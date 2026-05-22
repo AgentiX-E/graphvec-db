@@ -1,0 +1,60 @@
+{
+  "name": "raft-logic",
+  "version": "0.3.14",
+  "description": "Node.js wrapper around a WASM build of tikv/raft-rs (via wasm-bindgen).",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "ssh://git@codeberg.org/psvensson/raft-logic.git"
+  },
+  "keywords": [
+    "raft",
+    "consensus",
+    "etcd",
+    "tikv",
+    "wasm",
+    "webassembly",
+    "node"
+  ],
+  "type": "module",
+  "main": "./index.mjs",
+  "module": "./index.mjs",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    },
+    "./loader.mjs": {
+      "import": "./loader.mjs",
+      "default": "./loader.mjs"
+    },
+    "./*": "./*"
+  },
+  "files": [
+    "*.mjs",
+    "wasm/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build:wasm": "bash -c 'set -euo pipefail; if [ -d native/raft-wasm ]; then cd native/raft-wasm; elif [ -d packages/raft-wasm ]; then cd packages/raft-wasm; else echo \"No raft-wasm crate found (expected native/raft-wasm or packages/raft-wasm)\"; exit 1; fi; wasm-pack build --release --target nodejs --out-name raft_wasm --out-dir ../../wasm; cd - >/dev/null; rm -f wasm/package.json wasm/.gitignore; if [ -f wasm/raft_wasm.js ]; then mv wasm/raft_wasm.js wasm/raft_wasm.cjs; fi'",
+    "prepack": "bash -c 'set -e; if [ -f wasm/raft_wasm.cjs ] && [ -f wasm/raft_wasm_bg.wasm ]; then echo \"Using existing wasm artifacts\"; else npm run build:wasm; fi'",
+    "prepare": "npm run build:wasm || true",
+    "example:single": "node examples/single-node.mjs",
+    "example:single-threaded": "node examples/single-node-threaded.mjs",
+    "example:three": "node examples/three-node.mjs",
+    "example:three-sqlite": "node examples/three-node-sqlite.mjs",
+    "example:three-sqlite-restart": "node examples/three-node-sqlite-restart.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.5"
+  },
+  "directories": {
+    "example": "examples"
+  },
+  "author": "psvensson@gmail.com"
+}
