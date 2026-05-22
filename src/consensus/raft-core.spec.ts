@@ -368,7 +368,12 @@ describe('RaftCore', () => {
 
         // Leader should step down within a few heartbeat intervals
         // It will try to re-elect itself but should step down again on each check
-        await waitFor(() => leader!.role === 'follower', 2000)
+        const checkStart = Date.now()
+        await waitFor(() => {
+          const role = leader!.role
+          console.log(`[${Date.now() - checkStart}ms] leader role: ${role}, term: ${leader!.currentTerm}`)
+          return role === 'follower'
+        }, 2000)
 
       } finally {
         await Promise.all(cores.map(c => {
