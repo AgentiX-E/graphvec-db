@@ -73,7 +73,8 @@ describe('AC-IT-1: Single-Node GraphEngine 端到端 CRUD', () => {
       name: `BatchNode${i}`,
     }))
 
-    const ids = engine.batchUpsertNodes(inputs)
+    const idMap = engine.batchUpsertNodes(inputs)
+    const ids = Object.values(idMap)
     expect(ids.length).toBe(10)
 
     // 验证所有节点都可读

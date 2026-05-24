@@ -150,8 +150,10 @@ export class DeltaSync {
         }
       }
     }, intervalMs)
+    this.flushTimer.unref()
     // 每 60s 执行一次过期清理
     this._cleanupTimer = setInterval(() => this._evictExpired(), 60000)
+    this._cleanupTimer.unref()
   }
 
   stopAutoFlush(): void {

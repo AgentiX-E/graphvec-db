@@ -11,7 +11,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "jest --passWithNoTests",
+    "test:all": "NODE_OPTIONS='--max-old-space-size=4096' jest --maxWorkers=2 --no-coverage --forceExit",
+    "test:all:coverage": "NODE_OPTIONS='--max-old-space-size=4096' jest --maxWorkers=1 --coverage --forceExit",
     "test:integration": "jest --config jest.integration.config.ts",
     "test:fault": "jest --config jest.fault-injection.config.ts --verbose",
     "bench": "npx ts-node bench/core-ops.bench.ts",

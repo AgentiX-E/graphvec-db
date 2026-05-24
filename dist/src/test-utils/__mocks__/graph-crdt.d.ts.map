@@ -1,0 +1,1 @@
+{"version":3,"file":"graph-crdt.d.ts","sourceRoot":"","sources":["../../../../src/test-utils/__mocks__/graph-crdt.ts"],"names":[],"mappings":"AAAA,cAAM,KAAK;IACT,OAAO,CAAC,KAAK,CAA0B;IAEvC,KAAK,CAAC,MAAM,EAAE,GAAG,GAAG,GAAG;IAOvB,KAAK,IAAI,GAAG;IAKZ,QAAQ,IAAI,MAAM,CAAC,MAAM,EAAE,GAAG,CAAC;IAI/B,KAAK,IAAI,IAAI;CAGd;AAED,eAAe,KAAK,CAAA"}

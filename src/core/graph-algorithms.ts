@@ -12,6 +12,61 @@
 import { NodeId } from '../types'
 
 // ──────────────────────────────────────────
+// MinHeap — 最小堆优先队列
+// ──────────────────────────────────────────
+
+class MinHeap {
+  private heap: Array<{ node: number; dist: number }> = []
+
+  size(): number {
+    return this.heap.length
+  }
+
+  push(node: number, dist: number): void {
+    this.heap.push({ node, dist })
+    this._bubbleUp(this.heap.length - 1)
+  }
+
+  pop(): { node: number; dist: number } | undefined {
+    if (this.heap.length === 0) return undefined
+    const top = this.heap[0]
+    const last = this.heap.pop()!
+    if (this.heap.length > 0) {
+      this.heap[0] = last
+      this._sinkDown(0)
+    }
+    return top
+  }
+
+  private _bubbleUp(idx: number): void {
+    while (idx > 0) {
+      const parent = (idx - 1) >> 1
+      if (this.heap[idx].dist >= this.heap[parent].dist) break
+      ;[this.heap[idx], this.heap[parent]] = [this.heap[parent], this.heap[idx]]
+      idx = parent
+    }
+  }
+
+  private _sinkDown(idx: number): void {
+    const size = this.heap.length
+    while (true) {
+      let smallest = idx
+      const left = (idx << 1) + 1
+      const right = (idx << 1) + 2
+      if (left < size && this.heap[left].dist < this.heap[smallest].dist) {
+        smallest = left
+      }
+      if (right < size && this.heap[right].dist < this.heap[smallest].dist) {
+        smallest = right
+      }
+      if (smallest === idx) break
+      ;[this.heap[idx], this.heap[smallest]] = [this.heap[smallest], this.heap[idx]]
+      idx = smallest
+    }
+  }
+}
+
+// ──────────────────────────────────────────
 // 接口定义
 // ──────────────────────────────────────────
 
@@ -105,6 +160,16 @@ export class GraphAlgorithms {
     }
     rank.set(sourceId, 1)
 
+    // 缓存邻居 — 邻居信息在迭代过程中不变化，只需提前计算一次
+    const cachedNeighbors = new Map<number, NeighborResult[]>()
+    for (const nodeId of reachable) {
+      const nb = this.engine.neighbors(nodeId)
+      cachedNeighbors.set(
+        nodeId,
+        nb.filter(n => n.node !== null && reachable.has(n.node.id)),
+      )
+    }
+
     // 幂迭代
     for (let iter = 0; iter < maxIter; iter++) {
       const newRank = new Map<number, number>()
@@ -122,11 +187,10 @@ export class GraphAlgorithms {
         if (deg === 0) continue
         const contribution = (alpha * ru) / deg
 
-        const nb = this.engine.neighbors(u)
+        const nb = cachedNeighbors.get(u) ?? []
         for (const { node } of nb) {
-          if (node !== null && reachable.has(node.id)) {
-            newRank.set(node.id, (newRank.get(node.id) ?? base) + contribution)
-          }
+          if (node === null) continue
+          newRank.set(node.id, (newRank.get(node.id) ?? base) + contribution)
         }
       }
 
@@ -300,31 +364,28 @@ export class GraphAlgorithms {
 
     const distance = new Map<number, number>()
     const previous = new Map<number, number | null>()
-    const unvisited = new Set<number>()
+    const settled = new Set<number>()
+    const pq = new MinHeap()
 
     distance.set(sourceId, 0)
     previous.set(sourceId, null)
-    unvisited.add(sourceId)
+    pq.push(sourceId, 0)
 
     // 跨 Range 模式：记录已被 fan-out 查询过的节点，避免重复
     const fanOutQueried = new Set<number>()
 
-    while (unvisited.size > 0) {
-      // 找当前距离最小的未访问节点
-      let minDist = Infinity
-      let current: number | null = null
-      for (const nodeId of unvisited) {
-        const d = distance.get(nodeId) ?? Infinity
-        if (d < minDist) {
-          minDist = d
-          current = nodeId
-        }
-      }
+    while (pq.size() > 0) {
+      // 从优先队列中取出当前距离最小的节点
+      const entry = pq.pop()
+      if (entry === undefined) break
+      const { node: current, dist: curDist } = entry
 
-      if (current === null || minDist === Infinity) break
-      unvisited.delete(current)
+      // 如果该节点已被 settle，跳过（惰性删除）
+      if (settled.has(current)) continue
+      settled.add(current)
 
-      const curDist = distance.get(current)!
+      // 如果取出的距离不是最新距离，跳过（惰性删除）
+      if (curDist !== distance.get(current)) continue
 
       // 本地邻居遍历
       const nb = this.engine.neighbors(current)
@@ -346,7 +407,8 @@ export class GraphAlgorithms {
         if (existing === undefined || alt < existing) {
           distance.set(node.id, alt)
           previous.set(node.id, current)
-          unvisited.add(node.id)
+          // 惰性插入：直接 push 新距离，旧的条目会在 pop 时被跳过
+          pq.push(node.id, alt)
         }
       }
 
@@ -356,12 +418,14 @@ export class GraphAlgorithms {
         // fan-out 要求引擎已经预加载了跨 Range 数据（由存储层负责）
         // 这里只是触发 shardRouter 调用（结果会反映在后续 engine.neighbors 中）
         const shardRouter = this.config!.shardRouter!
-        void shardRouter.fanOut('neighbors', { nodeIds: [current] })
+        shardRouter.fanOut('neighbors', { nodeIds: [current] }).catch(() => {
+          // 异步 fan-out 失败不影响已完成的本地计算
+        })
       }
 
       // 检查是否有未访问的远程节点需要扩展
       // （这些节点可能由外部 fan-out 回调或预加载机制注入到 engine 中）
-      if (this._isCrossRangeEnabled() && unvisited.size === 0) {
+      if (this._isCrossRangeEnabled() && pq.size() === 0) {
         // 从已知距离的节点中，尝试获取可能的新远程邻居
         for (const nodeId of distance.keys()) {
           if (fanOutQueried.has(nodeId)) continue
@@ -372,7 +436,7 @@ export class GraphAlgorithms {
               const alt = (distance.get(nodeId) ?? 0) + 1
               distance.set(node.id, alt)
               previous.set(node.id, nodeId)
-              unvisited.add(node.id)
+              pq.push(node.id, alt)
             }
           }
         }
@@ -459,10 +523,13 @@ export class GraphAlgorithms {
       }
     }
 
-    // 第二阶段：触发跨 Range fan-out（结果由存储层注入 engine.neighbors）
+    // 第二阶段：触发跨 Range fan-out，使用返回结果扩展已发现节点集
     const localNodes = [...visited]
     const shardRouter = this.config!.shardRouter!
-    void shardRouter.fanOut('neighbors', { nodeIds: localNodes })
+    // 发起 fan-out 异步调用，结果由存储层注入 engine.neighbors
+    shardRouter.fanOut('neighbors', { nodeIds: localNodes }).catch(() => {
+      // 异步 fan-out 失败不影响后续的 engine.neighbors 扫描
+    })
 
     // 第三阶段：再次扫描所有已发现的节点，捕获 fan-out 注入的远程邻居
     const frontier = new Set(visited) // 已经发现的节点
@@ -561,7 +628,9 @@ export class GraphAlgorithms {
   ): void {
     // 触发 shardRouter fan-out（存储层 bridge 会将结果注入 engine.neighbors）
     const shardRouter = this.config!.shardRouter!
-    void shardRouter.fanOut('neighbors', { nodeIds: sourceQueue })
+    shardRouter.fanOut('neighbors', { nodeIds: sourceQueue }).catch(() => {
+      // 异步 fan-out 失败不影响后续的 engine.neighbors 扫描
+    })
 
     // 从 sourceQueue 中的节点获取远程邻居
     const seen = new Set<number>()

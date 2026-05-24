@@ -82,7 +82,7 @@ export interface VectorSearchOptions {
   denseQuery?: Float32Array | number[]
   sparseQuery?: Record<number, number>
   k?: number
-  hybrid?: boolean
+  hybrid?: boolean | { text: string; strategy?: 'rrf' | 'weighted'; vectorWeight?: number; textWeight?: number }
   hybridWeights?: { dense: number; sparse: number }
   scope?: {
     edgeTypeFilter?: EdgeType[]
@@ -150,6 +150,13 @@ export interface RaftStatus {
   applied: number
   lastIndex: number
   snapshotIndex: number
+}
+
+export interface MembershipChange {
+  type: 'add' | 'remove'
+  peerId: string
+  peerAddress?: string
+  term: number
 }
 
 export interface RaftOperation {
@@ -220,20 +227,49 @@ export enum Role {
   OPERATOR = 'operator',
 }
 
+/**
+ * mTLS 授权 DN → 角色映射
+ * 每个条目定义了一个被授权客户的 CN 及其数据库级权限。
+ *
+ * databases: 该 CN 被授权访问的数据库列表，空数组或无此字段表示全部数据库
+ */
+export interface AuthorizedIdentity {
+  /** 证书 CN */
+  cn: string
+  /** 全局角色 */
+  role: Role
+  /** 限定可访问的数据库，空数组或 undefined = 所有数据库 */
+  databases?: string[]
+}
+
+/**
+ * mTLS 认证配置
+ * 只支持 mTLS，不支持 JWT/Basic/API Key
+ */
 export interface AuthConfig {
-  mode: 'jwt' | 'basic' | 'apikey' | 'mtls'
-  jwtSecret?: string
-  jwtExpiryMs?: number
-  apiKeys?: Record<string, Role>
-  tlsCert?: string
-  tlsKey?: string
-  tlsCA?: string
-  tlsNodeWhitelist?: string[]  // mTLS 节点白名单
+  mode: 'mtls'
+  tlsCert: string   // 服务端证书路径
+  tlsKey: string    // 服务端私钥路径
+  tlsCA?: string    // CA 证书路径（可选，如不指定则用系统 CA）
+
+  /** 授权身份列表 */
+  identities?: AuthorizedIdentity[]
+
+  /** 授权身份配置文件路径（JSON 格式），支持运行时热加载（文件 watch） */
+  identitiesFile?: string
+
+  /** 未授权 CN 默认角色，undefined = 拒绝访问 */
+  defaultRole?: Role
+
+  /** 默认可访问数据库（用于 defaultRole 生效的场景），空数组或 undefined = 所有数据库 */
+  defaultDatabases?: string[]
 }
 
 export interface AuthResult {
   user: string
   role: Role
+  /** 限定可访问的数据库列表 */
+  databases?: string[]
 }
 
 export class AuthError extends Error {

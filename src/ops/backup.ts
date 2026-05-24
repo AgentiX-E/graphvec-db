@@ -3,6 +3,8 @@ import * as path from 'path'
 import { GraphEngine } from '../core/graph-engine'
 import { Logger } from './logger'
 import { HlcClock } from '../replication/hlc-clock'
+import type { PITRConfig, RecoveryPoint } from './backup-types'
+import { WalArchiver } from './backup-wal'
 
 /**
  * Backup — 文件级备份 / 恢复
@@ -23,6 +25,8 @@ export class Backup {
   private inProgress: boolean = false
   private clock: HlcClock
   private snapshotId: number = 0
+  private pitrConfig: PITRConfig | null = null
+  private walArchiver: WalArchiver = new WalArchiver()
 
   constructor(engine: GraphEngine, clock?: HlcClock) {
     this.engine = engine
@@ -175,4 +179,242 @@ export class Backup {
       return []
     }
   }
+
+  // ─────────── PITR（Point-in-Time Recovery）───────────
+
+  /**
+   * 启用 PITR（Point-in-Time Recovery）
+   * @param config PITR 配置
+   */
+  enablePITR(config: PITRConfig): void {
+    this.pitrConfig = { ...config }
+    this.logger.info('PITR enabled', {
+      walArchivePath: config.walArchivePath,
+      fullBackupIntervalMs: config.fullBackupIntervalMs,
+      retentionCount: config.retentionCount,
+    })
+  }
+
+  /**
+   * 创建增量备份：将当前 WAL 文件归档到存档目录
+   * @returns 备份 ID
+   */
+  async createIncremental(): Promise<string> {
+    if (!this.pitrConfig) {
+      throw new Error('PITR is not enabled. Call enablePITR() first.')
+    }
+    const dataDir = process.env.DATA_DIR || './data'
+    const archiveDir = this.pitrConfig.walArchivePath
+
+    // 确保归档目录存在
+    fs.mkdirSync(archiveDir, { recursive: true })
+
+    // 扫描数据目录下所有 WAL 文件并归档
+    let archivedCount = 0
+    let firstBackupId = ''
+
+    const scanWalFiles = (dir: string) => {
+      let entries: fs.Dirent[]
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name)
+        if (entry.isFile() && /^wal-.+\.bin$/.test(entry.name)) {
+          const archiveRecord = this.walArchiver.archiveWalSync(fullPath, archiveDir)
+          if (!firstBackupId) {
+            firstBackupId = archiveRecord.backupId
+          }
+          archivedCount++
+        } else if (entry.isDirectory()) {
+          scanWalFiles(fullPath)
+        }
+      }
+    }
+
+    scanWalFiles(dataDir)
+
+    if (archivedCount === 0) {
+      // 如果没有 WAL 文件，创建一个占位归档，记录当前时间点
+      const placeholderPath = path.join(archiveDir, `${ARCHIVE_PREFIX}${Date.now()}-no-wal`)
+      fs.writeFileSync(placeholderPath, JSON.stringify({ timestamp: Date.now(), noWal: true }))
+      firstBackupId = path.basename(placeholderPath)
+    }
+
+    // 清理旧归档（只保留 retentionCount 个）
+    await this.walArchiver.cleanupArchives(archiveDir, this.pitrConfig.retentionCount)
+
+    this.logger.info(`Incremental backup created`, {
+      backupId: firstBackupId,
+      archivedCount,
+      archiveDir,
+    })
+
+    return firstBackupId
+  }
+
+  /**
+   * 恢复到指定时间点
+   *
+   * 流程：
+   * 1. 找到指定时间戳之前的最新全量备份
+   * 2. 从该全量备份恢复
+   * 3. 按时间排序重放 WAL 归档直到目标时间戳
+   *
+   * @param timestamp 目标时间戳（毫秒）
+   * @param archiveDir 归档目录
+   */
+  async restoreToTimestamp(timestamp: number, archiveDir: string): Promise<void> {
+    // 1. 找到最近的备份目录
+    const backupBaseDir = path.dirname(archiveDir)
+    const backupDirs = this.listBackups(backupBaseDir)
+      .filter(b => {
+        // 解析备份目录的时间戳
+        const ts = parseBackupTimestamp(b)
+        return ts !== null && ts <= timestamp
+      })
+      .sort((a, b) => {
+        const tsA = parseBackupTimestamp(a) ?? 0
+        const tsB = parseBackupTimestamp(b) ?? 0
+        return tsB - tsA // 最近的先排
+      })
+
+    if (backupDirs.length === 0) {
+      throw new Error(`No full backup found before timestamp ${timestamp}`)
+    }
+
+    const latestFullBackup = backupDirs[0]
+    this.logger.info(`Found latest full backup before PITR target`, {
+      backupPath: latestFullBackup,
+      targetTimestamp: timestamp,
+    })
+
+    // 2. 恢复全量备份
+    await this.restore(latestFullBackup)
+
+    // 3. 查找所有在目标时间戳之前的 WAL 归档
+    const archives = await this.walArchiver.listArchives(archiveDir)
+    const archivesToReplay = archives.filter(a => a.timestamp <= timestamp)
+
+    this.logger.info(`Replaying ${archivesToReplay.length} WAL archives for PITR`, {
+      targetTimestamp: timestamp,
+      archiveCount: archivesToReplay.length,
+    })
+
+    // 将 WAL 归档文件恢复回数据目录
+    const dataDir = process.env.DATA_DIR || './data'
+    for (const archive of archivesToReplay) {
+      try {
+        // 从归档文件名提取原始 WAL 文件名: wal-archive-<ts>-<originalName>
+        const baseName = path.basename(archive.walPath)
+        const originalName = getOriginalWalName(baseName)
+        if (!originalName) continue
+
+        // 搜索数据目录下对应的 WAL 目录
+        const destWalPath = findWalDestPath(dataDir, originalName)
+        if (destWalPath) {
+          // 确保目标目录存在
+          fs.mkdirSync(path.dirname(destWalPath), { recursive: true })
+          fs.copyFileSync(archive.walPath, destWalPath)
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to replay WAL archive: ${archive.walPath}`, { error: (err as Error).message })
+      }
+    }
+  }
+
+  /**
+   * 列出可用的恢复点
+   * @param archiveDir 归档目录
+   */
+  async listRecoveryPoints(archiveDir: string): Promise<RecoveryPoint[]> {
+    const points: RecoveryPoint[] = []
+
+    // 1. 从全量备份目录扫描
+    const backupBaseDir = path.dirname(archiveDir)
+    const backupDirs = this.listBackups(backupBaseDir)
+    for (const dir of backupDirs) {
+      const ts = parseBackupTimestamp(dir)
+      if (ts !== null) {
+        points.push({
+          timestamp: ts,
+          backupId: path.basename(dir),
+          type: 'full',
+        })
+      }
+    }
+
+    // 2. 从 WAL 归档扫描
+    const incrementalPoints = await this.walArchiver.listRecoveryPoints(archiveDir)
+    points.push(...incrementalPoints)
+
+    // 3. 按时间排序
+    points.sort((a, b) => a.timestamp - b.timestamp)
+    return points
+  }
+}
+
+// ─────────── PITR 辅助函数 ───────────
+
+/** WAL 归档文件前缀（与 backup-wal.ts 中一致） */
+const ARCHIVE_PREFIX = 'wal-archive-'
+
+/**
+ * 从备份目录路径解析时间戳。
+ * 格式: graphvec-backup-2026-05-23T22-30-00-000Z
+ */
+function parseBackupTimestamp(backupPath: string): number | null {
+  const baseName = path.basename(backupPath)
+  const match = baseName.match(/^graphvec-backup-(.+)$/)
+  if (!match) return null
+  try {
+    // 将文件名中的 - 恢复为日期分隔符
+    const isoStr = match[1].replace(/-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3.$4$5')
+    // 处理完全替换: T 前面的 - 是日期分隔符
+    const isoFull = match[1]
+      .replace(/(\d{4})-(\d{2})-(\d{2})/, '$1-$2-$3')
+      .replace(/-(\d{2})-(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3.$4Z')
+      .replace(/Z$/, '+08:00')
+    const d = new Date(isoFull)
+    return isNaN(d.getTime()) ? null : d.getTime()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 从归档文件名中提取原始 WAL 文件名
+ * 格式: wal-archive-<timestamp>-<originalName>
+ */
+function getOriginalWalName(archiveName: string): string | null {
+  const match = archiveName.match(new RegExp(`^${ARCHIVE_PREFIX}\\d+-(.+)$`))
+  return match ? match[1] : null
+}
+
+/**
+ * 在数据目录中查找匹配的 WAL 文件目标路径
+ */
+function findWalDestPath(dataDir: string, walName: string): string | null {
+  const walk = (dir: string): string | null => {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return null
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name)
+      if (entry.isFile() && entry.name === walName) {
+        return fullPath
+      }
+      if (entry.isDirectory()) {
+        const result = walk(fullPath)
+        if (result) return result
+      }
+    }
+    return null
+  }
+  return walk(dataDir)
 }

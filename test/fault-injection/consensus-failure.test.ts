@@ -7,11 +7,11 @@
  * 3. 多次 stop/start 不报错
  */
 import { StandaloneConsensus } from '../../src/consensus/standalone-consensus'
-import { SimulatedRaftConsensus } from '../../src/consensus/simulated-raft'
+import { SimulatedRaftConsensus, SimulatedRaftInstanceManager } from '../../src/consensus/simulated-raft'
 
 describe('AC-FI-6: Consensus failure recovery', () => {
   afterEach(() => {
-    SimulatedRaftConsensus.reset()
+    SimulatedRaftInstanceManager.reset()
   })
 
   test('should handle propose failure gracefully without start', async () => {

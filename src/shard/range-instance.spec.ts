@@ -36,13 +36,17 @@ function makeTestConfig(override?: Partial<RangeConfig>): RangeConfig {
 
 describe('RangeInstance', () => {
   let clock: HlcClock
+  const runningInstances: RangeInstance[] = []
 
   beforeAll(() => {
     fs.mkdirSync(`${TEST_DIR}/raft`, { recursive: true })
     fs.mkdirSync(`${TEST_DIR}/graph`, { recursive: true })
   })
 
-  afterAll(() => {
+  afterAll(async () => {
+    // 关闭所有运行中的实例
+    await Promise.all(runningInstances.map(r => r.stop().catch(() => {})))
+    runningInstances.length = 0
     try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch {}
   })
 
@@ -50,7 +54,12 @@ describe('RangeInstance', () => {
     clock = new HlcClock()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // 关闭所有运行中的实例
+    await Promise.all(runningInstances.map(r => r.stop().catch(() => {})))
+    runningInstances.length = 0
+    // 等待 IO flush，确保 WAL fd 在删除前释放
+    await new Promise(r => setImmediate(r))
     // Clean graph/raft dirs so next test gets fresh state
     try { fs.rmSync(`${TEST_DIR}/graph`, { recursive: true, force: true }) } catch {}
     try { fs.rmSync(`${TEST_DIR}/raft`, { recursive: true, force: true }) } catch {}
@@ -68,8 +77,8 @@ describe('RangeInstance', () => {
       const config = makeTestConfig()
       const instance = new RangeInstance(config, clock)
       expect(instance.config).toBe(config)
-      expect(instance.raft).toBeDefined()
       expect(instance.engine).toBeDefined()
+      expect(instance.isStarted).toBe(false)
     })
   })
 
@@ -83,15 +92,15 @@ describe('RangeInstance', () => {
     test('should transition from closed to open after start', async () => {
       const instance = new RangeInstance(makeTestConfig(), clock)
       expect(instance.engine.isOpen).toBe(false)
-      expect(instance.raft.isStarted).toBe(false)
+      expect(instance.isStarted).toBe(false)
 
       await instance.start()
       expect(instance.engine.isOpen).toBe(true)
-      expect(instance.raft.isStarted).toBe(true)
+      expect(instance.isStarted).toBe(true)
 
       await instance.stop()
       expect(instance.engine.isOpen).toBe(false)
-      expect(instance.raft.isStarted).toBe(false)
+      expect(instance.isStarted).toBe(false)
     })
 
     test('should handle double stop gracefully', async () => {
@@ -106,10 +115,10 @@ describe('RangeInstance', () => {
       for (let i = 0; i < 3; i++) {
         await instance.start()
         expect(instance.engine.isOpen).toBe(true)
-        expect(instance.raft.isStarted).toBe(true)
+        expect(instance.isStarted).toBe(true)
         await instance.stop()
         expect(instance.engine.isOpen).toBe(false)
-        expect(instance.raft.isStarted).toBe(false)
+        expect(instance.isStarted).toBe(false)
       }
     })
   })
@@ -253,7 +262,7 @@ describe('RangeInstance', () => {
       // Now create an edge between them — edge uses numeric node IDs
       const srcId = 1 // first upserted node
       const dstId = 2 // second upserted node
-      await instance.raft.engine_.upsertEdge(srcId, dstId, 2)
+      await instance.engine.upsertEdge(srcId, dstId, 2)
 
       // Verify via neighbors
       const result = await instance.read(engine => engine.neighbors(srcId))

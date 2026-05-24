@@ -14,7 +14,7 @@ import { StandaloneConsensus } from '../../src/consensus/standalone-consensus'
 import { RaftNode } from '../../src/consensus/raft-node'
 import { GraphEngine } from '../../src/core/graph-engine'
 import { HlcClock } from '../../src/replication/hlc-clock'
-import { SimulatedRaftConsensus } from '../../src/consensus/simulated-raft'
+import { SimulatedRaftConsensus, SimulatedRaftInstanceManager } from '../../src/consensus/simulated-raft'
 import { OverGraphConfig, RaftNodeConfig } from '../../src/types'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -28,7 +28,7 @@ describe('AC-FI-3: 日志损坏恢复', () => {
 
   afterAll(() => {
     try { fs.rmSync(dataDir, { recursive: true, force: true }) } catch { /* ignore */ }
-    SimulatedRaftConsensus.reset()
+    SimulatedRaftInstanceManager.reset()
   })
 
   test('StandaloneConsensus 未设置 applyFn 时 propose 返回 { ok: false } 而非崩溃', async () => {

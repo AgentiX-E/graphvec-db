@@ -7,12 +7,11 @@ export { GraphEngine } from './core/graph-engine'
 export { GraphConfig } from './core/graph-config'
 
 // Consensus (abstracted)
-export { RaftNode } from './consensus/raft-node'
-export { RaftCluster } from './consensus/raft-cluster'
+export { RangeInstance as RaftNode } from './shard/range-instance'
 export { StandaloneConsensus } from './consensus/standalone-consensus'
-export { SimulatedRaftConsensus } from './consensus/simulated-raft'
 export { RaftLogicConsensus } from './consensus/raft-logic-consensus'
-export { MockTransport, TcpTransport } from './consensus/raft-transport'
+export { MockTransport, TcpTransport } from './consensus/transport'
+export { createConsensus } from './consensus/consensus-factory'
 export type { ConsensusProvider, ConsensusConfig, ConsensusRole } from './consensus/consensus-provider'
 
 // Shard

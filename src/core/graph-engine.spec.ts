@@ -84,8 +84,36 @@ describe('GraphEngine', () => {
       { typeId: 1, name: 'batch-c', opts: { props: { val: 3 } } },
     ]
     const ids = engine.batchUpsertNodes(inputs)
-    expect(ids.length).toBe(3)
-    ids.forEach(id => expect(typeof id).toBe('number'))
+    // 返回 Record<string, NodeId>，键是 name，值是 nodeId
+    const keys = Object.keys(ids)
+    expect(keys.length).toBe(3)
+    keys.forEach(key => expect(typeof ids[key]).toBe('number'))
+  })
+
+  // ──────────────────────────────────────────
+  // TTL / retention policy tests
+  // ──────────────────────────────────────────
+
+  test('AC-1.17: upsertNode with ttlSeconds should not throw and node should be readable', () => {
+    // Verify TTL mapping: upsertNode maps opts.ttlSeconds → retentionPolicy { ttlSeconds }
+    const shortTTL = 3600 // 1 hour — enough to not expire during test
+    expect(() => {
+      const id = engine.upsertNode(1, 'ttl-test-node', { ttlSeconds: shortTTL })
+      const node = engine.getNode(id)
+      expect(node).not.toBeNull()
+      expect(node!.name).toBe('ttl-test-node')
+    }).not.toThrow()
+  })
+
+  test('AC-1.18: upsertNode with ttlSeconds and props should not throw', () => {
+    // Combined: ttlSeconds + other options like props
+    const id = engine.upsertNode(1, 'ttl-props-node', {
+      ttlSeconds: 7200,
+      props: { purpose: 'ttl-validation', version: 2 },
+    })
+    const node = engine.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.purpose).toBe('ttl-validation')
   })
 
   test('should support snapshot export', () => {

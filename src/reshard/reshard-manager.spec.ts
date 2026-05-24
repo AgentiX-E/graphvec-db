@@ -1,0 +1,283 @@
+/**
+ * reshard-manager.spec.ts — ReshardManager 在线 Resharding 测试
+ *
+ * 测试策略：
+ * ReshardManager 协调 ShardManager + ReshardPlan + ReshardWorker。
+ * ShardManager 需要真实 RangeInstance，通过 jest.mock 模块级别 mock。
+ * 单元测试验证：
+ * - 状态机转换（pending → dual_write → migrating → ... → completed）
+ * - 3PC 原子提交流程
+ * - 回滚逻辑
+ * - 容错处理
+ */
+import * as os from 'node:os'
+import * as path from 'node:path'
+import * as fs from 'node:fs'
+import { ReshardManager } from './reshard-manager'
+import { ShardManager } from '../shard/shard-manager'
+import { RangeInstance } from '../shard/range-instance'
+import { HlcClock } from '../replication/hlc-clock'
+import { ReshardingPlan, ReshardSplit, ShardMap } from '../types'
+import { GraphEngine } from '../core/graph-engine'
+
+jest.mock('../core/graph-engine', () => {
+  let nodeCounter = 0
+  return {
+    GraphEngine: jest.fn().mockImplementation(() => {
+      const nodes: Array<{ id: number; type: number; name: string }> = []
+      return {
+        open: jest.fn(),
+        close: jest.fn(),
+        upsertNode: jest.fn().mockImplementation((typeId: number, name: string) => {
+          const id = ++nodeCounter
+          nodes.push({ id, type: typeId, name })
+          return BigInt(id)
+        }),
+        upsertEdge: jest.fn(),
+        deleteNode: jest.fn(),
+        deleteEdge: jest.fn(),
+        batchUpsertNodes: jest.fn().mockReturnValue([]),
+        queryPattern: jest.fn().mockReturnValue([]),
+        neighbors: jest.fn().mockReturnValue({ edges: [], nodes: [] }),
+        getNode: jest.fn(),
+        getEdge: jest.fn(),
+        stats: jest.fn().mockReturnValue({ nodeCount: nodes.length, edgeCount: 0, diskSizeBytes: 100 }),
+        compact: jest.fn(),
+        isOpen: false,
+      }
+    }),
+  }
+})
+
+function createShardMap(testRunId: string, dir: string): ShardMap {
+  return {
+    version: 1,
+    ranges: [
+      {
+        rangeId: 'range-0',
+        dataDir: path.join(dir, 'range-0'),
+        raftConfig: {
+          nodeId: 'range-0',
+          peers: [],
+          storagePath: path.join(dir, 'range-0', 'raft'),
+          electionTimeoutMinMs: 150,
+          heartbeatIntervalMs: 50,
+        },
+        overgraphConfig: { path: path.join(dir, 'range-0', 'graph') },
+      },
+      {
+        rangeId: 'range-1',
+        dataDir: path.join(dir, 'range-1'),
+        raftConfig: {
+          nodeId: 'range-1',
+          peers: [],
+          storagePath: path.join(dir, 'range-1', 'raft'),
+          electionTimeoutMinMs: 150,
+          heartbeatIntervalMs: 50,
+        },
+        overgraphConfig: { path: path.join(dir, 'range-1', 'graph') },
+      },
+    ],
+    hashRing: {
+      virtualNodes: 160,
+      nodes: [
+        { hash: '0x00000000', rangeId: 'range-0' },
+        { hash: '0xFFFFFFFF', rangeId: 'range-1' },
+      ],
+    },
+  }
+}
+
+describe('ReshardManager', () => {
+  const testDir = path.join(os.tmpdir(), `reshard-mgr-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  let clock: HlcClock
+  let shardManager: ShardManager
+  let shardMap: ShardMap
+  let testRunId: string
+
+  beforeAll(() => {
+    fs.mkdirSync(testDir, { recursive: true })
+  })
+
+  afterAll(() => {
+    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch { /* ok */ }
+  })
+
+  beforeEach(() => {
+    clock = new HlcClock()
+    testRunId = Math.random().toString(36).slice(2, 8)
+    const dir = path.join(testDir, testRunId)
+    fs.mkdirSync(path.join(dir, 'range-0', 'raft'), { recursive: true })
+    fs.mkdirSync(path.join(dir, 'range-0', 'graph'), { recursive: true })
+    fs.mkdirSync(path.join(dir, 'range-1', 'raft'), { recursive: true })
+    fs.mkdirSync(path.join(dir, 'range-1', 'graph'), { recursive: true })
+    shardMap = createShardMap(testRunId, dir)
+    shardManager = new ShardManager(shardMap, clock)
+  })
+
+  afterEach(async () => {
+    try { await shardManager.stop() } catch { /* ok */ }
+    try { fs.rmSync(path.join(testDir, testRunId), { recursive: true, force: true }) } catch { /* ok */ }
+  })
+
+  describe('construction', () => {
+    it('should create with ShardManager and clock', () => {
+      const mgr = new ReshardManager(shardManager, clock)
+      expect(mgr).toBeDefined()
+      expect(mgr.status).toBeNull()
+    })
+  })
+
+  describe('evaluateAndExecute', () => {
+    it('should return null when no resharding needed', async () => {
+      await shardManager.start()
+      const mgr = new ReshardManager(shardManager, clock)
+      const result = await mgr.evaluateAndExecute()
+      expect(result).toBeNull()
+      await shardManager.stop()
+    })
+  })
+
+  describe('execute with plan', () => {
+    it('should execute resharding plan end-to-end', async () => {
+      await shardManager.start()
+
+      const planDir = path.join(testDir, testRunId, 'target')
+      fs.mkdirSync(path.join(planDir, 'raft'), { recursive: true })
+      fs.mkdirSync(path.join(planDir, 'graph'), { recursive: true })
+
+      const plan: ReshardingPlan = {
+        planId: 'test-plan-1',
+        version: 2,
+        createdAt: Date.now(),
+        estimatedDurationMs: 1000,
+        splits: [
+          {
+            sourceRangeId: 'range-0',
+            targetRangeId: 'range-0-split-0',
+            hashRangeStart: 0,
+            hashRangeEnd: 50000,
+            targetNodeId: 'node-split-0',
+            targetDataDir: planDir,
+          },
+        ],
+      }
+
+      const mgr = new ReshardManager(shardManager, clock)
+      const result = await mgr.execute(plan)
+
+      expect(result).toBeDefined()
+      expect(result.planId).toBe('test-plan-1')
+      expect(result.state).toBe('completed')
+      expect(result.progressPercent).toBe(100)
+      expect(result.completedAt).toBeGreaterThan(0)
+
+      await shardManager.stop()
+    })
+  })
+
+  describe('rollback', () => {
+    it('should rollback after completed execution', async () => {
+      await shardManager.start()
+
+      const planDir = path.join(testDir, testRunId, 'target-rollback')
+      fs.mkdirSync(path.join(planDir, 'raft'), { recursive: true })
+      fs.mkdirSync(path.join(planDir, 'graph'), { recursive: true })
+
+      const plan: ReshardingPlan = {
+        planId: 'test-plan-rollback',
+        version: 2,
+        createdAt: Date.now(),
+        estimatedDurationMs: 1000,
+        splits: [
+          {
+            sourceRangeId: 'range-0',
+            targetRangeId: 'range-0-split-rb',
+            hashRangeStart: 0,
+            hashRangeEnd: 50000,
+            targetNodeId: 'node-rb',
+            targetDataDir: planDir,
+          },
+        ],
+      }
+
+      const mgr = new ReshardManager(shardManager, clock)
+      await mgr.execute(plan)
+
+      // Status should be completed
+      expect(mgr.status!.state).toBe('completed')
+
+      // Rollback should work after completed
+      await mgr.rollback()
+      expect(mgr.status!.state).toBe('failed')
+      expect(mgr.status!.errors).toContain('Rolled back by operator')
+
+      await shardManager.stop()
+    })
+  })
+
+  describe('state machine transitions', () => {
+    it('should transition through correct states on success', async () => {
+      await shardManager.start()
+
+      const planDir = path.join(testDir, testRunId, 'target-states')
+      fs.mkdirSync(path.join(planDir, 'raft'), { recursive: true })
+      fs.mkdirSync(path.join(planDir, 'graph'), { recursive: true })
+
+      const plan: ReshardingPlan = {
+        planId: 'test-plan-states',
+        version: 2,
+        createdAt: Date.now(),
+        estimatedDurationMs: 1000,
+        splits: [
+          {
+            sourceRangeId: 'range-0',
+            targetRangeId: 'range-0-split-states',
+            hashRangeStart: 0,
+            hashRangeEnd: 50000,
+            targetNodeId: 'node-states',
+            targetDataDir: planDir,
+          },
+        ],
+      }
+
+      const mgr = new ReshardManager(shardManager, clock)
+
+      // After execute, final state should be 'completed'
+      const result = await mgr.execute(plan)
+      expect(result.state).toBe('completed')
+
+      await shardManager.stop()
+    })
+
+    it('should handle failure gracefully', async () => {
+      await shardManager.start()
+
+      const plan: ReshardingPlan = {
+        planId: 'test-plan-fail',
+        version: 2,
+        createdAt: Date.now(),
+        estimatedDurationMs: 1000,
+        splits: [
+          {
+            sourceRangeId: 'nonexistent-range',
+            targetRangeId: 'range-fail-target',
+            hashRangeStart: 0,
+            hashRangeEnd: 50000,
+            targetNodeId: 'node-fail',
+            targetDataDir: '/nonexistent/path',
+          },
+        ],
+      }
+
+      const mgr = new ReshardManager(shardManager, clock)
+      const result = await mgr.execute(plan)
+
+      // Should fail because source range doesn't exist
+      expect(result.state).toBe('failed')
+      expect(result.errors.length).toBeGreaterThan(0)
+
+      await shardManager.stop()
+    })
+  })
+})

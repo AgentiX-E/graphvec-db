@@ -1,0 +1,102 @@
+/**
+ * AutoSplitter — 自动 Range 分裂触发器
+ *
+ * 定期检查 Range 数据量，当超过阈值时自动生成 split 计划并执行。
+ *
+ * 设计原则:
+ * - 无侵入：通过 shardManager 检测，Splitter 只触发不执行迁移
+ * - 可配置：maxNodesPerRange、checkIntervalMs
+ * - 安全：预留 min check 间隔，避免 split 风暴
+ */
+
+import type { ShardManager } from './shard-manager'
+import type { RangeInstance } from './range-instance'
+
+export interface AutoSplitterConfig {
+  /** 每个 Range 的最大节点数阈值（默认 100000） */
+  maxNodesPerRange?: number
+  /** 检查间隔（毫秒，默认 30000 = 30s） */
+  checkIntervalMs?: number
+  /** 最小分裂间隔（毫秒，同一个 Range 两次 split 之间，默认 60000 = 1min） */
+  minSplitIntervalMs?: number
+}
+
+export class AutoSplitter {
+  private _config: Required<AutoSplitterConfig>
+  private _getRangeInstances: () => RangeInstance[]
+  private _onReshard: () => void
+  private _timer: ReturnType<typeof setInterval> | null = null
+  private _lastSplit = new Map<string, number>()
+  private _running = false
+
+  constructor(getRangeInstances: () => RangeInstance[], onReshard: () => void, config?: AutoSplitterConfig) {
+    this._getRangeInstances = getRangeInstances
+    this._onReshard = onReshard
+    this._config = {
+      maxNodesPerRange: config?.maxNodesPerRange ?? 100000,
+      checkIntervalMs: config?.checkIntervalMs ?? 30000,
+      minSplitIntervalMs: config?.minSplitIntervalMs ?? 60000,
+    }
+  }
+
+  /** 启动自动分裂检查 */
+  start(): void {
+    if (this._running) return
+    this._running = true
+    this._timer = setInterval(() => this._check(), this._config.checkIntervalMs)
+    this._timer.unref()
+  }
+
+  /** 停止自动分裂检查 */
+  stop(): void {
+    if (this._timer) {
+      clearInterval(this._timer)
+      this._timer = null
+    }
+    this._running = false
+  }
+
+  get running(): boolean {
+    return this._running
+  }
+
+  /** 立即执行一次检查 */
+  async checkNow(): Promise<number> {
+    return this._check()
+  }
+
+  private async _check(): Promise<number> {
+    const now = Date.now()
+    let splits = 0
+
+    try {
+      const ranges = this._getRangeInstances()
+      for (const range of ranges) {
+        // 跳过 draining range
+        if (range.isDraining()) continue
+
+        const engine = range.engine
+        const stats = engine.stats()
+        const nodeCount = stats.nodeCount ?? 0
+
+        if (nodeCount > this._config.maxNodesPerRange) {
+          const rangeId = range.config.rangeId
+          const lastSplit = this._lastSplit.get(rangeId) ?? 0
+
+          if (now - lastSplit < this._config.minSplitIntervalMs) {
+            continue // 过早，跳过
+          }
+
+          // 触发 split
+          this._lastSplit.set(rangeId, now)
+          this._onReshard()
+          splits++
+        }
+      }
+    } catch (err) {
+      // 静默：单次检查失败不影响后续
+    }
+
+    return splits
+  }
+}

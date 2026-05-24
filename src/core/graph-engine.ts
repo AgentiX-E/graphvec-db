@@ -1,36 +1,66 @@
-import { OverGraph, OverGraphDB } from 'overgraph'
 import {
-  NodeId, NodeRecord, EdgeRecord, UpsertNodeOptions, UpsertEdgeOptions,
+  NodeId, NodeRecord, EdgeRecord, NodeProperties,
+  UpsertNodeOptions, UpsertEdgeOptions,
   VectorSearchOptions, VectorSearchResult,
   PersonalizedPageRankOptions, ShortestPathOptions, ConnectedComponentsOptions,
   PatternMatchOptions, OverGraphConfig,
 } from '../types'
+import { StorageProvider, StorageConfig } from './storage-provider'
+import { OverGraphStorage } from './overgraph-storage'
+
+import { LabelEngine } from './label-engine'
+import { getEventBus } from './event-bus'
+import { EventStream } from './event-stream'
+
+/** Event for EventStream emit */
+interface StreamEvent { type: string; data: Record<string, unknown> }
 
 /**
- * GraphEngine — OverGraph v0.7.0 TypeScript 封装
+ * GraphEngine — 存储无关的图引擎核心
  *
- * 本层完成三件事：
- * 1. 类型转换（原生 JsNodeRecord → NodeRecord）
- * 2. API 适配（neighbors 返回数组而非 { edges, nodes }）
- * 3. 错误处理
+ * 所有数据操作通过 StorageProvider 接口完成，不直接依赖任何具体存储后端。
+ * 默认使用 OverGraph 后端，可切换为任何实现了 StorageProvider 的实现。
  */
 export class GraphEngine {
-  private db: OverGraphDB | null = null
+  private storage: StorageProvider
   private config: OverGraphConfig
   private _isOpen = false
   private _nodeCount: number = 0
   private _edgeCount: number = 0
+  private _nodeIds: Set<number> = new Set()
+  private _edgeKeys: Set<string> = new Set()
+  private _labelIndex: LabelEngine = new LabelEngine()
+  private _eventStream: EventStream | null = null
 
-  constructor(config: OverGraphConfig) {
+  /**
+   * 可选的回调：当节点/边发生变更时被调用
+   * 用于 DeltaSync 捕捉变更
+   */
+  public onRecordChange?: (name: string, fields: Record<string, any>) => void
+
+  constructor(config: OverGraphConfig, storage?: StorageProvider, eventStream?: EventStream) {
+    this.storage = storage ?? new OverGraphStorage()
     this.config = config
+    this._eventStream = eventStream ?? null
   }
 
+  /** 检查数据库是否已打开 */
   get isOpen(): boolean { return this._isOpen }
+
+  /** 通过 EventStream（可靠）或 EventBus（fire-and-forget）发布变更事件 */
+  private _emit(event: { type: string; data: Record<string, unknown> }): void {
+    if (this._eventStream) {
+      this._eventStream.emit(event)
+    } else {
+      try { getEventBus().emit({ ...event, timestamp: Date.now() } as import('./event-bus').GraphEvent) } catch { /* bus not initialized */ }
+    }
+  }
 
   /** 打开数据库 */
   open(): void {
     if (this._isOpen) return
-    this.db = OverGraph.open(this.config.path, {
+    this.storage.open({
+      path: this.config.path,
       denseVector: this.config.denseVector
         ? { dimension: this.config.denseVector.dimension }
         : undefined,
@@ -41,9 +71,8 @@ export class GraphEngine {
 
   /** 关闭数据库 */
   close(): void {
-    if (!this._isOpen || !this.db) return
-    this.db.close()
-    this.db = null
+    if (!this._isOpen) return
+    this.storage.close()
     this._isOpen = false
   }
 
@@ -51,58 +80,86 @@ export class GraphEngine {
   // Node operations
   // ──────────────────────────────────────────
 
+  /**
+   * 插入或更新一个节点
+   *
+   * @param typeId - 节点类型 ID
+   * @param name - 节点名称
+   * @param opts - 可选参数（属性、向量、有效期、衰减因子、TTL）
+   * @returns 新插入或已有节点的 ID
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): NodeId {
     this._ensureOpen()
-    const id = this.db!.upsertNode(typeId, name, {
-      props: opts?.props as Record<string, unknown> | undefined,
-      denseVector: opts?.denseVector instanceof Float32Array
-        ? opts.denseVector
-        : opts?.denseVector ? new Float32Array(opts.denseVector) : undefined,
-      sparseVector: opts?.sparseVector,
-      temporalValidity: opts?.temporalValidity,
-      decayFactor: opts?.decayFactor,
-      retentionPolicy: opts?.ttlSeconds ? { ttlSeconds: opts.ttlSeconds } : undefined,
-    })
-    // upsertNode 对已有节点返回相同 ID，此处简单递增
-    // 更精确的计数需要通过引擎快照恢复，当前为近似值
-    this._nodeCount++
+    const id = this.storage.upsertNode(typeId, name, opts)
+    if (!this._nodeIds.has(id)) {
+      this._nodeIds.add(id)
+      this._nodeCount++
+    }
+    this._labelIndex.addNode(typeId, id)
+    this.onRecordChange?.(name, { typeId, ...(opts?.props ?? {}) })
+    this._emit({ type: 'node:created', data: { id, typeId, name, props: opts?.props } })
     return id
   }
 
+  /**
+   * 根据节点 ID 获取节点记录
+   *
+   * @param id - 节点 ID
+   * @returns NodeRecord 或 null（节点不存在时）
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   getNode(id: NodeId): NodeRecord | null {
     this._ensureOpen()
-    const raw = this.db!.getNode(id, true)
+    const raw = this.storage.getNode(id, true)
     if (!raw) return null
-    // 获取真实 degree
     let degree = 0
     try {
-      const d = this.db!.degrees(id)
+      const d = this.storage.degrees(id)
       degree = d.inDegree + d.outDegree
     } catch {
-      // OverGraph 可能在某些状态下不支持 degrees() 调用
+      // storage 可能在某些状态下不支持 degrees() 调用
     }
     return {
       id: raw.id,
       type: raw.typeId,
-      name: raw.key,          // name is stored as `key`
-      props: raw.props as Record<string, string | number | boolean | null>,
+      name: raw.key,
+      props: raw.props as NodeProperties,
       createdAt: raw.createdAt,
       degree,
     }
   }
 
+  /**
+   * 删除指定 ID 的节点
+   *
+   * @param id - 要删除的节点 ID
+   * @returns true 如果节点存在且被删除，false 如果节点不存在
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   deleteNode(id: NodeId): boolean {
     this._ensureOpen()
-    const exists = this.db!.getNode(id) !== null
-    if (!exists) return false
-    this.db!.deleteNode(id)
+    const node = this.storage.getNode(id, true)
+    if (!node) return false
+    this._labelIndex.removeNode(node.typeId, id)
+    this.storage.deleteNode(id)
+    this._nodeIds.delete(id)
     this._nodeCount = Math.max(0, this._nodeCount - 1)
+    this.onRecordChange?.(node.key, { _deleted: true, typeId: node.typeId })
+    this._emit({ type: 'node:deleted', data: { id, typeId: node.typeId, name: node.key } })
     return true
   }
 
+  /**
+   * 批量插入或更新多个节点
+   *
+   * @param inputs - 节点输入数组
+   * @returns 节点名称到 ID 的映射表
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   batchUpsertNodes(inputs: { typeId: number; name: string; opts?: UpsertNodeOptions }[]): Record<string, NodeId> {
     this._ensureOpen()
-    const ids = this.db!.batchUpsertNodes(inputs.map(i => ({
+    const ids = this.storage.batchUpsertNodes(inputs.map(i => ({
       typeId: i.typeId,
       name: i.name,
       key: i.name,
@@ -115,9 +172,9 @@ export class GraphEngine {
     // Build name-to-ID map by querying each returned node
     const nameToId: Record<string, NodeId> = {}
     for (const id of ids) {
-      const node = this.db!.getNode(id, true)
+      const node = this.storage.getNode(id, true)
       if (node) {
-        nameToId[(node as any).key] = id
+        nameToId[node.key] = id
       }
     }
     // Fallback: if any name is missing (e.g. duplicate overwrites),
@@ -134,87 +191,114 @@ export class GraphEngine {
   // Edge operations
   // ──────────────────────────────────────────
 
+  /**
+   * 插入或更新一条边
+   *
+   * @param src - 源节点 ID
+   * @param dst - 目标节点 ID
+   * @param typeId - 边类型 ID
+   * @param opts - 可选参数
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   upsertEdge(src: NodeId, dst: NodeId, typeId: number, opts?: UpsertEdgeOptions): void {
     this._ensureOpen()
-    this.db!.upsertEdge(src, dst, typeId, {
+    this.storage.upsertEdge(src, dst, typeId, {
       props: opts?.props as Record<string, unknown> | undefined,
       temporalValidity: opts?.temporalValidity,
       weight: opts?.weight,
     })
-    this._edgeCount++
+    const ek = `${src}:${dst}:${typeId}`
+    if (!this._edgeKeys.has(ek)) {
+      this._edgeKeys.add(ek)
+      this._edgeCount++
+    }
+    this.onRecordChange?.(`edge:${src}->${dst}`, { typeId, src, dst, ...(opts?.props ?? {}) })
+    this._emit({ type: 'edge:created', data: { src, dst, typeId, props: opts?.props } })
   }
 
+  /**
+   * 获取指定边的记录
+   *
+   * @param src - 源节点 ID
+   * @param dst - 目标节点 ID
+   * @param typeId - 边类型 ID
+   * @returns EdgeRecord 或 null（边不存在时）
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   getEdge(src: NodeId, dst: NodeId, typeId: number): EdgeRecord | null {
     this._ensureOpen()
-    const raw = this.db!.getEdge(src, dst, typeId)
+    const raw = this.storage.getEdge(src, dst, typeId)
     if (raw) {
       return {
         src: raw.from,
         dst: raw.to,
         type: raw.typeId,
-        props: raw.props as Record<string, string | number | boolean | null>,
+        props: raw.props as NodeProperties,
         timestamp: raw.createdAt,
       }
     }
-    // OverGraph v0.7.0: getEdge may return null after deleteNode.
-    // Fallback: search via neighbors to find the matching edge.
-    const entries = this.db!.neighbors(src, { maxDepth: 1, edgeTypeFilter: [typeId] })
+    // Fallback: search via neighbors to find the matching edge
+    const entries = this.storage.neighbors(src, { maxDepth: 1, edgeTypeFilter: [typeId] })
     const match = entries.find(e => e.nodeId === dst && e.edgeTypeId === typeId)
     if (!match) return null
     return {
-      src,
-      dst,
-      type: typeId,
-      props: {},
-      timestamp: match.validFrom,
+      src, dst, type: typeId, props: {}, timestamp: match.validFrom,
     }
   }
 
+  /**
+   * 删除指定边
+   *
+   * @param src - 源节点 ID
+   * @param dst - 目标节点 ID
+   * @param typeId - 边类型 ID
+   * @returns true 如果边存在且被删除
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   deleteEdge(src: NodeId, dst: NodeId, typeId: number): boolean {
     this._ensureOpen()
-    const result = this.db!.deleteEdge(src, dst, typeId)
+    const result = this.storage.deleteEdge(src, dst, typeId)
     if (result) {
       this._edgeCount = Math.max(0, this._edgeCount - 1)
     }
+    this.onRecordChange?.(`edge:${src}->${dst}:${typeId}`, { _deleted: true, src, dst, typeId })
+    this._emit({ type: 'edge:deleted', data: { src, dst, typeId } })
     return result
   }
 
+  /**
+   * 获取指定节点的所有邻居
+   *
+   * @param id - 节点 ID
+   * @param opts - 可选参数（maxDepth, edgeTypeFilter）
+   * @returns 包含 edges 和 nodes 数组的对象
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   neighbors(id: NodeId, opts?: { maxDepth?: number; edgeTypeFilter?: number[] }): {
     edges: EdgeRecord[]; nodes: NodeRecord[]
   } {
     this._ensureOpen()
-    const entries = this.db!.neighbors(id, opts)
+    const entries = this.storage.neighbors(id, opts)
     const edges: EdgeRecord[] = []
     const nodes: NodeRecord[] = []
     const seenNodes = new Set<NodeId>()
 
     for (const entry of entries) {
       edges.push({
-        src: id,
-        dst: entry.nodeId,
-        type: entry.edgeTypeId,
-        props: {},
-        timestamp: entry.validFrom,
+        src: id, dst: entry.nodeId, type: entry.edgeTypeId, props: {}, timestamp: entry.validFrom,
       })
-
       if (!seenNodes.has(entry.nodeId)) {
         seenNodes.add(entry.nodeId)
-        // 直接通过原生 getNode 获取，避免 graph-engine 包装层的 degree 查询开销
-        //（degree 在邻居上下文中通常不需要，且每次 getNode 都会触发一次 db!.degrees()）
-        const raw = this.db!.getNode(entry.nodeId, true)
+        const raw = this.storage.getNode(entry.nodeId, true)
         if (raw) {
           nodes.push({
-            id: raw.id,
-            type: raw.typeId,
-            name: raw.key,
+            id: raw.id, type: raw.typeId, name: raw.key,
             props: raw.props as Record<string, string | number | boolean | null>,
-            createdAt: raw.createdAt,
-            degree: 0,
+            createdAt: raw.createdAt, degree: 0,
           })
         }
       }
     }
-
     return { edges, nodes }
   }
 
@@ -222,10 +306,17 @@ export class GraphEngine {
   // Vector search
   // ──────────────────────────────────────────
 
+  /**
+   * 向量搜索
+   *
+   * @param query - 搜索参数
+   * @returns 按分数降序排列的搜索结果数组
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   vectorSearch(query: VectorSearchOptions): VectorSearchResult[] {
     this._ensureOpen()
 
-    // OverGraph v0.7.0 vectorSearch accepts the query as JSON string
+    // 构造存储层搜索查询（所有路径都走下层引擎的 vectorSearch）
     const searchQuery: string = JSON.stringify({
       denseQuery: query.denseQuery instanceof Float32Array
         ? Array.from(query.denseQuery)
@@ -240,9 +331,7 @@ export class GraphEngine {
       } : undefined,
       minScore: query.minScore,
     })
-
-    const hits = this.db!.vectorSearch(searchQuery)
-
+    const hits = this.storage.vectorSearch(searchQuery)
     return hits.map(hit => ({
       node: this.getNode(hit.id)!,
       score: hit.score,
@@ -254,9 +343,16 @@ export class GraphEngine {
   // Graph algorithms
   // ──────────────────────────────────────────
 
+  /**
+   * 个性化 PageRank
+   *
+   * @param opts - 算法参数
+   * @returns 节点 ID 和对应分数的数组
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   personalizedPageRank(opts: PersonalizedPageRankOptions): { nodeId: number; score: number }[] {
     this._ensureOpen()
-    return this.db!.personalizedPageRank({
+    return this.storage.personalizedPageRank({
       sourceNode: opts.sourceNode,
       maxIter: opts.maxIter ?? 10,
       alpha: opts.alpha ?? 0.85,
@@ -265,25 +361,46 @@ export class GraphEngine {
     })
   }
 
+  /**
+   * 计算两点之间的所有最短路径
+   *
+   * @param opts - 路径参数
+   * @returns 路径数组
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   allShortestPaths(opts: ShortestPathOptions): { path: number[]; cost: number }[] {
     this._ensureOpen()
-    return this.db!.allShortestPaths({
+    return this.storage.allShortestPaths({
       source: opts.source,
       target: opts.target,
       maxDepth: opts.maxDepth ?? 6,
     })
   }
 
+  /**
+   * 计算连通分量
+   *
+   * @param opts - 可选参数
+   * @returns 连通分量数组
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   connectedComponents(opts?: ConnectedComponentsOptions): number[][] {
     this._ensureOpen()
-    return this.db!.connectedComponents({
+    return this.storage.connectedComponents({
       edgeTypeFilter: opts?.edgeTypeFilter?.map(e => Number(e)),
     })
   }
 
+  /**
+   * 模式匹配
+   *
+   * @param opts - 匹配参数
+   * @returns 匹配的节点记录数组
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
   queryPattern(opts: PatternMatchOptions): NodeRecord[] {
     this._ensureOpen()
-    const results = this.db!.queryPattern({
+    const results = this.storage.queryPattern({
       sourceNodeId: opts.sourceNode,
       sourceTypeId: opts.sourceType,
       depth: opts.depth,
@@ -302,36 +419,82 @@ export class GraphEngine {
   // Maintenance
   // ──────────────────────────────────────────
 
-  compact(): void {
+  /**
+   * 按节点类型查找所有节点 ID
+   *
+   * @param typeId - 节点类型 ID
+   * @returns 该类型的所有节点 ID 数组
+   */
+  findNodesByType(typeId: number): number[] {
     this._ensureOpen()
-    this.db!.compact()
+    return this._labelIndex.getNodeIds(typeId)
   }
 
+  /**
+   * 按节点属性查找节点 ID
+   *
+   * @param typeId - 节点类型 ID
+   * @param propKey - 属性键名
+   * @param propValue - 属性值
+   * @returns 匹配的节点 ID 数组
+   */
+  findNodesByProperty(typeId: number, propKey: string, propValue: unknown): number[] {
+    this._ensureOpen()
+    const typeNodes = this._labelIndex.getNodeIds(typeId)
+    return typeNodes.filter(id => {
+      const node = this.storage.getNode(id, false)
+      return node && node.props?.[propKey] === propValue
+    })
+  }
+
+  /**
+   * 执行存储引擎压缩
+   */
+  compact(): void {
+    this._ensureOpen()
+    this.storage.compact()
+  }
+
+  /**
+   * 获取引擎统计信息
+   *
+   * @returns 包含节点数、边数和磁盘占用字节的对象
+   */
   stats(): { nodeCount: number; edgeCount: number; diskSizeBytes: number } {
     this._ensureOpen()
-    const s = this.db!.stats()
+    const s = this.storage.stats()
     return {
       nodeCount: this._nodeCount,
       edgeCount: this._edgeCount,
-      diskSizeBytes: s.pendingWalBytes + s.activeMemtableBytes + s.immutableMemtableBytes,
+      diskSizeBytes: s.diskSizeBytes,
     }
   }
 
+  /**
+   * 导出当前数据快照
+   *
+   * @returns 快照数据的 Buffer
+   */
   exportSnapshot(): Buffer {
     this._ensureOpen()
-    if (typeof (this.db as any).exportSnapshot !== 'function') {
-      return Buffer.alloc(0)
-    }
-    return Buffer.from(this.db!.exportSnapshot())
+    if (!this.storage.exportSnapshot) return Buffer.alloc(0)
+    return this.storage.exportSnapshot()
   }
 
+  /**
+   * 导入快照数据
+   *
+   * @param data - 之前由 exportSnapshot() 导出的快照数据
+   */
   importSnapshot(data: Buffer): void {
     this._ensureOpen()
-    this.db!.importSnapshot(data)
+    if (this.storage.importSnapshot) {
+      this.storage.importSnapshot(data)
+    }
   }
 
   private _ensureOpen(): void {
-    if (!this._isOpen || !this.db) {
+    if (!this._isOpen) {
       throw new Error('GraphEngine is not open. Call open() first.')
     }
   }

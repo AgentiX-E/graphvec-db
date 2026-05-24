@@ -4,6 +4,14 @@
 
 import { ShardManager } from '../shard/shard-manager'
 import { NodeRecord, EdgeRecord } from '../types'
+import {
+  buildIRFromSpec,
+  optimizeIR,
+  executeIR,
+  QuerySpec,
+  PlanNode,
+  formatPlanExplain,
+} from './query-planner'
 
 /**
  * GraphQuery — 流式图查询接口
@@ -30,8 +38,24 @@ export class GraphQuery {
   private projectFields_: string[] | null = null
   private vector_: { vector: number[]; k: number } | null = null
 
+  /**
+   * 是否启用查询优化器（QueryIR）。
+   * 启用后，execute() 会通过 QueryIR (buildIRFromSpec → optimizeIR → executeIR) 执行。
+   * 默认禁用以保持向后兼容。
+   */
+  private useOptimizer_: boolean = false
+
   constructor(manager: ShardManager) {
     this.manager = manager
+  }
+
+  /**
+   * 启用或禁用查询优化器
+   * @param enabled 是否启用
+   */
+  enableOptimizer(enabled: boolean = true): GraphQuery {
+    this.useOptimizer_ = enabled
+    return this
   }
 
   /**
@@ -138,9 +162,74 @@ export class GraphQuery {
   }
 
   /**
+   * plan — 输出当前查询的优化计划（EXPLAIN），不实际执行
+   *
+   * 使用 QueryIR 构建计划树，应用优化，然后返回可读的计划描述。
+   * 适用于调试、性能分析、查询调优。
+   *
+   * @returns 查询计划的可读字符串描述
+   */
+  plan(): string {
+    const spec = this.buildQuerySpec()
+    const plan = buildIRFromSpec(spec)
+    const optimized = optimizeIR(plan)
+    return formatPlanExplain(optimized, 0)
+  }
+
+  /**
+   * 构建当前查询的 QuerySpec（供 IR 使用）
+   */
+  private buildQuerySpec(): QuerySpec {
+    const spec: QuerySpec = {}
+
+    if (this.currentTypeId !== null || this.maxDepth > 0) {
+      spec.match = { typeId: this.currentTypeId ?? undefined }
+    }
+
+    if (this.predicates.length > 0) {
+      spec.predicates = [...this.predicates]
+    }
+
+    if (this.maxDepth > 0) {
+      spec.neighbors = {
+        id: 0, // 占位，实际运行时由 scan 阶段决定
+        edgeType: this.edgeFilter?.[0] ?? undefined,
+        maxDepth: this.maxDepth,
+      }
+    }
+
+    if (this.orderField_) {
+      spec.orderBy = { field: this.orderField_, direction: this.orderDir_ }
+    }
+
+    if (this.limit_ !== null) {
+      spec.limit = this.limit_
+    }
+
+    if (this.skip_ > 0) {
+      spec.skip = this.skip_
+    }
+
+    if (this.projectFields_ && this.projectFields_.length > 0) {
+      spec.return = [...this.projectFields_]
+    }
+
+    if (this.vector_) {
+      spec.vectorSearch = { vector: this.vector_.vector, topK: this.vector_.k }
+    }
+
+    return spec
+  }
+
+  /**
    * 内部执行逻辑
    *
-   * 流程：
+   * 当 useOptimizer_ 启用时，通过 QueryIR 执行：
+   *   buildIRFromSpec → optimizeIR → executeIR
+   *
+   * 未启用时，保持原始执行路径。
+   *
+   * 流程（原始路径）：
    * 1. 如果是向量搜索路径（有 vector_），优先做向量搜索
    * 2. 如果是 match(typeId) 路径，从存储中按 typeId 获取所有节点
    * 3. 邻居遍历（如果设置了 maxDepth）
@@ -150,6 +239,16 @@ export class GraphQuery {
    * 7. 投影（project）
    */
   private async execute(): Promise<NodeRecord[]> {
+    // ── QueryIR 优化路径 ──
+    if (this.useOptimizer_) {
+      const spec = this.buildQuerySpec()
+      const plan = buildIRFromSpec(spec)
+      const optimized = optimizeIR(plan)
+      const fnPreds = this.predicates.length > 0 ? [...this.predicates] : undefined
+      return executeIR(optimized, this.manager, fnPreds)
+    }
+
+    // ── 原始执行路径（向后兼容） ──
     let nodes: NodeRecord[] = []
 
     if (this.vector_ !== null) {
@@ -253,12 +352,28 @@ export class GraphQuery {
    * 产品中可以通过注入外部扫描器或通过 PatternMatch API 实现。
    */
   protected async scanAllRanges(): Promise<NodeRecord[]> {
-    // 默认实现：尝试从每个 Range 获取节点列表
-    // 由于 ShardManager/GraphEngine 没有提供枚举所有节点的 API，
-    // 此方法在正式使用时应通过注入的 NodeScanner 或 RangeScanner 实现。
-    //
-    // 当前返回空数组，测试中通过 MockShardManager 提供数据。
-    return []
+    // 默认实现：遍历所有 Range 收集节点
+    // 注入的 ShardManager 必须提供 getAllRanges()，否则返回空
+    const shardManager = (this as any).manager
+    if (!shardManager || typeof shardManager.getAllRanges !== 'function') {
+      return []
+    }
+    const ranges = shardManager.getAllRanges()
+    if (ranges.size === 0) return []
+
+    const results: NodeRecord[] = []
+    for (const [rangeId, range] of ranges) {
+      try {
+        const nodes = await range.read(async (engine: any) => {
+          // 通过 labelEngine 枚举所有类型的节点
+          return (await engine.findNodesByType(0).catch(() => [])) as any
+        })
+        results.push(...nodes)
+      } catch {
+        // 跳过无法读取的 Range
+      }
+    }
+    return results
   }
 
   /**

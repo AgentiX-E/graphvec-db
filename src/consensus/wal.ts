@@ -8,6 +8,7 @@
  * 所有整数字段采用 Big-Endian 编码。
  */
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { Logger } from '../ops/logger'
 
 export interface LogEntry {
@@ -18,7 +19,8 @@ export interface LogEntry {
 
 export class WAL {
   private fd: number = -1
-  private path: string
+  private walPath: string
+  private metaPath: string
   private entries: LogEntry[] = []
   private lastIndex: number = 0
   private lastTerm: number = 0
@@ -26,7 +28,8 @@ export class WAL {
   private _opened = false
 
   constructor(path: string) {
-    this.path = path
+    this.walPath = path
+    this.metaPath = path + '.meta'
     this.logger = new Logger('WAL')
   }
 
@@ -45,13 +48,13 @@ export class WAL {
     return new Promise<void>((resolve, reject) => {
       try {
         // 确保目录存在
-        const dir = this.path.substring(0, this.path.lastIndexOf('/'))
-        if (dir && dir !== this.path) {
+        const dir = this.walPath.substring(0, this.walPath.lastIndexOf('/'))
+        if (dir && dir !== this.walPath) {
           fs.mkdirSync(dir, { recursive: true })
         }
 
         // 打开文件（读写模式）
-        this.fd = fs.openSync(this.path, 'a+')
+        this.fd = fs.openSync(this.walPath, 'a+')
 
         // 读取已有内容
         const stat = fs.fstatSync(this.fd)
@@ -62,10 +65,10 @@ export class WAL {
         }
 
         this._opened = true
-        this.logger.info(`WAL opened: ${this.path}, entries=${this.entries.length}, lastIndex=${this.lastIndex}`)
+        this.logger.info(`WAL opened: ${this.walPath}, entries=${this.entries.length}, lastIndex=${this.lastIndex}`)
         resolve()
       } catch (err) {
-        this.logger.error(`Failed to open WAL: ${this.path}`, err as Error)
+        this.logger.error(`Failed to open WAL: ${this.walPath}`, err as Error)
         reject(err)
       }
     })
@@ -92,6 +95,9 @@ export class WAL {
 
     const buf = Buffer.concat([header, Buffer.from(data)])
     fs.writeSync(this.fd, buf, 0, buf.length, null)
+
+    // fsync：确保日志落盘后再返回
+    fs.fsyncSync(this.fd)
 
     this.entries.push(entry)
     return entry
@@ -192,8 +198,11 @@ export class WAL {
     try {
       fs.fsyncSync(this.fd)
       fs.closeSync(this.fd)
-    } catch {
-      // ignore close errors
+    } catch (err) {
+      this._opened = false
+      this.fd = -1
+      this.logger.warn(`WAL close error (fd=${this.fd}): ${(err as Error).message}`)
+      throw err
     }
     this._opened = false
     this.fd = -1
@@ -209,13 +218,63 @@ export class WAL {
   async destroy(): Promise<void> {
     await this.close()
     try {
-      fs.unlinkSync(this.path)
+      fs.unlinkSync(this.walPath)
     } catch {
       // ignore if file doesn't exist
+    }
+    try {
+      fs.unlinkSync(this.metaPath)
+    } catch {
+      // ignore
     }
     this.entries = []
     this.lastIndex = 0
     this.lastTerm = 0
+  }
+
+  /**
+   * 持久化 key-value meta 到独立的 meta 文件
+   * 格式：每行 "key=value\n"
+   * 用于持久化 currentTerm / votedFor 等选举状态
+   */
+  persistMeta(key: string, value: string): void {
+    try {
+      const meta: Record<string, string> = {}
+      if (fs.existsSync(this.metaPath)) {
+        const content = fs.readFileSync(this.metaPath, 'utf-8')
+        for (const line of content.split('\n').filter(Boolean)) {
+          const eqIdx = line.indexOf('=')
+          if (eqIdx > 0) {
+            meta[line.slice(0, eqIdx)] = line.slice(eqIdx + 1)
+          }
+        }
+      }
+      meta[key] = value
+      const lines = Object.entries(meta).map(([k, v]) => `${k}=${v}`).join('\n')
+      fs.writeFileSync(this.metaPath, lines + '\n', 'utf-8')
+      const metaFd = fs.openSync(this.metaPath, 'r')
+      fs.fsyncSync(metaFd)
+      fs.closeSync(metaFd)
+    } catch {
+      // meta 写入失败不阻止主流程
+    }
+  }
+
+  /** 加载 meta 文件中的指定 key */
+  loadMeta(key: string): string | undefined {
+    try {
+      if (!fs.existsSync(this.metaPath)) return undefined
+      const content = fs.readFileSync(this.metaPath, 'utf-8')
+      for (const line of content.split('\n').filter(Boolean)) {
+        const eqIdx = line.indexOf('=')
+        if (eqIdx > 0 && line.slice(0, eqIdx) === key) {
+          return line.slice(eqIdx + 1)
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return undefined
   }
 
   // ─── 内部方法 ──────────────────────────────────────────────

@@ -473,7 +473,7 @@ describe('ShardManager', () => {
       expect(statuses.length).toBe(2)
       for (const s of statuses) {
         expect(s.rangeId).toMatch(/^test-range-[01]$/)
-        expect(s.raftRole).toBe('leader')
+        expect(s.raftRole).toBe('standalone')
         expect(typeof s.nodeCount).toBe('number')
       }
 

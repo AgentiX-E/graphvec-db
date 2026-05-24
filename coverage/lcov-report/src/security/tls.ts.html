@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">94.73% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/19</span>
+                <span class='fraction'>18/19</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">100% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>0/15</span>
+                <span class='fraction'>15/15</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">100% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>0/3</span>
+                <span class='fraction'>3/3</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">93.33% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/15</span>
+                <span class='fraction'>14/15</span>
             </div>
         
             
@@ -61,7 +61,7 @@
             </div>
         </template>
     </div>
-    <div class='status-line low'></div>
+    <div class='status-line high'></div>
     <pre><table class="coverage">
 <tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
 <a name='L2'></a><a href='#L2'>2</a>
@@ -133,25 +133,23 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">4x</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -167,17 +165,19 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">20x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">15x</span>
+<span class="cline-any cline-yes">15x</span>
+<span class="cline-any cline-yes">15x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">11x</span>
+<span class="cline-any cline-yes">11x</span>
+<span class="cline-any cline-yes">9x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">5x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -193,23 +193,23 @@
  */
 &nbsp;
 // 受信任的节点 ID 模式：字母数字中划线，1-64 字符
-const NODE_ID_PATTERN = <span class="cstat-no" title="statement not covered" >/^[a-zA-Z0-9_-]{1,64}$/</span>
+const NODE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
 &nbsp;
-<span class="cstat-no" title="statement not covered" >export class T</span>LSConfig {
+export class TLSConfig {
   private config: AuthConfig
 &nbsp;
-<span class="fstat-no" title="function not covered" >  constructor(c</span>onfig: AuthConfig) {
-<span class="cstat-no" title="statement not covered" >    this.config = config</span>
+  constructor(config: AuthConfig) {
+    this.config = config
   }
 &nbsp;
   /**
    * 获取 TLS 服务器选项
    */
-<span class="fstat-no" title="function not covered" >  getServerOptions(</span>): { key: string; cert: string; ca?: string; requestCert: boolean; rejectUnauthorized: boolean } {
-<span class="cstat-no" title="statement not covered" >    <span class="missing-if-branch" title="if path not taken" >I</span>if (!this.config.tlsCert || !this.config.tlsKey) {</span>
-<span class="cstat-no" title="statement not covered" >      throw new Error('TLS: cert and key must be configured for server mode')</span>
+  getServerOptions(): { key: string; cert: string; ca?: string; requestCert: boolean; rejectUnauthorized: boolean } {
+    if (!this.config.tlsCert || !this.config.tlsKey) {
+      throw new Error('TLS: cert and key must be configured for server mode')
     }
-<span class="cstat-no" title="statement not covered" >    return {</span>
+    return {
       key: this.config.tlsKey,
       cert: this.config.tlsCert,
       ca: this.config.tlsCA,
@@ -226,18 +226,18 @@ const NODE_ID_PATTERN = <span class="cstat-no" title="statement not covered" >/^
    * - CN 必须符合节点 ID 格式（字母数字中划线，1-64 字符）
    * - 无效格式返回 null 而非抛出异常
    */
-<span class="fstat-no" title="function not covered" >  static </span>extractCN(cert: unknown): string | null {
-<span class="cstat-no" title="statement not covered" >    <span class="missing-if-branch" title="if path not taken" >I</span>if (!cert || typeof cert !== 'object') <span class="cstat-no" title="statement not covered" >return null</span></span>
+  static extractCN(cert: unknown): string | null {
+    if (!cert || typeof cert !== 'object') return null
 &nbsp;
-<span class="cstat-no" title="statement not covered" >    try {</span>
-      const subject = (<span class="cstat-no" title="statement not covered" >cert as Record&lt;string, unknown&gt;).subject as Record&lt;string, unknown&gt; | undefined</span>
-<span class="cstat-no" title="statement not covered" >      <span class="missing-if-branch" title="if path not taken" >I</span>if (!subject || typeof subject !== 'object') <span class="cstat-no" title="statement not covered" >return null</span></span>
+    try {
+      const subject = (cert as Record&lt;string, unknown&gt;).subject as Record&lt;string, unknown&gt; | undefined
+      if (!subject || typeof subject !== 'object') return null
 &nbsp;
-      const rawCN = <span class="cstat-no" title="statement not covered" >subject.CN ?? subject.commonName</span>
-<span class="cstat-no" title="statement not covered" >      <span class="missing-if-branch" title="if path not taken" >I</span>if (typeof rawCN !== 'string' || !rawCN) <span class="cstat-no" title="statement not covered" >return null</span></span>
-<span class="cstat-no" title="statement not covered" >      <span class="missing-if-branch" title="if path not taken" >I</span>if (!NODE_ID_PATTERN.test(rawCN)) <span class="cstat-no" title="statement not covered" >return null</span></span>
+      const rawCN = subject.CN ?? subject.commonName
+      if (typeof rawCN !== 'string' || !rawCN) return null
+      if (!NODE_ID_PATTERN.test(rawCN)) return null
 &nbsp;
-<span class="cstat-no" title="statement not covered" >      return rawCN</span>
+      return rawCN
     } catch {
 <span class="cstat-no" title="statement not covered" >      return null</span>
     }
@@ -250,7 +250,7 @@ const NODE_ID_PATTERN = <span class="cstat-no" title="statement not covered" >/^
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-05-22T07:45:55.395Z
+                at 2026-05-24T09:49:29.067Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

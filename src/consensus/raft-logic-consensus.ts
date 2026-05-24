@@ -47,7 +47,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
     }
 
     try {
-      this._raftModule = await importRaftLogic()
+      this._raftModule = await getRaftModule()
       this._loaded = true
     } catch (err) {
       this._loadError = new Error(
@@ -175,9 +175,14 @@ export class RaftLogicConsensus implements ConsensusProvider {
 }
 
 /** 动态导入 raft-logic（可选依赖） */
-async function importRaftLogic(): Promise<any> {
+let _raftModule: any = null
+
+async function getRaftModule(): Promise<any> {
+  if (_raftModule) return _raftModule
+  // 生产环境 / 集成测试才需要加载 WASM — lint:disable 绕过 ts-jest 转译
   try {
-    return await import('raft-logic')
+    _raftModule = await import('raft-logic')
+    return _raftModule
   } catch {
     throw new Error(
       'raft-logic is not installed. Install it: npm install raft-logic'

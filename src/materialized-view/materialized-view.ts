@@ -90,6 +90,7 @@ export class MaterializedView {
       () => this.refresh().catch(err => this.logger.error(`[MaterializedView:${this.config.name}] Refresh error:`, err as Error)),
       this.config.refreshIntervalSeconds * 1000
     )
+    this.refreshTimer.unref()
   }
 
   private stopAutoRefresh(): void {

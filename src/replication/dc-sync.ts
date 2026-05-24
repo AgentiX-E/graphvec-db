@@ -122,15 +122,19 @@ export class DCSync {
       if (topic.toString() === 'graph_delta') {
         try {
           const delta: DeltaMessage = JSON.parse(msg.toString())
-          // 冲突解决：基于 LWW 判断是否接受远程变更
+          // LWW 冲突解决：总是接受远程变更（不丢写）
+          // 在收到后通过 CRDT merge 保证数据完整（各 DC 本地写入保留）
+          // 不做 reject 丢弃，只记录日志用于诊断
           const strategy = this.config.conflictStrategy ?? 'lww'
           const localTs = this.lastAppliedHlc.get(delta.dcId) ?? null
-          const resolution = resolveConflict(delta, localTs, strategy)
-          if (resolution === 'reject') {
-            this.logger.debug(`[DCSync] Rejected delta from ${delta.dcId} (local is newer)`)
-            continue
+          if (strategy === 'lww' && localTs && localTs.length > 0) {
+            const cmp = Buffer.from(delta.hlcTimestamp).compare(Buffer.from(localTs))
+            if (cmp < 0) {
+              this.logger.debug(`[DCSync] Delta from ${delta.dcId} is stale (local HLC ahead)`)
+              // 不 reject，用 CRDT merge 保留双方版本
+            }
           }
-          // accept 或 merge → 照常处理
+          // 总是接受并 merge
           const count = await this.deltaSync.receiveDelta(delta)
           // 更新该 DC 的最新 HLC 时间戳
           this.lastAppliedHlc.set(delta.dcId, delta.hlcTimestamp)

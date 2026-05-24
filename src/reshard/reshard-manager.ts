@@ -1,6 +1,7 @@
 import { ShardManager } from '../shard/shard-manager'
 import { ReshardPlan } from './reshard-plan'
 import { ReshardWorker } from './reshard-worker'
+import { RangeInstance } from '../shard/range-instance'
 import { ReshardingPlan, ReshardingStatus, ShardMap, RangeConfig } from '../types'
 import { HlcClock } from '../replication/hlc-clock'
 
@@ -128,7 +129,6 @@ export class ReshardManager {
           denseVector: { dimension: 384 },
         },
       }
-      const { RangeInstance } = require('../shard/range-instance')
       const targetInstance = new RangeInstance(targetRangeConfig, this.clock)
       await targetInstance.start()
 
@@ -233,6 +233,7 @@ export class ReshardManager {
         }
       }
     }, delayMs)
+    this.cleanTimer.unref()
   }
 
   private _updateState(state: ReshardingStatus['state'], progress: number): void {

@@ -25,7 +25,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/66</span>
+                <span class='fraction'>0/64</span>
             </div>
         
             
@@ -39,14 +39,14 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>0/33</span>
+                <span class='fraction'>0/32</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
                 <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/33</span>
+                <span class='fraction'>0/32</span>
             </div>
         
             
@@ -123,8 +123,7 @@
 <a name='L58'></a><a href='#L58'>58</a>
 <a name='L59'></a><a href='#L59'>59</a>
 <a name='L60'></a><a href='#L60'>60</a>
-<a name='L61'></a><a href='#L61'>61</a>
-<a name='L62'></a><a href='#L62'>62</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
+<a name='L61'></a><a href='#L61'>61</a></td><td class="line-coverage quiet"><span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -133,7 +132,6 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
@@ -194,12 +192,11 @@
 <span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >G</span>raphConfig </span>} from './core/graph-config'</span>
 &nbsp;
 // Consensus (abstracted)
-<span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >R</span>aftNode </span>} from './consensus/raft-node'</span>
-<span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >R</span>aftCluster </span>} from './consensus/raft-cluster'</span>
+<span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >R</span>angeInstance </span>as RaftNode </span>} from './shard/range-instance'
 <span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >S</span>tandaloneConsensus </span>} from './consensus/standalone-consensus'</span>
-<span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >S</span>imulatedRaftConsensus </span>} from './consensus/simulated-raft'</span>
 <span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >R</span>aftLogicConsensus </span>} from './consensus/raft-logic-consensus'</span>
-<span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >M</span>ockTransport,</span> <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >T</span>cpTransport </span>} from './consensus/raft-transport'</span>
+<span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >M</span>ockTransport,</span> <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >T</span>cpTransport </span>} from './consensus/transport'</span>
+<span class="cstat-no" title="statement not covered" >export { <span class="cstat-no" title="statement not covered" ><span class="fstat-no" title="function not covered" >c</span>reateConsensus </span>} from './consensus/consensus-factory'</span>
 export type { ConsensusProvider, ConsensusConfig, ConsensusRole } from './consensus/consensus-provider'
 &nbsp;
 // Shard
@@ -253,7 +250,7 @@ export const <span class="cstat-no" title="statement not covered" >NAME = 'agent
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-05-22T07:45:55.395Z
+                at 2026-05-24T09:49:29.067Z
             </div>
         <script src="../prettify.js"></script>
         <script>

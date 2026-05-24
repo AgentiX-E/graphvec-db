@@ -12,7 +12,7 @@
 import { GraphEngine } from '../../src/core/graph-engine'
 import { RaftNode } from '../../src/consensus/raft-node'
 import { HlcClock } from '../../src/replication/hlc-clock'
-import { SimulatedRaftConsensus } from '../../src/consensus/simulated-raft'
+import { SimulatedRaftConsensus, SimulatedRaftInstanceManager } from '../../src/consensus/simulated-raft'
 import { OverGraphConfig, RaftNodeConfig } from '../../src/types'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -31,7 +31,7 @@ describe('AC-FI-1: 模拟网络分区', () => {
   let nodes: RaftNode[]
 
   beforeAll(async () => {
-    SimulatedRaftConsensus.reset()
+    SimulatedRaftInstanceManager.reset()
     process.env.CONSENSUS_MODE = 'simulated-raft'
 
     for (const dir of [node1Dir, node2Dir, node3Dir]) {
@@ -64,7 +64,12 @@ describe('AC-FI-1: 模拟网络分区', () => {
     await raft1.start()
     await raft2.start()
     await raft3.start()
-    await raft1.waitForLeader(5000)
+    // 等待 Leader 选举（任意节点成为 Leader）
+    await Promise.any([
+      raft1.waitForLeader(5000),
+      raft2.waitForLeader(5000),
+      raft3.waitForLeader(5000),
+    ])
   }, 30000)
 
   afterAll(async () => {
@@ -72,7 +77,7 @@ describe('AC-FI-1: 模拟网络分区', () => {
     for (const dir of [node1Dir, node2Dir, node3Dir]) {
       try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
     }
-    SimulatedRaftConsensus.reset()
+    SimulatedRaftInstanceManager.reset()
   }, 10000)
 
   it('1. 确认集群运行且 Leader 已选举', () => {
