@@ -1,48 +1,72 @@
 /**
  * EventStream 单元测试
  *
- * 使用 MockEventBus（mock ZeroMQ），不依赖真实网络
+ * 使用 MockEventBus（mock ROUTER/DEALER），不依赖真实网络
  */
 
-import { EventEmitter } from 'node:events'
 import { EventStream, EventStreamConfig } from './event-stream'
+import { TransportMessage } from './event-bus'
 import { StreamMessage } from './stream-wal'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 
-// ── MockEventBus (简化版，模拟 EventBus 的 on/emit/dedup 行为) ──
-
-interface MockGraphEvent {
-  type: string
-  nodeId: string
-  timestamp: number
-  data: Record<string, unknown>
-}
+// ── MockEventBus（模拟 ROUTER/DEALER EventBus） ──
 
 class MockEventBus {
-  readonly emitter = new EventEmitter()
   public nodeId: string
-  /** 收集所有发出的消息 */
-  public sent: MockGraphEvent[] = []
+  /** 收集所有发出的 TransportMessage */
+  public sent: TransportMessage[] = []
+  private receiveHandler: ((msg: TransportMessage, fromNodeId: string) => void) | null = null
 
   constructor(nodeId: string) {
     this.nodeId = nodeId
   }
 
-  emit(event: Omit<MockGraphEvent, 'nodeId'>): void {
-    const full = { ...event, nodeId: this.nodeId }
-    this.sent.push(full)
-    this.emitter.emit(event.type, full)
+  setReceiveHandler(handler: (msg: TransportMessage, fromNodeId: string) => void): void {
+    this.receiveHandler = handler
   }
 
-  on(type: string, handler: (evt: MockGraphEvent) => void): void {
-    this.emitter.on(type, handler)
+  send(nodeId: string, msg: TransportMessage): void {
+    this.sent.push(msg)
   }
+
+  broadcast(msg: TransportMessage): void {
+    this.sent.push(msg)
+  }
+
+  emit(event: any): void {
+    // no-op in mock — EventStream doesn't use bus.emit() anymore
+  }
+
+  on(type: string, handler: (...args: any[]) => void): void {
+    // no-op in mock
+  }
+
+  off(type: string, handler: (...args: any[]) => void): void {
+    // no-op in mock
+  }
+
+  getPeerNodeIds(): string[] { return ['remote-a', 'remote-b'] }
 
   /** 模拟远程节点发来消息 */
-  simulateRemote(type: string, data: Record<string, unknown>, remoteNodeId = 'remote-a'): void {
-    const evt: MockGraphEvent = { type, nodeId: remoteNodeId, timestamp: Date.now(), data }
-    this.emitter.emit(type, evt)
+  simulateRemote(msg: Partial<TransportMessage> & { data: Record<string, unknown> }, fromNodeId = 'remote-a'): void {
+    const full: TransportMessage = {
+      msgId: msg.msgId || `mock-${Date.now()}`,
+      type: msg.type || 'data',
+      srcNodeId: msg.srcNodeId || fromNodeId,
+      data: msg.data || {},
+      ackMsgId: msg.ackMsgId,
+    }
+    this.receiveHandler?.(full, fromNodeId)
+  }
+
+  /** broadcast 发来的内容也当是发给所有人的 — 模拟所有 peer 收到后触发本地 receiveHandler */
+  simulateAllPeersReceive(msg: TransportMessage | null = null, fromNodeId = 'remote-a'): void {
+    const toProcess = msg || this.sent[this.sent.length - 1]
+    if (toProcess) {
+      const copy: TransportMessage = { ...toProcess, srcNodeId: fromNodeId }
+      this.receiveHandler?.(copy, fromNodeId)
+    }
   }
 }
 
@@ -87,7 +111,7 @@ describe('EventStream', () => {
     it('emit 后写入 WAL 并通过 EventBus 发布', () => {
       esA.emit({ type: 'node:created', data: { id: 1 } })
 
-      // 检查 EventBus.sent
+      // 检查 EventBus.sent（TransportMessage）
       expect(busA.sent.length).toBeGreaterThanOrEqual(1)
       const rawMsg = busA.sent[0].data.__es_msg as StreamMessage
       expect(rawMsg).toBeDefined()
@@ -122,8 +146,10 @@ describe('EventStream', () => {
       })
 
       // 模拟远程节点发来事件
-      busA.simulateRemote('node:created', {
-        __es_msg: { msgId: 'remote-a-5', seq: 5, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: { id: 99 } },
+      busA.simulateRemote({
+        data: {
+          __es_msg: { msgId: 'remote-a-5', seq: 5, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: { id: 99 } },
+        },
       })
     })
 
@@ -132,11 +158,15 @@ describe('EventStream', () => {
       esA.on('node:created', () => { callCount++ })
 
       // 发两次相同 msgId
-      busA.simulateRemote('node:created', {
-        __es_msg: { msgId: 'dup-1', seq: 1, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: {} },
+      busA.simulateRemote({
+        data: {
+          __es_msg: { msgId: 'dup-1', seq: 1, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: {} },
+        },
       })
-      busA.simulateRemote('node:created', {
-        __es_msg: { msgId: 'dup-1', seq: 1, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: {} },
+      busA.simulateRemote({
+        data: {
+          __es_msg: { msgId: 'dup-1', seq: 1, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: {} },
+        },
       })
 
       expect(callCount).toBe(1)
@@ -145,21 +175,23 @@ describe('EventStream', () => {
 
   describe('ACK 回传', () => {
     it('收到远程事件后应自动发送 ACK', () => {
-      busA.simulateRemote('node:created', {
-        __es_msg: { msgId: 'r-1', seq: 1, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: {} },
+      busA.simulateRemote({
+        data: {
+          __es_msg: { msgId: 'r-1', seq: 1, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: {} },
+        },
       })
 
-      // 检查是否发送了 event:ack
-      const ackEvents = busA.sent.filter(e => e.type === 'event:ack')
-      expect(ackEvents.length).toBe(1)
-      expect(ackEvents[0].data.msgId).toBe('r-1')
+      // 检查是否发送了 ack TransportMessage
+      const ackMsgs = busA.sent.filter(e => e.type === 'ack')
+      expect(ackMsgs.length).toBe(1)
+      expect(ackMsgs[0].ackMsgId).toBe('r-1')
     })
 
     it('ACK 到来时应从 pendingTracker 移除并标记 WAL', () => {
       esA.emit({ type: 'node:created', data: { id: 1 } })
 
-      // 模拟远程节点回传 ACK
-      busA.simulateRemote('event:ack', { msgId: 'node-a-1', nodeId: 'remote-b' })
+      // 模拟远程节点回传 ACK TransportMessage
+      busA.simulateRemote({ type: 'ack', ackMsgId: 'node-a-1', data: {} }, 'remote-b')
 
       const tracker = (esA as any).pendingTracker as Map<string, any>
       expect(tracker.has('node-a-1')).toBe(false)
@@ -189,9 +221,9 @@ describe('EventStream', () => {
       esA.emit({ type: 'node:created', data: { id: 1 } })
 
       setTimeout(() => {
-        // 检查重发
-        const nodeCreatedEvents = busA.sent.filter(e => e.type === 'node:created')
-        expect(nodeCreatedEvents.length).toBeGreaterThanOrEqual(2) // 原始 + 至少一次重试
+        // 检查重发（sent 里的 'data' 类型消息，包含 __es_msg）
+        const dataMsgs = busA.sent.filter((e: TransportMessage) => e.type === 'data' && (e.data as any).__es_msg?.msgId === 'node-a-1')
+        expect(dataMsgs.length).toBeGreaterThanOrEqual(2) // 原始 + 至少一次重试
         done()
       }, 800)
     })
@@ -199,48 +231,67 @@ describe('EventStream', () => {
   })
 
   describe('SYNC 追赶', () => {
-    it('requestSync 应发送 event:sync', () => {
+    it('requestSync 应发送 sync-query', () => {
       esA.emit({ type: 'node:created', data: { id: 1 } })
       esA.emit({ type: 'node:created', data: { id: 2 } })
       esA.requestSync()
 
-      const syncEvents = busA.sent.filter(e => e.type === 'event:sync')
-      expect(syncEvents.length).toBe(1)
-      expect(syncEvents[0].data.requester).toBe('node-a')
-      expect(syncEvents[0].data.lastSeq).toBe(2)
+      const syncQueries = busA.sent.filter(e => e.type === 'sync-query')
+      expect(syncQueries.length).toBe(1)
+      expect(syncQueries[0].data.requester).toBe('node-a')
+      expect(syncQueries[0].data.lastSeq).toBe(2)
     })
 
-    it('收到 event:sync 时应回复 event:sync-batch', (done) => {
+    it('收到 sync-query 时应回复 sync-query-reply', (done) => {
       // 先发 5 条消息
       for (let i = 1; i <= 5; i++) {
         esA.emit({ type: 'node:created', data: { id: i } })
       }
 
-      // 模拟远程发来 sync 请求（lastSeq=2，要求补齐 seq>2）
-      busA.simulateRemote('event:sync', { requester: 'remote-b', lastSeq: 2 })
+      // 模拟远程发来 sync-query（lastSeq=2，要求补齐 seq>2）
+      busA.simulateRemote({ type: 'sync-query', data: { requester: 'remote-b', lastSeq: 2 } }, 'remote-b')
+
+      // 检查 sync-query-reply 回复
+      setTimeout(() => {
+        const replyMsgs = busA.sent.filter(e => e.type === 'sync-query-reply')
+        expect(replyMsgs.length).toBe(1)
+        expect(replyMsgs[0].data.nodeId).toBe('node-a')
+        expect(replyMsgs[0].data.currentSeq).toBe(5)
+        done()
+      }, 100)
+    })
+
+    it('收到 sync-request 后应回复 sync-batch', (done) => {
+      // 先发 5 条消息
+      for (let i = 1; i <= 5; i++) {
+        esA.emit({ type: 'node:created', data: { id: i } })
+      }
+
+      // 模拟远程发来 sync-request
+      busA.simulateRemote({ type: 'sync-request', data: { requester: 'remote-b', fromSeq: 2, targetSeq: 5 } }, 'remote-b')
 
       // 检查 sync-batch 回复
       setTimeout(() => {
-        const batchEvents = busA.sent.filter(e => e.type === 'event:sync-batch')
-        expect(batchEvents.length).toBe(1)
-        const msgs = batchEvents[0].data.msgs as StreamMessage[]
+        const batchMsgs = busA.sent.filter(e => e.type === 'sync-batch')
+        expect(batchMsgs.length).toBe(1)
+        const msgs = batchMsgs[0].data.msgs as StreamMessage[]
         expect(msgs.length).toBe(3) // seq 3, 4, 5
         expect(msgs.map(m => m.seq)).toEqual([3, 4, 5])
         done()
       }, 100)
     })
 
-    it('收到 event:sync-batch 后应去重消费', (done) => {
+    it('收到 sync-batch 后应去重消费', (done) => {
       const received: StreamMessage[] = []
       esA.on('node:created', (msg) => { received.push(msg) })
 
       // 模拟远程发来 sync-batch
-      busA.simulateRemote('event:sync-batch', {
+      busA.simulateRemote({ type: 'sync-batch', data: {
         msgs: [
           { msgId: 'catchup-1', seq: 10, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: { id: 10 } },
           { msgId: 'catchup-2', seq: 11, nodeId: 'remote-a', timestamp: Date.now(), type: 'node:created', data: { id: 11 } },
         ],
-      })
+      } })
 
       setTimeout(() => {
         expect(received.length).toBe(2)
@@ -321,7 +372,7 @@ describe('EventStream', () => {
 
       // 在重试到达 threshold 之前发送 ACK
       setTimeout(() => {
-        busA.simulateRemote('event:ack', { msgId: 'node-a-1', nodeId: 'remote' })
+        busA.simulateRemote({ type: 'ack', ackMsgId: 'node-a-1', data: {} }, 'remote')
       }, 100)
 
       // threshold 时间后检查 onStall 未被触发

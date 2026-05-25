@@ -11,38 +11,44 @@
 import { GraphEngine } from './graph-engine'
 import { EventStream, EventStreamConfig } from './event-stream'
 import { OverGraphStorage } from './overgraph-storage'
-import { getEventBus, EventBus } from './event-bus'
-import { EventEmitter } from 'node:events'
+import { TransportMessage } from './event-bus'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 
-// ── MockEventBus ──
-
-interface MockGraphEvent {
-  type: string
-  nodeId: string
-  timestamp: number
-  data: Record<string, unknown>
-}
+// ── MockBus ──
 
 class MockBus {
-  readonly emitter = new EventEmitter()
   public nodeId = 'test-node'
-  public sent: MockGraphEvent[] = []
+  public sent: TransportMessage[] = []
+  private receiveHandler: ((msg: TransportMessage, fromNodeId: string) => void) | null = null
 
-  emit(event: Omit<MockGraphEvent, 'nodeId'>): void {
-    const full = { ...event, nodeId: this.nodeId }
-    this.sent.push(full)
-    this.emitter.emit(event.type, full)
+  setReceiveHandler(handler: (msg: TransportMessage, fromNodeId: string) => void): void {
+    this.receiveHandler = handler
   }
 
-  on(type: string, handler: (evt: MockGraphEvent) => void): void {
-    this.emitter.on(type, handler)
+  send(nodeId: string, msg: TransportMessage): void {
+    this.sent.push(msg)
   }
 
-  simulateRemote(type: string, data: Record<string, unknown>, remoteNodeId = 'remote'): void {
-    const evt: MockGraphEvent = { type, nodeId: remoteNodeId, timestamp: Date.now(), data }
-    this.emitter.emit(type, evt)
+  broadcast(msg: TransportMessage): void {
+    this.sent.push(msg)
+  }
+
+  emit(event: any): void { /* no-op — EventStream uses broadcast/send now */ }
+  on(type: string, handler: (...args: any[]) => void): void { /* no-op */ }
+  off(type: string, handler: (...args: any[]) => void): void { /* no-op */ }
+
+  getPeerNodeIds(): string[] { return ['remote'] }
+
+  simulateRemote(msgId: string, remoteNodeId = 'remote'): void {
+    const msg: TransportMessage = {
+      msgId: `ack-for-${msgId}`,
+      type: 'ack',
+      srcNodeId: remoteNodeId,
+      ackMsgId: msgId,
+      data: {},
+    }
+    this.receiveHandler?.(msg, remoteNodeId)
   }
 }
 
@@ -110,8 +116,8 @@ describe('GraphEngine + EventStream 集成', () => {
 
     await ge.upsertNode(1, 'n1')
 
-    // 模拟远程 ACK
-    BUS.simulateRemote('event:ack', { msgId: 'test-node-1', nodeId: 'remote' })
+    // 模拟远程 ACK TransportMessage
+    BUS.simulateRemote('test-node-1', 'remote')
 
     const pending = es['wal'].readPending(Date.now() + 60000) as any[]
     expect(pending.find((m: any) => m.msgId === 'test-node-1')).toBeUndefined()
