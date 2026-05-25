@@ -1,139 +1,260 @@
-import jwt from 'jsonwebtoken'
-import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto'
+// ============================================================
+// Auth — mTLS 认证引擎（唯一认证方式）
+//
+// 只支持 mTLS 认证。证书 CN 用作用户标识，身份文件配置授权。
+// ============================================================
+
 import { AuthConfig, AuthResult, Role, AuthError } from '../types'
 
-// ──────────────────────────────────────────
-// 密码哈希工具
-// ──────────────────────────────────────────
-
-const SCRYPT_KEYLEN = 64
-const SCRYPT_COST = 16384
-const SCRYPT_BLOCK_SIZE = 8
-const SCRYPT_PARALLEL = 1
-const SALT_LENGTH = 32
-
-function hashPassword(password: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const salt = randomBytes(SALT_LENGTH).toString('hex')
-    scrypt(password, salt, SCRYPT_KEYLEN, { N: SCRYPT_COST, r: SCRYPT_BLOCK_SIZE, p: SCRYPT_PARALLEL }, (err, key) => {
-      if (err) reject(err)
-      else resolve(`${salt}:${key.toString('hex')}`)
-    })
-  })
-}
-
-async function verifyPassword(password: string, hashed: string): Promise<boolean> {
-  const [salt, keyHex] = hashed.split(':')
-  if (!salt || !keyHex) return false
-  return new Promise((resolve) => {
-    scrypt(password, salt, SCRYPT_KEYLEN, { N: SCRYPT_COST, r: SCRYPT_BLOCK_SIZE, p: SCRYPT_PARALLEL }, (err, key) => {
-      if (err) resolve(false)
-      else {
-        try {
-          resolve(timingSafeEqual(key, Buffer.from(keyHex, 'hex')))
-        } catch {
-          resolve(false)
-        }
-      }
-    })
-  })
-}
-
-/** 
- * 更新所有 storagePath 的 RaftCluster 测试 */
-
 /**
- * Authenticator — 认证入口
+ * mTLS 认证引擎
  *
- * 支持四种模式：
- * - jwt: JSON Web Token
- * - basic: Basic Auth (username:password)
- * - apikey: API Key 头验证
- * - mtls: 双向 TLS（需配合 tls.ts）
+ * 验证流程：
+ * 1. 从客户端证书提取 CN（Common Name）
+ * 2. 在授权列表（identities）中查找 CN
+ * 3. 找到则返回对应的身份和角色
+ * 4. 未找到则使用 defaultRole（如果有配置）
+ * 5. 无 defaultRole 则拒绝访问
  */
 export class Authenticator {
   private config: AuthConfig
+  /** 当前生效的身份配置（内存快照） */
+  private identities: Map<string, { role: Role; databases?: string[] }>
+  /** 是否已初始化 */
+  private _initialized = false
+  /** chokidar watcher 实例 */
+  private _watcher: { close: () => Promise<void> } | null = null
 
   constructor(config: AuthConfig) {
-    if (!config.jwtSecret || config.jwtSecret === 'default-secret') {
-      throw new Error('AuthConfig.jwtSecret must be set for production use')
+    if (config.mode !== 'mtls') {
+      throw new Error('Auth: only mTLS mode is supported')
+    }
+    if (!config.tlsCert || !config.tlsKey) {
+      throw new Error('Auth: tlsCert and tlsKey are required for mTLS mode')
     }
     this.config = config
+    this.identities = new Map()
+    this._loadIdentities()
   }
 
   /**
-   * 认证请求
-   * @param credentials 认证凭证（token / header / cert）
-   * @returns { user: string, role: Role }
-   * @throws { AuthError } 认证失败
+   * 从配置加载身份映射
    */
-  async authenticate(credentials: {
-    type: 'jwt' | 'basic' | 'apikey' | 'mtls'
-    token?: string
-    username?: string
-    password?: string
-    apiKey?: string
-    cn?: string
-  }): Promise<AuthResult> {
-    switch (credentials.type) {
-      case 'jwt':
-        return this._authenticateJWT(credentials.token)
-      case 'basic':
-        return this._authenticateBasic(credentials.username, credentials.password)
-      case 'apikey':
-        return this._authenticateAPIKey(credentials.apiKey)
-      case 'mtls':
-        return this._authenticateMTLS(credentials.cn)
-      default:
-        throw new AuthError(`Unsupported auth type: ${credentials.type}`, 400)
+  private _loadIdentities(): void {
+    this.identities.clear()
+
+    // 从 config.identities 加载
+    if (this.config.identities) {
+      for (const id of this.config.identities) {
+        this.identities.set(id.cn, { role: id.role, databases: id.databases })
+      }
     }
+
+    // 从 identitiesFile 加载（覆盖 config.identities）
+    if (this.config.identitiesFile) {
+      try {
+        const fs = require('fs')
+        const raw = fs.readFileSync(this.config.identitiesFile, 'utf-8')
+        const data = JSON.parse(raw)
+        if (Array.isArray(data.identities)) {
+          for (const id of data.identities) {
+            if (id.cn) {
+              this.identities.set(id.cn, {
+                role: id.role || Role.READER,
+                databases: id.databases,
+              })
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`Auth: failed to load identities file "${this.config.identitiesFile}":`, (err as Error).message)
+      }
+    }
+
+    this._initialized = true
   }
 
-  private async _authenticateJWT(token?: string): Promise<AuthResult> {
-    if (!token) throw new AuthError('No JWT token provided')
+  /**
+   * 启动身份文件热加载
+   * 使用 chokidar 监听文件变更，即时生效
+   */
+  startWatch(): void {
+    if (!this.config.identitiesFile) return
+    if (this._watcher) return
+
     try {
-      const decoded = jwt.verify(token, this.config.jwtSecret!) as any
-      return {
-        user: decoded.sub || decoded.user || 'unknown',
-        role: decoded.role || Role.READER,
-      }
+      const chokidar = require('chokidar')
+      const watcher = chokidar.watch(this.config.identitiesFile, {
+        persistent: false,
+        ignoreInitial: false,
+        awaitWriteFinish: {
+          stabilityThreshold: 200,
+          pollInterval: 100,
+        },
+      })
+
+      watcher.on('change', () => {
+        console.log('Auth: identities file changed, reloading...')
+        this._loadIdentities()
+      })
+
+      this._watcher = watcher
     } catch (err) {
-      throw new AuthError('Invalid or expired JWT token')
+      console.warn('Auth: chokidar not available, falling back to stat polling')
+      this._startStatPolling()
     }
   }
 
-  private async _authenticateBasic(username?: string, password?: string): Promise<AuthResult> {
-    if (!username || !password) throw new AuthError('No Basic Auth credentials')
-    // Basic Auth 不应该使用 hardcode 凭据
-    // 生产环境应查询用户数据库或使用外部身份提供者
-    throw new AuthError('Basic Auth requires external identity provider')
+  /**
+   * 兜底方案：stat 轮询（仅当 chokidar 加载失败时使用）
+   */
+  private _watchTimer: ReturnType<typeof setInterval> | null = null
+
+  private _startStatPolling(): void {
+    if (!this.config.identitiesFile) return
+
+    const fs = require('fs')
+    let lastMtime = 0
+    try {
+      lastMtime = fs.statSync(this.config.identitiesFile)?.mtimeMs || 0
+    } catch { /* 文件还不存在 */ }
+
+    this._watchTimer = setInterval(() => {
+      try {
+        const stat = fs.statSync(this.config.identitiesFile)
+        if (stat.mtimeMs > lastMtime) {
+          console.log('Auth: identities file changed (poll), reloading...')
+          this._loadIdentities()
+          lastMtime = stat.mtimeMs
+        }
+      } catch { /* 文件临时不可读 */ }
+    }, 30000)
+    this._watchTimer.unref()
   }
 
-  private async _authenticateAPIKey(apiKey?: string): Promise<AuthResult> {
-    if (!apiKey) throw new AuthError('No API Key provided')
-    const role = this.config.apiKeys?.[apiKey]
-    if (role) {
-      return { user: `apikey:${apiKey.slice(0, 8)}...`, role }
+  /**
+   * 停止文件监控
+   */
+  stopWatch(): void {
+    // 关闭 chokidar watcher
+    if (this._watcher) {
+      this._watcher.close().catch(() => {})
+      this._watcher = null
     }
-    throw new AuthError('Invalid API Key')
+    // 关闭 stat polling
+    if (this._watchTimer) {
+      clearInterval(this._watchTimer)
+      this._watchTimer = null
+    }
   }
 
-  private async _authenticateMTLS(cn?: string): Promise<AuthResult> {
-    if (!cn) throw new AuthError('No mTLS client certificate')
+  /**
+   * 强制重新加载身份配置
+   */
+  reloadIdentities(): void {
+    this._loadIdentities()
+    console.log('Auth: identities reloaded')
+  }
 
-    // CN 必须是有效的节点 ID（字母数字中划线，1-64 字符）
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(cn)) {
-      throw new AuthError('Invalid mTLS certificate CN: must be a valid node ID')
+  /**
+   * 认证：根据证书 CN 返回用户身份
+   *
+   * @param cn 客户端证书的 Common Name
+   * @returns AuthResult 包含用户标识、角色、数据库白名单
+   * @throws AuthError 认证失败
+   */
+  authenticate(cn: string): AuthResult {
+    if (!cn || typeof cn !== 'string') {
+      throw new AuthError('mTLS: client certificate CN is required')
     }
 
-    // 检查节点白名单（如果配置了）
-    if (this.config.tlsNodeWhitelist && this.config.tlsNodeWhitelist.length > 0) {
-      if (!this.config.tlsNodeWhitelist.includes(cn)) {
-        throw new AuthError(`mTLS node ${cn} not in whitelist`)
+    // 1. 查找授权身份
+    const identity = this.identities.get(cn)
+    if (identity) {
+      return {
+        user: cn,
+        role: identity.role,
+        databases: identity.databases,
       }
     }
 
-    return { user: cn, role: Role.READER }
+    // 2. 用 defaultRole 兜底
+    if (this.config.defaultRole !== undefined) {
+      return {
+        user: cn,
+        role: this.config.defaultRole,
+        databases: this.config.defaultDatabases,
+      }
+    }
+
+    // 3. 拒绝
+    throw new AuthError(`mTLS: certificate CN "${cn}" is not authorized`)
+  }
+
+  /**
+   * 是否已有身份配置
+   */
+  get initialized(): boolean {
+    return this._initialized
+  }
+
+  /**
+   * 获取当前所有已授权的 CN 列表
+   */
+  listAuthorizedCNs(): string[] {
+    return [...this.identities.keys()]
+  }
+}
+
+// ──────────────────────────────────────────
+// RBAC — 基于角色的访问控制
+// ──────────────────────────────────────────
+
+export class RBAC {
+  private static readonly PERMISSIONS: Record<Role, Set<string>> = {
+    [Role.ADMIN]: new Set(['*']),
+    [Role.OPERATOR]: new Set([
+      'read', 'write', 'delete',
+      'compact', 'backup', 'restore', 'reshard',
+      'health', 'metrics', 'audit',
+    ]),
+    [Role.WRITER]: new Set(['read', 'write', 'delete']),
+    [Role.READER]: new Set(['read']),
+  }
+
+  /**
+   * 检查角色是否有权限执行操作
+   * @throws { AuthError } 无权限，statusCode=403
+   */
+  static checkPermission(role: Role, operation: string): void {
+    if (role === Role.ADMIN) return
+
+    const allowed = RBAC.PERMISSIONS[role]
+    if (!allowed || !allowed.has(operation)) {
+      throw new AuthError(
+        `Role '${role}' does not have permission for '${operation}'`,
+        403,
+      )
+    }
+  }
+
+  /**
+   * 检查用户是否有权访问指定数据库
+   */
+  static checkDatabaseAccess(role: Role, databases: string[] | undefined, database: string): void {
+    if (role === Role.ADMIN) return
+    if (!databases || databases.length === 0) return // 未限定 = 全部可访问
+    if (databases.includes(database)) return
+    throw new AuthError(
+      `Access denied to database '${database}'`,
+      403,
+    )
+  }
+
+  /** 获取角色的所有权限 */
+  static getPermissions(role: Role): string[] {
+    if (role === Role.ADMIN) return ['* (all)']
+    return [...(RBAC.PERMISSIONS[role] || [])]
   }
 }
 
@@ -142,146 +263,65 @@ export class Authenticator {
  */
 export function validateAuthConfig(config: AuthConfig): string[] {
   const errors: string[] = []
-  if (!config.jwtSecret || config.jwtSecret === 'default-secret') {
-    errors.push('jwtSecret must be set to a secure random string')
+  if (config.mode !== 'mtls') {
+    errors.push('auth mode must be "mtls"')
   }
-  if (!config.apiKeys || Object.keys(config.apiKeys).length === 0) {
-    errors.push('at least one apiKey must be configured')
+  if (!config.tlsCert) {
+    errors.push('tlsCert must be configured')
+  }
+  if (!config.tlsKey) {
+    errors.push('tlsKey must be configured')
+  }
+  if (!config.identities || config.identities.length === 0) {
+    if (!config.identitiesFile) {
+      if (config.defaultRole === undefined) {
+        errors.push('at least one identity, identitiesFile, or defaultRole must be configured')
+      }
+    }
   }
   return errors
 }
 
 // ──────────────────────────────────────────
-// UserRegistry — 简单的用户注册/认证系统（用于测试）
+// 兼容导出（旧接口）
 // ──────────────────────────────────────────
 
+/** @deprecated 不再支持 UserRegistry，使用 mTLS + 身份文件 */
 export class UserRegistry {
-  private users: Map<string, { passwordHash: string; role: string; disabled: boolean }> = new Map()
-
-  async register(username: string, password: string, role: string): Promise<void> {
-    const passwordHash = await hashPassword(password)
-    this.users.set(username, { passwordHash, role, disabled: false })
+  async register(): Promise<void> {
+    throw new Error('UserRegistry is deprecated. Use mTLS authentication with identities config instead.')
   }
-
-  async authenticate(username: string, password: string): Promise<boolean> {
-    const user = this.users.get(username)
-    if (!user || user.disabled) return false
-    return verifyPassword(password, user.passwordHash)
+  async authenticate(): Promise<boolean> {
+    throw new Error('UserRegistry is deprecated. Use mTLS authentication with identities config instead.')
   }
-
-  getRole(username: string): string | null {
-    const user = this.users.get(username)
-    return user ? user.role : null
+  getRole(): string | null {
+    throw new Error('UserRegistry is deprecated.')
   }
-
-  disable(username: string): boolean {
-    const user = this.users.get(username)
-    if (!user) return false
-    user.disabled = true
-    return true
+  disable(): boolean {
+    throw new Error('UserRegistry is deprecated.')
   }
-
-  changeRole(username: string, newRole: string): boolean {
-    const user = this.users.get(username)
-    if (!user) return false
-    user.role = newRole
-    return true
+  changeRole(): boolean {
+    throw new Error('UserRegistry is deprecated.')
   }
-
-  unregister(username: string): boolean {
-    return this.users.delete(username)
+  unregister(): boolean {
+    throw new Error('UserRegistry is deprecated.')
   }
 }
 
-// ──────────────────────────────────────────
-// RateLimiter — 简单的速率限制器（用于测试）
-// ──────────────────────────────────────────
+/** @deprecated */
+export class RateLimiter {}
 
-export class RateLimiter {
-  private allowed: Set<string> = new Set()
-  private tokens: Map<string, number> = new Map()
-  private maxTokens: number = 10
-
-  allow(key: string): void {
-    this.allowed.add(key)
-    this.tokens.set(key, this.maxTokens)
-  }
-
-  isAllowed(key: string): boolean {
-    if (!this.allowed.has(key) && !this.tokens.has(key)) return true // default allow
-    const tokens = this.tokens.get(key)
-    if (tokens === undefined) return true
-    if (tokens > 0) {
-      this.tokens.set(key, tokens - 1)
-      return true
-    }
-    return false
-  }
-
-  setMaxTokens(max: number): void {
-    this.maxTokens = max
-  }
-
-  reset(): void {
-    this.allowed.clear()
-    this.tokens.clear()
-  }
+/** @deprecated */
+export async function authenticateBasic(): Promise<string> {
+  throw new Error('Basic Auth is deprecated. Use mTLS only.')
 }
 
-// ──────────────────────────────────────────
-// 认证辅助函数
-// ──────────────────────────────────────────
-
-/**
- * Basic Auth 认证（返回 token 字符串）
- */
-export async function authenticateBasic(
-  registry: UserRegistry,
-  username: string,
-  password: string,
-): Promise<string> {
-  const ok = await registry.authenticate(username, password)
-  if (!ok) {
-    throw new Error('Invalid credentials')
-  }
-  const role = registry.getRole(username)
-  return `basic-token-${username}-${role}`
+/** @deprecated */
+export async function authenticateToken(): Promise<{ user: string; role: string } | null> {
+  throw new Error('Token-based auth is deprecated. Use mTLS only.')
 }
 
-/**
- * 验证 Bearer token
- */
-export async function authenticateToken(authHeader: string): Promise<{ user: string; role: string } | null> {
-  const parts = authHeader.split(' ')
-  if (parts.length !== 2 || parts[0] !== 'Bearer') {
-    throw new Error('Invalid authorization header')
-  }
-  const token = parts[1]
-  // JWT token — 使用 Authenticator 验证
-  try {
-    const secret = process.env.AUTH_JWT_SECRET
-    if (!secret) return null // 未配置 JWT secret 时拒绝所有请求
-    const decoded = jwt.verify(token, secret) as any
-    return {
-      user: decoded.sub || decoded.user || 'unknown',
-      role: decoded.role || 'reader',
-    }
-  } catch {
-    // JWT 验证失败 — 拒绝，不降级到 basic-token
-    throw new Error('Invalid token')
-  }
-}
-
-/**
- * 中间件：需要认证
- */
-export function requireAuth(header: string | undefined): void {
-  if (!header) {
-    throw new Error('Authorization header required')
-  }
-  try {
-    authenticateToken(header)
-  } catch {
-    throw new Error('Invalid or expired token')
-  }
+/** @deprecated */
+export function requireAuth(): void {
+  throw new Error('Token-based auth is deprecated. Use mTLS only.')
 }

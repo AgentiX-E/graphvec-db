@@ -85,12 +85,12 @@ describe('GraphEngine + EventStream 集成', () => {
   beforeEach(() => { cleanup(); BUS.sent.length = 0 })
   afterEach(() => { cleanup() })
 
-  it('使用 EventStream 时 emit 写入 WAL', () => {
+  it('使用 EventStream 时 emit 写入 WAL', async () => {
     const es = new EventStream(createES())
     es.open()
     const ge = makeEngine(es)
 
-    const id = ge.upsertNode(1, 'n1')
+    const id = await ge.upsertNode(1, 'n1')
     expect(typeof id).toBe('number')
 
     // 检查 WAL 中有记录
@@ -103,12 +103,12 @@ describe('GraphEngine + EventStream 集成', () => {
     es.close()
   })
 
-  it('ACK 到来后从 WAL 移除 pending', () => {
+  it('ACK 到来后从 WAL 移除 pending', async () => {
     const es = new EventStream(createES())
     es.open()
     const ge = makeEngine(es)
 
-    ge.upsertNode(1, 'n1')
+    await ge.upsertNode(1, 'n1')
 
     // 模拟远程 ACK
     BUS.simulateRemote('event:ack', { msgId: 'test-node-1', nodeId: 'remote' })
@@ -120,9 +120,9 @@ describe('GraphEngine + EventStream 集成', () => {
     es.close()
   })
 
-  it('不传 EventStream 时不应使用 EventStream（fallback 到 EventBus）', () => {
+  it('不传 EventStream 时不应使用 EventStream（fallback 到 EventBus）', async () => {
     const ge = makeEngine()
-    const id = ge.upsertNode(1, 'n1')
+    const id = await ge.upsertNode(1, 'n1')
 
     // 当没有 EventStream 时，GraphEngine 尝试 getEventBus()（可能抛错）
     // 但不应该走 EventStream 路径

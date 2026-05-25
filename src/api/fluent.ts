@@ -427,3 +427,147 @@ export class GraphQuery {
     })
   }
 }
+
+/**
+ * UnionQuery — 多个查询的并集
+ *
+ * 使用示例：
+ *   const q1 = new GraphQuery(manager).match(1)
+ *   const q2 = new GraphQuery(manager).match(2)
+ *   const result = await union(q1, q2).return()
+ */
+export class UnionQuery {
+  private queries: GraphQuery[]
+  private manager: ShardManager
+  private limit_: number | null = null
+  private skip_ = 0
+
+  constructor(...queries: GraphQuery[]) {
+    if (queries.length < 2) {
+      throw new Error('UnionQuery requires at least 2 queries')
+    }
+    this.manager = queries[0]['manager']
+    this.queries = queries
+  }
+
+  limit(n: number): this {
+    this.limit_ = n
+    return this
+  }
+
+  skip(n: number): this {
+    this.skip_ = n
+    return this
+  }
+
+  async return(): Promise<NodeRecord[]> {
+    const all = await Promise.all(this.queries.map(q => q.return()))
+    const seen = new Set<number>()
+    const result: NodeRecord[] = []
+    for (const nodes of all) {
+      for (const n of nodes) {
+        if (!seen.has(n.id)) {
+          seen.add(n.id)
+          result.push(n)
+        }
+      }
+    }
+    if (this.skip_ > 0) result.splice(0, this.skip_)
+    if (this.limit_ !== null) result.splice(this.limit_)
+    return result
+  }
+}
+
+/**
+ * IntersectQuery — 多个查询的交集
+ */
+export class IntersectQuery {
+  private queries: GraphQuery[]
+  private manager: ShardManager
+  private limit_: number | null = null
+  private skip_ = 0
+
+  constructor(...queries: GraphQuery[]) {
+    if (queries.length < 2) {
+      throw new Error('IntersectQuery requires at least 2 queries')
+    }
+    this.manager = queries[0]['manager']
+    this.queries = queries
+  }
+
+  limit(n: number): this {
+    this.limit_ = n
+    return this
+  }
+
+  skip(n: number): this {
+    this.skip_ = n
+    return this
+  }
+
+  async return(): Promise<NodeRecord[]> {
+    // 先执行所有查询
+    const allResults = await Promise.all(this.queries.map(q => q.return()))
+    if (allResults.length === 0) return []
+
+    // 交集：从第一个结果开始逐层过滤
+    let result = allResults[0]
+    for (let i = 1; i < allResults.length; i++) {
+      const ids = new Set(allResults[i].map(n => n.id))
+      result = result.filter(n => ids.has(n.id))
+    }
+    if (this.skip_ > 0) result.splice(0, this.skip_)
+    if (this.limit_ !== null) result.splice(this.limit_)
+    return result
+  }
+}
+
+/**
+ * SubtractQuery — A − B：在 A 中不在 B 中的节点
+ */
+export class SubtractQuery {
+  private queries: GraphQuery[]
+  private manager: ShardManager
+  private limit_: number | null = null
+  private skip_ = 0
+
+  constructor(a: GraphQuery, b: GraphQuery) {
+    this.manager = a['manager']
+    this.queries = [a, b]
+  }
+
+  limit(n: number): this {
+    this.limit_ = n
+    return this
+  }
+
+  skip(n: number): this {
+    this.skip_ = n
+    return this
+  }
+
+  async return(): Promise<NodeRecord[]> {
+    const [aResults, bResults] = await Promise.all([
+      this.queries[0].return(),
+      this.queries[1].return(),
+    ])
+    const bIds = new Set(bResults.map(n => n.id))
+    let result = aResults.filter(n => !bIds.has(n.id))
+    if (this.skip_ > 0) result.splice(0, this.skip_)
+    if (this.limit_ !== null) result.splice(this.limit_)
+    return result
+  }
+}
+
+/** 静态工厂方法 */
+export function union(...queries: GraphQuery[]): UnionQuery {
+  return new UnionQuery(...queries)
+}
+
+export function intersect(...queries: GraphQuery[]): IntersectQuery {
+  return new IntersectQuery(...queries)
+}
+
+export function subtract(a: GraphQuery, b: GraphQuery): SubtractQuery {
+  return new SubtractQuery(a, b)
+}

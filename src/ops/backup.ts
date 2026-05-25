@@ -103,7 +103,32 @@ export class Backup {
       }
       walkDir(destPath)
 
-      return { path: destPath, sizeBytes }
+      // 6. 将备份目录打成 gzip 压缩包
+      const tarGzPath = `${destPath}.tar.gz`
+      try {
+        const mod = await import('archiver')
+        const archiverCreate = typeof mod.default === 'function' ? mod.default : mod.create
+        const output = fs.createWriteStream(tarGzPath)
+        const archive = archiverCreate('tar', { gzip: true, gzipOptions: { level: 6 } })
+
+        await new Promise<void>((resolve, reject) => {
+          output.on('close', resolve)
+          archive.on('error', reject)
+          archive.pipe(output)
+          archive.directory(destPath, path.basename(destPath))
+          archive.finalize()
+        })
+
+        // 7. 删除原始裸目录
+        fs.rmSync(destPath, { recursive: true, force: true })
+
+        // 8. 更新大小和路径
+        sizeBytes = fs.statSync(tarGzPath).size
+
+        return { path: tarGzPath, sizeBytes }
+      } catch (err) {
+        throw new Error(`Backup archive failed: ${(err as Error).message}`)
+      }
     } finally {
       this.inProgress = false
     }
@@ -148,14 +173,25 @@ export class Backup {
         fs.renameSync(target, currentBackup)
       }
 
-      // 复制备份数据
-      fs.cpSync(backupPath, target, { recursive: true })
-      // 确保数据落盘
-      const fd = fs.openSync(target, 'r')
-      try {
-        fs.fsyncSync(fd)
-      } finally {
-        fs.closeSync(fd)
+      // 如果备份是压缩包，先解压
+      if (backupPath.endsWith('.tar.gz')) {
+        const { default: tar } = await import('tar')
+        fs.mkdirSync(target, { recursive: true })
+        await tar.extract({
+          file: backupPath,
+          cwd: path.dirname(target),
+          strip: 1,
+        })
+      } else {
+        // 复制备份数据（裸目录）
+        fs.cpSync(backupPath, target, { recursive: true })
+        // 确保数据落盘
+        const fd = fs.openSync(target, 'r')
+        try {
+          fs.fsyncSync(fd)
+        } finally {
+          fs.closeSync(fd)
+        }
       }
     } catch (err) {
       // 恢复失败时尝试回滚
@@ -173,7 +209,7 @@ export class Backup {
   listBackups(backupDir: string): string[] {
     try {
       return fs.readdirSync(backupDir)
-        .filter(name => name.startsWith('graphvec-backup-'))
+        .filter(name => name.startsWith('graphvec-backup-') && (fs.statSync(path.join(backupDir, name)).isDirectory() || name.endsWith('.tar.gz')))
         .map(name => path.join(backupDir, name))
     } catch {
       return []

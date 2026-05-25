@@ -43,12 +43,16 @@ export interface UpsertNodeOptions {
   temporalValidity?: TemporalValidity
   decayFactor?: number
   ttlSeconds?: number
+  /** 如果为 true，跳过 Multi-Leader 复制广播 */
+  skipReplication?: boolean
 }
 
 export interface UpsertEdgeOptions {
   props?: NodeProperties
   temporalValidity?: TemporalValidity
   weight?: number
+  /** 如果为 true，跳过 Multi-Leader 复制广播 */
+  skipReplication?: boolean
 }
 
 export interface NodeRecord {

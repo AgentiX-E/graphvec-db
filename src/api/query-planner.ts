@@ -25,6 +25,9 @@ export enum PlanNodeType {
   PERSONALIZED_PAGE_RANK = 'personalized_page_rank',
   CONNECTED_COMPONENTS = 'connected_components',
   PARALLEL_UNION = 'parallel_union',
+  UNION = 'union',
+  INTERSECT = 'intersect',
+  SUBTRACT = 'subtract',
 }
 
 export interface PlanNode {
@@ -859,6 +862,47 @@ async function executeNode(
     case PlanNodeType.SHORTEST_PATH:
     case PlanNodeType.PERSONALIZED_PAGE_RANK:
     case PlanNodeType.CONNECTED_COMPONENTS:
+    case PlanNodeType.UNION: {
+      // 合并多个子查询结果（去重）
+      if (inputData.length === 0) {
+        // 需要执行子节点
+        const left = await executeIR(plan.children[0], shardManager, fnPredicates)
+        const right = await executeIR(plan.children[1], shardManager, fnPredicates)
+        const seen = new Set<number>()
+        const result: NodeRecord[] = []
+        for (const n of [...left, ...right]) {
+          if (!seen.has(n.id)) {
+            seen.add(n.id)
+            result.push(n)
+          }
+        }
+        return result
+      }
+      return inputData
+    }
+
+    case PlanNodeType.INTERSECT: {
+      // 多个子查询的交集
+      if (inputData.length === 0) {
+        const left = await executeIR(plan.children[0], shardManager, fnPredicates)
+        const right = await executeIR(plan.children[1], shardManager, fnPredicates)
+        const rightIds = new Set(right.map(n => n.id))
+        return left.filter(n => rightIds.has(n.id))
+      }
+      return inputData
+    }
+
+    case PlanNodeType.SUBTRACT: {
+      // A − B：左子查询结果中不在右子查询中的节点
+      if (inputData.length === 0) {
+        const left = await executeIR(plan.children[0], shardManager, fnPredicates)
+        const right = await executeIR(plan.children[1], shardManager, fnPredicates)
+        const rightIds = new Set(right.map(n => n.id))
+        return left.filter(n => !rightIds.has(n.id))
+      }
+      return inputData
+    }
+
     case PlanNodeType.PARALLEL_UNION:
     default:
       // 暂未实现的节点类型，返回输入数据

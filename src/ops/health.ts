@@ -79,10 +79,10 @@ export class Health {
     let engineOk = true
     let engineError: string | undefined
     try {
-      const testId = this.engine.upsertNode(999999, '__health_check__', {
+      const testId = await this.engine.upsertNode(999999, '__health_check__', {
         props: { __ts: Date.now() },
       })
-      this.engine.deleteNode(testId)
+      await await this.engine.deleteNode(testId)
     } catch (err) {
       engineOk = false
       engineError = (err as Error).message

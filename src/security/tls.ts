@@ -1,58 +1,65 @@
+// ============================================================
+// TLS — mTLS 配置管理
+//
+// 提供 TLS 服务器选项和证书 CN 提取。
+// 生产环境应使用真实 CA 签名证书，开发环境可使用自签名证书。
+// ============================================================
+
+import * as fs from 'fs'
+import * as https from 'https'
 import { AuthConfig } from '../types'
 
 /**
- * TLS — mTLS 配置管理
- *
- * 生产环境应使用真实的 CA 签名证书
- * 开发环境可使用自签名证书
+ * TLS 配置管理
  */
-
-// 受信任的节点 ID 模式：字母数字中划线，1-64 字符
-const NODE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/
-
 export class TLSConfig {
   private config: AuthConfig
 
   constructor(config: AuthConfig) {
+    if (config.mode !== 'mtls') {
+      throw new Error('TLS: only mTLS mode is supported')
+    }
+    if (!config.tlsCert || !config.tlsKey) {
+      throw new Error('TLS: cert and key must be configured for server mode')
+    }
     this.config = config
   }
 
   /**
-   * 获取 TLS 服务器选项
+   * 获取 HTTPS 服务器选项
+   * 从文件路径加载证书
    */
-  getServerOptions(): { key: string; cert: string; ca?: string; requestCert: boolean; rejectUnauthorized: boolean } {
-    if (!this.config.tlsCert || !this.config.tlsKey) {
-      throw new Error('TLS: cert and key must be configured for server mode')
+  getServerOptions(): https.ServerOptions {
+    const cert = fs.readFileSync(this.config.tlsCert!, 'utf-8')
+    const key = fs.readFileSync(this.config.tlsKey!, 'utf-8')
+    const opts: https.ServerOptions = {
+      cert,
+      key,
+      requestCert: true,
+      rejectUnauthorized: true,
     }
-    return {
-      key: this.config.tlsKey,
-      cert: this.config.tlsCert,
-      ca: this.config.tlsCA,
-      requestCert: this.config.mode === 'mtls',
-      rejectUnauthorized: this.config.mode === 'mtls',
+    if (this.config.tlsCA) {
+      opts.ca = fs.readFileSync(this.config.tlsCA, 'utf-8')
     }
+    return opts
   }
 
   /**
-   * 从证书 subject 中提取 CN（Common Name）
+   * 从 HTTP IncomingMessage 提取客户端证书 CN
    *
-   * 安全校验：
-   * - 校验证书对象结构（拒绝非对象输入）
-   * - CN 必须符合节点 ID 格式（字母数字中划线，1-64 字符）
-   * - 无效格式返回 null 而非抛出异常
+   * Node.js 的 https server 会将客户端证书存储在 socket 上，
+   * 可通过 req.socket.getPeerCertificate() 获取。
    */
-  static extractCN(cert: unknown): string | null {
-    if (!cert || typeof cert !== 'object') return null
-
+  static extractCNFromRequest(req: any): string | null {
     try {
-      const subject = (cert as Record<string, unknown>).subject as Record<string, unknown> | undefined
-      if (!subject || typeof subject !== 'object') return null
+      // Express 和原生 HTTP 请求的 socket 访问路径
+      const socket = req.socket || req.connection
+      if (!socket || typeof socket.getPeerCertificate !== 'function') return null
 
-      const rawCN = subject.CN ?? subject.commonName
-      if (typeof rawCN !== 'string' || !rawCN) return null
-      if (!NODE_ID_PATTERN.test(rawCN)) return null
+      const cert = socket.getPeerCertificate()
+      if (!cert || !cert.subject) return null
 
-      return rawCN
+      return cert.subject.CN || null
     } catch {
       return null
     }

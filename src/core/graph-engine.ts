@@ -5,15 +5,166 @@ import {
   PersonalizedPageRankOptions, ShortestPathOptions, ConnectedComponentsOptions,
   PatternMatchOptions, OverGraphConfig,
 } from '../types'
-import { StorageProvider, StorageConfig } from './storage-provider'
+import { StorageProvider, StorageConfig, NeighborsOptions, NeighborEntry } from './storage-provider'
 import { OverGraphStorage } from './overgraph-storage'
 
 import { LabelEngine } from './label-engine'
 import { getEventBus } from './event-bus'
 import { EventStream } from './event-stream'
+import { MultiLeaderReplication } from './multi-leader-replication'
+import { SchemaDef, ValidationResult } from '../schema/schema-types'
+import { validateNodeType, validateEdgeType } from '../schema/schema-validator'
 
 /** Event for EventStream emit */
 interface StreamEvent { type: string; data: Record<string, unknown> }
+
+// ──────────────────────────────────────────
+// LRU Cache with per-entry TTL
+// ──────────────────────────────────────────
+
+interface LRUNode<K, V> {
+  key: K
+  value: V
+  expiresAt: number
+  prev: LRUNode<K, V> | null
+  next: LRUNode<K, V> | null
+}
+
+/**
+ * LRU cache with per-entry TTL expiry.
+ * Uses a Map (key → node) + doubly-linked list (head=MRU, tail=LRU).
+ * Not thread-safe.
+ */
+class LRUCache<K, V> {
+  private readonly _map = new Map<K, LRUNode<K, V>>()
+  private _head: LRUNode<K, V> | null = null
+  private _tail: LRUNode<K, V> | null = null
+  private readonly _maxSize: number
+  private readonly _defaultTTLMs: number
+
+  constructor(maxSize: number = 1000, defaultTTLSec: number = 60) {
+    this._maxSize = maxSize
+    this._defaultTTLMs = defaultTTLSec * 1000
+  }
+
+  /** 获取缓存条目，过期则返回 null 并删除 */
+  get(key: K): V | undefined {
+    const node = this._map.get(key)
+    if (!node) return undefined
+
+    // 检查过期
+    if (Date.now() > node.expiresAt) {
+      this._removeNode(node)
+      this._map.delete(key)
+      return undefined
+    }
+
+    // 移到链表头部（MRU）
+    this._moveToHead(node)
+    return node.value
+  }
+
+  /** 设置缓存条目（使用默认 TTL） */
+  set(key: K, value: V, ttlMs?: number): void {
+    const expiresAt = Date.now() + (ttlMs ?? this._defaultTTLMs)
+
+    const existing = this._map.get(key)
+    if (existing) {
+      existing.value = value
+      existing.expiresAt = expiresAt
+      this._moveToHead(existing)
+      return
+    }
+
+    // 如果已满，淘汰 LRU（尾部）
+    if (this._map.size >= this._maxSize) {
+      this._evictOne()
+    }
+
+    const node: LRUNode<K, V> = { key, value, expiresAt, prev: null, next: null }
+    this._map.set(key, node)
+    this._prepend(node)
+  }
+
+  /** 删除指定 key */
+  delete(key: K): boolean {
+    const node = this._map.get(key)
+    if (!node) return false
+    this._removeNode(node)
+    this._map.delete(key)
+    return true
+  }
+
+  /** 清空全部缓存 */
+  clear(): void {
+    this._map.clear()
+    this._head = null
+    this._tail = null
+  }
+
+  get size(): number {
+    return this._map.size
+  }
+
+  // ── 内部方法 ──
+
+  private _prepend(node: LRUNode<K, V>): void {
+    node.prev = null
+    node.next = this._head
+    if (this._head) {
+      this._head.prev = node
+    }
+    this._head = node
+    if (!this._tail) {
+      this._tail = node
+    }
+  }
+
+  private _removeNode(node: LRUNode<K, V>): void {
+    if (node.prev) {
+      node.prev.next = node.next
+    } else {
+      this._head = node.next
+    }
+    if (node.next) {
+      node.next.prev = node.prev
+    } else {
+      this._tail = node.prev
+    }
+    node.prev = null
+    node.next = null
+  }
+
+  private _moveToHead(node: LRUNode<K, V>): void {
+    if (node === this._head) return
+    this._removeNode(node)
+    this._prepend(node)
+  }
+
+  private _evictOne(): void {
+    if (!this._tail) return
+    const tail = this._tail
+    this._removeNode(tail)
+    this._map.delete(tail.key)
+  }
+
+  /** 清理所有过期条目并返回已清理个数 */
+  evictExpired(): number {
+    let count = 0
+    // 从尾部扫描，因为 LRU 节点很可能也已经过期
+    let node = this._tail
+    while (node) {
+      const prev = node.prev
+      if (Date.now() > node.expiresAt) {
+        this._removeNode(node)
+        this._map.delete(node.key)
+        count++
+      }
+      node = prev
+    }
+    return count
+  }
+}
 
 /**
  * GraphEngine — 存储无关的图引擎核心
@@ -31,6 +182,17 @@ export class GraphEngine {
   private _edgeKeys: Set<string> = new Set()
   private _labelIndex: LabelEngine = new LabelEngine()
   private _eventStream: EventStream | null = null
+  /** Multi-Leader 同步复制层（可选） */
+  private _mlReplication: MultiLeaderReplication | null = null
+
+  // ── LRU Cache for neighbors ──
+  private _neighborCache: LRUCache<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }>
+  private _cacheEnabled = false
+  private _cacheMaxSize: number
+  private _cacheDefaultTTLSec: number
+
+  /** Schema 类型定义（可选） */
+  private _schema?: SchemaDef
 
   /**
    * 可选的回调：当节点/边发生变更时被调用
@@ -38,10 +200,27 @@ export class GraphEngine {
    */
   public onRecordChange?: (name: string, fields: Record<string, any>) => void
 
-  constructor(config: OverGraphConfig, storage?: StorageProvider, eventStream?: EventStream) {
+  constructor(config: OverGraphConfig, storage?: StorageProvider, eventStream?: EventStream, mlReplication?: MultiLeaderReplication) {
     this.storage = storage ?? new OverGraphStorage()
     this.config = config
     this._eventStream = eventStream ?? null
+    this._mlReplication = mlReplication ?? null
+    this._cacheMaxSize = config.cacheSize ?? 1000
+    this._cacheDefaultTTLSec = 60
+    this._neighborCache = new LRUCache<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }>(
+      this._cacheMaxSize,
+      this._cacheDefaultTTLSec,
+    )
+  }
+
+  /** 设置 Schema 定义 */
+  setSchema(schema: SchemaDef): void {
+    this._schema = schema
+  }
+
+  /** 获取当前 Schema */
+  getSchema(): SchemaDef | undefined {
+    return this._schema
   }
 
   /** 检查数据库是否已打开 */
@@ -66,6 +245,45 @@ export class GraphEngine {
         : undefined,
       defaultRetention: this.config.defaultRetention,
     })
+
+    // 注册远程事件应用回调 — 收到集群内其他节点的变更事件时持久化到本地
+    if (this._eventStream) {
+      this._eventStream.registerApplyHandler(async (msg) => {
+        switch (msg.type) {
+          case 'node:created':
+          case 'node:updated': {
+            const id = msg.data.id as number
+            const typeId = msg.data.typeId as number
+            const name = msg.data.name as string
+            const props = msg.data.props as Record<string, string | number | boolean | string[] | number[] | null> | undefined
+            await this.upsertNode(typeId, name, { props, skipReplication: true })
+            break
+          }
+          case 'node:deleted': {
+            const id = msg.data.id as number
+            await this.deleteNode(id, true)
+            break
+          }
+          case 'edge:created':
+          case 'edge:updated': {
+            const src = msg.data.src as number
+            const dst = msg.data.dst as number
+            const typeId = msg.data.typeId as number
+            const props = msg.data.props as Record<string, string | number | boolean | string[] | number[] | null> | undefined
+            await this.upsertEdge(src, dst, typeId, { props, skipReplication: true })
+            break
+          }
+          case 'edge:deleted': {
+            const src = msg.data.src as number
+            const dst = msg.data.dst as number
+            const typeId = msg.data.typeId as number
+            await this.deleteEdge(src, dst, typeId, true)
+            break
+          }
+        }
+      })
+    }
+
     this._isOpen = true
   }
 
@@ -81,16 +299,24 @@ export class GraphEngine {
   // ──────────────────────────────────────────
 
   /**
-   * 插入或更新一个节点
+   * 插入或更新一个节点（Multi-Leader 模式：同步等待所有远程节点 ACK）
    *
    * @param typeId - 节点类型 ID
    * @param name - 节点名称
    * @param opts - 可选参数（属性、向量、有效期、衰减因子、TTL）
    * @returns 新插入或已有节点的 ID
-   * @throws {Error} 如果 GraphEngine 未 open()
+   * @throws {Error} 如果 GraphEngine 未 open() 或同步复制超时
    */
-  upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): NodeId {
+  async upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): Promise<NodeId> {
     this._ensureOpen()
+
+    if (this._schema) {
+      const result = validateNodeType(typeId, opts?.props ?? {}, this._schema)
+      if (!result.valid) {
+        throw new Error(`Schema 校验失败: ${result.errors.join('; ')}`)
+      }
+    }
+
     const id = this.storage.upsertNode(typeId, name, opts)
     if (!this._nodeIds.has(id)) {
       this._nodeIds.add(id)
@@ -98,6 +324,14 @@ export class GraphEngine {
     }
     this._labelIndex.addNode(typeId, id)
     this.onRecordChange?.(name, { typeId, ...(opts?.props ?? {}) })
+
+    if (this._mlReplication && !opts?.skipReplication) {
+      const result = await this._mlReplication.replicate('node:created', { id, typeId, name, props: opts?.props })
+      if (!result.success) {
+        console.error(`[GraphEngine] Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
+      }
+    }
+
     this._emit({ type: 'node:created', data: { id, typeId, name, props: opts?.props } })
     return id
   }
@@ -137,7 +371,7 @@ export class GraphEngine {
    * @returns true 如果节点存在且被删除，false 如果节点不存在
    * @throws {Error} 如果 GraphEngine 未 open()
    */
-  deleteNode(id: NodeId): boolean {
+  async deleteNode(id: NodeId, skipReplication = false): Promise<boolean> {
     this._ensureOpen()
     const node = this.storage.getNode(id, true)
     if (!node) return false
@@ -146,6 +380,14 @@ export class GraphEngine {
     this._nodeIds.delete(id)
     this._nodeCount = Math.max(0, this._nodeCount - 1)
     this.onRecordChange?.(node.key, { _deleted: true, typeId: node.typeId })
+
+    if (this._mlReplication && !skipReplication) {
+      const result = await this._mlReplication.replicate('node:deleted', { id, typeId: node.typeId, name: node.key })
+      if (!result.success) {
+        console.error(`[GraphEngine] Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
+      }
+    }
+
     this._emit({ type: 'node:deleted', data: { id, typeId: node.typeId, name: node.key } })
     return true
   }
@@ -192,16 +434,24 @@ export class GraphEngine {
   // ──────────────────────────────────────────
 
   /**
-   * 插入或更新一条边
+   * 插入或更新一条边（Multi-Leader 模式：同步等待所有远程节点 ACK）
    *
    * @param src - 源节点 ID
    * @param dst - 目标节点 ID
    * @param typeId - 边类型 ID
    * @param opts - 可选参数
-   * @throws {Error} 如果 GraphEngine 未 open()
+   * @throws {Error} 如果 GraphEngine 未 open() 或同步复制超时
    */
-  upsertEdge(src: NodeId, dst: NodeId, typeId: number, opts?: UpsertEdgeOptions): void {
+  async upsertEdge(src: NodeId, dst: NodeId, typeId: number, opts?: UpsertEdgeOptions): Promise<void> {
     this._ensureOpen()
+
+    if (this._schema) {
+      const result = validateEdgeType(typeId, opts?.props ?? {}, this._schema)
+      if (!result.valid) {
+        throw new Error(`Schema 校验失败: ${result.errors.join('; ')}`)
+      }
+    }
+
     this.storage.upsertEdge(src, dst, typeId, {
       props: opts?.props as Record<string, unknown> | undefined,
       temporalValidity: opts?.temporalValidity,
@@ -213,6 +463,14 @@ export class GraphEngine {
       this._edgeCount++
     }
     this.onRecordChange?.(`edge:${src}->${dst}`, { typeId, src, dst, ...(opts?.props ?? {}) })
+
+    if (this._mlReplication && !opts?.skipReplication) {
+      const result = await this._mlReplication.replicate('edge:created', { src, dst, typeId, props: opts?.props })
+      if (!result.success) {
+        console.error(`[GraphEngine] Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
+      }
+    }
+
     this._emit({ type: 'edge:created', data: { src, dst, typeId, props: opts?.props } })
   }
 
@@ -255,13 +513,21 @@ export class GraphEngine {
    * @returns true 如果边存在且被删除
    * @throws {Error} 如果 GraphEngine 未 open()
    */
-  deleteEdge(src: NodeId, dst: NodeId, typeId: number): boolean {
+  async deleteEdge(src: NodeId, dst: NodeId, typeId: number, skipReplication = false): Promise<boolean> {
     this._ensureOpen()
     const result = this.storage.deleteEdge(src, dst, typeId)
     if (result) {
       this._edgeCount = Math.max(0, this._edgeCount - 1)
     }
     this.onRecordChange?.(`edge:${src}->${dst}:${typeId}`, { _deleted: true, src, dst, typeId })
+
+    if (this._mlReplication && result && !skipReplication) {
+      const r = await this._mlReplication.replicate('edge:deleted', { src, dst, typeId })
+      if (!r.success) {
+        console.error(`[GraphEngine] Multi-Leader replication: ${r.acksReceived}/${r.expectedAcks} ACKs`)
+      }
+    }
+
     this._emit({ type: 'edge:deleted', data: { src, dst, typeId } })
     return result
   }
@@ -300,6 +566,41 @@ export class GraphEngine {
       }
     }
     return { edges, nodes }
+  }
+
+  /**
+   * 批量邻居查询（带 LRU 缓存）
+   *
+   * 输入 N 个 nodeId，一次返回所有邻居，重复查询走缓存。
+   * 适合用于图算法（PageRank、社区检测等）需要反复查邻居的热点路径。
+   *
+   * @param ids - 节点 ID 数组（batch）
+   * @param opts - 查询选项（同 neighbors()）
+   * @returns Map<NodeId, { edges; nodes }>
+   */
+  batchNeighbors(ids: NodeId[], opts?: { maxDepth?: number; edgeTypeFilter?: number[] }): Map<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }> {
+    this._ensureOpen()
+    const result = new Map<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }>()
+    const miss: NodeId[] = []
+
+    for (const id of ids) {
+      const cached = this._neighborCache.get(id)
+      if (cached !== undefined) {
+        result.set(id, cached)
+      } else {
+        miss.push(id)
+      }
+    }
+
+    if (miss.length > 0) {
+      for (const id of miss) {
+        const data = this.neighbors(id, opts)
+        this._neighborCache.set(id, data)
+        result.set(id, data)
+      }
+    }
+
+    return result
   }
 
   // ──────────────────────────────────────────
@@ -453,6 +754,71 @@ export class GraphEngine {
   compact(): void {
     this._ensureOpen()
     this.storage.compact()
+  }
+
+  /**
+   * 聚合计数
+   * @param typeFilter - 可选，按 typeId 过滤（节点类型）
+   * @returns 符合条件的节点数量
+   */
+  countNodes(typeFilter?: number[]): number {
+    this._ensureOpen()
+    if (!typeFilter || typeFilter.length === 0) {
+      return this._nodeCount
+    }
+    // 通过 searchNodes 或 label index 按类型过滤
+    let count = 0
+    for (const id of this._nodeIds) {
+      const raw = this.storage.getNode(id, true)
+      if (raw && typeFilter.includes(raw.typeId)) {
+        count++
+      }
+    }
+    return count
+  }
+
+  /**
+   * 统计节点属性之和
+   * @param field - 属性字段名（必须是数字类型）
+   * @param typeFilter - 可选，按 typeId 过滤
+   * @returns 属性值的总和
+   */
+  sumNodeProperty(field: string, typeFilter?: number[]): number {
+    this._ensureOpen()
+    let sum = 0
+    for (const id of this._nodeIds) {
+      const raw = this.storage.getNode(id, true)
+      if (!raw) continue
+      if (typeFilter && typeFilter.length > 0 && !typeFilter.includes(raw.typeId)) continue
+      const val = raw.props?.[field]
+      if (typeof val === 'number') {
+        sum += val
+      }
+    }
+    return sum
+  }
+
+  /**
+   * 统计节点属性平均值
+   * @param field - 属性字段名（必须是数字类型）
+   * @param typeFilter - 可选，按 typeId 过滤
+   * @returns 属性值的平均值，无匹配节点时返回 0
+   */
+  avgNodeProperty(field: string, typeFilter?: number[]): number {
+    this._ensureOpen()
+    let sum = 0
+    let count = 0
+    for (const id of this._nodeIds) {
+      const raw = this.storage.getNode(id, true)
+      if (!raw) continue
+      if (typeFilter && typeFilter.length > 0 && !typeFilter.includes(raw.typeId)) continue
+      const val = raw.props?.[field]
+      if (typeof val === 'number') {
+        sum += val
+        count++
+      }
+    }
+    return count > 0 ? sum / count : 0
   }
 
   /**

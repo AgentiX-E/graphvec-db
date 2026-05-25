@@ -135,6 +135,9 @@ export interface EventStreamConfig {
  */
 export type EventHandler = (msg: StreamMessage) => void
 
+/** 应用层回调 — async，持久化完成后才发 ACK */
+export type ApplyHandler = (msg: StreamMessage) => Promise<void>
+
 /**
  * 事件去重器 — 环形缓冲区实现，O(1) 插入和淘汰
  */
@@ -194,6 +197,8 @@ export class EventStream {
   private pendingTracker = new Map<string, { sentAt: number; retries: number }>()
   /** 本地事件回调 */
   private handlers = new Map<string, EventHandler[]>()
+  /** 远程事件应用回调（持久化后才发 ACK） */
+  private applyHandler: ApplyHandler | null = null
   /** 后台扫描 timer */
   private scanTimer: ReturnType<typeof setInterval> | null = null
   /** 是否正在运行 */
@@ -272,6 +277,16 @@ export class EventStream {
   }
 
   /**
+   * 注册远程事件应用回调
+   *
+   * 当收到远程节点的事件时，先调用此回调完成本地持久化，再发 ACK。
+   * 确保 ACK 回来时数据已写入远程存储。
+   */
+  registerApplyHandler(handler: ApplyHandler): void {
+    this.applyHandler = handler
+  }
+
+  /**
    * 发送可靠事件
    *
    * 1. 写入本地 WAL（PENDING 状态）
@@ -282,27 +297,78 @@ export class EventStream {
     if (!this.running) {
       throw new Error('EventStream is not open')
     }
+    const msg = this._buildMessage(event)
+    this._appendAndPublish(msg)
+  }
 
+  /**
+   * 发送并同步等待指定数量的远程 ACK
+   *
+   * 用于 Multi-Leader 同步复制：写入本地后等待其他节点持久化确认
+   */
+  async emitSync(event: { type: string; data: Record<string, unknown>; timestamp?: number }, expectedAcks: number, timeoutMs = 30000): Promise<number> {
+    if (!this.running) throw new Error('EventStream is not open')
+    if (expectedAcks <= 0) {
+      this.emit(event)
+      return 0
+    }
+
+    const msg = this._buildMessage(event)
+    this._appendAndPublish(msg)
+
+    return new Promise<number>((resolve, reject) => {
+      let ackCount = 0
+      let settled = false
+
+
+      const ackHandler = (evt: GraphEvent) => {
+        if (settled) return
+        const ackMsgId = evt.data.msgId as string
+        if (ackMsgId === msg.msgId) {
+          ackCount++
+          if (ackCount >= expectedAcks) {
+            settled = true
+            this.bus.off('event:ack', ackHandler as any)
+            clearTimeout(timer)
+            resolve(ackCount)
+          }
+        }
+      }
+
+      this.bus.on('event:ack', ackHandler as any)
+
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true
+          this.bus.off('event:ack', ackHandler as any)
+          reject(new Error(`emitSync timeout after ${timeoutMs}ms: got ${ackCount}/${expectedAcks} ACKs`))
+        }
+      }, timeoutMs)
+
+      if (typeof timer === 'object' && 'unref' in timer) {
+        (timer as any).unref()
+      }
+    })
+  }
+
+  /** 构建内部消息 */
+  private _buildMessage(event: { type: string; data: Record<string, unknown>; timestamp?: number }): StreamMessage {
     this.seq++
-    const msg: StreamMessage = {
+    return {
       msgId: `${this.config.nodeId}-${this.seq}`,
       seq: this.seq,
       nodeId: this.config.nodeId,
-      timestamp: Date.now(),
+      timestamp: event.timestamp ?? Date.now(),
       type: event.type,
       data: { ...event.data },
     }
+  }
 
-    // 1. 持久化
+  /** 持久化 + 发布 + 本地触发 */
+  private _appendAndPublish(msg: StreamMessage): void {
     this.wal.append(msg)
-
-    // 2. 发布到 EventBus（作为原始 GraphEvent）
     this.bus.emit(this._busEvent('node:created', { __es_msg: msg }))
-
-    // 3. 追踪
     this.pendingTracker.set(msg.msgId, { sentAt: Date.now(), retries: 0 })
-
-    // 4. 本地也触发 handler（同进程订阅者立即收到）
     this._emitLocal(msg)
   }
 
@@ -378,14 +444,24 @@ export class EventStream {
     if (this.dedup.has(raw.msgId)) return
     this.dedup.add(raw.msgId)
 
-    // 2. 回传 ACK
-    this.bus.emit(this._busEvent('event:ack', { msgId: raw.msgId, nodeId: raw.nodeId }))
-
-    // 3. 标记消费
-    this.wal.markConsumed([raw.msgId])
-
-    // 4. 回调
-    this._emitLocal(raw)
+    if (this.applyHandler) {
+      // 有 applyHandler：先持久化，再发 ACK
+      this.applyHandler(raw)
+        .then(() => {
+          this.bus.emit(this._busEvent('event:ack', { msgId: raw.msgId, nodeId: raw.nodeId }))
+          this.wal.markConsumed([raw.msgId])
+          this._emitLocal(raw)
+        })
+        .catch((err) => {
+          console.error(`[${this.config.nodeId}] applyHandler error for ${raw.msgId}: ${err.message}`)
+          // 不发送 ACK — 写入失败，发送端会超时重试
+        })
+    } else {
+      // 无 applyHandler：立刻发 ACK（向后兼容 fire-and-forget 模式）
+      this.bus.emit(this._busEvent('event:ack', { msgId: raw.msgId, nodeId: raw.nodeId }))
+      this.wal.markConsumed([raw.msgId])
+      this._emitLocal(raw)
+    }
   }
 
   private _onControlMessage(evt: GraphEvent): void {

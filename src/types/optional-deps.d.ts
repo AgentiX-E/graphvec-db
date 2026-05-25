@@ -1,5 +1,31 @@
 // Type declarations for optional/pluggable dependencies
 
+// archiver — file archiving for backup compression (ESM-only, loaded via dynamic import)
+declare module 'archiver' {
+  import { Stream } from 'stream'
+  interface Archiver {
+    pipe(dest: Stream.Writable): Stream.Writable
+    append(source: string | Buffer | Stream, data: { name: string; prefix?: string }): void
+    directory(dirpath: string, destpath: string): void
+    finalize(): Promise<void>
+    on(event: 'error', handler: (err: Error) => void): this
+    on(event: 'warning', handler: (err: Error) => void): this
+  }
+  function create(format: 'tar' | 'zip', opts?: { gzip?: boolean; gzipOptions?: { level?: number } }): Archiver
+  export { create }
+  export default create
+}
+
+// tar — tar.gz extraction (ESM-only, loaded via dynamic import)
+declare module 'tar' {
+  interface ExtractOptions {
+    file: string
+    cwd: string
+    strip?: number
+  }
+  function extract(opts: ExtractOptions): Promise<void>
+}
+
 // raft-logic — optional, tikv/raft-rs WASM consensus
 declare module 'raft-logic' {
   export class InMemoryStorage {

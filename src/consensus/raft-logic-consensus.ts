@@ -24,6 +24,13 @@ export class RaftLogicConsensus implements ConsensusProvider {
   private _loaded = false
   private _loadError: Error | null = null
   private _raftModule: any = null
+  private _snapshotTimer: ReturnType<typeof setInterval> | null = null
+  private _entryCount = 0
+
+  // ── Pipeline 批量提交 ──
+  private _pipelineQueue: Array<{ data: Uint8Array; resolve: (val: { ok: boolean }) => void; reject: (err: Error) => void; timeoutMs: number }> = []
+  private _pipelineTimer: ReturnType<typeof setTimeout> | null = null
+  private _pipelineWindowMs = 100
 
   constructor(
     config: ConsensusConfig,
@@ -93,6 +100,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
         storage,
         transport,
         apply: async (entry: any) => {
+          this._entryCount++
           if (this.applyFn) {
             await this.applyFn(Buffer.from(entry.data))
           }
@@ -105,6 +113,15 @@ export class RaftLogicConsensus implements ConsensusProvider {
       await raft.start()
       this._node = raft
       this._started = true
+
+      // 每 apply 10000 条后触发一次 snapshot（Raft log compact）
+      this._entryCount = 0
+      this._snapshotTimer = setInterval(() => {
+        if (this._entryCount >= 10000) {
+          this._triggerSnapshotOnce()
+        }
+      }, 60_000) // 每分钟检查一次
+      this._snapshotTimer.unref()
     } catch (err) {
       this.logger.warn('[RaftLogicConsensus] Failed to initialize raft-logic. Falling back?', { err: (err as Error).message })
       throw err
@@ -112,6 +129,18 @@ export class RaftLogicConsensus implements ConsensusProvider {
   }
 
   async stop(): Promise<void> {
+    if (this._snapshotTimer) {
+      clearInterval(this._snapshotTimer)
+      this._snapshotTimer = null
+    }
+    // flush 剩余 Pipeline 请求
+    if (this._pipelineTimer) {
+      clearTimeout(this._pipelineTimer)
+      this._pipelineTimer = null
+    }
+    if (this._pipelineQueue.length > 0) {
+      await this._flushPipeline()
+    }
     if (this._node) {
       await this._node.stop()
       this._node = null
@@ -119,16 +148,76 @@ export class RaftLogicConsensus implements ConsensusProvider {
     this._started = false
   }
 
+  /**
+   * Pipeline 批量提交（100ms 窗口，合并 proposal）
+   *
+   * 无并发时走快速路径（直接 clientRequest），
+   * 有并发时才合并为一次 clientRequest，减少 RTT。
+   */
   async propose(data: Uint8Array, timeoutMs?: number): Promise<{ ok: boolean }> {
     if (!this._node || !this._started) return { ok: false }
+
+    const tm = timeoutMs ?? 5000
+
+    // 如果队列为空，走单条快速路径
+    if (this._pipelineQueue.length === 0) {
+      try {
+        const result = await this._node.clientRequest(
+          Buffer.from(data).toString('base64'),
+          { waitFor: 'apply', timeout: tm }
+        )
+        return { ok: result.ok }
+      } catch {
+        return { ok: false }
+      }
+    }
+
+    // 队列已有等待，合并提交
+    return new Promise<{ ok: boolean }>((resolve, reject) => {
+      this._pipelineQueue.push({ data, resolve, reject, timeoutMs: tm })
+      if (!this._pipelineTimer) {
+        this._pipelineTimer = setTimeout(() => {
+          this._flushPipeline()
+        }, this._pipelineWindowMs)
+        this._pipelineTimer.unref()
+      }
+    })
+  }
+
+  /** 冲刷 Pipeline 队列：合并所有待发请求为一条 batch entry */
+  private async _flushPipeline(): Promise<void> {
+    this._pipelineTimer = null
+    const batch = this._pipelineQueue.splice(0)
+    if (batch.length === 0) return
+
     try {
+      // 合并：每条 data 用长度前缀拼接，便于接收端拆分
+      const parts: string[] = []
+      for (const item of batch) {
+        parts.push(item.data.length.toString(16).padStart(8, '0'))
+        parts.push(Buffer.from(item.data).toString('base64'))
+      }
+      const batchPayload = parts.join('|')
+
       const result = await this._node.clientRequest(
-        Buffer.from(data).toString('base64'),
-        { waitFor: 'apply', timeout: timeoutMs ?? 5000 }
+        batchPayload,
+        { waitFor: 'apply', timeout: Math.max(...batch.map(b => b.timeoutMs)) }
       )
-      return { ok: result.ok }
-    } catch {
-      return { ok: false }
+
+      if (result.ok) {
+        for (const item of batch) {
+          item.resolve({ ok: true })
+        }
+      } else {
+        for (const item of batch) {
+          item.resolve({ ok: false })
+        }
+      }
+    } catch (err) {
+      const error = err as Error
+      for (const item of batch) {
+        item.reject(error)
+      }
     }
   }
 
@@ -171,6 +260,21 @@ export class RaftLogicConsensus implements ConsensusProvider {
   /** 测试辅助：获取加载错误 */
   _getLoadError(): Error | null {
     return this._loadError
+  }
+
+  /**
+   * 触发一次 snapshot（Raft log compact）
+   * 被定时器或外部手动调用
+   */
+  async _triggerSnapshotOnce(): Promise<void> {
+    if (!this._node) return
+    try {
+      this._entryCount = 0
+      await this._node.triggerSnapshot({ compact: true })
+      this.logger.info('[snapshot] Raft log compacted')
+    } catch (err) {
+      this.logger.warn('[snapshot] Failed', { err: (err as Error).message })
+    }
   }
 }
 

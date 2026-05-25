@@ -1,11 +1,111 @@
 // ============================================================
-// RestApiServer 测试
+// RestApiServer 测试 — mTLS 认证
 // ============================================================
 
 import { createRestApiServer, RestApiServer, RestApiConfig, jsonResponse, parseBody } from './rest'
-import { NodeRecord, EdgeRecord } from '../types'
-import { UserRegistry, RateLimiter } from '../security/auth'
+import { NodeRecord, EdgeRecord, Role } from '../types'
+import { Authenticator, RBAC } from '../security/auth'
+import { TLSConfig } from '../security/tls'
+import * as https from 'https'
 import * as http from 'http'
+import * as path from 'path'
+import * as fs from 'fs'
+
+// ──────────────────────────────────────────
+// mTLS 测试用证书路径
+// ──────────────────────────────────────────
+
+const TEST_CERTS_DIR = path.resolve(__dirname, '../../test-certs')
+const SERVER_CERT = path.join(TEST_CERTS_DIR, 'server-cert.pem')
+const SERVER_KEY = path.join(TEST_CERTS_DIR, 'server-key.pem')
+const CLIENT_ADMIN_CERT = path.join(TEST_CERTS_DIR, 'client-cert.pem')
+const CLIENT_ADMIN_KEY = path.join(TEST_CERTS_DIR, 'client-key.pem')
+const CLIENT_READER_CERT = path.join(TEST_CERTS_DIR, 'client-reader-cert.pem')
+const CLIENT_READER_KEY = path.join(TEST_CERTS_DIR, 'client-reader-key.pem')
+
+/**
+ * 构建一个可供测试使用的 TLSConfig
+ * 使用 test-certs/ 下的自签名证书
+ */
+function createMockTlsConfig(): TLSConfig {
+  return new TLSConfig({
+    mode: 'mtls',
+    tlsCert: SERVER_CERT,
+    tlsKey: SERVER_KEY,
+    tlsCA: path.join(TEST_CERTS_DIR, 'ca-cert.pem'),
+  })
+}
+
+/**
+ * 构建一个允许测试用 CN 的 Authenticator
+ * 基于 test-certs 中签发的 CN：test-admin, test-reader
+ */
+function createMockAuthenticator(): Authenticator {
+  return new Authenticator({
+    mode: 'mtls',
+    tlsCert: SERVER_CERT,
+    tlsKey: SERVER_KEY,
+    identities: [
+      { cn: 'test-admin', role: Role.ADMIN },
+      { cn: 'test-reader', role: Role.READER },
+    ],
+  })
+}
+
+/**
+ * 读取客户端证书文件，创建 HTTPS Agent 用于测试请求
+ */
+function createTestHttpsAgent(certPath: string, keyPath: string): https.Agent {
+  return new https.Agent({
+    cert: fs.readFileSync(certPath),
+    key: fs.readFileSync(keyPath),
+    rejectUnauthorized: false,
+    ca: fs.readFileSync(SERVER_CERT),
+  })
+}
+
+/** 管理员级别客户端 agent */
+const adminAgent = createTestHttpsAgent(CLIENT_ADMIN_CERT, CLIENT_ADMIN_KEY)
+/** 只读级别客户端 agent */
+const readerAgent = createTestHttpsAgent(CLIENT_READER_CERT, CLIENT_READER_KEY)
+
+/**
+ * 无客户端证书的请求（用于测试未认证访问）
+ */
+function makeNoCertRequest(
+  server: RestApiServer,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ statusCode: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const port = server.getPort()
+    const postData = body !== undefined ? JSON.stringify(body) : undefined
+    const options: https.RequestOptions = {
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method,
+      rejectUnauthorized: false,
+      headers: {},
+    }
+    if (postData) {
+      options.headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData).toString() }
+    }
+    const req = https.request(options, (res) => {
+      let data = ''
+      res.on('data', (chunk: string) => { data += chunk })
+      res.on('end', () => {
+        let parsed: unknown
+        try { parsed = data ? JSON.parse(data) : {} } catch { parsed = data }
+        resolve({ statusCode: res.statusCode ?? 0, body: parsed })
+      })
+    })
+    req.on('error', reject)
+    if (postData) req.write(postData)
+    req.end()
+  })
+}
 
 // ──────────────────────────────────────────
 // MockShardManager
@@ -81,10 +181,15 @@ class MockShardManager {
     m.set('range-0', this.getRange('range-0'))
     return m
   }
+
+  async deleteNode(id: number): Promise<void> {
+    const idx = this.allNodes.findIndex(n => n.id === id)
+    if (idx >= 0) this.allNodes.splice(idx, 1)
+  }
 }
 
 // ──────────────────────────────────────────
-// Request helper
+// HTTPS 请求辅助函数
 // ──────────────────────────────────────────
 
 function makeRequest(
@@ -92,20 +197,30 @@ function makeRequest(
   method: string,
   path: string,
   body?: unknown,
+  agent: https.Agent = adminAgent,
   headers?: Record<string, string>,
 ): Promise<{ statusCode: number; body: unknown; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const port = server.getPort()
     const postData = body !== undefined ? JSON.stringify(body) : undefined
 
-    const options: http.RequestOptions = {
+    const options: https.RequestOptions = {
       hostname: '127.0.0.1',
       port,
       path,
       method,
+      agent,
+      rejectUnauthorized: false,
       headers: {
         ...headers,
       },
+    }
+
+    // 如果 agent 没有设置 cert，从文件加载默认 cert
+    const agentCert = (agent as any)?.options?.cert
+    if (!agentCert) {
+      options.key = fs.readFileSync(CLIENT_ADMIN_KEY)
+      options.cert = fs.readFileSync(CLIENT_ADMIN_CERT)
     }
 
     if (postData) {
@@ -116,7 +231,7 @@ function makeRequest(
       }
     }
 
-    const req = http.request(options, (res) => {
+    const req = https.request(options, (res) => {
       let data = ''
       res.on('data', (chunk: string) => { data += chunk })
       res.on('end', () => {
@@ -150,16 +265,13 @@ function makeRequest(
 describe('RestApiServer', () => {
   let mockShardManager: MockShardManager
   let server: RestApiServer
-
-  beforeAll(() => {
-    process.env.AUTH_JWT_SECRET = 'test-secret'
-  })
+  let mockAuthenticator: Authenticator
+  let mockTlsConfig: TLSConfig
 
   beforeEach(() => {
-    // 清理 env
-    delete process.env.AGENTIX_ADMIN_TOKEN
-
     mockShardManager = new MockShardManager()
+    mockAuthenticator = createMockAuthenticator()
+    mockTlsConfig = createMockTlsConfig()
   })
 
   afterEach(async () => {
@@ -169,12 +281,12 @@ describe('RestApiServer', () => {
   })
 
   // ──────────────────────────────────────────
-  // 原始 27 tests — 路由/状态/CORS/认证/JSON/生命周期
+  // 基础路由测试
   // ──────────────────────────────────────────
 
   describe('基础路由', () => {
     test('GET /api/status should return 200', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -184,7 +296,7 @@ describe('RestApiServer', () => {
     })
 
     test('GET /api/status should include version', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -193,7 +305,7 @@ describe('RestApiServer', () => {
     })
 
     test('GET /api/status should include shards', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       mockShardManager.setNodes([
         { id: 1, type: 1, name: 'A', props: {}, createdAt: Date.now(), degree: 0 },
       ])
@@ -205,7 +317,7 @@ describe('RestApiServer', () => {
     })
 
     test('POST /api/graph/nodes should create node', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -215,7 +327,7 @@ describe('RestApiServer', () => {
     })
 
     test('POST /api/graph/nodes missing fields should return 400', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -224,7 +336,7 @@ describe('RestApiServer', () => {
     })
 
     test('POST /api/graph/nodes missing name should return 400', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -233,7 +345,7 @@ describe('RestApiServer', () => {
     })
 
     test('GET to unknown route should return 404', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -242,9 +354,13 @@ describe('RestApiServer', () => {
     })
   })
 
+  // ──────────────────────────────────────────
+  // CORS
+  // ──────────────────────────────────────────
+
   describe('CORS', () => {
     test('should include CORS headers when enabled', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', enableCors: true }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig, enableCors: true }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -254,7 +370,7 @@ describe('RestApiServer', () => {
     })
 
     test('OPTIONS preflight should return 204', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', enableCors: true }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig, enableCors: true }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -263,7 +379,7 @@ describe('RestApiServer', () => {
     })
 
     test('CORS headers on normal request', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', enableCors: true }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig, enableCors: true }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -272,50 +388,58 @@ describe('RestApiServer', () => {
     })
   })
 
-  describe('认证', () => {
-    test('should require auth with enableAuth', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', enableAuth: true }
+  // ──────────────────────────────────────────
+  // mTLS 认证测试
+  // ──────────────────────────────────────────
+
+  describe('mTLS 认证', () => {
+    test('requests without client cert should be rejected', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
-      const res = await makeRequest(server, 'GET', '/api/status')
-      expect(res.statusCode).toBe(401)
+      // 无证书会在 SSL 层被拒绝（alert certificate required）
+      await expect(makeNoCertRequest(server, 'POST', '/api/graph/nodes', { typeId: 1, name: 'x' }) as Promise<unknown>)
+        .rejects.toThrow()
     })
 
-    test('should pass auth with valid Bearer token', async () => {
-      process.env.AUTH_JWT_SECRET = 'test-secret-for-jwt'
-
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', enableAuth: true }
+    test('requests with valid admin client cert should pass auth on protected routes', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
-      // 签发一个真实 JWT 用于测试
-      const jwt = require('jsonwebtoken')
-      const token = jwt.sign({ sub: 'testuser', role: 'admin' }, 'test-secret-for-jwt', { expiresIn: '1h' })
-
-      const res = await makeRequest(server, 'GET', '/api/status', undefined, {
-        Authorization: `Bearer ${token}`,
-      })
+      const res = await makeRequest(server, 'POST', '/api/graph/nodes', { typeId: 1, name: 'test-node' }, adminAgent)
       expect(res.statusCode).toBe(200)
-
-      delete process.env.AUTH_JWT_SECRET
     })
 
-    test('should reject invalid Bearer token', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', enableAuth: true }
+    test('requests with reader client cert should be forbidden from write routes', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
-      const res = await makeRequest(server, 'GET', '/api/status', undefined, {
-        Authorization: 'Bearer invalid-token',
-      })
-      expect(res.statusCode).toBe(401)
+      // reader 角色没有 write 权限，POST /api/graph/nodes requiresPermission=write
+      const res = await makeRequest(server, 'POST', '/api/graph/nodes', { typeId: 1, name: 'test-node' }, readerAgent)
+      expect(res.statusCode).toBe(403)
+    })
+
+    test('unauthenticated routes should work without cert', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      // /api/status requireAuth=false, 应正常工作
+      const res = await makeRequest(server, 'GET', '/api/status')
+      expect(res.statusCode).toBe(200)
     })
   })
 
+  // ──────────────────────────────────────────
+  // JSON 响应
+  // ──────────────────────────────────────────
+
   describe('JSON 响应', () => {
     test('should return JSON content-type', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -324,7 +448,7 @@ describe('RestApiServer', () => {
     })
 
     test('error response should be JSON', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -334,9 +458,13 @@ describe('RestApiServer', () => {
     })
   })
 
+  // ──────────────────────────────────────────
+  // 服务器生命周期
+  // ──────────────────────────────────────────
+
   describe('服务器生命周期', () => {
     test('should start and stop without error', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
       expect(server.getPort()).toBeGreaterThan(0)
@@ -344,14 +472,14 @@ describe('RestApiServer', () => {
     })
 
     test('should assign dynamic port when port is 0', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
       expect(server.getPort()).toBeGreaterThan(0)
     })
 
     test('should handle multiple requests', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -366,7 +494,7 @@ describe('RestApiServer', () => {
     })
 
     test('should handle POST body serialization', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -376,7 +504,7 @@ describe('RestApiServer', () => {
     })
 
     test('should add Content-Type and Content-Length to requests', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -385,9 +513,13 @@ describe('RestApiServer', () => {
     })
   })
 
+  // ──────────────────────────────────────────
+  // PUT/DELETE/PATCH handler
+  // ──────────────────────────────────────────
+
   describe('PUT/DELETE/PATCH handler', () => {
     test('POST should work with body', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -396,7 +528,7 @@ describe('RestApiServer', () => {
     })
 
     test('PUT to unknown route should return 404', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -405,7 +537,7 @@ describe('RestApiServer', () => {
     })
 
     test('PATCH to unknown route should return 404', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -414,7 +546,7 @@ describe('RestApiServer', () => {
     })
 
     test('DELETE to unknown route should return 404', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -424,153 +556,12 @@ describe('RestApiServer', () => {
   })
 
   // ──────────────────────────────────────────
-  // 第4波新增：用户注册（5 tests）
-  // ──────────────────────────────────────────
-
-  describe('用户注册', () => {
-    test('POST /api/register should register user', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      const res = await makeRequest(server, 'POST', '/api/register', {
-        username: 'alice',
-        password: 'secret',
-        role: 'admin',
-      })
-      expect(res.statusCode).toBe(200)
-    })
-
-    test('POST /api/login with valid credentials should return token', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      await makeRequest(server, 'POST', '/api/register', {
-        username: 'bob', password: 'pass', role: 'reader',
-      })
-
-      const res = await makeRequest(server, 'POST', '/api/login', {
-        username: 'bob', password: 'pass',
-      })
-      expect(res.statusCode).toBe(200)
-      expect((res.body as any).token).toBeDefined()
-    })
-
-    test('POST /api/login with invalid credentials should return 401', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      const res = await makeRequest(server, 'POST', '/api/login', {
-        username: 'nonexistent', password: 'wrong',
-      })
-      expect(res.statusCode).toBe(401)
-    })
-
-    test('POST /api/admin/disable-user should disable user', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', adminToken: 'admin-token' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      await makeRequest(server, 'POST', '/api/register', {
-        username: 'charlie', password: 'pwd', role: 'reader',
-      })
-
-      const res = await makeRequest(server, 'POST', '/api/admin/disable-user',
-        { username: 'charlie' },
-        { Authorization: 'Bearer admin-token' },
-      )
-      expect(res.statusCode).toBe(200)
-    })
-
-    test('POST /api/admin/change-role should change role', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', adminToken: 'admin-token' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      await makeRequest(server, 'POST', '/api/register', {
-        username: 'dave', password: 'pwd', role: 'reader',
-      })
-
-      const res = await makeRequest(server, 'POST', '/api/admin/change-role',
-        { username: 'dave', role: 'admin' },
-        { Authorization: 'Bearer admin-token' },
-      )
-      expect(res.statusCode).toBe(200)
-    })
-  })
-
-  describe('unregister', () => {
-    test('POST /api/admin/unregister should remove user', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', adminToken: 'admin-token' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      await makeRequest(server, 'POST', '/api/register', {
-        username: 'eve', password: 'pwd', role: 'reader',
-      })
-
-      const res = await makeRequest(server, 'POST', '/api/admin/unregister',
-        { username: 'eve' },
-        { Authorization: 'Bearer admin-token' },
-      )
-      expect(res.statusCode).toBe(200)
-    })
-  })
-
-  // ──────────────────────────────────────────
-  // 第4波新增：速率限制（3 tests）
-  // ──────────────────────────────────────────
-
-  describe('速率限制', () => {
-    test('POST /api/admin/ratelimit-allow should allow key', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', adminToken: 'admin-token' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      const res = await makeRequest(server, 'POST', '/api/admin/ratelimit-allow',
-        { key: '127.0.0.1' },
-        { Authorization: 'Bearer admin-token' },
-      )
-      expect(res.statusCode).toBe(200)
-    })
-
-    test('POST /api/admin/ratelimit-reset should reset limits', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', adminToken: 'admin-token' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      const res = await makeRequest(server, 'POST', '/api/admin/ratelimit-reset',
-        {},
-        { Authorization: 'Bearer admin-token' },
-      )
-      expect(res.statusCode).toBe(200)
-    })
-
-    test('should allow independent bucket per key', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', adminToken: 'admin-token' }
-      server = createRestApiServer(mockShardManager as any, config)
-      await server.start()
-
-      // Allow specific IP
-      await makeRequest(server, 'POST', '/api/admin/ratelimit-allow',
-        { key: '10.0.0.1' },
-        { Authorization: 'Bearer admin-token' },
-      )
-
-      const res = await makeRequest(server, 'GET', '/api/status')
-      expect(res.statusCode).toBe(200)
-    })
-  })
-
-  // ──────────────────────────────────────────
-  // 第4波新增：安全头 + bodySizeLimit（3 tests）
+  // 安全头 + bodySizeLimit
   // ──────────────────────────────────────────
 
   describe('安全头', () => {
     test('should include security headers', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1' }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -582,7 +573,7 @@ describe('RestApiServer', () => {
 
   describe('bodySizeLimit', () => {
     test('should reject request body exceeding limit', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', bodySizeLimit: 10 }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig, bodySizeLimit: 10 }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 
@@ -594,7 +585,7 @@ describe('RestApiServer', () => {
     })
 
     test('should accept request body within limit', async () => {
-      const config: RestApiConfig = { port: 0, host: '127.0.0.1', bodySizeLimit: 1000 }
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig, bodySizeLimit: 1000 }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()
 

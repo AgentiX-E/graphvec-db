@@ -125,7 +125,7 @@ export class GraphImporter {
               opts.props = JSON.parse(cols[3])
             } catch { /* ignore bad props */ }
           }
-          this.engine.upsertNode(nodeType, name, opts)
+          await await this.engine.upsertNode(nodeType, name, opts)
           nodesImported++
         } else if (type === 'edge' || type === 'e') {
           const src = parseInt(cols[1], 10)
@@ -137,7 +137,7 @@ export class GraphImporter {
               opts.props = JSON.parse(cols[4])
             } catch { /* ignore */ }
           }
-          this.engine.upsertEdge(src, dst, edgeType, opts)
+          await await this.engine.upsertEdge(src, dst, edgeType, opts)
           edgesImported++
         }
       } catch (err) {
@@ -176,7 +176,7 @@ export class GraphImporter {
         const name = node.name ?? node.id?.toString() ?? `node-${nodesImported}`
         const opts: UpsertNodeOptions = {}
         if (node.props) opts.props = node.props
-        this.engine.upsertNode(nodeType, name, opts)
+        await await this.engine.upsertNode(nodeType, name, opts)
         nodesImported++
       } catch (err) {
         errors.push(`Node import: ${(err as Error).message}`)
@@ -191,7 +191,7 @@ export class GraphImporter {
         const edgeType = edge.type ?? edge.label ?? options.edgeType ?? 1
         const opts: UpsertEdgeOptions = {}
         if (edge.props) opts.props = edge.props
-        this.engine.upsertEdge(src, dst, edgeType, opts)
+        await await this.engine.upsertEdge(src, dst, edgeType, opts)
         edgesImported++
       } catch (err) {
         errors.push(`Edge import: ${(err as Error).message}`)
@@ -249,13 +249,13 @@ export class GraphImporter {
               }
             }
           }
-          this.engine.upsertNode(nodeType, name, opts)
+          await await this.engine.upsertNode(nodeType, name, opts)
           nodesImported++
         } else if (el.type === 'edge') {
           const src = typeof el.outV === 'number' ? el.outV : parseInt(String(el.outV), 10)
           const dst = typeof el.inV === 'number' ? el.inV : parseInt(String(el.inV), 10)
           const edgeType = typeof el.label === 'number' ? el.label : 1
-          this.engine.upsertEdge(src, dst, edgeType)
+          await await this.engine.upsertEdge(src, dst, edgeType)
           edgesImported++
         }
       } catch (err) {
@@ -291,7 +291,7 @@ export class GraphImporter {
       try {
         // Ensure subject node exists
         if (!subjectNodes.has(triple.subject)) {
-          const nodeId = this.engine.upsertNode(1, triple.subject, {
+          const nodeId = await await this.engine.upsertNode(1, triple.subject, {
             props: { rdf_uri: triple.subject },
           })
           subjectNodes.set(triple.subject, nodeId)
@@ -300,7 +300,7 @@ export class GraphImporter {
 
         // Ensure object node exists (if not a literal)
         if (!triple.object.startsWith('"') && !objectNodes.has(triple.object)) {
-          const nodeId = this.engine.upsertNode(1, triple.object, {
+          const nodeId = await await this.engine.upsertNode(1, triple.object, {
             props: { rdf_uri: triple.object },
           })
           objectNodes.set(triple.object, nodeId)
@@ -312,7 +312,7 @@ export class GraphImporter {
           const srcId = subjectNodes.get(triple.subject)!
           const dstId = objectNodes.get(triple.object)!
           const edgeType = this.predicateToEdgeType(triple.predicate)
-          this.engine.upsertEdge(srcId, dstId, edgeType)
+          await await this.engine.upsertEdge(srcId, dstId, edgeType)
           edgesImported++
         }
       } catch (err) {
