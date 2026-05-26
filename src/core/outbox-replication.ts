@@ -87,6 +87,8 @@ export interface OutboxReplicationConfig {
   batchSize?: number
   entryTTLDays?: number
   housekeepingIntervalMs?: number
+  /** 启用 per-peer 分库（OutboxV2）。WorkerPool 多进程架构时零锁竞争。 */
+  usePerPeerDb?: boolean
   eventBus: {
     send: (nodeId: string, msg: any) => Promise<void>
     batchSend?: (nodeId: string, msgs: any[]) => Promise<void>
@@ -226,7 +228,7 @@ class OutboxIndex {
   }
 }
 
-export class Outbox {
+export class Outbox implements IOutbox {
   private db: RootDatabase
   private seqDb: RootDatabase
   private indexDb: RootDatabase
@@ -392,13 +394,317 @@ export class Outbox {
 }
 
 // ---------------------------------------------------------------------------
+// OutboxV2 — Per-Peer LMDB 分库
+//
+// 每个 peer 拥有独立的 LMDB 环境，WorkerPool 多进程时零锁竞争。
+//
+// 存储结构：
+//   data/outbox-v2/
+//     peer-1.lmdb/       # peer-1 的出站消息 + 序列 + 索引
+//     peer-2.lmdb/       # peer-2 的出站消息 + 序列 + 索引
+//     ...
+//     _seq-counter.lmdb/ # 全局唯一序列计数器
+//
+// 每个 peer LMDB 内部使用 prefix-key：
+//   msg:${seq}      → OutboxEntry
+//   seq             → lastSeq（全局唯一序列）
+//   pending         → 当前 pending 列表（"," 分隔的 seq）
+//   delivered       → 已发送列表（"," 分隔的 seq）
+//   acked:${seq}    → 1（ACK 状态）
+// ---------------------------------------------------------------------------
+
+export class OutboxV2 implements IOutbox {
+  private basePath: string
+  /** peerId → LMDB 环境 */
+  private peerDbs = new Map<string, RootDatabase>()
+  /** 全局序列计数器 DB */
+  private seqCounterDb: RootDatabase
+  /** 已打开的 LMDB 路径集合，共 close */
+  private allDbs: RootDatabase[] = []
+
+  constructor(dbPath: string) {
+    this.basePath = dbPath
+    fs.mkdirSync(dbPath, { recursive: true })
+    const seqCounterPath = path.join(dbPath, '_seq-counter.lmdb')
+    this.seqCounterDb = open({ path: seqCounterPath, compression: true })
+    this.allDbs.push(this.seqCounterDb)
+  }
+
+  close(): void {
+    for (const peerDb of this.peerDbs.values()) {
+      try { peerDb.close() } catch { /* best-effort */ }
+    }
+    this.peerDbs.clear()
+    for (const db of this.allDbs) {
+      try { db.close() } catch { /* best-effort */ }
+    }
+    this.allDbs = []
+  }
+
+  /** 获取或创建 peer 对应的 LMDB 环境 */
+  private _getOrOpenPeerDb(peerId: string): RootDatabase {
+    let db = this.peerDbs.get(peerId)
+    if (db) return db
+    const peerDbPath = this.getPeerDbPath(peerId)
+    db = open({
+      path: peerDbPath,
+      compression: true,
+      mapSize: 64 * 1024 * 1024, // 64MB per peer
+    })
+    this.peerDbs.set(peerId, db)
+    this.allDbs.push(db)
+    return db
+  }
+
+  /** 返回 peer LMDB 目录路径 */
+  getPeerDbPath(peerId: string): string {
+    return path.join(this.basePath, `${peerId}.lmdb`)
+  }
+
+  /**
+   * 通过 seq 找到 peer LMDB → 用于 markDelivered/markAcked 等操作。
+   * 遍历所有 peer LMDB 查找（peer 数量有限，O(P) 可接受）。
+   * 如果频繁调用可加 peer→seq 缓存，但当前场景不需要。
+   */
+  private _findPeerDbBySeq(seq: number): RootDatabase | null {
+    for (const [peerId, db] of this.peerDbs) {
+      try {
+        const entry = db.get(`msg:${seq}`) as OutboxEntry | undefined
+        if (entry) return db
+      } catch {
+        // try next
+      }
+    }
+    // 未缓存 peer DB，遍历文件系统
+    if (!fs.existsSync(this.basePath)) return null
+    const entries: string[] = []
+    try {
+      const dirs = fs.readdirSync(this.basePath)
+      for (const d of dirs) {
+        if (!d.endsWith('.lmdb') || d === '_seq-counter.lmdb') continue
+        const peerId = d.slice(0, -5) // remove '.lmdb'
+        const db = this._getOrOpenPeerDb(peerId)
+        try {
+          const entry = db.get(`msg:${seq}`) as OutboxEntry | undefined
+          if (entry) return db
+        } catch {
+          // try next
+        }
+      }
+    } catch { /* ignore dir read errors */ }
+    return null
+  }
+
+  /** 生成全局唯一递增 seq */
+  private _nextSeq(): number {
+    // 使用 seqCounterDb 确保原子递增
+    let seq: number
+    try {
+      // LMDB 事务保证 append 的原子性
+      this.seqCounterDb.transactionSync(() => {
+        const current = (this.seqCounterDb.get('seq') as number) ?? 0
+        seq = current + 1
+        this.seqCounterDb.putSync('seq', seq)
+      })
+    } catch (err) {
+      // 如果事务失败（罕见），回退到 Date.now() 方案
+      seq = Date.now()
+    }
+    return seq!
+  }
+
+  add(entry: Omit<OutboxEntry, 'seq'>): number {
+    const seq = this._nextSeq()
+    const full: OutboxEntry = { ...entry, seq }
+    const peerDb = this._getOrOpenPeerDb(entry.targetNodeId)
+    peerDb.putSync(`msg:${seq}`, full)
+
+    // 更新 pending 列表
+    const pendingStr = (peerDb.get('pending') as string) ?? ''
+    const pendingSeqs = pendingStr ? pendingStr.split(',').map(Number) : []
+    pendingSeqs.push(seq)
+    peerDb.putSync('pending', pendingSeqs.join(','))
+
+    return seq
+  }
+
+  markDeliveredBatch(seqs: number[]): void {
+    const now = Date.now()
+    // 按 peer 分组 seqs 以批量操作
+    const seqByPeer = new Map<string, number[]>()
+    for (const seq of seqs) {
+      const db = this._findPeerDbBySeq(seq)
+      if (!db) continue
+      // 找到该 db 所属 peer
+      let peerId: string | null = null
+      for (const [pid, pdb] of this.peerDbs) {
+        if (pdb === db) { peerId = pid; break }
+      }
+      if (!peerId) continue
+      let list = seqByPeer.get(peerId)
+      if (!list) { list = []; seqByPeer.set(peerId, list) }
+      list.push(seq)
+    }
+
+    for (const [peerId, peerSeqs] of seqByPeer) {
+      const peerDb = this._getOrOpenPeerDb(peerId)
+      for (const seq of peerSeqs) {
+        const entry = peerDb.get(`msg:${seq}`) as OutboxEntry | undefined
+        if (entry && !entry.delivered) {
+          entry.delivered = true
+          entry.deliveredAt = now
+          peerDb.putSync(`msg:${seq}`, entry)
+        }
+      }
+      // 从 pending 列表移除这些 seq
+      const pendingStr = (peerDb.get('pending') as string) ?? ''
+      const pendingSeqs = pendingStr ? pendingStr.split(',').map(Number) : []
+      const deliveredSet = new Set(peerSeqs)
+      const remaining = pendingSeqs.filter(s => !deliveredSet.has(s))
+      peerDb.putSync('pending', remaining.join(','))
+
+      // 加入 delivered 列表
+      const deliveredStr = (peerDb.get('delivered') as string) ?? ''
+      const deliveredSeqs = deliveredStr ? deliveredStr.split(',').map(Number) : []
+      deliveredSeqs.push(...peerSeqs)
+      peerDb.putSync('delivered', deliveredSeqs.join(','))
+    }
+  }
+
+  fetchPendingByPeer(peerId: string): OutboxEntry[] {
+    const peerDb = this._getOrOpenPeerDb(peerId)
+    const pendingStr = (peerDb.get('pending') as string) ?? ''
+    if (!pendingStr) return []
+    const seqs = pendingStr.split(',').map(Number)
+    return seqs
+      .map(seq => peerDb.get(`msg:${seq}`) as OutboxEntry | undefined)
+      .filter((e): e is OutboxEntry => e !== undefined && !e.delivered)
+  }
+
+  fetchOldestPending(peerId: string): OutboxEntry | null {
+    const entries = this.fetchPendingByPeer(peerId)
+    return entries.length > 0 ? entries[0] : null
+  }
+
+  getPendingCountForPeer(peerId: string): number {
+    const peerDb = this._getOrOpenPeerDb(peerId)
+    const pendingStr = (peerDb.get('pending') as string) ?? ''
+    return pendingStr ? pendingStr.split(',').length : 0
+  }
+
+  markAcked(seq: number): void {
+    const db = this._findPeerDbBySeq(seq)
+    if (!db) return
+    db.putSync(`acked:${seq}`, 1)
+
+    // 同时从 delivered 移除
+    let peerId: string | null = null
+    for (const [pid, pdb] of this.peerDbs) {
+      if (pdb === db) { peerId = pid; break }
+    }
+    if (!peerId) return
+
+    const deliveredStr = (db.get('delivered') as string) ?? ''
+    const deliveredSeqs = deliveredStr ? deliveredStr.split(',').map(Number) : []
+    const remaining = deliveredSeqs.filter(s => s !== seq)
+    db.putSync('delivered', remaining.join(','))
+  }
+
+  isAcked(seq: number): boolean {
+    const db = this._findPeerDbBySeq(seq)
+    if (!db) return false
+    try {
+      const val = db.get(`acked:${seq}`)
+      return val === 1
+    } catch {
+      return false
+    }
+  }
+
+  markPending(seq: number): void {
+    const db = this._findPeerDbBySeq(seq)
+    if (!db) return
+    const entry = db.get(`msg:${seq}`) as OutboxEntry | undefined
+    if (!entry) return
+    entry.delivered = false
+    entry.deliveredAt = 0
+    db.putSync(`msg:${seq}`, entry)
+
+    // 重新加入 pending
+    const pendingStr = (db.get('pending') as string) ?? ''
+    const pendingSeqs = pendingStr ? pendingStr.split(',').map(Number) : []
+    if (!pendingSeqs.includes(seq)) {
+      pendingSeqs.push(seq)
+      db.putSync('pending', pendingSeqs.join(','))
+    }
+
+    // 从 delivered 移除
+    const deliveredStr = (db.get('delivered') as string) ?? ''
+    const deliveredSeqs = deliveredStr ? deliveredStr.split(',').map(Number) : []
+    const remaining = deliveredSeqs.filter(s => s !== seq)
+    db.putSync('delivered', remaining.join(','))
+  }
+
+  cleanDeliveredBefore(cutoffMs: number): number {
+    let count = 0
+    for (const [peerId, peerDb] of this.peerDbs) {
+      const deliveredStr = (peerDb.get('delivered') as string) ?? ''
+      if (!deliveredStr) continue
+      const deliveredSeqs = deliveredStr.split(',').map(Number)
+      const remaining: number[] = []
+      const now = Date.now()
+      for (const seq of deliveredSeqs) {
+        const entry = peerDb.get(`msg:${seq}`) as OutboxEntry | undefined
+        if (entry && entry.delivered && entry.deliveredAt < cutoffMs) {
+          // 清理 msg + acked
+          peerDb.removeSync(`msg:${seq}`)
+          try { peerDb.removeSync(`acked:${seq}`) } catch { /* */ }
+          count++
+        } else {
+          remaining.push(seq)
+        }
+      }
+      peerDb.putSync('delivered', remaining.join(','))
+    }
+    return count
+  }
+
+  getPendingCount(): number {
+    let count = 0
+    for (const [, peerDb] of this.peerDbs) {
+      const pendingStr = (peerDb.get('pending') as string) ?? ''
+      if (pendingStr) count += pendingStr.split(',').length
+    }
+    return count
+  }
+}
+
+// ---------------------------------------------------------------------------
+// IOutbox — Outbox / OutboxV2 的公共接口
+// ---------------------------------------------------------------------------
+
+export interface IOutbox {
+  add(entry: Omit<OutboxEntry, 'seq'>): number
+  markDeliveredBatch(seqs: number[]): void
+  fetchPendingByPeer(peerId: string): OutboxEntry[]
+  fetchOldestPending(peerId: string): OutboxEntry | null
+  getPendingCountForPeer(peerId: string): number
+  markAcked(seq: number): void
+  isAcked(seq: number): boolean
+  markPending(seq: number): void
+  cleanDeliveredBefore(cutoffMs: number): number
+  getPendingCount(): number
+  close(): void
+}
+
+// ---------------------------------------------------------------------------
 // PerPeerWorker — 每个 peer 独立的 Worker
 // ---------------------------------------------------------------------------
 
 export class PerPeerWorker {
   private peerId: string
   private config: PerPeerConfig
-  private outbox: Outbox
+  private outbox: IOutbox
   private running = false
   private workerTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -423,7 +729,7 @@ export class PerPeerWorker {
 
   private log: Logger
 
-  constructor(peerId: string, config: PerPeerConfig, outbox: Outbox) {
+  constructor(peerId: string, config: PerPeerConfig, outbox: IOutbox) {
     this.peerId = peerId
     this.config = config
     this.outbox = outbox
@@ -696,7 +1002,7 @@ export class PerPeerWorker {
 
 export class OutboxReplicationManager {
   private config: OutboxReplicationConfig
-  private outbox: Outbox
+  private outbox: IOutbox
   /** peerId → PerPeerWorker */
   private workerMap = new Map<string, PerPeerWorker>()
   private housekeepingTimer: ReturnType<typeof setInterval> | null = null
@@ -710,7 +1016,14 @@ export class OutboxReplicationManager {
   constructor(config: OutboxReplicationConfig) {
     this.config = config
     const dbPath = config.dbPath ?? path.join(process.cwd(), 'data', 'outbox')
-    this.outbox = new Outbox(dbPath)
+    // 根据 usePerPeerDb 选择 OutboxV2 或 Outbox
+    if (config.usePerPeerDb) {
+      // OutboxV2 使用目录（含 _seq-counter.lmdb + 各 peer LMDB）
+      const v2Dir = dbPath.endsWith('.lmdb') ? dbPath.replace(/\.lmdb$/, '') : dbPath
+      this.outbox = new OutboxV2(v2Dir)
+    } else {
+      this.outbox = new Outbox(dbPath)
+    }
     this.log = config.logger ?? new Logger('outbox-mgr')
     this.curveDir = config.curveDir || null
 

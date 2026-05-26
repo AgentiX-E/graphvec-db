@@ -33,6 +33,7 @@ type Router = any
 type Dealer = any
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { EventBusWorkerPool, type PeerConfig } from './event-bus-worker-pool'
 
 // ──────────────────────────────────────────
 // 事件类型
@@ -238,6 +239,13 @@ export class EventBus {
   /** ACK flush 超时（ms） */
   private readonly ACK_FLUSH_TIMEOUT = 5
 
+  /**
+   * 可选：WorkerPool 多进程架构。
+   * 当配置了 workerPoolConcurrency > 1 时，EventBus 不再创建和管理 DEALER sockets，
+   * 改为通过 WorkerPool 发送。ROUTER socket 仍保留在主进程。
+   */
+  workerPool?: EventBusWorkerPool
+
   constructor(config: EventBusConfig) {
     this.config = {
       ...config,
@@ -421,6 +429,11 @@ export class EventBus {
       clearInterval(this._nasMonitorTimer)
       this._nasMonitorTimer = null
     }
+    // 停止 WorkerPool（如果已激活）
+    if (this.workerPool) {
+      await this.workerPool.stop().catch(() => {})
+      this.workerPool = undefined
+    }
     if (this.routerSocket) {
       this.routerSocket.close()
       this.routerSocket = null
@@ -439,8 +452,18 @@ export class EventBus {
 
   /**
    * 发送消息给指定 peer
+   *
+   * 如果 WorkerPool 已激活（workerPoolConcurrency > 0），
+   * 则路由到对应的子进程发送；否则通过主进程的 DEALER socket 直接发送。
    */
   async send(nodeId: string, msg: TransportMessage): Promise<void> {
+    // WorkerPool 模式：路由到子进程
+    if (this.workerPool) {
+      await this.workerPool.send(nodeId, [msg])
+      return
+    }
+
+    // 传统模式：主进程 DEALER socket 直接发送
     const dealer = this.dealerSockets.get(nodeId)
     if (!dealer) {
       this.logger.warn(`no DEALER for peer ${nodeId}, trying broadcast`)
@@ -457,8 +480,22 @@ export class EventBus {
 
   /**
    * 广播消息给所有 peer
+   *
+   * 如果 WorkerPool 已激活，通过所有子进程逐条发送；否则遍历主进程 DEALER 发送。
    */
   broadcast(msg: TransportMessage): void {
+    // WorkerPool 模式：逐个 peer 路由到子进程
+    if (this.workerPool) {
+      const allNodeIds = this.getPeerNodeIds()
+      for (const nodeId of allNodeIds) {
+        this.workerPool.send(nodeId, [msg]).catch((err: Error) => {
+          this.logger.warn(`WorkerPool broadcast to ${nodeId} error: ${err.message}`)
+        })
+      }
+      return
+    }
+
+    // 传统模式：主进程 DEALER 直接发送
     for (const [nodeId, dealer] of this.dealerSockets) {
       const payload = Buffer.from(JSON.stringify(msg))
       dealer.send([payload]).catch((err: Error) => {
@@ -469,10 +506,21 @@ export class EventBus {
 
   /**
    * 批量发送消息给指定 peer，通过 ZMQ multi-part 帧序列提升吞吐量。
+   *
+   * 如果 WorkerPool 已激活，路由到子进程（子进程内部处理 ZMQ multi-part）。
+   * 否则通过主进程 DEALER socket 发送。
+   *
    * 前 N-1 帧带 ZMQ_SENDMORE 标记，最后一帧不带。
    * 如果 zmq 版本不支持 ZMQ_SENDMORE 或 dealer 不存在，退化为并发逐条发送。
    */
   async batchSend(nodeId: string, msgs: TransportMessage[]): Promise<void> {
+    // WorkerPool 模式：路由到子进程（子进程处理 multi-part 批发送）
+    if (this.workerPool) {
+      await this.workerPool.send(nodeId, msgs)
+      return
+    }
+
+    // 传统模式：主进程 DEALER socket 直接发送
     const dealer = this.dealerSockets.get(nodeId)
     if (!dealer) {
       // 退化为逐条广播
