@@ -76,4 +76,96 @@ describe('SafeReader', () => {
       expect(mockProvider.readIndex).toHaveBeenCalled()
     })
   })
+
+  // ──────────────────────────────────────────────────
+  // consistentRead — barrier 语义测试
+  // ──────────────────────────────────────────────────
+  describe('consistentRead', () => {
+    test('should call barrier() when provider exposes it', async () => {
+      const barrierFn = jest.fn().mockResolvedValue(undefined)
+      const providerWithBarrier = {
+        readIndex: jest.fn(),
+        barrier: barrierFn,
+      } as unknown as ConsensusProvider
+
+      const reader = new SafeReader(providerWithBarrier)
+      const result = await reader.consistentRead(() => 'barrier-done')
+
+      expect(barrierFn).toHaveBeenCalledTimes(1)
+      expect(result.data).toBe('barrier-done')
+    })
+
+    test('should fallback to readIndex when provider lacks barrier()', async () => {
+      const readIndexFn = jest.fn().mockResolvedValue(undefined)
+      const providerNoBarrier = {
+        readIndex: readIndexFn,
+      } as unknown as ConsensusProvider
+
+      const reader = new SafeReader(providerNoBarrier)
+      const result = await reader.consistentRead(() => 'fallback-to-readindex')
+
+      expect(readIndexFn).toHaveBeenCalledTimes(1)
+      expect(result.data).toBe('fallback-to-readindex')
+    })
+
+    test('should pass timeoutMs to barrier()', async () => {
+      const barrierFn = jest.fn().mockResolvedValue(undefined)
+      const providerWithBarrier = {
+        readIndex: jest.fn(),
+        barrier: barrierFn,
+      } as unknown as ConsensusProvider
+
+      const reader = new SafeReader(providerWithBarrier, { readIndexTimeoutMs: 42 })
+      await reader.consistentRead(() => 'timed-barrier')
+
+      expect(barrierFn).toHaveBeenCalledWith(42)
+    })
+
+    test('should return refreshedAt with consistentRead', async () => {
+      const providerWithBarrier = {
+        readIndex: jest.fn(),
+        barrier: jest.fn().mockResolvedValue(undefined),
+      } as unknown as ConsensusProvider
+
+      const reader = new SafeReader(providerWithBarrier)
+      const before = Date.now()
+      const result = await reader.consistentRead(() => 'timed')
+      expect(result.refreshedAt).toBeGreaterThanOrEqual(before)
+    })
+
+    test('should not call barrier or readIndex when disabled', async () => {
+      const barrierFn = jest.fn()
+      const readIndexFn = jest.fn()
+      const providerWithBarrier = {
+        readIndex: readIndexFn,
+        barrier: barrierFn,
+      } as unknown as ConsensusProvider
+
+      const reader = new SafeReader(providerWithBarrier, { enabled: false })
+      await reader.consistentRead(() => 'disabled')
+
+      expect(barrierFn).not.toHaveBeenCalled()
+      expect(readIndexFn).not.toHaveBeenCalled()
+    })
+
+    test('should execute directly when no provider', async () => {
+      const reader = new SafeReader()
+      const result = await reader.consistentRead(() => 'no-provider')
+      expect(result.data).toBe('no-provider')
+    })
+
+    test('should propagate barrier() errors when no fallback tolerance', async () => {
+      const barrierFn = jest.fn().mockRejectedValue(new Error('barrier failed'))
+      const readIndexFn = jest.fn().mockResolvedValue(undefined)
+      const provider = {
+        readIndex: readIndexFn,
+        barrier: barrierFn,
+      } as unknown as ConsensusProvider
+
+      const reader = new SafeReader(provider)
+      // barrier 抛错 — SafeReader 的 consistentRead 不吞错误
+      // （错误容忍由 RAFT Consensus 层的 barrier 实现保证）
+      await expect(reader.consistentRead(() => 'should-throw')).rejects.toThrow('barrier failed')
+    })
+  })
 })

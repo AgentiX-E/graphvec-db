@@ -1,7 +1,7 @@
 /**
- * StreamWal 压力测试
+ * SegmentStreamWal 压力测试
  */
-import { StreamWal, type StreamMessage } from './stream-wal'
+import { SegmentStreamWal, type StreamMessage } from './segment-stream-wal'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -15,9 +15,9 @@ afterAll(() => {
   fs.rmSync(TEST_DIR, { recursive: true, force: true })
 })
 
-describe('StreamWal 压力测试', () => {
+describe('SegmentStreamWal 压力测试', () => {
   test('并发 append 1000 条消息', () => {
-    const wal = new StreamWal(path.join(TEST_DIR, 'concurrent-1000.wal'))
+    const wal = new SegmentStreamWal(path.join(TEST_DIR, 'concurrent-1000'))
     wal.open()
     const batch: StreamMessage[] = []
     for (let i = 0; i < 1000; i++) {
@@ -42,7 +42,7 @@ describe('StreamWal 压力测试', () => {
   })
 
   test('ACK + markConsumed 后 replay 不包含已消费消息', () => {
-    const wal = new StreamWal(path.join(TEST_DIR, 'consume-test.wal'))
+    const wal = new SegmentStreamWal(path.join(TEST_DIR, 'consume-test'))
     wal.open()
     for (let i = 0; i < 500; i++) {
       wal.append({
@@ -85,10 +85,10 @@ describe('StreamWal 压力测试', () => {
   })
 
   test('close + reopen 数据完整性', () => {
-    const fp = path.join(TEST_DIR, 'reopen-test.wal')
+    const dir = path.join(TEST_DIR, 'reopen-test')
 
     // 写入
-    const wal1 = new StreamWal(fp)
+    const wal1 = new SegmentStreamWal(dir)
     wal1.open()
     for (let i = 0; i < 2000; i++) {
       wal1.append({
@@ -103,7 +103,7 @@ describe('StreamWal 压力测试', () => {
     wal1.close()
 
     // 重新打开
-    const wal2 = new StreamWal(fp)
+    const wal2 = new SegmentStreamWal(dir)
     wal2.open()
     const entries = wal2.replay(0)
     expect(entries.length).toBe(2000)

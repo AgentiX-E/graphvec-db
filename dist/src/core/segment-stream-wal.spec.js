@@ -1,0 +1,311 @@
+"use strict";
+/**
+ * SegmentStreamWal 单元测试
+ *
+ * 覆盖：
+ * - 基本 append/read/replay API
+ * - Segment 滚动
+ * - prune 只删不重写
+ * - 旧文件迁移
+ * - 进程崩溃后恢复（模拟）
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+const segment_stream_wal_1 = require("./segment-stream-wal");
+const path = __importStar(require("node:path"));
+const fs = __importStar(require("node:fs"));
+const TEST_DIR = path.join('/tmp', `segment-stream-wal-test-${Date.now()}`);
+function makeMsg(seq, overrides) {
+    return {
+        msgId: `node-a-${seq}`,
+        seq,
+        nodeId: 'node-a',
+        timestamp: Date.now(),
+        type: 'node:created',
+        data: { id: seq },
+        ...overrides,
+    };
+}
+function walDir(name) {
+    return path.join(TEST_DIR, name);
+}
+beforeAll(() => {
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+});
+afterAll(() => {
+    try {
+        fs.rmSync(TEST_DIR, { recursive: true });
+    }
+    catch { /* ignore */ }
+});
+// 帮助函数：读取目录中所有 log 文件的内容作为原始缓冲区列表
+function readSegmentFiles(dir) {
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.log')).sort();
+    return files.map(f => fs.readFileSync(path.join(dir, f)));
+}
+describe('SegmentStreamWal — 基本 API', () => {
+    let wal;
+    beforeEach(() => {
+        wal = new segment_stream_wal_1.SegmentStreamWal(walDir('basic'));
+        wal.open();
+    });
+    afterEach(() => {
+        wal.drop();
+    });
+    it('append 后 size 增加', () => {
+        expect(wal.size).toBe(0);
+        wal.append(makeMsg(1));
+        expect(wal.size).toBe(1);
+        wal.append(makeMsg(2));
+        expect(wal.size).toBe(2);
+    });
+    it('readPending 返回超时的 PENDING 消息', () => {
+        const past = Date.now() - 10000;
+        wal.append(makeMsg(1, { timestamp: past }));
+        wal.append(makeMsg(2, { timestamp: Date.now() + 10000 }));
+        const pending = wal.readPending(Date.now());
+        expect(pending.length).toBe(1);
+        expect(pending[0].seq).toBe(1);
+    });
+    it('acknowledge 后 readPending 不再返回', () => {
+        const past = Date.now() - 10000;
+        wal.append(makeMsg(1, { timestamp: past }));
+        wal.acknowledge(['node-a-1']);
+        const pending = wal.readPending(Date.now());
+        expect(pending.length).toBe(0);
+    });
+    it('批量 acknowledge 多个 ID', () => {
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        wal.append(makeMsg(3));
+        wal.acknowledge(new Set(['node-a-1', 'node-a-3']));
+        const past = Date.now() + 60000;
+        const pending = wal.readPending(past);
+        expect(pending.length).toBe(1);
+        expect(pending[0].seq).toBe(2);
+    });
+    it('空 Set acknowledge 不产生副作用', () => {
+        wal.append(makeMsg(1));
+        wal.acknowledge([]);
+        expect(wal.size).toBe(1);
+    });
+    it('markConsumed 后 replay 不再包含', () => {
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        wal.markConsumed(['node-a-1']);
+        const replayed = wal.replay(0);
+        expect(replayed.length).toBe(1);
+        expect(replayed[0].seq).toBe(2);
+    });
+    it('replay 从指定 seq 回放', () => {
+        for (let i = 1; i <= 5; i++)
+            wal.append(makeMsg(i));
+        const replayed = wal.replay(3);
+        expect(replayed.length).toBe(3);
+        expect(replayed.map(m => m.seq)).toEqual([3, 4, 5]);
+    });
+    it('ACKED 消息也应回放', () => {
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        wal.acknowledge(['node-a-1']);
+        const replayed = wal.replay(0);
+        expect(replayed.length).toBe(2);
+    });
+});
+describe('SegmentStreamWal — Segment 滚动', () => {
+    it('写入超过 segment 大小应自动滚动', () => {
+        // 用很小的 segment 大小（1KB）
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('roll_test'), 1024);
+        wal.open();
+        // 写入约 200 字节的消息，5 个就到 1KB
+        for (let i = 1; i <= 10; i++) {
+            const msg = makeMsg(i, { data: { id: i, padding: 'x'.repeat(150) } });
+            wal.append(msg);
+        }
+        // 应产生至少 2 个 segment 文件
+        const dir = walDir('roll_test');
+        const logFiles = fs.readdirSync(dir).filter(f => f.endsWith('.log'));
+        expect(logFiles.length).toBeGreaterThanOrEqual(2);
+        wal.drop();
+    });
+    it('滚动后数据仍然完整可读', () => {
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('roll_data'), 512);
+        wal.open();
+        const msgs = [];
+        for (let i = 1; i <= 20; i++) {
+            const msg = makeMsg(i, { data: { id: i, padding: 'x'.repeat(60) } });
+            msgs.push(msg);
+            wal.append(msg);
+        }
+        const replayed = wal.replay(0);
+        expect(replayed.length).toBe(20);
+        expect(replayed.map(m => m.seq)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+        wal.drop();
+    });
+});
+describe('SegmentStreamWal — prune（核心特性：只删不重写）', () => {
+    it('prune 后所有 PENDING 消息仍然可读', () => {
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('prune_pending'));
+        wal.open();
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        wal.acknowledge(['node-a-1']);
+        const remaining = wal.prune();
+        expect(remaining).toBe(1);
+        // 验证 PENDING 消息仍然在
+        const pending = wal.readPending(Date.now() + 60000);
+        expect(pending.length).toBe(1);
+        expect(pending[0].seq).toBe(2);
+        wal.drop();
+    });
+    it('prune 只删除不包含 PENDING 的 segment', () => {
+        // 用小的 segment 大小确保消息分布到多个 segment
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('prune_multiseg'), 512);
+        wal.open();
+        // 写入 10 条消息（分布在多个 segment）
+        for (let i = 1; i <= 10; i++) {
+            wal.append(makeMsg(i, { data: { id: i, padding: 'y'.repeat(80) } }));
+        }
+        // 确认所有消息，触发滚动
+        const allIds = Array.from({ length: 5 }, (_, i) => `node-a-${i + 1}`);
+        wal.acknowledge(allIds);
+        const dir = walDir('prune_multiseg');
+        // 获取 pruning 前的 segment 数量
+        const beforePruneFiles = fs.readdirSync(dir).filter(f => f.endsWith('.log'));
+        const beforeCount = beforePruneFiles.length;
+        expect(beforeCount).toBeGreaterThanOrEqual(2);
+        wal.prune();
+        const afterPruneFiles = fs.readdirSync(dir).filter(f => f.endsWith('.log'));
+        expect(afterPruneFiles.length).toBeLessThan(beforeCount);
+        wal.drop();
+    });
+    it('prune 后重新打开仍然正确', () => {
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('prune_reopen'));
+        wal.open();
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        wal.append(makeMsg(3));
+        wal.acknowledge(['node-a-1', 'node-a-2']);
+        const remainingPending = wal.prune();
+        expect(remainingPending).toBe(1); // 只有 seq 3 是 PENDING
+        wal.close();
+        // 重新打开
+        const wal2 = new segment_stream_wal_1.SegmentStreamWal(walDir('prune_reopen'));
+        wal2.open();
+        const pending = wal2.readPending(Date.now() + 60000);
+        expect(pending.length).toBe(1);
+        expect(pending[0].seq).toBe(3);
+        wal2.drop();
+    });
+});
+describe('SegmentStreamWal — 崩溃恢复', () => {
+    it('close 后重新打开应保留消息', () => {
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('persist'));
+        wal.open();
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        wal.close();
+        const wal2 = new segment_stream_wal_1.SegmentStreamWal(walDir('persist'));
+        wal2.open();
+        expect(wal2.size).toBe(2);
+        const pending = wal2.readPending(Date.now() + 60000);
+        expect(pending.length).toBe(2);
+        wal2.drop();
+    });
+    it('不调用 close 直接重新打开应与文件系统同步', () => {
+        // 模拟崩溃：不 close 就直接创建新实例
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('crash'));
+        wal.open();
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        wal.sync(); // 模拟崩溃前内核刷盘
+        // 模拟崩溃：不调用 close
+        const wal2 = new segment_stream_wal_1.SegmentStreamWal(walDir('crash'));
+        wal2.open();
+        // 数据在磁盘上，_countAllEntries 应能扫描到
+        expect(wal2.size).toBe(2);
+        wal2.drop();
+    });
+});
+describe('SegmentStreamWal — 旧文件迁移', () => {
+    it('从旧单文件 WAL 迁移后数据完整', () => {
+        // 创建一个旧格式单文件，路径名选一个不会与 walDir() 冲突的名称
+        const legacyName = `legacy_migrate_${Date.now()}.wal`;
+        const legacyPath = path.join(TEST_DIR, legacyName);
+        const oldFd = fs.openSync(legacyPath, 'w');
+        const msg = makeMsg(1, { data: { test: true } });
+        const encoded = encodeMsg(msg, segment_stream_wal_1.FLAG_PENDING);
+        fs.writeSync(oldFd, encoded);
+        fs.fsyncSync(oldFd);
+        fs.closeSync(oldFd);
+        // 构造时传入旧文件路径
+        const migratedWal = new segment_stream_wal_1.SegmentStreamWal(legacyPath);
+        migratedWal.open();
+        expect(migratedWal.size).toBe(1);
+        const replayed = migratedWal.replay(0);
+        expect(replayed.length).toBe(1);
+        expect(replayed[0].seq).toBe(1);
+        // 旧文件应被迁移到新的 segment 目录
+        const migrateDir = legacyPath + '_segments';
+        expect(fs.existsSync(migrateDir)).toBe(true);
+        expect(fs.existsSync(path.join(migrateDir, '00000001.log'))).toBe(true);
+        migratedWal.drop();
+    });
+});
+// 帮助函数 — 编码消息（与 SegmentStreamWal 内部相同）
+function encodeMsg(msg, flags) {
+    const data = JSON.stringify({
+        type: msg.type,
+        nodeId: msg.nodeId,
+        timestamp: msg.timestamp,
+        data: msg.data,
+        msgId: msg.msgId,
+        seq: msg.seq,
+    });
+    const msgIdBuf = Buffer.from(msg.msgId, 'utf-8');
+    const dataBuf = Buffer.from(data, 'utf-8');
+    const buf = Buffer.alloc(1 + 4 + msgIdBuf.length + 4 + dataBuf.length);
+    let offset = 0;
+    buf[offset++] = flags;
+    buf.writeUInt32BE(msgIdBuf.length, offset);
+    offset += 4;
+    msgIdBuf.copy(buf, offset);
+    offset += msgIdBuf.length;
+    buf.writeUInt32BE(dataBuf.length, offset);
+    offset += 4;
+    dataBuf.copy(buf, offset);
+    return buf;
+}
+//# sourceMappingURL=segment-stream-wal.spec.js.map

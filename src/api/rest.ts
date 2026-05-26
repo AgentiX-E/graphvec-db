@@ -5,9 +5,13 @@
 import * as https from 'https'
 import * as http from 'http'
 import { ShardManager } from '../shard/shard-manager'
-import { Authenticator, RBAC } from '../security/auth'
+import { Authenticator, RBAC, bodySizeLimitMiddleware, BODY_SIZE_LIMIT } from '../security/auth'
 import { TLSConfig } from '../security/tls'
 import { Role, AuthResult, AuthError } from '../types'
+import type { OutboxReplicationManager } from '../core/outbox-replication'
+import type { DatabaseManager, DatabaseInstance } from '../core/database-manager'
+import { register } from 'prom-client'
+import { executeIR, QuerySpec, buildIRFromSpec, optimizeIR } from './query-planner'
 
 // ──────────────────────────────────────────
 // 类型定义
@@ -18,10 +22,15 @@ export interface RestApiConfig {
   host: string
   authenticator: Authenticator
   tlsConfig: TLSConfig
+  /** 请求体大小限制（字节），默认 10MB；设为 0 拒绝所有；设为 undefined 不限制 */
   bodySizeLimit?: number
   enableCors?: boolean
   enableRatelimit?: boolean
   maxRatelimitPerMin?: number
+  /** Multi-Leader Outbox 复制管理器（暴露 admin 管理接口） */
+  replicationManager?: OutboxReplicationManager
+  /** 多数据库管理器（可选），提供后自动启用 /api/v1/:db/... 路由 */
+  databaseManager?: DatabaseManager
 }
 
 export interface RestApiServer {
@@ -68,6 +77,7 @@ type RouteHandler = (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   parsed: URL,
+  params: Record<string, string>,
   auth: AuthResult,
 ) => Promise<void> | void
 
@@ -136,6 +146,119 @@ function extractCN(req: http.IncomingMessage): string | null {
 }
 
 // ──────────────────────────────────────────
+// 路由匹配 — 支持路径参数
+// ──────────────────────────────────────────
+
+/**
+ * 将路径模式匹配到请求路径，返回提取的路径参数。
+ * 支持 :param 单段参数和 * 通配符（仅尾部）。
+ *
+ * 示例：
+ *   _matchRoute('/api/graph/node/:id', '/api/graph/node/42')
+ *     → { id: '42' }
+ *
+ *   _matchRoute('/api/graph/edges/:nodeId', '/api/graph/edges/42')
+ *     → { nodeId: '42' }
+ *
+ *   _matchRoute('/api/graph/node', '/api/graph/node')
+ *     → {}  （精确匹配，无参数）
+ */
+export function _matchRoute(
+  pattern: string,
+  requestPath: string,
+): Record<string, string> | null {
+  const patternParts = pattern.split('/')
+  const requestParts = requestPath.split('/')
+
+  if (patternParts.length !== requestParts.length) {
+    return null
+  }
+
+  const params: Record<string, string> = {}
+
+  for (let i = 0; i < patternParts.length; i++) {
+    const pPart = patternParts[i]
+    const rPart = requestParts[i]
+
+    if (pPart.startsWith(':')) {
+      // 路径参数 — 提取值
+      params[pPart.slice(1)] = rPart
+    } else if (pPart !== rPart) {
+      // 静态段不匹配
+      return null
+    }
+  }
+
+  return params
+}
+
+/**
+ * 对没有 Content-Length 的请求应用流式 body size limit
+ * 返回 true 表示已处理响应（调用方应 return）
+ */
+function applyBodySizeLimit(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  limit: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (limit <= 0) {
+      jsonResponse(res, 413, { error: 'Request body size limit is set to 0, rejecting all body payloads' })
+      resolve(true)
+      return
+    }
+
+    const method = req.method?.toUpperCase() ?? 'GET'
+    if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
+      resolve(false)
+      return
+    }
+
+    let totalBytes = 0
+    let aborted = false
+
+    const onData = (chunk: Buffer) => {
+      if (aborted) return
+      totalBytes += Buffer.byteLength(chunk)
+      if (totalBytes > limit) {
+        aborted = true
+        req.destroy()
+        if (!res.headersSent) {
+          jsonResponse(res, 413, { error: 'Request body exceeded limit (streamed)' })
+        }
+        resolve(true)
+      }
+    }
+
+    const onEnd = () => {
+      if (!aborted) {
+        cleanup()
+        resolve(false)
+      }
+    }
+
+    const cleanup = () => {
+      req.removeListener('data', onData)
+      req.removeListener('end', onEnd)
+      req.removeListener('error', onError)
+    }
+
+    const onError = (_err: Error) => {
+      aborted = true
+      cleanup()
+      if (!res.headersSent) {
+        jsonResponse(res, 413, { error: 'Request body read error' })
+      }
+      resolve(true)
+    }
+
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('error', onError)
+  })
+}
+
+// ──────────────────────────────────────────
 // RestApiServer — 完整实现
 // ──────────────────────────────────────────
 
@@ -147,12 +270,14 @@ export function createRestApiServer(
   const authenticator = config.authenticator
 
   const routes: Route[] = [
+    // ── 健康检查 ──────────────────────────────
+
     // GET /api/status
     {
       method: 'GET',
       path: '/api/status',
       requireAuth: false,
-      handler: async (_req, res, _parsed, _auth) => {
+      handler: async (_req, res, _parsed, _params, _auth) => {
         const status = shardManager.getShardStatus()
         jsonResponse(res, 200, {
           status: 'ok',
@@ -162,13 +287,25 @@ export function createRestApiServer(
       },
     },
 
+    // GET /api/health
+    {
+      method: 'GET',
+      path: '/api/health',
+      requireAuth: false,
+      handler: async (_req, res, _parsed, _params, _auth) => {
+        jsonResponse(res, 200, { status: 'ok' })
+      },
+    },
+
+    // ── 节点 CRUD ────────────────────────────
+
     // POST /api/graph/nodes
     {
       method: 'POST',
       path: '/api/graph/nodes',
       requireAuth: true,
       requiredPermission: 'write',
-      handler: async (req, res, _parsed, auth) => {
+      handler: async (req, res, _parsed, _params, auth) => {
         const body = await parseBody(req) as Record<string, unknown>
         if (!body.typeId || !body.name) {
           jsonResponse(res, 400, { error: 'typeId and name are required' })
@@ -185,16 +322,16 @@ export function createRestApiServer(
     // GET /api/graph/node/:id
     {
       method: 'GET',
-      path: '/api/graph/node',
+      path: '/api/graph/node/:id',
       requireAuth: true,
       requiredPermission: 'read',
-      handler: async (req, res, _parsed, auth) => {
-        const body = await parseBody(req) as Record<string, unknown>
-        if (!body.id) {
-          jsonResponse(res, 400, { error: 'id is required' })
+      handler: async (_req, res, _parsed, params, auth) => {
+        const id = Number(params.id)
+        if (isNaN(id)) {
+          jsonResponse(res, 400, { error: 'Invalid node id' })
           return
         }
-        const node = await shardManager.getNode(Number(body.id))
+        const node = await shardManager.getNode(id)
         if (!node) {
           jsonResponse(res, 404, { error: 'not found' })
           return
@@ -206,30 +343,595 @@ export function createRestApiServer(
     // DELETE /api/graph/node/:id
     {
       method: 'DELETE',
-      path: '/api/graph/node',
+      path: '/api/graph/node/:id',
       requireAuth: true,
       requiredPermission: 'delete',
-      handler: async (req, res, _parsed, auth) => {
-        const body = await parseBody(req) as Record<string, unknown>
-        if (!body.id) {
-          jsonResponse(res, 400, { error: 'id is required' })
+      handler: async (_req, res, _parsed, params, auth) => {
+        const id = Number(params.id)
+        if (isNaN(id)) {
+          jsonResponse(res, 400, { error: 'Invalid node id' })
           return
         }
-        await shardManager.deleteNode(Number(body.id))
+        await shardManager.deleteNode(id)
         jsonResponse(res, 200, { message: 'deleted' })
       },
     },
 
-    // GET /api/health
+    // ── 边 CRUD ──────────────────────────────
+
+    // POST /api/graph/edges — 创建边
+    {
+      method: 'POST',
+      path: '/api/graph/edges',
+      requireAuth: true,
+      requiredPermission: 'write',
+      handler: async (req, res, _parsed, _params, auth) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        if (body.src === undefined || body.dst === undefined || body.type === undefined) {
+          jsonResponse(res, 400, { error: 'src, dst, and type are required' })
+          return
+        }
+        const src = Number(body.src)
+        const dst = Number(body.dst)
+        const typeId = Number(body.type)
+        if (isNaN(src) || isNaN(dst) || isNaN(typeId)) {
+          jsonResponse(res, 400, { error: 'src, dst, and type must be numbers' })
+          return
+        }
+        await shardManager.upsertEdge(src, dst, typeId, {
+          props: body.props !== undefined ? (body.props as any) : undefined,
+        })
+        jsonResponse(res, 200, { message: 'edge created' })
+      },
+    },
+
+    // GET /api/graph/edges/:nodeId — 获取节点的邻边
     {
       method: 'GET',
-      path: '/api/health',
+      path: '/api/graph/edges/:nodeId',
+      requireAuth: true,
+      requiredPermission: 'read',
+      handler: async (_req, res, _parsed, params, auth) => {
+        const nodeId = Number(params.nodeId)
+        if (isNaN(nodeId)) {
+          jsonResponse(res, 400, { error: 'Invalid node id' })
+          return
+        }
+        const result = await shardManager.neighbors(nodeId)
+        jsonResponse(res, 200, {
+          nodeId,
+          edges: result.edges,
+          nodes: result.nodes,
+          edgeCount: result.edges.length,
+          nodeCount: result.nodes.length,
+        })
+      },
+    },
+
+    // DELETE /api/graph/edge — 删除边（body 传参）
+    {
+      method: 'DELETE',
+      path: '/api/graph/edge',
+      requireAuth: true,
+      requiredPermission: 'delete',
+      handler: async (req, res, _parsed, _params, auth) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        if (body.src === undefined || body.dst === undefined || body.type === undefined) {
+          jsonResponse(res, 400, { error: 'src, dst, and type are required' })
+          return
+        }
+        const src = Number(body.src)
+        const dst = Number(body.dst)
+        const typeId = Number(body.type)
+        if (isNaN(src) || isNaN(dst) || isNaN(typeId)) {
+          jsonResponse(res, 400, { error: 'src, dst, and type must be numbers' })
+          return
+        }
+
+        // ShardManager 没有 deleteEdge 方法，通过所在 range 的 engine 直接调用
+        try {
+          const rangeId = typeof (shardManager as any)._getRangeForNodeId === 'function'
+            ? (shardManager as any)._getRangeForNodeId(src)
+            : (shardManager as any).getRouter().getRangeForKey(String(src))
+          const range = (shardManager as any).getRange(rangeId)
+          await range.write({
+            type: 'delete_edge',
+            payload: { src, dst, typeId },
+          })
+          jsonResponse(res, 200, { message: 'edge deleted' })
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Failed to delete edge'
+          jsonResponse(res, 500, { error: msg })
+        }
+      },
+    },
+
+    // ── 批量操作 ──────────────────────────────
+
+    // POST /api/graph/nodes/batch
+    {
+      method: 'POST',
+      path: '/api/graph/nodes/batch',
+      requireAuth: true,
+      requiredPermission: 'write',
+      handler: async (req, res, _parsed, _params, auth) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const items = body.items as Array<Record<string, unknown>> | undefined
+        if (!Array.isArray(items) || items.length === 0) {
+          jsonResponse(res, 400, { error: 'items array is required and must be non-empty' })
+          return
+        }
+        const inputs: Array<{ typeId: number; name: string }> = []
+        for (const item of items) {
+          if (!item.id || !item.type) {
+            jsonResponse(res, 400, { error: 'each item must have id and type' })
+            return
+          }
+          inputs.push({
+            typeId: Number(item.type),
+            name: String(item.id),
+          })
+        }
+        const ids = await shardManager.batchUpsertNodes(inputs)
+        jsonResponse(res, 200, { ids, count: ids.length })
+      },
+    },
+
+    // POST /api/graph/edges/batch
+    {
+      method: 'POST',
+      path: '/api/graph/edges/batch',
+      requireAuth: true,
+      requiredPermission: 'write',
+      handler: async (req, res, _parsed, _params, auth) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const items = body.items as Array<Record<string, unknown>> | undefined
+        if (!Array.isArray(items) || items.length === 0) {
+          jsonResponse(res, 400, { error: 'items array is required and must be non-empty' })
+          return
+        }
+        let successCount = 0
+        const errors: Array<{ index: number; error: string }> = []
+
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]
+          if (item.src === undefined || item.dst === undefined || item.type === undefined) {
+            errors.push({ index: i, error: 'src, dst, and type are required' })
+            continue
+          }
+          try {
+            await shardManager.upsertEdge(
+              Number(item.src),
+              Number(item.dst),
+              Number(item.type),
+              item.props ? { props: item.props as any } : undefined,
+            )
+            successCount++
+          } catch (err: unknown) {
+            errors.push({
+              index: i,
+              error: err instanceof Error ? err.message : 'Unknown error',
+            })
+          }
+        }
+
+        jsonResponse(res, 200, {
+          successCount,
+          errorCount: errors.length,
+          errors: errors.length > 0 ? errors : undefined,
+        })
+      },
+    },
+
+    // ── 查询端点 ──────────────────────────────
+
+    // POST /api/query — 参数化查询
+    {
+      method: 'POST',
+      path: '/api/query',
+      requireAuth: true,
+      requiredPermission: 'read',
+      handler: async (req, res, _parsed, _params, auth) => {
+        const body = await parseBody(req) as Record<string, unknown>
+
+        if (!body.query && !body.match) {
+          jsonResponse(res, 400, {
+            error: 'query string or match object is required',
+          })
+          return
+        }
+
+        try {
+          // Build QuerySpec from the request body
+          const spec: QuerySpec = body.query
+            ? parseQueryString(String(body.query))
+            : parseMatchBody(body)
+
+          const plan = buildIRFromSpec(spec)
+          const optimized = optimizeIR(plan)
+          const results = await executeIR(optimized, shardManager)
+
+          jsonResponse(res, 200, {
+            results,
+            count: results.length,
+            plan: {
+              type: optimized.type,
+              estimatedRows: optimized.estimatedRows,
+              estimatedCost: optimized.estimatedCost,
+            },
+          })
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Query execution failed'
+          jsonResponse(res, 500, { error: msg })
+        }
+      },
+    },
+
+    // GET /api/query/stream?query=... — SSE 流式查询
+    {
+      method: 'GET',
+      path: '/api/query/stream',
+      requireAuth: true,
+      requiredPermission: 'read',
+      handler: async (req, res, parsed, _params, auth) => {
+        const queryStr = parsed.searchParams.get('query')
+        if (!queryStr) {
+          jsonResponse(res, 400, { error: 'query parameter is required' })
+          return
+        }
+
+        try {
+          const spec = parseQueryString(queryStr)
+          const plan = buildIRFromSpec(spec)
+          const optimized = optimizeIR(plan)
+          const results = await executeIR(optimized, shardManager)
+
+          // SSE 响应
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          })
+
+          // 发送结果元数据
+          res.write(`event: meta\ndata: ${JSON.stringify({ count: results.length })}\n\n`)
+
+          // 逐个发送结果
+          for (let i = 0; i < results.length; i++) {
+            res.write(`event: result\ndata: ${JSON.stringify({ index: i, node: results[i] })}\n\n`)
+          }
+
+          // 发送完成事件
+          res.write(`event: complete\ndata: {}\n\n`)
+          res.end()
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Stream query failed'
+
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          })
+
+          res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
+          res.end()
+        }
+      },
+    },
+
+    // ── Metrics ───────────────────────────────
+
+    // GET /metrics
+    {
+      method: 'GET',
+      path: '/metrics',
       requireAuth: false,
-      handler: async (_req, res, _parsed, _auth) => {
-        jsonResponse(res, 200, { status: 'ok' })
+      handler: async (_req, res, _parsed, _params, auth) => {
+        const metrics = await register.metrics()
+        res.writeHead(200, {
+          'Content-Type': register.contentType,
+          'Content-Length': Buffer.byteLength(metrics),
+        })
+        res.end(metrics)
+      },
+    },
+
+    // GET /api/metrics
+    {
+      method: 'GET',
+      path: '/api/metrics',
+      requireAuth: true,
+      requiredPermission: 'read',
+      handler: async (_req, res, _parsed, _params, auth) => {
+        const metrics = await register.metrics()
+        res.writeHead(200, {
+          'Content-Type': register.contentType,
+          'Content-Length': Buffer.byteLength(metrics),
+        })
+        res.end(metrics)
       },
     },
   ]
+
+  // ── 多数据库路由 ────────────────
+  // 当 config.databaseManager 存在时，为所有 graph/query 端点生成 /api/v1/:db/... 变体
+  if (config.databaseManager) {
+    const dbm = config.databaseManager
+
+    // 生成多数据库路由的辅助函数
+    const addMultiDbRoute = (
+      method: string,
+      path: string,
+      requireAuth: boolean,
+      requiredPermission: string | undefined,
+      handler: (sm: ShardManager, req: http.IncomingMessage, res: http.ServerResponse, parsed: URL, params: Record<string, string>, auth: AuthResult) => Promise<void>,
+    ): void => {
+      routes.push({
+        method,
+        path,
+        requireAuth,
+        requiredPermission,
+        handler: async (req, res, parsed, params, auth) => {
+          const dbName = params.db
+          let instance: DatabaseInstance
+          try {
+            instance = dbm.resolve(dbName)
+          } catch {
+            jsonResponse(res, 404, { error: `Database '${dbName}' not found` })
+            return
+          }
+          await handler(instance.shardManager, req, res, parsed, params, auth)
+        },
+      })
+    }
+
+    // 节点 CRUD
+    addMultiDbRoute('POST', '/api/v1/:db/graph/nodes', true, 'write',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        if (!body.typeId || !body.name) {
+          jsonResponse(res, 400, { error: 'typeId and name are required' })
+          return
+        }
+        const nodeId = await sm.upsertNode(Number(body.typeId), String(body.name))
+        jsonResponse(res, 200, { id: nodeId })
+      },
+    )
+
+    addMultiDbRoute('GET', '/api/v1/:db/graph/node/:id', true, 'read',
+      async (sm, _req, res, _parsed, params) => {
+        const id = Number(params.id)
+        if (isNaN(id)) { jsonResponse(res, 400, { error: 'Invalid node id' }); return }
+        const node = await sm.getNode(id)
+        if (!node) { jsonResponse(res, 404, { error: 'not found' }); return }
+        jsonResponse(res, 200, node)
+      },
+    )
+
+    addMultiDbRoute('DELETE', '/api/v1/:db/graph/node/:id', true, 'delete',
+      async (sm, _req, res, _parsed, params) => {
+        const id = Number(params.id)
+        if (isNaN(id)) { jsonResponse(res, 400, { error: 'Invalid node id' }); return }
+        await sm.deleteNode(id)
+        jsonResponse(res, 200, { message: 'deleted' })
+      },
+    )
+
+    // 边 CRUD
+    addMultiDbRoute('POST', '/api/v1/:db/graph/edges', true, 'write',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        if (body.src === undefined || body.dst === undefined || body.type === undefined) {
+          jsonResponse(res, 400, { error: 'src, dst, and type are required' })
+          return
+        }
+        const src = Number(body.src)
+        const dst = Number(body.dst)
+        const typeId = Number(body.type)
+        if (isNaN(src) || isNaN(dst) || isNaN(typeId)) {
+          jsonResponse(res, 400, { error: 'src, dst, and type must be numbers' })
+          return
+        }
+        await sm.upsertEdge(src, dst, typeId, {
+          props: body.props !== undefined ? (body.props as any) : undefined,
+        })
+        jsonResponse(res, 200, { message: 'edge created' })
+      },
+    )
+
+    addMultiDbRoute('GET', '/api/v1/:db/graph/edges/:nodeId', true, 'read',
+      async (sm, _req, res, _parsed, params) => {
+        const nodeId = Number(params.nodeId)
+        if (isNaN(nodeId)) { jsonResponse(res, 400, { error: 'Invalid node id' }); return }
+        const result = await sm.neighbors(nodeId)
+        jsonResponse(res, 200, {
+          nodeId,
+          edges: result.edges,
+          nodes: result.nodes,
+          edgeCount: result.edges.length,
+          nodeCount: result.nodes.length,
+        })
+      },
+    )
+
+    addMultiDbRoute('DELETE', '/api/v1/:db/graph/edge', true, 'delete',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        if (body.src === undefined || body.dst === undefined || body.type === undefined) {
+          jsonResponse(res, 400, { error: 'src, dst, and type are required' })
+          return
+        }
+        const src = Number(body.src)
+        const dst = Number(body.dst)
+        const typeId = Number(body.type)
+        if (isNaN(src) || isNaN(dst) || isNaN(typeId)) {
+          jsonResponse(res, 400, { error: 'src, dst, and type must be numbers' })
+          return
+        }
+        try {
+          const rangeId = typeof (sm as any)._getRangeForNodeId === 'function'
+            ? (sm as any)._getRangeForNodeId(src)
+            : (sm as any).getRouter().getRangeForKey(String(src))
+          const range = (sm as any).getRange(rangeId)
+          await range.write({ type: 'delete_edge', payload: { src, dst, typeId } })
+          jsonResponse(res, 200, { message: 'edge deleted' })
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Failed to delete edge'
+          jsonResponse(res, 500, { error: msg })
+        }
+      },
+    )
+
+    // 批量操作
+    addMultiDbRoute('POST', '/api/v1/:db/graph/nodes/batch', true, 'write',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const items = body.items as Array<Record<string, unknown>> | undefined
+        if (!Array.isArray(items) || items.length === 0) {
+          jsonResponse(res, 400, { error: 'items array is required and must be non-empty' })
+          return
+        }
+        const inputs: Array<{ typeId: number; name: string }> = []
+        for (const item of items) {
+          if (!item.id || !item.type) {
+            jsonResponse(res, 400, { error: 'each item must have id and type' })
+            return
+          }
+          inputs.push({ typeId: Number(item.type), name: String(item.id) })
+        }
+        const ids = await sm.batchUpsertNodes(inputs)
+        jsonResponse(res, 200, { ids, count: ids.length })
+      },
+    )
+
+    addMultiDbRoute('POST', '/api/v1/:db/graph/edges/batch', true, 'write',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const items = body.items as Array<Record<string, unknown>> | undefined
+        if (!Array.isArray(items) || items.length === 0) {
+          jsonResponse(res, 400, { error: 'items array is required and must be non-empty' })
+          return
+        }
+        let successCount = 0
+        const errors: Array<{ index: number; error: string }> = []
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]
+          if (item.src === undefined || item.dst === undefined || item.type === undefined) {
+            errors.push({ index: i, error: 'src, dst, and type are required' })
+            continue
+          }
+          try {
+            await sm.upsertEdge(Number(item.src), Number(item.dst), Number(item.type),
+              item.props ? { props: item.props as any } : undefined)
+            successCount++
+          } catch (err: unknown) {
+            errors.push({ index: i, error: err instanceof Error ? err.message : 'Unknown error' })
+          }
+        }
+        jsonResponse(res, 200, { successCount, errorCount: errors.length, errors: errors.length > 0 ? errors : undefined })
+      },
+    )
+
+    // 查询
+    addMultiDbRoute('POST', '/api/v1/:db/query', true, 'read',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        if (!body.query && !body.match) {
+          jsonResponse(res, 400, { error: 'query string or match object is required' })
+          return
+        }
+        try {
+          const spec: QuerySpec = body.query ? parseQueryString(String(body.query)) : parseMatchBody(body)
+          const plan = buildIRFromSpec(spec)
+          const optimized = optimizeIR(plan)
+          const results = await executeIR(optimized, sm)
+          jsonResponse(res, 200, { results, count: results.length, plan: { type: optimized.type, estimatedRows: optimized.estimatedRows, estimatedCost: optimized.estimatedCost } })
+        } catch (err: unknown) {
+          jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Query execution failed' })
+        }
+      },
+    )
+
+    addMultiDbRoute('GET', '/api/v1/:db/query/stream', true, 'read',
+      async (sm, _req, res, parsed) => {
+        const queryStr = parsed.searchParams.get('query')
+        if (!queryStr) { jsonResponse(res, 400, { error: 'query parameter is required' }); return }
+        try {
+          const spec = parseQueryString(queryStr)
+          const plan = buildIRFromSpec(spec)
+          const optimized = optimizeIR(plan)
+          const results = await executeIR(optimized, sm)
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
+          res.write(`event: meta\ndata: ${JSON.stringify({ count: results.length })}\n\n`)
+          for (let i = 0; i < results.length; i++) {
+            res.write(`event: result\ndata: ${JSON.stringify({ index: i, node: results[i] })}\n\n`)
+          }
+          res.write(`event: complete\ndata: {}\n\n`)
+          res.end()
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Stream query failed'
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
+          res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
+          res.end()
+        }
+      },
+    )
+  }
+
+  // 注册 admin 路由（如果有 replicationManager）
+  if (config.replicationManager) {
+    const mgr = config.replicationManager
+
+    // GET /api/admin/replication — 复制状态和配置
+    routes.push({
+      method: 'GET',
+      path: '/api/admin/replication',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req, res, _parsed, _params, _auth) => {
+        const config = mgr.getConfig()
+        jsonResponse(res, 200, {
+          nodeId: config.nodeId,
+          peers: config.peers.map(p => p.nodeId),
+          tickMs: config.tickMs ?? 500,
+          maxBackoffSeconds: config.maxBackoffSeconds ?? 60,
+          housekeepingIntervalMs: config.housekeepingIntervalMs ?? 86400000,
+          entryTTLDays: config.entryTTLDays ?? 14,
+        })
+      },
+    })
+
+    // PUT /api/admin/replication/config — 热加载更新配置
+    routes.push({
+      method: 'PUT',
+      path: '/api/admin/replication/config',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (req, res, _parsed, _params, _auth) => {
+        const body = (await parseBody(req)) as Record<string, unknown>
+        const partial: Record<string, number> = {}
+        const intFields = ['tickMs', 'maxBackoffSeconds', 'housekeepingIntervalMs', 'entryTTLDays'] as const
+        for (const field of intFields) {
+          const val = body[field]
+          if (val !== undefined) {
+            const n = Number(val)
+            if (isNaN(n) || n <= 0) {
+              jsonResponse(res, 400, { error: `${field} must be a positive integer` })
+              return
+            }
+            partial[field] = Math.round(n)
+          }
+        }
+        if (Object.keys(partial).length === 0) {
+          jsonResponse(res, 400, { error: 'no valid fields to update' })
+          return
+        }
+        mgr.updateConfig(partial)
+        jsonResponse(res, 200, { updated: partial })
+      },
+    })
+  }
 
   const server = https.createServer({
     ...config.tlsConfig.getServerOptions(),
@@ -258,14 +960,24 @@ export function createRestApiServer(
       res.setHeader('X-Frame-Options', 'DENY')
       res.setHeader('X-XSS-Protection', '1; mode=block')
 
-      // Body size limit
-      if (config.bodySizeLimit && (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH')) {
-        const contentLength = parseInt(req.headers['content-length'] ?? '0', 10)
-        if (contentLength > config.bodySizeLimit) {
-          jsonResponse(res, 413, { error: 'Request body too large' })
-          return
+      // Body size limit — 使用 auth.ts 中完整的 bodySizeLimitMiddleware
+      if (config.bodySizeLimit !== undefined && config.bodySizeLimit >= 0) {
+        // 对于无 Content-Length 的请求，用 wrapBodySizeLimit 包装处理
+        if (!req.headers['content-length']) {
+          // 使用流式 body size limit 中间件
+          const middlewareApplied = await applyBodySizeLimit(req, res, config.bodySizeLimit)
+          if (middlewareApplied) return
+        } else {
+          const contentLength = parseInt(req.headers['content-length'], 10)
+          if (!isNaN(contentLength) && contentLength > config.bodySizeLimit) {
+            jsonResponse(res, 413, { error: 'Request body too large' })
+            return
+          }
         }
       }
+
+      // setEncoding on incoming message for consistent Body handling
+      req.setEncoding('utf8')
 
       // Rate limit
       if (config.enableRatelimit) {
@@ -276,10 +988,20 @@ export function createRestApiServer(
         }
       }
 
-      // 匹配路由
+      // 匹配路由（支持路径参数）
       const method = req.method?.toUpperCase() ?? 'GET'
       const path = parsed.pathname
-      const matched = routes.find(r => r.method === method && r.path === path)
+      let matched: Route | null = null
+      let matchedParams: Record<string, string> = {}
+      for (const route of routes) {
+        if (route.method !== method) continue
+        const params = _matchRoute(route.path, path)
+        if (params !== null) {
+          matched = route
+          matchedParams = params
+          break
+        }
+      }
 
       if (!matched) {
         jsonResponse(res, 404, { error: 'Not Found' })
@@ -314,7 +1036,7 @@ export function createRestApiServer(
         }
       }
 
-      await matched.handler(req, res, parsed, auth as AuthResult)
+      await matched.handler(req, res, parsed, matchedParams, auth as AuthResult)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal Server Error'
       jsonResponse(res, 500, { error: message })
@@ -342,4 +1064,140 @@ export function createRestApiServer(
       return config.port
     },
   }
+}
+
+// ──────────────────────────────────────────
+// 查询解析辅助函数
+// ──────────────────────────────────────────
+
+/**
+ * 从简单的查询字符串解析为 QuerySpec。
+ * 支持格式：
+ *   "MATCH (n) WHERE n.typeId=1 RETURN n LIMIT 10"
+ *   "MATCH (n)-[e]->(m) WHERE n.name='test'"
+ *
+ * 简化实现：解析 key=value 形式的查询条件。
+ */
+function parseQueryString(query: string): QuerySpec {
+  const spec: QuerySpec = {}
+
+  // 尝试提取 typeId
+  const typeMatch = query.match(/typeId\s*[=:]\s*(\d+)/)
+  if (typeMatch) {
+    spec.match = { typeId: parseInt(typeMatch[1], 10) }
+  }
+
+  // 尝试提取 name 过滤
+  const nameMatch = query.match(/name\s*[=:]\s*['"]([^'"]+)['"]/)
+  if (nameMatch) {
+    spec.match = { ...spec.match, name: nameMatch[1] }
+  }
+
+  // 尝试提取 WHERE 条件
+  const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+LIMIT|\s*$)/i)
+  if (whereMatch) {
+    const whereClause = whereMatch[1].trim()
+    const conditions = whereClause.split(/\s+AND\s+/i)
+    const where: Record<string, any> = {}
+    for (const cond of conditions) {
+      const eqMatch = cond.match(/(\w+)\s*[=:]\s*(.+)/)
+      if (eqMatch) {
+        let val: any = eqMatch[2].trim()
+        // 去掉引号
+        if ((val.startsWith("'") && val.endsWith("'")) ||
+            (val.startsWith('"') && val.endsWith('"'))) {
+          val = val.slice(1, -1)
+        } else if (!isNaN(Number(val))) {
+          val = Number(val)
+        }
+        where[eqMatch[1]] = val
+      }
+    }
+    if (Object.keys(where).length > 0) {
+      spec.where = where
+    }
+  }
+
+  // 尝试提取 LIMIT
+  const limitMatch = query.match(/LIMIT\s+(\d+)/i)
+  if (limitMatch) {
+    spec.limit = parseInt(limitMatch[1], 10)
+  }
+
+  // 尝试提取 ORDER BY
+  const orderMatch = query.match(/ORDER\s+BY\s+(\w+)\s*(ASC|DESC)?/i)
+  if (orderMatch) {
+    spec.orderBy = {
+      field: orderMatch[1],
+      direction: (orderMatch[2]?.toLowerCase() as 'asc' | 'desc') ?? 'asc',
+    }
+  }
+
+  // 尝试提取 RETURN
+  const returnMatch = query.match(/RETURN\s+(.+?)(?:\s+ORDER|\s+LIMIT|\s*$)/i)
+  if (returnMatch) {
+    const fields = returnMatch[1].split(',').map(f => f.trim()).filter(Boolean)
+    if (fields.length > 0 && fields[0] !== '*') {
+      spec.return = fields
+    }
+  }
+
+  // 尝试提取 edges: 如果查询包含 -> 或 ->e->
+  if (/->/.test(query)) {
+    spec.neighbors = spec.neighbors ?? { id: 0, maxDepth: 1 }
+  }
+
+  return spec
+}
+
+/**
+ * 从 match 对象解析出 QuerySpec。
+ * body 格式：
+ *   { match: { typeId?: number, name?: string },
+ *     where?: Record<string, any>,
+ *     return?: string[],
+ *     orderBy?: { field: string, direction: 'asc'|'desc' },
+ *     limit?: number,
+ *     neighbors?: { id: number, maxDepth?: number } }
+ */
+function parseMatchBody(body: Record<string, unknown>): QuerySpec {
+  const spec: QuerySpec = {}
+
+  const match = body.match as Record<string, unknown> | undefined
+  if (match) {
+    spec.match = {
+      typeId: match.typeId !== undefined ? Number(match.typeId) : undefined,
+      name: match.name !== undefined ? String(match.name) : undefined,
+    }
+  }
+
+  if (body.where !== undefined) {
+    spec.where = body.where as Record<string, any>
+  }
+
+  if (body.return !== undefined) {
+    spec.return = body.return as string[]
+  }
+
+  if (body.orderBy !== undefined) {
+    const ob = body.orderBy as Record<string, any>
+    spec.orderBy = {
+      field: String(ob.field),
+      direction: (String(ob.direction) as 'asc' | 'desc'),
+    }
+  }
+
+  if (body.limit !== undefined) {
+    spec.limit = Number(body.limit)
+  }
+
+  if (body.neighbors !== undefined) {
+    const n = body.neighbors as Record<string, any>
+    spec.neighbors = {
+      id: Number(n.id),
+      maxDepth: n.maxDepth !== undefined ? Number(n.maxDepth) : 1,
+    }
+  }
+
+  return spec
 }

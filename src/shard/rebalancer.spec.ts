@@ -18,21 +18,28 @@ import * as fs from 'fs'
 // 3. getStats() 返回正确的 RebalancerStats
 // 4. start/stop 生命周期
 
-const randomId = Math.random().toString(36).slice(2, 8)
-const TEST_DIR = `/tmp/agentiX-test-rebal-${randomId}`
+let testCounter = 0
 
-function makeShardMap(version: number = 1, rangeCount: number = 2): ShardMap {
+function getUniqueSuffix(): string {
+  return `${process.pid}-${testCounter}`
+}
+
+function getUniqueDir(): string {
+  return `/tmp/agentiX-test-rebal-${getUniqueSuffix()}`
+}
+
+function makeShardMap(testDir: string, version: number = 1, rangeCount: number = 2): ShardMap {
   const ranges = Array.from({ length: rangeCount }, (_, i) => ({
     rangeId: `rebal-range-${i}`,
-    dataDir: `${TEST_DIR}/${randomId}/range-${i}`,
+    dataDir: `${testDir}/range-${i}`,
     raftConfig: {
       nodeId: `rebal-range-${i}`,
       peers: [] as { id: string; address: string }[],
-      storagePath: `${TEST_DIR}/${randomId}/range-${i}/raft`,
+      storagePath: `${testDir}/range-${i}/raft`,
       electionTimeoutMinMs: 150,
       heartbeatIntervalMs: 50,
     },
-    overgraphConfig: { path: `${TEST_DIR}/${randomId}/range-${i}/graph` },
+    overgraphConfig: { path: `${testDir}/range-${i}/graph` },
   }))
 
   // Create hash ring nodes — assign a distinct hash range per range
@@ -54,24 +61,24 @@ function makeShardMap(version: number = 1, rangeCount: number = 2): ShardMap {
 describe('Rebalancer', () => {
   let clock: HlcClock
   let shardMap: ShardMap
-
-  beforeAll(() => {
-    fs.mkdirSync(TEST_DIR, { recursive: true })
-  })
-
-  afterAll(() => {
-    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch {}
-  })
+  let testDir: string
+  let testSuffix: string
 
   beforeEach(() => {
     clock = new HlcClock()
-    shardMap = makeShardMap()
+    testDir = getUniqueDir()
+    testSuffix = getUniqueSuffix()
+    shardMap = makeShardMap(testDir)
 
     // Create directory structure
     for (const range of shardMap.ranges) {
       fs.mkdirSync(`${range.dataDir}/raft`, { recursive: true })
       fs.mkdirSync(`${range.dataDir}/graph`, { recursive: true })
     }
+  })
+
+  afterEach(() => {
+    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch {}
   })
 
   // ──────────────────────────────────────────
@@ -127,14 +134,14 @@ describe('Rebalancer', () => {
     for (let i = 0; i < 5; i++) {
       await range0.write({
         type: 'upsert_node',
-        payload: { typeId: 1, name: `rebal-node-${i}-${randomId}`, opts: undefined },
+        payload: { typeId: 1, name: `rebal-node-${i}-${testSuffix}`, opts: undefined },
       })
     }
 
     // Write 1 node to range 1
     await range1.write({
       type: 'upsert_node',
-      payload: { typeId: 1, name: `rebal-node-other-${randomId}`, opts: undefined },
+      payload: { typeId: 1, name: `rebal-node-other-${testSuffix}`, opts: undefined },
     })
 
     const rebalancer = new Rebalancer(mgr)
@@ -192,5 +199,126 @@ describe('Rebalancer', () => {
     const mgr = new ShardManager(shardMap, clock)
     const rebalancer = new Rebalancer(mgr)
     expect(() => rebalancer.stop()).not.toThrow()
+  })
+
+  // ──────────────────────────────────────────
+  // _findHotNodes — 基于度数的热节点检测
+  // ──────────────────────────────────────────
+
+  test('_findHotNodes should return nodes with highest degree', async () => {
+    const mgr = new ShardManager(shardMap, clock)
+    await mgr.start()
+    await new Promise(r => setTimeout(r, 50))
+
+    const range = mgr.getRange('rebal-range-0')
+    const rebalancer = new Rebalancer(mgr)
+
+    // 创建 10 个节点 (typeId=1)
+    const nodeIds: number[] = []
+    for (let i = 0; i < 10; i++) {
+      const id = await range.write({
+        type: 'upsert_node',
+        payload: { typeId: 1, name: `hot-node-${i}-${testSuffix}`, opts: undefined },
+      })
+      nodeIds.push(id as number)
+    }
+
+    // 给 node A (nodeIds[0]) 创建 10 条边 → 使它成为最高度数节点
+    const hotNodeId = nodeIds[0]
+    for (let i = 0; i < 10; i++) {
+      await range.write({
+        type: 'upsert_edge',
+        payload: { src: hotNodeId, dst: nodeIds[i % 10], typeId: 1, opts: undefined },
+      })
+    }
+
+    // 给 node B (nodeIds[1]) 创建 1 条边
+    await range.write({
+      type: 'upsert_edge',
+      payload: { src: nodeIds[1], dst: nodeIds[2], typeId: 1, opts: undefined },
+    })
+
+    await new Promise(r => setTimeout(r, 100))
+
+    // 直接验证度数：通过引擎检查 node A 的度数
+    const engineDegreeA: number = await range.read(e => {
+      const n = e.getNode(hotNodeId)
+      return n?.degree ?? 0
+    })
+
+    // 如果 engine 不支持度数计算，则跳过基于度数的断言
+    if (engineDegreeA > 0) {
+      // 引擎支持度数计算 — 验证基于度数的热点检测
+      const hotNodes = await (rebalancer as any)._findHotNodes(range, 3)
+      expect(hotNodes).toBeDefined()
+      expect(hotNodes.length).toBeGreaterThanOrEqual(1)
+      expect(hotNodes.length).toBeLessThanOrEqual(3)
+      // node A (hotNodeId) 应有最高度数，应在结果中
+      expect(hotNodes).toContain(hotNodeId)
+    } else {
+      // 引擎不支持度数计算 — 验证 fallback 逻辑（按 ID 降序）
+      const allNodeIds: number[] = await range.read(e => e.findNodesByType(1))
+      const expectedFallback = [...allNodeIds].sort((a, b) => b - a).slice(0, 3)
+      const hotNodes = await (rebalancer as any)._findHotNodes(range, 3)
+      expect(hotNodes).toBeDefined()
+      expect(hotNodes.length).toBeGreaterThanOrEqual(1)
+      expect(hotNodes.length).toBeLessThanOrEqual(3)
+      expect(hotNodes).toEqual(expectedFallback)
+    }
+
+    await mgr.stop()
+  })
+
+  test('_findHotNodes should respect maxMigrationsPerRound count', async () => {
+    const mgr = new ShardManager(shardMap, clock)
+    await mgr.start()
+    await new Promise(r => setTimeout(r, 50))
+
+    const range = mgr.getRange('rebal-range-0')
+    const rebalancer = new Rebalancer(mgr)
+
+    // 创建 5 个节点，每个有边
+    const nodeIds: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const id = await range.write({
+        type: 'upsert_node',
+        payload: { typeId: 1, name: `hot-node-2-${i}-${testSuffix}`, opts: undefined },
+      })
+      nodeIds.push(id as number)
+    }
+
+    // 每个节点连到自身（1 条边）
+    for (const id of nodeIds) {
+      await range.write({
+        type: 'upsert_edge',
+        payload: { src: id, dst: id, typeId: 1, opts: undefined },
+      })
+    }
+
+    await new Promise(r => setTimeout(r, 100))
+
+    // 请求 1 个节点 — 不应返回超过 1 个节点
+    const hotNodes = await (rebalancer as any)._findHotNodes(range, 1)
+    expect(hotNodes).toBeDefined()
+    expect(hotNodes.length).toBeLessThanOrEqual(1)
+
+    await mgr.stop()
+  })
+
+  test('_findHotNodes should return empty array for empty range', async () => {
+    const mgr = new ShardManager(shardMap, clock)
+    await mgr.start()
+    await new Promise(r => setTimeout(r, 50))
+
+    const range = mgr.getRange('rebal-range-1') // 空 range
+    const rebalancer = new Rebalancer(mgr)
+
+    const hotNodes = await (rebalancer as any)._findHotNodes(range, 5)
+    expect(hotNodes).toBeDefined()
+    expect(Array.isArray(hotNodes)).toBe(true)
+    // 空 range 返回空数组
+    expect(hotNodes.length).toBe(0)
+
+    await mgr.stop()
   })
 })

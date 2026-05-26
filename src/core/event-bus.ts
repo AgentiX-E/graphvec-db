@@ -28,6 +28,7 @@
 import { EventEmitter } from 'node:events'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const zmq = require('zeromq')
+import { Logger } from '../ops/logger'
 type Router = any
 type Dealer = any
 import * as fs from 'node:fs'
@@ -69,49 +70,35 @@ export interface GraphEvent {
  * - `'explicit'` : 在配置中直接传入密钥字符串
  * - `'nas'`       : 通过 NAS 共享目录自动管理公钥
  */
-export type CurveKeyMode = 'explicit' | 'nas'
-
 /**
- * CURVE 安全配置（explicit 模式）
+ * CURVE 强制启用，不可关闭。
+ * 使用单一的 CurveSecurityConfig 配置，无需 mode 区分。
  */
-export interface CurveExplicitConfig {
-  mode: 'explicit'
-  server: boolean
-  secretKey: string
-  publicKey: string
-  peerKeys?: Record<string, string>
-}
-
-/**
- * CURVE 安全配置（NAS 共享目录模式）
- *
- * 文件名格式：`{nodeId}_{port}.pub`，内容 = 一行 CURVE 公钥。
- * 每个进程启动时写入自己的文件，扫描目录中所有 `*.pub` 文件自动发现 peer。
- *
- * NAS 目录路径优先使用 `EVENTBUS_CURVE_DIR` 环境变量，未设置时回退到 `publicKeyDir`。
- */
-export interface CurveNasConfig {
-  mode: 'nas'
-  /** 本节点 ID（唯一标识） */
-  nodeId: string
-  /** 本节点 ROUTER 监听端口 */
-  port: number
-  /** 是否作为 CURVE server（ROUTER 端），ROUTER/SERVER=true，DEALER/SERVER=false */
-  server: boolean
-  /** NAS 共享公钥目录路径（回退值，`EVENTBUS_CURVE_DIR` 环境变量优先） */
-  publicKeyDir: string
-}
-
 /**
  * CURVE 安全配置
+ *
+ * CURVE 是 ZeroMQ 内置的 Curve25519 认证+加密机制。
+ * 当前项目强制启用 CURVE，不可关闭。
+ * - `server`: ROUTER 端 true，DEALER 端 false
+ * - `publicKeyDir`: NAS 共享公钥目录路径
+ * - `port`: 本节点 ROUTER 监听端口
+ * - `nodeId`: 本节点唯一标识
  */
-export type CurveConfig = CurveExplicitConfig | CurveNasConfig
+export interface CurveSecurityConfig {
+  server: boolean
+  publicKeyDir: string
+  port: number
+  nodeId: string
+}
 
 /**
  * 传输安全配置
+ *
+ * CURVE 强制启用，不可关闭。
+ * `curve` 字段必须提供，不可为 undefined。
  */
 export interface EventBusSecurity {
-  curve: CurveConfig
+  curve: CurveSecurityConfig
 }
 
 /**
@@ -159,7 +146,7 @@ function publicKeyFileForEndpoint(nodeId: string, port: number): string {
  * 从 `*.pub` 文件名解析 nodeId 和 port
  * 文件名格式：`{nodeId}_{port}.pub`
  */
-function parsePubFilename(filename: string): { nodeId: string; port: number } | null {
+export function parsePubFilename(filename: string): { nodeId: string; port: number } | null {
   const base = filename.endsWith('.pub') ? filename.slice(0, -4) : filename
   const lastUnderscore = base.lastIndexOf('_')
   if (lastUnderscore < 0) return null
@@ -223,7 +210,10 @@ export class EventBus {
   private running = false
   /** NAS 目录路径 */
   private nasKeyDir: string | null = null
+  /** NAS 目录变更监控定时器（动态 DEALER 管理） */
+  private _nasMonitorTimer: ReturnType<typeof setInterval> | null = null
   private nasKeyFiles: Set<string> | null = null
+  private logger: Logger
 
   /**
    * 消息接收回调：EventStream 注册此回调处理收到的所有消息。
@@ -238,6 +228,7 @@ export class EventBus {
       subscribeAddresses: config.subscribeAddresses ?? [],
       isRaftLeader: config.isRaftLeader ?? false,
     }
+    this.logger = new Logger('EventBus')
   }
 
   // ── CURVE 密钥生成与磁盘管理 ─────────
@@ -280,12 +271,21 @@ export class EventBus {
     return result
   }
 
+  /**
+   * 解析 CURVE 配置：
+   * 1. 生成本机密钥对（secretKey + publicKey）
+   * 2. 将公钥写入共享目录
+   * 3. 扫描目录发现所有 peer 公钥
+   * 4. 返回 resolved 配置（含密钥 + peer 信息）
+   */
   static async resolveCurveConfig(security: EventBusSecurity): Promise<{
-    explicitConfig: CurveExplicitConfig
+    secretKey: string
+    publicKey: string
+    peerKeys: Record<string, string>
     peerAddresses: string[]
     peerNodeIds: string[]
   }> {
-    const curve = security.curve as CurveNasConfig
+    const curve = security.curve
     const { publicKey, secretKey } = EventBus.generateCurveKeys()
     EventBus.writePublicKeyToDir(curve.publicKeyDir, curve.nodeId, curve.port, publicKey)
     const allPeers = await EventBus.waitForPeerKeys(curve.publicKeyDir, curve.nodeId)
@@ -302,11 +302,7 @@ export class EventBus {
       peerNodeIds.push(peer.nodeId)
     }
 
-    return {
-      explicitConfig: { mode: 'explicit', server: curve.server, secretKey, publicKey, peerKeys },
-      peerAddresses,
-      peerNodeIds,
-    }
+    return { secretKey, publicKey, peerKeys, peerAddresses, peerNodeIds }
   }
 
   static async waitForPeerKeys(dir: string, selfNodeId?: string, minPeers = 1): Promise<PeerDescriptor[]> {
@@ -329,39 +325,33 @@ export class EventBus {
     if (this.running) return
     this.running = true
 
-    // NAS 模式：自动生成密钥对 + 公钥分发 + 推导地址
-    if (this.config.security?.curve?.mode === 'nas') {
-      const nasConfig = this.config.security.curve as CurveNasConfig
-      const curveDir = process.env.EVENTBUS_CURVE_DIR || nasConfig.publicKeyDir
-      nasConfig.publicKeyDir = curveDir
-      this.nasKeyDir = curveDir
-
-      if (!this.config.publishAddress) {
-        this.config.publishAddress = `tcp://0.0.0.0:${nasConfig.port}`
-      }
-
-      const { explicitConfig, peerAddresses, peerNodeIds } = await EventBus.resolveCurveConfig(this.config.security)
-
-      this.config = {
-        ...this.config,
-        security: { curve: explicitConfig },
-        subscribeAddresses: this.config.subscribeAddresses && this.config.subscribeAddresses.length > 0
-          ? this.config.subscribeAddresses
-          : peerAddresses,
-      }
-
-      // 保存 peerNodeIds 供 DEALER 创建使用
-      ;(this.config as any)._peerNodeIds = peerNodeIds
-    }
-
-    // CURVE 是强制安全机制
-    const hasZMQ = (!this.config.isRaftLeader && this.config.publishAddress) ||
-      (this.config.subscribeAddresses!.length > 0)
-    if (hasZMQ && !this.config.security?.curve) {
+    if (!this.config.security?.curve) {
       throw new Error(
         'EventBus: CURVE security is required when using ZMQ. ' +
-        'Provide a `security.curve` config.',
+        'Provide a `security.curve` config with nodeId, port, server, and publicKeyDir.',
       )
+    }
+
+    const curve = this.config.security.curve
+    const curveDir = process.env.EVENTBUS_CURVE_DIR || curve.publicKeyDir
+    this.nasKeyDir = curveDir
+    ;(this.config.security.curve as any).publicKeyDir = curveDir
+
+    if (!this.config.publishAddress && curve.port) {
+      this.config.publishAddress = `tcp://0.0.0.0:${curve.port}`
+    }
+
+    // 解析 CURVE 配置：生成密钥对 + 公钥分发 + 扫描 peer
+    const { secretKey, publicKey, peerKeys, peerAddresses, peerNodeIds } =
+      await EventBus.resolveCurveConfig(this.config.security)
+
+    // 存储解析后的密钥供 _applyCurveToSocket 使用
+    ;(this.config as any)._resolvedCurve = { secretKey, publicKey, peerKeys }
+    ;(this.config as any)._peerNodeIds = peerNodeIds
+
+    // 自动填充 subscribeAddresses（如果未手动指定）
+    if (!this.config.subscribeAddresses || this.config.subscribeAddresses.length === 0) {
+      this.config.subscribeAddresses = peerAddresses
     }
 
     // 1. 启动 ROUTER（Server）
@@ -369,37 +359,36 @@ export class EventBus {
       this.routerSocket = new zmq.Router()
       this._applyCurveToSocket(this.routerSocket, true)
       await this.routerSocket.bind(this.config.publishAddress)
-      console.log(`EventBus ROUTER bound to ${this.config.publishAddress}`)
+      this.logger.info(`ROUTER bound to ${this.config.publishAddress}`)
       this._startRouterLoop()
     }
 
     // 2. 为每个 peer 创建 DEALER（Client）
-    if (this.config.subscribeAddresses!.length > 0) {
-      const peerNodeIds = (this.config as any)._peerNodeIds as string[] | undefined
-      const curve = this.config.security?.curve
+    if (this.config.subscribeAddresses.length > 0) {
+      const pnids = (this.config as any)._peerNodeIds as string[] | undefined
 
-      for (let i = 0; i < this.config.subscribeAddresses!.length; i++) {
-        const addr = this.config.subscribeAddresses![i]
-        const peerNodeId = peerNodeIds?.[i] || `peer-${i}`
+      for (let i = 0; i < this.config.subscribeAddresses.length; i++) {
+        const addr = this.config.subscribeAddresses[i]
+        const peerNodeId = pnids?.[i] || `peer-${i}`
 
         const dealer = new zmq.Dealer()
         this._applyCurveToSocket(dealer, false)
 
-        // CURVE：DEALER 作为 client，需要对方 ROUTER 的公钥
-        if (curve?.mode === 'explicit' && curve.peerKeys) {
-          const s = dealer as any
-          s.curvePublicKey = curve.publicKey
-          s.curveSecretKey = curve.secretKey
-          // 通过 nodeId 查对方公钥
-          const serverKey = curve.peerKeys[peerNodeId] || curve.peerKeys[addr] || Object.values(curve.peerKeys).find(k => k !== curve.publicKey)
-          if (serverKey) s.curveServerKey = serverKey
-        }
+        // DEALER(client) 需要对方 ROUTER(server) 的公钥
+        const s = dealer as any
+        s.curvePublicKey = publicKey
+        s.curveSecretKey = secretKey
+        const serverKey = peerKeys[peerNodeId] || peerKeys[addr] || Object.values(peerKeys).find(k => k !== publicKey)
+        if (serverKey) s.curveServerKey = serverKey
 
         await dealer.connect(addr)
         this.dealerSockets.set(peerNodeId, dealer)
-        console.log(`EventBus DEALER connected to ${addr} (peer: ${peerNodeId})`)
+        this.logger.info(`DEALER connected to ${addr} (peer: ${peerNodeId})`)
       }
     }
+
+    // 启动 NAS 目录动态监控
+    this._startNasMonitor(3000)
   }
 
   /**
@@ -407,6 +396,11 @@ export class EventBus {
    */
   async stop(): Promise<void> {
     this.running = false
+    // 清除 NAS 监控定时器
+    if (this._nasMonitorTimer) {
+      clearInterval(this._nasMonitorTimer)
+      this._nasMonitorTimer = null
+    }
     if (this.routerSocket) {
       this.routerSocket.close()
       this.routerSocket = null
@@ -429,13 +423,13 @@ export class EventBus {
   send(nodeId: string, msg: TransportMessage): void {
     const dealer = this.dealerSockets.get(nodeId)
     if (!dealer) {
-      console.warn(`EventBus: no DEALER for peer ${nodeId}, trying broadcast`)
+      this.logger.warn(`no DEALER for peer ${nodeId}, trying broadcast`)
       this.broadcast(msg)
       return
     }
     const payload = Buffer.from(JSON.stringify(msg))
     dealer.send([payload]).catch((err: Error) => {
-      console.warn(`EventBus DEALER send to ${nodeId} error: ${err.message}`)
+      this.logger.warn(`DEALER send to ${nodeId} error: ${err.message}`)
     })
   }
 
@@ -446,7 +440,7 @@ export class EventBus {
     for (const [nodeId, dealer] of this.dealerSockets) {
       const payload = Buffer.from(JSON.stringify(msg))
       dealer.send([payload]).catch((err: Error) => {
-        console.warn(`EventBus DEALER broadcast to ${nodeId} error: ${err.message}`)
+        this.logger.warn(`DEALER broadcast to ${nodeId} error: ${err.message}`)
       })
     }
   }
@@ -491,21 +485,182 @@ export class EventBus {
   /**
    * 将 CURVE 安全配置应用到 ZMQ socket
    *
+   * CURVE 是强制安全机制，此处无条件应用。
+   * 密钥信息已在 start() 中解析并存储在 `_resolvedCurve`。
+   * 注意：DEALER(client) 端的 curveServerKey 在 start() DEALER 创建循环中单独设置，
+   * 因为不同 peer 的 serverKey 不同，不能在这里统一设置。
+   *
    * @param isRouter - true = ROUTER(server)，false = DEALER(client)
    */
   private _applyCurveToSocket(socket: Router | Dealer, isRouter: boolean): void {
-    const curve = this.config.security?.curve
-    if (!curve || curve.mode !== 'explicit') return
+    const resolved = (this.config as any)._resolvedCurve as { secretKey: string; publicKey: string; peerKeys: Record<string, string> } | undefined
+    if (!resolved) {
+      throw new Error('EventBus: CURVE keys not resolved. Call start() to initialize.')
+    }
 
     const s = socket as any
     s.curveServer = isRouter  // ROUTER=server, DEALER=client
-    s.curveSecretKey = curve.secretKey
-    s.curvePublicKey = curve.publicKey
+    s.curveSecretKey = resolved.secretKey
+    s.curvePublicKey = resolved.publicKey
+  }
 
-    // DEALER(client) 需要对方 ROUTER(server) 的公钥
-    if (!isRouter && curve.peerKeys) {
-      // 取第一个非本机公钥作为默认 serverKey
-      // 每个 DEALER connect 前具体设置（在 start() 中已完成）
+  // ── NAS 目录动态监控 ────────────────
+
+  /**
+   * 启动 NAS 目录动态监控。
+   * 周期性扫描 curveDir，动态创建/关闭 DEALER socket。
+   *
+   * @param intervalMs 扫描间隔（毫秒），默认 3000
+   */
+  private _startNasMonitor(intervalMs = 3000): void {
+    if (this._nasMonitorTimer) {
+      clearInterval(this._nasMonitorTimer)
+    }
+    this._nasMonitorTimer = setInterval(() => {
+      try {
+        this._syncPeerDealers()
+      } catch (err: any) {
+        this.logger.warn(`NAS monitor sync error: ${err.message}`)
+      }
+    }, intervalMs)
+    this._nasMonitorTimer.unref()
+    this.logger.info(`NAS monitor started (interval=${intervalMs}ms)`)
+  }
+
+  /**
+   * 扫描 NAS 目录，对比当前 DEALER，创建新增 peer 的 DEALER、关闭消失 peer 的 DEALER。
+   */
+  private _syncPeerDealers(): void {
+    if (!this.nasKeyDir) return
+
+    const resolved = (this.config as any)._resolvedCurve as { secretKey: string; publicKey: string; peerKeys: Record<string, string> } | undefined
+    if (!resolved) return
+
+    const allPeers = EventBus.readAllPeerKeys(this.nasKeyDir)
+    const selfNodeId = this.config.nodeId
+
+    // 构建当前 peer 集合（排除自身）
+    const currentPeers = new Set<string>()
+    for (const peer of allPeers) {
+      if (peer.nodeId !== selfNodeId) {
+        currentPeers.add(peer.nodeId)
+      }
+    }
+
+    const existingPeerIds = new Set(this.dealerSockets.keys())
+
+    // ── 新增 peer（currentPeers - existingPeerIds）──
+    for (const peerNodeId of currentPeers) {
+      if (!existingPeerIds.has(peerNodeId)) {
+        const peer = allPeers.find(p => p.nodeId === peerNodeId)
+        if (!peer) continue
+
+        try {
+          const dealer = new zmq.Dealer()
+          this._applyCurveToSocket(dealer, false)
+
+          const s = dealer as any
+          s.curvePublicKey = resolved.publicKey
+          s.curveSecretKey = resolved.secretKey
+
+          // 设置对方 ROUTER 的公钥
+          const serverKey = resolved.peerKeys[peerNodeId] || resolved.peerKeys[peer.address] || peer.publicKey
+          if (serverKey) {
+            s.curveServerKey = serverKey
+          } else {
+            this.logger.warn(`_syncPeerDealers: no curveServerKey for peer ${peerNodeId}, using ${peer.publicKey}`)
+            s.curveServerKey = peer.publicKey
+          }
+
+          dealer.connect(peer.address)
+          this.dealerSockets.set(peerNodeId, dealer)
+          this.logger.info(`[NAS] DEALER created for new peer ${peerNodeId} @ ${peer.address}`)
+        } catch (err: any) {
+          this.logger.warn(`[NAS] failed to create DEALER for ${peerNodeId}: ${err.message}`)
+        }
+      }
+    }
+
+    // ── 消失 peer（existingPeerIds - currentPeers）──
+    for (const peerNodeId of existingPeerIds) {
+      if (!currentPeers.has(peerNodeId)) {
+        const dealer = this.dealerSockets.get(peerNodeId)
+        if (dealer) {
+          try {
+            dealer.close()
+          } catch { /* ignore close error */ }
+          this.dealerSockets.delete(peerNodeId)
+          this.logger.info(`[NAS] DEALER closed for gone peer ${peerNodeId}`)
+        }
+
+        // 从 identity 映射清理
+        const identity = this.nodeToIdentity.get(peerNodeId)
+        if (identity) {
+          this.identityToNode.delete(identity)
+          this.nodeToIdentity.delete(peerNodeId)
+        }
+      }
+    }
+
+    // 更新 _peerNodeIds 列表
+    (this.config as any)._peerNodeIds = Array.from(currentPeers)
+  }
+
+  /**
+   * 按 nodeId 重建 DEALER socket。
+   * 如果该 nodeId 已有 DEALER，先 close 旧的再重建。
+   * 用于 Outbox PerPeerWorker 退避恢复时重建连接。
+   *
+   * @returns true=成功重建，false=未找到对应 peer 公钥
+   */
+  async _recoverDealerByNodeId(nodeId: string): Promise<boolean> {
+    if (!this.nasKeyDir) return false
+
+    // 关闭已有的 DEALER（如果有）
+    const oldDealer = this.dealerSockets.get(nodeId)
+    if (oldDealer) {
+      try {
+        oldDealer.close()
+      } catch { /* ignore */ }
+      this.dealerSockets.delete(nodeId)
+    }
+
+    // 扫描目录找到该 nodeId 的 peer
+    const allPeers = EventBus.readAllPeerKeys(this.nasKeyDir)
+    const peer = allPeers.find(p => p.nodeId === nodeId)
+    if (!peer) {
+      this.logger.warn(`_recoverDealerByNodeId: no peer found for ${nodeId}`)
+      return false
+    }
+
+    const resolved = (this.config as any)._resolvedCurve as { secretKey: string; publicKey: string; peerKeys: Record<string, string> } | undefined
+    if (!resolved) {
+      this.logger.warn(`_recoverDealerByNodeId: no resolved curve keys`)
+      return false
+    }
+
+    try {
+      const dealer = new zmq.Dealer()
+      this._applyCurveToSocket(dealer, false)
+
+      const s = dealer as any
+      s.curvePublicKey = resolved.publicKey
+      s.curveSecretKey = resolved.secretKey
+
+      const serverKey = resolved.peerKeys[nodeId] || resolved.peerKeys[peer.address] || peer.publicKey
+      if (serverKey) {
+        s.curveServerKey = serverKey
+      } else {
+        s.curveServerKey = peer.publicKey
+      }
+
+      await dealer.connect(peer.address)
+      this.dealerSockets.set(nodeId, dealer)
+      this.logger.info(`[NAS] DEALER recovered for peer ${nodeId} @ ${peer.address}`)
+      return true
+    } catch (err: any) {
+      this.logger.warn(`[NAS] failed to recover DEALER for ${nodeId}: ${err.message}`)
+      return false
     }
   }
 
@@ -547,7 +702,7 @@ export class EventBus {
           }
         } catch (err: any) {
           if (!this.running) break
-          console.warn(`EventBus ROUTER receive error: ${err.message}`)
+          this.logger.warn(`ROUTER receive error: ${err.message}`)
         }
       }
     }
@@ -558,6 +713,7 @@ export class EventBus {
 // ── 全局单例 ──────────────────────────
 
 let _instance: EventBus | null = null
+const _initLogger = new Logger('EventBus')
 
 export async function initEventBus(config: EventBusConfig): Promise<EventBus> {
   if (_instance) {
@@ -565,7 +721,7 @@ export async function initEventBus(config: EventBusConfig): Promise<EventBus> {
   }
   _instance = new EventBus(config)
   await _instance.start().catch((err) => {
-    console.error(`EventBus init error: ${err.message}`)
+    _initLogger.error(`init error: ${err.message}`)
   })
   return _instance
 }

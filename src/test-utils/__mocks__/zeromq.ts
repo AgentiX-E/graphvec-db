@@ -37,3 +37,37 @@ export class Subscriber {
     })
   }
 }
+
+/** Mock Dealer socket — used by EventBus for outbound connections */
+export class Dealer {
+  connect: jest.Mock
+  close: jest.Mock
+  send: jest.Mock
+  constructor() {
+    const mock = createMockSocket()
+    this.connect = mock.connect
+    this.close = mock.close
+    this.send = mock.send
+  }
+}
+
+/** Mock Router socket — used by EventBus for inbound connections */
+export class Router {
+  bind: jest.Mock
+  close: jest.Mock
+  receive: jest.Mock
+  constructor() {
+    const mock = createMockSocket()
+    this.bind = mock.bind
+    this.close = mock.close
+    this.receive = jest.fn()
+  }
+}
+
+/** Mock curveKeyPair */
+export function curveKeyPair(): { publicKey: string; secretKey: string } {
+  return {
+    publicKey: 'mock-pub-key-abcdef1234567890abcdef1234567890abcdef1234567890abc',
+    secretKey: 'mock-sec-key-abcdef1234567890abcdef1234567890abcdef1234567890abc',
+  }
+}

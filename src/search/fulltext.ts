@@ -51,6 +51,15 @@ export class FullTextIndex {
     this.ms = new MiniSearch({
       fields,
       storeFields: fields,
+      tokenize: (text: string) => FullTextIndex._cjkTokenize(text),
+      processTerm: (term: string) => {
+        // For CJK characters, don't lower-case or stem — they're case-insensitive by nature
+        // For ASCII, apply standard lowercasing
+        if (/^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+$/.test(term)) {
+          return term
+        }
+        return term.toLowerCase()
+      },
     })
   }
 
@@ -262,23 +271,57 @@ export class FullTextIndex {
     return FullTextIndex.deserialize(data)
   }
 
-  private _tokenize(text: string): string[] {
-    return text.toLowerCase().split(/[^a-zA-Z0-9\u4e00-\u9fff]+/).filter(Boolean)
-  }
-
-  private _cjkTokenize(text: string): string[] {
+  /**
+   * CJK-aware tokenizer using character bigrams (overlapping 2-grams) for CJK text
+   * and whitespace/punctuation splitting for non-CJK text.
+   *
+   * Character bigrams with overlap ensure that any 2-character search term
+   * will match, while still providing good recall for longer phrases.
+   * Examples:
+   *   "编程"      → ["编程"]
+   *   "南京市"    → ["南京", "京市"]
+   *   "Python编程guide" → ["python", "编程", "guide"]
+   *
+   * Supports:
+   * - CJK Unified Ideographs (Chinese, Japanese Kanji)
+   * - Hiragana / Katakana (Japanese)
+   * - ASCII alphanumeric (English / mixed)
+   */
+  private static _cjkTokenize(text: string): string[] {
     const tokens: string[] = []
-    const segments = text.split(/([\u4e00-\u9fff]+)/).filter(Boolean)
+
+    // Split by CJK characters — this separates CJK runs from ASCII runs
+    const segments = text.split(/([\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+)/).filter(Boolean)
+
     for (const seg of segments) {
-      if (/^[\u4e00-\u9fff]+$/.test(seg)) {
-        for (let i = 0; i < seg.length - 1; i++) {
-          tokens.push(seg.substring(i, i + 2))
-        }
+      if (/^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+$/.test(seg)) {
+        // CJK segment: emit overlapping character bigrams
+        FullTextIndex._cjkBigrams(seg, tokens)
       } else {
+        // Non-CJK — standard lowercasing and split
         tokens.push(...seg.toLowerCase().split(/[^a-zA-Z0-9]+/).filter(Boolean))
       }
     }
+
     return tokens
+  }
+
+  /**
+   * Generate overlapping character bigrams from a CJK string and append to tokens array.
+   * For single characters (rare), emit the character itself.
+   */
+  private static _cjkBigrams(text: string, out: string[]): void {
+    if (text.length >= 2) {
+      for (let i = 0; i < text.length - 1; i++) {
+        out.push(text.substring(i, i + 2))
+      }
+    } else if (text.length === 1) {
+      out.push(text)
+    }
+  }
+
+  private _tokenize(text: string): string[] {
+    return FullTextIndex._cjkTokenize(text)
   }
 }
 

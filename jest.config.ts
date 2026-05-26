@@ -19,6 +19,7 @@ module.exports = {
     '^test/(.*)$': '<rootDir>/test/$1',
     '^zeromq$': '<rootDir>/src/test-utils/__mocks__/zeromq.ts',
     '^graph-crdt$': '<rootDir>/src/test-utils/__mocks__/graph-crdt.ts',
+    '^chokidar$': '<rootDir>/src/security/__mocks__/chokidar.ts',
   },
   // Handle TypeScript path alias in test imports
   transform: {
@@ -33,4 +34,8 @@ module.exports = {
       },
     ],
   },
+  transformIgnorePatterns: [
+    // Do not transform ESM-only dependencies
+    '/node_modules/(?!(archiver|tar|tar-stream|minizlib|minipass|yauzl|bl|readable-stream)/)',
+  ],
 }

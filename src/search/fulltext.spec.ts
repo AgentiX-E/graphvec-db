@@ -117,6 +117,57 @@ describe('FullTextIndex', () => {
     })
   })
 
+  describe('CJK 分词支持 (Item 19)', () => {
+    test('TC-19.1: 中文搜索 — 索引"我喜欢编程"并搜索"编程"应匹配', () => {
+      const idx = new FullTextIndex()
+      idx.addDocument('doc1', { name: '我喜欢编程' })
+      const results = idx.search('编程')
+      expect(results).toHaveLength(1)
+      expect(results[0].docId).toBe('doc1')
+    })
+
+    test('TC-19.2: 日语搜索 — 索引"私はコードが好きです"并搜索"コード"应匹配', () => {
+      const idx = new FullTextIndex()
+      idx.addDocument('doc1', { name: '私はコードが好きです' })
+      const results = idx.search('コード')
+      expect(results).toHaveLength(1)
+      expect(results[0].docId).toBe('doc1')
+    })
+
+    test('TC-19.3: 混合中英文 — 索引"Python编程guide"并搜索"编程guide"应匹配', () => {
+      const idx = new FullTextIndex()
+      idx.addDocument('doc1', { name: 'Python编程guide' })
+      const results = idx.search('编程guide')
+      expect(results).toHaveLength(1)
+      expect(results[0].docId).toBe('doc1')
+    })
+
+    test('TC-19.4: 无CJK文本 — 纯英文搜索不受影响', () => {
+      const idx = new FullTextIndex()
+      idx.addDocument('doc1', { name: 'hello world' })
+      idx.addDocument('doc2', { name: 'foo bar' })
+      const results = idx.search('hello')
+      expect(results).toHaveLength(1)
+      expect(results[0].docId).toBe('doc1')
+    })
+
+    test('TC-19.5: 分词边界 — "南京市长江大桥"的正确保留', () => {
+      const idx = new FullTextIndex()
+      idx.addDocument('doc1', { name: '南京市长江大桥' })
+      // 搜索完整短语
+      const fullResults = idx.search('南京市')
+      expect(fullResults).toHaveLength(1)
+
+      // 搜索"长江"
+      const chienResults = idx.search('长江')
+      expect(chienResults).toHaveLength(1)
+
+      // 搜索"大桥"
+      const bridgeResults = idx.search('大桥')
+      expect(bridgeResults).toHaveLength(1)
+    })
+  })
+
   describe('文档计数与状态', () => {
     test('count should return 0 for empty index', () => {
       const idx = new FullTextIndex()

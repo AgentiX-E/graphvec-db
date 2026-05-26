@@ -26,7 +26,7 @@ export { DCSync } from './replication/dc-sync'
 
 // Security
 export { Authenticator } from './security/auth'
-export { RBAC } from './security/rbac'
+export { RBAC } from './security/auth'
 export { TLSConfig } from './security/tls'
 export { AuditLogger } from './security/audit'
 

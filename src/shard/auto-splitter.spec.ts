@@ -1,4 +1,4 @@
-import { AutoSplitter } from './auto-splitter'
+import { AutoSplitter, type SplitSuggestion } from './auto-splitter'
 import type { RangeInstance } from './range-instance'
 
 describe('AutoSplitter', () => {
@@ -23,8 +23,8 @@ describe('AutoSplitter', () => {
     expect(splitter.running).toBe(false)
   })
 
-  test('should check and detect oversized ranges', async () => {
-    let resharded = false
+  test('should check and detect oversized ranges and pass SplitSuggestion', async () => {
+    let suggestion: SplitSuggestion | undefined
     const getRanges = () => [mockRange({
       config: { rangeId: 'r1' } as any,
       isDraining: () => false,
@@ -32,12 +32,36 @@ describe('AutoSplitter', () => {
         stats: () => ({ nodeCount: 200000, edgeCount: 50000, diskSizeBytes: 0 }),
       },
     } as RangeInstance)]
-    const onReshard = () => { resharded = true }
+    const onReshard = (s?: SplitSuggestion) => { suggestion = s }
 
     splitter = new AutoSplitter(getRanges, onReshard, { maxNodesPerRange: 100000 })
     const count = await splitter.checkNow()
     expect(count).toBe(1)
-    expect(resharded).toBe(true)
+    expect(suggestion).toBeDefined()
+    expect(suggestion!.rangeId).toBe('r1')
+    expect(suggestion!.nodeCount).toBe(200000)
+    expect(suggestion!.edgeCount).toBe(50000)
+    expect(suggestion!.suggestedTargetCount).toBe(2)
+    expect(suggestion!.reason).toBe('node_count_exceeded')
+  })
+
+  test('should compute suggestedTargetCount correctly (1500/1000 → ceil=2)', async () => {
+    let suggestion: SplitSuggestion | undefined
+    const getRanges = () => [mockRange({
+      config: { rangeId: 'r2' } as any,
+      isDraining: () => false,
+      engine: {
+        stats: () => ({ nodeCount: 1500, edgeCount: 300, diskSizeBytes: 0 }),
+      },
+    } as RangeInstance)]
+    const onReshard = (s?: SplitSuggestion) => { suggestion = s }
+
+    splitter = new AutoSplitter(getRanges, onReshard, { maxNodesPerRange: 1000 })
+    const count = await splitter.checkNow()
+    expect(count).toBe(1)
+    expect(suggestion).toBeDefined()
+    expect(suggestion!.suggestedTargetCount).toBe(2)
+    expect(suggestion!.nodeCount).toBe(1500)
   })
 
   test('should skip ranges below threshold', async () => {

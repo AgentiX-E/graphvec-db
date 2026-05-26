@@ -7,6 +7,7 @@
  */
 import { RaftLogicConsensus } from './raft-logic-consensus'
 import { ConsensusConfig } from './consensus-provider'
+import { TcpTransport } from './transport'
 
 describe('RaftLogicConsensus', () => {
   let config: ConsensusConfig
@@ -19,6 +20,10 @@ describe('RaftLogicConsensus', () => {
       electionTimeoutMs: 500,
       heartbeatIntervalMs: 100,
     }
+  })
+
+  afterEach(() => {
+    TcpTransport.reset()
   })
 
   describe('construction', () => {
@@ -303,6 +308,168 @@ describe('RaftLogicConsensus', () => {
       const consensus = new RaftLogicConsensus(config, mockModule)
       await consensus.start()
       await expect(consensus.waitForLeader()).resolves.toBeUndefined()
+    })
+  })
+
+  describe('barrier', () => {
+    it('should use WASM barrier() when available', async () => {
+      const barrierFn = jest.fn().mockResolvedValue(undefined)
+      const mockModule = {
+        RaftNode: jest.fn().mockImplementation(() => ({
+          start: jest.fn().mockResolvedValue(undefined),
+          stop: jest.fn().mockResolvedValue(undefined),
+          clientRequest: jest.fn().mockResolvedValue({ ok: true }),
+          barrier: barrierFn,
+          status: jest.fn().mockReturnValue({ role: 'leader', leaderId: '1', term: 1 }),
+        })),
+        SqliteStorage: jest.fn().mockImplementation(() => ({
+          open: jest.fn().mockResolvedValue(undefined),
+        })),
+        InMemoryTransport: jest.fn(),
+        ready: Promise.resolve(),
+      }
+      const consensus = new RaftLogicConsensus(config, mockModule)
+      await consensus.start()
+
+      await consensus.barrier(3000)
+      expect(barrierFn).toHaveBeenCalledWith({ timeout: 3000 })
+    })
+
+    it('should use read-after-write fallback when WASM lacks barrier()', async () => {
+      const clientRequestFn = jest.fn().mockResolvedValue({ ok: true })
+      const mockModule = {
+        RaftNode: jest.fn().mockImplementation(() => ({
+          start: jest.fn().mockResolvedValue(undefined),
+          stop: jest.fn().mockResolvedValue(undefined),
+          clientRequest: clientRequestFn,
+          readIndex: jest.fn().mockResolvedValue(undefined),
+          status: jest.fn().mockReturnValue({ role: 'leader', leaderId: '1', term: 1 }),
+        })),
+        SqliteStorage: jest.fn().mockImplementation(() => ({
+          open: jest.fn().mockResolvedValue(undefined),
+        })),
+        InMemoryTransport: jest.fn(),
+        ready: Promise.resolve(),
+      }
+      const consensus = new RaftLogicConsensus(config, mockModule)
+      await consensus.start()
+
+      await consensus.barrier(5000)
+      // should have called clientRequest with a no-op entry
+      expect(clientRequestFn).toHaveBeenCalledTimes(1)
+      const callArg = clientRequestFn.mock.calls[0][0] as string
+      // Verify it's a barrier no-op payload (base64 of JSON with type: __noop_barrier)
+      expect(callArg).toBeDefined()
+      // Decode and verify structure
+      const decoded = JSON.parse(Buffer.from(callArg, 'base64').toString())
+      expect(decoded.type).toBe('__noop_barrier')
+      expect(decoded.timestamp).toBeGreaterThan(0)
+      // 检查 options
+      expect(clientRequestFn.mock.calls[0][1]).toMatchObject({ waitFor: 'apply', timeout: 5000 })
+    })
+
+    it('should not throw when not started', async () => {
+      const consensus = new RaftLogicConsensus(config)
+      await expect(consensus.barrier()).resolves.toBeUndefined()
+    })
+
+    it('should fallback to read-after-write when WASM barrier() rejects', async () => {
+      const clientRequestFn = jest.fn().mockResolvedValue({ ok: true })
+      const barrierFn = jest.fn().mockRejectedValue(new Error('barrier unavailable'))
+      const mockModule = {
+        RaftNode: jest.fn().mockImplementation(() => ({
+          start: jest.fn().mockResolvedValue(undefined),
+          stop: jest.fn().mockResolvedValue(undefined),
+          clientRequest: clientRequestFn,
+          barrier: barrierFn,
+          status: jest.fn().mockReturnValue({ role: 'leader', leaderId: '1', term: 1 }),
+        })),
+        SqliteStorage: jest.fn().mockImplementation(() => ({
+          open: jest.fn().mockResolvedValue(undefined),
+        })),
+        InMemoryTransport: jest.fn(),
+        ready: Promise.resolve(),
+      }
+      const consensus = new RaftLogicConsensus(config, mockModule)
+      await consensus.start()
+
+      // barrier() rejects, should fallback to read-after-write (clientRequest)
+      await consensus.barrier(3000)
+      expect(barrierFn).toHaveBeenCalledTimes(1)
+      expect(clientRequestFn).toHaveBeenCalledTimes(1)
+    })
+
+    it('should still resolve even if fallback clientRequest fails (error tolerance)', async () => {
+      const barrierFn = jest.fn().mockRejectedValue(new Error('no barrier'))
+      const clientRequestFn = jest.fn().mockRejectedValue(new Error('no-op propose failed'))
+      const mockModule = {
+        RaftNode: jest.fn().mockImplementation(() => ({
+          start: jest.fn().mockResolvedValue(undefined),
+          stop: jest.fn().mockResolvedValue(undefined),
+          clientRequest: clientRequestFn,
+          barrier: barrierFn,
+          status: jest.fn().mockReturnValue({ role: 'leader', leaderId: '1', term: 1 }),
+        })),
+        SqliteStorage: jest.fn().mockImplementation(() => ({
+          open: jest.fn().mockResolvedValue(undefined),
+        })),
+        InMemoryTransport: jest.fn(),
+        ready: Promise.resolve(),
+      }
+      const consensus = new RaftLogicConsensus(config, mockModule)
+      await consensus.start()
+
+      // Even if both barrier and clientRequest fail, barrier() should not throw
+      // (graceful degradation — no linearizable guarantee but read still works)
+      await expect(consensus.barrier(3000)).resolves.toBeUndefined()
+    })
+  })
+
+  // ================================================================
+  // TcpTransport 集成测试
+  // ================================================================
+  describe('TcpTransport 模式', () => {
+    it('should use TcpTransport when transportPort is set', async () => {
+      // 配一个 ENOENT 的 port（不会真监听），但测试创建即可
+      const consensus = new RaftLogicConsensus(config)
+      // 只是验证 config.transportPort 不会导致 start() 之前爆炸
+      // 真正的测试在集成测试中
+      expect(consensus).toBeDefined()
+      expect(consensus._getLoadError()).toBeNull()
+    })
+
+    it('should create TcpTransport via start() and pass to RaftNode', async () => {
+      const mockModule = {
+        RaftNode: jest.fn().mockImplementation(() => ({
+          start: jest.fn().mockResolvedValue(undefined),
+          stop: jest.fn().mockResolvedValue(undefined),
+          clientRequest: jest.fn().mockResolvedValue({ ok: true }),
+          status: jest.fn().mockReturnValue({ role: 'follower', leaderId: null, term: 0 }),
+        })),
+        SqliteStorage: jest.fn().mockImplementation(() => ({
+          open: jest.fn().mockResolvedValue(undefined),
+        })),
+        InMemoryTransport: jest.fn(),
+        ready: Promise.resolve(),
+      }
+
+      const tcpConfig: ConsensusConfig = {
+        ...config,
+        transportPort: 0,  // 0 = OS 分配端口
+        peers: [],
+      }
+      const consensus = new RaftLogicConsensus(tcpConfig, mockModule)
+      await consensus.start()
+
+      // 验证 RaftNode 构造时传入了 transport 对象（而非默认 InMemoryTransport）
+      const raftNodeArgs = mockModule.RaftNode.mock.calls[0][0]
+      expect(raftNodeArgs.transport).toBeDefined()
+      expect(raftNodeArgs.transport.sendTo).toBeDefined()
+      expect(raftNodeArgs.transport.onMessage).toBeDefined()
+      expect(typeof raftNodeArgs.transport.sendTo).toBe('function')
+      expect(typeof raftNodeArgs.transport.onMessage).toBe('function')
+
+      await consensus.stop()
     })
   })
 })

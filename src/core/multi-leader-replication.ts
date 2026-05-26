@@ -1,37 +1,41 @@
 /**
- * multi-leader-replication.ts — Multi-Leader 同步复制层
+ * multi-leader-replication.ts — Multi-Leader 复制层
  *
- * 在 GraphEngine 的 upsert 路径上加入同步复制：写入本地 storage + WAL 后，
- * 通过 EventStream 广播到同 DC 内所有节点，等待所有节点持久化确认后再返回。
- *
- * 冲突解决：HLC 时间戳 + nodeId 比较（LWW），大者覆盖。
- *
- * 架构：
- *   upsertNode / upsertEdge
- *       │
- *       ▼
- *   MultiLeaderReplication.write()
- *       ├── 1. 写入本地 storage + 内存索引
- *       ├── 2. EventStream.emitSync()（同步等待所有远程节点 ACK）
- *       └── 3. 返回结果（或抛出异常）
+ * 基于 Outbox Worker 的最终一致性复制：
+ * 1. replicate() 写入 Outbox（LMDB 持久化）后立即返回
+ * 2. 单一 OutboxWorker 后台发送，per-peer 退避独立
+ * 3. 退避重试（maxBackoffSeconds = 60s），无限重试
+ * 4. 节点下线（.pub 删除）→ Worker 自动停止发送
  */
 
-import { EventStream } from './event-stream'
-import { HlcClock } from '../replication/hlc-clock'
+import { OutboxReplicationManager, type OutboxReplicationConfig } from './outbox-replication'
 import type { NodeProperties, NodeId, TemporalValidity } from '../types'
+import * as crypto from 'node:crypto'
 
 /** Multi-Leader 复制配置 */
 export interface MultiLeaderConfig {
   /** 当前节点 ID */
   nodeId: string
-  /** 同 DC 内所有参与 Multi-Leader 的节点 ID（包括自己） */
-  peers: string[]
-  /** EventStream 实例（需已 open） */
-  eventStream: EventStream
-  /** HLC 时钟实例 */
-  clock: HlcClock
-  /** emitSync 超时（毫秒），默认 30000 */
-  syncTimeoutMs?: number
+  /** peers 列表 [{ nodeId, addr }] */
+  peers: Array<{ nodeId: string; addr: string }>
+  /** Curve 公钥目录 */
+  curveDir: string
+  /** LMDB 数据库路径（可选） */
+  dbPath?: string
+  /** tick 间隔（ms），默认 500 */
+  tickMs?: number
+  /** 最大退避时间（s），默认 60 */
+  maxBackoffSeconds?: number
+  /** 已送达记录保留天数，默认 14 */
+  entryTTLDays?: number
+  /** Housekeeping 执行间隔（ms），默认 86400000 */
+  housekeepingIntervalMs?: number
+  /** EventBus 实例（用于 send + 重建 DEALER） */
+  eventBus: {
+    send: (nodeId: string, msg: any) => Promise<void>
+    _recoverDealerByNodeId?: (nodeId: string) => Promise<void>
+    _handleDealerSendError?: (nodeId: string, err: Error) => void
+  }
 }
 
 /** Multi-Leader 复制结果 */
@@ -42,61 +46,84 @@ export interface WriteResult {
   error?: string
 }
 
+/** replicate 的运行时参数 */
+export interface ReplicateOptions {
+  /** 预期的 ACK 数（0 = 只写本地），默认 peer 数 */
+  emitReplica?: number
+}
+
 /**
- * Multi-Leader 同步复制层
- *
- * 封装写入同步 + LWW 冲突解决的逻辑
+ * Multi-Leader 复制层
  */
 export class MultiLeaderReplication {
+  private manager: OutboxReplicationManager
   private config: MultiLeaderConfig
 
   constructor(config: MultiLeaderConfig) {
-    if (!config.peers.includes(config.nodeId)) {
-      throw new Error(`MultiLeader: nodeId ${config.nodeId} must be in peers list`)
-    }
     this.config = config
+    const peerAddrs = config.peers.filter(p => p.nodeId !== config.nodeId)
+    const mgrConfig: OutboxReplicationConfig = {
+      nodeId: config.nodeId,
+      peers: peerAddrs,
+      dbPath: config.dbPath,
+      curveDir: config.curveDir,
+      tickMs: config.tickMs,
+      maxBackoffSeconds: config.maxBackoffSeconds,
+      entryTTLDays: config.entryTTLDays,
+      housekeepingIntervalMs: config.housekeepingIntervalMs,
+      eventBus: config.eventBus,
+    }
+    this.manager = new OutboxReplicationManager(mgrConfig)
   }
 
   /** 当前节点 ID */
   get nodeId(): string { return this.config.nodeId }
 
+  /** 启动所有 Outbox Worker 并注册 shutdown hook */
+  start(): void {
+    this.manager.start()
+    this.manager.registerShutdownHook()
+  }
+
   /**
-   * 同步复制：将变更事件广播到所有 remote 节点并等待 ACK
-   *
-   * @param type 事件类型（'node:created' | 'node:updated' | 'node:deleted' | 'edge:created'等）
-   * @param data 事件数据
-   * @returns WriteResult
-   * @throws 同步超时异常
+   * 写入 Outbox（不等待远程 ACK）
    */
-  async replicate(type: string, data: Record<string, unknown>): Promise<WriteResult> {
-    // 需要等待的 ACK 数 = 所有远程节点数
-    const expectedAcks = this.config.peers.length - 1
+  async replicate(type: string, data: Record<string, unknown>, opts?: ReplicateOptions): Promise<WriteResult> {
+    const expectedAcks = opts?.emitReplica ?? this.config.peers.filter(p => p.nodeId !== this.config.nodeId).length
 
     if (expectedAcks <= 0) {
       return { success: true, acksReceived: 0, expectedAcks: 0 }
     }
 
-    // 标记 HLC 时间戳
-    const timestamp = this.config.clock.nowWithWallTime()
-    const hlcBytes = Array.from(timestamp.toBytes()).map(b => b.toString(16).padStart(2, '0')).join('')
+    // 标记消息 ID
+    const msgId = crypto.randomUUID()
+    const payload = { ...data, msgId }
 
-    const acksReceived = await this.config.eventStream.emitSync(
-      {
-        type,
-        data: {
-          ...data,
-          __hlc: hlcBytes,
-          __nodeId: this.config.nodeId,
-        },
-      },
-      expectedAcks,
-      this.config.syncTimeoutMs ?? 30000,
-    )
+    this.manager.addMessage(type, payload)
 
+    return { success: true, acksReceived: 0, expectedAcks }
+  }
+
+  /** 停止 */
+  stop(): void {
+    this.manager.stop()
+  }
+
+  /** 统计信息 */
+  getStats(): { workers: number; pending: number } {
     return {
-      success: acksReceived >= expectedAcks,
-      acksReceived,
-      expectedAcks,
+      workers: this.config.peers.filter(p => p.nodeId !== this.config.nodeId).length,
+      pending: this.manager.getStats().pending,
     }
+  }
+
+  /** 通知 Worker 某个 peer 已连接 */
+  notifyConnected(peerId: string): void {
+    this.manager.notifyConnected(peerId)
+  }
+
+  /** 通知 Worker 收到某个 peer 的 ACK */
+  notifyAcked(peerId: string): void {
+    this.manager.notifyAcked(peerId)
   }
 }

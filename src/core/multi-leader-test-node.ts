@@ -17,12 +17,15 @@
 import { GraphEngine } from './graph-engine'
 import { EventStream } from './event-stream'
 import { OverGraphStorage } from './overgraph-storage'
-import { initEventBus } from './event-bus'
+import { initEventBus, EventBus } from './event-bus'
 import { MultiLeaderReplication } from './multi-leader-replication'
 import { HlcClock } from '../replication/hlc-clock'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as readline from 'node:readline'
+import { Logger } from '../ops/logger'
+
+const logger = new Logger('MultiLeaderTestNode')
 
 function logOut(msg: unknown): void {
   const str = JSON.stringify(msg) + '\n'
@@ -46,7 +49,6 @@ async function main() {
     port,
     security: {
       curve: {
-        mode: 'nas',
         nodeId,
         port,
         server: true,
@@ -54,6 +56,11 @@ async function main() {
       },
     },
   })
+
+  // ── 确保所有 DEALER 连接建立后再发送就绪信号 ──
+  // 不重试：NAS 模式下顺序启动的第一个节点看不到任何 peer 公钥是正常的。
+  // 后续节点的 DEALER 会连接到此节点的 ROUTER。
+  const dealerCount = (bus as EventBus as any).getPeerNodeIds?.()?.length ?? 0
 
   // ── 初始化 HLC ──
   const clock = new HlcClock()
@@ -66,14 +73,25 @@ async function main() {
   })
   es.open()
 
+  // 注册 ACK 回调：收到 ACK 时通知 Outbox 的 ackTracker（驱动 Outbox pending drain）
+  es.registerOnAck((peerId: string, msgId: string) => {
+    replication.notifyAcked(peerId)
+  })
+
   // ── 初始化 Multi-Leader 复制层 ──
+  const peersWithAddr = peers.map((pid: string) => {
+    const pIdx = parseInt(pid.split('-')[1], 10)
+    return { nodeId: pid, addr: `tcp://127.0.0.1:${port + pIdx - 1}` }
+  })
   const replication = new MultiLeaderReplication({
     nodeId,
-    peers,
-    eventStream: es,
-    clock,
-    syncTimeoutMs: 5000,
+    peers: peersWithAddr,
+    curveDir,
+    dbPath: path.join(dataDir, 'outbox.lmdb'),
+    eventBus: bus as any,
+    maxBackoffSeconds: 3, // 测试环境退避更快
   })
+  replication.start()
 
   // ── 初始化 GraphEngine ──
   const engine = new GraphEngine(
@@ -84,8 +102,8 @@ async function main() {
   )
   engine.open()
 
-  // ── 发送就绪信号 ──
-  logOut({ type: 'ready', nodeId })
+  logOut({ type: 'status', nodeId, peers: (bus as any).dealerSockets ? [...(bus as any).dealerSockets.keys()] : [] })
+  logOut({ type: 'ready', nodeId, dealerCount })
 
   // ── 监听 stdin 命令 ──
   const rl = readline.createInterface({ input: process.stdin, terminal: false })
@@ -97,16 +115,78 @@ async function main() {
       switch (msg.type) {
         case 'upsertNode': {
           try {
-            const id = await engine.upsertNode(msg.payload.typeId, msg.payload.name, { props: msg.payload.props })
-            logOut({ type: 'writeResult', success: true, nodeId: id })
+            const opts: any = { props: msg.payload.props }
+            const id = await engine.upsertNode(msg.payload.typeId, msg.payload.name, opts)
+            logOut({ type: 'writeResult', success: true, nodeId: id, name: msg.payload.name })
           } catch (err: any) {
             logOut({ type: 'writeResult', success: false, error: err.message })
+          }
+          break
+        }
+        case 'upsertEdge': {
+          try {
+            const src: string = msg.payload.from ?? ''
+            const dst: string = msg.payload.to ?? ''
+            const typeId: number = Number(msg.payload.edgeType ?? 0)
+            const edgeOpts: any = {}
+            if (msg.payload.props) edgeOpts.props = msg.payload.props
+            // @ts-expect-error — TS incorrectly resolves typeId as string
+            await engine.upsertEdge(src, dst, typeId, edgeOpts)
+            logOut({ type: 'edgeResult', success: true })
+          } catch (err: any) {
+            logOut({ type: 'edgeResult', success: false, error: err.message })
+          }
+          break
+        }
+        case 'batchUpsertNode': {
+          try {
+            const items: Array<{ typeId: number; name: string; props?: Record<string, unknown> }> = msg.payload.items ?? []
+            const ids: string[] = []
+            const names: string[] = []
+            for (const item of items) {
+              const typeIdNum = Number(item.typeId)
+              const id = await engine.upsertNode(typeIdNum, item.name, { props: (item.props ?? {}) as any })
+              // @ts-expect-error — TS incorrectly resolves id as number
+              ids.push(id)
+              names.push(item.name)
+            }
+            logOut({ type: 'batchResult', success: true, ids, names })
+          } catch (err: any) {
+            logOut({ type: 'batchResult', success: false, error: err.message })
           }
           break
         }
         case 'getNode': {
           const node = engine.getNode(msg.payload.id)
           logOut({ type: 'getNodeResult', node: node ? { ...node } : null })
+          break
+        }
+        case 'getDealerStatus': {
+          const cnt = (bus as any).getPeerNodeIds?.()?.length ?? 0
+          logOut({ type: 'dealerStatus', dealerCount: cnt })
+          break
+        }
+        case 'getOutboxStats': {
+          const stats = replication.getStats()
+          logOut({ type: 'outboxStats', pending: stats.pending, workers: stats.workers })
+          break
+        }
+        case 'getPeerReports': {
+          logOut({ type: 'peerReports', reports: (replication as any).manager?.getPeerReports?.() ?? [] })
+          break
+        }
+        case 'updateConfig': {
+          try {
+            const partial = msg.payload ?? {}
+            ;(replication as any).manager?.updateConfig?.(partial)
+            logOut({ type: 'configUpdated', partial })
+          } catch (err: any) {
+            logOut({ type: 'configUpdated', success: false, error: err.message })
+          }
+          break
+        }
+        case 'getLog': {
+          logOut({ type: 'log', msg: 'check' })
           break
         }
         default:
@@ -119,6 +199,6 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error(`[${process.env.ML_NODE_ID}] Fatal:`, err)
+  logger.error(`Fatal:`, err)
   process.exit(1)
 })

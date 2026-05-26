@@ -15,6 +15,13 @@ import { MultiLeaderReplication } from './multi-leader-replication'
 import { SchemaDef, ValidationResult } from '../schema/schema-types'
 import { validateNodeType, validateEdgeType } from '../schema/schema-validator'
 
+import { parseQuery, QueryPlan } from '../query/query-engine'
+import { FullTextIndex, SearchOptions, SearchResult } from '../search/fulltext'
+import { RLSContext, RowLevelSecurity } from '../security/rls'
+import { QueryPlanner, QuerySpec, buildIRFromSpec, optimizeIR } from '../api/query-planner'
+import { OptimizerBridge } from '../query/planner-bridge'
+import { Logger } from '../ops/logger'
+
 /** Event for EventStream emit */
 interface StreamEvent { type: string; data: Record<string, unknown> }
 
@@ -184,6 +191,7 @@ export class GraphEngine {
   private _eventStream: EventStream | null = null
   /** Multi-Leader 同步复制层（可选） */
   private _mlReplication: MultiLeaderReplication | null = null
+  private logger: Logger
 
   // ── LRU Cache for neighbors ──
   private _neighborCache: LRUCache<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }>
@@ -194,23 +202,51 @@ export class GraphEngine {
   /** Schema 类型定义（可选） */
   private _schema?: SchemaDef
 
+  /** FullText 全文索引（可选） */
+  private _fulltext: FullTextIndex | null = null
+
+  /** Row-Level Security（可选） */
+  private _rls: RowLevelSecurity | null = null
+
+  /** QueryPlanner — 查询计划器（可选，主供优化器桥接使用） */
+  private _planner: QueryPlanner | null = null
+
+  /** OptimizerBridge — 优化器桥接层（可选） */
+  private _bridge: OptimizerBridge | null = null
+
+  // ── 递归保护（Item 1: upsertNode递归死循环） ──
+  /** 最大递归深度 */
+  private static MAX_RECURSION_DEPTH = 10
+  /** 正在应用远程事件 */
+  private _applyingRemote = false
+  /** 当前递归深度 */
+  private _recursionDepth = 0
+
   /**
    * 可选的回调：当节点/边发生变更时被调用
    * 用于 DeltaSync 捕捉变更
    */
   public onRecordChange?: (name: string, fields: Record<string, any>) => void
 
-  constructor(config: OverGraphConfig, storage?: StorageProvider, eventStream?: EventStream, mlReplication?: MultiLeaderReplication) {
+  constructor(config: OverGraphConfig, storage?: StorageProvider, eventStream?: EventStream, mlReplication?: MultiLeaderReplication, fulltext?: FullTextIndex, rls?: RowLevelSecurity, planner?: QueryPlanner) {
     this.storage = storage ?? new OverGraphStorage()
     this.config = config
     this._eventStream = eventStream ?? null
     this._mlReplication = mlReplication ?? null
+    this._fulltext = fulltext ?? null
+    this._rls = rls ?? null
+    this._planner = planner ?? null
+    this._bridge = null
     this._cacheMaxSize = config.cacheSize ?? 1000
     this._cacheDefaultTTLSec = 60
     this._neighborCache = new LRUCache<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }>(
       this._cacheMaxSize,
       this._cacheDefaultTTLSec,
     )
+    this.logger = new Logger('GraphEngine')
+
+    // 注册 EventStream 远程数据处理（见 open() 方法）
+    // 由 open() 调用 registerApplyHandler，避免构造函数重复注册
   }
 
   /** 设置 Schema 定义 */
@@ -244,41 +280,63 @@ export class GraphEngine {
         ? { dimension: this.config.denseVector.dimension }
         : undefined,
       defaultRetention: this.config.defaultRetention,
+      overgraph: this.config.overgraph,
     })
 
     // 注册远程事件应用回调 — 收到集群内其他节点的变更事件时持久化到本地
     if (this._eventStream) {
       this._eventStream.registerApplyHandler(async (msg) => {
-        switch (msg.type) {
-          case 'node:created':
-          case 'node:updated': {
-            const id = msg.data.id as number
-            const typeId = msg.data.typeId as number
-            const name = msg.data.name as string
-            const props = msg.data.props as Record<string, string | number | boolean | string[] | number[] | null> | undefined
-            await this.upsertNode(typeId, name, { props, skipReplication: true })
-            break
+        // 递归保护：设置远程应用标志 + 深度计数
+        if (this._applyingRemote) {
+          this._recursionDepth++
+          if (this._recursionDepth > GraphEngine.MAX_RECURSION_DEPTH) {
+            this._recursionDepth = 0
+            this._applyingRemote = false
+            throw new Error(`递归深度超过上限 (${GraphEngine.MAX_RECURSION_DEPTH})，已重置保护`)
           }
-          case 'node:deleted': {
-            const id = msg.data.id as number
-            await this.deleteNode(id, true)
-            break
+        } else {
+          this._applyingRemote = true
+          this._recursionDepth = 1
+        }
+        try {
+          switch (msg.type) {
+            case 'node:created':
+            case 'node:updated': {
+              const id = msg.data.id as number
+              const typeId = msg.data.typeId as number
+              const name = msg.data.name as string
+              const props = msg.data.props as Record<string, string | number | boolean | string[] | number[] | null> | undefined
+              await this.upsertNode(typeId, name, { props, skipReplication: true })
+              break
+            }
+            case 'node:deleted': {
+              const id = msg.data.id as number
+              await this.deleteNode(id, true)
+              break
+            }
+            case 'edge:created':
+            case 'edge:updated': {
+              const src = msg.data.src as number
+              const dst = msg.data.dst as number
+              const typeId = msg.data.typeId as number
+              const props = msg.data.props as Record<string, string | number | boolean | string[] | number[] | null> | undefined
+              await this.upsertEdge(src, dst, typeId, { props, skipReplication: true })
+              break
+            }
+            case 'edge:deleted': {
+              const src = msg.data.src as number
+              const dst = msg.data.dst as number
+              const typeId = msg.data.typeId as number
+              await this.deleteEdge(src, dst, typeId, true)
+              break
+            }
           }
-          case 'edge:created':
-          case 'edge:updated': {
-            const src = msg.data.src as number
-            const dst = msg.data.dst as number
-            const typeId = msg.data.typeId as number
-            const props = msg.data.props as Record<string, string | number | boolean | string[] | number[] | null> | undefined
-            await this.upsertEdge(src, dst, typeId, { props, skipReplication: true })
-            break
+        } finally {
+          if (this._recursionDepth > 0) {
+            this._recursionDepth--
           }
-          case 'edge:deleted': {
-            const src = msg.data.src as number
-            const dst = msg.data.dst as number
-            const typeId = msg.data.typeId as number
-            await this.deleteEdge(src, dst, typeId, true)
-            break
+          if (this._recursionDepth === 0) {
+            this._applyingRemote = false
           }
         }
       })
@@ -323,16 +381,20 @@ export class GraphEngine {
       this._nodeCount++
     }
     this._labelIndex.addNode(typeId, id)
+    this._fulltext?.addDocument(String(id), { name, ...(opts?.props ?? {}) })
     this.onRecordChange?.(name, { typeId, ...(opts?.props ?? {}) })
 
     if (this._mlReplication && !opts?.skipReplication) {
-      const result = await this._mlReplication.replicate('node:created', { id, typeId, name, props: opts?.props })
+      const result = await this._mlReplication.replicate('node:created', { id, typeId, name, props: opts?.props }, opts as any)
       if (!result.success) {
-        console.error(`[GraphEngine] Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
+        this.logger.error(`Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
       }
     }
 
-    this._emit({ type: 'node:created', data: { id, typeId, name, props: opts?.props } })
+    // 递归保护：远程应用期间跳过 emit 防止回环
+    if (!this._applyingRemote) {
+      this._emit({ type: 'node:created', data: { id, typeId, name, props: opts?.props } })
+    }
     return id
   }
 
@@ -340,13 +402,22 @@ export class GraphEngine {
    * 根据节点 ID 获取节点记录
    *
    * @param id - 节点 ID
-   * @returns NodeRecord 或 null（节点不存在时）
+   * @param ctx - 可选的 RLS 上下文，如果提供则进行行级过滤
+   * @returns NodeRecord 或 null（节点不存在或 RLS 过滤掉时）
    * @throws {Error} 如果 GraphEngine 未 open()
    */
-  getNode(id: NodeId): NodeRecord | null {
+  getNode(id: NodeId, ctx?: RLSContext): NodeRecord | null {
     this._ensureOpen()
     const raw = this.storage.getNode(id, true)
     if (!raw) return null
+
+    // RLS 过滤：如果上下文提供且 RLS 启用，检查用户是否有权限查看此记录
+    if (this._rls && ctx) {
+      if (!this._rls.checkRecord('nodes', ctx, raw)) {
+        return null
+      }
+    }
+
     let degree = 0
     try {
       const d = this.storage.degrees(id)
@@ -368,14 +439,28 @@ export class GraphEngine {
    * 删除指定 ID 的节点
    *
    * @param id - 要删除的节点 ID
+   * @param skipReplication - 是否跳过 Multi-Leader 同步复制（默认 false）
+   * @param cascade - 是否级联删除关联边（默认 false）
+   *   cascade=true 时，先删除该节点的所有出边，然后删除节点本身。
+   *   注意：当前实现仅删除出边（src === id 的边），入边（dst === id 的边）不受影响。
    * @returns true 如果节点存在且被删除，false 如果节点不存在
    * @throws {Error} 如果 GraphEngine 未 open()
    */
-  async deleteNode(id: NodeId, skipReplication = false): Promise<boolean> {
+  async deleteNode(id: NodeId, skipReplication = false, cascade = false): Promise<boolean> {
     this._ensureOpen()
     const node = this.storage.getNode(id, true)
     if (!node) return false
+
+    // 级联删除：先删除所有以该节点为起点的边
+    if (cascade) {
+      const entries = this.storage.neighbors(id)
+      for (const entry of entries) {
+        await this.deleteEdge(id, entry.nodeId, entry.edgeTypeId, skipReplication)
+      }
+    }
+
     this._labelIndex.removeNode(node.typeId, id)
+    this._fulltext?.removeDocument(String(id))
     this.storage.deleteNode(id)
     this._nodeIds.delete(id)
     this._nodeCount = Math.max(0, this._nodeCount - 1)
@@ -384,11 +469,14 @@ export class GraphEngine {
     if (this._mlReplication && !skipReplication) {
       const result = await this._mlReplication.replicate('node:deleted', { id, typeId: node.typeId, name: node.key })
       if (!result.success) {
-        console.error(`[GraphEngine] Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
+        this.logger.error(`Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
       }
     }
 
-    this._emit({ type: 'node:deleted', data: { id, typeId: node.typeId, name: node.key } })
+    // 递归保护：远程应用期间跳过 emit 防止回环
+    if (!this._applyingRemote) {
+      this._emit({ type: 'node:deleted', data: { id, typeId: node.typeId, name: node.key } })
+    }
     return true
   }
 
@@ -417,6 +505,7 @@ export class GraphEngine {
       const node = this.storage.getNode(id, true)
       if (node) {
         nameToId[node.key] = id
+        this._fulltext?.addDocument(String(id), { name: node.key, ...(node.props as Record<string, string | number | boolean | null>) })
       }
     }
     // Fallback: if any name is missing (e.g. duplicate overwrites),
@@ -467,11 +556,14 @@ export class GraphEngine {
     if (this._mlReplication && !opts?.skipReplication) {
       const result = await this._mlReplication.replicate('edge:created', { src, dst, typeId, props: opts?.props })
       if (!result.success) {
-        console.error(`[GraphEngine] Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
+        this.logger.error(`Multi-Leader replication: ${result.acksReceived}/${result.expectedAcks} ACKs`)
       }
     }
 
-    this._emit({ type: 'edge:created', data: { src, dst, typeId, props: opts?.props } })
+    // 递归保护：远程应用期间跳过 emit 防止回环
+    if (!this._applyingRemote) {
+      this._emit({ type: 'edge:created', data: { src, dst, typeId, props: opts?.props } })
+    }
   }
 
   /**
@@ -524,11 +616,14 @@ export class GraphEngine {
     if (this._mlReplication && result && !skipReplication) {
       const r = await this._mlReplication.replicate('edge:deleted', { src, dst, typeId })
       if (!r.success) {
-        console.error(`[GraphEngine] Multi-Leader replication: ${r.acksReceived}/${r.expectedAcks} ACKs`)
+        this.logger.error(`Multi-Leader replication: ${r.acksReceived}/${r.expectedAcks} ACKs`)
       }
     }
 
-    this._emit({ type: 'edge:deleted', data: { src, dst, typeId } })
+    // 递归保护：远程应用期间跳过 emit 防止回环
+    if (!this._applyingRemote) {
+      this._emit({ type: 'edge:deleted', data: { src, dst, typeId } })
+    }
     return result
   }
 
@@ -537,10 +632,11 @@ export class GraphEngine {
    *
    * @param id - 节点 ID
    * @param opts - 可选参数（maxDepth, edgeTypeFilter）
+   * @param ctx - 可选的 RLS 上下文，如果提供则对结果集进行行级过滤
    * @returns 包含 edges 和 nodes 数组的对象
    * @throws {Error} 如果 GraphEngine 未 open()
    */
-  neighbors(id: NodeId, opts?: { maxDepth?: number; edgeTypeFilter?: number[] }): {
+  neighbors(id: NodeId, opts?: { maxDepth?: number; edgeTypeFilter?: number[] }, ctx?: RLSContext): {
     edges: EdgeRecord[]; nodes: NodeRecord[]
   } {
     this._ensureOpen()
@@ -557,6 +653,10 @@ export class GraphEngine {
         seenNodes.add(entry.nodeId)
         const raw = this.storage.getNode(entry.nodeId, true)
         if (raw) {
+          // RLS 过滤：如果上下文提供且 RLS 启用
+          if (this._rls && ctx && !this._rls.checkRecord('nodes', ctx, raw)) {
+            continue
+          }
           nodes.push({
             id: raw.id, type: raw.typeId, name: raw.key,
             props: raw.props as Record<string, string | number | boolean | null>,
@@ -638,6 +738,443 @@ export class GraphEngine {
       score: hit.score,
       distance: hit.distance,
     })).filter(r => r.node !== null)
+  }
+
+  // ──────────────────────────────────────────
+  // Cypher-lite query execution
+  // ──────────────────────────────────────────
+
+  /**
+   * Cypher-lite 查询入口
+   *
+   * 支持的子集：
+   *   MATCH (a:Label)-[:EDGE_LABEL]->(b) WHERE b.prop > val RETURN b.prop
+   *   MATCH (a) WHERE a.name = "value" RETURN a
+   *   ORDER BY / LIMIT / SKIP
+   *
+   * @param queryString - Cypher-lite 查询字符串
+   * @param ctx - 可选的 RLS 上下文，如果提供则对结果集进行行级过滤
+   * @param useOptimizer - 是否启用优化器桥接（默认 false 向后兼容）
+   * @returns 查询结果（节点记录数组）
+   */
+  query(queryString: string, ctx?: RLSContext, useOptimizer: boolean = false): NodeRecord[] {
+    this._ensureOpen()
+
+    // 如果启用优化器，走 OptimizerBridge 路径
+    if (useOptimizer) {
+      return this._queryOptimized(queryString, ctx)
+    }
+
+    const plan = parseQuery(queryString)
+
+    // 处理集合运算（UNION / INTERSECT / SUBTRACT）
+    if (plan.unionType && plan.rightPlan) {
+      const leftResults = this._executeQueryPlan(plan)
+      const rightResults = this._executeQueryPlan(plan.rightPlan)
+      const combined = this._applySetOperation(leftResults, rightResults, plan.unionType)
+      return this._rls && ctx ? this._rls.enforceQuery('nodes', ctx, combined) : combined
+    }
+
+    const results = this._executeQueryPlan(plan)
+    return this._rls && ctx ? this._rls.enforceQuery('nodes', ctx, results) : results
+  }
+
+  /**
+   * 使用 OptimizerBridge 执行查询。
+   * 将 Cypher-lite 解析后的 QueryPlan 转换为 QuerySpec，再走优化器路径。
+   */
+  private _queryOptimized(queryString: string, ctx?: RLSContext): NodeRecord[] {
+    const plan = parseQuery(queryString)
+    const bridge = this._getOrCreateBridge()
+
+    // 将 QueryPlan 转为 QuerySpec（兼容 Cypher-lite 解析结果）
+    const spec: QuerySpec = {
+      match: plan.scanLabel ? { name: plan.scanLabel } : undefined,
+      where: this._planFiltersToWhere(plan),
+      limit: plan.limit,
+      skip: plan.skip,
+    }
+
+    // 优化器桥接是异步的，但 query() 是同步的
+    // 这里使用同步执行（因为当前的 GraphEngine._executeQueryPlan 也是同步的）
+    const ir = buildIRFromSpec(spec)
+    const optimized = optimizeIR(ir)
+
+    // 同步执行优化后的计划
+    let result = this._executeOptimizedSync(optimized, spec)
+    if (this._rls && ctx) {
+      result = this._rls.enforceQuery('nodes', ctx, result)
+    }
+    return result
+  }
+
+  /**
+   * 将 QueryPlan 的 filters 转为 QuerySpec 的 where 条件。
+   */
+  private _planFiltersToWhere(plan: QueryPlan): Record<string, any> {
+    const where: Record<string, any> = {}
+    for (const f of plan.filters) {
+      if (f.operator === 'EQ') {
+        where[f.property] = f.value
+      }
+    }
+    return where
+  }
+
+  /**
+   * 同步执行优化后的 IR 计划（同步版本，供 query() 使用）。
+   */
+  private _executeOptimizedSync(plan: any, spec: QuerySpec): NodeRecord[] {
+    // 简化实现：直接提取 SCAN 节点的过滤和限制条件，
+    // 用 GraphEngine 的标准同步方法执行
+    let nodes = this._scanAll()
+
+    // 获取下推的过滤条件
+    const details = plan.details || {}
+    const typeId = details.typeId as number | null | undefined
+    const pushedFilters = details.pushedFilters as Array<{ field: string; op: string; value: unknown }> | undefined
+    const pushedLimit = details.pushedLimit as number | undefined
+
+    // 递归收集 SCAN 节点的下推条件（优化器可能把 FILTER 折叠进 SCAN）
+    this._collectPushdownFromPlan(plan, nodes)
+
+    // 按 typeId 过滤
+    if (typeId !== null && typeId !== undefined) {
+      nodes = nodes.filter(n => n.type === typeId)
+    }
+
+    // 应用下推的过滤条件
+    if (pushedFilters && pushedFilters.length > 0) {
+      for (const filter of pushedFilters) {
+        nodes = nodes.filter(n => {
+          const val = this._resolveNodeField(n, filter.field)
+          return this._applyPredicate(val, filter.op, filter.value)
+        })
+      }
+    }
+
+    // 应用下推的 limit（早期截断）
+    if (pushedLimit !== undefined && pushedLimit > 0) {
+      nodes = nodes.slice(0, pushedLimit)
+    }
+
+    return nodes
+  }
+
+  /**
+   * 从计划树中递归收集下推条件，并追加到 passed array。
+   */
+  private _collectPushdownFromPlan(plan: any, _nodes: NodeRecord[]): void {
+    // 当前节点的下推条件
+    const details = plan.details || {}
+    const pushedFilters = details.pushedFilters as Array<{ field: string; op: string; value: unknown }> | undefined
+
+    if (pushedFilters && pushedFilters.length > 0) {
+      details['_collected'] = true
+    }
+
+    // 递归子节点
+    if (plan.children) {
+      for (const child of plan.children) {
+        this._collectPushdownFromPlan(child, _nodes)
+      }
+    }
+  }
+
+  /**
+   * 从 NodeRecord 中解析字段值（与 QueryIR 的 resolveNodeField 逻辑一致）。
+   */
+  private _resolveNodeField(node: NodeRecord, field: string): unknown {
+    const key = field as keyof NodeRecord
+    if (key in node) {
+      return (node as any)[key]
+    }
+    return node.props?.[field]
+  }
+
+  /**
+   * 应用过滤条件（与 QueryIR 的 applyPredicate 逻辑一致）。
+   */
+  private _applyPredicate(value: unknown, op: string, target: unknown): boolean {
+    switch (op) {
+      case 'eq':
+        return value === target
+      case 'neq':
+        return value !== target
+      case 'gt':
+        return typeof value === 'number' && typeof target === 'number' && value > target
+      case 'gte':
+        return typeof value === 'number' && typeof target === 'number' && value >= target
+      case 'lt':
+        return typeof value === 'number' && typeof target === 'number' && value < target
+      case 'lte':
+        return typeof value === 'number' && typeof target === 'number' && value <= target
+      case 'prefix':
+        return typeof value === 'string' && typeof target === 'string' && value.startsWith(target)
+      case 'in':
+        return Array.isArray(target) && target.includes(value)
+      default:
+        return true
+    }
+  }
+
+  /**
+   * 获取或创建 OptimizerBridge 实例。
+   */
+  private _getOrCreateBridge(): OptimizerBridge {
+    if (!this._bridge) {
+      this._bridge = new OptimizerBridge(this)
+    }
+    return this._bridge
+  }
+
+  /**
+   * 暴露给 OptimizerBridge 的全量扫描方法。
+   * OptimizerBridge 通过此方法从本引擎扫描所有节点。
+   */
+  public scanAllNodes(): NodeRecord[] {
+    return this._scanAll()
+  }
+
+  /**
+   * 执行集合运算
+   */
+  private _applySetOperation(
+    left: NodeRecord[],
+    right: NodeRecord[],
+    op: 'union' | 'union_all' | 'intersect' | 'subtract',
+  ): NodeRecord[] {
+    switch (op) {
+      case 'union': {
+        const seen = new Set<number>()
+        const result: NodeRecord[] = []
+        for (const n of [...left, ...right]) {
+          if (!seen.has(n.id)) {
+            seen.add(n.id)
+            result.push(n)
+          }
+        }
+        return result
+      }
+      case 'union_all': {
+        return [...left, ...right]
+      }
+      case 'intersect': {
+        const rightIds = new Set(right.map(n => n.id))
+        return left.filter(n => rightIds.has(n.id))
+      }
+      case 'subtract': {
+        const rightIds = new Set(right.map(n => n.id))
+        return left.filter(n => !rightIds.has(n.id))
+      }
+      default:
+        return left
+    }
+  }
+
+  /**
+   * 执行 QueryPlan
+   */
+  private _executeQueryPlan(plan: QueryPlan, ctx?: RLSContext): NodeRecord[] {
+    // Step 1: 扫描起始节点
+    let candidates: NodeRecord[]
+    if (plan.scanLabel) {
+      // 用 label 字符串匹配所有节点的 typeName
+      candidates = this._scanNodesByLabel(plan.scanLabel)
+    } else {
+      candidates = this._scanAll()
+    }
+
+    // RLS 过滤：扫描结果
+    if (this._rls && ctx) {
+      candidates = this._rls.enforceQuery('nodes', ctx, candidates)
+    }
+
+    if (candidates.length === 0) {
+      // 聚合函数在空结果集时返回预设值
+      if (plan.aggregate) {
+        return this._execAggregation([], plan.aggregate)
+      }
+      return []
+    }
+
+    // Step 2: 执行遍历步（当前仅支持单跳）
+    let results: NodeRecord[] = [...candidates]
+    for (const step of plan.steps) {
+      const filtered: NodeRecord[] = []
+      for (const node of results) {
+        const neighborsRaw = this.storage.neighbors(node.id, {
+          edgeTypeFilter: step.edgeLabel ? [Number(step.edgeLabel)] : undefined,
+        })
+        for (const entry of neighborsRaw) {
+          const neighbor = this.getNode(entry.nodeId, ctx)
+          if (neighbor) {
+            if (step.targetLabel && neighbor.typeName !== step.targetLabel) continue
+            filtered.push(neighbor)
+          }
+        }
+      }
+      results = filtered
+      if (results.length === 0) break
+    }
+
+    // Step 3: 应用 WHERE 过滤器
+    if (plan.filters.length > 0) {
+      results = results.filter(node =>
+        plan.filters.every(f => this._matchFilter(node, f))
+      )
+    }
+
+    // 如果检测到聚合函数，执行聚合（在 WHERE 之后，SKIP/LIMIT 之前）
+    if (plan.aggregate) {
+      return this._execAggregation(results, plan.aggregate)
+    }
+
+    // Step 4: SKIP / LIMIT
+    if (plan.skip && plan.skip > 0) {
+      results = results.slice(plan.skip)
+    }
+    if (plan.limit && results.length > plan.limit) {
+      results = results.slice(0, plan.limit)
+    }
+
+    return results
+  }
+
+  /**
+   * 执行聚合函数
+   */
+  private _execAggregation(nodes: NodeRecord[], agg: { type: string; field?: string; alias?: string }): NodeRecord[] {
+    // 提取实际属性名：如 n.age → age，n.score → score
+    const rawField = agg.field ?? ''
+    const propName = rawField.includes('.') ? rawField.split('.')[1] : rawField
+
+    let value: number
+
+    switch (agg.type) {
+      case 'count':
+        value = nodes.length
+        break
+      case 'sum':
+        value = this._aggregateSum(nodes, propName)
+        break
+      case 'avg':
+        value = this._aggregateAvg(nodes, propName)
+        break
+      case 'max':
+        value = this._aggregateMax(nodes, propName)
+        break
+      case 'min':
+        value = this._aggregateMin(nodes, propName)
+        break
+      default:
+        value = 0
+    }
+
+    // 构造伪节点作为返回值，确保返回结果与现有的 query() 签名兼容
+    const alias = agg.alias ?? agg.type
+    return [{
+      id: -1,
+      name: alias,
+      typeId: 0,
+      typeName: '',
+      props: { [alias]: value },
+    } as unknown as NodeRecord]
+  }
+
+  /** 对节点数组计算属性求和 */
+  private _aggregateSum(nodes: NodeRecord[], field: string): number {
+    let sum = 0
+    for (const n of nodes) {
+      const val = n.props?.[field]
+      if (typeof val === 'number') sum += val
+    }
+    return sum
+  }
+
+  /** 对节点数组计算属性平均值 */
+  private _aggregateAvg(nodes: NodeRecord[], field: string): number {
+    let sum = 0
+    let count = 0
+    for (const n of nodes) {
+      const val = n.props?.[field]
+      if (typeof val === 'number') { sum += val; count++ }
+    }
+    return count > 0 ? sum / count : 0
+  }
+
+  /** 对节点数组计算属性最大值 */
+  private _aggregateMax(nodes: NodeRecord[], field: string): number {
+    let max = -Infinity
+    for (const n of nodes) {
+      const val = n.props?.[field]
+      if (typeof val === 'number' && val > max) max = val
+    }
+    return max === -Infinity ? 0 : max
+  }
+
+  /** 对节点数组计算属性最小值 */
+  private _aggregateMin(nodes: NodeRecord[], field: string): number {
+    let min = Infinity
+    for (const n of nodes) {
+      const val = n.props?.[field]
+      if (typeof val === 'number' && val < min) min = val
+    }
+    return min === Infinity ? 0 : min
+  }
+
+  /** 扫描所有节点 */
+  private _scanAll(): NodeRecord[] {
+    const records: NodeRecord[] = []
+    for (const id of this._nodeIds) {
+      const node = this.getNode(id)
+      if (node) records.push(node)
+    }
+    return records
+  }
+
+  /** 按 label (typeName) 扫描节点 */
+  private _scanNodesByLabel(label: string): NodeRecord[] {
+    const records: NodeRecord[] = []
+    for (const id of this._nodeIds) {
+      const node = this.getNode(id)
+      if (node && node.typeName === label) {
+        records.push(node)
+      }
+    }
+    return records
+  }
+
+  /** 检查单条 filter 是否匹配 */
+  private _matchFilter(node: NodeRecord, f: { property: string; operator: string; value: unknown }): boolean {
+    const val = node.props?.[f.property]
+    switch (f.operator) {
+      case 'EQ':  return val === f.value
+      case 'NEQ': return val !== f.value
+      case 'GT':  return typeof val === 'number' && typeof f.value === 'number' && val > f.value
+      case 'GTE': return typeof val === 'number' && typeof f.value === 'number' && val >= f.value
+      case 'LT':  return typeof val === 'number' && typeof f.value === 'number' && val < f.value
+      case 'LTE': return typeof val === 'number' && typeof f.value === 'number' && val <= f.value
+      default: return true
+    }
+  }
+
+  // ──────────────────────────────────────────
+  // FullText search
+  // ──────────────────────────────────────────
+
+  /**
+   * 全文搜索 — 代理到 FullTextIndex（如果已配置）
+   *
+   * @param query - 搜索关键词
+   * @param options - 搜索选项（limit, fields, fuzzy, weights, mode 等）
+   * @returns 搜索结果数组，未配置 fulltext 时返回空数组
+   * @throws {Error} 如果 GraphEngine 未 open()
+   */
+  search(query: string, options?: SearchOptions): SearchResult[] {
+    this._ensureOpen()
+    if (!this._fulltext) return []
+    return this._fulltext.search(query, options)
   }
 
   // ──────────────────────────────────────────
@@ -819,6 +1356,48 @@ export class GraphEngine {
       }
     }
     return count > 0 ? sum / count : 0
+  }
+
+  /**
+   * 统计节点属性最大值
+   * @param field - 属性字段名（必须是数字类型）
+   * @param typeFilter - 可选，按 typeId 过滤
+   * @returns 属性值的最大值，无匹配节点时返回 -Infinity
+   */
+  maxNodeProperty(field: string, typeFilter?: number[]): number {
+    this._ensureOpen()
+    let max = -Infinity
+    for (const id of this._nodeIds) {
+      const raw = this.storage.getNode(id, true)
+      if (!raw) continue
+      if (typeFilter && typeFilter.length > 0 && !typeFilter.includes(raw.typeId)) continue
+      const val = raw.props?.[field]
+      if (typeof val === 'number' && val > max) {
+        max = val
+      }
+    }
+    return max === -Infinity ? 0 : max
+  }
+
+  /**
+   * 统计节点属性最小值
+   * @param field - 属性字段名（必须是数字类型）
+   * @param typeFilter - 可选，按 typeId 过滤
+   * @returns 属性值的最小值，无匹配节点时返回 Infinity
+   */
+  minNodeProperty(field: string, typeFilter?: number[]): number {
+    this._ensureOpen()
+    let min = Infinity
+    for (const id of this._nodeIds) {
+      const raw = this.storage.getNode(id, true)
+      if (!raw) continue
+      if (typeFilter && typeFilter.length > 0 && !typeFilter.includes(raw.typeId)) continue
+      const val = raw.props?.[field]
+      if (typeof val === 'number' && val < min) {
+        min = val
+      }
+    }
+    return min === Infinity ? 0 : min
   }
 
   /**

@@ -272,4 +272,59 @@ describe('RangeInstance', () => {
       await instance.stop()
     })
   })
+
+  // ──────────────────────────────────────────
+  // 乐观锁
+  // ──────────────────────────────────────────
+
+  describe('optimistic lock', () => {
+    test('writeWithOptimisticLock succeeds on first write', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      runningInstances.push(instance)
+      await instance.start()
+      await instance.waitForLeader(2000)
+
+      // First write: expectedVersion=0, should succeed
+      const version = await instance.writeWithOptimisticLock('opt-key-1', {
+        payload: { typeId: 1, name: 'opt-node-1' },
+      })
+      expect(version).toBe(1) // 0→1
+      expect(instance.getVersion('opt-key-1')).toBe(1)
+
+      await instance.stop()
+    })
+
+    test('writeWithOptimisticLock succeeds with correct version', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      runningInstances.push(instance)
+      await instance.start()
+      await instance.waitForLeader(2000)
+
+      const v1 = await instance.writeWithOptimisticLock('opt-key-2', {
+        payload: { typeId: 1, name: 'opt-node-2' },
+      })
+      expect(v1).toBe(1)
+
+      const v2 = await instance.writeWithOptimisticLock('opt-key-2', {
+        payload: { typeId: 1, name: 'opt-node-2-updated' },
+      })
+      expect(v2).toBe(2)
+      expect(instance.getVersion('opt-key-2')).toBe(2)
+
+      await instance.stop()
+    })
+
+    test('OptimisticLockError has correct message format', () => {
+      const err = new RangeInstance.OptimisticLockError('test-key', 1, 2)
+      expect(err.name).toBe('OptimisticLockError')
+      expect(err.message).toContain('test-key')
+      expect(err.message).toContain('expected version 1')
+      expect(err.message).toContain('actual 2')
+    })
+
+    test('getVersion returns 0 for unknown key', () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      expect(instance.getVersion('nonexistent-key')).toBe(0)
+    })
+  })
 })

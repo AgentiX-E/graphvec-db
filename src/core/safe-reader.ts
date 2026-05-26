@@ -39,12 +39,38 @@ export class SafeReader {
   }
 
   /**
-   * 在执行 read 操作前先同步 readIndex，确保读到最新数据。
-   * 如果 SafeReader 被禁用，直接执行 read 函数。
+   * 标准读 — 使用 readIndex 同步后读取
+   * 保证读到 leader 已 commit 的最新数据
    */
   async read<T>(fn: () => T): Promise<ReadResult<T>> {
     if (this._enabled && this._provider) {
       await this._provider.readIndex(this._timeoutMs)
+    }
+    this._lastRefresh = Date.now()
+    return { data: fn(), refreshedAt: this._lastRefresh }
+  }
+
+  /**
+   * 线性一致读 — 使用 barrier 语义后读取
+   * barrier() 返回后保证所有 barrier 前的写入都已 apply，
+   * 比 readIndex 提供更强的线性一致保证（Raft §6.4）。
+   *
+   * 适用场景：
+   * - 客户端先写入，后续读必须看到写入（读己之写）
+   * - 对一致性要求极高的读取（如分布式锁判定）
+   *
+   * 注意：
+   * - barrier 是可选 API（provider.barrier?），不暴露时 fallback 到 readIndex
+   * - barrier 的性能开销略高于 readIndex（可能涉及 no-op proposal）
+   */
+  async consistentRead<T>(fn: () => T): Promise<ReadResult<T>> {
+    if (this._enabled && this._provider) {
+      if (this._provider.barrier) {
+        await this._provider.barrier(this._timeoutMs)
+      } else {
+        // provider 未实现 barrier，fallback 到 readIndex
+        await this._provider.readIndex(this._timeoutMs)
+      }
     }
     this._lastRefresh = Date.now()
     return { data: fn(), refreshedAt: this._lastRefresh }

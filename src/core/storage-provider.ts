@@ -21,6 +21,15 @@ export interface StorageConfig {
   path: string
   denseVector?: { dimension: number }
   defaultRetention?: { nodes?: string; edges?: string }
+  /** OverGraph 存储优化参数 */
+  overgraph?: {
+    /** 自动 compaction 的 flush 次数阈值。0=禁用（推荐生产），默认 5 */
+    compactAfterNFlushes?: number
+    /** memtable 刷盘阈值（条目数），默认 10000 */
+    memtableFlushThreshold?: number
+    /** memtable 硬上限（字节），默认 64MB */
+    memtableHardCapBytes?: number
+  }
 }
 
 /**

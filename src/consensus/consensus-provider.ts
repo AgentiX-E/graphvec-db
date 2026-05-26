@@ -24,6 +24,22 @@ export interface ConsensusProvider {
    */
   readIndex(timeoutMs?: number): Promise<void>
 
+  /**
+   * 线性一致读取屏障
+   * barrier() 返回后，保证 barrier 前的所有提案都已 apply 到状态机。
+   * barrier 后读取的数据保证看到 barrier 前的所有写入（Raft §6.4）。
+   *
+   * 如果共识实现暴露此 API，调用方获得更强的线性一致保障（barrier
+   * 语义严格强于 readIndex：barrier 确保所有前置 entry 已 apply，
+   * 而 readIndex 只确保 leader 的 commitIndex ≥ follower 的 appliedIndex）。
+   *
+   * 实现注意：
+   * - 优先使用底层 `barrier()` API（如 raft-rs WASM 提供）
+   * - fallback：在无 barrier API 时，propose 一个 no-op entry 并等它 apply
+   * - standalone 模式可以为空实现（线性一致保证由单点保证）
+   */
+  barrier?(timeoutMs?: number): Promise<void>
+
   /** 获取当前角色 */
   getRole(): ConsensusRole
 
@@ -51,4 +67,6 @@ export interface ConsensusConfig {
   peers: string[]
   electionTimeoutMs?: number
   heartbeatIntervalMs?: number
+  /** 当设置时，使用 TcpTransport 而非 InMemoryTransport（跨进程通信） */
+  transportPort?: number
 }

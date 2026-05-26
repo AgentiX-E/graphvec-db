@@ -21,15 +21,36 @@ export interface AutoSplitterConfig {
   minSplitIntervalMs?: number
 }
 
+/**
+ * SplitSuggestion — AutoSplitter 传递给外部 ReshardManager 的 split 建议
+ *
+ * 包含触发原因、当前负载和建议的分片数量，使 ReshardManager 无需二次计算即可决策。
+ */
+export interface SplitSuggestion {
+  rangeId: string
+  nodeCount: number
+  edgeCount: number
+  diskSizeBytes: number
+  suggestedSplitKey?: number
+  suggestedTargetCount: number
+  reason: string
+}
+
+/**
+ * ReshardCallback — 触发 rebalance 的回调签名
+ * - suggestion 可选：传递时不破坏向后兼容，ReshardManager 可选择忽略或使用建议。
+ */
+export type ReshardCallback = (suggestion?: SplitSuggestion) => void
+
 export class AutoSplitter {
   private _config: Required<AutoSplitterConfig>
   private _getRangeInstances: () => RangeInstance[]
-  private _onReshard: () => void
+  private _onReshard: ReshardCallback
   private _timer: ReturnType<typeof setInterval> | null = null
   private _lastSplit = new Map<string, number>()
   private _running = false
 
-  constructor(getRangeInstances: () => RangeInstance[], onReshard: () => void, config?: AutoSplitterConfig) {
+  constructor(getRangeInstances: () => RangeInstance[], onReshard: ReshardCallback, config?: AutoSplitterConfig) {
     this._getRangeInstances = getRangeInstances
     this._onReshard = onReshard
     this._config = {
@@ -89,7 +110,17 @@ export class AutoSplitter {
 
           // 触发 split
           this._lastSplit.set(rangeId, now)
-          this._onReshard()
+
+          const suggestion: SplitSuggestion = {
+            rangeId,
+            nodeCount,
+            edgeCount: stats.edgeCount ?? 0,
+            diskSizeBytes: stats.diskSizeBytes ?? 0,
+            suggestedTargetCount: Math.ceil(nodeCount / this._config.maxNodesPerRange),
+            reason: 'node_count_exceeded',
+          }
+
+          this._onReshard(suggestion)
           splits++
         }
       }

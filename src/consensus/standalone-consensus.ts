@@ -46,6 +46,12 @@ export class StandaloneConsensus implements ConsensusProvider {
     return
   }
 
+  async barrier(_timeoutMs?: number): Promise<void> {
+    // standalone 模式：单点写入后本机读取必然是线性一致
+    // 无需额外屏障
+    return
+  }
+
   getRole(): ConsensusRole {
     return 'standalone'
   }

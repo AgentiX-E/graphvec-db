@@ -9,7 +9,7 @@
  * 非 .spec.ts 后缀，不会被单元测试自动收集。
  * 需手动运行：npx jest --testPathPattern='curvespec' --no-coverage
  */
-import { EventBus, CurveExplicitConfig } from './event-bus'
+import { EventBus, CurveSecurityConfig } from './event-bus'
 
 // 每次测试用不同的端口防止冲突
 let portCounter = 10000
@@ -32,20 +32,18 @@ describe('EventBus CURVE 跨节点通信', () => {
     const keyB = zmq.curveKeyPair()
 
     // 节点 A: PUB 端是 A（serverKey = keyA.secretKey），SUB 端是 B 的 client
-    const curveA: CurveExplicitConfig = {
-      mode: 'explicit',
+    const curveA: CurveSecurityConfig = {
       server: true,
-      publicKey: keyA.publicKey,
-      secretKey: keyA.secretKey,
-      peerKeys: { 'tcp://127.0.0.1:5556': keyB.publicKey },
+      publicKeyDir: '/tmp/curve-test-a',
+      port: pubPortA,
+      nodeId: 'node-A',
     }
 
-    const curveB: CurveExplicitConfig = {
-      mode: 'explicit',
+    const curveB: CurveSecurityConfig = {
       server: true,
-      publicKey: keyB.publicKey,
-      secretKey: keyB.secretKey,
-      peerKeys: { 'tcp://127.0.0.1:5555': keyA.publicKey },
+      publicKeyDir: '/tmp/curve-test-b',
+      port: pubPortB,
+      nodeId: 'node-B',
     }
 
     const busA = new EventBus({
@@ -114,11 +112,11 @@ describe('EventBus CURVE 跨节点通信', () => {
     const wrongKey = zmq.curveKeyPair() // 不匹配的第三组密钥
 
     // B 用错误的公钥连接 A → 应失败
-    const curveA: CurveExplicitConfig = {
-      mode: 'explicit',
+    const curveA: CurveSecurityConfig = {
       server: true,
-      publicKey: keyA.publicKey,
-      secretKey: keyA.secretKey,
+      publicKeyDir: '/tmp/curve-test-wrong',
+      port: pubPortA,
+      nodeId: 'node-A',
     }
 
     const busA = new EventBus({
@@ -128,13 +126,12 @@ describe('EventBus CURVE 跨节点通信', () => {
       security: { curve: curveA },
     })
 
-    // 使用错误的 key 连接应该正常启动但 SUB 收不到消息
-    const curveWrongSub: CurveExplicitConfig = {
-      mode: 'explicit',
+    // 使用不同的 publicKeyDir（不同密钥对）的连接应该正常启动但SUB收不到消息
+    const curveWrongSub: CurveSecurityConfig = {
       server: false,
-      publicKey: keyB.publicKey,
-      secretKey: keyB.secretKey,
-      peerKeys: { 'tcp://127.0.0.1:5555': wrongKey.publicKey },
+      publicKeyDir: '/tmp/curve-test-wrong-sub',
+      port: pubPortA + 1,
+      nodeId: 'node-B',
     }
 
     let errorThrown = false

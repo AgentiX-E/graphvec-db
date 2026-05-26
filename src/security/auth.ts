@@ -4,7 +4,9 @@
 // 只支持 mTLS 认证。证书 CN 用作用户标识，身份文件配置授权。
 // ============================================================
 
+import * as http from 'http'
 import { AuthConfig, AuthResult, Role, AuthError } from '../types'
+import { Logger } from '../ops/logger'
 
 /**
  * mTLS 认证引擎
@@ -24,6 +26,7 @@ export class Authenticator {
   private _initialized = false
   /** chokidar watcher 实例 */
   private _watcher: { close: () => Promise<void> } | null = null
+  private logger: Logger
 
   constructor(config: AuthConfig) {
     if (config.mode !== 'mtls') {
@@ -33,6 +36,7 @@ export class Authenticator {
       throw new Error('Auth: tlsCert and tlsKey are required for mTLS mode')
     }
     this.config = config
+    this.logger = new Logger('Auth')
     this.identities = new Map()
     this._loadIdentities()
   }
@@ -67,7 +71,7 @@ export class Authenticator {
           }
         }
       } catch (err) {
-        console.warn(`Auth: failed to load identities file "${this.config.identitiesFile}":`, (err as Error).message)
+        this.logger.warn(`failed to load identities file "${this.config.identitiesFile}": ${(err as Error).message}`)
       }
     }
 
@@ -94,13 +98,13 @@ export class Authenticator {
       })
 
       watcher.on('change', () => {
-        console.log('Auth: identities file changed, reloading...')
+        this.logger.info('identities file changed, reloading...')
         this._loadIdentities()
       })
 
       this._watcher = watcher
     } catch (err) {
-      console.warn('Auth: chokidar not available, falling back to stat polling')
+      this.logger.warn('chokidar not available, falling back to stat polling')
       this._startStatPolling()
     }
   }
@@ -123,7 +127,7 @@ export class Authenticator {
       try {
         const stat = fs.statSync(this.config.identitiesFile)
         if (stat.mtimeMs > lastMtime) {
-          console.log('Auth: identities file changed (poll), reloading...')
+          this.logger.info('identities file changed (poll), reloading...')
           this._loadIdentities()
           lastMtime = stat.mtimeMs
         }
@@ -153,7 +157,7 @@ export class Authenticator {
    */
   reloadIdentities(): void {
     this._loadIdentities()
-    console.log('Auth: identities reloaded')
+    this.logger.info('identities reloaded')
   }
 
   /**
@@ -251,6 +255,19 @@ export class RBAC {
     )
   }
 
+  /**
+   * 检查资源访问权限
+   */
+  static checkResourceAccess(role: Role, resourceType: string): void {
+    // admin 可以访问任何资源
+    if (role === Role.ADMIN) return
+
+    // reader 只能读
+    if (role === Role.READER && resourceType.startsWith('write:')) {
+      throw new AuthError('Reader cannot write resources', 403)
+    }
+  }
+
   /** 获取角色的所有权限 */
   static getPermissions(role: Role): string[] {
     if (role === Role.ADMIN) return ['* (all)']
@@ -306,6 +323,138 @@ export class UserRegistry {
   unregister(): boolean {
     throw new Error('UserRegistry is deprecated.')
   }
+}
+
+// ──────────────────────────────────────────
+// Body Size Limit — 请求体大小限制中间件
+// ──────────────────────────────────────────
+
+/** 默认最大请求体大小：10MB */
+export const BODY_SIZE_LIMIT = 10485760
+
+/** 默认读取超时：30 秒 */
+export const BODY_READ_TIMEOUT = 30000
+
+/**
+ * Body Size Limit 中间件工厂
+ *
+ * 对 POST/PUT/PATCH 请求检查请求体大小：
+ * - 有 Content-Length 且超过 maxSize → 返回 413
+ * - 无 Content-Length → 流式读取，累计超过 maxSize 后断开
+ * - 读取超时 → 断开连接
+ *
+ * @param maxSize 最大字节数（默认 10MB）
+ * @param readTimeout 读取超时毫秒数（默认 30s，0=不超时）
+ */
+export function bodySizeLimitMiddleware(
+  maxSize: number = BODY_SIZE_LIMIT,
+  readTimeout: number = BODY_READ_TIMEOUT,
+) {
+  return function bodySizeLimitHandler(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    next: () => void,
+  ): void {
+    // 只限制 POST/PUT/PATCH
+    const method = req.method?.toUpperCase() ?? 'GET'
+    if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
+      next()
+      return
+    }
+
+    // bodySizeLimit = 0 → 拒绝所有请求体
+    if (maxSize <= 0) {
+      jsonSizeResponse(res, 413, { error: 'Request body size limit is set to 0, rejecting all body payloads' })
+      return
+    }
+
+    // 检查 Content-Length header
+    const contentLengthStr = req.headers['content-length']
+    if (contentLengthStr) {
+      const contentLength = parseInt(contentLengthStr, 10)
+      if (!isNaN(contentLength) && contentLength > maxSize) {
+        jsonSizeResponse(res, 413, { error: 'Request body too large' })
+        return
+      }
+      // 有 Content-Length 且在限制内 → 放行
+      next()
+      return
+    }
+
+    // 没有 Content-Length → 流式读取检查
+    let totalBytes = 0
+    let aborted = false
+    let timedOut = false
+
+    // 设置读取超时
+    let readTimer: ReturnType<typeof setTimeout> | undefined
+    if (readTimeout > 0) {
+      readTimer = setTimeout(() => {
+        timedOut = true
+        aborted = true
+        req.destroy(new Error('Request body read timeout'))
+        if (!res.headersSent) {
+          jsonSizeResponse(res, 413, { error: 'Request body read timeout' })
+        }
+      }, readTimeout)
+    }
+
+    const onData = (chunk: Buffer) => {
+      if (aborted) return
+      totalBytes += chunk.length
+      if (totalBytes > maxSize && !timedOut) {
+        aborted = true
+        req.destroy(new Error('Request body exceeded limit'))
+        if (readTimer) clearTimeout(readTimer)
+        if (!res.headersSent) {
+          jsonSizeResponse(res, 413, { error: 'Request body exceeded limit' })
+        }
+      }
+    }
+
+    const onEnd = () => {
+      if (readTimer) clearTimeout(readTimer)
+      if (!aborted) {
+        req.removeListener('data', onData)
+        req.removeListener('end', onEnd)
+        req.removeListener('error', onError)
+        next()
+      }
+    }
+
+    const onError = (err: Error) => {
+      if (readTimer) clearTimeout(readTimer)
+      aborted = true
+      if (!res.headersSent) {
+        jsonSizeResponse(res, 413, { error: err.message || 'Request body read error' })
+      }
+    }
+
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('error', onError)
+    // 设置编码以确保 chunk 是 Buffer
+    req.setEncoding('utf8')
+  }
+}
+
+/**
+ * 发送 JSON 响应并同时设置 Content-Length 以防 413 被 Node.js 吞掉
+ */
+function jsonSizeResponse(
+  res: http.ServerResponse,
+  statusCode: number,
+  data: unknown,
+): void {
+  const body = JSON.stringify(data)
+  if (!res.headersSent) {
+    res.writeHead(statusCode, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      'Connection': 'close',
+    })
+  }
+  res.end(body)
 }
 
 /** @deprecated */

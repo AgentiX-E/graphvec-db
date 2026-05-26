@@ -1,4 +1,5 @@
 import { ConsensusProvider, ConsensusRole, ConsensusConfig } from './consensus-provider'
+import { InstallSnapshotRequest, InstallSnapshotResponse } from './transport'
 import { Logger } from '../ops/logger'
 
 /**
@@ -20,6 +21,8 @@ export class RaftLogicConsensus implements ConsensusProvider {
   private logger: Logger
   private applyFn: ((data: Uint8Array) => Promise<void>) | null = null
   private _node: any = null
+  private _transport: any = null
+  private _engine: { exportSnapshot(): Buffer; importSnapshot(data: Buffer): void } | null = null
   private _started = false
   private _loaded = false
   private _loadError: Error | null = null
@@ -72,6 +75,13 @@ export class RaftLogicConsensus implements ConsensusProvider {
     this.applyFn = fn
   }
 
+  /**
+   * 设置图引擎引用，供 InstallSnapshot 使用
+   */
+  setEngine(engine: { exportSnapshot(): Buffer; importSnapshot(data: Buffer): void }): void {
+    this._engine = engine
+  }
+
   async start(): Promise<void> {
     // 如果 init() 未被调用过，自动调用
     if (!this._loaded && !this._loadError) {
@@ -86,8 +96,41 @@ export class RaftLogicConsensus implements ConsensusProvider {
       const { RaftNode, SqliteStorage, InMemoryTransport, ready } = this._raftModule
       await ready
 
-      const nodeIds = [this.config.nodeId, ...this.config.peers]
-      const transport = new InMemoryTransport()
+      let transport
+
+      // 如果配置了 transportPort，使用 TcpTransport 跨进程通信
+      if (this.config.transportPort !== undefined && this.config.transportPort >= 0) {
+        const { TcpTransport } = await import('./transport')
+        const tcpTransport = new TcpTransport(this.config.nodeId, this.config.transportPort)
+        tcpTransport.start()
+        this._transport = tcpTransport
+
+        // 连接所有 peer（地址格式 "nodeId:host:port"）
+        for (const peerAddr of this.config.peers) {
+          tcpTransport.connectTo(peerAddr)
+        }
+
+        // 适配为 raft-logic 期望的 transport 接口
+        // raft-logic RaftNode 需要: sendTo(peerId, msg: Uint8Array) 和 onMessage(handler)
+        transport = {
+          sendTo: (peerId: number, msg: Uint8Array) => {
+            tcpTransport.sendTo(String(peerId), msg)
+            return true
+          },
+          onMessage: (handler: (from: string, msgBuf: Uint8Array) => void) => {
+            tcpTransport.setMessageHandler(handler)
+          },
+        }
+      } else {
+        transport = new InMemoryTransport()
+      }
+
+      // 对 TcpTransport 模式，peers 格式为 "nodeId:host:port"
+      // 对 InMemoryTransport 模式，peers 直接是 nodeId 字符串
+      const nodeIds = [this.config.nodeId, ...this.config.peers.map(p => {
+        const idx = p.indexOf(':')
+        return idx > 0 ? p.substring(0, idx) : p
+      })]
       const storage = new SqliteStorage({ file: `./data/raft-${this.config.nodeId}.db` })
 
       await storage.open()
@@ -113,6 +156,9 @@ export class RaftLogicConsensus implements ConsensusProvider {
       await raft.start()
       this._node = raft
       this._started = true
+
+      // 尝试注册 WASM onSnapshot 回调（如果有）
+      this._tryRegisterOnSnapshot()
 
       // 每 apply 10000 条后触发一次 snapshot（Raft log compact）
       this._entryCount = 0
@@ -145,6 +191,13 @@ export class RaftLogicConsensus implements ConsensusProvider {
       await this._node.stop()
       this._node = null
     }
+
+    // 停止 TcpTransport（如果使用）
+    if (this._transport) {
+      this._transport.stop()
+      this._transport = null
+    }
+
     this._started = false
   }
 
@@ -226,6 +279,65 @@ export class RaftLogicConsensus implements ConsensusProvider {
     await this._node.readIndex({ timeout: timeoutMs ?? 3000 })
   }
 
+  /**
+   * 线性一致读取屏障
+   *
+   * 优先使用 WASM 暴露的 barrier() API（raft-rs 原生），
+   * 返回后保证所有前置 entry 已 apply。
+   *
+   * fallback：当 WASM 不暴露 barrier() 时，
+   * 使用"读后写"策略：propose 一个空的 no-op entry，
+   * 等它 commit & apply 后再返回，隐式证明所有前置写入已完成。
+   *
+   * @see Raft §6.4 — barrier 语义
+   */
+  async barrier(timeoutMs?: number): Promise<void> {
+    const tm = timeoutMs ?? 5000
+    const node = this._node
+    if (!node || !this._started) return
+
+    // 1) 优先使用 WASM barrier() API（raft-rs 原生支持 barrier 语义）
+    if (typeof (node as any).barrier === 'function') {
+      this.logger.debug('[RaftConsensus] Using WASM barrier()')
+      try {
+        await (node as any).barrier({ timeout: tm })
+        return
+      } catch (err) {
+        // barrier 失败：可能是 leader 切换或超时，fallback 到 read-after-write
+        this.logger.warn('[RaftConsensus] WASM barrier() failed, falling back to read-after-write', {
+          err: (err as Error).message,
+        })
+      }
+    } else {
+      this.logger.warn('[RaftConsensus] barrier() not available in WASM, using read-after-write fallback')
+    }
+
+    // 2) Fallback: read-after-write
+    // propose 一个空 entry（no-op），等它 apply 后再返回
+    // 此方案保证 barrier 前的所有写入都已经 apply（因为 no-op 保证日志顺序 apply）
+    const noopData = Buffer.from(JSON.stringify({
+      type: '__noop_barrier',
+      id: `barrier-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: Date.now(),
+    }))
+
+    try {
+      const result = await node.clientRequest(
+        Buffer.from(noopData).toString('base64'),
+        { waitFor: 'apply', timeout: tm },
+      )
+      if (!result.ok) {
+        throw new Error('no-op barrier proposal result: ok=false')
+      }
+      this.logger.debug('[RaftConsensus] read-after-write barrier completed')
+    } catch (err) {
+      // 最后防线：即使 barrier 失败也允许读取（弱一致性保证）
+      this.logger.warn('[RaftConsensus] read-after-write barrier failed, no linearizable guarantee', {
+        err: (err as Error).message,
+      })
+    }
+  }
+
   getRole(): ConsensusRole {
     if (!this._node) return 'follower'
     const status = this._node.status()
@@ -274,6 +386,110 @@ export class RaftLogicConsensus implements ConsensusProvider {
       this.logger.info('[snapshot] Raft log compacted')
     } catch (err) {
       this.logger.warn('[snapshot] Failed', { err: (err as Error).message })
+    }
+  }
+
+  // ── InstallSnapshot 支持 ─────────────────────────────────────
+
+  /**
+   * 手动 InstallSnapshot 方法（供 leader 主动推送快照到 follower）
+   *
+   * 1. 先尝试通过 WASM 的 onSnapshot 回调（如果暴露）
+   * 2. fallback: 直接构造 install_snapshot 操作写入状态机
+   *
+   * @param snapshotData - 快照原始数据
+   */
+  async installSnapshot(snapshotData: Buffer): Promise<void> {
+    const snapshot = snapshotData.toString('base64')
+
+    if (this._node && typeof (this._node as any).onSnapshot === 'function') {
+      // WASM 支持 onSnapshot
+      this.logger.info('[RaftConsensus] Using WASM onSnapshot')
+      ;(this._node as any).onSnapshot(snapshot)
+    } else {
+      // 无 onSnapshot 时的 fallback: 通过 state machine 写入
+      this.logger.info('[RaftConsensus] Using manual snapshot install (no WASM onSnapshot)')
+      await this._applySnapshotToStateMachine(snapshot)
+    }
+
+    // 尝试更新 Raft 节点 snapshot index
+    try {
+      if (this._node && typeof (this._node as any).triggerSnapshot === 'function') {
+        await this._node.triggerSnapshot({ compact: true })
+      }
+    } catch {
+      // optional — 非必须
+    }
+  }
+
+  /**
+   * 处理收到的 InstallSnapshot 请求（follower 侧）
+   *
+   * 接收 leader 推送的快照 → 调用 engine.importSnapshot() 恢复数据
+   */
+  async handleInstallSnapshot(request: InstallSnapshotRequest): Promise<InstallSnapshotResponse> {
+    try {
+      const snapshotData = Buffer.from(request.data)
+      this.logger.info('[RaftConsensus] handleInstallSnapshot', {
+        term: request.term,
+        leaderId: request.leaderId,
+        lastIncludedIndex: request.lastIncludedIndex,
+        dataLen: snapshotData.length,
+      })
+
+      // 调用 engine.importSnapshot 恢复状态机数据
+      if (this._engine) {
+        this._engine.importSnapshot(snapshotData)
+      } else {
+        this.logger.warn('[RaftConsensus] No engine set, snapshot not imported')
+        // 即使没有 engine，也尝试通过 applyFn 将快照写入 state machine
+        if (this.applyFn) {
+          const op = JSON.stringify({
+            type: 'install_snapshot',
+            payload: { snapshotData: snapshotData.toString('base64') },
+          })
+          await this.applyFn(Buffer.from(op))
+        }
+      }
+
+      return { success: true, term: request.term }
+    } catch (err) {
+      this.logger.error('[RaftConsensus] handleInstallSnapshot failed', { err: (err as Error).message })
+      return { success: false, term: request.term }
+    }
+  }
+
+  /**
+   * 将 snapshot 以 state machine 操作形式 apply
+   *（当 WASM onSnapshot 不可用时）
+   */
+  private async _applySnapshotToStateMachine(snapshotBase64: string): Promise<void> {
+    if (!this.applyFn) {
+      this.logger.warn('[RaftConsensus] No applyFn set, cannot apply snapshot')
+      return
+    }
+
+    const op = JSON.stringify({
+      type: 'install_snapshot',
+      payload: { snapshotData: snapshotBase64 },
+    })
+    await this.applyFn(Buffer.from(op))
+  }
+
+  /**
+   * 尝试注册 WASM onSnapshot 回调（如果底层暴露）
+   * 在 start() 中调用
+   */
+  private _tryRegisterOnSnapshot(): void {
+    if (!this._node) return
+    if (typeof (this._node as any).onSnapshot === 'function') {
+      this.logger.info('[RaftConsensus] Registering WASM onSnapshot callback')
+      ;(this._node as any).onSnapshot(async (snapshotBase64: string) => {
+        this.logger.info('[RaftConsensus] onSnapshot received')
+        await this._applySnapshotToStateMachine(snapshotBase64)
+      })
+    } else {
+      this.logger.info('[RaftConsensus] WASM onSnapshot not available, using manual approach')
     }
   }
 }

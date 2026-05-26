@@ -52,6 +52,12 @@ export class GraphConfig {
       denseVector: envConfig.vectorDimension
         ? { dimension: envConfig.vectorDimension }
         : { dimension: 384 },
+      // 生产默认优化参数
+      overgraph: {
+        compactAfterNFlushes: 0,        // 禁用自动 compaction → 手动 compact 更可控
+        memtableFlushThreshold: 100000, // 增大 memtable 减少 segment 碎片
+        memtableHardCapBytes: 256 * 1024 * 1024, // 256MB
+      },
       ...overrides,
     }
   }

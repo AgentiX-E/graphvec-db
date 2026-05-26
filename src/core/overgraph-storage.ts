@@ -19,12 +19,25 @@ export class OverGraphStorage implements StorageProvider {
 
   open(config: StorageConfig): void {
     if (this._isOpen) return
-    this._db = OverGraph.open(config.path, {
+    const ogOpts: any = {
       denseVector: config.denseVector
         ? { dimension: config.denseVector.dimension }
         : undefined,
       defaultRetention: config.defaultRetention,
-    })
+    }
+    // 应用 OverGraph 存储优化参数
+    if (config.overgraph) {
+      if (config.overgraph.compactAfterNFlushes !== undefined) {
+        ogOpts.compactAfterNFlushes = config.overgraph.compactAfterNFlushes
+      }
+      if (config.overgraph.memtableFlushThreshold !== undefined) {
+        ogOpts.memtableFlushThreshold = config.overgraph.memtableFlushThreshold
+      }
+      if (config.overgraph.memtableHardCapBytes !== undefined) {
+        ogOpts.memtableHardCapBytes = config.overgraph.memtableHardCapBytes
+      }
+    }
+    this._db = OverGraph.open(config.path, ogOpts)
     this._isOpen = true
   }
 

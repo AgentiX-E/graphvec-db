@@ -1,1 +1,0 @@
-{"version":3,"file":"betweenness.d.ts","sourceRoot":"","sources":["../../../src/algorithms/betweenness.ts"],"names":[],"mappings":"AAAA;;;;;GAKG;AAEH,MAAM,WAAW,iBAAiB;IAChC,4CAA4C;IAC5C,CAAC,MAAM,EAAE,MAAM,GAAG,MAAM,CAAA;CACzB;AAED,wBAAgB,qBAAqB,CACnC,QAAQ,EAAE,MAAM,EAAE,EAClB,OAAO,EAAE,GAAG,CAAC,MAAM,EAAE,MAAM,EAAE,CAAC,EAC9B,UAAU,UAAO,GAChB,iBAAiB,CAsEnB"}

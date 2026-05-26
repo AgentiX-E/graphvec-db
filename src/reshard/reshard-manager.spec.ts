@@ -41,6 +41,19 @@ jest.mock('../core/graph-engine', () => {
         neighbors: jest.fn().mockReturnValue({ edges: [], nodes: [] }),
         getNode: jest.fn(),
         getEdge: jest.fn(),
+        exportSnapshot: jest.fn().mockReturnValue(
+          Buffer.from(JSON.stringify({ nodes: nodes.map(n => ({ ...n })), version: 1 }))
+        ),
+        importSnapshot: jest.fn().mockImplementation((buf: Buffer) => {
+          const data = JSON.parse(buf.toString())
+          if (Array.isArray(data.nodes)) {
+            data.nodes.forEach((n: { id: number; type: number; name: string }) => {
+              if (!nodes.find(x => x.id === n.id)) {
+                nodes.push({ id: n.id, type: n.type, name: n.name })
+              }
+            })
+          }
+        }),
         stats: jest.fn().mockReturnValue({ nodeCount: nodes.length, edgeCount: 0, diskSizeBytes: 100 }),
         compact: jest.fn(),
         isOpen: false,
@@ -211,6 +224,66 @@ describe('ReshardManager', () => {
       await mgr.rollback()
       expect(mgr.status!.state).toBe('failed')
       expect(mgr.status!.errors).toContain('Rolled back by operator')
+
+      await shardManager.stop()
+    })
+  })
+
+  describe('cleanup logic', () => {
+    it('should remove source range (not target range) on cleanup timeout', async () => {
+      await shardManager.start()
+
+      const planDir = path.join(testDir, testRunId, 'target-cleanup')
+      fs.mkdirSync(path.join(planDir, 'raft'), { recursive: true })
+      fs.mkdirSync(path.join(planDir, 'graph'), { recursive: true })
+
+      const plan: ReshardingPlan = {
+        planId: 'test-plan-cleanup',
+        version: 2,
+        createdAt: Date.now(),
+        estimatedDurationMs: 1000,
+        splits: [
+          {
+            sourceRangeId: 'range-0',
+            targetRangeId: 'range-0-cleanup-test',
+            hashRangeStart: 0,
+            hashRangeEnd: 50000,
+            targetNodeId: 'node-cleanup',
+            targetDataDir: planDir,
+          },
+        ],
+      }
+
+      const mgr = new ReshardManager(shardManager, clock)
+
+      // Spy on removeRange before execute so we can intercept the cleanup call
+      const removeRangeSpy = jest.spyOn(shardManager, 'removeRange')
+
+      await mgr.execute(plan)
+      expect(mgr.status!.state).toBe('completed')
+
+      // After execute, _scheduleCleanup has been called with a 48h timer,
+      // so removeRange should NOT have been called yet (it's still pending)
+      expect(removeRangeSpy).not.toHaveBeenCalledWith('range-0')
+      expect(removeRangeSpy).not.toHaveBeenCalledWith('range-0-cleanup-test')
+
+      // Now we manually invoke the cleanup callback to test what would happen
+      // We can do this by calling _scheduleCleanup with a very short delay using fake timers
+      jest.useFakeTimers()
+
+      // @ts-expect-error accessing private method for testing cleanup behavior
+      const scheduleCleanup = (mgr as any)._scheduleCleanup.bind(mgr)
+      scheduleCleanup(plan, 100)
+
+      // Fast-forward to fire the timer
+      jest.advanceTimersByTime(200)
+
+      // Verify: source range should have been removed, target range should NOT
+      expect(removeRangeSpy).toHaveBeenCalledWith('range-0')
+      expect(removeRangeSpy).not.toHaveBeenCalledWith('range-0-cleanup-test')
+
+      removeRangeSpy.mockRestore()
+      jest.useRealTimers()
 
       await shardManager.stop()
     })

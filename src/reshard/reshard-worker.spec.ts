@@ -41,7 +41,7 @@ describe('ReshardWorker', () => {
     })
   })
 
-  describe('execute', () => {
+  describe('execute (snapshot migration)', () => {
     it('should progress through phases and reach 100%', async () => {
       const sourceRange = createMockRange('range-source', { nodeCount: 0 }) as unknown as RangeInstance
       const targetRange = createMockRange('range-target') as unknown as RangeInstance
@@ -50,17 +50,103 @@ describe('ReshardWorker', () => {
       expect(worker.progress).toBe(0)
 
       await worker.execute()
-
-      // Should reach 100% progress
       expect(worker.progress).toBe(100)
     })
 
     it('should handle execute without error when source has nodes', async () => {
-      const sourceRange = createMockRange('range-source', { nodeCount: 5 }) as unknown as RangeInstance
-      const targetRange = createMockRange('range-target') as unknown as RangeInstance
+      const nodeCount = 5
+      const edgeCount = 3
+      const mockTargetState = { nodeCount: 0, edgeCount: 0 }
+      const sourceRange = createMockRange('range-source', { nodeCount, edgeCount }) as unknown as RangeInstance
+      const targetRange = createMockRange('range-target', {
+        nodeCount: 0,
+        edgeCount: 0,
+        mutableState: mockTargetState,
+        snapshotCallback: (data: string) => {
+          const parsed = JSON.parse(Buffer.from(data, 'base64').toString())
+          mockTargetState.nodeCount = parsed.nodes?.length ?? 0
+          mockTargetState.edgeCount = parsed.edges?.length ?? 0
+        },
+      }) as unknown as RangeInstance
 
       const worker = new ReshardWorker(split, undefined as any, sourceRange, targetRange)
       await expect(worker.execute()).resolves.toBeUndefined()
+    })
+
+    it('should migrate snapshot data and verify node/edge counts match', async () => {
+      const nodeCount = 10
+      const edgeCount = 5
+
+      // 用 Buffer 存储真实导出的快照数据
+      const snapshotBuffer = Buffer.from(
+        JSON.stringify({
+          nodes: Array.from({ length: nodeCount }, (_, i) => ({
+            id: i + 1,
+            type: 1,
+            name: `node-${i}`,
+            props: {},
+          })),
+          edges: Array.from({ length: edgeCount }, (_, i) => ({
+            src: i + 1,
+            dst: ((i + 1) % nodeCount) + 1,
+            type: 10,
+            props: {},
+          })),
+        })
+      )
+
+      // 记录目标 range 接收到的 write 操作
+      const targetWrites: any[] = []
+
+      const sourceRange = createMockRange('range-source', {
+        nodeCount,
+        edgeCount,
+        snapshotOverride: snapshotBuffer,
+      }) as unknown as RangeInstance
+
+      // 目标 range 使用可变的 nodeCount/edgeCount，模拟 snapshot 写入后的状态更新
+      const mockTargetState = { nodeCount: 0, edgeCount: 0 }
+      const targetRange = createMockRange('range-target', {
+        nodeCount: 0,
+        edgeCount: 0,
+        mutableState: mockTargetState,
+        // 安装 snapshot 后更新统计
+        snapshotCallback: (data: string) => {
+          const parsed = JSON.parse(Buffer.from(data, 'base64').toString())
+          const nCount = parsed.nodes?.length ?? 0
+          const eCount = parsed.edges?.length ?? 0
+          mockTargetState.nodeCount = nCount
+          mockTargetState.edgeCount = eCount
+          targetWrites.push({ type: 'install_snapshot', nodeCount: nCount, edgeCount: eCount })
+        },
+      }) as unknown as RangeInstance
+
+      const worker = new ReshardWorker(split, undefined as any, sourceRange, targetRange)
+      await worker.execute()
+
+      expect(worker.progress).toBe(100)
+      expect(targetWrites.length).toBeGreaterThanOrEqual(1)
+      expect(targetWrites[0].type).toBe('install_snapshot')
+      // 校验快照包含了正确的数据量
+      expect(targetWrites[0].nodeCount).toBe(nodeCount)
+      expect(targetWrites[0].edgeCount).toBe(edgeCount)
+    })
+
+    it('should throw on stats mismatch between source and target', async () => {
+      const sourceRange = createMockRange('range-source', {
+        nodeCount: 10,
+        edgeCount: 0,
+      }) as unknown as RangeInstance
+
+      const targetRange = createMockRange('range-target', {
+        nodeCount: 5, // intentionally mismatched
+        edgeCount: 0,
+      }) as unknown as RangeInstance
+
+      const worker = new ReshardWorker(split, undefined as any, sourceRange, targetRange)
+
+      // expect execute to throw because node counts don't match
+      await expect(worker.execute()).rejects.toThrow(/count mismatch/)
     })
   })
 
@@ -70,7 +156,6 @@ describe('ReshardWorker', () => {
       const targetRange = createMockRange('range-target', { nodeCount: 95 }) as unknown as RangeInstance
 
       const worker = new ReshardWorker(split, undefined as any, sourceRange, targetRange)
-      await worker.execute()
 
       const ready = await worker.prepare()
       expect(ready).toBe(true)
@@ -81,7 +166,6 @@ describe('ReshardWorker', () => {
       const targetRange = createMockRange('range-target', { nodeCount: 92 }) as unknown as RangeInstance
 
       const worker = new ReshardWorker(split, undefined as any, sourceRange, targetRange)
-      await worker.execute()
 
       const ready = await worker.prepare()
       expect(ready).toBe(true)
@@ -92,7 +176,6 @@ describe('ReshardWorker', () => {
       const targetRange = createMockRange('range-target', { nodeCount: 5 }) as unknown as RangeInstance
 
       const worker = new ReshardWorker(split, undefined as any, sourceRange, targetRange)
-      await worker.execute()
 
       const ready = await worker.prepare()
       expect(ready).toBe(false)
@@ -129,10 +212,20 @@ function createMockRange(rangeId: string, opts?: {
   nodeCount?: number
   throwOnGetStatus?: boolean
   edgeCount?: number
+  snapshotOverride?: Buffer
+  snapshotCallback?: (data: string) => void
+  mutableState?: { nodeCount: number; edgeCount: number }
 }) {
   const nodeCount = opts?.nodeCount ?? 0
   const edgeCount = opts?.edgeCount ?? 0
   const throwOnGetStatus = opts?.throwOnGetStatus ?? false
+  const snapshotOverride = opts?.snapshotOverride
+  const snapshotCallback = opts?.snapshotCallback
+  const mutableState = opts?.mutableState
+
+  // 用于 stats() 的实时值：如果有 mutableState 则使用它，否则使用初始值
+  const getNodeCount = () => mutableState?.nodeCount ?? nodeCount
+  const getEdgeCount = () => mutableState?.edgeCount ?? edgeCount
 
   return {
     config: { rangeId, dataDir: '.', raftConfig: { nodeId: rangeId, peers: [], storagePath: '.' }, overgraphConfig: { path: '.' } },
@@ -142,29 +235,57 @@ function createMockRange(rangeId: string, opts?: {
     stop: jest.fn().mockResolvedValue(undefined),
     isDraining: jest.fn().mockReturnValue(false),
     setDraining: jest.fn(),
-    write: jest.fn().mockResolvedValue(undefined),
-    read: jest.fn().mockImplementation(async (reader: Function) => {
-      if (nodeCount === 0) {
-        return reader({ queryPattern: () => [], neighbors: () => ({ edges: [] }) })
+    write: jest.fn().mockImplementation(async (op: any) => {
+      if (op.type === 'install_snapshot' && snapshotCallback) {
+        snapshotCallback(op.payload.snapshotData)
       }
-      const nodes = Array.from({ length: nodeCount }, (_, i) => ({
-        id: i + 1,
-        type: 1,
-        name: `node-${i}`,
-        props: {},
-      }))
-      return reader({
-        queryPattern: () => nodes,
+    }),
+    read: jest.fn().mockImplementation(async (reader: Function) => {
+      // 构造 mock 的 GraphEngine-like 对象
+      const mockEngine: any = {
+        queryPattern: () =>
+          Array.from({ length: nodeCount }, (_, i) => ({
+            id: i + 1,
+            type: 1,
+            name: `node-${i}`,
+            props: {},
+          })),
         neighbors: () => ({
           edges: Array.from({ length: edgeCount }, (_, i) => ({
             src: i + 1,
-            dst: (i + 1) % nodeCount + 1,
+            dst: (i + 1) % (nodeCount || 1) + 1,
             type: 10,
             props: {},
           })),
-          nodes,
+          nodes: [],
         }),
-      })
+        exportSnapshot: () => {
+          if (snapshotOverride) return snapshotOverride
+          // 默认生成快照 Buffer
+          return Buffer.from(
+            JSON.stringify({
+              nodes: Array.from({ length: nodeCount }, (_, i) => ({
+                id: i + 1,
+                type: 1,
+                name: `node-${i}`,
+                props: {},
+              })),
+              edges: Array.from({ length: edgeCount }, (_, i) => ({
+                src: i + 1,
+                dst: ((i + 1) % (nodeCount || 1)) + 1,
+                type: 10,
+                props: {},
+              })),
+            })
+          )
+        },
+        stats: () => ({
+          nodeCount: getNodeCount(),
+          edgeCount: getEdgeCount(),
+          diskSizeBytes: 100,
+        }),
+      }
+      return reader(mockEngine)
     }),
     getStatus: jest.fn().mockImplementation(() => {
       if (throwOnGetStatus) {
@@ -172,7 +293,7 @@ function createMockRange(rangeId: string, opts?: {
       }
       return {
         raft: { role: 'leader', leaderId: rangeId, term: 1 },
-        storage: { nodeCount, edgeCount, diskSizeBytes: 100 },
+        storage: { nodeCount: getNodeCount(), edgeCount: getEdgeCount(), diskSizeBytes: 100 },
       }
     }),
     isHealthy: jest.fn().mockReturnValue(true),

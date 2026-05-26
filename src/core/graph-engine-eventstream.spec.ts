@@ -26,11 +26,11 @@ class MockBus {
     this.receiveHandler = handler
   }
 
-  send(nodeId: string, msg: TransportMessage): void {
+  async send(nodeId: string, msg: TransportMessage): Promise<void> {
     this.sent.push(msg)
   }
 
-  broadcast(msg: TransportMessage): void {
+  async broadcast(msg: TransportMessage): Promise<void> {
     this.sent.push(msg)
   }
 

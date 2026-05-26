@@ -165,9 +165,11 @@ export interface MembershipChange {
 
 export interface RaftOperation {
   id: string
-  type: 'upsert_node' | 'upsert_edge' | 'delete_node' | 'delete_edge' | 'batch_upsert' | 'batch_edge' | 'admin'
+  type: 'upsert_node' | 'upsert_edge' | 'delete_node' | 'delete_edge' | 'batch_upsert' | 'batch_edge' | 'admin' | 'optimistic_upsert_node' | 'optimistic_upsert_edge' | 'install_snapshot'
   payload: unknown
   hlcTimestamp?: Uint8Array
+  /** 乐观锁：期望的版本号，用于检测写冲突 */
+  expectedVersion?: number | Record<string, number>
 }
 
 // ──────────────────────────────────────────
@@ -186,6 +188,12 @@ export interface OverGraphConfig {
   denseVector?: { dimension: number }
   defaultRetention?: { nodes?: string; edges?: string }
   cacheSize?: number
+  /** OverGraph 存储内核调优参数 */
+  overgraph?: {
+    compactAfterNFlushes?: number
+    memtableFlushThreshold?: number
+    memtableHardCapBytes?: number
+  }
 }
 
 export interface ShardMap {

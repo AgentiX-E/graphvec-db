@@ -2,14 +2,27 @@ import { LRUCache } from 'lru-cache'
 import { RangeInstance } from './range-instance'
 import { ShardRouter } from './shard-router'
 import { HlcClock } from '../replication/hlc-clock'
+import { Logger } from '../ops/logger'
 import {
   NodeId, NodeRecord, EdgeRecord,
   UpsertNodeOptions, UpsertEdgeOptions,
   VectorSearchOptions, VectorSearchResult,
-  ShardMap, RaftOperation,
+  ShardMap, RaftOperation, ReshardSplit,
 } from '../types'
 import { Telemetry } from '../ops/otel'
 import { MetricsCollector } from '../ops/otel-metrics'
+
+/** 心跳检测配置 */
+export interface ShardHealthCheckConfig {
+  /** 探测间隔（ms），默认 5000 */
+  intervalMs: number
+  /** 超过此毫秒未活跃视为不健康，默认 intervalMs × 3 */
+  staleThresholdMs?: number
+  /** 失活时的回调（可选），用于触发恢复/报警 */
+  onStale?: (rangeId: string, lastSeenMs: number) => void
+}
+
+const DEFAULT_HEALTH_CHECK_INTERVAL = 5000
 
 /**
  * ShardManager — 全局分片管理器
@@ -33,6 +46,62 @@ export class ShardManager {
   private shardMap: ShardMap
   private telemetry: Telemetry
   private metrics: MetricsCollector
+  /** 心跳检测定时器 */
+  private _healthTimer: ReturnType<typeof setInterval> | null = null
+  /** 心跳配置 */
+  private _healthConfig: ShardHealthCheckConfig = { intervalMs: DEFAULT_HEALTH_CHECK_INTERVAL }
+  /** rangeId → 上次 ping 失活通知时间（避免重复报警） */
+  private _staleNotifiedAt = new Map<string, number>()
+
+  /** Reshard 双写：sourceRangeId → target RangeInstance */
+  private _dualWriteTargets: Map<string, RangeInstance> = new Map()
+
+  /** 日志实例 */
+  private logger: Logger = new Logger('ShardManager')
+
+  /**
+   * 启用双写：将 splits 中每个 sourceRangeId 对应的目标 Range 注册到双写表中。
+   * 此后所有写入操作会同时写入源 Range 和目标 Range。
+   */
+  enableDualWrite(splits: ReshardSplit[]): void {
+    for (const split of splits) {
+      const target = this.ranges.get(split.targetRangeId)
+      if (target) {
+        this._dualWriteTargets.set(split.sourceRangeId, target)
+        this.logger.info({ sourceRangeId: split.sourceRangeId, targetRangeId: split.targetRangeId }, 'Dual write enabled')
+      } else {
+        this.logger.warn({ targetRangeId: split.targetRangeId }, 'Dual write target range not found')
+      }
+    }
+  }
+
+  /** 停用双写：清空双写表，后续写入只走原始路由 */
+  disableDualWrite(): void {
+    const count = this._dualWriteTargets.size
+    this._dualWriteTargets.clear()
+    if (count > 0) {
+      this.logger.info({ count }, 'Dual write disabled')
+    }
+  }
+
+  /**
+   * 内部工具：在双写模式下，并行写入源 Range 和目标 Range。
+   * 目标写入失败不影响源写入（best-effort）。
+   */
+  private async _writeWithDualWrite<T>(rangeId: string, fn: (r: RangeInstance) => Promise<T>): Promise<T> {
+    const range = this.ranges.get(rangeId)
+    const target = this._dualWriteTargets.get(rangeId)
+    if (target && range) {
+      const [result] = await Promise.all([
+        fn(range),
+        fn(target).catch(err => {
+          this.logger.warn({ err: (err as Error).message }, 'Dual write to target failed, source write unaffected')
+        }),
+      ])
+      return result
+    }
+    return fn(range!)
+  }
 
   /** nodeId → prefixedName 缓存（LRU），确保按名称路由一致性 */
   private _nodeIdToName = new LRUCache<NodeId, string>({
@@ -123,7 +192,16 @@ export class ShardManager {
     typeCounts.set(typeId, (typeCounts.get(typeId) ?? 0) + 1)
   }
 
-  async start(): Promise<void> {
+  async start(healthConfig?: ShardHealthCheckConfig, routerDataDir?: string): Promise<void> {
+    // 尝试从持久化文件恢复路由表
+    if (routerDataDir) {
+      const saved = ShardRouter.loadShardMap(routerDataDir)
+      if (saved) {
+        this.shardMap = saved
+        this.router.rebuild(saved)
+        this.logger.info('ShardMap restored from persistent storage')
+      }
+    }
     const promises: Promise<void>[] = []
     for (const rangeConfig of this.shardMap.ranges) {
       const instance = new RangeInstance(rangeConfig, this.clock)
@@ -143,6 +221,83 @@ export class ShardManager {
         // 单节点 leader 超时是正常的；跳过
       }
     }
+    // 启动心跳检测
+    this._startHealthCheck(healthConfig)
+  }
+
+  /** 启动周期性心跳探测 */
+  private _startHealthCheck(config?: ShardHealthCheckConfig): void {
+    if (this._healthTimer) return
+    if (config) this._healthConfig = config
+    const { intervalMs } = this._healthConfig
+    this._healthTimer = setInterval(() => this._tickHealthCheck(), intervalMs)
+    this._healthTimer.unref()
+  }
+
+  /** 停止心跳探测 */
+  private _stopHealthCheck(): void {
+    if (this._healthTimer) {
+      clearInterval(this._healthTimer)
+      this._healthTimer = null
+    }
+  }
+
+  /** 单次心跳轮询 */
+  private _tickHealthCheck(): void {
+    const staleThreshold = this._healthConfig.staleThresholdMs ?? (this._healthConfig.intervalMs * 3)
+    const now = Date.now()
+    for (const [rangeId, instance] of this.ranges) {
+      try {
+        instance.ping()
+      } catch {
+        // ping 异常时只记录，不中断轮询
+      }
+      const elapsed = now - instance.lastSeenMs
+      if (elapsed > staleThreshold) {
+        // 失活 — 触发回调
+        const lastNotify = this._staleNotifiedAt.get(rangeId) ?? 0
+        if (now - lastNotify > staleThreshold) {
+          this._staleNotifiedAt.set(rangeId, now)
+          this._healthConfig.onStale?.(rangeId, instance.lastSeenMs)
+        }
+      }
+    }
+  }
+
+  /** 获取心跳探测配置 */
+  getHealthConfig(): Readonly<ShardHealthCheckConfig> {
+    return { ...this._healthConfig }
+  }
+
+  /** 更新心跳探测配置（热加载） */
+  updateHealthConfig(config: Partial<ShardHealthCheckConfig>): void {
+    Object.assign(this._healthConfig, config)
+    if (this._healthTimer) {
+      this._stopHealthCheck()
+      this._startHealthCheck()
+    }
+  }
+
+  /** 获取分片健康状态 */
+  getShardHealth(): Array<{
+    rangeId: string
+    healthy: boolean
+    lastSeenMs: number
+    elapsedMs: number
+  }> {
+    const now = Date.now()
+    const staleThreshold = this._healthConfig.staleThresholdMs ?? (this._healthConfig.intervalMs * 3)
+    const result: Array<{ rangeId: string; healthy: boolean; lastSeenMs: number; elapsedMs: number }> = []
+    for (const [rangeId, instance] of this.ranges) {
+      const elapsed = now - instance.lastSeenMs
+      result.push({
+        rangeId,
+        healthy: elapsed <= staleThreshold,
+        lastSeenMs: instance.lastSeenMs,
+        elapsedMs: elapsed,
+      })
+    }
+    return result
   }
 
   async stop(): Promise<void> {
@@ -170,15 +325,16 @@ export class ShardManager {
       const start = Date.now()
       const tenantName = name
       const rangeId = this._smartRoute(tenantName, typeId)
-      const range = this.getRange(rangeId)
       // 将 _rangeKey 注入 props，用于缓存 miss 时恢复路由键
       const enrichedOpts: UpsertNodeOptions | undefined = opts
         ? { ...opts, props: { ...opts.props, _rangeKey: tenantName } as any }
         : { props: { _rangeKey: tenantName } as any }
-      const result = await range.write({
-        type: 'upsert_node',
-        payload: { typeId, name: tenantName, opts: enrichedOpts },
-      })
+      const result = await this._writeWithDualWrite(rangeId, (range) =>
+        range.write({
+          type: 'upsert_node',
+          payload: { typeId, name: tenantName, opts: enrichedOpts },
+        })
+      )
       this.metrics.incrementCounter('graph.ops.writes')
       this.metrics.recordHistogram('graph.ops.latency', Date.now() - start)
       const nodeId = typeof result === 'number' ? result : typeId
@@ -193,11 +349,12 @@ export class ShardManager {
   /** 写入边 — 跟随源节点（按名称）路由 */
   async upsertEdge(src: NodeId, dst: NodeId, typeId: number, opts?: UpsertEdgeOptions): Promise<void> {
     const rangeId = this._getRangeForNodeId(src)
-    const range = this.getRange(rangeId)
-    await range.write({
-      type: 'upsert_edge',
-      payload: { src, dst, typeId, opts },
-    })
+    await this._writeWithDualWrite(rangeId, (range) =>
+      range.write({
+        type: 'upsert_edge',
+        payload: { src, dst, typeId, opts },
+      })
+    )
   }
 
   /** Batch 写入多个节点 — 按 shard 分组并行写入（自动添加租户前缀） */
@@ -224,20 +381,34 @@ export class ShardManager {
       }
     }
 
-    // 每个 range 并发发出 batch_upsert 操作
+    // 每个 range 并发发出 batch_upsert 操作（含双写）
     const promises: Promise<unknown>[] = []
     const rangeOrder: string[] = []
     for (const [rangeId, groupInputs] of groups) {
       const range = this.getRange(rangeId)
       rangeOrder.push(rangeId)
-      promises.push(range.write({
-        type: 'batch_upsert',
-        payload: { inputs: groupInputs },
-      }))
+      const target = this._dualWriteTargets.get(rangeId)
+      if (target) {
+        // 双写模式：并行写入源和目标
+        promises.push(Promise.all([
+          range.write({ type: 'batch_upsert', payload: { inputs: groupInputs } }),
+          target.write({ type: 'batch_upsert', payload: { inputs: groupInputs } })
+            .catch(err => {
+              this.logger.warn({ err: (err as Error).message }, 'Dual write batch_upsert to target failed')
+            }),
+        ]))
+      } else {
+        promises.push(range.write({
+          type: 'batch_upsert',
+          payload: { inputs: groupInputs },
+        }))
+      }
     }
 
     // 按 range 分组收集结果 (Record<string, NodeId>)
-    const results = await Promise.all(promises) as Record<string, number>[]
+    const rawResults = await Promise.all(promises)
+    // 双写模式下，Promise.all 返回的是 [mainResult, targetResult]，取第一个
+    const results = rawResults.map(r => Array.isArray(r) ? r[0] : r) as Record<string, number>[]
 
     // 按原始输入顺序重建 ID 数组
     // 结果 key 是带前缀的名称（如在 tenant 上下文中），需匹配 prefixedInputs
@@ -317,10 +488,11 @@ export class ShardManager {
   }
 
   /** 删除节点 — 按名称路由 */
-  async deleteNode(id: NodeId): Promise<void> {
+  async deleteNode(id: NodeId, cascade = false): Promise<void> {
     const rangeId = this._getRangeForNodeId(id)
-    const range = this.getRange(rangeId)
-    await range.write({ type: 'delete_node', payload: { id } })
+    await this._writeWithDualWrite(rangeId, (range) =>
+      range.write({ type: 'delete_node', payload: { id, cascade } })
+    )
     // 清理缓存
     this._nodeIdToName.delete(id)
   }
@@ -559,8 +731,12 @@ export class ShardManager {
   }
 
   /** 重建路由表 */
-  rebuildRouter(shardMap: ShardMap): void {
+  rebuildRouter(shardMap: ShardMap, routerDataDir?: string): void {
     this.shardMap = shardMap
     this.router.rebuild(shardMap)
+    // 持久化更新后的路由表
+    if (routerDataDir) {
+      this.router.persistShardMap(routerDataDir)
+    }
   }
 }

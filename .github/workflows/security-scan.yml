@@ -1,0 +1,64 @@
+# ============================================================
+# Security Scan: 每周安全扫描
+# File: .github/workflows/security-scan.yml
+# Description: 定时触发 npm audit、lockfile 校验及依赖审查
+# ============================================================
+
+name: Security Scan
+
+on:
+  schedule:
+    # 每周一上午 8:00 UTC (北京时间下午 4:00) 运行
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+
+jobs:
+  weekly-security-scan:
+    name: Weekly Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: npm audit (full)
+        run: npm audit
+        continue-on-error: true
+
+      - name: Lockfile integrity verification
+        run: node scripts/verify-deps.mjs
+        continue-on-error: true
+
+      - name: Check for outdated packages
+        run: |
+          echo "## ⏫ Outdated Packages" >> $GITHUB_STEP_SUMMARY
+          npm outdated --long 2>&1 | head -50 >> $GITHUB_STEP_SUMMARY || echo "All packages up to date or unable to check."
+        continue-on-error: true
+
+      - name: Summarize findings
+        if: always()
+        run: |
+          echo "## 📊 Security Scan Results (Node ${{ matrix.node-version }})" >> $GITHUB_STEP_SUMMARY
+          echo "Scan completed at $(date -u)" >> $GITHUB_STEP_SUMMARY

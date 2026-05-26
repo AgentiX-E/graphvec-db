@@ -1,3 +1,6 @@
+import * as path from 'node:path'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
 import { ShardRouter } from './shard-router'
 import { ShardMap } from '../types'
 
@@ -167,6 +170,74 @@ describe('ShardRouter', () => {
       const result = router.getShardMap()
       expect(result.version).toBe(1)
       expect(result.ranges.length).toBe(3)
+    })
+  })
+
+  describe('persistence (persistShardMap / loadShardMap)', () => {
+    const tmpDir = path.join(os.tmpdir(), 'shard-router-test-' + Date.now())
+    const shardMapFixture = createMockShardMap()
+
+    beforeEach(() => {
+      // 清理临时目录
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    afterAll(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    test('should persist and reload the same shard map', () => {
+      router.persistShardMap(tmpDir)
+      const loaded = ShardRouter.loadShardMap(tmpDir)
+      expect(loaded).not.toBeNull()
+      expect(loaded!.version).toBe(shardMapFixture.version)
+      expect(loaded!.ranges).toEqual(shardMapFixture.ranges)
+      expect(loaded!.hashRing).toEqual(shardMapFixture.hashRing)
+    })
+
+    test('should return null when shard-map.json does not exist', () => {
+      const result = ShardRouter.loadShardMap(tmpDir)
+      expect(result).toBeNull()
+    })
+
+    test('should correctly route after manual JSON modification', () => {
+      // 持久化原始路由表
+      router.persistShardMap(tmpDir)
+
+      // 修改 JSON 文件 — 去掉 range-gamma
+      const filePath = path.join(tmpDir, 'shard-map.json')
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+      raw.hashRing.nodes = raw.hashRing.nodes.filter(
+        (n: { hash: string; rangeId: string }) => n.rangeId !== 'range-gamma'
+      )
+      raw.ranges = raw.ranges.filter(
+        (r: { rangeId: string }) => r.rangeId !== 'range-gamma'
+      )
+      raw.version = 2
+      fs.writeFileSync(filePath, JSON.stringify(raw, null, 2))
+
+      // 加载修改后的路由表
+      const loaded = ShardRouter.loadShardMap(tmpDir)
+      expect(loaded).not.toBeNull()
+      expect(loaded!.version).toBe(2)
+      expect(loaded!.ranges.length).toBe(2)
+      expect(loaded!.ranges.map(r => r.rangeId).sort()).toEqual(['range-alpha', 'range-beta'])
+    })
+
+    test('should route correctly after loading persisted shard map', () => {
+      // 先持久化
+      router.persistShardMap(tmpDir)
+
+      // 加载然后重建新路由
+      const loaded = ShardRouter.loadShardMap(tmpDir)!
+      const restoredRouter = new ShardRouter(loaded)
+
+      // 验证路由一致性
+      const key = 'test-key-for-persistence'
+      expect(restoredRouter.getRangeForKey(key)).toBe(router.getRangeForKey(key))
+
+      const ranges = restoredRouter.getAllRanges().sort()
+      expect(ranges).toEqual(['range-alpha', 'range-beta', 'range-gamma'])
     })
   })
 })

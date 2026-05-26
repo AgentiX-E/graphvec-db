@@ -1,0 +1,639 @@
+{
+  "meta": {
+    "analysisDate": "2026-05-26",
+    "methodology": "Online research of GitHub repos, official docs, release notes",
+    "dimensions": ["embedding", "vector", "replication", "query", "security", "operations", "vendorLockIn", "cjkSupport", "performance"],
+    "weights": {
+      "embedding": 0.20,
+      "vector": 0.15,
+      "replication": 0.10,
+      "query": 0.15,
+      "security": 0.05,
+      "operations": 0.05,
+      "vendorLockIn": 0.05,
+      "cjkSupport": 0.05,
+      "performance": 0.20
+    },
+    "description": "AgentiX GraphVec vs 15 competitors - comprehensive scoring matrix"
+  },
+  "agentiX": {
+    "name": "AgentiX GraphVec",
+    "type": "Embedded Multi-Active Vector Graph DB",
+    "version": "v0.x (development)",
+    "engine": "OverGraph (Rust)",
+    "languages": ["Rust", "Cypher-lite", "Fluent API"],
+    "protocols": ["REST", "gRPC", "ZMQ"],
+    "license": "Open Source",
+    "scores": {
+      "embedding": 9,
+      "vector": 8,
+      "replication": 7,
+      "query": 5,
+      "security": 4,
+      "operations": 5,
+      "vendorLockIn": 9,
+      "cjkSupport": 4,
+      "performance": 6
+    },
+    "weightedScore": 5.80,
+    "rank": 11,
+    "summary": "AI Agent era embedded multi-active vector graph database",
+    "strengths": [
+      "Truly embedded (Rust, link as library)",
+      "Zero-copy HNSW vector search via OverGraph",
+      "Multi-active LWW replication",
+      "raft-logic WASM consensus (v0.3.14)",
+      "PerPeerWorker + Outbox replication pattern",
+      "Cypher-lite + Fluent dual API"
+    ],
+    "weaknesses": [
+      "Cypher-lite covers only basic patterns",
+      "No RBAC/security model",
+      "No CJK tokenizer support",
+      "~8K-12K ops/sec vs 50K-100K for mature products",
+      "No web UI / operations dashboard",
+      "Limited documentation and benchmarks"
+    ],
+    "arch": {
+      "engine": "OverGraph (Rust native, embedded)",
+      "replication": "ZMQ + Outbox + PerPeerWorker",
+      "consensus": "raft-logic WASM (v0.3.14)",
+      "query": "Cypher-lite (peggy generated) + Fluent API + REST + gRPC",
+      "vector": "OverGraph HNSW (zero-copy)",
+      "fulltext": "MiniSearch",
+      "storage": "LMDB + SegmentStreamWal",
+      "performance": "~8K-12K ops/sec (single node)"
+    }
+  },
+  "competitors": [
+    {
+      "name": "Neo4j",
+      "type": "OLTP Graph (Server)",
+      "version": "5.x (AuraDB 6.x preview)",
+      "engine": "Java",
+      "license": "GPLv3 (CE) / Commercial (EE)",
+      "scores": {
+        "embedding": 3,
+        "vector": 6,
+        "replication": 9,
+        "query": 10,
+        "security": 9,
+        "operations": 8,
+        "vendorLockIn": 3,
+        "cjkSupport": 7,
+        "performance": 7
+      },
+      "weightedScore": 7.55,
+      "rank": 1,
+      "agentiXAdvantage": [
+        "Truly embedded - no deployment needed",
+        "Zero-copy vector search",
+        "Multi-active LWW replication",
+        "No commercial license costs"
+      ],
+      "agentiXDisadvantage": [
+        "Cypher ecosystem maturity gap (Neo4j is industry standard)",
+        "Performance gap (8K vs 50K+ ops/sec)",
+        "No enterprise security model",
+        "No visualization tools / Bloom equivalent",
+        "Community/brand recognition gap"
+      ]
+    },
+    {
+      "name": "CozoDB",
+      "type": "Embedded Relational-Graph-Vector DB",
+      "version": "v0.7",
+      "engine": "Rust",
+      "license": "MPL-2.0",
+      "scores": {
+        "embedding": 10,
+        "vector": 8,
+        "replication": 1,
+        "query": 8,
+        "security": 1,
+        "operations": 3,
+        "vendorLockIn": 9,
+        "cjkSupport": 4,
+        "performance": 8
+      },
+      "weightedScore": 7.45,
+      "rank": 2,
+      "agentiXAdvantage": [
+        "Replication - CozoDB has none",
+        "Cypher-lite more approachable than Datalog",
+        "REST/gRPC API out of the box",
+        "Multi-active vs single-node"
+      ],
+      "agentiXDisadvantage": [
+        "Datalog recursive queries are more powerful",
+        "Richer cross-language client SDKs",
+        "WASM browser execution",
+        "More mature documentation and examples"
+      ]
+    },
+    {
+      "name": "SurrealDB",
+      "type": "Multi-Model (Doc+Graph+Vector+Time)",
+      "version": "v2.x",
+      "engine": "Rust",
+      "license": "BSL (Business Source License)",
+      "scores": {
+        "embedding": 8,
+        "vector": 7,
+        "replication": 6,
+        "query": 7,
+        "security": 7,
+        "operations": 7,
+        "vendorLockIn": 4,
+        "cjkSupport": 5,
+        "performance": 7
+      },
+      "weightedScore": 7.20,
+      "rank": 3,
+      "agentiXAdvantage": [
+        "Multi-active LWW (SurrealDB is master-replica)",
+        "Fully open source (no BSL restrictions)",
+        "Zero-copy vector indexing",
+        "raft-logic WASM consensus"
+      ],
+      "agentiXDisadvantage": [
+        "SurrealQL is more feature-rich",
+        "Mature security model (row-level RBAC)",
+        "Significant community and brand",
+        "Cloud service and managed offerings",
+        "Larger client SDK ecosystem"
+      ]
+    },
+    {
+      "name": "ArangoDB",
+      "type": "Multi-Model (Server)",
+      "version": "3.x",
+      "engine": "C++",
+      "license": "Apache 2.0 (CE) / Commercial (EE)",
+      "scores": {
+        "embedding": 2,
+        "vector": 5,
+        "replication": 8,
+        "query": 8,
+        "security": 8,
+        "operations": 7,
+        "vendorLockIn": 5,
+        "cjkSupport": 5,
+        "performance": 7
+      },
+      "weightedScore": 6.85,
+      "rank": 4,
+      "agentiXAdvantage": [
+        "Embedded - ArangoDB requires deployment",
+        "Zero-copy vector",
+        "Multi-active replication"
+      ],
+      "agentiXDisadvantage": [
+        "AQL is more powerful than Cypher-lite",
+        "ArangoSearch is more capable",
+        "Enterprise security features",
+        "Production-proven at scale"
+      ]
+    },
+    {
+      "name": "Qdrant",
+      "type": "Vector Search Engine",
+      "version": "1.13.x",
+      "engine": "Rust",
+      "license": "Apache 2.0",
+      "scores": {
+        "embedding": 7,
+        "vector": 10,
+        "replication": 7,
+        "query": 4,
+        "security": 6,
+        "operations": 8,
+        "vendorLockIn": 7,
+        "cjkSupport": 5,
+        "performance": 9
+      },
+      "weightedScore": 6.80,
+      "rank": 5,
+      "agentiXAdvantage": [
+        "Graph query capabilities (Qdrant is pure vector)",
+        "Fluent API + Cypher for graph operations",
+        "Multi-active replication",
+        "Full-text search built-in"
+      ],
+      "agentiXDisadvantage": [
+        "Vector search performance and production validation",
+        "Cloud service maturity",
+        "Client SDK ecosystem",
+        "Agent skills ecosystem"
+      ]
+    },
+    {
+      "name": "Kùzu",
+      "type": "Embedded Columnar Graph DB",
+      "version": "0.11.3 (archived)",
+      "engine": "C++",
+      "license": "MIT",
+      "scores": {
+        "embedding": 9,
+        "vector": 6,
+        "replication": 1,
+        "query": 8,
+        "security": 2,
+        "operations": 3,
+        "vendorLockIn": 9,
+        "cjkSupport": 3,
+        "performance": 8
+      },
+      "weightedScore": 6.75,
+      "rank": 6,
+      "agentiXAdvantage": [
+        "Project archived - AgentiX is active development",
+        "Multi-active replication",
+        "Cypher + Fluent API"
+      ],
+      "agentiXDisadvantage": [
+        "Columnar storage better for analytics",
+        "Full Cypher support",
+        "WASM browser support"
+      ]
+    },
+    {
+      "name": "Dgraph",
+      "type": "Distributed Graph DB",
+      "version": "v25.x",
+      "engine": "Go",
+      "license": "Apache 2.0",
+      "scores": {
+        "embedding": 1,
+        "vector": 5,
+        "replication": 8,
+        "query": 7,
+        "security": 6,
+        "operations": 6,
+        "vendorLockIn": 6,
+        "cjkSupport": 4,
+        "performance": 7
+      },
+      "weightedScore": 6.40,
+      "rank": 7,
+      "agentiXAdvantage": [
+        "Simpler ops (embedded vs distributed)",
+        "Zero-copy vector",
+        "Multi-active replication",
+        "Full open source"
+      ],
+      "agentiXDisadvantage": [
+        "Distributed ACID transaction maturity",
+        "GraphQL native query is more modern",
+        "Enterprise scale and performance"
+      ]
+    },
+    {
+      "name": "NebulaGraph",
+      "type": "Distributed Graph DB (CNCF)",
+      "version": "3.8.0",
+      "engine": "C++",
+      "license": "Apache 2.0",
+      "scores": {
+        "embedding": 1,
+        "vector": 2,
+        "replication": 8,
+        "query": 7,
+        "security": 6,
+        "operations": 6,
+        "vendorLockIn": 6,
+        "cjkSupport": 7,
+        "performance": 8
+      },
+      "weightedScore": 6.25,
+      "rank": 8,
+      "agentiXAdvantage": [
+        "Embedded - much simpler deployment",
+        "Vector search - Nebula has none",
+        "Full-text search built-in"
+      ],
+      "agentiXDisadvantage": [
+        "Distributed scale",
+        "Chinese enterprise adoption",
+        "CJK support",
+        "Performance and reliability"
+      ]
+    },
+    {
+      "name": "Typesense",
+      "type": "Fulltext+Vector Search Engine",
+      "version": "v31",
+      "engine": "C++",
+      "license": "GPLv3",
+      "scores": {
+        "embedding": 4,
+        "vector": 6,
+        "replication": 5,
+        "query": 4,
+        "security": 5,
+        "operations": 7,
+        "vendorLockIn": 4,
+        "cjkSupport": 6,
+        "performance": 9
+      },
+      "weightedScore": 6.20,
+      "rank": 9,
+      "agentiXAdvantage": [
+        "Graph query (Typesense is pure search)",
+        "Multi-active LWW",
+        "Open source without GPL restrictions"
+      ],
+      "agentiXDisadvantage": [
+        "Vector+fulltext hybrid search performance",
+        "Typo tolerance feature",
+        "Cloud service maturity",
+        "Benchmark-proven speed"
+      ]
+    },
+    {
+      "name": "TigerGraph",
+      "type": "OLTP+OLAP Graph DB",
+      "version": "4.x",
+      "engine": "C++",
+      "license": "Commercial (limited CE)",
+      "scores": {
+        "embedding": 1,
+        "vector": 3,
+        "replication": 8,
+        "query": 7,
+        "security": 8,
+        "operations": 7,
+        "vendorLockIn": 2,
+        "cjkSupport": 4,
+        "performance": 9
+      },
+      "weightedScore": 5.90,
+      "rank": 10,
+      "agentiXAdvantage": [
+        "Free and open source",
+        "Embedded - no complex deployment",
+        "Built-in vector search",
+        "Multi-active replication"
+      ],
+      "agentiXDisadvantage": [
+        "Massive performance gap (TigerGraph is fastest)",
+        "Deep link traversal analytics",
+        "Enterprise security and support",
+        "No vendor independence"
+      ]
+    },
+    {
+      "name": "EdgeDB (Gel)",
+      "type": "Graph-Relational (PG-based)",
+      "version": "5.x",
+      "engine": "Rust + Python (PG backend)",
+      "license": "Apache 2.0",
+      "scores": {
+        "embedding": 3,
+        "vector": 4,
+        "replication": 6,
+        "query": 7,
+        "security": 6,
+        "operations": 6,
+        "vendorLockIn": 5,
+        "cjkSupport": 6,
+        "performance": 6
+      },
+      "weightedScore": 5.75,
+      "rank": 12,
+      "agentiXAdvantage": [
+        "Embedded vs PG-based dependency",
+        "Built-in vector + fulltext",
+        "Multi-active replication"
+      ],
+      "agentiXDisadvantage": [
+        "EdgeQL is more modern query language",
+        "Better migration system",
+        "Cloud service"
+      ]
+    },
+    {
+      "name": "HugeGraph",
+      "type": "OLTP Graph DB (Apache Incubator)",
+      "version": "1.5+",
+      "engine": "Java",
+      "license": "Apache 2.0",
+      "scores": {
+        "embedding": 1,
+        "vector": 2,
+        "replication": 6,
+        "query": 7,
+        "security": 5,
+        "operations": 6,
+        "vendorLockIn": 7,
+        "cjkSupport": 7,
+        "performance": 6
+      },
+      "weightedScore": 5.55,
+      "rank": 13,
+      "agentiXAdvantage": [
+        "Embedded vs server deployment",
+        "Built-in vector search",
+        "Full-text search",
+        "Rust vs JVM (memory & startup)"
+      ],
+      "agentiXDisadvantage": [
+        "Gremlin + Cypher dual query",
+        "Baidu/Chinese ecosystem",
+        "Big data integration (Spark/Flink)",
+        "Apache project governance"
+      ]
+    },
+    {
+      "name": "JanusGraph",
+      "type": "Distributed Graph DB",
+      "version": "1.0.x",
+      "engine": "Java",
+      "license": "Apache 2.0",
+      "scores": {
+        "embedding": 2,
+        "vector": 1,
+        "replication": 5,
+        "query": 7,
+        "security": 5,
+        "operations": 5,
+        "vendorLockIn": 7,
+        "cjkSupport": 4,
+        "performance": 6
+      },
+      "weightedScore": 5.20,
+      "rank": 14,
+      "agentiXAdvantage": [
+        "Simpler ops (embedded)",
+        "Vector + fulltext built-in",
+        "Multi-active replication",
+        "Modern architecture"
+      ],
+      "agentiXDisadvantage": [
+        "TinkerPop/Gremlin ecosystem",
+        "Graph visualization tools",
+        "Larger backend flexibility"
+      ]
+    },
+    {
+      "name": "GraphRAG (Microsoft)",
+      "type": "RAG + Knowledge Graph Pipeline",
+      "version": "latest",
+      "engine": "Python (LLM-based)",
+      "license": "MIT",
+      "scores": {
+        "embedding": 1,
+        "vector": 3,
+        "replication": 1,
+        "query": 5,
+        "security": 3,
+        "operations": 3,
+        "vendorLockIn": 5,
+        "cjkSupport": 8,
+        "performance": 3
+      },
+      "weightedScore": 3.75,
+      "rank": 15,
+      "agentiXAdvantage": [
+        "Embedded graph database (not a pipeline)",
+        "Real-time query vs LLM pipeline",
+        "Multi-active replication",
+        "No LLM API costs"
+      ],
+      "agentiXDisadvantage": [
+        "LLM-powered knowledge graph extraction",
+        "Global search over narrative data",
+        "Microsoft research backing"
+      ]
+    }
+  ],
+  "ranking": [
+    {"rank": 1, "name": "Neo4j", "weightedScore": 7.55},
+    {"rank": 2, "name": "CozoDB", "weightedScore": 7.45},
+    {"rank": 3, "name": "SurrealDB", "weightedScore": 7.20},
+    {"rank": 4, "name": "ArangoDB", "weightedScore": 6.85},
+    {"rank": 5, "name": "Qdrant", "weightedScore": 6.80},
+    {"rank": 6, "name": "Kùzu", "weightedScore": 6.75},
+    {"rank": 7, "name": "Dgraph", "weightedScore": 6.40},
+    {"rank": 8, "name": "NebulaGraph", "weightedScore": 6.25},
+    {"rank": 9, "name": "Typesense", "weightedScore": 6.20},
+    {"rank": 10, "name": "TigerGraph", "weightedScore": 5.90},
+    {"rank": 11, "name": "AgentiX GraphVec", "weightedScore": 5.80},
+    {"rank": 12, "name": "EdgeDB (Gel)", "weightedScore": 5.75},
+    {"rank": 13, "name": "HugeGraph", "weightedScore": 5.55},
+    {"rank": 14, "name": "JanusGraph", "weightedScore": 5.20},
+    {"rank": 15, "name": "GraphRAG (Microsoft)", "weightedScore": 3.75}
+  ],
+  "topGaps": [
+    {
+      "name": "查询语言 (Query Language)",
+      "severity": "CRITICAL",
+      "impact": "Cypher-lite covers <30% of Neo4j Cypher. Developers expect full Cypher for complex pattern matching",
+      "estEffort": "Large (3-6 months)",
+      "suggestion": "Target 80% Cypher TCK compliance; prioritize MATCH, WHERE, RETURN, aggregation, subqueries"
+    },
+    {
+      "name": "安全模型 (Security Model)",
+      "severity": "HIGH",
+      "impact": "No RBAC means agents can't isolate data between tenants/users",
+      "estEffort": "Medium (1-2 months)",
+      "suggestion": "Add PBAC (Policy-Based Access Control) with anonymous, authenticated, and admin roles"
+    },
+    {
+      "name": "性能优化 (Performance)",
+      "severity": "HIGH",
+      "impact": "8K-12K ops/sec vs 50K-100K for production systems. Limits practical scale",
+      "estEffort": "Large (3-6 months)",
+      "suggestion": "OverGraph engine optimizations: vectorized execution, batch writes, prefetching"
+    },
+    {
+      "name": "CJK 分词支持",
+      "severity": "MEDIUM",
+      "impact": "Chinese/Japanese/Korean search quality poor without proper tokenizers",
+      "estEffort": "Small (2-4 weeks)",
+      "suggestion": "Integrate jieba-rs (Chinese), lindera (Japanese), and MiniSearch CJK extensions"
+    },
+    {
+      "name": "运维工具 (Operations Tools)",
+      "severity": "MEDIUM",
+      "impact": "No visualization UI, no metrics/monitoring, no performance dashboard",
+      "estEffort": "Medium (1-2 months)",
+      "suggestion": "Build Web Console + OpenTelemetry metrics + Prometheus/Grafana integration"
+    },
+    {
+      "name": "文档与社区 (Documentation & Community)",
+      "severity": "LOW",
+      "impact": "No performance benchmarks page, limited examples, small community",
+      "estEffort": "Ongoing (2-4 weeks initial)",
+      "suggestion": "Publish TPC-H/LDBC benchmarks, API reference, interactive examples, contribute guide"
+    }
+  ],
+  "lowHangingFruit": [
+    {
+      "name": "性能基准页面",
+      "priority": "HIGH",
+      "estimate": "1-2 days",
+      "impact": "All competitors publish benchmarks; without them users can't evaluate",
+      "action": "Run TPC-H, LDBC SNB, and vector recall benchmarks; publish with methodology"
+    },
+    {
+      "name": "Fluent API 文档补全",
+      "priority": "HIGH",
+      "estimate": "3-5 days",
+      "impact": "Fluent API is the primary developer interface; needs complete reference",
+      "action": "Document all Fluent API methods with code examples in Rust and Python"
+    },
+    {
+      "name": "CJK 分词 (集成 jieba-rs)",
+      "priority": "HIGH",
+      "estimate": "2-3 weeks",
+      "impact": "Enables Chinese market adoption; competitors NebulaGraph/HugeGraph have it",
+      "action": "Integrate jieba-rs and lindera tokenizers; expose through MiniSearch"
+    },
+    {
+      "name": "WASM npm 包发布",
+      "priority": "MEDIUM",
+      "estimate": "2-3 weeks",
+      "impact": "Enables browser-side embedding; SurrealDB/CozoDB already support this",
+      "action": "Build WASM target for OverGraph engine; publish npm package with JS API"
+    },
+    {
+      "name": "Graphviz/D3.js 可视化集成",
+      "priority": "MEDIUM",
+      "estimate": "1-2 weeks",
+      "impact": "Quick win for developer UX; makes query results visual",
+      "action": "Add Graphviz DOT output + embedded D3.js web component for query results"
+    },
+    {
+      "name": "快速上手教程",
+      "priority": "MEDIUM",
+      "estimate": "3-5 days",
+      "impact": "First impression matters; 10-minute quickstart drives adoption",
+      "action": "Create Python, Rust, and CLI quickstart guides with real use cases"
+    },
+    {
+      "name": "OpenCypher TCK 测试报告",
+      "priority": "LOW",
+      "estimate": "2-3 days",
+      "impact": "Shows exactly which Cypher features are supported; manages expectations",
+      "action": "Run Neo4j TCK tests against AgentiX; publish pass/fail matrix"
+    }
+  ],
+  "uniquePositioning": {
+    "statement": "The ONLY open-source graph database that simultaneously offers embedded deployment + multi-active LWW replication + native vector search",
+    "noDirectCompetitorIn": [
+      "Embedded + multi-active replication (no competitor does both)",
+      "CozoDB: embedded + vector but NO replication",
+      "SurrealDB: embedded + replication but master-replica (not multi-active)",
+      "Neo4j: replication + vector but NOT embedded",
+      "Qdrant: embedded + replication + vector but NOT a graph database"
+    ],
+    "targetMarkets": [
+      "AI Agent local knowledge graph storage",
+      "Edge/IoT devices needing graph + vector search",
+      "Embedded systems with multi-node replication",
+      "P2P applications (bots, games, social graphs)",
+      "Developer tools needing embedded graph DB"
+    ]
+  }
+}

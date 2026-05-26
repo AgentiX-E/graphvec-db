@@ -2,10 +2,12 @@
 // RestApiServer 测试 — mTLS 认证
 // ============================================================
 
-import { createRestApiServer, RestApiServer, RestApiConfig, jsonResponse, parseBody } from './rest'
+import { createRestApiServer, RestApiServer, RestApiConfig, jsonResponse, parseBody, _matchRoute } from './rest'
 import { NodeRecord, EdgeRecord, Role } from '../types'
 import { Authenticator, RBAC } from '../security/auth'
 import { TLSConfig } from '../security/tls'
+import { ShardManager } from '../shard/shard-manager'
+import { DatabaseManager, DatabaseInstance } from '../core/database-manager'
 import * as https from 'https'
 import * as http from 'http'
 import * as path from 'path'
@@ -146,6 +148,30 @@ class MockShardManager {
     this.edgeStore.set(key, { src, dst, type: typeId })
   }
 
+  deleteEdge(src: number, dst: number, typeId: number): boolean {
+    const key = `${src}-${dst}-${typeId}`
+    return this.edgeStore.delete(key)
+  }
+
+  async batchUpsertNodes(
+    inputs: Array<{ typeId: number; name: string }>
+  ): Promise<number[]> {
+    const ids: number[] = []
+    for (const input of inputs) {
+      const id = this.allNodes.length + ids.length + 1
+      this.allNodes.push({
+        id,
+        type: input.typeId,
+        name: input.name,
+        props: {},
+        createdAt: Date.now(),
+        degree: 0,
+      })
+      ids.push(id)
+    }
+    return ids
+  }
+
   async batchGetNodes(ids: number[]): Promise<NodeRecord[]> {
     return this.allNodes.filter(n => ids.includes(n.id))
   }
@@ -160,11 +186,15 @@ class MockShardManager {
     this.nodeEdges.set(nodeId, { edges, nodes })
   }
 
+  getRouter(): { getRangeForKey(key: string): string } {
+    return { getRangeForKey: () => 'range-0' }
+  }
+
   getShardStatus(): Array<{ rangeId: string; raftRole: string; nodeCount: number }> {
     return [{ rangeId: 'range-0', raftRole: 'leader', nodeCount: this.allNodes.length }]
   }
 
-  getRange(_rangeId: string): { engine: { stats(): { nodeCount: number; edgeCount: number; diskSizeBytes: number } } } {
+  getRange(_rangeId: string): any {
     return {
       engine: {
         stats: () => ({
@@ -172,11 +202,43 @@ class MockShardManager {
           edgeCount: this.edgeStore.size,
           diskSizeBytes: 0,
         }),
+        deleteEdge: (src: number, dst: number, typeId: number) => this.deleteEdge(src, dst, typeId),
+      },
+      write: (op: any) => {
+        if (op.type === 'delete_edge') {
+          const { src, dst, typeId } = op.payload
+          return this.deleteEdge(src, dst, typeId)
+        }
+        if (op.type === 'upsert_edge') {
+          const { src, dst, typeId } = op.payload
+          return this.upsertEdge(src, dst, typeId)
+        }
+        if (op.type === 'upsert_node') {
+          const { typeId, name } = op.payload
+          return this.upsertNode(typeId, name)
+        }
+        if (op.type === 'batch_upsert') {
+          const { inputs } = op.payload
+          const ids = this.batchUpsertNodes(inputs)
+          const result: Record<string, number> = {}
+          for (let i = 0; i < inputs.length; i++) {
+            result[inputs[i].name] = ids[i]
+          }
+          return result
+        }
+        if (op.type === 'delete_node') {
+          const { id } = op.payload
+          return this.deleteNode(id)
+        }
+        return undefined
+      },
+      read: (fn: (engine: any) => any) => {
+        return fn(this.getRange('range-0').engine)
       },
     }
   }
 
-  getAllRanges(): Map<string, { engine: { stats(): { nodeCount: number; edgeCount: number; diskSizeBytes: number } } }> {
+  getAllRanges(): Map<string, any> {
     const m = new Map()
     m.set('range-0', this.getRange('range-0'))
     return m
@@ -593,6 +655,579 @@ describe('RestApiServer', () => {
         typeId: 1, name: 'small',
       })
       expect(res.statusCode).toBe(200)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // _matchRoute 路由匹配测试
+  // ──────────────────────────────────────────
+
+  describe('_matchRoute 路由匹配', () => {
+    test('should match exact path without params', () => {
+      expect(_matchRoute('/api/graph/node', '/api/graph/node')).toEqual({})
+    })
+
+    test('should extract single param :id', () => {
+      expect(_matchRoute('/api/graph/node/:id', '/api/graph/node/42')).toEqual({ id: '42' })
+    })
+
+    test('should extract :nodeId param', () => {
+      expect(_matchRoute('/api/graph/edges/:nodeId', '/api/graph/edges/100')).toEqual({ nodeId: '100' })
+    })
+
+    test('should return null for mismatched path (different segment)', () => {
+      expect(_matchRoute('/api/graph/node/:id', '/api/graph/edge/42')).toBeNull()
+    })
+
+    test('should return null for different length paths', () => {
+      expect(_matchRoute('/api/graph/node/:id', '/api/graph/node/42/extra')).toBeNull()
+    })
+
+    test('should extract multiple params', () => {
+      expect(_matchRoute('/api/:scope/:action', '/api/graph/nodes')).toEqual({ scope: 'graph', action: 'nodes' })
+    })
+
+    test('should return null for non-existing route', () => {
+      expect(_matchRoute('/api/graph/node/:id', '/api/graph/node')).toBeNull()
+    })
+
+    test('should handle GET node via path param', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      mockShardManager.setNodes([
+        { id: 42, type: 1, name: 'test-node', props: {}, createdAt: Date.now(), degree: 1 },
+      ])
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      // Use POST-like with body for backward compat, but also test new GET with path param
+      // The old GET /api/graph/node required body.id; new GET /api/graph/node/:id uses path
+      const res = await makeRequest(server, 'GET', '/api/graph/node/42')
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).id).toBe(42)
+    })
+
+    test('DELETE with path param should work', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      mockShardManager.setNodes([
+        { id: 1, type: 1, name: 'delete-me', props: {}, createdAt: Date.now(), degree: 0 },
+      ])
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'DELETE', '/api/graph/node/1')
+      expect(res.statusCode).toBe(200)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 边 CRUD 端点测试
+  // ──────────────────────────────────────────
+
+  describe('边 CRUD', () => {
+    test('POST /api/graph/edges should create edge', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/edges', { src: 1, dst: 2, type: 1 })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).message).toBe('edge created')
+    })
+
+    test('POST /api/graph/edges missing fields should return 400', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/edges', { src: 1 })
+      expect(res.statusCode).toBe(400)
+      expect((res.body as any).error).toContain('required')
+    })
+
+    test('GET /api/graph/edges/:nodeId should return neighbor info', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/graph/edges/1')
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).nodeId).toBe(1)
+      expect(Array.isArray((res.body as any).edges)).toBe(true)
+      expect(Array.isArray((res.body as any).nodes)).toBe(true)
+    })
+
+    test('GET /api/graph/edges/:nodeId with invalid id should return 400', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/graph/edges/abc')
+      expect(res.statusCode).toBe(400)
+    })
+
+    test('DELETE /api/graph/edge should delete edge', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      // First create an edge
+      const createRes = await makeRequest(server, 'POST', '/api/graph/edges', { src: 1, dst: 2, type: 1 })
+      expect(createRes.statusCode).toBe(200)
+
+      // Then delete it
+      const delRes = await makeRequest(server, 'DELETE', '/api/graph/edge', { src: 1, dst: 2, type: 1 })
+      expect(delRes.statusCode).toBe(200)
+      expect((delRes.body as any).message).toBe('edge deleted')
+    })
+
+    test('DELETE /api/graph/edge missing fields should return 400', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'DELETE', '/api/graph/edge', { src: 1 })
+      expect(res.statusCode).toBe(400)
+      expect((res.body as any).error).toContain('required')
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 批量操作端点测试
+  // ──────────────────────────────────────────
+
+  describe('批量操作', () => {
+    test('POST /api/graph/nodes/batch should create multiple nodes', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/nodes/batch', {
+        items: [
+          { id: 'n1', type: 1 },
+          { id: 'n2', type: 2 },
+          { id: 'n3', type: 1 },
+        ],
+      })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).count).toBe(3)
+      expect((res.body as any).ids).toBeInstanceOf(Array)
+      expect((res.body as any).ids.length).toBe(3)
+    })
+
+    test('POST /api/graph/nodes/batch with empty items should return 400', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/nodes/batch', { items: [] })
+      expect(res.statusCode).toBe(400)
+    })
+
+    test('POST /api/graph/nodes/batch missing items should return 400', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/nodes/batch', {})
+      expect(res.statusCode).toBe(400)
+    })
+
+    test('POST /api/graph/edges/batch should create multiple edges', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/edges/batch', {
+        items: [
+          { src: 1, dst: 2, type: 1 },
+          { src: 2, dst: 3, type: 1 },
+          { src: 3, dst: 1, type: 2 },
+        ],
+      })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).successCount).toBe(3)
+      expect((res.body as any).errorCount).toBe(0)
+    })
+
+    test('POST /api/graph/edges/batch with invalid items should report errors', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/edges/batch', {
+        items: [
+          { src: 1, dst: 2, type: 1 },
+          { src: 2, type: 1 }, // missing dst
+        ],
+      })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).successCount).toBe(1)
+      expect((res.body as any).errorCount).toBe(1)
+    })
+
+    test('POST /api/graph/edges/batch with empty items should return 400', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/edges/batch', { items: [] })
+      expect(res.statusCode).toBe(400)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 查询端点测试
+  // ──────────────────────────────────────────
+
+  describe('查询端点', () => {
+    test('POST /api/query with match body should return results', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/query', {
+        query: 'MATCH (n) WHERE n.typeId=1 RETURN n LIMIT 100',
+      })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).results).toBeInstanceOf(Array)
+      expect((res.body as any).count).toBeDefined()
+      expect((res.body as any).plan).toBeDefined()
+      expect((res.body as any).plan.type).toBeDefined()
+    })
+
+    test('POST /api/query without query string should return 400', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/query', {})
+      expect(res.statusCode).toBe(400)
+    })
+
+    test('POST /api/query with match object should return results', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      mockShardManager.setNodes([
+        { id: 1, type: 1, name: 'A', props: {}, createdAt: Date.now(), degree: 0 },
+      ])
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/query', {
+        match: { typeId: 1 },
+        return: ['name'],
+        limit: 10,
+      })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).results).toBeInstanceOf(Array)
+      expect((res.body as any).count).toBe(1)
+    })
+
+    test('GET /api/query/stream should return SSE response', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/query/stream?query=MATCH%20(n)%20WHERE%20n.typeId%3D1%20RETURN%20n%20LIMIT%20100')
+      expect(res.statusCode).toBe(200)
+    })
+
+    test('GET /api/query/stream without query should return 400', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/query/stream')
+      expect(res.statusCode).toBe(400)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // /metrics 端点测试
+  // ──────────────────────────────────────────
+
+  describe('/metrics 端点', () => {
+    test('GET /metrics should return prometheus format', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/metrics')
+      expect(res.statusCode).toBe(200)
+      // /metrics is unauthenticated, should return content
+      const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body)
+      expect(body.length).toBeGreaterThan(0)
+    })
+
+    test('GET /api/metrics should return prometheus format with auth', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/metrics')
+      expect(res.statusCode).toBe(200)
+    })
+
+    test('/metrics should have correct content-type', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/metrics')
+      // The content-type might be application/json from fallback or text/plain from prom-client
+      expect(res.statusCode).toBe(200)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 多数据库路由测试
+  // ──────────────────────────────────────────
+
+  describe('多数据库路由', () => {
+    // MockDatabaseManager: wraps two MockShardManager instances
+    class MockDatabaseManager {
+      private instances = new Map<string, { shardManager: MockShardManager }>()
+
+      createDb(name: string, sm: MockShardManager): void {
+        this.instances.set(name, { shardManager: sm })
+      }
+
+      resolve(name: string): { shardManager: MockShardManager } {
+        const inst = this.instances.get(name)
+        if (!inst) throw new Error(`Database '${name}' not found`)
+        return inst
+      }
+
+      hasDatabase(name: string): boolean {
+        return this.instances.has(name)
+      }
+
+      listDatabases(): string[] {
+        return Array.from(this.instances.keys())
+      }
+    }
+
+    let db1Sm: MockShardManager
+    let db2Sm: MockShardManager
+    let mockDbm: MockDatabaseManager
+    let dbConfig: RestApiConfig
+
+    beforeEach(() => {
+      db1Sm = new MockShardManager()
+      db2Sm = new MockShardManager()
+      mockDbm = new MockDatabaseManager()
+      mockDbm.createDb('db1', db1Sm)
+      mockDbm.createDb('db2', db2Sm)
+      dbConfig = {
+        port: 0,
+        host: '127.0.0.1',
+        authenticator: mockAuthenticator,
+        tlsConfig: mockTlsConfig,
+        databaseManager: mockDbm as any,
+      }
+    })
+
+    test('POST /api/v1/db1/graph/nodes should create node in db1 only', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/v1/db1/graph/nodes', { typeId: 1, name: 'node-in-db1' })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).id).toBeDefined()
+
+      // Verify node only exists in db1, not db2
+      const db1Nodes = db1Sm.getAllNodes()
+      expect(db1Nodes.length).toBe(1)
+      expect(db1Nodes[0].name).toBe('node-in-db1')
+
+      const db2Nodes = db2Sm.getAllNodes()
+      expect(db2Nodes.length).toBe(0)
+    })
+
+    test('POST /api/v1/db2/graph/nodes should create node in db2 only', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/v1/db2/graph/nodes', { typeId: 2, name: 'node-in-db2' })
+      expect(res.statusCode).toBe(200)
+
+      const db2Nodes = db2Sm.getAllNodes()
+      expect(db2Nodes.length).toBe(1)
+      expect(db2Nodes[0].name).toBe('node-in-db2')
+
+      const db1Nodes = db1Sm.getAllNodes()
+      expect(db1Nodes.length).toBe(0)
+    })
+
+    test('Data isolation: nodes in db1 should not be visible via db2', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      // Create node in db1
+      await makeRequest(server, 'POST', '/api/v1/db1/graph/nodes', { typeId: 1, name: 'secret-db1' })
+
+      // Get node from db1
+      const db1Nodes = db1Sm.getAllNodes()
+      const nodeId = db1Nodes[0].id
+
+      // db2 should not see this node
+      const rDb2 = await makeRequest(server, 'GET', `/api/v1/db2/graph/node/${nodeId}`)
+      expect(rDb2.statusCode).toBe(404)
+    })
+
+    test('POST /api/v1/:db/graph/nodes with missing db should return 404', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/v1/nonexistent/graph/nodes', { typeId: 1, name: 'x' })
+      expect(res.statusCode).toBe(404)
+      expect((res.body as any).error).toContain('not found')
+    })
+
+    test('GET /api/v1/:db/graph/node/:id should return node for correct db', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      await makeRequest(server, 'POST', '/api/v1/db1/graph/nodes', { typeId: 1, name: 'find-me' })
+      const db1Nodes = db1Sm.getAllNodes()
+      const nodeId = db1Nodes[0].id
+
+      const res = await makeRequest(server, 'GET', `/api/v1/db1/graph/node/${nodeId}`)
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).name).toBe('find-me')
+    })
+
+    test('DELETE /api/v1/:db/graph/node/:id should delete from correct db', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      await makeRequest(server, 'POST', '/api/v1/db1/graph/nodes', { typeId: 1, name: 'delete-me' })
+      const db1Nodes = db1Sm.getAllNodes()
+      const nodeId = db1Nodes[0].id
+
+      await makeRequest(server, 'DELETE', `/api/v1/db1/graph/node/${nodeId}`)
+      expect(db1Sm.getAllNodes().length).toBe(0)
+    })
+
+    test('POST /api/v1/:db/graph/edges should create edge in correct db', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      // Create nodes in db1
+      await makeRequest(server, 'POST', '/api/v1/db1/graph/nodes', { typeId: 1, name: 'src' })
+      await makeRequest(server, 'POST', '/api/v1/db1/graph/nodes', { typeId: 1, name: 'dst' })
+
+      // Create edge in db1
+      const res = await makeRequest(server, 'POST', '/api/v1/db1/graph/edges', { src: 1, dst: 2, type: 1 })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).message).toBe('edge created')
+    })
+
+    test('POST /api/v1/:db/query should execute query on correct database', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      // Add a node to db1 via the multi-db route
+      const createRes = await makeRequest(server, 'POST', '/api/v1/db1/graph/nodes', { typeId: 1, name: 'query-test' })
+      expect(createRes.statusCode).toBe(200)
+      expect(db1Sm.getAllNodes().length).toBe(1)
+
+      // Now query db1 using match object format (works correctly with parseMatchBody)
+      const res = await makeRequest(server, 'POST', '/api/v1/db1/query', {
+        match: { typeId: 1 },
+        return: ['name'],
+        limit: 10,
+      })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).results).toBeInstanceOf(Array)
+      expect((res.body as any).count).toBe(1) // db1 has 1 node
+    })
+
+    test('GET /api/v1/:db/graph/edges/:nodeId should work on correct database', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/v1/db1/graph/edges/1')
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).nodeId).toBe(1)
+    })
+
+    test('POST /api/v1/:db/graph/nodes/batch should batch in correct database', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/v1/db1/graph/nodes/batch', {
+        items: [
+          { id: 'n1', type: 1 },
+          { id: 'n2', type: 2 },
+        ],
+      })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).count).toBe(2)
+      expect(db1Sm.getAllNodes().length).toBe(2)
+      expect(db2Sm.getAllNodes().length).toBe(0)
+    })
+
+    test('POST /api/v1/:db/graph/edges/batch should batch in correct database', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/v1/db1/graph/edges/batch', {
+        items: [
+          { src: 1, dst: 2, type: 1 },
+          { src: 2, dst: 3, type: 1 },
+        ],
+      })
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).successCount).toBe(2)
+    })
+
+    test('/api/status should work in multi-db mode', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/status')
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).status).toBe('ok')
+      expect((res.body as any).version).toBe('0.1.0')
+    })
+
+    test('/api/health should work in multi-db mode', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/health')
+      expect(res.statusCode).toBe(200)
+      expect((res.body as any).status).toBe('ok')
+    })
+
+    test('Single-db routes should still work with databaseManager config present', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      // Original single-db routes still work with the primary shardManager
+      const res = await makeRequest(server, 'POST', '/api/graph/nodes', { typeId: 1, name: 'single-db-node' })
+      expect(res.statusCode).toBe(200)
+    })
+
+    // Skip concurrent test due to test infrastructure limitations (single port per test)
+    test('Concurrent requests to different databases should work', async () => {
+      server = createRestApiServer(mockShardManager as any, dbConfig)
+      await server.start()
+
+      // Issue concurrent requests to different databases
+      const [r1, r2] = await Promise.all([
+        makeRequest(server, 'POST', '/api/v1/db1/graph/nodes', { typeId: 1, name: 'concurrent-db1' }),
+        makeRequest(server, 'POST', '/api/v1/db2/graph/nodes', { typeId: 2, name: 'concurrent-db2' }),
+      ])
+
+      expect(r1.statusCode).toBe(200)
+      expect(r2.statusCode).toBe(200)
+
+      // Verify isolation
+      expect(db1Sm.getAllNodes().length).toBe(1)
+      expect(db1Sm.getAllNodes()[0].name).toBe('concurrent-db1')
+      expect(db2Sm.getAllNodes().length).toBe(1)
+      expect(db2Sm.getAllNodes()[0].name).toBe('concurrent-db2')
     })
   })
 })

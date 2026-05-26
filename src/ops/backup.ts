@@ -1,10 +1,17 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import { createRequire } from 'module'
 import { GraphEngine } from '../core/graph-engine'
 import { Logger } from './logger'
 import { HlcClock } from '../replication/hlc-clock'
 import type { PITRConfig, RecoveryPoint } from './backup-types'
 import { WalArchiver } from './backup-wal'
+import { fsyncDirectory } from './backup-helpers'
+
+// createRequire for safe loading of ESM-only modules inside CJS context
+const _require = createRequire(typeof __filename !== 'undefined' ? __filename : '/')
+const _archiver = _require('archiver')
+const _tar = _require('tar')
 
 /**
  * Backup — 文件级备份 / 恢复
@@ -64,26 +71,40 @@ export class Backup {
       try {
         fs.mkdirSync(destPath, { recursive: true })
 
-        // 2. 执行数据复制（不阻塞同时写入）
-        fs.cpSync(dataDir, destPath, { recursive: true })
+        // 2. 在复制前刷新所有待处理数据，确保文件系统一致性
+        // 2a. 尝试同步 GraphEngine 内部缓存（如果实现了 sync/flush 方法）
+        const engineAny = this.engine as any
+        if (typeof engineAny.sync === 'function') {
+          engineAny.sync()
+        }
+        if (typeof engineAny.flush === 'function') {
+          engineAny.flush()
+        }
+        // 2b. 尝试同步底层存储层
+        if (typeof engineAny.storage?.compact === 'function') {
+          engineAny.storage.compact()
+        }
 
-        // 3. 写入一致性标记文件（记录备份参考时间点）
-        fs.writeFileSync(
-          path.join(destPath, '.consistency-marker'),
-          JSON.stringify({
-            snapshotId: this.snapshotId,
-            hlcWallTime: Number(ts.wallTime),
-            hlcLogical: ts.logical,
-            createdAt: new Date().toISOString(),
-          }, null, 2)
-        )
+        // 2c. 确保数据目录中所有文件已落盘
+        fsyncDirectory(dataDir)
 
-        // 4. 确保标记文件落盘
-        const fd = fs.openSync(destPath, 'r')
+        // 3. 执行数据复制（cpSync + fsync 保证一致性）
+        this._copyDirSync(dataDir, destPath)
+
+        // 4. 写入一致性标记文件（记录备份参考时间点，标记文件也需 fsync）
+        const markerContent = JSON.stringify({
+          snapshotId: this.snapshotId,
+          hlcWallTime: Number(ts.wallTime),
+          hlcLogical: ts.logical,
+          createdAt: new Date().toISOString(),
+        }, null, 2)
+        const markerPath = path.join(destPath, '.consistency-marker')
+        fs.writeFileSync(markerPath, markerContent)
+        const markerFd = fs.openSync(markerPath, 'r')
         try {
-          fs.fsyncSync(fd)
+          fs.fsyncSync(markerFd)
         } finally {
-          fs.closeSync(fd)
+          fs.closeSync(markerFd)
         }
       } catch (err) {
         throw new Error(`Backup failed: ${(err as Error).message}`)
@@ -106,10 +127,9 @@ export class Backup {
       // 6. 将备份目录打成 gzip 压缩包
       const tarGzPath = `${destPath}.tar.gz`
       try {
-        const mod = await import('archiver')
-        const archiverCreate = typeof mod.default === 'function' ? mod.default : mod.create
+        const archiverReq = _archiver
         const output = fs.createWriteStream(tarGzPath)
-        const archive = archiverCreate('tar', { gzip: true, gzipOptions: { level: 6 } })
+        const archive = archiverReq('tar', { gzip: true, gzipOptions: { level: 6 } })
 
         await new Promise<void>((resolve, reject) => {
           output.on('close', resolve)
@@ -175,23 +195,16 @@ export class Backup {
 
       // 如果备份是压缩包，先解压
       if (backupPath.endsWith('.tar.gz')) {
-        const { default: tar } = await import('tar')
+        const tarReq = _tar
         fs.mkdirSync(target, { recursive: true })
-        await tar.extract({
+        await tarReq.extract({
           file: backupPath,
           cwd: path.dirname(target),
           strip: 1,
         })
       } else {
         // 复制备份数据（裸目录）
-        fs.cpSync(backupPath, target, { recursive: true })
-        // 确保数据落盘
-        const fd = fs.openSync(target, 'r')
-        try {
-          fs.fsyncSync(fd)
-        } finally {
-          fs.closeSync(fd)
-        }
+        this._copyDirSync(backupPath, target)
       }
     } catch (err) {
       // 恢复失败时尝试回滚
@@ -214,6 +227,40 @@ export class Backup {
     } catch {
       return []
     }
+  }
+
+  /**
+   * 递归复制目录（Node.js 版本兼容）
+   * - Node 16.7+：使用 fs.cpSync
+   * - 更早版本：手动递归复制
+   */
+  private _copyDirSync(src: string, dest: string): void {
+    if (typeof fs.cpSync === 'function') {
+      fs.cpSync(src, dest, { recursive: true })
+      // cpSync 后对目标目录执行 fsync，确保数据落盘
+      fsyncDirectory(dest)
+    } else {
+      this._copyRecursiveSync(src, dest)
+    }
+  }
+
+  /**
+   * 手动递归复制目录（fs.cpSync 函数的 fallback）
+   */
+  private _copyRecursiveSync(src: string, dest: string): void {
+    fs.mkdirSync(dest, { recursive: true })
+    const entries = fs.readdirSync(src, { withFileTypes: true })
+    for (const entry of entries) {
+      const srcPath = path.join(src, entry.name)
+      const destPath = path.join(dest, entry.name)
+      if (entry.isFile()) {
+        fs.copyFileSync(srcPath, destPath)
+      } else if (entry.isDirectory()) {
+        this._copyRecursiveSync(srcPath, destPath)
+      }
+    }
+    // 对目标目录执行 fsync
+    fsyncDirectory(dest)
   }
 
   // ─────────── PITR（Point-in-Time Recovery）───────────

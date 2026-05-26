@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>15/15</span>
+                <span class='fraction'>0/15</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>8/8</span>
+                <span class='fraction'>0/8</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>2/2</span>
+                <span class='fraction'>0/2</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">100% </span>
+                <span class="strong">0% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>13/13</span>
+                <span class='fraction'>0/13</span>
             </div>
         
             
@@ -61,7 +61,7 @@
             </div>
         </template>
     </div>
-    <div class='status-line high'></div>
+    <div class='status-line low'></div>
     <pre><table class="coverage">
 <tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
 <a name='L2'></a><a href='#L2'>2</a>
@@ -99,62 +99,62 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">5x</span>
-<span class="cline-any cline-yes">5x</span>
-<span class="cline-any cline-yes">5x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">5x</span>
-<span class="cline-any cline-yes">11x</span>
-<span class="cline-any cline-yes">11x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">8x</span>
-<span class="cline-any cline-yes">8x</span>
-<span class="cline-any cline-yes">6x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">6x</span>
-<span class="cline-any cline-yes">6x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/**
  * Retry — 通用重试逻辑
  *
  * 支持指数退避和最大重试次数
  */
-export async function retry&lt;T&gt;(
+<span class="cstat-no" title="statement not covered" >export a</span>sync function <span class="fstat-no" title="function not covered" >retry&lt;</span>T&gt;(
   fn: () =&gt; Promise&lt;T&gt;,
-  options: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number } = {}
+  options: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number } = <span class="branch-0 cbranch-no" title="branch not covered" >{}</span>
 ): Promise&lt;T&gt; {
-  const maxRetries = options.maxRetries ?? 3
-  const baseDelayMs = options.baseDelayMs ?? 100
-  const maxDelayMs = options.maxDelayMs ?? 5000
+  const maxRetries = <span class="cstat-no" title="statement not covered" >options.maxRetries ?? 3</span>
+  const baseDelayMs = <span class="cstat-no" title="statement not covered" >options.baseDelayMs ?? 100</span>
+  const maxDelayMs = <span class="cstat-no" title="statement not covered" >options.maxDelayMs ?? 5000</span>
 &nbsp;
   let lastError: Error | undefined
 &nbsp;
-  for (let attempt = 0; attempt &lt;= maxRetries; attempt++) {
-    try {
-      return await fn()
+<span class="cstat-no" title="statement not covered" >  for (let attempt = <span class="cstat-no" title="statement not covered" >0;</span> attempt &lt;= maxRetries; attempt++) {</span>
+<span class="cstat-no" title="statement not covered" >    try {</span>
+<span class="cstat-no" title="statement not covered" >      return await fn()</span>
     } catch (err) {
-      lastError = err as Error
-      if (attempt &lt; maxRetries) {
-        const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs)
+<span class="cstat-no" title="statement not covered" >      lastError = err as Error</span>
+<span class="cstat-no" title="statement not covered" >      <span class="missing-if-branch" title="if path not taken" >I</span>if (attempt &lt; maxRetries) {</span>
+        const delay = <span class="cstat-no" title="statement not covered" >Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs)</span>
         // jitter: 随机 50%~100%，防止惊群效应
-        const jittered = delay * (0.5 + Math.random() * 0.5)
-        await new Promise(r =&gt; setTimeout(r, Math.round(jittered)))
+        const jittered = <span class="cstat-no" title="statement not covered" >delay * (0.5 + Math.random() * 0.5)</span>
+<span class="cstat-no" title="statement not covered" >        await new Promise(<span class="fstat-no" title="function not covered" >r </span>=&gt; <span class="cstat-no" title="statement not covered" >setTimeout(r, Math.round(jittered)))</span></span>
       }
     }
   }
 &nbsp;
-  throw lastError
+<span class="cstat-no" title="statement not covered" >  throw lastError</span>
 }
 &nbsp;</pre></td></tr></table></pre>
 
@@ -163,7 +163,7 @@ export async function retry&lt;T&gt;(
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-05-25T01:36:34.354Z
+                at 2026-05-26T03:36:57.730Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

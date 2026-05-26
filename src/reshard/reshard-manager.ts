@@ -4,6 +4,7 @@ import { ReshardWorker } from './reshard-worker'
 import { RangeInstance } from '../shard/range-instance'
 import { ReshardingPlan, ReshardingStatus, ShardMap, RangeConfig } from '../types'
 import { HlcClock } from '../replication/hlc-clock'
+import { Logger } from '../ops/logger'
 
 /**
  * ReshardManager — 在线 Resharding 协调器
@@ -27,11 +28,13 @@ export class ReshardManager {
   private workers: ReshardWorker[] = []
   private _status: ReshardingStatus | null = null
   private cleanTimer: ReturnType<typeof setTimeout> | null = null
+  private logger: Logger
 
   constructor(shardManager: ShardManager, clock: HlcClock) {
     this.shardManager = shardManager
     this.clock = clock
     this.plan = new ReshardPlan()
+    this.logger = new Logger('ReshardManager')
   }
 
   get status(): ReshardingStatus | null { return this._status }
@@ -137,6 +140,9 @@ export class ReshardManager {
       const worker = new ReshardWorker(split, this.clock, sourceRange, targetInstance)
       this.workers.push(worker)
     }
+
+    // 启用双写：此后所有写入同时写入源和目标 Range
+    this.shardManager.enableDualWrite(plan.splits)
   }
 
   private async _migrateData(plan: ReshardingPlan): Promise<void> {
@@ -220,6 +226,8 @@ export class ReshardManager {
 
     // 原子更新路由表（ShardManager.rebuildRouter 内部应使用锁）
     this.shardManager.rebuildRouter(newMap)
+    // 路由已切换，停用双写：后续写入只走新路由
+    this.shardManager.disableDualWrite()
     this._status!.progressPercent = 90
   }
 
@@ -227,7 +235,8 @@ export class ReshardManager {
     this.cleanTimer = setTimeout(() => {
       for (const split of plan.splits) {
         try {
-          this.shardManager.removeRange(split.targetRangeId)
+          this.logger.warn(`Cleaning up source range: ${split.sourceRangeId} (48h after split completion)`)
+          this.shardManager.removeRange(split.sourceRangeId)
         } catch {
           // 清理失败不阻塞
         }

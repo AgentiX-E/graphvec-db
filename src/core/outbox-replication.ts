@@ -1,0 +1,990 @@
+/**
+ * outbox-replication.ts — EventBus Outbox: PerPeerWorker 池
+ *
+ * 每个 peer 一个独立的 PerPeerWorker（setTimeout loop），互不阻塞。
+ * 三级 pending 优先级队列：Critical（重试≥3次/超时）→ Normal → Stale（兜底）。
+ * ackTracker 超时重传 + LinearBackoff + recoverDealerFn 重建 DEALER。
+ *
+ * 设计文档 docs/EventBus_WorkerPool_设计方案.md
+ */
+
+import { open, type RootDatabase } from 'lmdb'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import * as crypto from 'node:crypto'
+import { Logger } from '../ops/logger'
+import { EventBus, parsePubFilename } from './event-bus'
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface OutboxEntry {
+  seq: number
+  msgId: string
+  targetNodeId: string
+  type: string
+  payload: string
+  createdAt: number
+  delivered: boolean
+  deliveredAt: number
+}
+
+export interface OutboxPeerConfig {
+  nodeId: string
+  addr: string
+}
+
+/** PerPeerWorker 的 pending 消息队列条目 */
+interface PendingItem {
+  entry: OutboxEntry
+  retryCount: number
+  insertedAt: number
+}
+
+/** PerPeerWorker 配置 */
+interface PerPeerConfig {
+  peerId: string
+  tickMs: number
+  maxBackoffMs: number
+  ackTimeoutMs: number
+  batchSize?: number
+  curveDir: string
+  sendFn: (msgId: string, payload: Buffer) => Promise<void>
+  batchSendFn?: (items: Array<{ msgId: string; payload: Buffer }>) => Promise<void>
+  recoverDealerFn: () => Promise<void>
+  logger?: Logger
+}
+
+export interface OutboxConfig {
+  nodeId: string
+  peers: OutboxPeerConfig[]
+  curveDir: string
+  dbPath?: string
+  tickMs?: number
+  maxBackoffSeconds?: number
+  entryTTLDays?: number
+  housekeepingIntervalMs?: number
+  curveKeyPair?: { publicKey: string; secretKey: string }
+  sendFn: (peerId: string, msgId: string, payload: Buffer) => Promise<void>
+  recoverDealerFn: (peerId: string) => Promise<void>
+  logger?: Logger
+}
+
+export interface OutboxReplicationConfig {
+  nodeId: string
+  peers: Array<{ nodeId: string; addr: string }>
+  curveDir: string
+  dbPath?: string
+  tickMs?: number
+  maxBackoffSeconds?: number
+  batchSize?: number
+  entryTTLDays?: number
+  housekeepingIntervalMs?: number
+  eventBus: {
+    send: (nodeId: string, msg: any) => Promise<void>
+    batchSend?: (nodeId: string, msgs: any[]) => Promise<void>
+    _recoverDealerByNodeId?: (nodeId: string) => Promise<void>
+    _handleDealerSendError?: (nodeId: string, err: Error) => void
+  }
+  logger?: Logger
+}
+
+// ---------------------------------------------------------------------------
+// OutboxIndex — LMDB 前缀索引
+//
+// 解决 fetchPendingByPeer/getPendingCountForPeer 全表扫描（O(N)）问题。
+// 使用 LMDB 前缀范围扫描（O(K)，K=该 peer 的 pending 数）。
+//
+// 索引键格式：
+//   pending:<peerId>:<pad10(seq)> → 1
+//   delivered:<peerId>:<pad10(seq)> → 1     (用于清理索引)
+//   seqToPeer:<seq> → peerId                 (seq → peer 反向查找)
+// ---------------------------------------------------------------------------
+
+class OutboxIndex {
+  private db: RootDatabase
+
+  constructor(db: RootDatabase) {
+    this.db = db
+  }
+
+  addPending(peerId: string, seq: number): void {
+    this.db.putSync(this._pendingKey(peerId, seq), 1)
+    this.db.putSync(`seqToPeer:${seq}`, peerId)
+  }
+
+  markDelivered(peerId: string, seq: number): void {
+    this.db.removeSync(this._pendingKey(peerId, seq))
+    this.db.putSync(this._deliveredKey(peerId, seq), 1)
+    this.db.removeSync(`seqToPeer:${seq}`)
+  }
+
+  markPending(peerId: string, seq: number): void {
+    this.db.removeSync(this._deliveredKey(peerId, seq))
+    this.db.putSync(this._pendingKey(peerId, seq), 1)
+    this.db.putSync(`seqToPeer:${seq}`, peerId)
+  }
+
+  /** 按 peer 查询 pending seq 列表（LMDB 前缀扫描，O(K)） */
+  fetchPendingSeqs(peerId: string): number[] {
+    const seqs: number[] = []
+    const prefix = this._pendingKey(peerId, 0).slice(0, -10) // 不含 seq 部分
+    try {
+      this.db.getRange({ start: prefix, end: prefix + '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff' })
+        .forEach((entry: any) => {
+          const key = typeof entry.key === 'string' ? entry.key : entry.key.toString()
+          const seq = parseInt(key.slice(key.lastIndexOf(':') + 1), 10)
+          if (!isNaN(seq)) seqs.push(seq)
+        })
+    } catch {
+      // LMDB getRange 可能抛异常
+    }
+    return seqs // 天然按 seq 排序（前缀顺序）
+  }
+
+  /** 统计指定 peer 的 pending 数（O(K)） */
+  countPending(peerId: string): number {
+    let count = 0
+    const prefix = this._pendingKey(peerId, 0).slice(0, -10)
+    try {
+      this.db.getRange({ start: prefix, end: prefix + '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff' })
+        .forEach(() => { count++ })
+    } catch {
+      // ignore
+    }
+    return count
+  }
+
+  /** 获取最早待发送的 seq */
+  oldestPending(peerId: string): number | null {
+    const prefix = this._pendingKey(peerId, 0).slice(0, -10)
+    try {
+      let first: number | null = null
+      this.db.getRange({ start: prefix, end: prefix + '\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff', limit: 1 })
+        .forEach((entry: any) => {
+          const key = typeof entry.key === 'string' ? entry.key : entry.key.toString()
+          first = parseInt(key.slice(key.lastIndexOf(':') + 1), 10)
+        })
+      return first
+    } catch {
+      return null
+    }
+  }
+
+  /** 启动时从主 Outbox DB 重建索引 */
+  rebuildFromScratch(mainDb: RootDatabase): void {
+    let count = 0
+    mainDb.getRange({ start: 1 }).forEach((entry: any) => {
+      const e = entry.value as OutboxEntry
+      if (!e.delivered) {
+        this.db.putSync(this._pendingKey(e.targetNodeId, e.seq), 1)
+        this.db.putSync(`seqToPeer:${e.seq}`, e.targetNodeId)
+      } else {
+        this.db.putSync(this._deliveredKey(e.targetNodeId, e.seq), 1)
+      }
+      count++
+    })
+  }
+
+  /** 清理已送达的索引记录（housekeeping） */
+  cleanDeliveredBefore(cutoffMs: number, mainDb: RootDatabase): number {
+    let count = 0
+    try {
+      this.db.getRange({ start: 'delivered:' }).forEach((entry: any) => {
+        const key = typeof entry.key === 'string' ? entry.key : entry.key.toString()
+        // key: delivered:<peerId>:<pad10(seq)>
+        const seq = parseInt(key.slice(key.lastIndexOf(':') + 1), 10)
+        if (isNaN(seq)) return
+
+        const outboxEntry = mainDb.get(seq) as OutboxEntry | undefined
+        if (outboxEntry && outboxEntry.delivered && outboxEntry.deliveredAt < cutoffMs) {
+          this.db.removeSync(key)
+          count++
+        }
+      })
+    } catch {
+      // ignore
+    }
+    return count
+  }
+
+  private _pendingKey(peerId: string, seq: number): string {
+    return `pending:${peerId}:${String(seq).padStart(10, '0')}`
+  }
+
+  private _deliveredKey(peerId: string, seq: number): string {
+    return `delivered:${peerId}:${String(seq).padStart(10, '0')}`
+  }
+}
+
+export class Outbox {
+  private db: RootDatabase
+  private seqDb: RootDatabase
+  private indexDb: RootDatabase
+  private index: OutboxIndex
+
+  constructor(dbPath: string) {
+    const dir = path.dirname(dbPath)
+    fs.mkdirSync(dir, { recursive: true })
+    this.db = open({ path: dbPath, compression: true })
+    this.seqDb = open({ path: dbPath + '-seq', compression: true })
+    this.indexDb = open({ path: dbPath + '-index', compression: true })
+    this.index = new OutboxIndex(this.indexDb)
+
+    // 启动时重建索引（如果索引 DB 为空）
+    this._ensureIndex()
+  }
+
+  close(): void {
+    this.db.close()
+    this.seqDb.close()
+    this.indexDb.close()
+  }
+
+  add(entry: Omit<OutboxEntry, 'seq'>): number {
+    const seq = (this.seqDb.get('seq') as number ?? 0) + 1
+    this.seqDb.putSync('seq', seq)
+    const full: OutboxEntry = { ...entry, seq }
+    this.db.putSync(seq, full)
+    this.index.addPending(entry.targetNodeId, seq)
+    return seq
+  }
+
+  markDeliveredBatch(seqs: number[]): void {
+    const now = Date.now()
+    for (const seq of seqs) {
+      const entry = this.db.get(seq) as OutboxEntry | undefined
+      if (entry && !entry.delivered) {
+        entry.delivered = true
+        entry.deliveredAt = now
+        this.db.putSync(seq, entry)
+        this.index.markDelivered(entry.targetNodeId, seq)
+      }
+    }
+  }
+
+  // 罕见：用于重发 / 回退
+  markPending(seq: number): void {
+    const entry = this.db.get(seq) as OutboxEntry | undefined
+    if (entry) {
+      entry.delivered = false
+      entry.deliveredAt = 0
+      this.db.putSync(seq, entry)
+      this.index.markPending(entry.targetNodeId, seq)
+    }
+  }
+
+  fetchOldestPending(peerId: string): OutboxEntry | null {
+    // 先查索引拿到最早的 seq
+    const oldestSeq = this.index.oldestPending(peerId)
+    if (oldestSeq === null) return null
+    const entry = this.db.get(oldestSeq) as OutboxEntry | undefined
+    return entry ?? null
+  }
+
+  /** 取指定 peer 的所有 pending 消息（按 seq 升序）— 使用索引，O(K) */
+  fetchPendingByPeer(peerId: string): OutboxEntry[] {
+    // 1. 从索引获取 seq 列表
+    const seqs = this.index.fetchPendingSeqs(peerId)
+    if (seqs.length === 0) return []
+
+    // 2. 批量从主 DB 读取
+    return seqs
+      .map(seq => this.db.get(seq) as OutboxEntry | undefined)
+      .filter((e): e is OutboxEntry => e !== undefined && !e.delivered)
+  }
+
+  getPendingCountForPeer(peerId: string): number {
+    return this.index.countPending(peerId)
+  }
+
+  cleanDeliveredBefore(cutoffMs: number): number {
+    let count = 0
+    this.db.getRange({ start: 1 }).forEach((entry: any) => {
+      const e = entry.value as OutboxEntry
+      if (e.delivered && e.deliveredAt < cutoffMs) {
+        this.db.removeSync(entry.key)
+        count++
+      }
+    })
+    // 同时清理索引
+    this.index.cleanDeliveredBefore(cutoffMs, this.db)
+    return count
+  }
+
+  getPendingCount(): number {
+    let count = 0
+    this.db.getRange({ start: 1 }).forEach((entry: any) => {
+      if (!(entry.value as OutboxEntry).delivered) count++
+    })
+    return count
+  }
+
+  /** 确保索引已建立 */
+  private _ensureIndex(): void {
+    try {
+      // 快速检查索引是否为空
+      const hasIndex = this.index.countPending('__probe__') >= 0
+      // 检查主 DB 是否有数据
+      let hasData = false
+      this.db.getRange({ start: 1, limit: 1 }).forEach(() => { hasData = true })
+
+      if (hasData) {
+        // 检查索引是否有内容：读一个非 pending 的 key 来检测
+        let indexHasData = false
+        try {
+          this.indexDb.getRange({ start: 'pending:', limit: 1 }).forEach(() => { indexHasData = true })
+        } catch { /* ignore */ }
+
+        if (!indexHasData) {
+          this.index.rebuildFromScratch(this.db)
+        }
+      }
+    } catch {
+      // 索引异常时重建（慢启动）
+      try { this.index.rebuildFromScratch(this.db) } catch { /* ignore */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PerPeerWorker — 每个 peer 独立的 Worker
+// ---------------------------------------------------------------------------
+
+export class PerPeerWorker {
+  private peerId: string
+  private config: PerPeerConfig
+  private outbox: Outbox
+  private running = false
+  private workerTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** pending 消息队列：优先级分级 */
+  private criticalQueue: PendingItem[] = []
+  private normalQueue: PendingItem[] = []
+
+  /** ack 追踪：msgId → sentAt */
+  private ackTracker = new Map<string, number>()
+
+  /** 上次发送时间（退避用） */
+  private lastSendMs = 0
+  /** 当前退避状态 */
+  private inBackoff = false
+
+  private log: Logger
+
+  constructor(peerId: string, config: PerPeerConfig, outbox: Outbox) {
+    this.peerId = peerId
+    this.config = config
+    this.outbox = outbox
+    this.log = config.logger ?? new Logger(`ppw-${peerId}`)
+  }
+
+  /** 热加载 getter */
+  private get _tickMs(): number { return this.config.tickMs }
+  private get _maxBackoffMs(): number { return this.config.maxBackoffMs }
+  private get _ackTimeoutMs(): number { return this.config.ackTimeoutMs }
+  /** 每批最多发送条数（默认 100，可热加载） */
+  private get _batchSize(): number { return this.config.batchSize ?? 100 }
+
+  start(): void {
+    this.running = true
+    const loop = async () => {
+      try {
+        await this._tick()
+      } catch (err: any) {
+        this.log.warn(`Tick error: ${err.message}`)
+      }
+      if (this.running) {
+        this.workerTimer = setTimeout(loop, this._tickMs)
+      }
+    }
+    this.workerTimer = setTimeout(loop, this._tickMs)
+  }
+
+  stop(): void {
+    this.running = false
+    if (this.workerTimer) {
+      clearTimeout(this.workerTimer)
+      this.workerTimer = null
+    }
+    this.criticalQueue = []
+    this.normalQueue = []
+    this.ackTracker.clear()
+  }
+
+  /** 外部通知该 peer 已连接可用 */
+  notifyConnected(): void {
+    this.inBackoff = false
+    this.lastSendMs = 0
+  }
+
+  /** 外部通知收到该 peer 的 ACK */
+  notifyAcked(msgId: string): void {
+    this.ackTracker.delete(msgId)
+    if (this.ackTracker.size === 0) {
+      // 所有待 ACK 都收到 → 退出退避
+      this.inBackoff = false
+      this.lastSendMs = 0
+    }
+  }
+
+  /** 推送一条哨兵消息触发重试（deliveryCheck 使用） */
+  pushSentinel(): void {
+    // 如果 tracker 非空且无 pending 消息，说明消息可能丢了
+    if (this.ackTracker.size > 0 && this.criticalQueue.length === 0 && this.normalQueue.length === 0) {
+      this.inBackoff = false
+    }
+  }
+
+  /** 获取当前 pending 数量 */
+  getPendingCount(): number {
+    return this.criticalQueue.length + this.normalQueue.length
+  }
+
+  /** Worker 是否正在运行 */
+  get isRunning(): boolean {
+    return this.running
+  }
+
+  private async _tick(): Promise<void> {
+    // ── Phase 0: 检查 ACK 超时 ──
+    if (!this.running) return
+    const now = Date.now()
+    for (const [msgId, sentAt] of this.ackTracker) {
+      if (now - sentAt > this._ackTimeoutMs) {
+        this.log.info(`ack timeout for ${msgId}, reverting to pending`)
+        this.ackTracker.delete(msgId)
+        this.inBackoff = false
+        // 重新从 LMDB 加载消息到 normal queue
+        const entries = this.outbox.fetchPendingByPeer(this.peerId)
+        this.normalQueue = entries.map(e => ({ entry: e, retryCount: 0, insertedAt: now }))
+        this.normalQueue.sort((a, b) => a.entry.seq - b.entry.seq)
+        break // 一轮最多处理一个 timeout
+      }
+    }
+
+    // ── Phase 1: 检查退避 ──
+    if (!this.running) return
+    if (this.inBackoff && this.lastSendMs > 0) {
+      if (now - this.lastSendMs < this._maxBackoffMs) {
+        return // 退避中，跳过发送
+      }
+      // 退避超时 → 重建 DEALER
+      try {
+        const pubKey = this._readPeerPubKey()
+        if (!pubKey) {
+          // .pub 尚未出现，跳过退避恢复
+          this.lastSendMs = now
+          return
+        }
+        await this.config.recoverDealerFn()
+        this.inBackoff = false
+        this.lastSendMs = 0
+      } catch (err: any) {
+        this.log.warn(`recover dealer failed: ${err.message}`)
+        this.lastSendMs = now // 更新避免每 tick 都试
+        return
+      }
+    }
+
+    // ── Phase 2: 从 LMDB 加载 pending 消息填充队列 ──
+    if (!this.running) return
+    if (this.normalQueue.length === 0) {
+      const entries = this.outbox.fetchPendingByPeer(this.peerId)
+      this.normalQueue = entries.map(e => ({ entry: e, retryCount: 0, insertedAt: now }))
+      this.normalQueue.sort((a, b) => a.entry.seq - b.entry.seq)
+    }
+
+    // ── Phase 3: 检查 peer 是否在线 ──
+    if (!this.running) return
+    const pubKey = this._readPeerPubKey()
+    if (!pubKey) {
+      // .pub 文件尚未出现（顺序启动场景），跳过本次 tick，等下一次
+      this.log.info(`.pub not yet available for ${this.peerId}, deferring`)
+      return
+    }
+
+    // ── Phase 4: 收集 batch ──
+    const batch: PendingItem[] = []
+    while (batch.length < this._batchSize) {
+      const item = this.criticalQueue.shift() ?? this.normalQueue.shift()
+      if (!item) break
+      batch.push(item)
+    }
+
+    if (batch.length === 0) return // 无 pending 消息
+
+    // ── Phase 5: 发送 batch ──
+    const entriesToDeliver: number[] = []
+    const sendItems: Array<{ msgId: string; payload: Buffer }> = []
+    for (const item of batch) {
+      entriesToDeliver.push(item.entry.seq)
+      sendItems.push({
+        msgId: item.entry.msgId,
+        payload: Buffer.from(item.entry.payload),
+      })
+    }
+
+    try {
+      if (this.config.batchSendFn && sendItems.length > 1) {
+        // 批量发送（单次 ZMQ send，multi-part 消息）
+        await this.config.batchSendFn(sendItems)
+      } else {
+        // 兜底：逐条发送（兼容旧 sendFn）
+        for (const si of sendItems) {
+          await this.config.sendFn(si.msgId, si.payload)
+        }
+      }
+
+      // 成功：标记 delivered + 加入 ack 追踪
+      this.outbox.markDeliveredBatch(entriesToDeliver)
+      for (const item of batch) {
+        this.ackTracker.set(item.entry.msgId, Date.now())
+      }
+    } catch (err: any) {
+      this.log.warn(`batch send failed (${batch.length} msgs): ${err.message}`)
+      // 发送失败：全部放回队列，升级 retryCount
+      for (const item of batch) {
+        const newRetry = item.retryCount + 1
+        if (newRetry >= 3) {
+          this.criticalQueue.push({ ...item, retryCount: newRetry, insertedAt: now })
+        } else {
+          this.normalQueue.push({ ...item, retryCount: newRetry, insertedAt: now })
+        }
+      }
+      // 进入退避
+      this.inBackoff = true
+      this.lastSendMs = now
+    }
+  }
+
+  private _readPeerPubKey(): string | null {
+    try {
+      const entries = fs.readdirSync(this.config.curveDir)
+      for (const entry of entries) {
+        if (!entry.endsWith('.pub')) continue
+        const parsed = parsePubFilename(entry)
+        if (parsed && parsed.nodeId === this.peerId) {
+          const key = fs.readFileSync(path.join(this.config.curveDir, entry), 'utf-8').trim()
+          if (key.length > 0) return key
+        }
+      }
+    } catch { /* ignore */ }
+    return null
+  }
+
+  /** 获取当前状态统计（用于 reportConfig） */
+  getStats(): { critical: number; normal: number; ackPending: number; inBackoff: boolean } {
+    return {
+      critical: this.criticalQueue.length,
+      normal: this.normalQueue.length,
+      ackPending: this.ackTracker.size,
+      inBackoff: this.inBackoff,
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OutboxReplicationManager — 管理 Worker 池 + Housekeeping + DeliveryCheck
+// ---------------------------------------------------------------------------
+
+export class OutboxReplicationManager {
+  private config: OutboxReplicationConfig
+  private outbox: Outbox
+  /** peerId → PerPeerWorker */
+  private workerMap = new Map<string, PerPeerWorker>()
+  private housekeepingTimer: ReturnType<typeof setInterval> | null = null
+  private deliveryCheckTimer: ReturnType<typeof setInterval> | null = null
+  private reloadTimer: ReturnType<typeof setInterval> | null = null
+  private configFilePath: string | null = null
+  private log: Logger
+  /** NAS curve 目录路径（用于 Worker 动态发现） */
+  private curveDir: string | null
+
+  constructor(config: OutboxReplicationConfig) {
+    this.config = config
+    const dbPath = config.dbPath ?? path.join(process.cwd(), 'data', 'outbox')
+    this.outbox = new Outbox(dbPath)
+    this.log = config.logger ?? new Logger('outbox-mgr')
+    this.curveDir = config.curveDir || null
+
+    const envPath = process.env.ML_CONFIG_PATH
+    if (envPath) {
+      this.configFilePath = path.resolve(envPath)
+    }
+  }
+
+  get dbPath(): string { return this.config.dbPath ?? path.join(process.cwd(), 'data', 'outbox') }
+  get configFile(): string | null { return this.configFilePath }
+
+  loadConfigFile(): void {
+    if (!this.configFilePath) return
+    try {
+      const content = fs.readFileSync(this.configFilePath, 'utf-8')
+      const parsed = JSON.parse(content)
+      const partial: Partial<OutboxReplicationConfig> = {}
+      const fields = ['tickMs', 'maxBackoffSeconds', 'housekeepingIntervalMs', 'entryTTLDays'] as const
+      let changed = false
+      for (const field of fields) {
+        if (parsed[field] !== undefined && typeof parsed[field] === 'number' && parsed[field] > 0) {
+          partial[field] = parsed[field]
+          changed = true
+        }
+      }
+      if (changed) {
+        Object.assign(this.config, partial)
+        this.log.info(`[Outbox] loaded config from ${this.configFilePath}: ${JSON.stringify(partial)}`)
+        if (partial.housekeepingIntervalMs !== undefined) this._restartHousekeeping()
+      } else {
+        this.log.debug(`[Outbox] config file ${this.configFilePath}: no valid fields`)
+      }
+    } catch (err: any) {
+      this.log.warn(`[Outbox] failed to load config file ${this.configFilePath}: ${err.message}`)
+    }
+  }
+
+  saveConfigFile(): void {
+    if (!this.configFilePath) {
+      this.log.warn('[Outbox] no ML_CONFIG_PATH set, cannot save config')
+      return
+    }
+    try {
+      const dir = path.dirname(this.configFilePath)
+      fs.mkdirSync(dir, { recursive: true })
+      const data = {
+        tickMs: this.config.tickMs ?? 500,
+        maxBackoffSeconds: this.config.maxBackoffSeconds ?? 60,
+        housekeepingIntervalMs: this.config.housekeepingIntervalMs ?? 86400000,
+        entryTTLDays: this.config.entryTTLDays ?? 14,
+      }
+      fs.writeFileSync(this.configFilePath, JSON.stringify(data, null, 2), 'utf-8')
+      this.log.info(`[Outbox] config saved to ${this.configFilePath}`)
+    } catch (err: any) {
+      this.log.warn(`[Outbox] failed to save config file: ${err.message}`)
+    }
+  }
+
+  getConfig(): Readonly<OutboxReplicationConfig> {
+    return { ...this.config }
+  }
+
+  updateConfig(partial: Partial<Pick<OutboxReplicationConfig, 'tickMs' | 'maxBackoffSeconds' | 'housekeepingIntervalMs' | 'entryTTLDays'>>): void {
+    Object.assign(this.config, partial)
+    this.log.info(`[Outbox] config updated: ${JSON.stringify(partial)}`)
+    this.saveConfigFile()
+    if (partial.housekeepingIntervalMs !== undefined) {
+      this._restartHousekeeping()
+    }
+  }
+
+  private _restartHousekeeping(): void {
+    if (this.housekeepingTimer) {
+      clearInterval(this.housekeepingTimer)
+      this.housekeepingTimer = null
+    }
+    const hkInterval = this.config.housekeepingIntervalMs ?? 86400000
+    this.housekeepingTimer = setInterval(() => {
+      const cutoff = Date.now() - (this.config.entryTTLDays ?? 14) * 86400000
+      const count = this.outbox.cleanDeliveredBefore(cutoff)
+      if (count > 0) this.log.info(`[Outbox] housekeeping: removed ${count} old entries`)
+    }, hkInterval)
+  }
+
+  addMessage(type: string, data: Record<string, unknown>): void {
+    const createdAt = Date.now()
+    const remotePeers = this.config.peers.filter(p => p.nodeId !== this.config.nodeId)
+    for (const peer of remotePeers) {
+      this.outbox.add({
+        msgId: data['msgId'] as string ?? `${createdAt}-${crypto.randomUUID()}`,
+        targetNodeId: peer.nodeId,
+        type,
+        payload: JSON.stringify({ type, data }),
+        createdAt,
+        delivered: false,
+        deliveredAt: 0,
+      })
+    }
+  }
+
+  /** 创建/重建指定 peer 的 PerPeerWorker */
+  private _ensureWorker(peerId: string): PerPeerWorker {
+    let worker = this.workerMap.get(peerId)
+    if (worker) return worker
+
+    const remotePeers = this.config.peers.filter(p => p.nodeId !== this.config.nodeId)
+    const peerCfg = remotePeers.find(p => p.nodeId === peerId)
+    if (!peerCfg) {
+      throw new Error(`peer ${peerId} not found in config`)
+    }
+
+    worker = new PerPeerWorker(peerId, {
+      peerId,
+      tickMs: this.config.tickMs ?? 500,
+      maxBackoffMs: (this.config.maxBackoffSeconds ?? 60) * 1000,
+      ackTimeoutMs: (this.config.tickMs ?? 500) * 3,
+      batchSize: this.config.batchSize ?? 100,
+      curveDir: this.config.curveDir,
+      sendFn: async (msgId: string, payload: Buffer) => {
+        const parsed = JSON.parse(payload.toString('utf-8'))
+        const streamMsg = {
+          msgId,
+          seq: 0,
+          nodeId: this.config.nodeId,
+          timestamp: Date.now(),
+          type: parsed.type ?? 'unknown',
+          data: parsed,
+        }
+        const msg: any = {
+          msgId,
+          type: 'data',
+          srcNodeId: this.config.nodeId,
+          data: { __es_msg: streamMsg },
+        }
+        await this.config.eventBus.send(peerId, msg)
+      },
+      batchSendFn: async (items) => {
+        // 批量发送：将多个消息合并为一次 ZMQ send
+        // eventBus.send 一次只能发送一条，所以这里还是调用多次但利用 ZMQ 的缓冲能力
+        // 实际批量优化在 ZMQ 层面：在 EventBus 中实现 batchSend
+        if (this.config.eventBus.batchSend) {
+          const batched = items.map(({ msgId, payload }) => {
+            const parsed = JSON.parse(payload.toString('utf-8'))
+            const streamMsg = {
+              msgId,
+              seq: 0,
+              nodeId: this.config.nodeId,
+              timestamp: Date.now(),
+              type: parsed.type ?? 'unknown',
+              data: parsed,
+            }
+            return {
+              msgId,
+              type: 'data' as const,
+              srcNodeId: this.config.nodeId,
+              data: { __es_msg: streamMsg },
+            }
+          })
+          await this.config.eventBus.batchSend(peerId, batched)
+        } else {
+          // 兜底：逐条调用 send（但 batchSize 聚合减小了 Node.js 事件循环开销）
+          for (const { msgId, payload } of items) {
+            const parsed = JSON.parse(payload.toString('utf-8'))
+            const streamMsg = {
+              msgId,
+              seq: 0,
+              nodeId: this.config.nodeId,
+              timestamp: Date.now(),
+              type: parsed.type ?? 'unknown',
+              data: parsed,
+            }
+            const msg: any = {
+              msgId,
+              type: 'data',
+              srcNodeId: this.config.nodeId,
+              data: { __es_msg: streamMsg },
+            }
+            await this.config.eventBus.send(peerId, msg)
+          }
+        }
+      },
+      recoverDealerFn: async () => {
+        if (this.config.eventBus._recoverDealerByNodeId) {
+          await this.config.eventBus._recoverDealerByNodeId(peerId)
+        } else {
+          throw new Error('_recoverDealerByNodeId not available on eventBus')
+        }
+      },
+      logger: this.log,
+    }, this.outbox)
+
+    this.workerMap.set(peerId, worker)
+    this.log.info(`[Outbox] PerPeerWorker created for ${peerId}`)
+    return worker
+  }
+
+  start(): void {
+    this.loadConfigFile()
+
+    // 为每个 remote peer 创建 PerPeerWorker
+    const remotePeers = this.config.peers.filter(p => p.nodeId !== this.config.nodeId)
+    for (const peer of remotePeers) {
+      const worker = this._ensureWorker(peer.nodeId)
+      worker.start()
+    }
+
+    // Housekeeping
+    this._restartHousekeeping()
+
+    // DeliveryCheck：定时扫描所有 peer 的 backlog，对卡住的推送哨兵
+    this.deliveryCheckTimer = setInterval(() => {
+      this._deliveryCheckPeers()
+    }, (this.config.tickMs ?? 500) * 10)
+
+    // 配置文件定时重载
+    if (this.configFilePath) {
+      this.reloadTimer = setInterval(() => {
+        this.loadConfigFile()
+      }, 60000)
+    }
+  }
+
+  stop(): void {
+    for (const [peerId, worker] of this.workerMap) {
+      worker.stop()
+    }
+    this.workerMap.clear()
+
+    if (this.housekeepingTimer) {
+      clearInterval(this.housekeepingTimer)
+      this.housekeepingTimer = null
+    }
+    if (this.deliveryCheckTimer) {
+      clearInterval(this.deliveryCheckTimer)
+      this.deliveryCheckTimer = null
+    }
+    if (this.reloadTimer) {
+      clearInterval(this.reloadTimer)
+      this.reloadTimer = null
+    }
+    this._deleteMyPubKey()
+    this.outbox.close()
+  }
+
+  private _deleteMyPubKey(): void {
+    try {
+      const nodeId = this.config.nodeId
+      const entries = fs.readdirSync(this.config.curveDir)
+      for (const entry of entries) {
+        if (!entry.endsWith('.pub')) continue
+        const parsed = parsePubFilename(entry)
+        if (parsed && parsed.nodeId === nodeId) {
+          const filePath = path.join(this.config.curveDir, entry)
+          fs.unlinkSync(filePath)
+          this.log.info(`[Outbox] deleted my pub key: ${entry}`)
+          break
+        }
+      }
+    } catch (err: any) {
+      this.log.warn(`[Outbox] failed to delete pub key: ${err.message}`)
+    }
+  }
+
+  registerShutdownHook(): void {
+    const cleanup = () => {
+      this.log.info('[Outbox] shutdown hook triggered, cleaning up...')
+      this.stop()
+      process.exit(0)
+    }
+    process.on('SIGTERM', cleanup)
+    process.on('SIGINT', cleanup)
+    process.on('exit', () => {
+      try { this._deleteMyPubKey() } catch { /* best-effort */ }
+    })
+  }
+
+  /** DeliveryCheck：定时检查所有 peer 的 pending 状态，推送哨兵消息 */
+  private _deliveryCheckPeers(): void {
+    // 先执行 Worker 动态发现
+    this.discoverPeers()
+
+    const now = Date.now()
+    for (const [peerId, worker] of this.workerMap) {
+      // 如果 worker 的 ackTracker 有未 ack 的消息，但 pending 队列为空 → 可能是 ack 丢失
+      const stats = worker.getStats()
+      if (stats.ackPending > 0 && stats.critical === 0 && stats.normal === 0) {
+        worker.pushSentinel()
+      }
+      // 如果 worker 完全停止，但有 pending 数据 → 重启 worker
+      if (!this._isWorkerRunning(peerId)) {
+        const pendingCount = this.outbox.getPendingCountForPeer(peerId)
+        if (pendingCount > 0) {
+          this.log.info(`[DeliveryCheck] ${peerId} has ${pendingCount} pending but not running — restarting`)
+          this._restartWorker(peerId)
+        }
+      }
+    }
+  }
+
+  /**
+   * Worker 动态发现：扫描 curveDir 中的 *.pub 文件，
+   * 为新增 peer 创建 Worker，清理已消失 peer 的 Worker 记录。
+   */
+  discoverPeers(): void {
+    if (!this.curveDir) return
+
+    try {
+      // 扫描 curveDir 获取所有 peer nodeId
+      const allPeers = EventBus.readAllPeerKeys(this.curveDir)
+      const newPeers = allPeers
+        .filter(p => p.nodeId !== this.config.nodeId)
+        .map(p => p.nodeId)
+
+      // 为新增 peer 创建 Worker
+      for (const peerId of newPeers) {
+        const existing = this.workerMap.get(peerId)
+        if (!existing) {
+          this.log.info(`[discoverPeers] new peer ${peerId}, creating worker`)
+          this._ensureWorker(peerId).start()
+        } else if (!existing.isRunning) {
+          // Worker 已停止（可能因 peer pub key 尚未出现），重新启动
+          this.log.info(`[discoverPeers] restarting stopped worker for ${peerId}`)
+          existing.start()
+        }
+      }
+
+      // 清理已消失 peer 的 Worker（pub 删除 → Worker 已 self-stop）
+      for (const [peerId, worker] of this.workerMap) {
+        if (!newPeers.includes(peerId) && !worker.isRunning) {
+          this.log.info(`[discoverPeers] peer ${peerId} gone, removing worker`)
+          this.workerMap.delete(peerId)
+        }
+      }
+    } catch (err: any) {
+      this.log.warn(`[discoverPeers] error: ${err.message}`)
+    }
+  }
+
+  private _isWorkerRunning(peerId: string): boolean {
+    // 检查 worker 是否存在（running 状态只能通过 getStats 间接判断）
+    // 如果 worker 遇到 .pub 消失会 self-stop（设置 running=false）
+    return this.workerMap.has(peerId)
+  }
+
+  private _restartWorker(peerId: string): void {
+    const old = this.workerMap.get(peerId)
+    if (old) old.stop()
+    this.workerMap.delete(peerId)
+    const worker = this._ensureWorker(peerId)
+    worker.start()
+  }
+
+  /** 通知指定 peer 的 Worker 已连接 */
+  notifyConnected(peerId: string): void {
+    const worker = this.workerMap.get(peerId)
+    if (worker) worker.notifyConnected()
+  }
+
+  /** 通知指定 peer 的 Worker 收到 ACK */
+  notifyAcked(peerId: string): void {
+    const worker = this.workerMap.get(peerId)
+    if (worker) worker.notifyConnected()
+  }
+
+  getStats(): { sendTrack: number; backoffTrack: number; pending: number } {
+    return {
+      sendTrack: this.workerMap.size,
+      backoffTrack: 0,
+      pending: this.outbox.getPendingCount(),
+    }
+  }
+
+  /** 获取每个 peer 的详细报告（reportConfig 回调用） */
+  getPeerReports(): Array<{ peerId: string; stats: ReturnType<PerPeerWorker['getStats']> | null }> {
+    const reports: Array<{ peerId: string; stats: ReturnType<PerPeerWorker['getStats']> | null }> = []
+    for (const [peerId, worker] of this.workerMap) {
+      reports.push({ peerId, stats: worker.getStats() })
+    }
+    return reports
+  }
+}

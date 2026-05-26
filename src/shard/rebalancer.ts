@@ -287,34 +287,86 @@ export class Rebalancer {
 
   /**
    * 找出指定 Range 中最热的节点
-   * 这里的"热"通过 operationCount 判断，但实际场景中我们不具备每个节点的 op count。
-   * 作为简化实现，我们用节点 ID 的哈希值（均匀分布假设）来选择最靠近末尾的节点。
+   *
+   * 热节点检测算法（基于度数）：
+   * 1. 在单次 range.read() 中：遍历所有 typeId 收集该引擎的全部节点 ID，查询每个节点的
+   *    度数（入度 + 出度），构建 { nodeId → degree } 映射
+   * 2. 按度数降序排列，取前 count 个作为最热节点
+   * 3. 返回结果去重 & 不超过 count
+   *
+   * 备选指标（fallback）：
+   * - 如果度数全为 0 但节点存在，按节点 ID 降序排列（原逻辑）作为兜底
    */
   private async _findHotNodes(range: RangeInstance, count: number): Promise<NodeId[]> {
     try {
-      // 通过引擎的所有节点类型来收集节点 ID
-      const allNodeIds: NodeId[] = []
-      // 尝试通过 labelIndex 获取节点列表：查找所有类型（假设 typeId 0-100 覆盖大部分）
-      const seen = new Set<NodeId>()
-      for (let typeId = 0; typeId < 20; typeId++) {
-        try {
-          const ids = await range.read(engine => engine.findNodesByType(typeId))
-          for (const id of ids) {
-            if (!seen.has(id)) {
-              seen.add(id)
-              allNodeIds.push(id)
+      const result = await range.read(engine => {
+        // ── 第 1 步：通过 labelIndex 收集全部节点 ID ──
+        const allNodeIds: number[] = []
+        const seen = new Set<number>()
+        // 扫描 0-99 覆盖绝大多数场景；遇到连续空 type 则提前停止
+        let emptyRuns = 0
+        for (let typeId = 0; typeId < 100; typeId++) {
+          try {
+            const ids = engine.findNodesByType(typeId)
+            if (ids.length === 0) {
+              emptyRuns++
+              if (emptyRuns >= 10) break
+              continue
             }
+            emptyRuns = 0
+            for (const id of ids) {
+              if (!seen.has(id)) {
+                seen.add(id)
+                allNodeIds.push(id)
+              }
+            }
+          } catch {
+            emptyRuns++
+            if (emptyRuns >= 10) break
           }
-        } catch {
-          // 跳过不存在或不需要的类型
+        }
+        return { allNodeIds }
+      })
+
+      if (result.allNodeIds.length === 0) {
+        this.logger.debug('No nodes found in range for hot node detection')
+        return []
+      }
+
+      // ── 第 2 步：在另一个 read() 中批量获取度数 ──
+      const degreeMap = await range.read(engine => {
+        const map = new Map<number, number>()
+        for (const id of result.allNodeIds) {
+          try {
+            const node = engine.getNode(id)
+            map.set(id, node?.degree ?? 0)
+          } catch {
+            map.set(id, 0)
+          }
+        }
+        return map
+      })
+
+      // ── 第 3 步：按度数降序排列，取前 count 个 ──
+      const sorted = [...degreeMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+
+      // 取出度数 > 0 的前 count 个
+      const hotNodes: number[] = []
+      for (const [id, deg] of sorted) {
+        if (hotNodes.length >= count) break
+        if (deg > 0) {
+          hotNodes.push(id)
         }
       }
 
-      if (allNodeIds.length === 0) return []
+      // 兜底：如果度数全部为 0 但节点数 > 0，按 ID 降序取 count 个
+      if (hotNodes.length === 0 && result.allNodeIds.length > 0) {
+        const sortedFallback = [...result.allNodeIds].sort((a, b) => b - a)
+        return sortedFallback.slice(0, Math.min(count, result.allNodeIds.length))
+      }
 
-      // 排序并取最后的 count 个作为"热节点"
-      allNodeIds.sort((a, b) => b - a)
-      return allNodeIds.slice(0, Math.min(count, allNodeIds.length))
+      return hotNodes
     } catch (err) {
       this.logger.error('Failed to find hot nodes', err as Error)
       return []

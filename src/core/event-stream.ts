@@ -1,34 +1,19 @@
 /**
  * event-stream.ts — 基于 ROUTER/DEALER EventBus 的可靠事件流
  *
- * 架构（与旧 PUB/SUB 的关键区别）：
- *   1. 发送：不再通过 bus.emit()（local only），改用 bus.broadcast/send
- *   2. 接收：不再通过 bus.on() 监听，改用 bus.setReceiveHandler()（ROUTER 直接分发）
- *   3. ACK：点对点回传，不走 broadcast
- *   4. Sync：两轮协议（sync-query → 选 maxSeq → sync-request → sync-batch）
- *
- * 架构总览：
- *   upsertNode / deleteNode / upsertEdge / deleteEdge
- *       │
- *       ▼
- *   EventStream.emitSync(event, expectedAcks, timeoutMs)
- *       │
- *       ├── 1. _buildMessage → StreamMessage
- *       ├── 2. wal.append（PENDING 状态）
- *       ├── 3. bus.broadcast(transportMsg)  →  发给所有 peer
- *       ├── 4. waitForAcks(expectedAcks)     →  Promise 等点对点 ACK
- *       └── 5. resolve(ackCount)
+ * 架构：
+ *   emit() → wal.append → bus.broadcast（点对点 ACK）
  *
  *   收到远程消息（ROUTER receive loop → EventBus.setReceiveHandler）:
  *       busReceive(msg, fromNodeId)
- *           ├── type === 'ack'       → pendingTracker.delete, resolve emitSync
+ *           ├── type === 'ack'       → pendingTracker.delete
  *           ├── type === 'data'      → dedup → applyHandler → bus.send(ack)
  *           ├── type === 'sync-query' → 回复 self seq
  *           └── type === 'sync-request' → 回复 WAL batch
  */
 
 import { EventBus, TransportMessage } from './event-bus'
-import { StreamWal, StreamMessage } from './stream-wal'
+import { SegmentStreamWal, StreamMessage } from './segment-stream-wal'
 import { Logger } from '../ops/logger'
 
 export interface StallInfo {
@@ -103,7 +88,7 @@ class DedupRing {
 
 export class EventStream {
   private config: EventStreamConfig
-  private wal: StreamWal
+  private wal: SegmentStreamWal
   private bus: EventBus
   private logger: Logger
   private seq = 0
@@ -114,22 +99,16 @@ export class EventStream {
   private handlers = new Map<string, EventHandler[]>()
   /** 远程事件应用回调（持久化后才发 ACK） */
   private applyHandler: ApplyHandler | null = null
+  /** ACK 通知回调（OutboxReplicationManager 注册，收到 ACK 后通知 outbox 的 ackTracker） */
+  private onAckCallback: ((peerId: string, msgId: string) => void) | null = null
   /** 后台扫描 timer */
   private scanTimer: ReturnType<typeof setInterval> | null = null
   /** 是否正在运行 */
   private running = false
-  /** emitSync 等待中的 resolver：msgId → { resolve, reject, count, expected, timer } */
-  private syncResolvers = new Map<string, {
-    resolve: (count: number) => void
-    reject: (err: Error) => void
-    count: number
-    expected: number
-    timer: ReturnType<typeof setTimeout>
-  }>()
 
   constructor(config: EventStreamConfig) {
     this.config = {
-      ackTimeoutMs: 5000,
+      ackTimeoutMs: 3000,
       retryIntervalMs: 3000,
       maxRetries: 10,
       dedupCapacity: 10000,
@@ -138,7 +117,7 @@ export class EventStream {
       ...config,
     }
     this.bus = config.eventBus
-    this.wal = new StreamWal(config.walDir)
+    this.wal = new SegmentStreamWal(config.walDir)
     this.logger = new Logger('EventStream')
     this.dedup = new DedupRing(this.config.dedupCapacity!)
   }
@@ -185,6 +164,15 @@ export class EventStream {
   }
 
   /**
+   * 注册 ACK 通知回调。
+   * 收到远程 ACK 时，除了清理 pendingTracker，还通知此回调。
+   * 由 MultiLeaderReplication 注册，驱动 OutboxReplicationManager 的 ackTracker。
+   */
+  registerOnAck(callback: (peerId: string, msgId: string) => void): void {
+    this.onAckCallback = callback
+  }
+
+  /**
    * 发送可靠事件（fire-and-forget 本地 + 广播）
    */
   emit(event: { type: string; data: Record<string, unknown>; timestamp?: number }): void {
@@ -202,53 +190,6 @@ export class EventStream {
       data: { __es_msg: msg },
     }
     this.bus.broadcast(transport)
-  }
-
-  /**
-   * 发送并同步等待指定数量的远程 ACK
-   */
-  async emitSync(event: { type: string; data: Record<string, unknown>; timestamp?: number }, expectedAcks: number, timeoutMs = 30000): Promise<number> {
-    if (!this.running) throw new Error('EventStream is not open')
-    if (expectedAcks <= 0) {
-      this.emit(event)
-      return 0
-    }
-
-    const msg = this._buildMessage(event)
-    this.wal.append(msg)
-    this.pendingTracker.set(msg.msgId, { sentAt: Date.now(), retries: 0 })
-    this._emitLocal(msg)
-
-    // 通过 Transport 广播
-    const transport: TransportMessage = {
-      msgId: msg.msgId,
-      type: 'data',
-      srcNodeId: this.config.nodeId,
-      data: { __es_msg: msg },
-    }
-    this.bus.broadcast(transport)
-
-    return new Promise<number>((resolve, reject) => {
-      let ackCount = 0
-      let settled = false
-
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true
-          this.syncResolvers.delete(msg.msgId)
-          reject(new Error(`emitSync timeout after ${timeoutMs}ms: got ${ackCount}/${expectedAcks} ACKs`))
-        }
-      }, timeoutMs)
-      if (typeof timer === 'object' && 'unref' in timer) (timer as any).unref()
-
-      this.syncResolvers.set(msg.msgId, {
-        resolve: (c) => { settled = true; clearTimeout(timer); this.syncResolvers.delete(msg.msgId); resolve(c) },
-        reject: (e) => { settled = true; clearTimeout(timer); this.syncResolvers.delete(msg.msgId); reject(e) },
-        count: 0,
-        expected: expectedAcks,
-        timer,
-      })
-    })
   }
 
   private _buildMessage(event: { type: string; data: Record<string, unknown>; timestamp?: number }): StreamMessage {
@@ -292,7 +233,6 @@ export class EventStream {
     // 收集 Phase 1 回复（1.5s timeout）
     const seqs: { nodeId: string; seq: number }[] = []
     const timer = setTimeout(() => {
-      // Phase 1 超时 → 选 maxSeq
       let bestPeer = ''
       let bestSeq = -1
       for (const s of seqs) {
@@ -306,8 +246,6 @@ export class EventStream {
     }, 1500)
     if (typeof timer === 'object' && 'unref' in timer) (timer as any).unref()
 
-    // 暂时注册一个临时 handler 收 sync-query-reply
-    // 由于 receive handler 只有一个，用对象存一下
     ;(this as any)._syncQueryReplies = seqs
     ;(this as any)._syncQueryTimer = timer
   }
@@ -326,7 +264,6 @@ export class EventStream {
 
   /**
    * 注册到 EventBus 的 receive handler
-   * 所有通过 ROUTER 收到的 TransportMessage 都进入此函数
    */
   private _registerBusReceive(): void {
     this.bus.setReceiveHandler((msg: TransportMessage, fromNodeId: string) => {
@@ -354,23 +291,17 @@ export class EventStream {
   }
 
   /**
-   * 收到远程 ACK：匹配 pendingTracker 和 emitSync resolver
+   * 收到远程 ACK：更新 pendingTracker 和 WAL，
+   * 并通知 OutboxReplicationManager 的 ackTracker。
    */
   private _onRemoteAck(msg: TransportMessage): void {
     const ackMsgId = msg.ackMsgId
     if (!ackMsgId) return
-
-    // 更新 pendingTracker
     this.pendingTracker.delete(ackMsgId)
     this.wal.acknowledge([ackMsgId])
-
-    // 匹配 emitSync resolver
-    const resolver = this.syncResolvers.get(ackMsgId)
-    if (resolver) {
-      resolver.count++
-      if (resolver.count >= resolver.expected) {
-        resolver.resolve(resolver.count)
-      }
+    // 通知 Outbox 层的 ACK tracker
+    if (this.onAckCallback && msg.srcNodeId) {
+      this.onAckCallback(msg.srcNodeId, ackMsgId)
     }
   }
 
@@ -380,9 +311,25 @@ export class EventStream {
    */
   private _onRemoteData(msg: TransportMessage, fromNodeId: string): void {
     const raw = msg.data.__es_msg as StreamMessage | undefined
-    if (!raw) return
+    if (!raw) {
+      // 没有 __es_msg 的 data 消息 → 可能是 Outbox Worker 直接发的 replicated 事件
+      // 直接交给 applyHandler 处理（如果有注册）
+      if (this.applyHandler && msg.data && typeof msg.data === 'object') {
+        const inlineMsg: StreamMessage = {
+          msgId: msg.msgId,
+          seq: 0,
+          nodeId: msg.srcNodeId ?? fromNodeId,
+          timestamp: Date.now(),
+          type: (msg.data as any).type ?? 'unknown',
+          data: (msg.data as any).data ?? msg.data,
+        }
+        this.applyHandler(inlineMsg).catch(err => {
+          this.logger.error(`applyHandler error for inline msg ${msg.msgId}: ${err.message}`)
+        })
+      }
+      return
+    }
 
-    // 去重（跳过自己的消息）
     if (this.dedup.has(raw.msgId)) return
     this.dedup.add(raw.msgId)
 
@@ -445,7 +392,7 @@ export class EventStream {
   }
 
   /**
-   * 收到 sync-request：Phase 2，从 WAL 读取 batch 回复给请求者
+   * 收到 sync-request：Phase 2，从 WAL 读取 batch 回复
    */
   private _onSyncRequest(msg: TransportMessage): void {
     const requester = msg.data.requester as string
@@ -456,7 +403,6 @@ export class EventStream {
     const msgs = this.wal.replay(fromSeq + 1)
     if (msgs.length === 0) return
 
-    // 只取到 targetSeq（请求者所需的最新 seq）
     const filtered = targetSeq > 0 ? msgs.filter(m => m.seq <= targetSeq) : msgs
     if (filtered.length === 0) return
 
@@ -485,7 +431,6 @@ export class EventStream {
       if (this.dedup.has(m.msgId)) continue
       this.dedup.add(m.msgId)
       this._emitLocal(m)
-      // 逐条回传 ACK
       const ack: TransportMessage = {
         msgId: `ack-${m.msgId}`,
         type: 'ack',
@@ -520,7 +465,8 @@ export class EventStream {
   }
 
   private _startScan(): void {
-    this.scanTimer = setInterval(() => { this._scanPending() }, this.config.retryIntervalMs!)
+    const interval = this.config.ackTimeoutMs! / 3 || 1000
+    this.scanTimer = setInterval(() => { this._scanPending() }, interval)
     this.scanTimer.unref()
     const pruneTimer = setInterval(() => { this.wal.pruneByTimestamp(Date.now() - 3600000) }, 3600000)
     pruneTimer.unref()
@@ -529,13 +475,19 @@ export class EventStream {
   private _scanPending(): void {
     const now = Date.now()
     const timeout = this.config.ackTimeoutMs!
+    const maxRetries = 3
     for (const [msgId, info] of this.pendingTracker) {
       if (now - info.sentAt < timeout) continue
       info.retries++
 
-      if (info.retries % 10 === 0) {
-        this.logger.warn(`EventStream: ${msgId} still pending after ${info.retries} retries`)
+      /* 超过最大重试次数（第 4 次及以上）：记录 warn 但不阻塞 */
+      if (info.retries > maxRetries) {
+        if (info.retries === maxRetries + 1) {
+          this.logger.warn(`EventStream: ${msgId} exceeded max retries (${maxRetries}), giving up on retransmit`)
+        }
+        continue
       }
+
       if (this.config.onStall && info.retries === this.config.stallThreshold) {
         const msg = this.wal.readPending(Date.now() + 3600000).find(m => m.msgId === msgId)
         if (msg) {
@@ -547,7 +499,6 @@ export class EventStream {
       const msg = pendingMsgs.find(m => m.msgId === msgId)
       if (!msg) { this.pendingTracker.delete(msgId); continue }
 
-      // 重发
       const transport: TransportMessage = {
         msgId: msg.msgId,
         type: 'data',

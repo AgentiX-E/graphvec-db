@@ -1,4 +1,4 @@
-import { RBAC } from './rbac'
+import { RBAC } from './auth'
 import { Role, AuthError } from '../types'
 
 describe('RBAC', () => {
