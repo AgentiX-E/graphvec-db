@@ -52,6 +52,12 @@ interface PerPeerConfig {
   curveDir: string
   sendFn: (msgId: string, payload: Buffer) => Promise<void>
   batchSendFn?: (items: Array<{ msgId: string; payload: Buffer }>) => Promise<void>
+  /**
+   * 优化的批量发送接口：items 中携带预序列化的 buffer（TransportMessage JSON Buffer）。
+   * 当 serializedCache 命中时使用此接口，跳过 JSON.parse → 重构 → JSON.stringify 的重复开销。
+   * fallback到 batchSendFn 或 sendFn。
+   */
+  batchSendSerializedFn?: (items: Array<{ msgId: string; buffer: Buffer }>) => Promise<void>
   recoverDealerFn: () => Promise<void>
   logger?: Logger
 }
@@ -408,6 +414,13 @@ export class PerPeerWorker {
   /** 当前退避状态 */
   private inBackoff = false
 
+  /**
+   * 序列化缓存：msgId → Buffer（预序列化的 TransportMessage）。
+   * 在 Phase 2 加载 pending 时构建，Phase 5 发送后清除。
+   * 避免每条消息在每个 peer 上分别 JSON.parse → 重构 → JSON.stringify 的重复开销。
+   */
+  private serializedCache = new Map<string, Buffer>()
+
   private log: Logger
 
   constructor(peerId: string, config: PerPeerConfig, outbox: Outbox) {
@@ -546,6 +559,30 @@ export class PerPeerWorker {
       const entries = this.outbox.fetchPendingByPeer(this.peerId)
       this.normalQueue = entries.map(e => ({ entry: e, retryCount: 0, insertedAt: now }))
       this.normalQueue.sort((a, b) => a.entry.seq - b.entry.seq)
+      // Phase 2a: 预序列化——构建 TransportMessage Buffer，缓存后 batchSendFn 直接复用
+      for (const item of this.normalQueue) {
+        if (this.serializedCache.has(item.entry.msgId)) continue
+        try {
+          const parsed = JSON.parse(item.entry.payload)
+          const streamMsg = {
+            msgId: item.entry.msgId,
+            seq: 0,
+            nodeId: this.config.peerId,
+            timestamp: now,
+            type: parsed.type ?? 'unknown',
+            data: parsed,
+          }
+          const transport: any = {
+            msgId: item.entry.msgId,
+            type: 'data',
+            srcNodeId: this.config.peerId,
+            data: { __es_msg: streamMsg },
+          }
+          this.serializedCache.set(item.entry.msgId, Buffer.from(JSON.stringify(transport)))
+        } catch {
+          // payload 解析失败，不缓存，退回到 sendFn 中实时解析
+        }
+      }
     }
 
     // ── Phase 3: 检查 peer 是否在线 ──
@@ -570,16 +607,27 @@ export class PerPeerWorker {
     // ── Phase 5: 发送 batch ──
     const entriesToDeliver: number[] = []
     const sendItems: Array<{ msgId: string; payload: Buffer }> = []
+    const serializedItems: Array<{ msgId: string; buffer: Buffer }> = []
+    let allSerialized = true
     for (const item of batch) {
       entriesToDeliver.push(item.entry.seq)
-      sendItems.push({
-        msgId: item.entry.msgId,
-        payload: Buffer.from(item.entry.payload),
-      })
+      const cached = this.serializedCache.get(item.entry.msgId)
+      if (cached) {
+        serializedItems.push({ msgId: item.entry.msgId, buffer: cached })
+      } else {
+        allSerialized = false
+        sendItems.push({
+          msgId: item.entry.msgId,
+          payload: Buffer.from(item.entry.payload),
+        })
+      }
     }
 
     try {
-      if (this.config.batchSendFn && sendItems.length > 1) {
+      if (allSerialized && this.config.batchSendSerializedFn && serializedItems.length > 1) {
+        // 缓存命中：直接发送预序列化的 Buffer，跳过 JSON.parse → 重构 → JSON.stringify
+        await this.config.batchSendSerializedFn(serializedItems)
+      } else if (this.config.batchSendFn && sendItems.length > 1) {
         // 批量发送（单次 ZMQ send，multi-part 消息）
         await this.config.batchSendFn(sendItems)
       } else {
@@ -587,6 +635,11 @@ export class PerPeerWorker {
         for (const si of sendItems) {
           await this.config.sendFn(si.msgId, si.payload)
         }
+      }
+
+      // 清理缓存：已发送的消息从缓存中移除
+      for (const item of batch) {
+        this.serializedCache.delete(item.entry.msgId)
       }
 
       // 成功：标记 delivered + 加入 ack 追踪
@@ -794,6 +847,22 @@ export class OutboxReplicationManager {
           data: { __es_msg: streamMsg },
         }
         await this.config.eventBus.send(peerId, msg)
+      },
+      batchSendSerializedFn: async (items) => {
+        // 预序列化批量发送：buffer 已经是序列化的 TransportMessage JSON Buffer
+        // 直接 JSON.parse 后传给 eventBus.batchSend，跳过原始 payload 的 JSON.parse → 重构 → JSON.stringify
+        if (this.config.eventBus.batchSend) {
+          const parsed = items.map(({ msgId, buffer }) => {
+            return JSON.parse(buffer.toString('utf-8'))
+          })
+          await this.config.eventBus.batchSend(peerId, parsed)
+        } else {
+          // 退化：逐条通过 eventBus.send（但 Buffer 已序列化，直接 parse 后传）
+          for (const { msgId, buffer } of items) {
+            const msg = JSON.parse(buffer.toString('utf-8'))
+            await this.config.eventBus.send(peerId, msg)
+          }
+        }
       },
       batchSendFn: async (items) => {
         // 批量发送：将多个消息合并为一次 ZMQ send
