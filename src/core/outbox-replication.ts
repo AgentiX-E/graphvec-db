@@ -200,6 +200,8 @@ class OutboxIndex {
         const outboxEntry = mainDb.get(seq) as OutboxEntry | undefined
         if (outboxEntry && outboxEntry.delivered && outboxEntry.deliveredAt < cutoffMs) {
           this.db.removeSync(key)
+          // 同时清理 acked 标记（保持 indexDb 整洁）
+          try { this.db.removeSync(`acked:${seq}`) } catch {}
           count++
         }
       })
@@ -336,7 +338,10 @@ export class Outbox {
     this.db.getRange({ start: 1 }).forEach((entry: any) => {
       const e = entry.value as OutboxEntry
       if (e.delivered && e.deliveredAt < cutoffMs) {
+        // 清理 mainDb 中的条目
         this.db.removeSync(entry.key)
+        // 清理 indexDb 中的 acked 标记
+        this.indexDb.removeSync(`acked:${entry.key}`)
         count++
       }
     })

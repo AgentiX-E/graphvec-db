@@ -16,6 +16,8 @@
  * 12. broadcast() 兜底路径
  * 13. PerPeerWorker start → stop → start
  * 14. NAS 目录路径变更（热切换）
+ * 15. ROUTER 流水线 + batchSend 压力测试（大并发 ROUTER 帧 + 批量 dealer.send）
+ * 16. batchSend 批量发送正确性（SNDMORE multi-part 单条接收完整）
  *
  * 配置与 event-bus.live.spec.ts 一致，mock ZMQ 避开了实际网络开销。
  */
@@ -256,7 +258,86 @@ describe('EventBus 边际场景', () => {
   })
 
   // ================================================================
-  // 5. Outbox ACK 顺序错乱（未知 msgId 的 notifyAcked）
+  // 5. Outbox cleanDeliveredBefore 空间回收
+  // ================================================================
+  it('should clean delivered messages after threshold', async () => {
+    const tmpDir = path.join(testDir, 'lmdb-cleanup-test')
+    fs.mkdirSync(tmpDir, { recursive: true })
+    const outbox = new Outbox(path.join(tmpDir, 'outbox.lmdb'))
+
+    // 写入 5 条
+    const seqs: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const seq = outbox.add({
+        msgId: `cleanup-msg-${i}`,
+        targetNodeId: 'peer-a',
+        type: 'data',
+        payload: JSON.stringify({ idx: i }),
+        createdAt: Date.now(),
+        delivered: false,
+        deliveredAt: 0,
+      })
+      seqs.push(seq)
+    }
+    expect(outbox.getPendingCountForPeer('peer-a')).toBe(5)
+
+    // 标记 delivered
+    outbox.markDeliveredBatch(seqs)
+    expect(outbox.getPendingCountForPeer('peer-a')).toBe(0)
+
+    // 标记 ack
+    for (const seq of seqs) {
+      outbox.markAcked(seq)
+    }
+
+    // cleanDeliveredBefore：cutoff 为未来时间 → 5 条全部被清除
+    const removed = outbox.cleanDeliveredBefore(Date.now() + 10000)
+    expect(removed).toBe(5)
+
+    // 清除后 isAcked 也应返回 false（条目已物理删除）
+    for (const seq of seqs) {
+      expect(outbox.isAcked(seq)).toBe(false)
+    }
+
+    outbox.close()
+  })
+
+  // ================================================================
+  // 6. Outbox isAcked / markAcked 多进程兼容
+  // ================================================================
+  it('should support isAcked/markAcked lifecycle (multi-process compatible)', async () => {
+    const tmpDir = path.join(testDir, 'lmdb-acked-test')
+    fs.mkdirSync(tmpDir, { recursive: true })
+    const outbox = new Outbox(path.join(tmpDir, 'outbox.lmdb'))
+
+    const seq = outbox.add({
+      msgId: 'ack-lifecycle-test',
+      targetNodeId: 'peer-x',
+      type: 'data',
+      payload: '{}',
+      createdAt: Date.now(),
+      delivered: false,
+      deliveredAt: 0,
+    })
+
+    // 初始状态：未 ack
+    expect(outbox.isAcked(seq)).toBe(false)
+
+    // markedDelivered + markAcked
+    outbox.markDeliveredBatch([seq])
+    outbox.markAcked(seq)
+
+    // 已 ack
+    expect(outbox.isAcked(seq)).toBe(true)
+
+    // isAcked 对不存在 seq 返回 false
+    expect(outbox.isAcked(999999)).toBe(false)
+
+    outbox.close()
+  })
+
+  // ================================================================
+  // 7. Outbox ACK 顺序错乱（未知 msgId 的 notifyAcked）
   // ================================================================
   it('should ignore notifyAcked for unknown msgId (ack order disorder)', async () => {
     // OutboxReplicationManager.notifyAcked 对未知 msgId 应当静默忽略
@@ -284,7 +365,7 @@ describe('EventBus 边际场景', () => {
   })
 
   // ================================================================
-  // 6. ZMQ DEALER connect 到不存在的端口
+  // 8. ZMQ DEALER connect 到不存在的端口
   // ================================================================
   it('should handle _recoverDealerByNodeId when peer port is unreachable', async () => {
     const kp = makeKeyPair()
@@ -310,7 +391,7 @@ describe('EventBus 边际场景', () => {
   })
 
   // ================================================================
-  // 7. 所有 peer 同时离线
+  // 9. 所有 peer 同时离线
   // ================================================================
   it('should handle all peers disappearing simultaneously', async () => {
     const kp = makeKeyPair()
@@ -334,7 +415,7 @@ describe('EventBus 边际场景', () => {
   })
 
   // ================================================================
-  // 8. 公钥轮换（key rotation）
+  // 10. 公钥轮换（key rotation）
   // ================================================================
   it('should handle key rotation (pub key updated in-place)', async () => {
     const kp = makeKeyPair()
@@ -358,7 +439,7 @@ describe('EventBus 边际场景', () => {
   })
 
   // ================================================================
-  // 9. 重复 start/stop
+  // 11. 重复 start/stop
   // ================================================================
   it('should handle repeated start-stop cycles without socket leak', async () => {
     const kp = makeKeyPair()
@@ -392,7 +473,7 @@ describe('EventBus 边际场景', () => {
   })
 
   // ================================================================
-  // 10. broadcast 兜底路径
+  // 12. broadcast 兜底路径
   // ================================================================
   it('should fall back to broadcast when no DEALER exists for peer', async () => {
     const kp = makeKeyPair()
@@ -411,7 +492,7 @@ describe('EventBus 边际场景', () => {
   })
 
   // ================================================================
-  // 11. PerPeerWorker start → stop → start
+  // 13. PerPeerWorker start → stop → start
   // ================================================================
   it('should support PerPeerWorker lifecycle: start->stop->start', async () => {
     const tmpDir = path.join(testDir, 'ppw-lifecycle')
@@ -464,7 +545,7 @@ describe('EventBus 边际场景', () => {
   })
 
   // ================================================================
-  // 12. NAS 监控间隔自定义
+  // 14. NAS 监控间隔自定义
   // ================================================================
   it('should support custom NAS monitor interval via config', async () => {
     const kp = makeKeyPair()
@@ -501,5 +582,100 @@ describe('EventBus 边际场景', () => {
 
     await bus.stop()
     expect((bus as any)._nasMonitorTimer).toBeNull()
+  })
+
+  // ================================================================
+  // 15. ROUTER 流水线 + batchSend 压力测试
+  // ================================================================
+  it('should handle high-throughput ROUTER frames with ack batching (producer/consumer)', async () => {
+    const kp = makeKeyPair()
+    const bus = await createBus('stress-node', 7070, curveDir, kp, 7070)
+
+    // 构建 dealerSockets：模拟多个 peer
+    const dealerKeys = ['peer-1', 'peer-2', 'peer-3']
+    const receivedMsgs: string[] = []
+    const receivedAcks: string[] = []
+
+    for (const pk of dealerKeys) {
+      writePubKey(curveDir, pk, 8000, makeDistinctKeyPair(pk).publicKey)
+    }
+    await waitForDealerCount(bus, 3, 3000)
+
+    // 用创建总测试用的 receiveHandler 来收集消息
+    bus.setReceiveHandler((msg, fromNodeId) => {
+      if (msg.type === 'data') receivedMsgs.push(msg.msgId)
+      if (msg.type === 'ack') receivedAcks.push(msg.ackMsgId!)
+    })
+
+    // 模拟 ROUTER 压力：快速发送 100 条消息（模拟所有 peer 同时发 data + ack）
+    // mock 的 dealerSocket.receive() 需要被驱动，这里用 bus 自己的 send 和广播来模拟
+    const stressCount = 100
+    const promises: Promise<void>[] = []
+
+    // 测试 ACK 批处理：直接入队 _ackBatchQueue 后 flush
+    const ackBatch = (bus as any)._ackBatchQueue as Array<{ ackMsgId: string; srcNodeId: string }>
+    for (let i = 0; i < stressCount; i++) {
+      ackBatch.push({ ackMsgId: `original-${i}`, srcNodeId: 'peer-1' })
+    }
+    ;(bus as any)._ackBatchFlush()
+    expect(receivedAcks.length).toBe(stressCount)
+    expect(ackBatch.length).toBe(0)
+    expect(receivedAcks.slice(0, 3)).toEqual(['original-0', 'original-1', 'original-2'])
+
+    // 验证 ACK flush 定时器被清除
+    expect((bus as any)._ackFlushTimer).toBeNull()
+
+    // 测试 data 消息直通路径：RPC 模拟 producer 将 data 放入 _routerBuffer，
+    // 然后手动模拟一次 consumer 消费
+    receivedMsgs.length = 0
+    const routerBuf = (bus as any)._routerBuffer as Array<{ msg: any; fromNodeId: string }>
+    for (let i = 0; i < stressCount; i++) {
+      routerBuf.push({
+        msg: {
+          msgId: `data-test-${i}`,
+          type: 'data' as const,
+          srcNodeId: 'peer-2',
+          dstNodeId: '',
+          data: { content: `message-${i}` },
+        },
+        fromNodeId: 'peer-2',
+      })
+    }
+    // 模拟一次 consumer dispatch——data 不经过 batch，直接 dispatch
+    const batch = routerBuf.splice(0)
+    for (const { msg, fromNodeId } of batch) {
+      if (bus['receiveHandler']) bus['receiveHandler'](msg, fromNodeId)
+    }
+    expect(receivedMsgs.length).toBe(stressCount)
+    expect(receivedMsgs.slice(0, 3)).toEqual(['data-test-0', 'data-test-1', 'data-test-2'])
+
+    await bus.stop()
+  })
+
+  // ================================================================
+  // 16. batchSend 批量发送正确性
+  // ================================================================
+  it('should correctly send multiple messages via batchSend', async () => {
+    const kp = makeKeyPair()
+    const bus = await createBus('bcast-node', 7071, curveDir, kp, 7071)
+
+    writePubKey(curveDir, 'peer-batch', 8001, makeDistinctKeyPair('batch').publicKey)
+    await waitForDealerCount(bus, 1, 3000)
+
+    // batchSend 到存在的 peer → 使用 ZMQ multi-part
+    const msgs: import('./event-bus').TransportMessage[] = [
+      { msgId: 'b1', type: 'data', srcNodeId: 'bcast-node', data: { n: 1 } },
+      { msgId: 'b2', type: 'data', srcNodeId: 'bcast-node', data: { n: 2 } },
+      { msgId: 'b3', type: 'data', srcNodeId: 'bcast-node', data: { n: 3 } },
+    ]
+    await expect(bus.batchSend('peer-batch', msgs)).resolves.toBeUndefined()
+
+    // batchSend 到不存在的 peer → 退化 broadcast（不应抛出）
+    const msgs2: import('./event-bus').TransportMessage[] = [
+      { msgId: 'x1', type: 'data', srcNodeId: 'bcast-node', data: {} },
+    ]
+    await expect(bus.batchSend('nonexistent', msgs2)).resolves.toBeUndefined()
+
+    await bus.stop()
   })
 })

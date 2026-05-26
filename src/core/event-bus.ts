@@ -223,6 +223,21 @@ export class EventBus {
    */
   private receiveHandler: ((msg: TransportMessage, fromNodeId: string) => void) | null = null
 
+  /** 生产者/消费者缓冲：ROUTER receive 中原始帧入队 */
+  private _routerBuffer: { msg: TransportMessage; fromNodeId: string }[] = []
+
+  /** ACK msgId 批量积压队列 */
+  private _ackBatchQueue: { ackMsgId: string; srcNodeId: string }[] = []
+
+  /** ACK flush 定时器 */
+  private _ackFlushTimer: NodeJS.Timeout | null = null
+
+  /** ACK 批量 flush 阈值 */
+  private readonly ACK_BATCH_SIZE = 20
+
+  /** ACK flush 超时（ms） */
+  private readonly ACK_FLUSH_TIMEOUT = 5
+
   constructor(config: EventBusConfig) {
     this.config = {
       ...config,
@@ -453,6 +468,38 @@ export class EventBus {
   }
 
   /**
+   * 批量发送消息给指定 peer，通过 ZMQ multi-part 帧序列提升吞吐量。
+   * 前 N-1 帧带 ZMQ_SENDMORE 标记，最后一帧不带。
+   * 如果 zmq 版本不支持 ZMQ_SENDMORE 或 dealer 不存在，退化为并发逐条发送。
+   */
+  async batchSend(nodeId: string, msgs: TransportMessage[]): Promise<void> {
+    const dealer = this.dealerSockets.get(nodeId)
+    if (!dealer) {
+      // 退化为逐条广播
+      for (const msg of msgs) this.broadcast(msg)
+      return
+    }
+
+    // 检查 ZMQ_SENDMORE 支持
+    const hasSendMore = typeof zmq.ZMQ_SENDMORE === 'number'
+
+    if (hasSendMore && msgs.length > 1) {
+      // ZMQ multi-part: 发送 N 帧，前 N-1 帧带 SNDMORE，最后一帧不带
+      for (let i = 0; i < msgs.length; i++) {
+        const payload = Buffer.from(JSON.stringify(msgs[i]))
+        if (i < msgs.length - 1) {
+          await dealer.send([payload], zmq.ZMQ_SENDMORE)
+        } else {
+          await dealer.send([payload])
+        }
+      }
+    } else {
+      // 退化：并发发送所有消息
+      await Promise.all(msgs.map(msg => this.send(nodeId, msg).catch(() => {})))
+    }
+  }
+
+  /**
    * 获取已连接的 peer nodeId 列表
    */
   getPeerNodeIds(): string[] {
@@ -672,24 +719,53 @@ export class EventBus {
   }
 
   /**
-   * 启动 ROUTER 接收循环
+   * 批量 flush ACK 消息
+   *
+   * 将 _ackBatchQueue 中的 ACK 逐条调用 receiveHandler，然后清空队列。
+   */
+  private _ackBatchFlush(): void {
+    if (this._ackFlushTimer) {
+      clearTimeout(this._ackFlushTimer)
+      this._ackFlushTimer = null
+    }
+    if (this._ackBatchQueue.length === 0 || !this.receiveHandler) return
+
+    const batch = this._ackBatchQueue.splice(0)
+    for (const { ackMsgId, srcNodeId } of batch) {
+      this.receiveHandler(
+        {
+          msgId: `batch-ack-${ackMsgId}`,
+          type: 'ack',
+          srcNodeId,
+          ackMsgId,
+          data: {},
+        },
+        srcNodeId,
+      )
+    }
+  }
+
+  /**
+   * 启动 ROUTER 接收循环（生产者/消费者模式）
+   *
+   * - 生产者：仅做 ZMQ receive() → JSON.parse → 入队 buffer
+   * - 消费者：从 buffer 批量取帧，按 type 分组分发
    *
    * ZMQ ROUTER 的消息格式：[identity, ...frames]
    * identity 是 ROUTER 自动为每个 DEALER 连接分配的 routing ID。
-   * 收到消息后解析 JSON payload，通过 identity→nodeId 映射追踪来源。
    */
   private _startRouterLoop(): void {
-    const poll = async () => {
+    // ── 生产者：快速收帧入队 ──
+    const producer = async () => {
       while (this.running && this.routerSocket) {
         try {
           const frames = await (this.routerSocket as any).receive()
           if (!this.running || !frames || frames.length < 2) break
 
-          // ROUTER 消息格式: [identity, dataFrame]
           const identity = frames[0]
           const payload = frames[frames.length - 1]
-
           const text = Buffer.from(payload).toString('utf-8')
+
           let msg: TransportMessage
           try { msg = JSON.parse(text) } catch { continue }
 
@@ -703,17 +779,55 @@ export class EventBus {
 
           const fromNodeId = msg.srcNodeId || idStr
 
-          // 分发到 EventStream 的 receive handler
-          if (this.receiveHandler) {
-            this.receiveHandler(msg, fromNodeId)
-          }
+          // 入队（快速释放，不阻塞 receive）
+          this._routerBuffer.push({ msg, fromNodeId })
         } catch (err: any) {
           if (!this.running) break
           this.logger.warn(`ROUTER receive error: ${err.message}`)
         }
       }
     }
-    poll()
+
+    // ── 消费者：批量出队 dispatch ──
+    const consumer = async () => {
+      while (this.running) {
+        // 使用 setImmediate 让出事件循环，不阻塞 ZMQ receive
+        await new Promise<void>(resolve => setImmediate(resolve))
+
+        if (this._routerBuffer.length === 0) continue
+
+        // 批量取出当前所有缓冲帧
+        const batch = this._routerBuffer.splice(0)
+
+        for (const { msg, fromNodeId } of batch) {
+          if (msg.type === 'ack') {
+            // ACK 消息批量积压
+            if (msg.ackMsgId) {
+              this._ackBatchQueue.push({ ackMsgId: msg.ackMsgId, srcNodeId: fromNodeId })
+
+              // 达到批量阈值 → 立即 flush
+              if (this._ackBatchQueue.length >= this.ACK_BATCH_SIZE) {
+                this._ackBatchFlush()
+              } else if (!this._ackFlushTimer) {
+                // 设置超时 flush（首次积压时启动定时器）
+                this._ackFlushTimer = setTimeout(() => {
+                  this._ackBatchFlush()
+                }, this.ACK_FLUSH_TIMEOUT)
+                this._ackFlushTimer.unref()
+              }
+            }
+          } else {
+            // 非 ACK 消息（data、sync-query 等）：直接 dispatch
+            if (this.receiveHandler) {
+              this.receiveHandler(msg, fromNodeId)
+            }
+          }
+        }
+      }
+    }
+
+    producer()
+    consumer()
   }
 }
 
