@@ -264,6 +264,38 @@ export class Outbox {
     }
   }
 
+  /**
+   * 标记 ACK 已到达（多进程场景：主进程直接写入 LMDB mmap，Worker 立即可见）。
+   * 单进程场景 ACK 直接回调到 PerPeerWorker 的 ackTracker，不需要此方法。
+   * 但统一接口保证迁移到多进程时零代码改动。
+   */
+  markAcked(seq: number): void {
+    const entry = this.db.get(seq) as OutboxEntry | undefined
+    if (!entry) return
+    if (!entry.delivered) {
+      // ACK 到达但尚未标记 delivered —— 少见但合法
+      entry.delivered = true
+      entry.deliveredAt = Date.now()
+      this.db.putSync(seq, entry)
+      this.index.markDelivered(entry.targetNodeId, seq)
+    }
+    // 在索引中标记 ack 状态（用于多进程 mmap 共享）
+    this.indexDb.putSync(`acked:${seq}`, 1)
+  }
+
+  /**
+   * 查询指定 seq 的 ACK 是否已到达（多进程场景：Worker 子进程通过 LMDB mmap 读到主进程写入的 ACK）。
+   * O(1) 查询——前缀键定位。
+   */
+  isAcked(seq: number): boolean {
+    try {
+      const val = this.indexDb.get(`acked:${seq}`)
+      return val === 1
+    } catch {
+      return false
+    }
+  }
+
   // 罕见：用于重发 / 回退
   markPending(seq: number): void {
     const entry = this.db.get(seq) as OutboxEntry | undefined
@@ -419,7 +451,11 @@ export class PerPeerWorker {
     this.lastSendMs = 0
   }
 
-  /** 外部通知收到该 peer 的 ACK */
+  /**
+   * 外部通知收到该 peer 的 ACK（同进程/单进程场景）。
+   * 多进程场景下 ACK 通过 LMDB mmap 共享（markAcked/isAcked），
+   * 不经过此回调——但统一维护保证向后兼容。
+   */
   notifyAcked(msgId: string): void {
     this.ackTracker.delete(msgId)
     if (this.ackTracker.size === 0) {
@@ -448,11 +484,22 @@ export class PerPeerWorker {
   }
 
   private async _tick(): Promise<void> {
-    // ── Phase 0: 检查 ACK 超时 ──
+    // ── Phase 0: 检查 ACK 超时 + LMDB mmap ACK 穿透 ──
     if (!this.running) return
     const now = Date.now()
     for (const [msgId, sentAt] of this.ackTracker) {
       if (now - sentAt > this._ackTimeoutMs) {
+        // 先尝试通过 LMDB mmap 检查 ACK（多进程场景：主进程已写入 ACK 状态）
+        // 在 PerPeerWorker 中可以查到 ackTracker 中没有但 LMDB markAcked 已写入的记录。
+        // 这对单进程透明——不产生任何性能影响。
+        const loaded = this.outbox.fetchPendingByPeer(this.peerId)
+        const found = loaded.find(e => e.msgId === msgId)
+        if (found && this.outbox.isAcked(found.seq)) {
+          // ACK 已通过 LMDB mmap 到达——删除 ackTracker 条目即可
+          this.log.info(`ack for ${msgId} found via LMDB mmap, clearing tracker`)
+          this.ackTracker.delete(msgId)
+          continue
+        }
         this.log.info(`ack timeout for ${msgId}, reverting to pending`)
         this.ackTracker.delete(msgId)
         this.inBackoff = false

@@ -101,6 +101,12 @@ export class EventStream {
   private applyHandler: ApplyHandler | null = null
   /** ACK 通知回调（OutboxReplicationManager 注册，收到 ACK 后通知 outbox 的 ackTracker） */
   private onAckCallback: ((peerId: string, msgId: string) => void) | null = null
+  /**
+   * LMDB mmap ACK 回调（多进程场景：主进程收到 ACK 后直接写入 LMDB，Worker 子进程通过 mmap 读到）。
+   * 参数：ackMsgId（如 'node-2-42' 或 uuid）。Outbox 需要从 persistent store 定位对应的 seq。
+   * 单进程场景可留空——ACK 直接通过 onAckCallback 传到 PerPeerWorker 的 ackTracker。
+   */
+  private onAckMmapCallback: ((msgId: string) => void) | null = null
   /** 后台扫描 timer */
   private scanTimer: ReturnType<typeof setInterval> | null = null
   /** 是否正在运行 */
@@ -170,6 +176,15 @@ export class EventStream {
    */
   registerOnAck(callback: (peerId: string, msgId: string) => void): void {
     this.onAckCallback = callback
+  }
+
+  /**
+   * 注册 LMDB mmap ACK 回调。
+   * 多进程场景：主进程收到 ACK 后直接写入 LMDB（markAcked），
+   * Worker 子进程通过 mmap 读到 ACK 状态。
+   */
+  registerOnAckMmap(callback: (msgId: string) => void): void {
+    this.onAckMmapCallback = callback
   }
 
   /**
@@ -302,6 +317,10 @@ export class EventStream {
     // 通知 Outbox 层的 ACK tracker
     if (this.onAckCallback && msg.srcNodeId) {
       this.onAckCallback(msg.srcNodeId, ackMsgId)
+    }
+    // LMDB mmap ACK（多进程场景：主进程写入 LMDB，Worker 子进程 mmap 读到）
+    if (this.onAckMmapCallback) {
+      this.onAckMmapCallback(ackMsgId)
     }
   }
 
