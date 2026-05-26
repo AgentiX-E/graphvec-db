@@ -7,6 +7,7 @@
 import { LogEntry } from './wal'
 import * as net from 'node:net'
 import * as os from 'node:os'
+import { Logger } from '../ops/logger'
 
 // ─── Raft Message Types ──────────────────────────────────────
 
@@ -218,7 +219,14 @@ export class MockTransport implements Transport {
   }
 
   async installSnapshot(to: string, snapshot: InstallSnapshotRequest): Promise<InstallSnapshotResponse> {
-    return { term: snapshot.term, success: true }
+    return this._sendInternal(to, {
+      term: snapshot.term,
+      leaderId: snapshot.leaderId,
+      lastIncludedIndex: snapshot.lastIncludedIndex,
+      lastIncludedTerm: snapshot.lastIncludedTerm,
+      data: snapshot.data,
+      done: snapshot.done,
+    }, 'InstallSnapshot', 'InstallSnapshotResponse') as Promise<InstallSnapshotResponse>
   }
 
   /**
@@ -232,7 +240,9 @@ export class MockTransport implements Transport {
   ): Promise<unknown> {
     const responseFullType = responseType === 'AppendEntriesResponse'
       ? 'AppendEntriesResponse'
-      : 'RequestVoteResponse'
+      : responseType === 'InstallSnapshotResponse'
+        ? 'InstallSnapshotResponse'
+        : 'RequestVoteResponse'
 
     return new Promise<unknown>((resolve, reject) => {
       // Register pending response
@@ -285,6 +295,9 @@ export class MockTransport implements Transport {
     if (type === 'AppendEntriesResponse') {
       return { term: 0, success: false, lastLogIndex: 0 } as AppendEntriesResponse
     }
+    if (type === 'InstallSnapshotResponse') {
+      return { term: 0, success: false } as InstallSnapshotResponse
+    }
     if (type === 'PreVoteResponse') {
       return { term: 0, voteGranted: false } as RequestVoteResponse
     }
@@ -314,6 +327,10 @@ interface TcpFrame {
   from: string
   data: string // base64-encoded Uint8Array
   type?: string
+  /** 消息 ID，用于 ACK 匹配（发送方生成） */
+  msgId?: string
+  /** ACK 响应：对端回复时携带原始 msgId */
+  ackFor?: string
 }
 
 /** 全局 TCP 端口注册表（用于测试和集群管理等场景） */
@@ -333,9 +350,40 @@ export class TcpTransport {
   private handler: ((from: string, msg: Uint8Array) => void) | null = null
   private server: net.Server | null = null
   private connections: Map<string, net.Socket> = new Map()
+  /** 所有已接受的连接（incoming + outgoing），用于完整清理 */
+  private _acceptedSockets: Set<net.Socket> = new Set()
   private peerAddresses: Map<string, string> = new Map()
   private listenAddress: string = ''
   private _ns: string = 'default'
+  private logger: Logger = new Logger('TcpTransport')
+
+  /** ACK 超时时间（毫秒），默认 5000 */
+  ackTimeout: number = 5000
+
+  /** 自增消息 ID 计数器 */
+  private _msgIdCounter: number = 0
+
+  /** 待 ACK 响应注册表 */
+  private _pendingAcks: Map<string, {
+    peerId: string
+    resolve: (value: boolean) => void
+    timer: NodeJS.Timeout
+  }> = new Map()
+
+  /** 超时定时器集合（用于统一清理） */
+  private _ackTimers: Set<NodeJS.Timeout> = new Set()
+
+  // ── InstallSnapshot 分块接收状态 ──
+  private _snapshotChunks: Map<string, {
+    chunks: Map<number, Buffer>
+    total: number
+    fullChecksum: number
+    lastIncludedIndex: number
+    lastIncludedTerm: number
+    leaderId: string
+    term: number
+    timer: NodeJS.Timeout
+  }> = new Map()
 
   constructor(nodeId?: string, port?: number) {
     this.nodeId = nodeId || `tcp-${process.pid}`
@@ -379,7 +427,17 @@ export class TcpTransport {
     return true
   }
 
-  sendTo(peerId: string, msg: Uint8Array): boolean {
+  /**
+   * 发送消息到指定 peer，等待 ACK 确认
+   *
+   * @returns Promise<boolean> — ACK 收到返回 true，超时返回 false
+   */
+  async sendTo(peerId: string, msg: Uint8Array): Promise<boolean> {
+    return this._sendWithAck(peerId, msg)
+  }
+
+  /** 同步兼容重载 — 如果连接不通立即返回 false，不走 ACK 流程 */
+  sendToSync(peerId: string, msg: Uint8Array): boolean {
     const socket = this.connections.get(peerId)
     if (!socket || socket.destroyed || !socket.writable) {
       const addr = this.peerAddresses.get(peerId)
@@ -400,10 +458,52 @@ export class TcpTransport {
     }
   }
 
-  broadcast(msg: Uint8Array): void {
-    for (const peerId of this.connections.keys()) {
-      this.sendTo(peerId, msg)
+  /**
+   * 带 ACK 确认的发送
+   */
+  private async _sendWithAck(peerId: string, msg: Uint8Array): Promise<boolean> {
+    const socket = this.connections.get(peerId)
+    if (!socket || socket.destroyed || !socket.writable) {
+      const addr = this.peerAddresses.get(peerId)
+      if (addr) {
+        const [host, portStr] = addr.split(':')
+        const p = parseInt(portStr, 10)
+        if (!isNaN(p)) {
+          this._connectToPeer(peerId, host, p, 1)
+        }
+      }
+      return false
     }
+
+    const msgId = this._generateMsgId()
+
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this._pendingAcks.delete(msgId)
+        this._ackTimers.delete(timer)
+        resolve(false)
+      }, this.ackTimeout)
+
+      this._ackTimers.add(timer)
+      this._pendingAcks.set(msgId, { peerId, resolve, timer })
+
+      try {
+        this._writeFrame(socket, msg, msgId)
+      } catch {
+        clearTimeout(timer)
+        this._pendingAcks.delete(msgId)
+        this._ackTimers.delete(timer)
+        resolve(false)
+      }
+    })
+  }
+
+  async broadcast(msg: Uint8Array): Promise<void> {
+    const promises: Promise<boolean>[] = []
+    for (const peerId of this.connections.keys()) {
+      promises.push(this.sendTo(peerId, msg))
+    }
+    await Promise.all(promises)
   }
 
   start(): void {
@@ -421,11 +521,32 @@ export class TcpTransport {
   }
 
   stop(): void {
+    // Reject all pending ACKs
+    for (const [msgId, entry] of this._pendingAcks) {
+      clearTimeout(entry.timer)
+      entry.resolve(false)
+    }
+    this._pendingAcks.clear()
+
+    // Clear all ACK timers
+    for (const timer of this._ackTimers) {
+      clearTimeout(timer)
+    }
+    this._ackTimers.clear()
+
+    // Destroy all outgoing connections
     for (const [, socket] of this.connections) {
       socket.destroy()
     }
     this.connections.clear()
     this.peerAddresses.clear()
+
+    // Destroy all accepted (incoming) sockets
+    for (const socket of this._acceptedSockets) {
+      socket.destroy()
+    }
+    this._acceptedSockets.clear()
+
     if (this.server) {
       this.server.close()
       this.server = null
@@ -445,13 +566,252 @@ export class TcpTransport {
     return this.port
   }
 
+  // ── InstallSnapshot 分块处理 ──────────────────────────────
+
+  /**
+   * 处理单个 InstallSnapshot 分块
+   */
+  private _handleSnapshotChunk(from: string, msg: any): void {
+    // 获取或创建分块状态
+    let state = this._snapshotChunks.get(from)
+    if (!state) {
+      state = {
+        chunks: new Map(),
+        total: msg.total,
+        fullChecksum: msg.fullChecksum,
+        lastIncludedIndex: msg.lastIncludedIndex,
+        lastIncludedTerm: msg.lastIncludedTerm,
+        leaderId: msg.leaderId,
+        term: msg.term,
+        timer: setTimeout(() => {
+          // 超时清理
+          this._snapshotChunks.delete(from)
+          this.logger?.warn?.(`[TcpTransport] Snapshot chunks from ${from} timed out`)
+        }, TcpTransport.SNAPSHOT_TIMEOUT_MS),
+      }
+      this._snapshotChunks.set(from, state)
+    }
+
+    // 校验 chunk checksum
+    const chunkData = Buffer.from(msg.data as string, 'base64')
+    const expectedChecksum = msg.checksum as number
+    const actualChecksum = TcpTransport._computeChecksum(chunkData)
+    if (actualChecksum !== expectedChecksum) {
+      this.logger?.warn?.(`[TcpTransport] Snapshot chunk ${msg.seq}/${msg.total} from ${from} checksum mismatch`)
+      return
+    }
+
+    // 存储 chunk
+    state.chunks.set(msg.seq, chunkData)
+
+    // 重置超时
+    clearTimeout(state.timer)
+    state.timer = setTimeout(() => {
+      this._snapshotChunks.delete(from)
+    }, TcpTransport.SNAPSHOT_TIMEOUT_MS)
+  }
+
+  /**
+   * 处理 InstallSnapshot 完成消息
+   * 组装所有 chunk，校验整体 checksum，然后通过 handler 回调
+   */
+  private _handleSnapshotDone(from: string, msg: any): void {
+    const state = this._snapshotChunks.get(from)
+    if (!state) {
+      this.logger?.warn?.(`[TcpTransport] Snapshot done from ${from} but no chunks found`)
+      return
+    }
+
+    clearTimeout(state.timer)
+    this._snapshotChunks.delete(from)
+
+    // 检查 chunk 完整性
+    if (state.chunks.size !== state.total) {
+      this.logger?.warn?.(
+        `[TcpTransport] Snapshot from ${from} incomplete: got ${state.chunks.size}/${state.total} chunks`
+      )
+      return
+    }
+
+    // 按顺序组装
+    const parts: Buffer[] = []
+    for (let i = 0; i < state.total; i++) {
+      const chunk = state.chunks.get(i)
+      if (!chunk) {
+        this.logger?.warn?.(`[TcpTransport] Missing chunk ${i}/${state.total} from ${from}`)
+        return
+      }
+      parts.push(chunk)
+    }
+    const assembled = Buffer.concat(parts)
+
+    // 校验整体 checksum
+    const expectedChecksum = state.fullChecksum
+    const actualChecksum = TcpTransport._computeChecksum(assembled)
+    if (actualChecksum !== expectedChecksum) {
+      this.logger?.warn?.(
+        `[TcpTransport] Snapshot checksum mismatch from ${from}: ` +
+        `expected ${expectedChecksum}, got ${actualChecksum}`
+      )
+      return
+    }
+
+    // 构造 InstallSnapshot 请求并通过 handler 回调
+    const request: InstallSnapshotRequest = {
+      term: state.term,
+      leaderId: state.leaderId,
+      lastIncludedIndex: state.lastIncludedIndex,
+      lastIncludedTerm: state.lastIncludedTerm,
+      data: assembled,
+      done: true,
+    }
+
+    // 通过 handler 通知上层 — 包裹为标准 RaftMessage 格式
+    const raftMsg: RaftMessage = {
+      type: 'InstallSnapshot',
+      term: state.term,
+      from: state.leaderId || from,
+      to: this.nodeId,
+      data: request,
+    }
+    // 序列化为 Uint8Array 并通过现有的 handler 回调
+    const msgBuf = Buffer.from(JSON.stringify(raftMsg))
+    this.handler?.(from, msgBuf)
+  }
+
   getListenAddress(): string {
     return this.listenAddress
   }
 
-  private _writeFrame(socket: net.Socket, msg: Uint8Array): void {
+  // ── InstallSnapshot (分块传输) ──────────────────────────────
+
+  /** 默认分块大小：64KB */
+  private static readonly SNAPSHOT_CHUNK_SIZE = 64 * 1024
+
+  /** 默认超时：30s */
+  private static readonly SNAPSHOT_TIMEOUT_MS = 30_000
+
+  /** 最大重试次数 */
+  private static readonly SNAPSHOT_MAX_RETRIES = 3
+
+  /** CRC32 表 */
+  private static _crcTable: Uint32Array | null = null
+
+  /** 获取或初始化 CRC32 表 */
+  private static _getCrcTable(): Uint32Array {
+    if (TcpTransport._crcTable) return TcpTransport._crcTable
+    const table = new Uint32Array(256)
+    for (let i = 0; i < 256; i++) {
+      let c = i
+      for (let j = 0; j < 8; j++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1)
+      }
+      table[i] = c
+    }
+    TcpTransport._crcTable = table
+    return table
+  }
+
+  /** 计算 CRC32 checksum */
+  private static _computeChecksum(data: Buffer): number {
+    const table = TcpTransport._getCrcTable()
+    let crc = 0xFFFFFFFF
+    for (let i = 0; i < data.length; i++) {
+      crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8)
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0
+  }
+
+  /**
+   * 分块发送 InstallSnapshot 数据
+   *
+   * 将大快照数据分成小块，每块附带 seq/total/checksum 信息。
+   * 接收端重组并进行校验。
+   *
+   * @param to - 目标节点 ID
+   * @param snapshot - InstallSnapshot 请求
+   * @param chunkSize - 分块大小（默认 64KB）
+   * @param timeoutMs - 超时时间（默认 30s）
+   */
+  async installSnapshot(
+    to: string,
+    snapshot: InstallSnapshotRequest,
+    chunkSize: number = TcpTransport.SNAPSHOT_CHUNK_SIZE,
+    timeoutMs: number = TcpTransport.SNAPSHOT_TIMEOUT_MS,
+  ): Promise<InstallSnapshotResponse> {
+    const data = Buffer.from(snapshot.data)
+    const total = data.length
+    const totalChunks = Math.max(1, Math.ceil(total / chunkSize))
+
+    // 计算整体 checksum
+    const fullChecksum = TcpTransport._computeChecksum(data)
+
+    // 发送每个 chunk
+    for (let seq = 0; seq < totalChunks; seq++) {
+      const start = seq * chunkSize
+      const end = Math.min(start + chunkSize, total)
+      const chunkData = data.subarray(start, end)
+      const chunkChecksum = TcpTransport._computeChecksum(chunkData)
+
+      // 构造分块消息
+      const chunkMsg = {
+        type: 'install_snapshot_chunk' as const,
+        seq,
+        total: totalChunks,
+        data: chunkData.toString('base64'),
+        checksum: chunkChecksum,
+        fullChecksum,
+        lastIncludedIndex: snapshot.lastIncludedIndex,
+        lastIncludedTerm: snapshot.lastIncludedTerm,
+        leaderId: snapshot.leaderId,
+        term: snapshot.term,
+      }
+
+      // 发送并等待 ack（带重试）
+      let retries = 0
+      let sent = false
+      while (!sent && retries < TcpTransport.SNAPSHOT_MAX_RETRIES) {
+        try {
+          const msgBuf = Buffer.from(JSON.stringify(chunkMsg))
+          // 对 chunk 使用 fire-and-forget sendToSync，避免 ACK 层对可能正在忙碌连接的干扰
+          if (this.sendToSync(to, msgBuf)) {
+            sent = true
+          } else {
+            retries++
+            if (retries < TcpTransport.SNAPSHOT_MAX_RETRIES) {
+              await new Promise(r => setTimeout(r, 100 * Math.pow(2, retries)))
+            }
+          }
+        } catch {
+          retries++
+          if (retries < TcpTransport.SNAPSHOT_MAX_RETRIES) {
+            await new Promise(r => setTimeout(r, 100 * Math.pow(2, retries)))
+          }
+        }
+      }
+    }
+
+    // 发送完成标记
+    const doneMsg = {
+      type: 'install_snapshot_done' as const,
+      term: snapshot.term,
+      leaderId: snapshot.leaderId,
+      lastIncludedIndex: snapshot.lastIncludedIndex,
+      lastIncludedTerm: snapshot.lastIncludedTerm,
+      fullChecksum,
+    }
+    const doneBuf = Buffer.from(JSON.stringify(doneMsg))
+    await this.sendTo(to, doneBuf)
+
+    return { success: true, term: snapshot.term }
+  }
+
+  private _writeFrame(socket: net.Socket, msg: Uint8Array, msgId?: string): void {
     const base64Data = Buffer.from(msg).toString('base64')
     const frame: TcpFrame = { from: this.nodeId, data: base64Data, type: 'raft' }
+    if (msgId) {
+      frame.msgId = msgId
+    }
     const json = JSON.stringify(frame)
     const jsonBuf = Buffer.from(json, 'utf-8')
     const header = Buffer.alloc(4)
@@ -460,6 +820,8 @@ export class TcpTransport {
   }
 
   private _handleConnection(socket: net.Socket): void {
+    this._acceptedSockets.add(socket)
+    socket.on('close', () => { this._acceptedSockets.delete(socket) })
     socket.setKeepAlive(true, 5000)
     let buffer = Buffer.alloc(0)
 
@@ -473,8 +835,35 @@ export class TcpTransport {
         buffer = buffer.subarray(totalLen)
         try {
           const frame: TcpFrame = JSON.parse(frameJson)
+
+          // Handle ACK response
+          if (frame.type === 'ack' && frame.ackFor) {
+            this._handleAck(frame.ackFor)
+            continue
+          }
+
           if (frame.from && frame.data) {
-            this.handler?.(frame.from, Buffer.from(frame.data, 'base64'))
+            // Send ACK back if msgId is present (non-ACK messages)
+            if (frame.msgId) {
+              this._sendAck(socket, frame.msgId)
+            }
+
+            // 检查是否是 InstallSnapshot chunk 消息
+            const decoded = Buffer.from(frame.data, 'base64')
+            try {
+              const parsed = JSON.parse(decoded.toString('utf-8'))
+              if (parsed.type === 'install_snapshot_chunk') {
+                this._handleSnapshotChunk(frame.from, parsed)
+                continue
+              }
+              if (parsed.type === 'install_snapshot_done') {
+                this._handleSnapshotDone(frame.from, parsed)
+                continue
+              }
+            } catch {
+              // 不是 JSON 消息，正常转发
+            }
+            this.handler?.(frame.from, decoded)
           }
         } catch { /* ignore */ }
       }
@@ -518,5 +907,47 @@ export class TcpTransport {
       }
     }
     return '127.0.0.1'
+  }
+
+  /**
+   * 生成唯一消息 ID
+   */
+  private _generateMsgId(): string {
+    this._msgIdCounter++
+    return `${this.nodeId}-${Date.now()}-${this._msgIdCounter}`
+  }
+
+  /**
+   * 处理 ACK 响应
+   */
+  private _handleAck(msgId: string): void {
+    const entry = this._pendingAcks.get(msgId)
+    if (!entry) return
+
+    clearTimeout(entry.timer)
+    this._ackTimers.delete(entry.timer)
+    this._pendingAcks.delete(msgId)
+    entry.resolve(true)
+  }
+
+  /**
+   * 发送 ACK 帧
+   */
+  private _sendAck(socket: net.Socket, ackFor: string): void {
+    try {
+      const ackFrame: TcpFrame = {
+        from: this.nodeId,
+        data: '',
+        type: 'ack',
+        ackFor,
+      }
+      const json = JSON.stringify(ackFrame)
+      const jsonBuf = Buffer.from(json, 'utf-8')
+      const header = Buffer.alloc(4)
+      header.writeUInt32BE(jsonBuf.length, 0)
+      socket.write(Buffer.concat([header, jsonBuf]))
+    } catch {
+      // ACK 发送失败不阻塞消息处理
+    }
   }
 }
