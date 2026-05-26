@@ -128,6 +128,8 @@ export interface EventBusConfig {
   isRaftLeader?: boolean
   /** CURVE 安全配置 */
   security?: EventBusSecurity
+  /** NAS 目录动态监控间隔（ms），默认 3000。设为 0 禁用 */
+  nasMonitorIntervalMs?: number
 }
 
 // ──────────────────────────────────────────
@@ -387,8 +389,11 @@ export class EventBus {
       }
     }
 
-    // 启动 NAS 目录动态监控
-    this._startNasMonitor(3000)
+    // 启动 NAS 目录动态监控（默认 3 秒，可配置）
+    const nasInterval = this.config.nasMonitorIntervalMs ?? 3000
+    if (nasInterval > 0) {
+      this._startNasMonitor(nasInterval)
+    }
   }
 
   /**
