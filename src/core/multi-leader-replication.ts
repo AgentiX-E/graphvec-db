@@ -30,6 +30,10 @@ export interface MultiLeaderConfig {
   entryTTLDays?: number
   /** Housekeeping 执行间隔（ms），默认 86400000 */
   housekeepingIntervalMs?: number
+  /** 批量发送大小 */
+  batchSize?: number
+  /** 启用 per-peer 分库（OutboxV2） */
+  usePerPeerDb?: boolean
   /** EventBus 实例（用于 send + 重建 DEALER） */
   eventBus: {
     send: (nodeId: string, msg: any) => Promise<void>
@@ -69,8 +73,10 @@ export class MultiLeaderReplication {
       curveDir: config.curveDir,
       tickMs: config.tickMs,
       maxBackoffSeconds: config.maxBackoffSeconds,
+      batchSize: config.batchSize,
       entryTTLDays: config.entryTTLDays,
       housekeepingIntervalMs: config.housekeepingIntervalMs,
+      usePerPeerDb: config.usePerPeerDb,
       eventBus: config.eventBus,
     }
     this.manager = new OutboxReplicationManager(mgrConfig)

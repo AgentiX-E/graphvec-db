@@ -43,6 +43,12 @@ async function main() {
   const dataDir = process.env.ML_DATA_DIR!
   const curveDir = process.env.ML_CURVE_DIR!
 
+  // ── 读取额外的环境变量 ──
+  const workerPoolConcurrency = parseInt(process.env.ML_WORKER_POOL_CONCURRENCY ?? '0', 10)
+  const usePerPeerDb = process.env.ML_USE_PER_PEER_DB === 'true'
+  const tickMs = parseInt(process.env.ML_TICK_MS ?? '500', 10)
+  const batchSize = parseInt(process.env.ML_BATCH_SIZE ?? '1', 10)
+
   // ── 初始化 EventBus（NAS 模式：自动发现 peer） ──
   const bus = await initEventBus({
     nodeId,
@@ -56,6 +62,27 @@ async function main() {
       },
     },
   })
+
+  // ── 如果配置了 WorkerPool，在 EventBus 上设置 WorkerPool ──
+  if (workerPoolConcurrency > 0) {
+    const { EventBusWorkerPool } = await import('./event-bus-worker-pool')
+    const workerPool = new EventBusWorkerPool()
+    const peersList = peers
+      .filter((pid: string) => pid !== nodeId)
+      .map((pid: string) => {
+        const pIdx = parseInt(pid.split('-')[1], 10)
+        return { nodeId: pid, port: port + pIdx - 1, address: `tcp://127.0.0.1:${port + pIdx - 1}` }
+      })
+    await workerPool.start(peersList, workerPoolConcurrency, {
+      curveDir,
+      basePort: port,
+      ackCallback: (peerId: string, msgId: string) => {
+        // 收到 ACK 时调用 replication 的 notifyAcked
+      },
+    })
+    ;(bus as EventBus).workerPool = workerPool
+    logger.info(`WorkerPool configured with concurrency=${workerPoolConcurrency}`)
+  }
 
   // ── 确保所有 DEALER 连接建立后再发送就绪信号 ──
   // 不重试：NAS 模式下顺序启动的第一个节点看不到任何 peer 公钥是正常的。
@@ -90,6 +117,9 @@ async function main() {
     dbPath: path.join(dataDir, 'outbox.lmdb'),
     eventBus: bus as any,
     maxBackoffSeconds: 3, // 测试环境退避更快
+    tickMs,
+    batchSize,
+    usePerPeerDb,
   })
   replication.start()
 
@@ -162,13 +192,26 @@ async function main() {
           break
         }
         case 'getDealerStatus': {
-          const cnt = (bus as any).getPeerNodeIds?.()?.length ?? 0
+          let cnt = (bus as any).getPeerNodeIds?.()?.length ?? 0
+          // WorkerPool 模式下 DEALER 在子进程中，通过 WorkerPool 统计总 DEALER 数
+          const wp = (bus as EventBus).workerPool
+          if (wp) {
+            const stats = wp.getStats()
+            const totalDealers = stats.workers.reduce((sum: number, w: any) => sum + (w.peerIds?.length ?? 0), 0)
+            if (totalDealers > cnt) cnt = totalDealers
+          }
           logOut({ type: 'dealerStatus', dealerCount: cnt })
           break
         }
         case 'getOutboxStats': {
           const stats = replication.getStats()
           logOut({ type: 'outboxStats', pending: stats.pending, workers: stats.workers })
+          break
+        }
+        case 'getWorkerPoolStats': {
+          const wp = (bus as EventBus).workerPool
+          const wStats = wp ? wp.getStats() : null
+          logOut({ type: 'workerPoolStats', stats: wStats })
           break
         }
         case 'getPeerReports': {
@@ -182,6 +225,27 @@ async function main() {
             logOut({ type: 'configUpdated', partial })
           } catch (err: any) {
             logOut({ type: 'configUpdated', success: false, error: err.message })
+          }
+          break
+        }
+        case 'killWorkerPoolWorker': {
+          const wp = (bus as EventBus).workerPool
+          if (wp) {
+            const stats = wp.getStats()
+            const targetIdx = msg.payload?.workerIndex
+            const worker = typeof targetIdx === 'number' ? stats.workers[targetIdx] : stats.workers[0]
+            if (worker?.pid) {
+              try {
+                process.kill(worker.pid, 'SIGKILL')
+                logOut({ type: 'killResult', success: true, killedPid: worker.pid })
+              } catch (e: any) {
+                logOut({ type: 'killResult', success: false, error: e.message })
+              }
+            } else {
+              logOut({ type: 'killResult', success: false, error: 'no worker pid' })
+            }
+          } else {
+            logOut({ type: 'killResult', success: false, error: 'no workerPool' })
           }
           break
         }
