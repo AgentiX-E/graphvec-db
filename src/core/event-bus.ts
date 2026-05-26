@@ -420,7 +420,7 @@ export class EventBus {
   /**
    * 发送消息给指定 peer
    */
-  send(nodeId: string, msg: TransportMessage): void {
+  async send(nodeId: string, msg: TransportMessage): Promise<void> {
     const dealer = this.dealerSockets.get(nodeId)
     if (!dealer) {
       this.logger.warn(`no DEALER for peer ${nodeId}, trying broadcast`)
@@ -428,9 +428,11 @@ export class EventBus {
       return
     }
     const payload = Buffer.from(JSON.stringify(msg))
-    dealer.send([payload]).catch((err: Error) => {
+    try {
+      await dealer.send([payload])
+    } catch (err: any) {
       this.logger.warn(`DEALER send to ${nodeId} error: ${err.message}`)
-    })
+    }
   }
 
   /**

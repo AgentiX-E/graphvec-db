@@ -257,7 +257,7 @@ export class EventStream {
       srcNodeId: this.config.nodeId,
       data: { fromSeq: this.seq, requester: this.config.nodeId, targetSeq },
     }
-    this.bus.send(peerNodeId, req)
+    void this.bus.send(peerNodeId, req)
   }
 
   // ── ROUTER/DEALER 消息收发 ─────────
@@ -341,7 +341,7 @@ export class EventStream {
         ackMsgId: raw.msgId,
         data: {},
       }
-      this.bus.send(fromNodeId, ack)
+      void this.bus.send(fromNodeId, ack)
     }
 
     if (this.applyHandler) {
@@ -375,7 +375,7 @@ export class EventStream {
       dstNodeId: requester,
       data: { nodeId: this.config.nodeId, currentSeq: this.seq },
     }
-    this.bus.send(requester, reply)
+    void this.bus.send(requester, reply)
   }
 
   /**
@@ -417,7 +417,7 @@ export class EventStream {
         dstNodeId: requester,
         data: { msgs: batch },
       }
-      this.bus.send(requester, reply)
+      void this.bus.send(requester, reply)
     }
   }
 
@@ -438,7 +438,7 @@ export class EventStream {
         ackMsgId: m.msgId,
         data: {},
       }
-      this.bus.send(msg.srcNodeId, ack)
+      void this.bus.send(msg.srcNodeId, ack)
     }
   }
 
