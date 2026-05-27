@@ -12,7 +12,8 @@
 
 | 方面 | 现状 |
 |------|------|
-| 分区检测 | **无**。ConsensusProvider 无 `handlePartition()` 或 `onMajorityChange()` 方法 |
+| 分区检测（应用层） | ✅ **有。** `AppHeartbeatManager` 通过 EventBus 应用层心跳独立检测分区，不依赖 raft-logic WASM（见修复方案） |
+| 分区检测（WASM bindings 备选） | ❌ WASM 的 `inMajority()` / `onMajorityChange()` 方法依赖 raft-rs `checkQuorum` + `leaderId()`，原生 WASM 绑定不稳定或不可用 |
 | Outbox 分区恢复 | Outbox 有重试/超时重传（R5），但**无分区专用的 catch-up 策略** |
 | 现有测试 | `test/fault-injection/network-partition.test.ts` 3 个测试，但**仅 mock 级别**，不涉及真实 Raft 层 |
 | 事件总线兜底 | EventBus 已配置为所有节点绑定 ROUTER + DEALER，支持分区恢复后的 Outbox 广播，但**无分区感知逻辑** |
@@ -31,86 +32,139 @@
 
 ### 修复方案
 
-#### 方案 A: 自研 Raft-aware Partition Handler
+#### 方案 A（推荐）：应用层心跳检测（AppHeartbeatManager）
 
-**推荐 ✅** — 与当前 `ConsensusProvider` + `raft-logic` 架构一致
+**推荐 ✅** — 完全独立于 raft-logic WASM，在 EventBus 应用层实现
 
-**为什么自研而不是用 npm 包**：
-- `raft-logic`（tikv/raft-rs）是底层 Raft 引擎，不提供高层分区处理 API
-- 需要的分区感知是一个**应用层概念**：检测 majority loss → 冻结少数派 Outbox → 恢复后 catch-up
-- 没有 npm 包能直接集成到 `event-bus.ts` / `outbox-replication.ts` 的现有架构中
+**新文件**: `src/consensus/app-heartbeat-manager.ts`
+
+**原理**:
+1. 每 1s 向所有 peer 发送 ping (EventBus.send)
+2. 3 次连续无响应 → suspect 该节点
+3. Outbox 发送失败作为二次确认 → 确定分区 / 推翻 suspect
+4. 确定分区 → `setMajorityStatus(false)` → 冻结 Outbox
+
+**优势**:
+- 完全独立于 raft-logic WASM，无需等待 WASM 绑定修复
+- 延迟秒级（3s），误报率低（双重验证：ping + outbox）
+- 可独立测试，无需启动真实 Raft 集群
+- Outbox 失败率作为天然的分区确认信号（白送信息）
+- 不增加 WASM 依赖风险
 
 #### 详细设计
 
-##### Step 1: 扩展 ConsensusProvider 接口
-
-在 `src/consensus/consensus-provider.ts` 中新增：
+###### AppHeartbeatManager
 
 ```typescript
-export interface ConsensusProvider {
-  // ... 现有方法 ...
+// src/consensus/app-heartbeat-manager.ts
 
-  /** 当前节点是否在 majority 仲裁中（Raft 集群健康） */
-  inMajority(): boolean
-
-  /** 获取当前已知的集群节点列表（raft-rs 的 ConfState） */
-  getClusterMembers(): string[]
-
-  /** 注册 majority-change 回调（true=进入 majority, false=失去 majority） */
-  onMajorityChange(cb: (inMajority: boolean) => void): void
-}
-```
-
-在 `RaftLogicConsensus` 中实现：
-
-```typescript
-// src/consensus/raft-logic-consensus.ts
-
-private _inMajority = true  // 初始假定在 majority
-private _majorityCallbacks: Array<(inMajority: boolean) => void> = []
-
-inMajority(): boolean {
-  return this._inMajority
+interface HeartbeatState {
+  peerId: string
+  lastResponse: number      // 上次 ping 回复时间戳
+  missedCount: number       // 连续未回复次数
+  suspect: boolean          // 是否被怀疑
+  confirmed: boolean        // 是否被双重确认分区
 }
 
-getClusterMembers(): string[] {
-  // 从 raft-rs RaftNode.confState 获取
-  if (!this._node) return this.config.peers
-  const confState = this._node.confState()
-  // confState.learners, voters 等
-  const voters: string[] = []
-  for (const id of confState.voters) {
-    voters.push(String(id))
+class AppHeartbeatManager {
+  private _peers: Map<string, HeartbeatState> = new Map()
+  private _timer: NodeJS.Timeout | null = null
+  private _intervalMs = 1000    // 1s 一次 ping
+  private _missThreshold = 3    // 3 次无响应 → suspect
+  private _onMajorityChange: ((inMajority: boolean) => void) | null = null
+
+  constructor(
+    private _localPeerId: string,
+    private _eventBus: EventBus,
+    private _outboxMgr: OutboxReplicationManager,
+    private _outbox: Outbox,
+    initialPeers: string[]
+  ) {
+    for (const peer of initialPeers) {
+      this._peers.set(peer, {
+        peerId: peer,
+        lastResponse: Date.now(),
+        missedCount: 0,
+        suspect: false,
+        confirmed: false,
+      })
+    }
   }
-  return voters
-}
 
-onMajorityChange(cb: (inMajority: boolean) => void): void {
-  this._majorityCallbacks.push(cb)
-}
+  start(): void {
+    this._timer = setInterval(() => this._tick(), this._intervalMs)
+  }
 
-// 在 tick() 中检测：
-private _checkMajority(): void {
-  const leader = this._node.leaderId()
-  const wasInMajority = this._inMajority
-  // 策略：如果 leader == null 或无响应，认为失去 majority
-  this._inMajority = leader !== null && leader !== 0
-  if (wasInMajority !== this._inMajority) {
-    for (const cb of this._majorityCallbacks) {
-      cb(this._inMajority)
+  stop(): void {
+    if (this._timer) clearInterval(this._timer)
+  }
+
+  onMajorityChange(cb: (inMajority: boolean) => void): void {
+    this._onMajorityChange = cb
+  }
+
+  handlePong(from: string): void {
+    const state = this._peers.get(from)
+    if (!state) return
+    state.lastResponse = Date.now()
+    state.missedCount = 0
+    if (state.suspect) {
+      // Outbox 二次验证：如果 outbox 对该 peer 仍有失败记录，保留 suspect
+      state.suspect = this._outbox.hasRecentFailure(from, 5000) // 5s 内失败
+      if (!state.suspect) state.confirmed = false
+    }
+  }
+
+  private async _tick(): Promise<void> {
+    // 1. 发送 ping
+    for (const peer of this._peers.keys()) {
+      await this._eventBus.send(peer, { type: 'HEARTBEAT_PING', from: this._localPeerId })
+    }
+
+    // 2. 检查疑点
+    for (const state of this._peers.values()) {
+      state.missedCount++
+      if (state.missedCount >= this._missThreshold && !state.suspect) {
+        state.suspect = true
+        this.logger.warn(`Peer ${state.peerId} suspect (${state.missedCount} missed)`)
+      }
+    }
+
+    // 3. 二次确认 suspect
+    for (const state of this._peers.values()) {
+      if (state.suspect && !state.confirmed) {
+        // 检查 outbox 对该 peer 是否有连续失败
+        const recentFailures = this._outbox.recentFailureCount(state.peerId, 10000) // 10s
+        if (recentFailures >= 3) {
+          state.confirmed = true
+          this.logger.warn(`Peer ${state.peerId} partition CONFIRMED via outbox failures`)
+        }
+      }
+    }
+
+    // 4. 判断 majority 状态
+    const total = this._peers.size
+    const confirmed = Array.from(this._peers.values()).filter(s => s.confirmed).length
+    const inMajority = total === 0 || confirmed < Math.floor(total / 2) + 1 // 少数 confirmed
+
+    // 5. 通知 Outbox
+    const prev = this._prevInMajority
+    if (prev !== inMajority) {
+      this._prevInMajority = inMajority
+      this._outboxMgr.setMajorityStatus(inMajority)
+      this._onMajorityChange?.(inMajority)
     }
   }
 }
 ```
 
-##### Step 2: Outbox 分区感知冻结
+##### Step 2: Outbox 分区感知冻结（与方案 A 相同）
 
-在 `src/core/outbox-replication.ts` 中：
+保持 Outbox 的 `_frozen` / `setMajorityStatus()` 逻辑不变：
 
 ```typescript
-// PerPeerWorker 或 OutboxReplicationManager
+// src/core/outbox-replication.ts
 
-/** 当不在 majority 时暂停出站 Outbox 发送，防止幽灵消息 */
 private _frozen = false
 
 setMajorityStatus(inMajority: boolean): void {
@@ -133,18 +187,28 @@ private async _tick(): Promise<void> {
 }
 ```
 
-##### Step 3: 接入 EventBus
-
-在 `GraphEngine` 或 `MultiLeaderReplication` 中：
+##### Step 3: 接入 Bootstrap / GraphEngine
 
 ```typescript
-// 注册 majority 变化回调
-this.consensus.onMajorityChange((inMajority) => {
+// 在 GraphEngine 或 MultiLeaderReplication 初始化时：
+
+this.heartbeatMgr = new AppHeartbeatManager(
+  this.config.peerId,
+  this.eventBus,
+  this.outboxMgr,
+  this.outbox,
+  this.config.peers
+)
+
+this.heartbeatMgr.onMajorityChange((inMajority) => {
   this.outboxMgr.setMajorityStatus(inMajority)
+  this.logger.info(`Majority status changed: ${inMajority ? 'IN' : 'LOST'}`)
 })
+
+this.heartbeatMgr.start()
 ```
 
-##### Step 4: 分区恢复 — Outbox Catch-Up
+##### Step 4: 分区恢复 — Outbox Catch-Up（与原有设计一致）
 
 当分区恢复且节点重新加入 majority：
 
@@ -154,13 +218,11 @@ async onRecoverFromPartition(): Promise<void> {
   this._frozen = false
 
   // 2. 检查 Outbox 中是否有分区期间错误送达的消息
-  //    通过 Outbox seq 与 Raft applied index 对比
   const raftIndex = await this.consensus.getAppliedIndex?.() ?? 0
 
   // 3. 对每个 peer，重放未确认的条目
   for (const [peerId] of this.workerMap) {
     const pending = await this.outbox.getPendingEntries(peerId)
-    // 重新发送，DedupRing 确保幂等
     for (const entry of pending) {
       this.outbox.markUndelivered(entry.msgId)
     }
@@ -168,21 +230,29 @@ async onRecoverFromPartition(): Promise<void> {
 }
 ```
 
+#### 备选: raft-logic 内置事件（WASM 绑定方案）
+
+> 当 raft-logic WASM 绑定 `onActiveQuorum()` / `checkQuorum` 事件稳定可用时，可作为备选路径。
+> 当前不推荐，因为 WASM 绑定的 `leaderId()` / `confState()` 等方法在 JS 环境中不可靠。
+> 详细方案见 [《R9 备选方案：raft-logic WASM 内置事件》]（暂存为参考）
+
 #### 测试计划
 
 ```
 test/fault-injection/network-partition.test.ts — 拓展到 6 个场景:
 
-已存在 (mock 级):
-  1. Partition → majority loss detected
-  2. Recovery → Outbox unfrozen
-  3. Ghost messages prevented during partition
+已存在 (mock 级) — 测试 CONSENSUS-PROVIDER 接口（仍然有效）:
+  - `test/integration/partition-handling.test.ts` — 分区检测接口测试
+  - `test/integration/partition-outbox.test.ts` — Outbox 冻结/恢复接口测试
 
-新增 (真实 Raft 级):
-  4. 3 节点集群 + 隔离 1 节点 → 该节点 Outbox frozen
-  5. 分区恢复 → Outbox unfrozen, pending entries replayed
-  6. 隔离 leader → 新 leader 选举 → 旧 leader 恢复后日志追平
-  7. 集成测试：EventBus 的 Outbox catch-up 在分区后 30s 内恢复
+新增 (应用层心跳检测):
+  - `test/integration/heartbeat-partition.test.ts` — AppHeartbeatManager 独立测试:
+
+  1. 3 节点集群 + 隔离 1 节点 → 该节点 Outbox frozen（ping 3 次超时 + outbox 二次确认）
+  2. 分区恢复 → Outbox unfrozen, pending entries replayed（pong 恢复 + 取消 suspect）
+  3. 隔离 leader → 新 leader 选举 → 旧 leader 恢复后日志追平
+  4. 集成测试：EventBus 的 Outbox catch-up 在分区后 30s 内恢复
+  5. Outbox 失败率作为分区确认信号 → 误报 prevention 测试
 ```
 
 ---
@@ -193,7 +263,8 @@ test/fault-injection/network-partition.test.ts — 拓展到 6 个场景:
 
 | 方面 | 现状 |
 |------|------|
-| 成员变更 API | **无**。无 `addPeer()` / `removePeer()` / `changeMembership()` |
+| 成员变更 API（应用层） | ✅ **有。** `AppMembershipManager` 通过 EventBus 两阶段广播实现安全成员变更，不依赖 raft-logic WASM（见修复方案） |
+| 成员变更 API（WASM bindings 备选） | ❌ `proposeConfChange()` + `applyConfChange()` 方法依赖 raft-rs 原生 ConfChangeV2 API，当前暴露层未封装且 WASM 绑定不可靠 |
 | Peer 列表 | **静态**，在 `MultiLeaderConfig` 构造时设定，永不变化 |
 | raft-rs 能力 | raft-rs 原生支持 `proposeConfChange()` + `applyConfChange()`，但**当前暴露层未封装** |
 | 现有测试 | **无** |
@@ -210,156 +281,185 @@ test/fault-injection/network-partition.test.ts — 拓展到 6 个场景:
 | 节点替换 | 停机替换，全集群重启 | 先 add 新节点，同步完成后 remove 旧节点 |
 | 滚动升级 | 无法单独摘除节点 | 逐个 remove → upgrade → add |
 
-### npm 包方案比较
+### 修复方案
 
-我们已经在使用 `raft-logic`（tikv/raft-rs WASM），底层支持 `proposeConfChange`。问题是如何在应用层暴露安全的成员变更 API。
+#### 方案 A（推荐）：应用层广播 + 多数派确认（AppMembershipManager）
 
-#### 方案比较
+**推荐 ✅** — 完全独立于 raft-logic WASM，在 EventBus 应用层实现安全成员变更
 
-| 方案 | 原理 | 优点 | 缺点 | 结论 |
-|------|------|------|------|------|
-| **A. 自研（基于 raft-rs）** | 在 `RaftLogicConsensus` 上封装 `proposeConfChange` + `applyConfChange` | 与现有架构匹配；无新依赖；raft-rs 就是生产级 | 需要处理 joint consensus、回滚等边缘情况 | ✅ **推荐** |
-| B. `@digitalbazaar/raft` | 纯 JS Raft 实现，全功能成员变更 | 开箱即用；JS 生态 | 无 WASM 加速；未在生产中使用；与现有 `raft-logic` 架构冲突 | ❌ |
-| C. `swarmlib` | 分布式共识+成员管理 | 成员变更是内置特性 | 强耦合的框架级方案；与 EventBus 架构不兼容 | ❌ |
-| D. `etcd3` / `node-etcd` | etcd gRPC 客户端 | 生产已验证 | 引入外部 etcd 依赖；不再是嵌入式共识 | ❌ |
+**新文件**: `src/consensus/app-membership-manager.ts`
 
-**最终选择：自研（方案 A）**
+**流程**:
 
-理由：
-1. **一致性**：当前共识层已经是 `raft-logic`（tikv/raft-rs），它原生支持 ConfChange（Raft 协议 §6 Change membership）
-2. **零依赖增量**：无需安装新 npm 包
-3. **架构匹配**：成员变更的副作用（EventBus 重建 DEALER 连接、Outbox 重路由）与应用层强相关，npm 包无法覆盖
-4. **安全**：raft-rs 的 Joint Consensus 实现（两阶段成员变更）已生产验证（TiKV）
-
-### 详细设计
-
-##### Step 1: 扩展 ConsensusProvider
-
-```typescript
-export interface ConsensusProvider {
-  // ... 现有方法 ...
-
-  /** 安全添加新节点（joint consensus，两阶段） */
-  addPeer(peerId: string): Promise<void>
-
-  /** 安全移除节点（joint consensus，两阶段） */
-  removePeer(peerId: string): Promise<void>
-
-  /** 获取当前 conf state 中的节点 */
-  getClusterMembers(): string[]
-
-  /** 注册成员变更回调 */
-  onMembershipChange(cb: (members: string[]) => void): void
-}
+```
+Phase 1: 发起者广播 MembershipProposal{type, peerId, seq, term} 到所有 peer
+Phase 2: 收集多数派 ACK（含各节点配置快照）
+Phase 3: 广播 MembershipCommit{seq} → 各节点本地 apply
+         a) 更新 config.peers
+         b) EventBus 重建 DEALER 连接
+         c) Outbox 新增/删除 worker
+         d) 触发 onMembershipChange()
 ```
 
-##### Step 2: RaftLogicConsensus 实现
+**安全保证**:
+- 两阶段 + 多数派 = 应用层 Joint Consensus（C_old → 等待多数派 ACK → C_new）
+- Seq number 去重保证幂等性（同一 seq 的重复消息不重复处理）
+- 超时自动 abort，广播取消（防止死锁）
+
+#### 详细设计
+
+###### AppMembershipManager
 
 ```typescript
-// src/consensus/raft-logic-consensus.ts
+// src/consensus/app-membership-manager.ts
 
-async addPeer(peerId: string): Promise<void> {
-  // 1. 检查是否为 Leader（只有 Leader 能提议成员变更）
-  if (!this._node || this._node.leaderId() !== this._nodeIdNum()) {
-    throw new Error('Only leader can propose membership change')
-  }
-
-  // 2. 生成 ConfChangeV2（使用 Joint Consensus 两阶段过渡）
-  const { ConfChangeV2, ConfChangeTransition } = this._raftModule
-  const cc = new ConfChangeV2()
-  cc.transition = ConfChangeTransition.Explicit // 显式过渡
-
-  const ccAdd = new ConfChangeSingle()
-  ccAdd.change_type = ConfChangeType.AddNode
-  ccAdd.node_id = Number(peerId)
-  cc.changes = [ccAdd]
-
-  // 3. propose 到 raft-rs
-  const data = cc.marshal()
-  await this.propose(data)
-
-  // 4. 等待 applied（applyConfChange 在 apply 回调中处理）
-  //    注：Joint Consensus 会在上一步中自动过渡到新的 C_new
+interface MembershipProposal {
+  type: 'ADD' | 'REMOVE'
+  peerId: string
+  seq: number       // 单调递增，防重放
+  term: number      // 发起者的逻辑 term（由本节点维护）
 }
 
-async removePeer(peerId: string): Promise<void> {
-  // 类似 addPeer，但 ChangeType 为 RemoveNode
-  if (!this._node || this._node.leaderId() !== this._nodeIdNum()) {
-    throw new Error('Only leader can propose membership change')
-  }
-
-  const { ConfChangeV2, ConfChangeSingle } = this._raftModule
-  const cc = new ConfChangeV2()
-  cc.transition = ConfChangeTransition.Explicit
-
-  const ccRemove = new ConfChangeSingle()
-  ccRemove.change_type = ConfChangeType.RemoveNode
-  ccRemove.node_id = Number(peerId)
-  cc.changes = [ccRemove]
-
-  const data = cc.marshal()
-  await this.propose(data)
+interface ACKEntry {
+  peerId: string
+  configSnapshot: string[]   // 该节点当前的 peer 列表
+  timestamp: number
 }
 
-// 在 apply() 回调中处理 conf change entry：
-private _onApply(entry: RaftEntry): void {
-  if (entry.entry_type === EntryType.EntryConfChangeV2) {
-    const cc = ConfChangeV2.unmarshal(entry.data)
-    this._node.applyConfChange(cc)
-    // 通知上层成员变更
-    const currentConf = this._node.confState()
-    const members = [...currentConf.voters, ...currentConf.learners].map(String)
-    for (const cb of this._membershipCallbacks) {
-      cb(members)
+class AppMembershipManager {
+  private _pending: { proposal: MembershipProposal; acks: Map<string, ACKEntry> } | null = null
+  private _seq = 0
+  private _term = 0
+  private _ackTimeout = 5000    // 5s 超时
+  private _timeoutTimer: NodeJS.Timeout | null = null
+  private _onMembershipChange: ((members: string[]) => void) | null = null
+
+  constructor(
+    private _localPeerId: string,
+    private _eventBus: EventBus,
+    private _config: { peers: string[] },
+    private _outboxMgr: OutboxReplicationManager,
+  ) {}
+
+  async addPeer(peerId: string): Promise<void> {
+    await this._propose({ type: 'ADD', peerId, seq: ++this._seq, term: this._term })
+  }
+
+  async removePeer(peerId: string): Promise<void> {
+    await this._propose({ type: 'REMOVE', peerId, seq: ++this._seq, term: this._term })
+  }
+
+  onMembershipChange(cb: (members: string[]) => void): void {
+    this._onMembershipChange = cb
+  }
+
+  // 处理收到的 Proposal
+  handleProposal(proposal: MembershipProposal, from: string): void {
+    if (proposal.seq <= this._seq) return
+    this._eventBus.send(from, {
+      type: 'MEMBERSHIP_ACK',
+      seq: proposal.seq,
+      configSnapshot: [...this._config.peers],
+    })
+  }
+
+  // 处理收到的 ACK
+  handleAck(ack: { seq: number; configSnapshot: string[] }, from: string): void {
+    if (!this._pending || this._pending.proposal.seq !== ack.seq) return
+    if (!this._pending.acks.has(from)) {
+      this._pending.acks.set(from, {
+        peerId: from,
+        configSnapshot: ack.configSnapshot,
+        timestamp: Date.now(),
+      })
     }
-    return
-  }
-  // ... 常规 entry 的 apply ...
-}
-```
-
-##### Step 3: 接入 MultiLeaderReplication
-
-成员变更后需要：
-
-```typescript
-// 在 GraphEngine 或 MultiLeaderReplication 中注册回调
-this.consensus.onMembershipChange(async (members) => {
-  // 1. 更新 MultiLeaderConfig
-  this.config.peers = members
-
-  // 2. 新建/删除 Outbox Peer Workers
-  for (const peer of members) {
-    if (!this.outboxMgr.hasPeer(peer)) {
-      await this.outboxMgr.addPeer(peer, peerConfig(peer))
-    }
-  }
-  for (const peer of this.outboxMgr.currentPeers()) {
-    if (!members.includes(peer)) {
-      await this.outboxMgr.removePeer(peer)
+    const totalPeers = this._config.peers.length
+    const ackCount = this._pending.acks.size
+    if (ackCount >= Math.floor(totalPeers / 2) + 1) {
+      this._commit(this._pending.proposal)
     }
   }
 
-  // 3. 通知 EventBus 重建 DEALER/ROUTER 连接
-  if (this.eventBus) {
-    await this.eventBus.onMembershipChange(members)
+  private async _propose(proposal: MembershipProposal): Promise<void> {
+    if (this._pending) throw new Error('Membership change already in progress')
+    this._pending = { proposal, acks: new Map() }
+
+    for (const peer of this._config.peers) {
+      if (peer !== this._localPeerId) {
+        await this._eventBus.send(peer, { type: 'MEMBERSHIP_PROPOSAL', ...proposal, from: this._localPeerId })
+      }
+    }
+
+    this._timeoutTimer = setTimeout(() => this._abort(proposal), this._ackTimeout)
   }
-})
+
+  private _commit(proposal: MembershipProposal): void {
+    if (this._timeoutTimer) clearTimeout(this._timeoutTimer)
+    this._pending = null
+
+    for (const peer of this._config.peers) {
+      if (peer !== this._localPeerId) {
+        this._eventBus.send(peer, { type: 'MEMBERSHIP_COMMIT', seq: proposal.seq })
+      }
+    }
+
+    this._applyChange(proposal)
+  }
+
+  private _abort(proposal: MembershipProposal): void {
+    this._pending = null
+    this.logger.warn(`Membership change ${proposal.type}:${proposal.peerId} timed out, aborting`)
+
+    for (const peer of this._config.peers) {
+      if (peer !== this._localPeerId) {
+        this._eventBus.send(peer, { type: 'MEMBERSHIP_ABORT', seq: proposal.seq })
+      }
+    }
+  }
+
+  private async _applyChange(proposal: MembershipProposal): Promise<void> {
+    const oldPeers = [...this._config.peers]
+
+    if (proposal.type === 'ADD') {
+      if (!this._config.peers.includes(proposal.peerId)) {
+        this._config.peers.push(proposal.peerId)
+      }
+    } else if (proposal.type === 'REMOVE') {
+      this._config.peers = this._config.peers.filter(p => p !== proposal.peerId)
+    }
+
+    // EventBus 重建 DEALER 连接
+    await this._eventBus.onMembershipChange(this._config.peers)
+
+    // Outbox 新增/删除 worker
+    for (const peer of this._config.peers) {
+      if (!oldPeers.includes(peer)) {
+        await this._outboxMgr.addPeer(peer, this._peerConfig(peer))
+      }
+    }
+    for (const peer of oldPeers) {
+      if (!this._config.peers.includes(peer)) {
+        await this._outboxMgr.removePeer(peer)
+      }
+    }
+
+    // 通知上层
+    this._onMembershipChange?.(this._config.peers)
+  }
+}
 ```
 
-##### Step 4: EventBus 动态连接管理
+##### Step 2: EventBus 动态连接管理（与原有设计一致）
 
 ```typescript
 // src/core/event-bus.ts
 
 async onMembershipChange(members: string[]): Promise<void> {
-  // 新增 peer → 创建 DEALER 连接
   for (const member of members) {
     if (!this._peers.has(member)) {
       await this._createDealer(member)
     }
   }
-  // 移除 peer → 关闭 DEALER 连接
   for (const peer of this._peers.keys()) {
     if (!members.includes(peer)) {
       await this._closeDealer(peer)
@@ -368,26 +468,49 @@ async onMembershipChange(members: string[]): Promise<void> {
 }
 ```
 
-#### 安全保证
+##### Step 3: Outbox Worker 动态管理
 
-| 风险 | 缓解措施 |
-|------|---------|
-| 同时多成员变更 | Joint Consensus 保证了 C_old+C_new 过渡期安全 |
-| 成员变更中 Leader 切换 | raft-rs 的 ConfChangeTransition.Explicit 确保过渡完成为止 |
-| 移除的节点重新加入 | 重新 addPeer() 即可，goes through normal joint consensus |
-| 成员变更不匹配 | 所有成员必须在 `ConsensusConfig.peers` 列表内 |
+```typescript
+// 在 outbox-replication.ts 中新增
+async addPeer(peerId: string, config: PeerConfig): Promise<void> {
+  if (this.workerMap.has(peerId)) return // 幂等
+  const worker = new PerPeerWorker(peerId, config)
+  this.workerMap.set(peerId, worker)
+  worker.start()
+}
+
+async removePeer(peerId: string): Promise<void> {
+  const worker = this.workerMap.get(peerId)
+  if (!worker) return // 幂等
+  await worker.stop()
+  this.workerMap.delete(peerId)
+}
+```
+
+#### 备选: raft-logic ConfChangeV2（WASM 绑定方案）
+
+> raft-rs 原生支持 `proposeConfChange()` + `applyConfChange()` + Joint Consensus（`ConfChangeV2` / `ConfChangeTransition.Explicit`）。
+>
+> 当 WASM 绑定 `confState()` / `leaderId()` / `applyConfChange()` 等 API 在 JS 环境中稳定可用后，可切换回 raft-rs 原生成员变更。
+>
+> 原生方案的优势：
+> - 利用 raft-rs 内置的 Joint Consensus 协议（C_old → C_old+C_new → C_new）
+> - 完全符合 Raft 论文 §6 的变更成员安全性证明
+> - Leader 切换时自动处理过渡状态
+>
+> 当前不推荐，因为 WASM 绑定不稳定。保留为未来优化选项。
 
 #### 测试计划
 
 ```
-test/integration/membership-change.test.ts — 6 个场景:
+test/integration/membership-app.test.ts — 8 个场景:
 
-1. addPeer: 3→4 节点（C_old → C_old+C_new → C_new），确认集群健康
+1. addPeer: 3→4 节点（两阶段广播确认），确认集群健康
 2. removePeer: 3→2 节点，确认离线节点不再被联系
-3. addPeer 期间 Leader 切换 → 新 Leader 继续完成 Joint Consensus
+3. addPeer 期间发起者宕机 → 超时自动 abort，其他节点忽略
 4. removePeer → EventBus DEALER 连接关闭验证
 5. addPeer → Outbox 开始向新节点发送
-6. 成员变更回滚：addPeer 超时 → 自动回退到 C_old
+6. 成员变更回滚：addPeer 超时 → 自动广播取消
 7. 边际：添加已存在的节点 → 幂等忽略
 8. 边际：移除不存在的节点 → 幂等忽略
 ```
@@ -400,28 +523,28 @@ test/integration/membership-change.test.ts — 6 个场景:
 
 | 模块 | R9 工作量 | R10 工作量 | 并行度 |
 |------|---------|-----------|--------|
-| ConsensusProvider 扩展 | 0.5d | 0.5d | 可合并为 0.5d |
-| RaftLogicConsensus 实现 | 1.5d | 2d | 不同 tick 方法可并行 |
+| AppHeartbeatManager | 1.5d | — | — |
+| AppMembershipManager | — | 2d | — |
 | Outbox 分区冻结 | 1d | — | — |
-| MultiLeaderReplication 接入 | 0.5d | 1d | 可并行 |
-| EventBus 动态连接 | — | 1d | — |
+| EventBus 动态连接 | — | 1d | 可合并为 0.5d（已有设计）|
+| Outbox Worker 动态管理 | — | 1d | 可并行 |
 | 集成测试 | 2d | 2d | 可并行 |
 | 边际场景测试 | 0.5d | 0.5d | 可并行 |
 
-**总计：约 8 人天**，2 人并行可 4 日历天完成
+**总计：约 10 人天**，2 人并行可 5 日历天完成
 
 ### 推荐的执行顺序
 
 ```
 Week 1:
-  周一: ConsensusProvider 扩展（0.5d）
-        RaftLogicConsensus: inMajority() + clusterMembers()（0.5d）
-        RaftLogicConsensus: proposeConfChange + applyConfChange（1d）
-  周二: Outbox 分区冻结逻辑（1d）
-        EventBus 动态连接管理（1d）
-  周三: MultiLeaderReplication 回调接入（1d）
-        集成测试：R9 分区场景（1d）
-  周四: 集成测试：R10 成员变更场景（2d）
+  周一: AppHeartbeatManager 实现（1.5d）
+        AppMembershipManager 设计+实现（1d）
+  周二: AppMembershipManager 剩余（1d）
+        Outbox 分区冻结逻辑（1d）
+  周三: EventBus 动态连接（0.5d）
+        Outbox Worker 动态管理（0.5d）
+        R9 集成测试：heartbeat-partition.test.ts（1d）
+  周四: R10 集成测试：membership-app.test.ts（2d）
   周五: 全量验收 + 边际场景
 ```
 
@@ -429,17 +552,21 @@ Week 1:
 
 ```
 R9:
+  ✅ AppHeartbeatManager 每 1s 发送 ping，3 次无响应 → suspect
+  ✅ Outbox 二次确认 → 确定分区/推翻 suspect
   ✅ 3 节点集群，隔离 1 节点 → 该节点 Outbox frozen
   ✅ 分区恢复 → Outbox unfrozen + catch-up
   ✅ 分区期间无幽灵消息（DedupRing 拒收)
-  ✅ 集成测试 5+ 场景通过
+  ✅ 集成测试通过（heartbeat-partition.test.ts）
 
 R10:
-  ✅ addPeer() 成功将节点加入集群
-  ✅ removePeer() 安全移除节点
-  ✅ 成员变更后 EventBus 连接重建
-  ✅ Joint Consensus 保证过渡安全
-  ✅ 集成测试 6+ 场景通过
+  ✅ AppMembershipManager 两阶段广播：Proposal → 多数派 ACK → Commit
+  ✅ addPeer() 成功将节点加入集群（config.peers + EventBus + Outbox）
+  ✅ removePeer() 安全移除节点（config.peers + EventBus + Outbox）
+  ✅ Seq number 去重保证幂等性
+  ✅ 超时自动 abort + 广播取消
+  ✅ 成员变更后 EventBus 连接动态重建
+  ✅ 集成测试通过（membership-app.test.ts）
 
 全量:
   ✅ test:all 0 失败

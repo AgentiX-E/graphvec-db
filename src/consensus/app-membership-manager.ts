@@ -1,0 +1,477 @@
+/**
+ * app-membership-manager.ts — 应用层成员变更管理
+ *
+ * 不依赖 raft-logic WASM 的 ConfChangeV2 API。
+ * 通过 EventBus 应用层广播 + 多数派确认实现安全成员变更。
+ *
+ * 流程（两阶段提交）：
+ * Phase 1: 发起者广播 MembershipProposal{type, peerId, seq, term}
+ * Phase 2: 收集多数派 ACK（含各节点配置快照）
+ * Phase 3: 广播 MembershipCommit{seq} → 各节点本地 apply
+ *           a) 更新 config.peers
+ *           b) EventBus 重建 DEALER 连接
+ *           c) 触发 onMembershipChange()
+ * 回滚: 超时则广播 MembershipAbort{seq, reason}
+ *
+ * R10: 与 raft-logic ConfChangeV2 互补。两者可同时启用。
+ */
+
+import { Logger } from '../ops/logger'
+
+/** 成员变更消息类型 */
+export type MembershipMessageType = 'proposal' | 'ack' | 'commit' | 'abort'
+
+/** 成员变更操作类型 */
+export type MembershipChangeType = 'add' | 'remove'
+
+/** 通用成员变更消息 */
+export interface MembershipMessage {
+  type: MembershipMessageType
+  /** 提案序号（单调递增，去重） */
+  seq: number
+  /** 发起者 nodeId */
+  from: string
+  /** 操作类型 */
+  changeType?: MembershipChangeType
+  /** 目标 peerId */
+  targetPeerId?: string
+  /** 发起者配置快照（用于 Phase 2 一致性校验） */
+  configHash?: string
+  /** abort 原因 */
+  reason?: string
+  /** 确认的节点数 */
+  ackCount?: number
+  /** ACK 来源列表 */
+  ackFrom?: string[]
+  /** 提交的成员列表 */
+  members?: string[]
+}
+
+/** 成员变更传输层接口 */
+export interface MembershipTransport {
+  /** 向指定 peer 发送消息 */
+  send(peerId: string, msg: any): Promise<void>
+  /** 广播消息到所有 peer */
+  broadcast(msg: any): Promise<void>
+  /** 注册消息回调 */
+  onMessage(cb: (from: string, msg: any) => void): void
+  /** 获取当前 peer 列表 */
+  getPeers(): Array<{ nodeId: string; addr: string }>
+}
+
+/** 成员变更管理器配置 */
+export interface MembershipManagerConfig {
+  /** 当前节点 ID */
+  nodeId: string
+  /** 传输层接口 */
+  transport: MembershipTransport
+  /** 成员变更回调 */
+  onMembershipChange: (members: string[]) => void
+  /** 变更提案的 ACK 超时时间（ms），默认 5000 */
+  ackTimeoutMs?: number
+}
+
+/** 待处理的提案 */
+interface PendingProposal {
+  seq: number
+  changeType: MembershipChangeType
+  targetPeerId: string
+  configHash: string
+  acks: Set<string>
+  ackTimer: ReturnType<typeof setTimeout> | null
+  startTime: number
+  resolve: (value: void) => void
+  reject: (err: Error) => void
+}
+
+/**
+ * 应用层成员变更管理器
+ *
+ * 支持安全的 addPeer/removePeer，不依赖 raft-logic WASM。
+ *
+ * 使用示例：
+ *
+ * ```typescript
+ * const mm = new AppMembershipManager({
+ *   nodeId: 'node-1',
+ *   transport: eventBusMembershipAdapter,
+ *   onMembershipChange: (members) => {
+ *     hbManager.updatePeers(members)
+ *     multiLeaderReplication.updatePeers(members)
+ *   }
+ * })
+ * mm.start()
+ * await mm.proposeChange('add', 'node-5')
+ * ```
+ */
+export class AppMembershipManager {
+  private config: MembershipManagerConfig
+  private logger: Logger
+  private _running = false
+  /** 当前待处理的提案（一次只能一个） */
+  private _pending: PendingProposal | null = null
+  /** 已处理过的 seq（去重），key: "type:seq" */
+  private _seenSeqs = new Set<string>()
+  /** 当前 seq 递进 */
+  private _nextSeq = 0
+  /** 当前成员视图 */
+  private _members: string[] = []
+  /** 成员变更回调列表 */
+  private _membershipCallbacks: Array<(members: string[]) => void> = []
+
+  constructor(config: MembershipManagerConfig) {
+    this.config = {
+      ackTimeoutMs: config.ackTimeoutMs ?? 5000,
+      ...config,
+    }
+    this.logger = new Logger('AppMembershipManager')
+
+    // 初始化成员列表
+    this._syncMembersFromTransport()
+  }
+
+  /** 启动管理器（注册消息回调） */
+  start(): void {
+    if (this._running) return
+    this._running = true
+
+    this.config.transport.onMessage((from, msg) => {
+      this.handleMessage(from, msg)
+    })
+
+    this._syncMembersFromTransport()
+    this.logger.info(`[Membership] Started, initial members: ${this._members.join(', ')}`)
+  }
+
+  /** 停止管理器 */
+  stop(): void {
+    this._running = false
+    if (this._pending) {
+      clearTimeout(this._pending.ackTimer!)
+      this._pending = null
+    }
+    this._seenSeqs.clear()
+  }
+
+  /**
+   * 发起成员变更提案
+   *
+   * @param type - add 或 remove
+   * @param peerId - 目标 nodeId
+   * @returns 变更完成时 resolve
+   */
+  async proposeChange(type: MembershipChangeType, peerId: string): Promise<void> {
+    if (!this._running) throw new Error('AppMembershipManager not started')
+
+    // 验证：不能加自己
+    if (type === 'add' && peerId === this.config.nodeId) {
+      throw new Error('Cannot add self to cluster')
+    }
+    // 验证：不能移除自己
+    if (type === 'remove' && peerId === this.config.nodeId) {
+      throw new Error('Cannot remove self from cluster')
+    }
+    // 验证：add 时 peer 是否已存在
+    if (type === 'add' && this._members.includes(peerId)) {
+      this.logger.info(`[Membership] Peer ${peerId} already in cluster, skipping`)
+      return Promise.resolve() // 幂等
+    }
+    // 验证：remove 时 peer 是否不存在
+    if (type === 'remove' && !this._members.includes(peerId)) {
+      this.logger.info(`[Membership] Peer ${peerId} not in cluster, skipping`)
+      return Promise.resolve() // 幂等
+    }
+    // 验证：不能有并发的提案
+    if (this._pending) {
+      throw new Error(`Concurrent membership change in progress (seq=${this._pending.seq})`)
+    }
+
+    const seq = this._nextSeq++
+    const configHash = this._computeConfigHash()
+    const ackTimeout = this.config.ackTimeoutMs!
+
+    // Phase 1: 广播提案
+    const proposal: MembershipMessage = {
+      type: 'proposal',
+      seq,
+      from: this.config.nodeId,
+      changeType: type,
+      targetPeerId: peerId,
+      configHash,
+    }
+
+    this.logger.info(`[Membership] Phase 1: Broadcasting proposal seq=${seq}, ${type} ${peerId}`)
+
+    // Phase 2: 在 broadcast 前创建 Promise，
+    // 确保 resolve/reject 在 ACK 回传时已就绪
+    return new Promise<void>((resolve, reject) => {
+      // 在 broadcast 前设置 _pending（广播可能触发其他节点的 ACK 回传）
+      this._pending = {
+        seq,
+        changeType: type,
+        targetPeerId: peerId,
+        configHash,
+        acks: new Set([this.config.nodeId]), // 自投票
+        ackTimer: null,
+        startTime: Date.now(),
+        resolve,
+        reject,
+      }
+
+      const timer = setTimeout(() => {
+        // ACK 超时 → abort
+        const pending = this._pending
+        if (!pending) return
+
+        this._pending = null
+        this.logger.warn(`[Membership] Phase 2 timeout: seq=${seq}, acks=${pending.acks.size}`)
+
+        // 广播 abort
+        this.config.transport.broadcast({
+          type: 'abort',
+          seq,
+          from: this.config.nodeId,
+          reason: 'Timeout waiting for majority ACK',
+        } as MembershipMessage).catch(() => {})
+
+        reject(new Error(`Membership change timeout: seq=${seq}, ${type} ${peerId}`))
+      }, ackTimeout)
+
+      this._pending.ackTimer = timer
+
+      // 异步广播 proposal（不阻塞 Promise 构造）
+      this.config.transport.broadcast(proposal).then(() => {
+        // 广播完成后检查是否已满足（self ACK + 收到的 ACK）
+        this._checkProposalCompletion(resolve, reject)
+      }).catch((err: Error) => {
+        reject(err)
+      })
+    })
+  }
+
+  /**
+   * 处理收到的成员变更消息
+   * 由外部传输层回调
+   */
+  handleMessage(from: string, msg: any): void {
+    if (!msg || msg.type !== 'proposal' && msg.type !== 'ack' && msg.type !== 'commit' && msg.type !== 'abort') {
+      return // 不是成员变更消息
+    }
+
+    const mm = msg as MembershipMessage
+
+    // 去重（按 type:from:seq 区分——不同源的 ACK 需要各自保留）
+    const dedupKey = mm.type === 'proposal' || mm.type === 'commit' || mm.type === 'abort'
+      ? `${mm.type}:${mm.from}:${mm.seq}`
+      : `${mm.type}:${from}:${mm.seq}`
+    if (this._seenSeqs.has(dedupKey)) return
+    this._seenSeqs.add(dedupKey)
+
+    // 限制 seenSeqs 大小
+    if (this._seenSeqs.size > 1000) {
+      const first = this._seenSeqs.values().next().value
+      if (first !== undefined) this._seenSeqs.delete(first)
+    }
+
+    switch (mm.type) {
+      case 'proposal':
+        this._handleProposal(from, mm)
+        break
+      case 'ack':
+        this._handleAck(from, mm)
+        break
+      case 'commit':
+        this._handleCommit(mm)
+        break
+      case 'abort':
+        this._handleAbort(mm)
+        break
+    }
+  }
+
+  /** 获取当前成员列表 */
+  getMembers(): string[] {
+    return [...this._members]
+  }
+
+  /** 注册成员变更回调 */
+  onMembershipChange(cb: (members: string[]) => void): void {
+    this._membershipCallbacks.push(cb)
+  }
+
+  /** 处理收到的提案 */
+  private _handleProposal(from: string, msg: MembershipMessage): void {
+    if (!msg.changeType || !msg.targetPeerId) return
+
+    // 验证提案的 configHash 与本地一致
+    const localHash = this._computeConfigHash()
+    // 回复 ACK（含自己的 configHash）
+    this.config.transport.send(from, {
+      type: 'ack',
+      seq: msg.seq,
+      from: this.config.nodeId,
+      configHash: localHash,
+    } as MembershipMessage).catch(() => {})
+
+    this.logger.info(`[Membership] Received proposal seq=${msg.seq}, ${msg.changeType} ${msg.targetPeerId} from ${from}, sent ACK`)
+  }
+
+  /** 处理收到的 ACK */
+  private _handleAck(from: string, msg: MembershipMessage): void {
+    if (!this._pending || this._pending.seq !== msg.seq) {
+      return
+    }
+
+    // 检查 configHash 一致性（debug 日志，不拒绝 ACK）
+    if (msg.configHash && msg.configHash !== this._pending.configHash) {
+      this.logger.debug(`[Membership] ACK from ${from} configHash mismatch: ${msg.configHash} vs ${this._pending.configHash}`)
+    }
+
+    this._pending.acks.add(from)
+    this.logger.debug(`[Membership] Received ACK from ${from} for seq=${msg.seq} (${this._pending.acks.size}/${Math.floor(this._members.length / 2) + 1})`)
+
+    // 检查是否已满足 quorum，使用存储的 resolve/reject
+    const pending = this._pending
+    const totalMembers = this._members.length
+    const quorum = Math.floor(totalMembers / 2) + 1
+
+    if (pending.acks.size >= quorum) {
+      this._checkProposalCompletion(pending.resolve, pending.reject)
+    }
+  }
+
+  /** 检查提案是否完成 */
+  private _checkProposalCompletion(
+    resolve: (value: void) => void,
+    reject: (err: Error) => void
+  ): void {
+    if (!this._pending) return
+
+    const pending = this._pending
+    const totalMembers = this._members.length
+    const quorum = Math.floor(totalMembers / 2) + 1
+
+    if (pending.acks.size >= quorum) {
+      // 防止重复提交
+      if (pending.ackTimer === null) {
+        return // 已经 commit 过了
+      }
+
+      // 清除超时定时器
+      if (pending.ackTimer) {
+        clearTimeout(pending.ackTimer)
+        pending.ackTimer = null
+      }
+
+      // Phase 3: 广播 commit
+      this._commitChange(pending, resolve, reject)
+    }
+    // 否则继续等待（_handleAck 会再次调用此方法）
+  }
+
+  /** 提交变更（Phase 3） */
+  private _commitChange(
+    pending: PendingProposal,
+    resolve: (value: void) => void,
+    reject: (err: Error) => void
+  ): void {
+    // 计算新成员列表
+    let newMembers: string[]
+    if (pending.changeType === 'add') {
+      newMembers = [...this._members, pending.targetPeerId]
+    } else {
+      newMembers = this._members.filter(m => m !== pending.targetPeerId)
+    }
+
+    // 本地 apply
+    this._applyMembershipChange(newMembers)
+
+    // 广播 commit
+    const commitMsg: MembershipMessage = {
+      type: 'commit',
+      seq: pending.seq,
+      from: this.config.nodeId,
+      members: newMembers,
+      ackCount: pending.acks.size,
+      ackFrom: Array.from(pending.acks),
+    }
+
+    this.logger.info(`[Membership] Phase 3: Broadcasting commit seq=${pending.seq}, new members (${newMembers.length}): ${newMembers.join(', ')}`)
+
+    this.config.transport.broadcast(commitMsg).then(() => {
+      this._pending = null
+      resolve()
+    }).catch((err: Error) => {
+      this._pending = null
+      // commit 广播失败但本地已 apply，标记不一致
+      this.logger.error(`[Membership] Commit broadcast failed after local apply: ${err.message}`)
+      resolve() // 仍然 resolve，本地已生效
+    })
+  }
+
+  /** 本地 apply 成员变更 */
+  private _applyMembershipChange(newMembers: string[]): void {
+    this._members = [...newMembers].sort()
+
+    // 触发回调
+    for (const cb of this._membershipCallbacks) {
+      try {
+        cb(this._members)
+      } catch (err) {
+        this.logger.error(`[Membership] Callback error: ${(err as Error).message}`)
+      }
+    }
+
+    try {
+      this.config.onMembershipChange(this._members)
+    } catch (err) {
+      this.logger.error(`[Membership] onMembershipChange callback error: ${(err as Error).message}`)
+    }
+  }
+
+  /** 处理收到的 commit */
+  private _handleCommit(msg: MembershipMessage): void {
+    if (!msg.members || msg.members.length === 0) return
+
+    // 如果本地已经是最新，跳过
+    const sorted = [...msg.members].sort()
+    if (this._members.length === sorted.length &&
+        this._members.every((m, i) => m === sorted[i])) {
+      this.logger.debug(`[Membership] Commit seq=${msg.seq} already applied locally`)
+      return
+    }
+
+    this.logger.info(`[Membership] Applying commit seq=${msg.seq}, members: ${sorted.join(', ')}`)
+    this._applyMembershipChange(sorted)
+
+    // 更新传输层 peer 列表（子类/适配器可能需要）
+    // EventBus 会通过 onMembershipChange 回调接收新成员列表
+  }
+
+  /** 处理 abort */
+  private _handleAbort(msg: MembershipMessage): void {
+    if (this._pending && this._pending.seq === msg.seq) {
+      if (this._pending.ackTimer) {
+        clearTimeout(this._pending.ackTimer)
+      }
+      this._pending = null
+      this.logger.warn(`[Membership] Abort seq=${msg.seq}: ${msg.reason || 'No reason'}`)
+    }
+  }
+
+  /** 从传输层同步成员列表 */
+  private _syncMembersFromTransport(): void {
+    const peers = this.config.transport.getPeers()
+    const members = new Set<string>()
+    members.add(this.config.nodeId)
+    for (const p of peers) {
+      members.add(p.nodeId)
+    }
+    this._members = Array.from(members).sort()
+  }
+
+  /** 计算配置快照 hash（简单实现，用于检测不一致） */
+  private _computeConfigHash(): string {
+    return this._members.sort().join(',')
+  }
+}
