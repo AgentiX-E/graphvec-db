@@ -421,7 +421,9 @@ export class EventBus {
 
     // 1. 启动 ROUTER（Server）— 所有节点（包括 follower）都绑定 ROUTER
     //    使 EventBus 能接收来自任意节点（包括 Raft follower）的 Outbox 事件
-    if (this.config.publishAddress) {
+    if (this.config.disableRouter) {
+      this.logger.info('ROUTER disabled by config (disableRouter=true)')
+    } else if (this.config.publishAddress) {
       this.routerSocket = new zmq.Router()
       this._applyCurveToSocket(this.routerSocket, true)
       await this.routerSocket!.bind(this.config.publishAddress!)
@@ -592,6 +594,13 @@ export class EventBus {
    */
   getPeerNodeIds(): string[] {
     return Array.from(this.dealerSockets.keys())
+  }
+
+  /**
+   * 检查 ROUTER Socket 是否已创建并运行（测试用）
+   */
+  hasRouterSocket(): boolean {
+    return this.routerSocket !== null
   }
 
   // ── 本地监听 ─────────────────────────
