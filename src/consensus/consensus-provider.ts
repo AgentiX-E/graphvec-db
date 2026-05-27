@@ -57,6 +57,47 @@ export interface ConsensusProvider {
    * 可选方法，仅特定实现支持
    */
   setApply?(fn: (data: Uint8Array) => Promise<void>): void
+
+  // ── R9: 网络分区处理 ──
+
+  /**
+   * 当前节点是否在 majority 仲裁中（Raft 集群健康）
+   * 用于 Outbox 分区冻结：不在 majority 时暂停出站消息发送
+   */
+  inMajority(): boolean
+
+  /**
+   * 注册 majority-change 回调
+   * true  = 进入 majority（集群健康）
+   * false = 失去 majority（网络分区/Leader 降级）
+   */
+  onMajorityChange(cb: (inMajority: boolean) => void): void
+
+  // ── R10: 成员变更 ──
+
+  /**
+   * 安全添加新节点（通过 Joint Consensus 两阶段过渡）
+   * 只有 Leader 可以提议成员变更
+   */
+  addPeer(peerId: string): Promise<void>
+
+  /**
+   * 安全移除节点（通过 Joint Consensus 两阶段过渡）
+   * 只有 Leader 可以提议成员变更
+   */
+  removePeer(peerId: string): Promise<void>
+
+  /**
+   * 获取当前已知的集群节点列表
+   * 返回 raft-rs ConfState 中的 voters + learners
+   */
+  getClusterMembers(): string[]
+
+  /**
+   * 注册成员变更回调
+   * 当集群成员发生变更时触发（EntryConfChangeV2 被 apply 后）
+   */
+  onMembershipChange(cb: (members: string[]) => void): void
 }
 
 export type ConsensusRole = 'leader' | 'follower' | 'candidate' | 'standalone'

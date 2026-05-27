@@ -733,6 +733,9 @@ export class PerPeerWorker {
   /** 最近一次失败的时间戳 */
   private lastFailedMs = 0
 
+  /** R9: 分区冻结 — 不在 majority 时暂停发送 */
+  private _frozen = false
+
   private log: Logger
 
   constructor(peerId: string, config: PerPeerConfig, outbox: IOutbox) {
@@ -797,12 +800,19 @@ export class PerPeerWorker {
     this.lastSendMs = 0
   }
 
+  /** R9: 设置 frozen 状态 — 不在 majority 时暂停发送 */
+  setFrozen(frozen: boolean): void {
+    if (this._frozen === frozen) return
+    this._frozen = frozen
+    if (frozen) {
+      this.log.info(`[${this.peerId}] Outbox frozen (not in majority), deferring all sends`)
+    } else {
+      this.log.info(`[${this.peerId}] Outbox unfrozen (back in majority), resuming sends`)
+    }
+  }
+
   /**
    * 外部通知收到该 peer 的 ACK（同进程/单进程场景）。
-   * 多进程场景下 ACK 通过 LMDB mmap 共享（markAcked/isAcked），
-   * 不经过此回调——但统一维护保证向后兼容。
-   */
-  notifyAcked(msgId: string): void {
     this.ackTracker.delete(msgId)
     if (this.ackTracker.size === 0) {
       // 所有待 ACK 都收到 → 退出退避
@@ -830,6 +840,26 @@ export class PerPeerWorker {
   }
 
   private async _tick(): Promise<void> {
+    // R9: 分区冻结 — 不在 majority 时暂停所有出站发送
+    if (this._frozen) {
+      // 仍然处理 ACK 超时检查（确保 ackTracker 不会越积越多），
+      // 但不发送任何消息
+      if (this.ackTracker.size > 0) {
+        const now = Date.now()
+        for (const [msgId, sentAt] of this.ackTracker) {
+          if (now - sentAt > this._ackTimeoutMs) {
+            const loaded = this.outbox.fetchPendingByPeer(this.peerId)
+            const found = loaded.find(e => e.msgId === msgId)
+            if (found && this.outbox.isAcked(found.seq)) {
+              this.log.info(`ack for ${msgId} found via LMDB mmap, clearing tracker`)
+              this.ackTracker.delete(msgId)
+            }
+          }
+        }
+      }
+      return
+    }
+
     // ── Phase 0: 检查 ACK 超时 + LMDB mmap ACK 穿透 ──
     if (!this.running) return
     const now = Date.now()
@@ -959,9 +989,21 @@ export class PerPeerWorker {
     }
 
     try {
-      if (allSerialized && this.config.batchSendSerializedFn && serializedItems.length > 1) {
-        // 缓存命中：直接发送预序列化的 Buffer，跳过 JSON.parse → 重构 → JSON.stringify
-        await this.config.batchSendSerializedFn(serializedItems)
+      if (allSerialized && serializedItems.length > 0) {
+        // 缓存命中：直接发送预序列化的 Buffer
+        // 1 条时走 sendFn（兼容 sendFn 签名），>1 条时走 batchSendSerializedFn
+        if (serializedItems.length === 1) {
+          const si = serializedItems[0]
+          const msg = JSON.parse(si.buffer.toString('utf-8'))
+          await this.config.sendFn(si.msgId, Buffer.from(JSON.stringify(msg)))
+        } else if (this.config.batchSendSerializedFn) {
+          await this.config.batchSendSerializedFn(serializedItems)
+        } else {
+          for (const si of serializedItems) {
+            const msg = JSON.parse(si.buffer.toString('utf-8'))
+            await this.config.sendFn(si.msgId, Buffer.from(JSON.stringify(msg)))
+          }
+        }
       } else if (this.config.batchSendFn && sendItems.length > 1) {
         // 批量发送（单次 ZMQ send，multi-part 消息）
         await this.config.batchSendFn(sendItems)
@@ -1045,6 +1087,9 @@ export class OutboxReplicationManager {
   private log: Logger
   /** NAS curve 目录路径（用于 Worker 动态发现） */
   private curveDir: string | null
+
+  /** R9: 分区冻结标志 — 不在 majority 时暂停所有出站发送 */
+  private _frozen = false
 
   constructor(config: OutboxReplicationConfig) {
     this.config = config
@@ -1441,6 +1486,29 @@ export class OutboxReplicationManager {
   notifyAcked(peerId: string): void {
     const worker = this.workerMap.get(peerId)
     if (worker) worker.notifyConnected()
+  }
+
+  /** R9: 设置 frozen 状态 — 暂停/恢复所有 PerPeerWorker 的出站发送 */
+  setFrozen(frozen: boolean): void {
+    if (this._frozen === frozen) return
+    this._frozen = frozen
+    if (frozen) {
+      this.log.warn('[Outbox] Frozen: not in majority, pausing all outbox sends')
+    } else {
+      this.log.info('[Outbox] Unfrozen: back in majority, resuming all outbox sends')
+    }
+    for (const worker of this.workerMap.values()) {
+      worker.setFrozen(frozen)
+    }
+  }
+
+  /**
+   * R9: 设置 majority 状态，同步反映为 Outbox frozen/unfrozen
+   * true = in majority → unfrozen（正常发送）
+   * false = not in majority → frozen（暂停发送，防止幽灵消息）
+   */
+  setMajorityStatus(inMajority: boolean): void {
+    this.setFrozen(!inMajority)
   }
 
   getStats(): { sendTrack: number; backoffTrack: number; pending: number } {

@@ -67,4 +67,42 @@ export class StandaloneConsensus implements ConsensusProvider {
   async waitForLeader(_timeoutMs?: number): Promise<void> {
     return
   }
+
+  // ── R9: 网络分区（单节点总是在 majority 中） ──
+
+  /** 单节点总是在 majority 中 */
+  inMajority(): boolean {
+    return true
+  }
+
+  private _majorityCallbacks: Array<(inMajority: boolean) => void> = []
+
+  /** 单节点无网络，永远不会触发回调 */
+  onMajorityChange(cb: (inMajority: boolean) => void): void {
+    this._majorityCallbacks.push(cb)
+  }
+
+  // ── R10: 成员变更（单节点无 peers） ──
+
+  /** 单节点无 peers，addPeer 为空操作 */
+  async addPeer(_peerId: string): Promise<void> {
+    // standalone 模式没有其他节点，no-op
+  }
+
+  /** 单节点无 peers，removePeer 为空操作 */
+  async removePeer(_peerId: string): Promise<void> {
+    // standalone 模式没有其他节点，no-op
+  }
+
+  /** 返回仅包含当前节点的列表 */
+  getClusterMembers(): string[] {
+    return [this.config.nodeId]
+  }
+
+  private _membershipCallbacks: Array<(members: string[]) => void> = []
+
+  /** 单节点无成员变更，永远不会触发回调 */
+  onMembershipChange(cb: (members: string[]) => void): void {
+    this._membershipCallbacks.push(cb)
+  }
 }

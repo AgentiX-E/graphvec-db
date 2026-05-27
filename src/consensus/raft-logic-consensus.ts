@@ -35,6 +35,14 @@ export class RaftLogicConsensus implements ConsensusProvider {
   private _pipelineTimer: ReturnType<typeof setTimeout> | null = null
   private _pipelineWindowMs = 100
 
+  // ── R9: 网络分区检测 ──
+  private _inMajority = true
+  private _majorityCallbacks: Array<(inMajority: boolean) => void> = []
+  private _majorityCheckTimer: ReturnType<typeof setInterval> | null = null
+
+  // ── R10: 成员变更 ──
+  private _membershipCallbacks: Array<(members: string[]) => void> = []
+
   constructor(
     config: ConsensusConfig,
     private _moduleRef?: any, // 测试注入用 mock module
@@ -168,6 +176,51 @@ export class RaftLogicConsensus implements ConsensusProvider {
         }
       }, 60_000) // 每分钟检查一次
       this._snapshotTimer.unref()
+
+      // R9: 使用 raft-logic onQuorumActive 和 onRoleChange 事件跟踪 majority 状态
+      if (typeof raft.onQuorumActive === 'function') {
+        raft.onQuorumActive(() => {
+          const prev = this._inMajority
+          this._inMajority = true
+          if (prev !== true) {
+            this.logger.info('[RaftConsensus] Re-entered majority (quorum active)')
+            for (const cb of this._majorityCallbacks) {
+              try { cb(true) } catch {}
+            }
+          }
+        })
+      }
+      if (typeof raft.onRoleChange === 'function') {
+        raft.onRoleChange((rc: any) => {
+          // 从 leader 降级为 follower/candidate 时失去 majority
+          if (rc.role === 'follower' || rc.role === 'candidate') {
+            const prev = this._inMajority
+            this._inMajority = false
+            if (prev !== false) {
+              this.logger.info('[RaftConsensus] Lost majority (role changed)', { role: rc.role })
+              for (const cb of this._majorityCallbacks) {
+                try { cb(false) } catch {}
+              }
+            }
+          }
+          // 成为 leader 时进入 majority
+          if (rc.role === 'leader') {
+            const prev = this._inMajority
+            this._inMajority = true
+            if (prev !== true) {
+              this.logger.info('[RaftConsensus] Entered majority (became leader)')
+              for (const cb of this._majorityCallbacks) {
+                try { cb(true) } catch {}
+              }
+            }
+          }
+        })
+      }
+      // 后备定时检查（处理 onRoleChange 可能不触发的情况）
+      this._majorityCheckTimer = setInterval(() => {
+        this._checkMajority()
+      }, 2000)
+      this._majorityCheckTimer.unref()
     } catch (err) {
       this.logger.warn('[RaftLogicConsensus] Failed to initialize raft-logic. Falling back?', { err: (err as Error).message })
       throw err
@@ -178,6 +231,10 @@ export class RaftLogicConsensus implements ConsensusProvider {
     if (this._snapshotTimer) {
       clearInterval(this._snapshotTimer)
       this._snapshotTimer = null
+    }
+    if (this._majorityCheckTimer) {
+      clearInterval(this._majorityCheckTimer)
+      this._majorityCheckTimer = null
     }
     // flush 剩余 Pipeline 请求
     if (this._pipelineTimer) {
@@ -353,6 +410,111 @@ export class RaftLogicConsensus implements ConsensusProvider {
   getTerm(): number {
     if (!this._node) return 0
     return this._node.status().term
+  }
+
+  // ── R9: 网络分区处理 ──
+
+  /**
+   * 当前节点是否在 majority 仲裁中
+   * 通过检查是否存在已知 Leader 来判断
+   * leaderId !== 0 表示集群选出了 Leader，节点在 majority 中
+   */
+  inMajority(): boolean {
+    return this._inMajority
+  }
+
+  /**
+   * 注册 majority-change 回调
+   * true  = 进入 majority（集群健康）
+   * false = 失去 majority（网络分区/Leader 降级）
+   */
+  onMajorityChange(cb: (inMajority: boolean) => void): void {
+    this._majorityCallbacks.push(cb)
+    // 立即用当前状态通知
+    cb(this._inMajority)
+  }
+
+  /** 定期检查 majority 状态，状态变化时触发回调 */
+  private _checkMajority(): void {
+    if (!this._node) return
+    const status = this._node.status()
+    const leader = status.lead ?? status.leaderId ?? null
+    const wasInMajority = this._inMajority
+    // 策略：如果 leader == null 或 0，认为失去 majority
+    this._inMajority = leader !== null && leader !== 0
+    if (wasInMajority !== this._inMajority) {
+      this.logger.info('[RaftConsensus] Majority status changed', {
+        from: wasInMajority,
+        to: this._inMajority,
+        leaderId: leader,
+        term: status.term,
+      })
+      for (const cb of this._majorityCallbacks) {
+        try { cb(this._inMajority) } catch {}
+      }
+    }
+  }
+
+  // ── R10: 成员变更 ──
+
+  /**
+   * 安全添加新节点
+   *
+   * raft-logic WASM 当前未暴露 ConfChangeV2/propose_conf_change API，
+   * 因此在 raft-logic 模式下成员变更为 no-op。
+   * 当底层 WASM 暴露相关 API 后可实现两阶段 Joint Consensus 过渡。
+   *
+   * 单节点/测试模式可以通过 config.peers 来模拟。
+   */
+  async addPeer(peerId: string): Promise<void> {
+    if (!this._node || !this._started) {
+      throw new Error('RaftLogicConsensus not started')
+    }
+
+    // raft-logic WASM 不暴露 ConfChange API，暂不实现
+    this.logger.warn('[RaftConsensus] addPeer not yet supported in raft-logic WASM', { peerId })
+    throw new Error('addPeer not available: raft-logic WASM does not expose ConfChange API')
+  }
+
+  /**
+   * 安全移除节点
+   *
+   * 与 addPeer 相同限制，raft-logic WASM 未暴露 ConfChange API。
+   */
+  async removePeer(peerId: string): Promise<void> {
+    if (!this._node || !this._started) {
+      throw new Error('RaftLogicConsensus not started')
+    }
+
+    this.logger.warn('[RaftConsensus] removePeer not yet supported in raft-logic WASM', { peerId })
+    throw new Error('removePeer not available: raft-logic WASM does not expose ConfChange API')
+  }
+
+  /**
+   * 获取当前集群节点列表
+   *
+   * raft-logic WASM 不暴露 confState()，所以从 config.peers + nodeId 返回。
+   */
+  getClusterMembers(): string[] {
+    if (!this._node) return this.config.peers
+
+    // 优先尝试从 config 构造完整成员列表
+    const members = new Set<string>()
+    members.add(this.config.nodeId)
+    for (const p of this.config.peers) {
+      // peers 可能包含 "nodeId:host:port" 格式，提取 nodeId 部分
+      const idx = p.indexOf(':')
+      members.add(idx > 0 ? p.substring(0, idx) : p)
+    }
+    return Array.from(members)
+  }
+
+  /**
+   * 注册成员变更回调
+   * 当 ConfChangeV2 entry 被 apply 后触发
+   */
+  onMembershipChange(cb: (members: string[]) => void): void {
+    this._membershipCallbacks.push(cb)
   }
 
   async waitForLeader(timeoutMs?: number): Promise<void> {

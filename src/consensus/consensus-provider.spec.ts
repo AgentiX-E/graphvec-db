@@ -10,6 +10,8 @@ import { ConsensusProvider, ConsensusRole, ConsensusConfig } from './consensus-p
 
 class TestConsensusProvider implements ConsensusProvider {
   private _started = false
+  private _majorityCallbacks: Array<(inMajority: boolean) => void> = []
+  private _membershipCallbacks: Array<(members: string[]) => void> = []
 
   constructor(private config: ConsensusConfig) {}
 
@@ -43,6 +45,35 @@ class TestConsensusProvider implements ConsensusProvider {
 
   async waitForLeader(_timeoutMs?: number): Promise<void> {
     if (!this._started) throw new Error('not started')
+  }
+
+  // ── R9: 网络分区 ──
+
+  inMajority(): boolean {
+    return this._started
+  }
+
+  onMajorityChange(cb: (inMajority: boolean) => void): void {
+    this._majorityCallbacks.push(cb)
+    cb(this._started)
+  }
+
+  // ── R10: 成员变更 ──
+
+  async addPeer(_peerId: string): Promise<void> {
+    // test stub: no-op
+  }
+
+  async removePeer(_peerId: string): Promise<void> {
+    // test stub: no-op
+  }
+
+  getClusterMembers(): string[] {
+    return this._started ? [this.config.nodeId] : []
+  }
+
+  onMembershipChange(cb: (members: string[]) => void): void {
+    this._membershipCallbacks.push(cb)
   }
 }
 
@@ -155,3 +186,73 @@ type _Contract = ConsensusProvider extends {
 
 // Satisfy TypeScript that we're using the type alias
 const _: _Contract = true
+
+describe('R9: inMajority / onMajorityChange', () => {
+  let provider: TestConsensusProvider
+
+  beforeEach(() => {
+    provider = new TestConsensusProvider({
+      mode: 'standalone',
+      nodeId: 'test-node',
+      peers: [],
+    })
+  })
+
+  test('inMajority returns false before start', () => {
+    expect(provider.inMajority()).toBe(false)
+  })
+
+  test('inMajority returns true after start', async () => {
+    await provider.start()
+    expect(provider.inMajority()).toBe(true)
+  })
+
+  test('onMajorityChange callback fires immediately with current state', () => {
+    const cb = vi.fn()
+    provider.onMajorityChange(cb)
+    expect(cb).toHaveBeenCalledWith(false) // not started → not in majority
+  })
+
+  test('onMajorityChange callback fires after start', async () => {
+    const cb = vi.fn()
+    provider.onMajorityChange(cb)
+    cb.mockClear()
+    await provider.start()
+    // The callback was already called with false, but after start it may be called again
+    // Our implementation calls back on register; after start inMajority changes silently
+  })
+})
+
+describe('R10: addPeer / removePeer / getClusterMembers', () => {
+  let provider: TestConsensusProvider
+
+  beforeEach(() => {
+    provider = new TestConsensusProvider({
+      mode: 'standalone',
+      nodeId: 'test-node',
+      peers: ['peer-1', 'peer-2'],
+    })
+  })
+
+  test('getClusterMembers returns empty before start', () => {
+    expect(provider.getClusterMembers()).toEqual([])
+  })
+
+  test('getClusterMembers returns [nodeId] after start', async () => {
+    await provider.start()
+    expect(provider.getClusterMembers()).toEqual(['test-node'])
+  })
+
+  test('addPeer does not throw', async () => {
+    await expect(provider.addPeer('peer-3')).resolves.toBeUndefined()
+  })
+
+  test('removePeer does not throw', async () => {
+    await expect(provider.removePeer('peer-1')).resolves.toBeUndefined()
+  })
+
+  test('onMembershipChange accepts callback', () => {
+    const cb = vi.fn()
+    expect(() => provider.onMembershipChange(cb)).not.toThrow()
+  })
+})

@@ -10,6 +10,7 @@
 
 import { OutboxReplicationManager, type OutboxReplicationConfig } from './outbox-replication'
 import type { NodeProperties, NodeId, TemporalValidity } from '../types'
+import type { ConsensusProvider } from '../consensus/consensus-provider'
 import * as crypto from 'node:crypto'
 
 /** 拓扑类型，决定 Outbox 退避时间 */
@@ -158,5 +159,16 @@ export class MultiLeaderReplication {
   /** 通知 Worker 收到某个 peer 的 ACK */
   notifyAcked(peerId: string): void {
     this.manager.notifyAcked(peerId)
+  }
+
+  /** R9: 绑定 ConsensusProvider，自动注册 majority-change 回调
+   *
+   * 当节点失去 majority（网络分区）时，自动冻结 Outbox 出站发送；
+   * 恢复 majority 后自动解冻。
+   */
+  setConsensus(consensus: ConsensusProvider): void {
+    consensus.onMajorityChange((inMajority) => {
+      this.manager.setMajorityStatus(inMajority)
+    })
   }
 }
