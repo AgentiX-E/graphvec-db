@@ -7,7 +7,7 @@ describe('AC-IT-1: Single-Node GraphEngine 端到端 CRUD', () => {
   const dbPath = path.join('/tmp', `agentiX-integration-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   let engine: GraphEngine
 
-  beforeAll(() => {
+  beforeAll(async () => {
     // 确保目录存在
     fs.mkdirSync(dbPath, { recursive: true })
 
@@ -19,7 +19,7 @@ describe('AC-IT-1: Single-Node GraphEngine 端到端 CRUD', () => {
     engine.open()
   })
 
-  afterAll(() => {
+  afterAll(async () => {
     if (engine.isOpen) {
       engine.close()
     }
@@ -27,8 +27,8 @@ describe('AC-IT-1: Single-Node GraphEngine 端到端 CRUD', () => {
     fs.rmSync(dbPath, { recursive: true, force: true })
   })
 
-  it('1. 创建单个节点 A — upsertNode + getNode', () => {
-    const nodeA = engine.upsertNode(1, 'NodeA')
+  it('1. 创建单个节点 A — upsertNode + getNode', async () => {
+    const nodeA = await engine.upsertNode(1, 'NodeA')
     expect(nodeA).toBeGreaterThan(0)
 
     const retrieved = engine.getNode(nodeA)
@@ -37,9 +37,9 @@ describe('AC-IT-1: Single-Node GraphEngine 端到端 CRUD', () => {
     expect(retrieved!.type).toBe(1)
   })
 
-  it('2. 创建节点 B 并创建边 A→B — upsertEdge + getEdge', () => {
-    const nodeA = engine.upsertNode(1, 'EdgeNodeA')
-    const nodeB = engine.upsertNode(2, 'EdgeNodeB')
+  it('2. 创建节点 B 并创建边 A→B — upsertEdge + getEdge', async () => {
+    const nodeA = await engine.upsertNode(1, 'EdgeNodeA')
+    const nodeB = await engine.upsertNode(2, 'EdgeNodeB')
 
     engine.upsertEdge(nodeA, nodeB, 10)
 
@@ -50,10 +50,10 @@ describe('AC-IT-1: Single-Node GraphEngine 端到端 CRUD', () => {
     expect(edge!.type).toBe(10)
   })
 
-  it('3. 邻居遍历验证', () => {
-    const nodeA = engine.upsertNode(1, 'NeighborA')
-    const nodeB = engine.upsertNode(2, 'NeighborB')
-    const nodeC = engine.upsertNode(3, 'NeighborC')
+  it('3. 邻居遍历验证', async () => {
+    const nodeA = await engine.upsertNode(1, 'NeighborA')
+    const nodeB = await engine.upsertNode(2, 'NeighborB')
+    const nodeC = await engine.upsertNode(3, 'NeighborC')
 
     engine.upsertEdge(nodeA, nodeB, 10)
     engine.upsertEdge(nodeA, nodeC, 10)
@@ -67,7 +67,7 @@ describe('AC-IT-1: Single-Node GraphEngine 端到端 CRUD', () => {
     expect(neighborNames).toEqual(['NeighborB', 'NeighborC'])
   })
 
-  it('4. 批量写入 10 个节点 — batchUpsertNodes', () => {
+  it('4. 批量写入 10 个节点 — batchUpsertNodes', async () => {
     const inputs = Array.from({ length: 10 }, (_, i) => ({
       typeId: 1,
       name: `BatchNode${i}`,
@@ -85,23 +85,23 @@ describe('AC-IT-1: Single-Node GraphEngine 端到端 CRUD', () => {
     }
   })
 
-  it('5. 删除节点 — deleteNode', () => {
-    const nodeId = engine.upsertNode(1, 'ToDelete')
+  it('5. 删除节点 — deleteNode', async () => {
+    const nodeId = await engine.upsertNode(1, 'ToDelete')
     expect(engine.getNode(nodeId)).not.toBeNull()
 
-    const deleted = engine.deleteNode(nodeId)
+    const deleted = await engine.deleteNode(nodeId)
     expect(deleted).toBe(true)
 
     // 删除后读取应为 null
     expect(engine.getNode(nodeId)).toBeNull()
   })
 
-  it('6. 关闭引擎 — close + isOpen', () => {
+  it('6. 关闭引擎 — close + isOpen', async () => {
     expect(engine.isOpen).toBe(true)
     engine.close()
     expect(engine.isOpen).toBe(false)
 
     // 关闭后操作应抛出错误
-    expect(() => engine.upsertNode(1, 'AfterClose')).toThrow('GraphEngine is not open')
+    await expect(async () => engine.upsertNode(1, 'AfterClose')).rejects.toThrow('GraphEngine is not open')
   })
 })

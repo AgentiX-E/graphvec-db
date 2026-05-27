@@ -92,7 +92,6 @@ function createLocalEventStream(nodeId: string, walDir: string): EventStream {
 // ========================================
 
 describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () => {
-  vi.setTimeout(90000)
 
   // ========================================
   // Section 1: CDC 端到端
@@ -120,7 +119,7 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
       cleanDir(baseDir)
     })
 
-    it('1.1 CDCConsumer 订阅后捕获 upsert_node', (done) => {
+    it('1.1 CDCConsumer 订阅后捕获 upsert_node', async () => {
       const records: CDCChangeRecord[] = []
       const consumer = new CDCConsumer({
         onRecord: (record) => { records.push(record) },
@@ -129,17 +128,17 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
 
       engine.upsertNode(1, 'CDCNode')
 
-      setTimeout(() => {
+      await new Promise<void>(resolve => setTimeout(() => {
         const nodeEvents = records.filter(r => r.operation === 'upsert_node')
         expect(nodeEvents.length).toBeGreaterThanOrEqual(1)
         expect(nodeEvents[0].nodeId).toBeGreaterThan(0)
         // sourceNodeId 在单机测试中可能为 undefined，跳过此断言
         consumer.close()
-        done()
-      }, 300)
+        resolve()
+      }, 300))
     })
 
-    it('1.2 pause/resume 后消费继续', (done) => {
+    it('1.2 pause/resume 后消费继续', async () => {
       const records: CDCChangeRecord[] = []
       const consumer = new CDCConsumer({
         onRecord: (record) => { records.push(record) },
@@ -161,16 +160,16 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
       // 恢复后写入
       engine.upsertNode(1, 'ResumeNode')
 
-      setTimeout(() => {
+      await new Promise<void>(resolve => setTimeout(() => {
         expect(consumer.paused).toBe(false)
         const afterResume = records.filter(r => r.operation === 'upsert_node')
         expect(afterResume.length).toBeGreaterThanOrEqual(1)
         consumer.close()
-        done()
-      }, 500)
+        resolve()
+      }, 500))
     })
 
-    it('1.3 CDC 事件包含正确的 seq 和时间戳', (done) => {
+    it('1.3 CDC 事件包含正确的 seq 和时间戳', async () => {
       const records: CDCChangeRecord[] = []
       const consumer = new CDCConsumer({
         onRecord: (record) => { records.push(record) },
@@ -179,14 +178,14 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
 
       engine.upsertNode(1, 'SeqTestNode')
 
-      setTimeout(() => {
+      await new Promise<void>(resolve => setTimeout(() => {
         expect(records.length).toBeGreaterThanOrEqual(1)
         expect(records[0].seq).toBeGreaterThan(0)
         expect(records[0].timestamp).toBeGreaterThan(0)
         // sourceNodeId 在单机测试中可能为 undefined
         consumer.close()
-        done()
-      }, 300)
+        resolve()
+      }, 300))
     })
   })
 
@@ -526,7 +525,7 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
 
     // ---- 5.1 CDC 断点续传 ----
 
-    it('5.1 CDC 断点续传 — 记录 offset 后重启跳过已消费', (done) => {
+    it('5.1 CDC 断点续传 — 记录 offset 后重启跳过已消费', async () => {
       const baseDir = tmpDir('cdc-resume')
       const walDir = path.join(baseDir, 'wal')
       const dataDir = path.join(baseDir, 'data')
@@ -547,7 +546,8 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
       engine.upsertNode(1, 'ResumeNode2')
       engine.upsertNode(1, 'ResumeNode3')
 
-      setTimeout(() => {
+      // 等第一批记录消费完成
+      await new Promise<void>(resolve => setTimeout(() => {
         const offset = consumer.getOffset()
         expect(offset).toBeGreaterThan(0)
         consumer.close()
@@ -571,9 +571,9 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
           engine.close()
           stream.close()
           cleanDir(baseDir)
-          done()
+          resolve()
         }, 300)
-      }, 500)
+      }, 500))
     })
 
     // ---- 5.2 审计日志文件轮转 ----
@@ -617,7 +617,7 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
 
     // ---- 5.3 CDCConsumerGroup ----
 
-    it('5.3 CDCConsumerGroup 支持多消费者', (done) => {
+    it('5.3 CDCConsumerGroup 支持多消费者', async () => {
       const baseDir = tmpDir('cdc-group')
       const walDir = path.join(baseDir, 'wal')
       const dataDir = path.join(baseDir, 'data')
@@ -640,7 +640,7 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
       engine.upsertNode(1, 'GroupNode1')
       engine.upsertNode(1, 'GroupNode2')
 
-      setTimeout(() => {
+      await new Promise<void>(resolve => setTimeout(() => {
         expect(groupRecords1.length).toBe(groupRecords2.length)
         const nodeEvents1 = groupRecords1.filter(r => r.operation === 'upsert_node')
         const nodeEvents2 = groupRecords2.filter(r => r.operation === 'upsert_node')
@@ -652,8 +652,8 @@ describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () 
         engine.close()
         stream.close()
         cleanDir(baseDir)
-        done()
-      }, 500)
+        resolve()
+      }, 500))
     })
 
     // ---- 5.4 异常输入 ----
