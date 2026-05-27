@@ -26,14 +26,34 @@
  */
 
 import { EventEmitter } from 'node:events'
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const zmq = require('zeromq')
 import { Logger } from '../ops/logger'
-type Router = any
-type Dealer = any
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { EventBusWorkerPool, type PeerConfig } from './event-bus-worker-pool'
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const zmq = require('zeromq')
+
+/**
+ * ZMQ socket with CURVE properties.
+ * The zeromq module augments Socket with curve properties via declaration merging.
+ */
+interface ZmqCurveSocket {
+  curveServer: boolean
+  curveSecretKey: string | null
+  curvePublicKey: string
+  curveServerKey: string | null
+  close(): void
+  bind(address: string): Promise<void>
+  connect(address: string): void
+  send(data: Buffer | Buffer[], options?: number): Promise<void>
+  receive(): Promise<Buffer[]> | Promise<[Buffer, Buffer]>
+}
+
+/** ZMQ Router socket type */
+type Router = ZmqCurveSocket
+/** ZMQ Dealer socket type */
+type Dealer = ZmqCurveSocket
 
 // ──────────────────────────────────────────
 // 事件类型
@@ -112,6 +132,15 @@ export interface PeerDescriptor {
   publicKey: string
 }
 
+/**
+ * CURVE 密钥解析结果：start() 中生成密钥对、分发公钥、扫描 peer 后得到的完整配置
+ */
+export interface ResolvedCurve {
+  secretKey: string
+  publicKey: string
+  peerKeys: Record<string, string>
+}
+
 // ──────────────────────────────────────────
 // EventBus 配置
 // ──────────────────────────────────────────
@@ -133,6 +162,10 @@ export interface EventBusConfig {
   nasMonitorIntervalMs?: number
   /** ROUTER 缓冲区水位线：超过此值时触发背压暂停（默认 10000） */
   backpressureWatermark?: number
+  /** CURVE 密钥解析结果：start() 中填充 */
+  resolvedCurve?: ResolvedCurve
+  /** 已发现的 peer nodeId 列表：start() 中填充 */
+  peerNodeIds?: string[]
 }
 
 // ──────────────────────────────────────────
@@ -367,7 +400,7 @@ export class EventBus {
     const curve = this.config.security.curve
     const curveDir = process.env.EVENTBUS_CURVE_DIR || curve.publicKeyDir
     this.nasKeyDir = curveDir
-    ;(this.config.security.curve as any).publicKeyDir = curveDir
+    this.config.security.curve.publicKeyDir = curveDir
 
     if (!this.config.publishAddress && curve.port) {
       this.config.publishAddress = `tcp://0.0.0.0:${curve.port}`
@@ -378,8 +411,8 @@ export class EventBus {
       await EventBus.resolveCurveConfig(this.config.security)
 
     // 存储解析后的密钥供 _applyCurveToSocket 使用
-    ;(this.config as any)._resolvedCurve = { secretKey, publicKey, peerKeys }
-    ;(this.config as any)._peerNodeIds = peerNodeIds
+    this.config.resolvedCurve = { secretKey, publicKey, peerKeys }
+    this.config.peerNodeIds = peerNodeIds
 
     // 自动填充 subscribeAddresses（如果未手动指定）
     if (!this.config.subscribeAddresses || this.config.subscribeAddresses.length === 0) {
@@ -391,14 +424,14 @@ export class EventBus {
     if (this.config.publishAddress) {
       this.routerSocket = new zmq.Router()
       this._applyCurveToSocket(this.routerSocket, true)
-      await this.routerSocket.bind(this.config.publishAddress)
+      await this.routerSocket!.bind(this.config.publishAddress!)
       this.logger.info(`ROUTER bound to ${this.config.publishAddress}`)
       this._startRouterLoop()
     }
 
     // 2. 为每个 peer 创建 DEALER（Client）
     if (this.config.subscribeAddresses.length > 0) {
-      const pnids = (this.config as any)._peerNodeIds as string[] | undefined
+      const pnids = this.config.peerNodeIds
 
       for (let i = 0; i < this.config.subscribeAddresses.length; i++) {
         const addr = this.config.subscribeAddresses[i]
@@ -408,11 +441,10 @@ export class EventBus {
         this._applyCurveToSocket(dealer, false)
 
         // DEALER(client) 需要对方 ROUTER(server) 的公钥
-        const s = dealer as any
-        s.curvePublicKey = publicKey
-        s.curveSecretKey = secretKey
+        dealer.curvePublicKey = publicKey
+        dealer.curveSecretKey = secretKey
         const serverKey = peerKeys[peerNodeId] || peerKeys[addr] || Object.values(peerKeys).find(k => k !== publicKey)
-        if (serverKey) s.curveServerKey = serverKey
+        if (serverKey) dealer.curveServerKey = serverKey
 
         await dealer.connect(addr)
         this.dealerSockets.set(peerNodeId, dealer)
@@ -602,16 +634,16 @@ export class EventBus {
    *
    * @param isRouter - true = ROUTER(server)，false = DEALER(client)
    */
-  private _applyCurveToSocket(socket: Router | Dealer, isRouter: boolean): void {
-    const resolved = (this.config as any)._resolvedCurve as { secretKey: string; publicKey: string; peerKeys: Record<string, string> } | undefined
+  private _applyCurveToSocket(socket: Router | Dealer | null, isRouter: boolean): void {
+    if (!socket) return
+    const resolved = this.config.resolvedCurve
     if (!resolved) {
       throw new Error('EventBus: CURVE keys not resolved. Call start() to initialize.')
     }
 
-    const s = socket as any
-    s.curveServer = isRouter  // ROUTER=server, DEALER=client
-    s.curveSecretKey = resolved.secretKey
-    s.curvePublicKey = resolved.publicKey
+    socket.curveServer = isRouter  // ROUTER=server, DEALER=client
+    socket.curveSecretKey = resolved.secretKey
+    socket.curvePublicKey = resolved.publicKey
   }
 
   // ── NAS 目录动态监控 ────────────────
@@ -643,7 +675,7 @@ export class EventBus {
   private _syncPeerDealers(): void {
     if (!this.nasKeyDir) return
 
-    const resolved = (this.config as any)._resolvedCurve as { secretKey: string; publicKey: string; peerKeys: Record<string, string> } | undefined
+    const resolved = this.config.resolvedCurve
     if (!resolved) return
 
     const allPeers = EventBus.readAllPeerKeys(this.nasKeyDir)
@@ -669,17 +701,16 @@ export class EventBus {
           const dealer = new zmq.Dealer()
           this._applyCurveToSocket(dealer, false)
 
-          const s = dealer as any
-          s.curvePublicKey = resolved.publicKey
-          s.curveSecretKey = resolved.secretKey
+          dealer.curvePublicKey = resolved.publicKey
+          dealer.curveSecretKey = resolved.secretKey
 
           // 设置对方 ROUTER 的公钥
           const serverKey = resolved.peerKeys[peerNodeId] || resolved.peerKeys[peer.address] || peer.publicKey
           if (serverKey) {
-            s.curveServerKey = serverKey
+            dealer.curveServerKey = serverKey
           } else {
             this.logger.warn(`_syncPeerDealers: no curveServerKey for peer ${peerNodeId}, using ${peer.publicKey}`)
-            s.curveServerKey = peer.publicKey
+            dealer.curveServerKey = peer.publicKey
           }
 
           dealer.connect(peer.address)
@@ -712,8 +743,8 @@ export class EventBus {
       }
     }
 
-    // 更新 _peerNodeIds 列表
-    (this.config as any)._peerNodeIds = Array.from(currentPeers)
+    // 更新 peerNodeIds 列表
+    this.config.peerNodeIds = Array.from(currentPeers)
   }
 
   /**
@@ -743,7 +774,7 @@ export class EventBus {
       return false
     }
 
-    const resolved = (this.config as any)._resolvedCurve as { secretKey: string; publicKey: string; peerKeys: Record<string, string> } | undefined
+    const resolved = this.config.resolvedCurve
     if (!resolved) {
       this.logger.warn(`_recoverDealerByNodeId: no resolved curve keys`)
       return false
@@ -753,15 +784,14 @@ export class EventBus {
       const dealer = new zmq.Dealer()
       this._applyCurveToSocket(dealer, false)
 
-      const s = dealer as any
-      s.curvePublicKey = resolved.publicKey
-      s.curveSecretKey = resolved.secretKey
+      dealer.curvePublicKey = resolved.publicKey
+      dealer.curveSecretKey = resolved.secretKey
 
       const serverKey = resolved.peerKeys[nodeId] || resolved.peerKeys[peer.address] || peer.publicKey
       if (serverKey) {
-        s.curveServerKey = serverKey
+        dealer.curveServerKey = serverKey
       } else {
-        s.curveServerKey = peer.publicKey
+        dealer.curveServerKey = peer.publicKey
       }
 
       await dealer.connect(peer.address)
@@ -815,7 +845,7 @@ export class EventBus {
     const producer = async () => {
       while (this.running && this.routerSocket) {
         try {
-          const frames = await (this.routerSocket as any).receive()
+          const frames = await this.routerSocket!.receive()
           if (!this.running || !frames || frames.length < 2) break
 
           const identity = frames[0]

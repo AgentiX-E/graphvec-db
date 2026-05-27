@@ -798,7 +798,8 @@ describe('AC-IT-M13/M14: Leader switch + Outbox consistency', () => {
    * corresponding Outbox entry, and those entries persist even when the
    * leader changes.
    */
-  it('14.2 Multiple sequential writes preserve Outbox entries through leader change', async () => {
+  it('14.2 Multiple sequential writes preserve Outbox entries through leader change',
+    async () => {
     const baseDir = tmpDir('m14-sequential')
     const nodeDirs = {
       a: path.join(baseDir, 'node-a'),
