@@ -131,6 +131,8 @@ export interface EventBusConfig {
   security?: EventBusSecurity
   /** NAS 目录动态监控间隔（ms），默认 3000。设为 0 禁用 */
   nasMonitorIntervalMs?: number
+  /** ROUTER 缓冲区水位线：超过此值时触发背压暂停（默认 10000） */
+  backpressureWatermark?: number
 }
 
 // ──────────────────────────────────────────
@@ -226,6 +228,10 @@ export class EventBus {
 
   /** 生产者/消费者缓冲：ROUTER receive 中原始帧入队 */
   private _routerBuffer: { msg: TransportMessage; fromNodeId: string }[] = []
+  /** ROUTER 缓冲区水位线：超过此值时生产者休眠等待消费者消耗 */
+  private _backpressureWatermark: number
+  /** 是否已处于背压状态（避免重复 WARN） */
+  private _backpressureEngaged: boolean = false
 
   /** ACK msgId 批量积压队列 */
   private _ackBatchQueue: { ackMsgId: string; srcNodeId: string }[] = []
@@ -251,7 +257,9 @@ export class EventBus {
       ...config,
       publishAddress: config.publishAddress ?? null,
       subscribeAddresses: config.subscribeAddresses ?? [],
+      backpressureWatermark: config.backpressureWatermark ?? 10000,
     }
+    this._backpressureWatermark = this.config.backpressureWatermark!
     this.logger = new Logger('EventBus')
   }
 
@@ -827,6 +835,18 @@ export class EventBus {
 
           const fromNodeId = msg.srcNodeId || idStr
 
+          // 背压检测：缓冲区超过水位线时短暂休眠，让消费者有时间 drain
+          if (this._routerBuffer.length >= this._backpressureWatermark) {
+            if (!this._backpressureEngaged) {
+              this._backpressureEngaged = true
+              this.logger.warn(
+                `ROUTER buffer at ${this._routerBuffer.length} (watermark: ${this._backpressureWatermark}) — engaging backpressure`
+              )
+            }
+            // 短暂休眠让消费者 drain
+            await new Promise(resolve => setTimeout(resolve, 100))
+          }
+
           // 入队（快速释放，不阻塞 receive）
           this._routerBuffer.push({ msg, fromNodeId })
         } catch (err: any) {
@@ -843,6 +863,14 @@ export class EventBus {
         await new Promise<void>(resolve => setImmediate(resolve))
 
         if (this._routerBuffer.length === 0) continue
+
+        // 如果之前处于背压状态但现在缓冲区已 drain，记录恢复
+        if (this._backpressureEngaged && this._routerBuffer.length < this._backpressureWatermark) {
+          this._backpressureEngaged = false
+          this.logger.warn(
+            `ROUTER buffer drained to ${this._routerBuffer.length} — backpressure released`
+          )
+        }
 
         // 批量取出当前所有缓冲帧
         const batch = this._routerBuffer.splice(0)

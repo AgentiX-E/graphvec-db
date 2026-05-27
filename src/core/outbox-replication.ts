@@ -727,6 +727,12 @@ export class PerPeerWorker {
    */
   private serializedCache = new Map<string, Buffer>()
 
+  /** 记录每次成功发送的时间戳（按 peerId） */
+  private lastSuccessfulSend = new Map<string, number>()
+
+  /** 最近一次失败的时间戳 */
+  private lastFailedMs = 0
+
   private log: Logger
 
   constructor(peerId: string, config: PerPeerConfig, outbox: IOutbox) {
@@ -734,6 +740,22 @@ export class PerPeerWorker {
     this.config = config
     this.outbox = outbox
     this.log = config.logger ?? new Logger(`ppw-${peerId}`)
+  }
+
+  /**
+   * 检查指定 peer 的 DEALER 连接是否已就绪。
+   *
+   * 策略：
+   * - 如果该 peer 在最近 30s 内有成功发送 → 跳过探针，直接认为就绪
+   * - 否则检查 .pub 文件是否存在 → 存在即视为就绪
+   */
+  isPeerReady(probePeerId: string): boolean {
+    const recentSuccess = this.lastSuccessfulSend.get(probePeerId)
+    if (recentSuccess !== undefined && (Date.now() - recentSuccess) < 30_000) {
+      return true
+    }
+    const pubKey = this._readPeerPubKey()
+    return pubKey !== null
   }
 
   /** 热加载 getter */
@@ -891,6 +913,13 @@ export class PerPeerWorker {
       }
     }
 
+    // ── Phase 2b: 检查 DEALER 连接就绪状态（ZMQ readiness probe）──
+    if (!this.running) return
+    if (!this.isPeerReady(this.peerId)) {
+      this.log.info(`peer ${this.peerId} not ready (connection probe failed), deferring`)
+      return
+    }
+
     // ── Phase 3: 检查 peer 是否在线 ──
     if (!this.running) return
     const pubKey = this._readPeerPubKey()
@@ -949,12 +978,16 @@ export class PerPeerWorker {
       }
 
       // 成功：标记 delivered + 加入 ack 追踪
+      this.lastSuccessfulSend.set(this.peerId, Date.now())
       this.outbox.markDeliveredBatch(entriesToDeliver)
       for (const item of batch) {
         this.ackTracker.set(item.entry.msgId, Date.now())
       }
     } catch (err: any) {
       this.log.warn(`batch send failed (${batch.length} msgs): ${err.message}`)
+      // 发送失败：更新探针时间戳标记 peer 不健康
+      this.lastSuccessfulSend.delete(this.peerId)
+      this.lastFailedMs = now
       // 发送失败：全部放回队列，升级 retryCount
       for (const item of batch) {
         const newRetry = item.retryCount + 1
@@ -1391,6 +1424,11 @@ export class OutboxReplicationManager {
     this.workerMap.delete(peerId)
     const worker = this._ensureWorker(peerId)
     worker.start()
+  }
+
+  /** 获取指定 peer 的 Worker 实例（用于测试） */
+  getWorker(peerId: string): PerPeerWorker | undefined {
+    return this.workerMap.get(peerId)
   }
 
   /** 通知指定 peer 的 Worker 已连接 */

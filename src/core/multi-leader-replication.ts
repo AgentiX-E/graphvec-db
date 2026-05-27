@@ -12,6 +12,9 @@ import { OutboxReplicationManager, type OutboxReplicationConfig } from './outbox
 import type { NodeProperties, NodeId, TemporalValidity } from '../types'
 import * as crypto from 'node:crypto'
 
+/** 拓扑类型，决定 Outbox 退避时间 */
+export type TopologyType = 'intra-dc' | 'cross-dc' | 'edge'
+
 /** Multi-Leader 复制配置 */
 export interface MultiLeaderConfig {
   /** 当前节点 ID */
@@ -24,7 +27,9 @@ export interface MultiLeaderConfig {
   dbPath?: string
   /** tick 间隔（ms），默认 500 */
   tickMs?: number
-  /** 最大退避时间（s），默认 60 */
+  /** 拓扑类型（intra-dc: 3s, cross-dc: 60s, edge: 300s），默认 cross-dc */
+  topology?: TopologyType
+  /** 最大退避时间（s），默认 60。如果显式设置此值，则覆盖 topology 推导值 */
   maxBackoffSeconds?: number
   /** 已送达记录保留天数，默认 14 */
   entryTTLDays?: number
@@ -64,26 +69,48 @@ export class MultiLeaderReplication {
   private config: MultiLeaderConfig
 
   constructor(config: MultiLeaderConfig) {
-    this.config = config
+    this.config = { ...config }
     const peerAddrs = config.peers.filter(p => p.nodeId !== config.nodeId)
+
+    // Derive maxBackoffSeconds from topology if not explicitly set.
+    // Store result back in config so getConfig() reflects the resolved value.
+    if (this.config.maxBackoffSeconds === undefined) {
+      switch (this.config.topology ?? 'cross-dc') {
+        case 'intra-dc':
+          this.config.maxBackoffSeconds = 3
+          break
+        case 'cross-dc':
+          this.config.maxBackoffSeconds = 60
+          break
+        case 'edge':
+          this.config.maxBackoffSeconds = 300
+          break
+      }
+    }
+
     const mgrConfig: OutboxReplicationConfig = {
-      nodeId: config.nodeId,
+      nodeId: this.config.nodeId,
       peers: peerAddrs,
-      dbPath: config.dbPath,
-      curveDir: config.curveDir,
-      tickMs: config.tickMs,
-      maxBackoffSeconds: config.maxBackoffSeconds,
-      batchSize: config.batchSize,
-      entryTTLDays: config.entryTTLDays,
-      housekeepingIntervalMs: config.housekeepingIntervalMs,
-      usePerPeerDb: config.usePerPeerDb,
-      eventBus: config.eventBus,
+      dbPath: this.config.dbPath,
+      curveDir: this.config.curveDir,
+      tickMs: this.config.tickMs,
+      maxBackoffSeconds: this.config.maxBackoffSeconds,
+      batchSize: this.config.batchSize,
+      entryTTLDays: this.config.entryTTLDays,
+      housekeepingIntervalMs: this.config.housekeepingIntervalMs,
+      usePerPeerDb: this.config.usePerPeerDb,
+      eventBus: this.config.eventBus,
     }
     this.manager = new OutboxReplicationManager(mgrConfig)
   }
 
   /** 当前节点 ID */
   get nodeId(): string { return this.config.nodeId }
+
+  /** 获取当前配置副本（包含由 topology 推导的最终值） */
+  getConfig(): Readonly<MultiLeaderConfig> {
+    return { ...this.config }
+  }
 
   /** 启动所有 Outbox Worker 并注册 shutdown hook */
   start(): void {
