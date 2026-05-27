@@ -251,7 +251,7 @@ describe('Multi-Leader 边际场景', () => {
         typeId: 20,
         name: `backoff-queue-${i}`,
         props: { val: String(i) },
-      }})
+      }))
       const result = await batchWriteOn(nodes[0], items)
       expect(result.ids).toHaveLength(5)
 
@@ -306,7 +306,7 @@ describe('Multi-Leader 边际场景', () => {
         typeId: 30,
         name: `large-item-${i}`,
         props: { blob: largeData, index: String(i) },
-      }})
+      }))
       const result = await batchWriteOn(nodes[0], items)
       expect(result.ids).toHaveLength(100)
       console.log(`✓ large batch written (${result.ids.length} ids)`)

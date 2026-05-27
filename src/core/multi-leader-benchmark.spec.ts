@@ -108,7 +108,7 @@ describe('端到端多进程压测', () => {
         typeId: 200,
         name: `${n.nodeId}-wp-${i}`,
         props: { source: n.nodeId, idx: String(i) },
-      }})
+      }))
       n.stdin({ type: 'batchUpsertNode', payload: { items } })
     }
 
@@ -137,7 +137,7 @@ describe('端到端多进程压测', () => {
         typeId: 210,
         name: `${n.nodeId}-fanout-${i}`,
         props: { source: n.nodeId, idx: String(i) },
-      }})
+      }))
       n.stdin({ type: 'batchUpsertNode', payload: { items } })
     }
 

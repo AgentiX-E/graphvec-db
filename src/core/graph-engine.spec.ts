@@ -2,6 +2,7 @@ import { GraphEngine } from '../core/graph-engine'
 import { FullTextIndex } from '../search/fulltext'
 import { cleanTestData, testEngineConfig } from '../../test/fixtures/test-graph'
 import { OptimizerBridge } from '../query/planner-bridge'
+import { RowLevelSecurity } from '../security/rls'
 
 describe('GraphEngine', () => {
   let engine: GraphEngine
@@ -508,8 +509,7 @@ describe('GraphEngine', () => {
     const rlsPrefix = 'rls-test-'
 
     beforeAll(() => {
-      const { RowLevelSecurity } = require('../security/rls')
-      const rls = new RowLevelSecurity()
+            const rls = new RowLevelSecurity()
       rlsEngine = new GraphEngine(
         { ...testEngineConfig, path: testEngineConfig.path + '-rls' },
         undefined,
@@ -531,8 +531,7 @@ describe('GraphEngine', () => {
     })
 
     test('getNode with matching RLS context should return the node', async () => {
-      const { RowLevelSecurity } = require('../security/rls')
-      const rls = new RowLevelSecurity()
+            const rls = new RowLevelSecurity()
       rls.addPolicy({
         table: 'nodes',
         name: 'user-isolation',
@@ -559,8 +558,7 @@ describe('GraphEngine', () => {
     })
 
     test('getNode without context returns node (RLS not applied when no context)', async () => {
-      const { RowLevelSecurity } = require('../security/rls')
-      const rls = new RowLevelSecurity()
+            const rls = new RowLevelSecurity()
       rls.addPolicy({
         table: 'nodes',
         name: 'test-policy',
@@ -587,8 +585,7 @@ describe('GraphEngine', () => {
     })
 
     test('getNode with non-matching RLS context should return null (filtered out)', async () => {
-      const { RowLevelSecurity } = require('../security/rls')
-      const rls = new RowLevelSecurity()
+            const rls = new RowLevelSecurity()
       rls.addPolicy({
         table: 'nodes',
         name: 'strict-isolation',
@@ -615,8 +612,7 @@ describe('GraphEngine', () => {
     })
 
     test('removePolicy — getNode should return node after policy removed', async () => {
-      const { RowLevelSecurity } = require('../security/rls')
-      const rls = new RowLevelSecurity()
+            const rls = new RowLevelSecurity()
       rls.addPolicy({
         table: 'nodes',
         name: 'temp-isolation',
@@ -646,8 +642,7 @@ describe('GraphEngine', () => {
     })
 
     test('neighbors with RLS should filter out non-matching nodes', async () => {
-      const { RowLevelSecurity } = require('../security/rls')
-      const rls = new RowLevelSecurity()
+            const rls = new RowLevelSecurity()
       rls.addPolicy({
         table: 'nodes',
         name: 'neighbor-isolation',
@@ -679,8 +674,7 @@ describe('GraphEngine', () => {
     })
 
     test('query with RLS should filter results', async () => {
-      const { RowLevelSecurity } = require('../security/rls')
-      const rls = new RowLevelSecurity()
+            const rls = new RowLevelSecurity()
       rls.addPolicy({
         table: 'nodes',
         name: 'query-isolation',

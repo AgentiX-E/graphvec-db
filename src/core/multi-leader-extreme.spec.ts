@@ -203,7 +203,7 @@ describe('Multi-Leader 极端场景', () => {
           typeId: 100 + nodes.indexOf(n),
           name: `${n.nodeId}-bulk-${i}`,
           props: { source: n.nodeId, idx: String(i) },
-        }})
+        }))
         const result = await batchWriteOn(n, items)
         expect(result.ids).toHaveLength(10)
         allIds.push(...result.ids)
@@ -341,7 +341,7 @@ describe('Multi-Leader 极端场景', () => {
         typeId: 61,
         name: `hotload-${i}`,
         props: { val: String(i) },
-      }})
+      }))
       const result = await batchWriteOn(nodes[2], items)
       expect(result.ids).toHaveLength(3)
 
@@ -371,7 +371,7 @@ describe('Multi-Leader 极端场景', () => {
         typeId: 71,
         name: `node3-own-${i}`,
         props: { val: String(i) },
-      }})
+      }))
       const result = await batchWriteOn(nodes[2], items)
       expect(result.ids).toHaveLength(15)
 
