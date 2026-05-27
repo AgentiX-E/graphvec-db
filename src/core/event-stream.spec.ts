@@ -125,23 +125,23 @@ describe('EventStream', () => {
       expect(pending[0].seq).toBe(1)
     })
 
-    it('emit 后本地 handler 立即触发', (done) => {
+    it('emit 后本地 handler 立即触发', async () => {
       esA.on('node:created', (msg) => {
         expect(msg.msgId).toMatch(/^node-a-1$/)
         expect(msg.data.id).toBe(42)
-        done()
+
       })
 
       esA.emit({ type: 'node:created', data: { id: 42 } })
     })
 
-    it('远程事件应被去重并回调', (done) => {
+    it('远程事件应被去重并回调', async () => {
       const received: StreamMessage[] = []
       esA.on('node:created', (msg) => {
         received.push(msg)
         if (received.length === 1) {
           expect(msg.msgId).toBe('remote-a-5')
-          done()
+
         }
       })
 
@@ -203,9 +203,9 @@ describe('EventStream', () => {
   })
 
   describe('重试机制', () => {
-    jest.setTimeout(10000)
+    vi.setConfig({ testTimeout: 10000 })
 
-    it('超时未 ACK 的消息应被重发', (done) => {
+    it('超时未 ACK 的消息应被重发', async () => {
       let retryCount = 0
       const origScan = (esA as any)._scanPending.bind(esA)
       ;(esA as any)._scanPending = () => {
@@ -224,7 +224,7 @@ describe('EventStream', () => {
         // 检查重发（sent 里的 'data' 类型消息，包含 __es_msg）
         const dataMsgs = busA.sent.filter((e: TransportMessage) => e.type === 'data' && (e.data as any).__es_msg?.msgId === 'node-a-1')
         expect(dataMsgs.length).toBeGreaterThanOrEqual(2) // 原始 + 至少一次重试
-        done()
+
       }, 800)
     })
 
@@ -232,7 +232,7 @@ describe('EventStream', () => {
     // （已由 'ACK 到来时应从 pendingTracker 移除并标记 WAL' 覆盖）
 
     // TC-2.2: ACK 丢失自动重传 — 超时后最多重试 3 次
-    it('ACK 丢失后最多重试 3 次，第 4 次停止重传', (done) => {
+    it('ACK 丢失后最多重试 3 次，第 4 次停止重传', async () => {
       const ackTimeoutMs = 100
       const config = makeConfig('node-a', WAL_A, busA)
       config.ackTimeoutMs = ackTimeoutMs
@@ -264,12 +264,12 @@ describe('EventStream', () => {
         expect(entry!.retries).toBeGreaterThanOrEqual(4)
 
         es.close()
-        done()
+
       }, 1000)
     })
 
     // TC-2.3: 重传去重验证 — 接收方收到重传消息后，dedup 阻止重复处理
-    it('重传消息在接收方被去重', (done) => {
+    it('重传消息在接收方被去重', async () => {
       let callCount = 0
       esA.on('node:created', () => { callCount++ })
 
@@ -296,11 +296,11 @@ describe('EventStream', () => {
       const ackMsgs = busA.sent.filter(e => e.type === 'ack')
       expect(ackMsgs.length).toBe(1)
 
-      done()
+
     })
 
     // TC-2.4: ACK 最后一刻到达 — 正在重传窗口内收到 ACK，不重复重传
-    it('ACK 在重传窗口内到达，不重复重传', (done) => {
+    it('ACK 在重传窗口内到达，不重复重传', async () => {
       const ackTimeoutMs = 200
       const config = makeConfig('node-a', WAL_A, busA)
       config.ackTimeoutMs = ackTimeoutMs
@@ -349,7 +349,7 @@ describe('EventStream', () => {
         expect(dataMsgs.length).toBe(1)
 
         es.close()
-        done()
+
       }, 600)
     })
 
@@ -367,7 +367,7 @@ describe('EventStream', () => {
       expect(syncQueries[0].data.lastSeq).toBe(2)
     })
 
-    it('收到 sync-query 时应回复 sync-query-reply', (done) => {
+    it('收到 sync-query 时应回复 sync-query-reply', async () => {
       // 先发 5 条消息
       for (let i = 1; i <= 5; i++) {
         esA.emit({ type: 'node:created', data: { id: i } })
@@ -382,11 +382,11 @@ describe('EventStream', () => {
         expect(replyMsgs.length).toBe(1)
         expect(replyMsgs[0].data.nodeId).toBe('node-a')
         expect(replyMsgs[0].data.currentSeq).toBe(5)
-        done()
+
       }, 100)
     })
 
-    it('收到 sync-request 后应回复 sync-batch', (done) => {
+    it('收到 sync-request 后应回复 sync-batch', async () => {
       // 先发 5 条消息
       for (let i = 1; i <= 5; i++) {
         esA.emit({ type: 'node:created', data: { id: i } })
@@ -402,11 +402,11 @@ describe('EventStream', () => {
         const msgs = batchMsgs[0].data.msgs as StreamMessage[]
         expect(msgs.length).toBe(3) // seq 3, 4, 5
         expect(msgs.map(m => m.seq)).toEqual([3, 4, 5])
-        done()
+
       }, 100)
     })
 
-    it('收到 sync-batch 后应去重消费', (done) => {
+    it('收到 sync-batch 后应去重消费', async () => {
       const received: StreamMessage[] = []
       esA.on('node:created', (msg) => { received.push(msg) })
 
@@ -422,7 +422,7 @@ describe('EventStream', () => {
         expect(received.length).toBe(2)
         expect(received[0].seq).toBe(10)
         expect(received[1].seq).toBe(11)
-        done()
+
       }, 100)
     })
   })
@@ -453,9 +453,9 @@ describe('EventStream', () => {
   })
 
   describe('存活告警', () => {
-    jest.setTimeout(10000)
+    vi.setConfig({ testTimeout: 10000 })
 
-    it('onStall 在重试次数达到 threshold 时被调用', (done) => {
+    it('onStall 在重试次数达到 threshold 时被调用', async () => {
       const stalled: any[] = []
       const config = makeConfig('node-a', WAL_A, busA)
       config.ackTimeoutMs = 50
@@ -478,11 +478,11 @@ describe('EventStream', () => {
         expect(stalled[0].durationMs).toBeGreaterThanOrEqual(0)
 
         es.close()
-        done()
+
       }, 500)
     })
 
-    it('ACK 后不再触发 onStall', (done) => {
+    it('ACK 后不再触发 onStall', async () => {
       const stalled: any[] = []
       const config = makeConfig('node-a', WAL_A, busA)
       config.ackTimeoutMs = 50
@@ -504,7 +504,7 @@ describe('EventStream', () => {
       setTimeout(() => {
         expect(stalled.length).toBe(0)
         es.close()
-        done()
+
       }, 600)
     })
   })

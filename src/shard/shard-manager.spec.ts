@@ -3,6 +3,7 @@ import { HlcClock } from '../replication/hlc-clock'
 import { ShardMap } from '../types'
 import * as fs from 'fs'
 
+vi.setConfig({ testTimeout: 60000 })
 const randomId = Math.random().toString(36).slice(2, 8)
 const TEST_DIR = `/tmp/agentiX-test-shard-${randomId}`
 

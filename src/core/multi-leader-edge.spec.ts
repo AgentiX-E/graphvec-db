@@ -19,7 +19,7 @@ import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 
-jest.setTimeout(180000)
+vi.setConfig({ testTimeout: 180000 })
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
@@ -251,7 +251,7 @@ describe('Multi-Leader 边际场景', () => {
         typeId: 20,
         name: `backoff-queue-${i}`,
         props: { val: String(i) },
-      }))
+      }})
       const result = await batchWriteOn(nodes[0], items)
       expect(result.ids).toHaveLength(5)
 
@@ -306,7 +306,7 @@ describe('Multi-Leader 边际场景', () => {
         typeId: 30,
         name: `large-item-${i}`,
         props: { blob: largeData, index: String(i) },
-      }))
+      }})
       const result = await batchWriteOn(nodes[0], items)
       expect(result.ids).toHaveLength(100)
       console.log(`✓ large batch written (${result.ids.length} ids)`)

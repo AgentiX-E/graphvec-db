@@ -20,31 +20,31 @@ import { HlcClock } from '../replication/hlc-clock'
 import { ReshardingPlan, ReshardSplit, ShardMap } from '../types'
 import { GraphEngine } from '../core/graph-engine'
 
-jest.mock('../core/graph-engine', () => {
+vi.mock('../core/graph-engine', () => {
   let nodeCounter = 0
   return {
-    GraphEngine: jest.fn().mockImplementation(() => {
+    GraphEngine: vi.fn().mockImplementation(function() {
       const nodes: Array<{ id: number; type: number; name: string }> = []
       return {
-        open: jest.fn(),
-        close: jest.fn(),
-        upsertNode: jest.fn().mockImplementation((typeId: number, name: string) => {
+        open: vi.fn(),
+        close: vi.fn(),
+        upsertNode: vi.fn().mockImplementation((typeId: number, name: string) => {
           const id = ++nodeCounter
           nodes.push({ id, type: typeId, name })
           return BigInt(id)
         }),
-        upsertEdge: jest.fn(),
-        deleteNode: jest.fn(),
-        deleteEdge: jest.fn(),
-        batchUpsertNodes: jest.fn().mockReturnValue([]),
-        queryPattern: jest.fn().mockReturnValue([]),
-        neighbors: jest.fn().mockReturnValue({ edges: [], nodes: [] }),
-        getNode: jest.fn(),
-        getEdge: jest.fn(),
-        exportSnapshot: jest.fn().mockReturnValue(
+        upsertEdge: vi.fn(),
+        deleteNode: vi.fn(),
+        deleteEdge: vi.fn(),
+        batchUpsertNodes: vi.fn().mockReturnValue([]),
+        queryPattern: vi.fn().mockReturnValue([]),
+        neighbors: vi.fn().mockReturnValue({ edges: [], nodes: [] }),
+        getNode: vi.fn(),
+        getEdge: vi.fn(),
+        exportSnapshot: vi.fn().mockReturnValue(
           Buffer.from(JSON.stringify({ nodes: nodes.map(n => ({ ...n })), version: 1 }))
         ),
-        importSnapshot: jest.fn().mockImplementation((buf: Buffer) => {
+        importSnapshot: vi.fn().mockImplementation((buf: Buffer) => {
           const data = JSON.parse(buf.toString())
           if (Array.isArray(data.nodes)) {
             data.nodes.forEach((n: { id: number; type: number; name: string }) => {
@@ -54,8 +54,8 @@ jest.mock('../core/graph-engine', () => {
             })
           }
         }),
-        stats: jest.fn().mockReturnValue({ nodeCount: nodes.length, edgeCount: 0, diskSizeBytes: 100 }),
-        compact: jest.fn(),
+        stats: vi.fn().mockReturnValue({ nodeCount: nodes.length, edgeCount: 0, diskSizeBytes: 100 }),
+        compact: vi.fn(),
         isOpen: false,
       }
     }),
@@ -257,7 +257,7 @@ describe('ReshardManager', () => {
       const mgr = new ReshardManager(shardManager, clock)
 
       // Spy on removeRange before execute so we can intercept the cleanup call
-      const removeRangeSpy = jest.spyOn(shardManager, 'removeRange')
+      const removeRangeSpy = vi.spyOn(shardManager, 'removeRange')
 
       await mgr.execute(plan)
       expect(mgr.status!.state).toBe('completed')
@@ -269,21 +269,21 @@ describe('ReshardManager', () => {
 
       // Now we manually invoke the cleanup callback to test what would happen
       // We can do this by calling _scheduleCleanup with a very short delay using fake timers
-      jest.useFakeTimers()
+      vi.useFakeTimers()
 
       // @ts-expect-error accessing private method for testing cleanup behavior
       const scheduleCleanup = (mgr as any)._scheduleCleanup.bind(mgr)
       scheduleCleanup(plan, 100)
 
       // Fast-forward to fire the timer
-      jest.advanceTimersByTime(200)
+      vi.advanceTimersByTime(200)
 
       // Verify: source range should have been removed, target range should NOT
       expect(removeRangeSpy).toHaveBeenCalledWith('range-0')
       expect(removeRangeSpy).not.toHaveBeenCalledWith('range-0-cleanup-test')
 
       removeRangeSpy.mockRestore()
-      jest.useRealTimers()
+      vi.useRealTimers()
 
       await shardManager.stop()
     })

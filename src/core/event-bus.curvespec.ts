@@ -10,6 +10,7 @@
  * 需手动运行：npx jest --testPathPattern='curvespec' --no-coverage
  */
 import { EventBus, CurveSecurityConfig } from './event-bus'
+import * as zmq from 'zeromq'
 
 // 每次测试用不同的端口防止冲突
 let portCounter = 10000
@@ -20,14 +21,13 @@ function nextPorts(): { pub: number; sub: number } {
 }
 
 describe('EventBus CURVE 跨节点通信', () => {
-  jest.setTimeout(30000)
+  vi.setTimeout(30000)
 
   it('两个节点通过 CURVE 加密双向 PUB/SUB 通信', async () => {
     const { pub: pubPortA, sub: subPortA } = nextPorts()
     const { pub: pubPortB, sub: subPortB } = nextPorts()
 
     // 生成 CURVE 密钥对
-    const zmq = require('zeromq') as any
     const keyA = zmq.curveKeyPair()
     const keyB = zmq.curveKeyPair()
 
@@ -106,7 +106,6 @@ describe('EventBus CURVE 跨节点通信', () => {
   it('CURVE 密钥验证失败时连接被拒绝', async () => {
     const { pub: pubPortA, sub: subPortA } = nextPorts()
 
-    const zmq = require('zeromq') as any
     const keyA = zmq.curveKeyPair()
     const keyB = zmq.curveKeyPair()
     const wrongKey = zmq.curveKeyPair() // 不匹配的第三组密钥

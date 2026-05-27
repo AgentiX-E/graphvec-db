@@ -29,7 +29,7 @@ describe('TcpTransport', () => {
 
   test('should handle setMessageHandler', () => {
     const t = new TcpTransport('node-1', 0)
-    const handler = jest.fn()
+    const handler = vi.fn()
     expect(() => t.setMessageHandler(handler)).not.toThrow()
   })
 

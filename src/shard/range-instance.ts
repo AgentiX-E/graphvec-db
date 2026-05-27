@@ -1,3 +1,4 @@
+import { StandaloneConsensus } from '../consensus/standalone-consensus'
 import { ConsensusProvider } from '../consensus/consensus-provider'
 import { GraphEngine } from '../core/graph-engine'
 import { HlcClock } from '../replication/hlc-clock'
@@ -46,7 +47,16 @@ export class RangeInstance {
     this.engine = new GraphEngine(config.overgraphConfig)
 
     // 共识引擎：传了就注入，否则用 StandaloneConsensus（单节点/测试默认）
-    const cp = consensus ?? new (require('../consensus/standalone-consensus').StandaloneConsensus)({
+    // ⚠️ WARN: 生产部署必须提供 ConsensusProvider（如 raft-logic）
+    //         StandaloneConsensus 仅限单节点开发/测试，多节点时数据完全不一致
+    if (!consensus) {
+      this.logger.warn(
+        'No ConsensusProvider provided — falling back to StandaloneConsensus. ' +
+        'This is SAFE for single-node development but DANGEROUS for multi-node production. ' +
+        'Provide a ConsensusProvider (raft-logic or simulated-raft) for multi-node deployments.'
+      )
+    }
+    const cp = consensus ?? new StandaloneConsensus({
       nodeId: config.raftConfig.nodeId,
       mode: 'standalone',
     })

@@ -207,6 +207,16 @@ export class EventStream {
     this.bus.broadcast(transport)
   }
 
+  /**
+   * 只触发本地回调，不写入 WAL 也不广播。
+   * 用于远程应用场景：事件已从网络到达并通过 `registerApplyHandler` 持久化，
+   * 但本地回调（缓存失效、索引更新等）仍需要触发。
+   */
+  emitLocal(event: { type: string; data: Record<string, unknown>; timestamp?: number }): void {
+    const msg = this._buildMessage(event)
+    this._emitLocal(msg)
+  }
+
   private _buildMessage(event: { type: string; data: Record<string, unknown>; timestamp?: number }): StreamMessage {
     this.seq++
     return {

@@ -5,7 +5,7 @@ import { Backup } from './backup'
 import { testEngineConfig } from '../../test/fixtures/test-graph'
 
 // Mock ESM-only modules for CJS compatibility
-jest.mock('archiver', () => {
+vi.mock('archiver', () => {
   function createArchiver() {
     const { PassThrough } = require('stream')
     const s = new PassThrough()
@@ -16,7 +16,7 @@ jest.mock('archiver', () => {
   return createArchiver
 })
 
-jest.mock('tar', () => ({ extract: async () => {} }))
+vi.mock('tar', () => ({ extract: async () => {} }))
 
 describe('Backup - Consistency', () => {
   const BACKUP_DIR = './test-data/backup-test'

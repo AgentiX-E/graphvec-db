@@ -125,8 +125,8 @@ export interface EventBusConfig {
   subscribeAddresses?: string[]
   /** 本节点 ROUTER 端口（NAS 模式时需要） */
   port?: number
-  /** 是否处于 Raft leader 角色（leader 不通过 ZMQ 收发事件） */
-  isRaftLeader?: boolean
+  /** 是否禁用 ROUTER server 端（边缘节点/仅发送） */
+  disableRouter?: boolean
   /** CURVE 安全配置 */
   security?: EventBusSecurity
   /** NAS 目录动态监控间隔（ms），默认 3000。设为 0 禁用 */
@@ -251,7 +251,6 @@ export class EventBus {
       ...config,
       publishAddress: config.publishAddress ?? null,
       subscribeAddresses: config.subscribeAddresses ?? [],
-      isRaftLeader: config.isRaftLeader ?? false,
     }
     this.logger = new Logger('EventBus')
   }
@@ -379,8 +378,9 @@ export class EventBus {
       this.config.subscribeAddresses = peerAddresses
     }
 
-    // 1. 启动 ROUTER（Server）
-    if (!this.config.isRaftLeader && this.config.publishAddress) {
+    // 1. 启动 ROUTER（Server）— 所有节点（包括 follower）都绑定 ROUTER
+    //    使 EventBus 能接收来自任意节点（包括 Raft follower）的 Outbox 事件
+    if (this.config.publishAddress) {
       this.routerSocket = new zmq.Router()
       this._applyCurveToSocket(this.routerSocket, true)
       await this.routerSocket.bind(this.config.publishAddress)

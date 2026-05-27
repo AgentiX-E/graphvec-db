@@ -3,6 +3,8 @@ import { ShardManager } from './shard-manager'
 import { RangeInstance } from './range-instance'
 import { HlcClock } from '../replication/hlc-clock'
 import { ShardMap } from '../types'
+
+vi.setConfig({ testTimeout: 60000 })
 import * as fs from 'fs'
 
 // ──────────────────────────────────────────

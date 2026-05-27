@@ -3,31 +3,31 @@ import { ShardManager } from '../shard/shard-manager'
 import { ShardMap } from '../types'
 import { HlcClock } from '../replication/hlc-clock'
 
-jest.mock('../shard/shard-manager', () => {
+vi.mock('../shard/shard-manager', () => {
   return {
-    ShardManager: jest.fn().mockImplementation(() => ({
-      getShardStatus: jest.fn().mockReturnValue([]),
-      getRange: jest.fn(),
-      start: jest.fn().mockResolvedValue(undefined),
-      stop: jest.fn().mockResolvedValue(undefined),
-    })),
+    ShardManager: vi.fn().mockImplementation(function() { return {
+      getShardStatus: vi.fn().mockReturnValue([]),
+      getRange: vi.fn(),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }}),
   }
 })
 
-jest.mock('../core/graph-engine', () => {
+vi.mock('../core/graph-engine', () => {
   return {
-    GraphEngine: jest.fn().mockImplementation(() => ({
-      open: jest.fn(),
-      close: jest.fn(),
-      upsertNode: jest.fn().mockReturnValue(999999),
-      deleteNode: jest.fn().mockReturnValue(true),
-      stats: jest.fn().mockReturnValue({
+    GraphEngine: vi.fn().mockImplementation(function() { return {
+      open: vi.fn(),
+      close: vi.fn(),
+      upsertNode: vi.fn().mockReturnValue(999999),
+      deleteNode: vi.fn().mockReturnValue(true),
+      stats: vi.fn().mockReturnValue({
         nodeCount: 0,
         edgeCount: 0,
         diskSizeBytes: 0,
       }),
       isOpen: true,
-    })),
+    }}),
   }
 })
 
@@ -57,7 +57,7 @@ describe('Health', () => {
 
   test('should report healthy when all shards have leader', () => {
     // Override mock to return shards with leader
-    ;(shardManager.getShardStatus as jest.Mock).mockReturnValue([
+    ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
       { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       { rangeId: 'r2', raftRole: 'follower', nodeCount: 100 },
     ])
@@ -69,7 +69,7 @@ describe('Health', () => {
   })
 
   test('should report degraded when some shards are unhealthy', () => {
-    ;(shardManager.getShardStatus as jest.Mock).mockReturnValue([
+    ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
       { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       { rangeId: 'r2', raftRole: 'candidate', nodeCount: 50 },
     ])
@@ -80,7 +80,7 @@ describe('Health', () => {
   })
 
   test('should report unhealthy when no leader', () => {
-    ;(shardManager.getShardStatus as jest.Mock).mockReturnValue([
+    ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
       { rangeId: 'r1', raftRole: 'candidate', nodeCount: 100 },
       { rangeId: 'r2', raftRole: 'follower', nodeCount: 100 },
     ])
@@ -90,7 +90,7 @@ describe('Health', () => {
   })
 
   test('should return summary string', () => {
-    ;(shardManager.getShardStatus as jest.Mock).mockReturnValue([
+    ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
       { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
     ])
 
@@ -102,7 +102,7 @@ describe('Health', () => {
 
   describe('check() — engine probe', () => {
     test('should detect healthy engine', async () => {
-      ;(shardManager.getShardStatus as jest.Mock).mockReturnValue([
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
 
@@ -112,13 +112,13 @@ describe('Health', () => {
     })
 
     test('should detect engine failure', async () => {
-      ;(shardManager.getShardStatus as jest.Mock).mockReturnValue([
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
 
       // Create a health instance with a failing engine
       const failingEngine = new (GraphEngine as any)()
-      failingEngine.upsertNode = jest.fn().mockImplementation(() => {
+      failingEngine.upsertNode = vi.fn().mockImplementation(function() {
         throw new Error('Engine crash')
       })
       const h = new Health(shardManager, failingEngine)

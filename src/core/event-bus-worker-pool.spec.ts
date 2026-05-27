@@ -12,14 +12,14 @@
 const assert = require('node:assert')
 
 // @ts-ignore — 使用 mock 模拟 zmq（child process 从文件入口导入，不受 mock 影响）
-jest.mock('zeromq')
+vi.mock('zeromq')
 
 import { EventBusWorkerPool, type PeerConfig } from './event-bus-worker-pool'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 
-jest.setTimeout(30000)
+vi.setConfig({ testTimeout: 30000 })
 
 describe('EventBusWorkerPool', () => {
   let pool: EventBusWorkerPool

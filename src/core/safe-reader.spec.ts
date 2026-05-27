@@ -3,16 +3,16 @@ import type { ConsensusProvider } from '../consensus/consensus-provider'
 
 describe('SafeReader', () => {
   describe('with consensus provider', () => {
-    let mockProvider: jest.Mocked<ConsensusProvider>
+    let mockProvider: vi.Mocked<ConsensusProvider>
 
     beforeEach(() => {
       mockProvider = {
-        readIndex: jest.fn().mockResolvedValue(undefined),
-        sync: jest.fn(),
-        on: jest.fn(),
-        start: jest.fn(),
-        stop: jest.fn(),
-      } as unknown as jest.Mocked<ConsensusProvider>
+        readIndex: vi.fn().mockResolvedValue(undefined),
+        sync: vi.fn(),
+        on: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+      } as unknown as vi.Mocked<ConsensusProvider>
     })
 
     test('should call readIndex before read', async () => {
@@ -47,7 +47,7 @@ describe('SafeReader', () => {
   describe('config', () => {
     test('should accept custom timeout', async () => {
       const mockProvider = {
-        readIndex: jest.fn().mockResolvedValue(undefined),
+        readIndex: vi.fn().mockResolvedValue(undefined),
       } as unknown as ConsensusProvider
       const reader = new SafeReader(mockProvider, { readIndexTimeoutMs: 100 })
       await reader.read(() => true)
@@ -68,7 +68,7 @@ describe('SafeReader', () => {
       reader.setEnabled(true)
 
       const mockProvider = {
-        readIndex: jest.fn().mockResolvedValue(undefined),
+        readIndex: vi.fn().mockResolvedValue(undefined),
       } as unknown as ConsensusProvider
       reader.setProvider(mockProvider)
 
@@ -82,9 +82,9 @@ describe('SafeReader', () => {
   // ──────────────────────────────────────────────────
   describe('consistentRead', () => {
     test('should call barrier() when provider exposes it', async () => {
-      const barrierFn = jest.fn().mockResolvedValue(undefined)
+      const barrierFn = vi.fn().mockResolvedValue(undefined)
       const providerWithBarrier = {
-        readIndex: jest.fn(),
+        readIndex: vi.fn(),
         barrier: barrierFn,
       } as unknown as ConsensusProvider
 
@@ -96,7 +96,7 @@ describe('SafeReader', () => {
     })
 
     test('should fallback to readIndex when provider lacks barrier()', async () => {
-      const readIndexFn = jest.fn().mockResolvedValue(undefined)
+      const readIndexFn = vi.fn().mockResolvedValue(undefined)
       const providerNoBarrier = {
         readIndex: readIndexFn,
       } as unknown as ConsensusProvider
@@ -109,9 +109,9 @@ describe('SafeReader', () => {
     })
 
     test('should pass timeoutMs to barrier()', async () => {
-      const barrierFn = jest.fn().mockResolvedValue(undefined)
+      const barrierFn = vi.fn().mockResolvedValue(undefined)
       const providerWithBarrier = {
-        readIndex: jest.fn(),
+        readIndex: vi.fn(),
         barrier: barrierFn,
       } as unknown as ConsensusProvider
 
@@ -123,8 +123,8 @@ describe('SafeReader', () => {
 
     test('should return refreshedAt with consistentRead', async () => {
       const providerWithBarrier = {
-        readIndex: jest.fn(),
-        barrier: jest.fn().mockResolvedValue(undefined),
+        readIndex: vi.fn(),
+        barrier: vi.fn().mockResolvedValue(undefined),
       } as unknown as ConsensusProvider
 
       const reader = new SafeReader(providerWithBarrier)
@@ -134,8 +134,8 @@ describe('SafeReader', () => {
     })
 
     test('should not call barrier or readIndex when disabled', async () => {
-      const barrierFn = jest.fn()
-      const readIndexFn = jest.fn()
+      const barrierFn = vi.fn()
+      const readIndexFn = vi.fn()
       const providerWithBarrier = {
         readIndex: readIndexFn,
         barrier: barrierFn,
@@ -155,8 +155,8 @@ describe('SafeReader', () => {
     })
 
     test('should propagate barrier() errors when no fallback tolerance', async () => {
-      const barrierFn = jest.fn().mockRejectedValue(new Error('barrier failed'))
-      const readIndexFn = jest.fn().mockResolvedValue(undefined)
+      const barrierFn = vi.fn().mockRejectedValue(new Error('barrier failed'))
+      const readIndexFn = vi.fn().mockResolvedValue(undefined)
       const provider = {
         readIndex: readIndexFn,
         barrier: barrierFn,

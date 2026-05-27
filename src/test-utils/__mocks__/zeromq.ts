@@ -1,18 +1,20 @@
+import { vi } from 'vitest'
+
 type AsyncIteratorResult<T> = { done: boolean; value?: T }
 
 const createMockSocket = () => ({
-  bind: jest.fn().mockResolvedValue(undefined),
-  connect: jest.fn().mockResolvedValue(undefined),
-  subscribe: jest.fn(),
-  close: jest.fn(),
-  send: jest.fn().mockResolvedValue(undefined),
+  bind: vi.fn().mockResolvedValue(undefined),
+  connect: vi.fn().mockResolvedValue(undefined),
+  subscribe: vi.fn(),
+  close: vi.fn(),
+  send: vi.fn().mockResolvedValue(undefined),
 })
 
 export class Publisher {
-  bind: jest.Mock
-  connect: jest.Mock
-  close: jest.Mock
-  send: jest.Mock
+  bind: ReturnType<typeof vi.fn>
+  connect: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
+  send: ReturnType<typeof vi.fn>
   constructor() {
     const mock = createMockSocket()
     this.bind = mock.bind
@@ -23,9 +25,9 @@ export class Publisher {
 }
 
 export class Subscriber {
-  connect: jest.Mock
-  subscribe: jest.Mock
-  close: jest.Mock
+  connect: ReturnType<typeof vi.fn>
+  subscribe: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
   [Symbol.asyncIterator]!: () => AsyncIterator<unknown>
   constructor() {
     const mock = createMockSocket()
@@ -33,16 +35,16 @@ export class Subscriber {
     this.subscribe = mock.subscribe
     this.close = mock.close
     this[Symbol.asyncIterator] = () => ({
-      next: jest.fn().mockResolvedValue({ done: true } as AsyncIteratorResult<unknown>),
+      next: vi.fn().mockResolvedValue({ done: true } as AsyncIteratorResult<unknown>),
     })
   }
 }
 
 /** Mock Dealer socket — used by EventBus for outbound connections */
 export class Dealer {
-  connect: jest.Mock
-  close: jest.Mock
-  send: jest.Mock
+  connect: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
+  send: ReturnType<typeof vi.fn>
   constructor() {
     const mock = createMockSocket()
     this.connect = mock.connect
@@ -53,14 +55,14 @@ export class Dealer {
 
 /** Mock Router socket — used by EventBus for inbound connections */
 export class Router {
-  bind: jest.Mock
-  close: jest.Mock
-  receive: jest.Mock
+  bind: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
+  receive: ReturnType<typeof vi.fn>
   constructor() {
     const mock = createMockSocket()
     this.bind = mock.bind
     this.close = mock.close
-    this.receive = jest.fn()
+    this.receive = vi.fn()
   }
 }
 
@@ -70,4 +72,13 @@ export function curveKeyPair(): { publicKey: string; secretKey: string } {
     publicKey: 'mock-pub-key-abcdef1234567890abcdef1234567890abcdef1234567890abc',
     secretKey: 'mock-sec-key-abcdef1234567890abcdef1234567890abcdef1234567890abc',
   }
+}
+
+// 兼容 require('zeromq')
+module.exports = {
+  Publisher,
+  Subscriber,
+  Dealer,
+  Router,
+  curveKeyPair,
 }

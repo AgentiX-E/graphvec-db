@@ -2,19 +2,19 @@ import { MaterializedView } from './materialized-view'
 import { MaterializedViewConfig } from '../types'
 import { GraphEngine } from '../core/graph-engine'
 
-jest.mock('../core/graph-engine', () => {
+vi.mock('../core/graph-engine', () => {
   return {
-    GraphEngine: jest.fn().mockImplementation(() => ({
-      upsertNode: jest.fn(),
-      open: jest.fn(),
-      close: jest.fn(),
+    GraphEngine: vi.fn().mockImplementation(function() { return {
+      upsertNode: vi.fn(),
+      open: vi.fn(),
+      close: vi.fn(),
       isOpen: false,
-      stats: jest.fn().mockReturnValue({ nodeCount: 42, edgeCount: 7, diskSizeBytes: 65536 }),
-      queryPattern: jest.fn().mockReturnValue([
+      stats: vi.fn().mockReturnValue({ nodeCount: 42, edgeCount: 7, diskSizeBytes: 65536 }),
+      queryPattern: vi.fn().mockReturnValue([
         { type: 1, name: 'node-1', props: { name: 'Alice' } },
         { type: 1, name: 'node-2', props: { name: 'Bob' } },
       ]),
-    })),
+    }}),
   }
 })
 

@@ -261,7 +261,7 @@ describe('Multi-Leader 集成测试', () => {
         typeId: 3,
         name: `concurrent-${i}`,
         props: { val: String(i) },
-      }))
+      }})
       const result = await batchWriteOn(nodes[0], items)
       expect(result.ids).toHaveLength(10)
       expect(result.names).toHaveLength(10)
@@ -281,7 +281,7 @@ describe('Multi-Leader 集成测试', () => {
         typeId: 4,
         name: `accumulate-${i}`,
         props: { val: String(i) },
-      }))
+      }})
       await batchWriteOn(nodes[0], items)
 
       // 验证 pending 积累（5 条 × 2 peers = 10）

@@ -7,13 +7,13 @@ import * as path from 'path'
 import { BackupScheduler } from './backup-scheduler'
 
 // Mock Backup 模块 — 完全模拟，不依赖 backup.ts
-jest.mock('./backup', () => ({
-  Backup: jest.fn().mockImplementation(() => ({
-    backup: jest.fn().mockResolvedValue({
+vi.mock('./backup', () => ({
+  Backup: vi.fn().mockImplementation(function() { return {
+    backup: vi.fn().mockResolvedValue({
       path: '/mock/backup.tar.gz',
       sizeBytes: 1024,
     }),
-  })),
+  }}),
 }))
 
 describe('BackupScheduler', () => {

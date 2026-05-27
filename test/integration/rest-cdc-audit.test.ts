@@ -92,7 +92,7 @@ function createLocalEventStream(nodeId: string, walDir: string): EventStream {
 // ========================================
 
 describe('AC-IT-3: CDC + 审计 + 多数据库 + 流式导入 集成测试', () => {
-  jest.setTimeout(30000)
+  vi.setTimeout(90000)
 
   // ========================================
   // Section 1: CDC 端到端

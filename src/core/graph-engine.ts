@@ -271,6 +271,13 @@ export class GraphEngine {
     }
   }
 
+  /** 只触发本地 EventStream 回调，不广播到远程（用于远程应用场景） */
+  private _emitLocal(event: { type: string; data: Record<string, unknown> }): void {
+    if (this._eventStream) {
+      this._eventStream.emitLocal(event)
+    }
+  }
+
   /** 打开数据库 */
   open(): void {
     if (this._isOpen) return
@@ -391,9 +398,11 @@ export class GraphEngine {
       }
     }
 
-    // 递归保护：远程应用期间跳过 emit 防止回环
+    // 递归保护：远程应用期间跳过全量 emit（防止回环），但触发本地回调
     if (!this._applyingRemote) {
       this._emit({ type: 'node:created', data: { id, typeId, name, props: opts?.props } })
+    } else {
+      this._emitLocal({ type: 'node:created', data: { id, typeId, name, props: opts?.props } })
     }
     return id
   }
@@ -473,9 +482,11 @@ export class GraphEngine {
       }
     }
 
-    // 递归保护：远程应用期间跳过 emit 防止回环
+    // 递归保护：远程应用期间触发本地回调，不广播
     if (!this._applyingRemote) {
       this._emit({ type: 'node:deleted', data: { id, typeId: node.typeId, name: node.key } })
+    } else {
+      this._emitLocal({ type: 'node:deleted', data: { id, typeId: node.typeId, name: node.key } })
     }
     return true
   }
@@ -560,9 +571,11 @@ export class GraphEngine {
       }
     }
 
-    // 递归保护：远程应用期间跳过 emit 防止回环
+    // 递归保护：远程应用期间触发本地回调，不广播
     if (!this._applyingRemote) {
       this._emit({ type: 'edge:created', data: { src, dst, typeId, props: opts?.props } })
+    } else {
+      this._emitLocal({ type: 'edge:created', data: { src, dst, typeId, props: opts?.props } })
     }
   }
 
@@ -620,9 +633,11 @@ export class GraphEngine {
       }
     }
 
-    // 递归保护：远程应用期间跳过 emit 防止回环
+    // 递归保护：远程应用期间触发本地回调，不广播
     if (!this._applyingRemote) {
       this._emit({ type: 'edge:deleted', data: { src, dst, typeId } })
+    } else {
+      this._emitLocal({ type: 'edge:deleted', data: { src, dst, typeId } })
     }
     return result
   }

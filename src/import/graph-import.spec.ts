@@ -12,18 +12,18 @@ import os from 'os'
 // Mock GraphEngine
 // ──────────────────────────────────────────
 
-jest.mock('../core/graph-engine', () => {
-  const actual = jest.requireActual('../core/graph-engine')
+vi.mock('../core/graph-engine', () => {
+  const actual = vi.importActual('../core/graph-engine')
   return {
     ...actual,
-    GraphEngine: jest.fn().mockImplementation(() => ({
-      upsertNode: jest.fn().mockImplementation(
+    GraphEngine: vi.fn().mockImplementation(function() { return {
+      upsertNode: vi.fn().mockImplementation(
         (typeId: number, name: string, opts?: any) => Promise.resolve(1)
       ),
-      upsertEdge: jest.fn().mockImplementation(
+      upsertEdge: vi.fn().mockImplementation(
         (src: number, dst: number, typeId: number, opts?: any) => Promise.resolve()
       ),
-      batchUpsertNodes: jest.fn().mockImplementation(
+      batchUpsertNodes: vi.fn().mockImplementation(
         (inputs: { typeId: number; name: string; opts?: any }[]) => {
           const result: Record<string, number> = {}
           for (const input of inputs) {
@@ -33,7 +33,7 @@ jest.mock('../core/graph-engine', () => {
           return result
         }
       ),
-    })),
+    }}),
   }
 })
 
@@ -371,8 +371,8 @@ describe('GraphImporter', () => {
 
   describe('batch write', () => {
     test('_flushBatch calls batchUpsertNodes with node items', async () => {
-      const engine = (importer as any).engine as jest.Mocked<GraphEngine>
-      const batchUpsertNodesSpy = jest.spyOn(engine, 'batchUpsertNodes')
+      const engine = (importer as any).engine as vi.Mocked<GraphEngine>
+      const batchUpsertNodesSpy = vi.spyOn(engine, 'batchUpsertNodes')
 
       // Access private method via bracket notation
       // We write a CSV with only nodes and force stream path
@@ -399,8 +399,8 @@ describe('GraphImporter', () => {
     })
 
     test('_flushBatch calls upsertEdge for edge items', async () => {
-      const engine = (importer as any).engine as jest.Mocked<GraphEngine>
-      const upsertEdgeSpy = jest.spyOn(engine, 'upsertEdge')
+      const engine = (importer as any).engine as vi.Mocked<GraphEngine>
+      const upsertEdgeSpy = vi.spyOn(engine, 'upsertEdge')
 
       const lines = [
         'edge,1,2,5',
@@ -419,11 +419,11 @@ describe('GraphImporter', () => {
     })
 
     test('batchUpsertNodes fallback on failure', async () => {
-      const engine = (importer as any).engine as jest.Mocked<GraphEngine>
+      const engine = (importer as any).engine as vi.Mocked<GraphEngine>
       // Make batchUpsertNodes throw
-      const batchUpsertNodesSpy = jest.spyOn(engine, 'batchUpsertNodes')
+      const batchUpsertNodesSpy = vi.spyOn(engine, 'batchUpsertNodes')
         .mockImplementationOnce(() => { throw new Error('batch failed') })
-      const upsertNodeSpy = jest.spyOn(engine, 'upsertNode')
+      const upsertNodeSpy = vi.spyOn(engine, 'upsertNode')
 
       const lines = [
         'node,1,fallback-node-1',

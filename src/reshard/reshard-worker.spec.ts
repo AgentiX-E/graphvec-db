@@ -196,7 +196,7 @@ describe('ReshardWorker', () => {
 
   describe('rollback', () => {
     it('should stop target range during rollback', async () => {
-      const targetStop = jest.fn().mockResolvedValue(undefined)
+      const targetStop = vi.fn().mockResolvedValue(undefined)
       const sourceRange = createMockRange('range-source') as unknown as RangeInstance
       const targetRange = { ...createMockRange('range-target'), stop: targetStop } as unknown as RangeInstance
 
@@ -231,16 +231,16 @@ function createMockRange(rangeId: string, opts?: {
     config: { rangeId, dataDir: '.', raftConfig: { nodeId: rangeId, peers: [], storagePath: '.' }, overgraphConfig: { path: '.' } },
     raft: { isStarted: false } as unknown as RangeInstance,
     engine: { isOpen: false } as unknown as GraphEngine,
-    start: jest.fn().mockResolvedValue(undefined),
-    stop: jest.fn().mockResolvedValue(undefined),
-    isDraining: jest.fn().mockReturnValue(false),
-    setDraining: jest.fn(),
-    write: jest.fn().mockImplementation(async (op: any) => {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    isDraining: vi.fn().mockReturnValue(false),
+    setDraining: vi.fn(),
+    write: vi.fn().mockImplementation(async (op: any) => {
       if (op.type === 'install_snapshot' && snapshotCallback) {
         snapshotCallback(op.payload.snapshotData)
       }
     }),
-    read: jest.fn().mockImplementation(async (reader: Function) => {
+    read: vi.fn().mockImplementation(async (reader: Function) => {
       // 构造 mock 的 GraphEngine-like 对象
       const mockEngine: any = {
         queryPattern: () =>
@@ -287,7 +287,7 @@ function createMockRange(rangeId: string, opts?: {
       }
       return reader(mockEngine)
     }),
-    getStatus: jest.fn().mockImplementation(() => {
+    getStatus: vi.fn().mockImplementation(function() {
       if (throwOnGetStatus) {
         throw new Error('range not available')
       }
@@ -296,6 +296,6 @@ function createMockRange(rangeId: string, opts?: {
         storage: { nodeCount: getNodeCount(), edgeCount: getEdgeCount(), diskSizeBytes: 100 },
       }
     }),
-    isHealthy: jest.fn().mockReturnValue(true),
+    isHealthy: vi.fn().mockReturnValue(true),
   }
 }

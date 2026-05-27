@@ -4,16 +4,18 @@ import { HlcClock } from './hlc-clock'
 import { DCSyncConfig, DeltaMessage } from '../types'
 import { GraphEngine } from '../core/graph-engine'
 
-jest.mock('../core/graph-engine', () => {
+vi.mock('../core/graph-engine', () => {
   return {
-    GraphEngine: jest.fn().mockImplementation(() => ({
-      upsertNode: jest.fn(),
-      open: jest.fn(),
-      close: jest.fn(),
-      isOpen: false,
-      stats: jest.fn().mockReturnValue({ nodeCount: 0, edgeCount: 0, diskSizeBytes: 0 }),
-      queryPattern: jest.fn().mockReturnValue([]),
-    })),
+    GraphEngine: vi.fn().mockImplementation(function mockGraphEngine() {
+      return {
+        upsertNode: vi.fn(),
+        open: vi.fn(),
+        close: vi.fn(),
+        isOpen: false,
+        stats: vi.fn().mockReturnValue({ nodeCount: 0, edgeCount: 0, diskSizeBytes: 0 }),
+        queryPattern: vi.fn().mockReturnValue([]),
+      }
+    }),
   }
 })
 
@@ -101,12 +103,16 @@ describe('DCSync', () => {
   let deltaSync: DeltaSync
   let dcSync: DCSync
 
+  function randPort(): number { return 15000 + (Date.now() % 1000) * 2 + (Math.random() * 1000 | 0) }
+
   beforeEach(() => {
+    const pubPort = randPort()
+    const subPort = pubPort + 1
     config = {
       dcId: 'dc-east',
-      peers: [{ dcId: 'dc-west', address: 'tcp://west.example.com:5556', port: 5556 }],
-      zmqPubAddress: 'tcp://0.0.0.0:5555',
-      zmqSubAddress: 'tcp://0.0.0.0:5556',
+      peers: [{ dcId: 'dc-west', address: `tcp://west.example.com:${subPort}`, port: subPort }],
+      zmqPubAddress: `tcp://0.0.0.0:${pubPort}`,
+      zmqSubAddress: `tcp://0.0.0.0:${subPort}`,
       syncIntervalMs: 100,
     }
     const clock = new HlcClock()

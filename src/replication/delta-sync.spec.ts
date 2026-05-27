@@ -2,16 +2,18 @@ import { DeltaSync } from './delta-sync'
 import { HlcClock } from './hlc-clock'
 import { GraphEngine } from '../core/graph-engine'
 
-jest.mock('../core/graph-engine', () => {
+vi.mock('../core/graph-engine', () => {
   return {
-    GraphEngine: jest.fn().mockImplementation(() => ({
-      upsertNode: jest.fn(),
-      open: jest.fn(),
-      close: jest.fn(),
-      isOpen: false,
-      stats: jest.fn().mockReturnValue({ nodeCount: 0, edgeCount: 0, diskSizeBytes: 0 }),
-      queryPattern: jest.fn().mockReturnValue([]),
-    })),
+    GraphEngine: vi.fn().mockImplementation(function mockGraphEngine() {
+      return {
+        upsertNode: vi.fn(),
+        open: vi.fn(),
+        close: vi.fn(),
+        isOpen: false,
+        stats: vi.fn().mockReturnValue({ nodeCount: 0, edgeCount: 0, diskSizeBytes: 0 }),
+        queryPattern: vi.fn().mockReturnValue([]),
+      }
+    }),
   }
 })
 
@@ -31,7 +33,7 @@ describe('DeltaSync', () => {
   })
 
   test('should start and stop auto flush', () => {
-    const handler = jest.fn()
+    const handler = vi.fn()
     ds.startAutoFlush(handler, 50)
     expect(ds).toBeDefined()
 

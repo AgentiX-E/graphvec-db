@@ -93,7 +93,7 @@ describe('CertMonitor', () => {
 
     it('should trigger onExpired callback for expired cert', () => {
       const certPath = generateCert(-1, tmpDir)
-      const onExpired = jest.fn()
+      const onExpired = vi.fn()
 
       const monitor = new CertMonitor({ certPath, onExpired })
       monitor.checkNow()
@@ -106,9 +106,9 @@ describe('CertMonitor', () => {
     it('should trigger onCritical when within critical days', () => {
       // 生成有效期很短但尚未过期的证书（临界值避免时机问题）
       const certPath = generateCert(3, tmpDir) // 3 天有效期
-      const onCritical = jest.fn()
-      const onWarning = jest.fn()
-      const onExpired = jest.fn()
+      const onCritical = vi.fn()
+      const onWarning = vi.fn()
+      const onExpired = vi.fn()
 
       const monitor = new CertMonitor({
         certPath,
@@ -131,9 +131,9 @@ describe('CertMonitor', () => {
     it('should trigger onWarning when within warning days but outside critical', () => {
       // 生成 15 天有效期的证书
       const certPath = generateCert(15, tmpDir)
-      const onCritical = jest.fn()
-      const onWarning = jest.fn()
-      const onExpired = jest.fn()
+      const onCritical = vi.fn()
+      const onWarning = vi.fn()
+      const onExpired = vi.fn()
 
       const monitor = new CertMonitor({
         certPath,
@@ -155,9 +155,9 @@ describe('CertMonitor', () => {
 
     it('should not trigger any callback for a long-lived cert', () => {
       const certPath = generateCert(365, tmpDir)
-      const onCritical = jest.fn()
-      const onWarning = jest.fn()
-      const onExpired = jest.fn()
+      const onCritical = vi.fn()
+      const onWarning = vi.fn()
+      const onExpired = vi.fn()
 
       const monitor = new CertMonitor({
         certPath,

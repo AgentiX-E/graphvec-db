@@ -1,4 +1,5 @@
 import { UpsertNodeOptions, OverGraphConfig } from '../../src/types'
+import * as fs from 'fs'
 
 /** 测试用的 OverGraph 配置 */
 export const testEngineConfig: OverGraphConfig = {
@@ -32,9 +33,8 @@ export function makeTestBatch(count: number) {
 /** 清理测试数据目录 */
 export function cleanTestData(dir: string = './test-data'): void {
   try {
-    const fs = require('fs')
     if (fs.existsSync(dir)) {
-      fs.rmSync(dir, { recursive: true, force: true })
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   } catch {
     // ignore
