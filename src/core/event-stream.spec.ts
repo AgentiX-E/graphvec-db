@@ -70,12 +70,18 @@ class MockEventBus {
   }
 }
 
-const TEST_DIR = path.join('/tmp', `event-stream-test-${Date.now()}`)
-const WAL_A = path.join(TEST_DIR, 'wal-a')
-const WAL_B = path.join(TEST_DIR, 'wal-b')
+// Unique temp dir per test via beforeEach
+let testSuffix: number
+const TEST_PARENT = path.join('/tmp', `event-stream-test-${Date.now()}`)
+let WAL_A: string
+let WAL_B: string
 
-beforeAll(() => fs.mkdirSync(TEST_DIR, { recursive: true }))
-afterAll(() => { try { fs.rmSync(TEST_DIR, { recursive: true }) } catch { /* ignore */ } })
+beforeEach(() => {
+  testSuffix = Math.floor(Math.random() * 1e9)
+  WAL_A = path.join(TEST_PARENT, `wal-a-${testSuffix}`)
+  WAL_B = path.join(TEST_PARENT, `wal-b-${testSuffix}`)
+})
+afterAll(() => { try { fs.rmSync(TEST_PARENT, { recursive: true }) } catch { /* ignore */ } })
 
 function makeConfig(nodeId: string, walDir: string, bus: MockEventBus): EventStreamConfig {
   return {
@@ -88,6 +94,11 @@ function makeConfig(nodeId: string, walDir: string, bus: MockEventBus): EventStr
     dedupCapacity: 100,
     catchupBatchSize: 10,
   }
+}
+
+/** Helper: await a flush (allow pending microtasks/timers to settle) */
+function flush(delay = 0): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, delay))
 }
 
 describe('EventStream', () => {
@@ -220,12 +231,11 @@ describe('EventStream', () => {
 
       esA.emit({ type: 'node:created', data: { id: 1 } })
 
-      setTimeout(() => {
-        // 检查重发（sent 里的 'data' 类型消息，包含 __es_msg）
-        const dataMsgs = busA.sent.filter((e: TransportMessage) => e.type === 'data' && (e.data as any).__es_msg?.msgId === 'node-a-1')
-        expect(dataMsgs.length).toBeGreaterThanOrEqual(2) // 原始 + 至少一次重试
+      await flush(800)
 
-      }, 800)
+      // 检查重发（sent 里的 'data' 类型消息，包含 __es_msg）
+      const dataMsgs = busA.sent.filter((e: TransportMessage) => e.type === 'data' && (e.data as any).__es_msg?.msgId === 'node-a-1')
+      expect(dataMsgs.length).toBeGreaterThanOrEqual(2) // 原始 + 至少一次重试
     })
 
     // TC-2.1: 正常 ACK — pendingTracker 清除，流正常
@@ -243,29 +253,28 @@ describe('EventStream', () => {
 
       es.emit({ type: 'node:created', data: { id: 1 } })
 
-      setTimeout(() => {
-        // 不发送 ACK，等超时
-        const dataMsgs = busA.sent.filter((e: TransportMessage) =>
-          e.type === 'data' && (e.data as any).__es_msg?.msgId === 'node-a-1'
-        )
-        // 发送次数：1(原始) = 1
-        // 第一次超时 → retry(1), info.retries=1 → 重新发送 → sentAt更新
-        // 第二次超时 → retry(2), info.retries=2 → 重新发送 → sentAt更新
-        // 第三次超时 → retry(3), info.retries=3 → 重新发送 → sentAt更新
-        // 第四次超时 → info.retries=4 > 3 → 不重发
-        // 预期：原始 1 + 重传 3 = 4 次
-        // （由于扫描间隔 = ackTimeoutMs/3 = 33ms，时间窗口可能出现更多扫描但只有前3次超时产生重传）
-        expect(dataMsgs.length).toBe(4)
+      await flush(1000)
 
-        // 验证 tracker 仍在（但后续不会再发送）
-        const tracker = (es as any).pendingTracker as Map<string, { retries: number }>
-        const entry = tracker.get('node-a-1')
-        expect(entry).toBeDefined()
-        expect(entry!.retries).toBeGreaterThanOrEqual(4)
+      // 不发送 ACK，等超时
+      const dataMsgs = busA.sent.filter((e: TransportMessage) =>
+        e.type === 'data' && (e.data as any).__es_msg?.msgId === 'node-a-1'
+      )
+      // 发送次数：1(原始) = 1
+      // 第一次超时 → retry(1), info.retries=1 → 重新发送 → sentAt更新
+      // 第二次超时 → retry(2), info.retries=2 → 重新发送 → sentAt更新
+      // 第三次超时 → retry(3), info.retries=3 → 重新发送 → sentAt更新
+      // 第四次超时 → info.retries=4 > 3 → 不重发
+      // 预期：原始 1 + 重传 3 = 4 次
+      // （由于扫描间隔 = ackTimeoutMs/3 = 33ms，时间窗口可能出现更多扫描但只有前3次超时产生重传）
+      expect(dataMsgs.length).toBe(4)
 
-        es.close()
+      // 验证 tracker 仍在（但后续不会再发送）
+      const tracker = (es as any).pendingTracker as Map<string, { retries: number }>
+      const entry = tracker.get('node-a-1')
+      expect(entry).toBeDefined()
+      expect(entry!.retries).toBeGreaterThanOrEqual(4)
 
-      }, 1000)
+      await es.close()
     })
 
     // TC-2.3: 重传去重验证 — 接收方收到重传消息后，dedup 阻止重复处理
@@ -322,35 +331,32 @@ describe('EventStream', () => {
       es.emit({ type: 'node:created', data: { id: 1 } })
 
       // ACK 在超时前最后一刻到达（略小于 ackTimeoutMs）
-      setTimeout(() => {
-        // 在 ACK 到达前 tracker 应还在
-        const esAny = es as any
-        expect(esAny.pendingTracker.has('node-a-1')).toBe(true)
+      await flush(ackTimeoutMs - 50)
 
-        // 发送 ACK
-        const ackBus = (es as any).bus as MockEventBus
-        ackBus.simulateRemote({ type: 'ack', ackMsgId: 'node-a-1', data: {} }, 'remote')
+      // 在 ACK 到达前 tracker 应还在
+      const esAny = es as any
+      expect(esAny.pendingTracker.has('node-a-1')).toBe(true)
 
-        // 确认 pending 被清除
-        expect(esAny.pendingTracker.has('node-a-1')).toBe(false)
-      }, ackTimeoutMs - 50)  // 在超时前 50ms 到达
+      // 发送 ACK
+      const ackBus = (es as any).bus as MockEventBus
+      ackBus.simulateRemote({ type: 'ack', ackMsgId: 'node-a-1', data: {} }, 'remote')
+
+      // 确认 pending 被清除
+      expect(esAny.pendingTracker.has('node-a-1')).toBe(false)
 
       // 等扫描周期多次运行后检查
-      setTimeout(() => {
-        const esAny = es as any
-        expect(esAny.pendingTracker.has('node-a-1')).toBe(false)
+      await flush(600)
 
-        // 确认原始消息 + 0 次重传（ACK 在超时前到达）
-        const ackBus = (es as any).bus as MockEventBus
-        const dataMsgs = ackBus.sent.filter((e: TransportMessage) =>
-          e.type === 'data' && (e.data as any).__es_msg?.msgId === 'node-a-1'
-        )
-        // 应只有原始 emit 的 1 次发送
-        expect(dataMsgs.length).toBe(1)
+      expect(esAny.pendingTracker.has('node-a-1')).toBe(false)
 
-        es.close()
+      // 确认原始消息 + 0 次重传（ACK 在超时前到达）
+      const dataMsgs = ackBus.sent.filter((e: TransportMessage) =>
+        e.type === 'data' && (e.data as any).__es_msg?.msgId === 'node-a-1'
+      )
+      // 应只有原始 emit 的 1 次发送
+      expect(dataMsgs.length).toBe(1)
 
-      }, 600)
+      await es.close()
     })
 
   })
@@ -377,13 +383,12 @@ describe('EventStream', () => {
       busA.simulateRemote({ type: 'sync-query', data: { requester: 'remote-b', lastSeq: 2 } }, 'remote-b')
 
       // 检查 sync-query-reply 回复
-      setTimeout(() => {
-        const replyMsgs = busA.sent.filter(e => e.type === 'sync-query-reply')
-        expect(replyMsgs.length).toBe(1)
-        expect(replyMsgs[0].data.nodeId).toBe('node-a')
-        expect(replyMsgs[0].data.currentSeq).toBe(5)
+      await flush(100)
 
-      }, 100)
+      const replyMsgs = busA.sent.filter(e => e.type === 'sync-query-reply')
+      expect(replyMsgs.length).toBe(1)
+      expect(replyMsgs[0].data.nodeId).toBe('node-a')
+      expect(replyMsgs[0].data.currentSeq).toBe(5)
     })
 
     it('收到 sync-request 后应回复 sync-batch', async () => {
@@ -396,14 +401,13 @@ describe('EventStream', () => {
       busA.simulateRemote({ type: 'sync-request', data: { requester: 'remote-b', fromSeq: 2, targetSeq: 5 } }, 'remote-b')
 
       // 检查 sync-batch 回复
-      setTimeout(() => {
-        const batchMsgs = busA.sent.filter(e => e.type === 'sync-batch')
-        expect(batchMsgs.length).toBe(1)
-        const msgs = batchMsgs[0].data.msgs as StreamMessage[]
-        expect(msgs.length).toBe(3) // seq 3, 4, 5
-        expect(msgs.map(m => m.seq)).toEqual([3, 4, 5])
+      await flush(100)
 
-      }, 100)
+      const batchMsgs = busA.sent.filter(e => e.type === 'sync-batch')
+      expect(batchMsgs.length).toBe(1)
+      const msgs = batchMsgs[0].data.msgs as StreamMessage[]
+      expect(msgs.length).toBe(3) // seq 3, 4, 5
+      expect(msgs.map(m => m.seq)).toEqual([3, 4, 5])
     })
 
     it('收到 sync-batch 后应去重消费', async () => {
@@ -418,12 +422,11 @@ describe('EventStream', () => {
         ],
       } })
 
-      setTimeout(() => {
-        expect(received.length).toBe(2)
-        expect(received[0].seq).toBe(10)
-        expect(received[1].seq).toBe(11)
+      await flush(100)
 
-      }, 100)
+      expect(received.length).toBe(2)
+      expect(received[0].seq).toBe(10)
+      expect(received[1].seq).toBe(11)
     })
   })
 
@@ -469,17 +472,16 @@ describe('EventStream', () => {
       es.emit({ type: 'node:created', data: { id: 1 } })
 
       // 不发 ACK，等待 onStall 触发
-      setTimeout(() => {
-        expect(stalled.length).toBe(1)
-        expect(stalled[0].msgId).toBe('node-a-1')
-        expect(stalled[0].retries).toBe(3)
-        expect(stalled[0].type).toBe('node:created')
-        expect(stalled[0].seq).toBe(1)
-        expect(stalled[0].durationMs).toBeGreaterThanOrEqual(0)
+      await flush(500)
 
-        es.close()
+      expect(stalled.length).toBe(1)
+      expect(stalled[0].msgId).toBe('node-a-1')
+      expect(stalled[0].retries).toBe(3)
+      expect(stalled[0].type).toBe('node:created')
+      expect(stalled[0].seq).toBe(1)
+      expect(stalled[0].durationMs).toBeGreaterThanOrEqual(0)
 
-      }, 500)
+      await es.close()
     })
 
     it('ACK 后不再触发 onStall', async () => {
@@ -496,16 +498,14 @@ describe('EventStream', () => {
       es.emit({ type: 'node:created', data: { id: 1 } })
 
       // 在重试到达 threshold 之前发送 ACK
-      setTimeout(() => {
-        busA.simulateRemote({ type: 'ack', ackMsgId: 'node-a-1', data: {} }, 'remote')
-      }, 100)
+      await flush(100)
+      busA.simulateRemote({ type: 'ack', ackMsgId: 'node-a-1', data: {} }, 'remote')
 
       // threshold 时间后检查 onStall 未被触发
-      setTimeout(() => {
-        expect(stalled.length).toBe(0)
-        es.close()
+      await flush(600)
 
-      }, 600)
+      expect(stalled.length).toBe(0)
+      await es.close()
     })
   })
 })

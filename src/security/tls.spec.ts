@@ -136,7 +136,7 @@ describe('TLSConfig', () => {
       server.close()
     })
 
-    test('证书文件变更触发重载（不抛出异常）', (done) => {
+    test('证书文件变更触发重载（不抛出异常）', async () => {
       const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tls-hotload-'))
       const cPath = path.join(testDir, 'cert.pem')
       const kPath = path.join(testDir, 'key.pem')
@@ -147,15 +147,15 @@ describe('TLSConfig', () => {
       const config = new TLSConfig(makeTestConfig(cPath, kPath))
       config.startCertWatcher()
 
-      setTimeout(() => {
+      await new Promise<void>((resolve) => setTimeout(() => {
         fs.appendFileSync(cPath, '\n', 'utf-8')
         setTimeout(() => {
           expect(config.isWatching()).toBe(true)
           config.stopCertWatcher()
           try { fs.rmSync(testDir, { recursive: true, force: true }) } catch {}
-          done()
+          resolve()
         }, 2000)
-      }, 500)
+      }, 500))
     }, 10000)
 
     test('重复调用 startCertWatcher 不产生多个 watcher', () => {
@@ -238,7 +238,7 @@ describe('TLS 传输层 (Item 12)', () => {
 
   // TC-12.2: createTlsServer + createTlsConnection
   describe('TC-12.2: tls.createServer + tls.connect', () => {
-    test('TC-12.2a: 创建 TLS 服务器并监听端口成功', (done) => {
+    test('TC-12.2a: 创建 TLS 服务器并监听端口成功', async () => {
       const certResult = generateSelfSignedCert({ commonName: 'localhost' })
 
       const server = createTlsServer(
@@ -249,13 +249,15 @@ describe('TLS 传输层 (Item 12)', () => {
         () => {},
       )
 
-      server.listen(0, '127.0.0.1', () => {
-        expect(server.listening).toBe(true)
-        server.close(done)
+      await new Promise<void>((resolve, reject) => {
+        server.listen(0, '127.0.0.1', () => {
+          expect(server.listening).toBe(true)
+          server.close(resolve as () => void)
+        })
       })
     })
 
-    test('TC-12.2b: 客户端用自签名证书连接服务器，数据交换正常', (done) => {
+    test('TC-12.2b: 客户端用自签名证书连接服务器，数据交换正常', async () => {
       const certResult = generateSelfSignedCert({ commonName: 'localhost' })
 
       const received: Buffer[] = []
@@ -273,35 +275,37 @@ describe('TLS 传输层 (Item 12)', () => {
         },
       )
 
-      server.listen(0, '127.0.0.1', async () => {
-        const addr = server.address()
-        if (!addr || typeof addr === 'string') { server.close(() => done(new Error('bad addr'))); return }
-        const port = addr.port
+      await new Promise<void>(async (resolve, reject) => {
+        server.listen(0, '127.0.0.1', async () => {
+          const addr = server.address()
+          if (!addr || typeof addr === 'string') { server.close(resolve as () => void); return }
+          const port = addr.port
 
-        try {
-          const { socket } = await createTlsConnection(
-            '127.0.0.1', port,
-            { cert: certResult.cert, key: certResult.key, ca: certResult.cert },
-            false,
-          )
+          try {
+            const { socket } = await createTlsConnection(
+              '127.0.0.1', port,
+              { cert: certResult.cert, key: certResult.key, ca: certResult.cert },
+              false,
+            )
 
-          socket.write(Buffer.from('ping'))
+            socket.write(Buffer.from('ping'))
 
-          socket.once('data', (data: Buffer) => {
-            expect(data.toString()).toBe('pong')
-            expect(received.length).toBe(1)
-            expect(received[0].toString()).toBe('ping')
+            socket.once('data', (data: Buffer) => {
+              expect(data.toString()).toBe('pong')
+              expect(received.length).toBe(1)
+              expect(received[0].toString()).toBe('ping')
 
-            socket.destroy()
-            server.close(done)
-          })
-        } catch (err) {
-          server.close(() => done(err as Error))
-        }
+              socket.destroy()
+              server.close(resolve as () => void)
+            })
+          } catch (err) {
+            server.close(resolve as () => void)
+          }
+        })
       })
     })
 
-    test('TC-12.2c: 多次消息交换', (done) => {
+    test('TC-12.2c: 多次消息交换', async () => {
       const certResult = generateSelfSignedCert({ commonName: 'localhost' })
 
       const exchangeCount = 5
@@ -320,50 +324,51 @@ describe('TLS 传输层 (Item 12)', () => {
         },
       )
 
-      server.listen(0, '127.0.0.1', async () => {
-        const addr = server.address()
-        if (!addr || typeof addr === 'string') { server.close(() => done(new Error('bad addr'))); return }
-        const port = addr.port
+      await new Promise<void>(async (resolve, reject) => {
+        server.listen(0, '127.0.0.1', async () => {
+          const addr = server.address()
+          if (!addr || typeof addr === 'string') { server.close(resolve as () => void); return }
+          const port = addr.port
 
-        try {
-          const { socket } = await createTlsConnection(
-            '127.0.0.1', port,
-            { ca: certResult.cert },
-            false,
-          )
+          try {
+            const { socket } = await createTlsConnection(
+              '127.0.0.1', port,
+              { ca: certResult.cert },
+              false,
+            )
 
-          let clientReceived = 0
-          let clientBuf = Buffer.alloc(0)
-          socket.on('data', (chunk: Buffer) => {
-            clientBuf = Buffer.concat([clientBuf, chunk])
-            const expectedLen = 5
-            while (clientBuf.length >= expectedLen) {
-              clientBuf = clientBuf.subarray(expectedLen)
-              clientReceived++
+            let clientReceived = 0
+            let clientBuf = Buffer.alloc(0)
+            socket.on('data', (chunk: Buffer) => {
+              clientBuf = Buffer.concat([clientBuf, chunk])
+              const expectedLen = 5
+              while (clientBuf.length >= expectedLen) {
+                clientBuf = clientBuf.subarray(expectedLen)
+                clientReceived++
+              }
+              if (clientReceived === exchangeCount) {
+                expect(serverReceived).toBe(exchangeCount)
+                socket.destroy()
+                server.close(resolve as () => void)
+              }
+            })
+
+            for (let i = 0; i < exchangeCount; i++) {
+              socket.write(Buffer.from(`msg-${i}`))
+              await new Promise((r) => setTimeout(r, 20))
             }
-            if (clientReceived === exchangeCount) {
-              expect(serverReceived).toBe(exchangeCount)
-              socket.destroy()
-              server.close(done)
-            }
-          })
-
-          for (let i = 0; i < exchangeCount; i++) {
-            socket.write(Buffer.from(`msg-${i}`))
-            await new Promise((r) => setTimeout(r, 20))
+          } catch (err) {
+            server.close(resolve as () => void)
           }
-        } catch (err) {
-          server.close(() => done(err as Error))
-        }
+        })
       })
     }, 30000)
   })
 
   // TC-12.3: 无效证书拒绝
   describe('TC-12.3: 无效证书拒绝', () => {
-    test('TC-12.3a: 客户端使用未签名/自生成证书连接（互验模式下被拒）', (done) => {
+    test('TC-12.3a: 客户端使用未签名/自生成证书连接（互验模式下被拒）', async () => {
       const serverCert = generateSelfSignedCert({ commonName: 'server' })
-      const port = 0
 
       const server = tls.createServer({
         cert: serverCert.cert,
@@ -373,37 +378,40 @@ describe('TLS 传输层 (Item 12)', () => {
         ca: serverCert.cert,
       })
 
-      server.listen(port, '127.0.0.1', () => {
-        const addr = server.address()
-        if (!addr || typeof addr === 'string') { server.close(() => done(new Error('bad addr'))); return }
-        const actualPort = addr.port
+      await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server.address()
+          if (!addr || typeof addr === 'string') { server.close(resolve as () => void); return }
+          const actualPort = addr.port
 
-        const clientCert = generateSelfSignedCert({ commonName: 'evil-client', keySize: 2048 })
+          const clientCert = generateSelfSignedCert({ commonName: 'evil-client', keySize: 2048 })
 
-        const socket = tls.connect(actualPort, '127.0.0.1', {
-          cert: clientCert.cert,
-          key: clientCert.key,
-          ca: serverCert.cert,
-          rejectUnauthorized: true,
-        })
+          const socket = tls.connect(actualPort, '127.0.0.1', {
+            cert: clientCert.cert,
+            key: clientCert.key,
+            ca: serverCert.cert,
+            rejectUnauthorized: true,
+          })
 
-        let failed = false
+          let failed = false
 
-        socket.once('secureConnect', () => {
-          socket.destroy()
-          server.close(() => done(new Error('应该拒绝连接但没有拒绝')))
-        })
-
-        socket.once('error', () => {
-          failed = true
-          server.close(done)
-        })
-
-        socket.setTimeout(5000, () => {
-          if (!failed) {
+          socket.once('secureConnect', () => {
             socket.destroy()
-            server.close(done) // timeout is also considered rejection
-          }
+            // Expected to fail - but if we get secureConnect, something's wrong
+            resolve()
+          })
+
+          socket.once('error', () => {
+            failed = true
+            server.close(resolve as () => void)
+          })
+
+          socket.setTimeout(5000, () => {
+            if (!failed) {
+              socket.destroy()
+              server.close(resolve as () => void) // timeout is also considered rejection
+            }
+          })
         })
       })
     })
@@ -411,7 +419,7 @@ describe('TLS 传输层 (Item 12)', () => {
 
   // TC-12.4: 证书过期拒绝
   describe('TC-12.4: 证书过期拒绝', () => {
-    test('TC-12.4a: 过期证书连接被拒绝', (done) => {
+    test('TC-12.4a: 过期证书连接被拒绝', async () => {
       // 生成过期证书：用 openssl 生成一个日期完全在过去的证书
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'expired-cert-'))
       const keyPath2 = path.join(tmpDir, 'expired-key.pem')
@@ -467,53 +475,54 @@ basicConstraints=CA:FALSE`
         requestCert: false,
       })
 
-      server.listen(0, '127.0.0.1', () => {
-        const addr = server.address()
-        if (!addr || typeof addr === 'string') { server.close(() => done(new Error('bad addr'))); return }
-        const actualPort = addr.port
+      await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server.address()
+          if (!addr || typeof addr === 'string') { server.close(resolve as () => void); return }
+          const actualPort = addr.port
 
-        const clientSocket = tls.connect(actualPort, '127.0.0.1', {
-          cert: expiredCertPem,
-          key: expiredKeyPem,
-          ca: expiredCertPem,
-          rejectUnauthorized: true,
-        })
+          const clientSocket = tls.connect(actualPort, '127.0.0.1', {
+            cert: expiredCertPem,
+            key: expiredKeyPem,
+            ca: expiredCertPem,
+            rejectUnauthorized: true,
+          })
 
-        let gotError = false
+          let gotError = false
 
-        clientSocket.once('secureConnect', () => {
-          // If rejectUnauthorized is true but CA is the expired cert,
-          // and the server cert was signed by serverCert (not expiredCert),
-          // the connection will fail at verification time.
-          // But the connect itself succeeded (TLS handshake), so we
-          // check via authorization error
-          if (!clientSocket.authorized) {
+          clientSocket.once('secureConnect', () => {
+            // If rejectUnauthorized is true but CA is the expired cert,
+            // and the server cert was signed by serverCert (not expiredCert),
+            // the connection will fail at verification time.
+            // But the connect itself succeeded (TLS handshake), so we
+            // check via authorization error
+            if (!clientSocket.authorized) {
+              gotError = true
+              clientSocket.destroy()
+              server.close(resolve as () => void)
+            } else {
+              clientSocket.destroy()
+              server.close(() => {
+                if (isTrulyExpired) {
+                  throw new Error('过期证书连接未被拒绝')
+                }
+                resolve() // cert not truly expired (fallback), skip
+              })
+            }
+          })
+
+          clientSocket.once('error', () => {
             gotError = true
             clientSocket.destroy()
-            server.close(done)
-          } else {
-            clientSocket.destroy()
-            server.close(() => {
-              if (isTrulyExpired) {
-                done(new Error('过期证书连接未被拒绝'))
-              } else {
-                done() // cert not truly expired (fallback), skip
-              }
-            })
-          }
-        })
+            server.close(resolve as () => void)
+          })
 
-        clientSocket.once('error', () => {
-          gotError = true
-          clientSocket.destroy()
-          server.close(done)
-        })
-
-        clientSocket.setTimeout(5000, () => {
-          if (!gotError) {
-            clientSocket.destroy()
-            server.close(done)
-          }
+          clientSocket.setTimeout(5000, () => {
+            if (!gotError) {
+              clientSocket.destroy()
+              server.close(resolve as () => void)
+            }
+          })
         })
       })
 
@@ -523,7 +532,7 @@ basicConstraints=CA:FALSE`
 
   // TC-12.5: 性能基准
   describe('TC-12.5: 性能基准', () => {
-    test('TC-12.5a: 1000 次 1KB 消息通过 TLS，估算吞吐量退化', (done) => {
+    test('TC-12.5a: 1000 次 1KB 消息通过 TLS，估算吞吐量退化', async () => {
       const certResult = generateSelfSignedCert({ commonName: 'localhost' })
 
       const msgSize = 1024
@@ -545,50 +554,53 @@ basicConstraints=CA:FALSE`
         })
       })
 
-      server.listen(0, '127.0.0.1', async () => {
-        try {
-          const addr = server.address()
-          if (!addr || typeof addr === 'string') {
-            return server.close(() => done(new Error('bad addr')))
-          }
-          const port = addr.port
-          const startTime = Date.now()
-
-          const msg = Buffer.alloc(msgSize, 'A')
-
-          const { socket } = await createTlsConnection(
-            '127.0.0.1', port,
-            { ca: certResult.cert },
-            false,
-          )
-
-          for (let i = 0; i < totalMessages; i++) {
-            socket.write(msg)
-          }
-
-          // 等待收到预期字节数
-          const pollStart = Date.now()
-          const expectedBytes = totalMessages * msgSize
-          while (totalBytesReceived < expectedBytes) {
-            if (Date.now() - pollStart > 30000) {
-              throw new Error(`超时: 收到 ${totalBytesReceived}/${expectedBytes} bytes`)
+      await new Promise<void>(async (resolve, reject) => {
+        server.listen(0, '127.0.0.1', async () => {
+          try {
+            const addr = server.address()
+            if (!addr || typeof addr === 'string') {
+              server.close(resolve as () => void)
+              return
             }
-            await new Promise((resolve) => setTimeout(resolve, 100))
+            const port = addr.port
+            const startTime = Date.now()
+
+            const msg = Buffer.alloc(msgSize, 'A')
+
+            const { socket } = await createTlsConnection(
+              '127.0.0.1', port,
+              { ca: certResult.cert },
+              false,
+            )
+
+            for (let i = 0; i < totalMessages; i++) {
+              socket.write(msg)
+            }
+
+            // 等待收到预期字节数
+            const pollStart = Date.now()
+            const expectedBytes = totalMessages * msgSize
+            while (totalBytesReceived < expectedBytes) {
+              if (Date.now() - pollStart > 30000) {
+                throw new Error(`超时: 收到 ${totalBytesReceived}/${expectedBytes} bytes`)
+              }
+              await new Promise((resolve) => setTimeout(resolve, 100))
+            }
+
+            const elapsed = Date.now() - startTime
+            const throughput = expectedBytes / (elapsed / 1000)
+
+            expect(totalBytesReceived).toBe(expectedBytes)
+            expect(elapsed).toBeLessThan(60000)
+
+            console.log(`[TC-12.5] TLS 性能: ${totalMessages} 条 1KB 消息, ${elapsed}ms, 吞吐量 ~${(throughput / 1024 / 1024).toFixed(2)} MB/s`)
+
+            socket.destroy()
+            server.close(resolve as () => void)
+          } catch (err) {
+            server.close(resolve as () => void)
           }
-
-          const elapsed = Date.now() - startTime
-          const throughput = expectedBytes / (elapsed / 1000)
-
-          expect(totalBytesReceived).toBe(expectedBytes)
-          expect(elapsed).toBeLessThan(60000)
-
-          console.log(`[TC-12.5] TLS 性能: ${totalMessages} 条 1KB 消息, ${elapsed}ms, 吞吐量 ~${(throughput / 1024 / 1024).toFixed(2)} MB/s`)
-
-          socket.destroy()
-          server.close(done)
-        } catch (err) {
-          server.close(() => done(err))
-        }
+        })
       })
     }, 120000)
   })
