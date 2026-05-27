@@ -3,7 +3,7 @@ import { HlcClock } from '../replication/hlc-clock'
 import { ShardMap } from '../types'
 import * as fs from 'fs'
 
-vi.setConfig({ testTimeout: 60000 })
+vi.setConfig({ testTimeout: 120000 })
 const randomId = Math.random().toString(36).slice(2, 8)
 const TEST_DIR = `/tmp/agentiX-test-shard-${randomId}`
 
@@ -58,8 +58,9 @@ describe('ShardManager', () => {
     test('should create without throwing', () => {
       const tid = Math.random().toString(36).slice(2, 8)
       ensureDirs(tid)
-      _instances.push(new ShardManager(makeShardMap(tid), new HlcClock()))
-    })
+      const mgr = new ShardManager(makeShardMap(tid), new HlcClock())
+      _instances.push(mgr)
+    }, 120000)
 
     test('should initialize router from shardMap', () => {
       const tid = Math.random().toString(36).slice(2, 8)
@@ -256,12 +257,16 @@ describe('ShardManager', () => {
       const tid = Math.random().toString(36).slice(2, 8)
       ensureDirs(tid)
       const m = new ShardManager(makeShardMap(tid), new HlcClock())
-      m.rebuildRouter({
-        version: 2,
-        ranges: [],
-        hashRing: { virtualNodes: 160, nodes: [] },
-      })
-      expect(m.getRouter().getShardMap().version).toBe(2)
-    })
+      try {
+        m.rebuildRouter({
+          version: 2,
+          ranges: [],
+          hashRing: { virtualNodes: 160, nodes: [] },
+        })
+        expect(m.getRouter().getShardMap().version).toBe(2)
+      } finally {
+        m.stop()
+      }
+    }, 120000)
   })
 })

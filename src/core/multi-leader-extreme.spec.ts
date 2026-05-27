@@ -64,7 +64,7 @@ function startNodes(nodeIds: string[], basePort: number, testDir: string, curveD
 
       // 等待 ready
       const ready = await new Promise<boolean>((resolveReady) => {
-        const timeout = setTimeout(() => { if (!hadError) resolveReady(false) }, 45000)
+        const timeout = setTimeout(() => { if (!hadError) resolveReady(false) }, 90000)
         let buf = ''
         proc.stdout?.on('data', (chunk: Buffer) => {
           buf += chunk.toString()

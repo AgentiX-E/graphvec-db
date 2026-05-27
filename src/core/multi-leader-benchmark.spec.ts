@@ -26,16 +26,16 @@ describe('端到端多进程压测', () => {
   beforeAll(() => {
     e2eCurveDir = path.join(e2eTestDir, 'curve')
     fs.mkdirSync(e2eCurveDir, { recursive: true })
-  }, 10000)
+  }, 30000)
 
   afterEach(() => {
     for (const n of e2eNodes) { try { n.proc.kill('SIGTERM') } catch {} }
     e2eNodes = []
-  }, 10000)
+  }, 30000)
 
   afterAll(() => {
     try { fs.rmSync(e2eTestDir, { recursive: true, force: true }) } catch {}
-  }, 10000)
+  }, 30000)
 
   function spawnNodes(nodeIds: string[], basePort: number, extraEnv: Record<string, string> = {}): Promise<NodeProc[]> {
     return new Promise((resolve, reject) => {

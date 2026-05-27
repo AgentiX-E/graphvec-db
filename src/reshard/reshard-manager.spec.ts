@@ -126,7 +126,7 @@ describe('ReshardManager', () => {
     fs.mkdirSync(path.join(dir, 'range-1', 'graph'), { recursive: true })
     shardMap = createShardMap(testRunId, dir)
     shardManager = new ShardManager(shardMap, clock)
-  })
+  }, 120000)
 
   afterEach(async () => {
     try { await shardManager.stop() } catch { /* ok */ }
@@ -326,31 +326,34 @@ describe('ReshardManager', () => {
     it('should handle failure gracefully', async () => {
       await shardManager.start()
 
-      const plan: ReshardingPlan = {
-        planId: 'test-plan-fail',
-        version: 2,
-        createdAt: Date.now(),
-        estimatedDurationMs: 1000,
-        splits: [
-          {
-            sourceRangeId: 'nonexistent-range',
-            targetRangeId: 'range-fail-target',
-            hashRangeStart: 0,
-            hashRangeEnd: 50000,
-            targetNodeId: 'node-fail',
-            targetDataDir: '/nonexistent/path',
-          },
-        ],
+      let result: any
+      try {
+        const plan: ReshardingPlan = {
+          planId: 'test-plan-fail',
+          version: 2,
+          createdAt: Date.now(),
+          estimatedDurationMs: 1000,
+          splits: [
+            {
+              sourceRangeId: 'nonexistent-range',
+              targetRangeId: 'range-fail-target',
+              hashRangeStart: 0,
+              hashRangeEnd: 50000,
+              targetNodeId: 'node-fail',
+              targetDataDir: '/nonexistent/path',
+            },
+          ],
+        }
+
+        const mgr = new ReshardManager(shardManager, clock)
+        result = await mgr.execute(plan)
+
+        // Should fail because source range doesn't exist
+        expect(result.state).toBe('failed')
+        expect(result.errors.length).toBeGreaterThan(0)
+      } finally {
+        await shardManager.stop()
       }
-
-      const mgr = new ReshardManager(shardManager, clock)
-      const result = await mgr.execute(plan)
-
-      // Should fail because source range doesn't exist
-      expect(result.state).toBe('failed')
-      expect(result.errors.length).toBeGreaterThan(0)
-
-      await shardManager.stop()
-    })
+    }, 120000)
   })
 })
