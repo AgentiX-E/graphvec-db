@@ -94,17 +94,25 @@ describe('AC-FI-5: HLC clock skew handling', () => {
    */
   test('should increment logical counter monotonically under rapid successive calls', () => {
     const clock = new HlcClock()
-    const timestamps: number[] = []
+    const pairs: Array<{ w: bigint; l: number }> = []
 
     // 连续高频生成 100 个时间戳
     for (let i = 0; i < 100; i++) {
       const ts = clock.nowWithWallTime()
-      timestamps.push(ts.logical)
+      pairs.push({ w: ts.wallTime, l: ts.logical })
     }
 
-    // logical 必须单调非递减（HLC 在 wall time 跃迁时会重置 logical=0）
-    for (let i = 1; i < timestamps.length; i++) {
-      expect(timestamps[i]).toBeGreaterThanOrEqual(timestamps[i - 1])
+    // (wallTime, logical) 二元组必须单调递增（HLC 总体有序性）
+    // 注：单看 logical 不保证单调——wallTime 跃迁时 HLC 正确重置 logical=0
+    for (let i = 1; i < pairs.length; i++) {
+      const prev = pairs[i - 1]
+      const cur = pairs[i]
+      if (cur.w > prev.w) {
+        // wallTime 跃迁时 logical 允许归零
+        continue
+      }
+      // wallTime 未变时 logical 必须递增
+      expect(cur.l).toBeGreaterThanOrEqual(prev.l + 1)
     }
   })
 

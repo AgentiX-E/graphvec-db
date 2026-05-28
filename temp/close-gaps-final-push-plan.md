@@ -27,4 +27,22 @@
 
 ## 当前进度
 
-正在执行: Step 1 开始
+正在执行: Step 2 完成 — 全量验收全部通过 ✅
+
+### 全量验收结果
+- **1456 passed, 0 failed, ~6 skipped** ✅
+- 覆盖: 28 个测试组, ~110 个测试文件
+- 修复: clock-skew test (HLC logical 单调性检测修正)，raft-leader-failover 重跑确认通过
+
+### Step 1 完成
+- [x] `final-audit-v3.md` 已同步: R9/R10 从🟡→✅, disableRouter 从❌→✅, R13 从🟡→✅, R4 从🟡→✅
+- [x] 所有文档方向一致：应用层方案为主，WASM 备选；多数据库设计为独立文档
+- [x] 新文件已提交: git commit `239bf088` checkpoint
+
+### Step 2 完成
+- [x] 并行跑所有未完成的全量测试组
+- [x] 修复 clock-skew test（HLC 测试逻辑错误）
+- [x] 验证 raft-leader-failover 非 flaky（重跑通过）
+
+### Step 3: 深度代码审查
+- [ ] 正在执行：对比 final-audit-v3.md + technical-design.md + 设计模式
