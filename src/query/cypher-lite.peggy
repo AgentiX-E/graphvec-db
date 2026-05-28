@@ -204,11 +204,14 @@ AggregateFunc
   = func:(CountFunc / SumFunc / AvgFunc / MaxFunc / MinFunc) { return func }
 
 CountFunc
-  = "count"i _ "(" _ name:Identifier _ ")" alias:AsClause? {
-      return { func: 'count', field: [name], alias }
+  = "count"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
+      return { func: 'count', field: [name, prop], alias }
     }
   / "count"i _ "(" _ "*" _ ")" alias:AsClause? {
       return { func: 'count', field: ['*'], alias }
+    }
+  / "count"i _ "(" _ name:Identifier _ ")" alias:AsClause? {
+      return { func: 'count', field: [name], alias }
     }
 
 SumFunc

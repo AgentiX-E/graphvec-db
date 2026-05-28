@@ -546,6 +546,40 @@ export class ShardManager {
     })
   }
 
+  /** 批量邻居查询（带缓存） */
+  async batchNeighbors(ids: NodeId[], opts?: { maxDepth?: number; edgeTypeFilter?: number[] }): Promise<Map<number, { edges: EdgeRecord[]; nodes: NodeRecord[] }>> {
+    return this.telemetry.traceAsync('shard.batchNeighbors', async () => {
+      const start = Date.now()
+      // 按 nodeId 所在 range 分组，减少跨 range 调用
+      const perRange = new Map<string, NodeId[]>()
+      for (const id of ids) {
+        const rangeId = this._getRangeForNodeId(id)
+        const group = perRange.get(rangeId)
+        if (group) group.push(id)
+        else perRange.set(rangeId, [id])
+      }
+
+      const result = new Map<number, { edges: EdgeRecord[]; nodes: NodeRecord[] }>()
+      const promises: Promise<void>[] = []
+
+      for (const [rangeId, nodeIds] of perRange) {
+        const range = this.getRange(rangeId)
+        promises.push(
+          range.read(engine => engine.batchNeighbors(nodeIds, opts)).then(partial => {
+            for (const [nodeId, val] of partial) {
+              result.set(nodeId, val)
+            }
+          })
+        )
+      }
+
+      await Promise.all(promises)
+      this.metrics.incrementCounter('graph.ops.reads')
+      this.metrics.recordHistogram('graph.ops.latency', Date.now() - start)
+      return result
+    })
+  }
+
   /** 向量搜索 — fan-out 到所有 Range */
   async vectorSearch(query: VectorSearchOptions): Promise<VectorSearchResult[]> {
     return this.telemetry.traceAsync('shard.vectorSearch', async () => {

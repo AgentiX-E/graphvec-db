@@ -523,6 +523,41 @@ export function createRestApiServer(
       },
     },
 
+    // POST /api/v1/graph/node/batch-neighbors — 批量邻居查询
+    {
+      method: 'POST',
+      path: '/api/v1/graph/node/batch-neighbors',
+      requireAuth: true,
+      requiredPermission: 'read',
+      handler: async (req, res, _parsed, _params, auth) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const ids = body.ids as number[] | undefined
+        if (!Array.isArray(ids) || ids.length === 0) {
+          jsonResponse(res, 400, { error: 'ids array is required and must be non-empty' })
+          return
+        }
+        const depth = body.depth !== undefined ? Number(body.depth) : undefined
+        const edgeTypeFilter = body.edgeTypeFilter as number[] | undefined
+
+        const result = await shardManager.batchNeighbors(ids, { maxDepth: depth, edgeTypeFilter })
+        // 序列化 Map 为 JSON 对象
+        const serialized: Record<string, unknown> = {}
+        for (const [nodeId, val] of result) {
+          serialized[String(nodeId)] = {
+            edges: val.edges,
+            nodes: val.nodes,
+            edgeCount: val.edges.length,
+            nodeCount: val.nodes.length,
+          }
+        }
+        jsonResponse(res, 200, {
+          nodeIds: ids,
+          results: serialized,
+          totalNodeCount: result.size,
+        })
+      },
+    },
+
     // ── 查询端点 ──────────────────────────────
 
     // POST /api/query — 参数化查询
@@ -833,6 +868,30 @@ export function createRestApiServer(
       },
     )
 
+    addMultiDbRoute('POST', '/api/v1/:db/graph/node/batch-neighbors', true, 'read',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const ids = body.ids as number[] | undefined
+        if (!Array.isArray(ids) || ids.length === 0) {
+          jsonResponse(res, 400, { error: 'ids array is required and must be non-empty' })
+          return
+        }
+        const depth = body.depth !== undefined ? Number(body.depth) : undefined
+        const edgeTypeFilter = body.edgeTypeFilter as number[] | undefined
+        const result = await sm.batchNeighbors(ids, { maxDepth: depth, edgeTypeFilter })
+        const serialized: Record<string, unknown> = {}
+        for (const [nodeId, val] of result) {
+          serialized[String(nodeId)] = {
+            edges: val.edges,
+            nodes: val.nodes,
+            edgeCount: val.edges.length,
+            nodeCount: val.nodes.length,
+          }
+        }
+        jsonResponse(res, 200, { nodeIds: ids, results: serialized, totalNodeCount: result.size })
+      },
+    )
+
     // 查询
     addMultiDbRoute('POST', '/api/v1/:db/query', true, 'read',
       async (sm, req, res) => {
@@ -874,6 +933,80 @@ export function createRestApiServer(
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
           res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
           res.end()
+        }
+      },
+    )
+
+    // 节点邻居查询（POST 方式）
+    addMultiDbRoute('POST', '/api/v1/:db/graph/node/neighbors', true, 'read',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const nodeId = Number(body.id)
+        const maxDepth = body.maxDepth !== undefined ? Number(body.maxDepth) : 1
+        if (isNaN(nodeId)) { jsonResponse(res, 400, { error: 'id is required and must be a number' }); return }
+        try {
+          const result = await sm.neighbors(nodeId, { maxDepth })
+          jsonResponse(res, 200, {
+            nodeId,
+            edges: result.edges,
+            nodes: result.nodes,
+            edgeCount: result.edges.length,
+            nodeCount: result.nodes.length,
+          })
+        } catch (err: unknown) {
+          jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Failed to get neighbors' })
+        }
+      },
+    )
+
+    // 批量邻居查询（S01）
+    addMultiDbRoute('POST', '/api/v1/:db/graph/batch-neighbors', true, 'read',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const ids = body.ids as number[] | undefined
+        if (!Array.isArray(ids) || ids.length === 0) {
+          jsonResponse(res, 400, { error: 'ids array is required and must be non-empty' })
+          return
+        }
+        const maxDepth = body.maxDepth !== undefined ? Number(body.maxDepth) : 1
+        try {
+          const result = new Map<number, { edges: any[]; nodes: any[] }>()
+          for (const id of ids) {
+            const nb = await sm.neighbors(id, { maxDepth })
+            result.set(id, { edges: nb.edges, nodes: nb.nodes })
+          }
+          const entries: Array<{ id: number; edges: any[]; nodes: any[] }> = []
+          for (const [id, val] of result) {
+            entries.push({ id, edges: val.edges, nodes: val.nodes })
+          }
+          jsonResponse(res, 200, { results: entries, count: entries.length })
+        } catch (err: unknown) {
+          jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Failed to get batch neighbors' })
+        }
+      },
+    )
+
+    // 数据库级别健康检查
+    addMultiDbRoute('GET', '/api/v1/:db/health', false, undefined,
+      async (sm, _req, res, _parsed, _params) => {
+        jsonResponse(res, 200, { status: 'ok', database: (_params as any).db })
+      },
+    )
+
+    // 数据库级别统计信息
+    addMultiDbRoute('GET', '/api/v1/:db/stats', true, 'read',
+      async (sm, _req, res, _parsed, _params) => {
+        try {
+          const status = sm.getShardStatus()
+          const totalNodes = status.reduce((sum, s) => sum + s.nodeCount, 0)
+          jsonResponse(res, 200, {
+            database: (_params as any).db,
+            status: 'ok',
+            shardCount: status.length,
+            totalNodes,
+          })
+        } catch (err: unknown) {
+          jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Failed to get stats' })
         }
       },
     )

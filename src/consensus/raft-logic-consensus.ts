@@ -20,6 +20,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
   private config: ConsensusConfig
   private logger: Logger
   private applyFn: ((data: Uint8Array) => Promise<void>) | null = null
+  private _snapshotHandler: ((data: Buffer) => Promise<void>) | null = null
   private _node: any = null
   private _transport: any = null
   private _engine: { exportSnapshot(): Buffer; importSnapshot(data: Buffer): void } | null = null
@@ -81,6 +82,17 @@ export class RaftLogicConsensus implements ConsensusProvider {
 
   setApply(fn: (data: Uint8Array) => Promise<void>): void {
     this.applyFn = fn
+  }
+
+  /**
+   * 设置快照回调。
+   * 当 raft-logic WASM 触发 onSnapshot 或 handleInstallSnapshot 接收到快照时，
+   * 通过此 handler 将快照数据传给调用方（如 RaftCore 或 Engine）。
+   *
+   * 参考 setApply() 的设计模式。
+   */
+  setSnapshotHandler(handler: (data: Buffer) => Promise<void>): void {
+    this._snapshotHandler = handler
   }
 
   /**
@@ -565,13 +577,25 @@ export class RaftLogicConsensus implements ConsensusProvider {
     const snapshot = snapshotData.toString('base64')
 
     if (this._node && typeof (this._node as any).onSnapshot === 'function') {
-      // WASM 支持 onSnapshot
+      // WASM 支持 onSnapshot — 该调用会触发 _tryRegisterOnSnapshot 注册的回调
       this.logger.info('[RaftConsensus] Using WASM onSnapshot')
       ;(this._node as any).onSnapshot(snapshot)
     } else {
-      // 无 onSnapshot 时的 fallback: 通过 state machine 写入
+      // 无 onSnapshot 时的 fallback
       this.logger.info('[RaftConsensus] Using manual snapshot install (no WASM onSnapshot)')
-      await this._applySnapshotToStateMachine(snapshot)
+
+      // 优先调用外部 handler
+      if (this._snapshotHandler) {
+        await this._snapshotHandler(snapshotData)
+      } else {
+        // 通过 state machine 写入
+        await this._applySnapshotToStateMachine(snapshot)
+      }
+
+      // 如果 engine 可用，也通过 importSnapshot 恢复
+      if (this._engine) {
+        this._engine.importSnapshot(snapshotData)
+      }
     }
 
     // 尝试更新 Raft 节点 snapshot index
@@ -587,7 +611,10 @@ export class RaftLogicConsensus implements ConsensusProvider {
   /**
    * 处理收到的 InstallSnapshot 请求（follower 侧）
    *
-   * 接收 leader 推送的快照 → 调用 engine.importSnapshot() 恢复数据
+   * 接收 leader 推送的快照：
+   * 1. 优先调用外部注册的 _snapshotHandler（setSnapshotHandler 设置）
+   * 2. 如果 engine 可用，通过 engine.importSnapshot 恢复数据
+   * 3. 如果都没有，尝试通过 applyFn 将快照写入 state machine
    */
   async handleInstallSnapshot(request: InstallSnapshotRequest): Promise<InstallSnapshotResponse> {
     try {
@@ -599,12 +626,17 @@ export class RaftLogicConsensus implements ConsensusProvider {
         dataLen: snapshotData.length,
       })
 
-      // 调用 engine.importSnapshot 恢复状态机数据
+      // 1) 优先调用外部 handler（如 setSnapshotHandler 注册的）
+      if (this._snapshotHandler) {
+        await this._snapshotHandler(snapshotData)
+      }
+
+      // 2) 调用 engine.importSnapshot 恢复状态机数据
       if (this._engine) {
         this._engine.importSnapshot(snapshotData)
-      } else {
-        this.logger.warn('[RaftConsensus] No engine set, snapshot not imported')
-        // 即使没有 engine，也尝试通过 applyFn 将快照写入 state machine
+      } else if (!this._snapshotHandler) {
+        this.logger.warn('[RaftConsensus] No engine or snapshotHandler set, snapshot not imported')
+        // 即使没有 engine 和 handler，也尝试通过 applyFn 将快照写入 state machine
         if (this.applyFn) {
           const op = JSON.stringify({
             type: 'install_snapshot',
@@ -641,6 +673,11 @@ export class RaftLogicConsensus implements ConsensusProvider {
   /**
    * 尝试注册 WASM onSnapshot 回调（如果底层暴露）
    * 在 start() 中调用
+   *
+   * 当 raft-logic WASM 触发 onSnapshot 时：
+   * 1. 优先调用外部注册的 _snapshotHandler（setSnapshotHandler 设置）
+   * 2. 如果未注册 handler，回退到 _applySnapshotToStateMachine
+   * 3. 如果 engine 可用，也通过 engine.importSnapshot 恢复数据
    */
   private _tryRegisterOnSnapshot(): void {
     if (!this._node) return
@@ -648,7 +685,19 @@ export class RaftLogicConsensus implements ConsensusProvider {
       this.logger.info('[RaftConsensus] Registering WASM onSnapshot callback')
       ;(this._node as any).onSnapshot(async (snapshotBase64: string) => {
         this.logger.info('[RaftConsensus] onSnapshot received')
-        await this._applySnapshotToStateMachine(snapshotBase64)
+        const buf = Buffer.from(snapshotBase64, 'base64')
+
+        // 优先使用外部 handler
+        if (this._snapshotHandler) {
+          await this._snapshotHandler(buf)
+        } else {
+          await this._applySnapshotToStateMachine(snapshotBase64)
+        }
+
+        // 如果 engine 已设置，也通过 importSnapshot 恢复
+        if (this._engine) {
+          this._engine.importSnapshot(buf)
+        }
       })
     } else {
       this.logger.info('[RaftConsensus] WASM onSnapshot not available, using manual approach')

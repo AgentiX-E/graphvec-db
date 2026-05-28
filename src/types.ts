@@ -188,6 +188,8 @@ export interface OverGraphConfig {
   denseVector?: { dimension: number }
   defaultRetention?: { nodes?: string; edges?: string }
   cacheSize?: number
+  /** 邻里查询缓存 TTL（毫秒），默认 5000 */
+  neighborCacheTTLMs?: number
   /** OverGraph 存储内核调优参数 */
   overgraph?: {
     compactAfterNFlushes?: number

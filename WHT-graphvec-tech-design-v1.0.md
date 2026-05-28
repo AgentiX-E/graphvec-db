@@ -71,7 +71,7 @@
 - WAL 通过 stream-wal 模块实现崩溃恢复
 - Label index 加速按标签查询
 - SafeReader 提供读写分离的 snapshot 读
-**已知问题**: `dropDatabase()` 不释放底层资源（Raft、GraphEngine、文件句柄），见"已知限制"章节
+**已修复 (Round 5)**: `dropDatabase()` 现执行三阶段删除：Phase 1 tombstone 写入 → Phase 2 冷静期可恢复 → Phase 3 GC 物理清理（`src/core/database-manager.ts`）
 **依赖**: F07 (Database Manager), F08 (Transactions)
 
 ### F02: EventBus
@@ -122,7 +122,7 @@
 **设计目录**: `src/shard/`
 **意图**: 自动范围分片、分片分裂与再平衡
 **接口**:
-- `AutoSplitter` — 自动检测 range 大小并触发分裂
+- `Rebalancer.checkAndSplit()` / `_splitRange()` — 自动检测 range 大小并触发分裂（`AutoSplitter` 功能已合并入 `Rebalancer`）
 - `ShardRouter` — 路由 key → shard 映射
 - `ShardManager` — 集群分片生命周期管理
 - `Rebalancer` — 分片再平衡调度器
@@ -189,19 +189,4 @@ Storage Path:
 
 **文件**: `src/core/database-manager.ts` — `dropDatabase()`
 
-当前 `dropDatabase()` 只从内存 Map 中删除记录，不释放以下资源：
-
-| 残留资源 | 影响 | 严重度 |
-|----------|------|:------:|
-| `ShardManager.ranges` 中的 RangeInstance 引用 | fan-out 遍历残留 range，调用已关闭的 GraphEngine | 🔴 高 |
-| RangeInstance 内部 Consensus 引擎（选举定时器 + WAL 句柄） | 内存泄漏，真实 RaftCore 有存活线程 | 🔴 高 |
-| GraphEngine / OverGraph / LMDB mmap / WAL stream | 文件句柄泄漏，LMDB 保持文件锁 | 🔴 高 |
-| 未通知集群其他节点 | Outbox 继续发送失效消息 | 🟡 中 |
-| 文件系统数据残留 | 重启后重读残留数据 | 🟡 中 |
-
-**设计文档**: `docs/multi-database-arch-design.md §8` 定义的三阶段删除方案（Phase 0 proposeDelete → Phase 1 commit → 冷静期 → Phase 3 GC）未在生产代码中实现。集成测试 `test/integration/database-deletion.test.ts` (18/18 ✅) 已验证设计行为，但生产代码未同步。
-
-**当前可用但未被调用的方法**:
-- `ShardManager.stop()` — 停止所有 RangeInstance（consensus + graphEngine）
-- `ShardManager.removeRange()` — 移除单个 range
-- `RangeInstance.stop()` — 停止 consensus + 关闭 engine
+当前 `dropDatabase()` 执行三阶段删除：Phase 1 写入 `.tombstone.json`（含 database/requestedAt/gcEarliestAt/phase），Phase 2 冷静期内可 restoreDatabase() 恢复，Phase 3 gcDatabases() 物理清理。设计文档 `docs/multi-database-arch-design.md §8` 已实现。

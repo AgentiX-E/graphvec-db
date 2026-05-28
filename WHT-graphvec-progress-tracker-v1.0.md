@@ -114,7 +114,8 @@
    - 不通知集群其他节点
    - 设计文档 `docs/multi-database-arch-design.md §8` 定义的三阶段删除未在生产代码中实现
    - 但 `ShardManager.stop()`、`removeRange()`、`RangeInstance.stop()` 方法已存在（未被调用）
-   - 集成测试 `database-deletion.test.ts` (18/18 ✅) 已验证设计行为
+   - 集成测试 `database-deletion.test.ts` (18/18 ✅) 已验证三阶段行为
+   - **Round 5 已实现**: Phase 1 tombstone 写入 (.tombstone.json) → Phase 2 冷静期可恢复 (restoreDatabase) → Phase 3 GC 物理清理 (gcDatabases)
 
 ## 变更日志
 

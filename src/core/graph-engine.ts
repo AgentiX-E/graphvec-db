@@ -237,7 +237,7 @@ export class GraphEngine {
     this._rls = rls ?? null
     this._planner = planner ?? null
     this._bridge = null
-    this._cacheMaxSize = config.cacheSize ?? 1000
+    this._cacheMaxSize = config.cacheSize ?? 1024
     this._cacheDefaultTTLSec = 60
     this._neighborCache = new LRUCache<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }>(
       this._cacheMaxSize,
@@ -655,6 +655,17 @@ export class GraphEngine {
     edges: EdgeRecord[]; nodes: NodeRecord[]
   } {
     this._ensureOpen()
+
+    // LRU 缓存：仅在无 RLS 上下文时命中
+    if (!ctx) {
+      const depth = opts?.maxDepth ?? 1
+      const cacheKey = `${id}:${depth}`
+      const cached = this._neighborCache.get(cacheKey as any)
+      if (cached !== undefined) {
+        return cached
+      }
+    }
+
     const entries = this.storage.neighbors(id, opts)
     const edges: EdgeRecord[] = []
     const nodes: NodeRecord[] = []
@@ -680,14 +691,25 @@ export class GraphEngine {
         }
       }
     }
-    return { edges, nodes }
+
+    const result = { edges, nodes }
+
+    // LRU 缓存写入（仅当无 RLS 上下文时）
+    if (!ctx) {
+      const depth = opts?.maxDepth ?? 1
+      const cacheKey = `${id}:${depth}`
+      const cacheTtlMs = this.config.neighborCacheTTLMs ?? 5000
+      this._neighborCache.set(cacheKey as any, result, cacheTtlMs)
+    }
+
+    return result
   }
 
   /**
    * 批量邻居查询（带 LRU 缓存）
    *
-   * 输入 N 个 nodeId，一次返回所有邻居，重复查询走缓存。
-   * 适合用于图算法（PageRank、社区检测等）需要反复查邻居的热点路径。
+   * 输入 N 个 nodeId，一次返回所有邻居。
+   * 每个 nodeId 的 neighbors() 内部已自带 LRU 缓存，所以批量查询自然走缓存。
    *
    * @param ids - 节点 ID 数组（batch）
    * @param opts - 查询选项（同 neighbors()）
@@ -696,26 +718,26 @@ export class GraphEngine {
   batchNeighbors(ids: NodeId[], opts?: { maxDepth?: number; edgeTypeFilter?: number[] }): Map<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }> {
     this._ensureOpen()
     const result = new Map<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }>()
-    const miss: NodeId[] = []
 
     for (const id of ids) {
-      const cached = this._neighborCache.get(id)
-      if (cached !== undefined) {
-        result.set(id, cached)
-      } else {
-        miss.push(id)
-      }
-    }
-
-    if (miss.length > 0) {
-      for (const id of miss) {
-        const data = this.neighbors(id, opts)
-        this._neighborCache.set(id, data)
-        result.set(id, data)
-      }
+      const data = this.neighbors(id, opts)
+      result.set(id, data)
     }
 
     return result
+  }
+
+  /**
+   * neighborsMany — 批量邻居查询的公共 API（推荐外部使用）
+   *
+   * 与 batchNeighbors 功能相同，但名称更直观，且深度参数直接暴露。
+   *
+   * @param ids - 节点 ID 数组
+   * @param depth - 遍历深度（默认 1）
+   * @returns Map<NodeId, { edges; nodes }>
+   */
+  neighborsMany(ids: NodeId[], depth?: number): Map<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }> {
+    return this.batchNeighbors(ids, { maxDepth: depth ?? 1 })
   }
 
   // ──────────────────────────────────────────

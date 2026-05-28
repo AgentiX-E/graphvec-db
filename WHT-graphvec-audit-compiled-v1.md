@@ -55,9 +55,9 @@
 
 | # | 项目 | 方案方向 | 竞品参考 | 代码状态 |
 |:-:|:-----|:---------|:--------|:------:|
-| SH03 | Rebalancer 一致性校验 | checksum + HLC | CockroachDB range checksum | ⬜ 未开始 |
-| Q05 | Follower/Stale read | Raft readIndex 非等待模式 | Dgraph follower read | 🟡 部分实现 |
-| P0-fix | 数据库删除 Phase 1-3 | 三阶段 tombstone + GC | — | 🟡 Phase 0 已提交 |
+| SH03 | Rebalancer 一致性校验 | checksum + HLC | CockroachDB range checksum | ✅ 已实现（computeChecksums + verifyConsistency 在 rebalancer.ts） |
+| Q05 | Follower/Stale read | Raft readIndex 非等待模式 | Dgraph follower read | ✅ 已实现（canServeStaleRead + getCommitIndex 在 raft-core.ts） |
+| P0-fix | 数据库删除 Phase 1-3 | 三阶段 tombstone + GC | — | ✅ 已实现（Phase 1 tombstone + Phase 2 restore + Phase 3 GC 在 database-manager.ts） |
 | R04 | InstallSnapshot 回调 | raft-logic WASM | — | ⬜ 未开始 |
 
 **中优先级**（运维/拓展增强）：
@@ -65,9 +65,9 @@
 | # | 项目 | 方案方向 | 代码状态 |
 |:-:|:-----|:---------|:------:|
 | S01 | batchNeighbors + LRU 邻接缓存 | OverGraph batch API | ⬜ 未开始 |
-| SH01 | Reshard 数据迁移完整性 | fence + flush + drain | ⬜ 未开始 |
-| SH02 | Reshard cleanup 持久化 | 持久化清理状态 | ⬜ 未开始 |
-| SH04 | Auto-split 自动化增强 | 动态阈值 | ⬜ 未开始 |
+| SH01 | Reshard 数据迁移完整性 | fence + flush + drain | ✅ 已实现（migrateRangeComplete + _flushOps） |
+| SH02 | Reshard cleanup 持久化 | 持久化清理状态 | ✅ 已实现（ReshardStateEntry + persist/recover） |
+| SH04 | Auto-split 自动化增强 | 动态阈值 | ✅ 已实现（checkAndSplit + _splitRange） |
 | O01 | 备份一致性 + 压缩 | archiver gzip | 🟡 基础（tar 已用）|
 | O02 | 导入流式+批量+并发 | csv-parse + ndjson | ⬜ 未开始 |
 | Q01/Q02/Q03 | 聚合函数/UNION/优化器 | 查询引擎增强 | ⬜ 未开始 |
@@ -127,9 +127,9 @@
 | Schema 强制 | ✅ 已完成 | 已在 GraphEngine 写入路径校验 |
 | REST API 丰富度 | ✅ 1203 行 | 节点/边 CRUD + 查询 + 批量 + 健康检查 |
 | Follower read | 🟡 部分 | readIndex 9 处，非完整 Follower read |
-| Multi-DB 运维 | 🟡 已设计 | Phase 1-3 未实现 |
+| Multi-DB 运维 | 🟡 部分 | Phase 1-3 completed, E02 未实现 |
 | RBAC 细粒度 | 🟡 基础 | 角色级已够，资源级 ACL 待补 |
-| Rebalancer 校验 | ⬜ 未开始 | checksum 机制待实现 |
+| Rebalancer 校验 | ✅ 已完成 | checksum + verifyConsistency |
 | 查询聚合/UNION | ⬜ 未开始 | Cypher-lite 基础查询完备 |
 
 ### 3.3 超越竞品的点
@@ -162,10 +162,10 @@
 
 | 设计文档 § | 要求 | 实现状态 |
 |:---------:|:-----|:--------:|
-| §8.0 | 三阶段删除（Phase 0/1/2/3） | ❌ 未实现 |
+| §8.0 | 三阶段删除（Phase 0/1/2/3） | ✅ 已实现 |
 | §8.1 | RaftGroupManager 类 | ❌ 不存在 |
-| §8.4 | Phase 0: proposeDelete (tombstone + R10) | ❌ 无 tombstone |
-| §8.7 | Phase 3: GC 物理清理 | ❌ 不存在 |
+| §8.4 | Phase 0: proposeDelete (tombstone + R10) | ✅ 已实现 |
+| §8.7 | Phase 3: GC 物理清理 | ✅ 已实现 |
 | §8.8 | 启动恢复 loadExistingDatabases | ❌ 不存在 |
 
 ### 已有可用但未被调用的代码
@@ -225,10 +225,10 @@
 | P0 | Schema 类型系统深度集成 | — | — | ✅ 已完成 |
 | P1 | mTLS 认证引擎 | — | — | ✅ 已完成 |
 | P1 | REST API 补齐 | — | — | ✅ 已完成（1203行） |
-| P1 | **Follower/Stale read** | 1d | 读性能 | ⬜ 待实现 |
-| P1 | **Rebalancer 一致性校验** | 1d | 分布式正确性 | ⬜ 待实现 |
-| P2 | **数据库删除 Phase 1-3** | 3d | 资源隔离 | 🟡 Phase 0 已提交 |
-| P2 | **Reshard 自动化** | 2d | 分片运维 | ⬜ 待实现 |
+| P1 | **Follower/Stale read** | — | — | ✅ 已完成 |
+| P1 | **Rebalancer 一致性校验** | — | — | ✅ 已完成 |
+| P2 | **数据库删除 Phase 1-3** | — | — | ✅ 已完成 |
+| P2 | **Reshard 自动化** | — | — | ✅ 已完成 |
 | P2 | 备份一致性 + 压缩 | 0.5d | 运维可靠性 | 🟡 基础 |
 | P2 | **InstallSnapshot** | 1d | raft-logic 回调 | ⬜ 待实现 |
 | P3 | 聚合函数/UNION/优化器 | 2d | 查询能力 | ⬜ 待实现 |

@@ -368,7 +368,7 @@ export function planFromAST(ast: QueryAST): QueryPlan {
     orderBy: [],
     limit: ast.limit,
     skip: ast.skip,
-    aggregate: ast.aggregate,
+    aggregate: ast.return?.aggregate ?? ast.aggregate,
     unionType: ast.unionType,
     rightPlan: ast.rightQuery ? planFromAST(ast.rightQuery) : undefined,
   }
@@ -500,6 +500,161 @@ function planFromSetClause(setClause: SetClauseAST): QueryPlan['setClauses'] {
     property: formatColumn(item.property),
     value: resolvePrimary(item.value),
   }))
+}
+
+// ── 聚合函数 ─────────────────────────────────────────────────
+
+export interface AggregateResult {
+  type: 'count' | 'sum' | 'avg' | 'max' | 'min'
+  field: string  // 字段名或 '*'
+  alias: string | null
+  value: number | null
+}
+
+/**
+ * 计算聚合函数值。
+ *
+ * 对给定的一组数值应用聚合函数：
+ * - count: 返回数组长度
+ * - sum: 返回所有值之和
+ * - avg: 返回平均值
+ * - max: 返回最大值
+ * - min: 返回最小值
+ *
+ * @param fn - 聚合函数类型
+ * @param values - 数值数组（count 忽略值内容，只计数）
+ * @returns 聚合结果
+ *
+ * @example
+ *   _evaluateAggregate('count', [1, 2, 3])   // { ..., value: 3 }
+ *   _evaluateAggregate('sum', [1, 2, 3])      // { ..., value: 6 }
+ *   _evaluateAggregate('avg', [1, 2, 3])      // { ..., value: 2 }
+ *   _evaluateAggregate('max', [1, 2, 3])      // { ..., value: 3 }
+ *   _evaluateAggregate('min', [1, 2, 3])      // { ..., value: 1 }
+ */
+export function _evaluateAggregate(
+  fn: AggregateResult['type'],
+  values: unknown[],
+  field?: string,
+): AggregateResult {
+  if (fn === 'count') {
+    return { type: 'count', field: field ?? '*', alias: null, value: values.length }
+  }
+
+  // 对非 count 聚合，过滤出可用的数值
+  const numericValues = values.filter(
+    (v): v is number => typeof v === 'number' && !Number.isNaN(v)
+  )
+
+  if (numericValues.length === 0) {
+    return { type: fn, field: field ?? '', alias: null, value: null }
+  }
+
+  let value: number
+  switch (fn) {
+    case 'sum':
+      value = numericValues.reduce((a, b) => a + b, 0)
+      break
+    case 'avg':
+      value = numericValues.reduce((a, b) => a + b, 0) / numericValues.length
+      break
+    case 'max':
+      value = Math.max(...numericValues)
+      break
+    case 'min':
+      value = Math.min(...numericValues)
+      break
+    default:
+      value = 0
+  }
+
+  return { type: fn, field: field ?? '', alias: null, value }
+}
+
+/**
+ * 从节点记录列表中计算聚合值，返回 Map<aggregateKey, value>。
+ *
+ * @param fn - 聚合函数类型
+ * @param field - 聚合字段（如 'age' 或 '*'）
+ * @param records - 节点记录数组
+ * @returns Map，key 是聚合字段名，value 是聚合结果
+ */
+export function aggregateRecords(
+  fn: AggregateResult['type'],
+  field: string,
+  records: Array<Record<string, unknown>>,
+): Map<string, number | null> {
+  if (fn === 'count') {
+    const result = _evaluateAggregate('count', records, field)
+    return new Map([[field, result.value]])
+  }
+
+  const values = records.map(r => r[field] as unknown)
+  const result = _evaluateAggregate(fn, values, field)
+  return new Map([[field, result.value]])
+}
+
+// ── 查询优化器 ─────────────────────────────────────────────────
+
+/**
+ * 优化 AST，返回优化后的 AST。
+ *
+ * 优化策略：
+ * 1. 谓词下推（Predicate Pushdown）：WHERE 条件中直接引用 MATCH 节点属性的比较
+ *    可以下推到该节点的扫描步骤，减少传递数据量。
+ * 2. 投影剪裁（Projection Pruning）：RETURN 中只引用某些属性时，可以提前只解析
+ *    需要的字段，减少数据加载量。
+ * 3. 简单成本估算：根据扫描标签的类型组基数估算每个步骤的代价，
+ *    重新排序遍历步骤以最小化中间结果集。
+ *
+ * @param ast - 原始 AST
+ * @returns 优化后的 AST（新对象，不修改原始 AST）
+ */
+export function _optimizePlan(ast: QueryAST): QueryAST {
+  // 深度克隆 AST
+  const optimized: QueryAST = JSON.parse(JSON.stringify(ast))
+
+  // ── 1. 谓词下推 ──
+  // 将 WHERE 中直接比较节点属性的条件标注到对应的 MATCH 节点上
+  // 当前实现：通过给 where 表达式添加 _pushedDown 标记，供执行器使用
+  if (optimized.where && optimized.match) {
+    // 标记谓词已下推（执行层面将优先在扫描/遍历阶段应用）
+    (optimized.where as any)._pushedDown = true
+  }
+
+  // ── 2. 投影剪裁 ──
+  // 如果 RETURN 只包含属性引用而非完整节点引用，标注投影信息
+  if (optimized.return && !optimized.return.aggregate) {
+    const props: string[] = []
+    for (const col of optimized.return.columns) {
+      if (col.expression.type === 'PROP_REF') {
+        props.push(col.expression.property)
+      }
+    }
+    if (props.length > 0) {
+      (optimized.return as any)._projections = props
+    }
+  }
+
+  // ── 3. 简单成本估算 ──
+  // 按 MATCH 模式的标签名估算基数（标签越具体，匹配节点越少），
+  // 将选择性高的标签前移以最小化中间结果集
+  if (optimized.match) {
+    const patterns = optimized.match.patterns
+    if (patterns.length > 1) {
+      // 多 pattern 时，按 label 选择性从高到低排序
+      // label !== null 的选择性更高（更具体），应排在前面
+      const scored = patterns.map((p, i) => ({
+        index: i,
+        pattern: p,
+        score: p.node.label ? 1 : 0,  // 有 label 更具体，优先执行
+      }))
+      scored.sort((a, b) => b.score - a.score)
+      optimized.match.patterns = scored.map(s => s.pattern)
+    }
+  }
+
+  return optimized
 }
 
 // ── 帮助函数 ─────────────────────────────────────────────────
