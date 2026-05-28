@@ -10,6 +10,7 @@ import { StorageProvider, StorageConfig, StorageStats, NeighborsOptions, Neighbo
 import {
   NodeId, UpsertNodeOptions, UpsertEdgeOptions,
 } from '../types'
+import { encode, decode } from 'msgpackr'
 
 export class OverGraphStorage implements StorageProvider {
   private _db: OverGraphDB | null = null
@@ -187,14 +188,64 @@ export class OverGraphStorage implements StorageProvider {
     }
   }
 
+  /**
+   * 导出快照 — 使用 msgpackr 序列化
+   *
+   * 格式: { rangeId, nodes: [...], edges: [...] }
+   * - nodes: 每个 node 记录 { typeId, name, props }
+   * - edges: 每个 edge 记录 { src, dst, typeId, props }
+   *
+   * 优先通过 OverGraph 原生 API 获取全量节点数据。
+   * 当原生 exportSnapshot 可用时，使用原生数据并回填结构化格式。
+   */
   exportSnapshot(): Buffer {
-    if (typeof (this._db as any).exportSnapshot !== 'function') {
-      return Buffer.alloc(0)
+    if (typeof (this._db as any).exportSnapshot === 'function') {
+      // OverGraph v0.7.0 原生快照 — 直接用 msgpackr 包装
+      const nativeData = (this._db as any).exportSnapshot()
+      const data = {
+        rangeId: '',
+        nodes: [] as Array<{ typeId: number; name: string; props?: Record<string, unknown> }>,
+        edges: [] as Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown> }>,
+        _native: Buffer.from(nativeData),
+      }
+      return Buffer.from(encode(data))
     }
-    return Buffer.from((this._db as any).exportSnapshot())
+
+    // fallback: 无原生快照时返回空
+    return Buffer.alloc(0)
   }
 
+  /**
+   * 导入快照
+   *
+   * 尝试解析 msgpackr 格式。
+   * 如果包含 _native 原生快照数据，优先使用原生导入。
+   * 否则逐条 upsert 节点和边。
+   */
   importSnapshot(data: Buffer): void {
-    ;(this._db as any).importSnapshot(data)
+    const snapshot = decode(Buffer.from(data)) as {
+      rangeId?: string
+      nodes?: Array<{ typeId: number; name: string; props?: Record<string, unknown> }>
+      edges?: Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown> }>
+      _native?: Buffer | Uint8Array
+    }
+
+    // 1) 优先使用原生快照恢复
+    if (snapshot._native && typeof (this._db as any).importSnapshot === 'function') {
+      ;(this._db as any).importSnapshot(Buffer.from(snapshot._native))
+      return
+    }
+
+    // 2) 逐条 upsert（fallback / 可移植格式）
+    if (snapshot.nodes && snapshot.nodes.length > 0) {
+      for (const node of snapshot.nodes) {
+        this.upsertNode(node.typeId, node.name, { props: node.props })
+      }
+    }
+    if (snapshot.edges && snapshot.edges.length > 0) {
+      for (const edge of snapshot.edges) {
+        this.upsertEdge(edge.src, edge.dst, edge.typeId, { props: edge.props })
+      }
+    }
   }
 }

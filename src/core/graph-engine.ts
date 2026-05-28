@@ -9,6 +9,10 @@ import { StorageProvider, StorageConfig, NeighborsOptions, NeighborEntry } from 
 import { OverGraphStorage } from './overgraph-storage'
 
 import { LabelEngine } from './label-engine'
+import { bfs } from '../algorithms/bfs'
+import { dfs } from '../algorithms/dfs'
+import { pagerank } from '../algorithms/pagerank'
+import { dijkstra } from '../algorithms/dijkstra'
 import { getEventBus } from './event-bus'
 import { EventStream } from './event-stream'
 import { MultiLeaderReplication } from './multi-leader-replication'
@@ -21,6 +25,7 @@ import { RLSContext, RowLevelSecurity } from '../security/rls'
 import { QueryPlanner, QuerySpec, buildIRFromSpec, optimizeIR } from '../api/query-planner'
 import { OptimizerBridge } from '../query/planner-bridge'
 import { Logger } from '../ops/logger'
+import { Transaction, TransactionManager } from './transaction'
 
 /** Event for EventStream emit */
 interface StreamEvent { type: string; data: Record<string, unknown> }
@@ -1035,23 +1040,37 @@ export class GraphEngine {
       return []
     }
 
-    // Step 2: 执行遍历步（当前仅支持单跳）
+    // Step 2: 执行遍历步（支持单跳和变长多跳）
     let results: NodeRecord[] = [...candidates]
     for (const step of plan.steps) {
-      const filtered: NodeRecord[] = []
-      for (const node of results) {
-        const neighborsRaw = this.storage.neighbors(node.id, {
-          edgeTypeFilter: step.edgeLabel ? [Number(step.edgeLabel)] : undefined,
+      if (step.range) {
+        // 变长路径：执行 BFS 多跳遍历
+        const minDepth = step.range.min
+        const maxDepth = step.range.max ?? minDepth // null max means no upper bound, treat as min
+        results = this._executeVariableLengthTraversal(results, {
+          relationshipType: step.edgeLabel ? Number(step.edgeLabel) : undefined,
+          minDepth,
+          maxDepth,
+          direction: step.direction,
+          ctx,
         })
-        for (const entry of neighborsRaw) {
-          const neighbor = this.getNode(entry.nodeId, ctx)
-          if (neighbor) {
-            if (step.targetLabel && neighbor.typeName !== step.targetLabel) continue
-            filtered.push(neighbor)
+      } else {
+        // 单跳遍历（原有逻辑）
+        const filtered: NodeRecord[] = []
+        for (const node of results) {
+          const neighborsRaw = this.storage.neighbors(node.id, {
+            edgeTypeFilter: step.edgeLabel ? [Number(step.edgeLabel)] : undefined,
+          })
+          for (const entry of neighborsRaw) {
+            const neighbor = this.getNode(entry.nodeId, ctx)
+            if (neighbor) {
+              if (step.targetLabel && neighbor.typeName !== step.targetLabel) continue
+              filtered.push(neighbor)
+            }
           }
         }
+        results = filtered
       }
-      results = filtered
       if (results.length === 0) break
     }
 
@@ -1194,6 +1213,85 @@ export class GraphEngine {
       case 'LTE': return typeof val === 'number' && typeof f.value === 'number' && val <= f.value
       default: return true
     }
+  }
+
+  /**
+   * 变长路径 BFS 多跳遍历
+   *
+   * 从 candidates 节点开始，沿指定边类型进行 BFS 遍历，
+   * 收集深度在 [minDepth, maxDepth] 范围内的所有目标节点。
+   *
+   * @param candidates - 起始节点列表
+   * @param opts - 遍历选项
+   * @param opts.relationshipType - 边类型 ID（可选）
+   * @param opts.minDepth - 最小深度
+   * @param opts.maxDepth - 最大深度
+   * @param opts.direction - 遍历方向
+   * @param opts.ctx - RLS 上下文（可选）
+   * @returns 位于有效深度范围内的目标节点列表（去重）
+   */
+  private _executeVariableLengthTraversal(
+    candidates: NodeRecord[],
+    opts: {
+      relationshipType?: number;
+      minDepth: number;
+      maxDepth: number;
+      direction: 'out' | 'in' | 'any';
+      ctx?: RLSContext;
+    },
+  ): NodeRecord[] {
+    const { relationshipType, minDepth, maxDepth, direction, ctx } = opts
+    const visited = new Set<number>()
+    const results: NodeRecord[] = []
+
+    // 每个元素: { node, depth }
+    interface BFSState {
+      node: NodeRecord
+      depth: number
+    }
+
+    // 初始化 BFS 队列
+    const queue: BFSState[] = candidates.map(n => ({ node: n, depth: 0 }))
+    for (const c of candidates) {
+      visited.add(c.id)
+    }
+
+    let head = 0
+    while (head < queue.length) {
+      const { node, depth } = queue[head]
+      head++
+
+      // 如果已到达 maxDepth，停止扩展
+      if (depth >= maxDepth) continue
+
+      // 获取邻居
+      const neighborsRaw = this.storage.neighbors(node.id, {
+        edgeTypeFilter: relationshipType !== undefined ? [relationshipType] : undefined,
+      })
+
+      for (const entry of neighborsRaw) {
+        const neighborId = entry.nodeId
+        if (visited.has(neighborId)) continue
+        visited.add(neighborId)
+
+        const neighbor = this.getNode(neighborId, ctx)
+        if (!neighbor) continue
+
+        const nextDepth = depth + 1
+
+        // 如果深度在有效范围内，加入结果集
+        if (nextDepth >= minDepth && nextDepth <= maxDepth) {
+          results.push(neighbor)
+        }
+
+        // 如果未到 maxDepth，继续扩展
+        if (nextDepth < maxDepth) {
+          queue.push({ node: neighbor, depth: nextDepth })
+        }
+      }
+    }
+
+    return results
   }
 
   // ──────────────────────────────────────────
@@ -1475,9 +1573,132 @@ export class GraphEngine {
     }
   }
 
+  // ── 图算法 API (Round 6) ──
+
+  /**
+   * BFS 遍历
+   * @param startNode - 起始节点 ID
+   * @returns Map<nodeId, { distance, parent }>
+   */
+  async bfs(startNode: NodeId): Promise<Map<NodeId, { distance: number; parent: NodeId | null }>> {
+    this._ensureOpen()
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return bfs(getNeighbors, startNode)
+  }
+
+  /**
+   * DFS 遍历
+   * @param startNode - 起始节点 ID
+   * @param order - 可选，'pre' | 'post'
+   * @returns { pre, post, parent }
+   */
+  async dfs(startNode: NodeId, order?: 'pre' | 'post'): Promise<{
+    pre: NodeId[]; post: NodeId[]; parent: Map<NodeId, NodeId | null>
+  }> {
+    this._ensureOpen()
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return dfs(getNeighbors, startNode, order)
+  }
+
+  /**
+   * PageRank 计算
+   * @param options - 可选参数（dampingFactor, maxIterations, convergenceThreshold）
+   * @returns Map<nodeId, rank>
+   */
+  async pagerank(options?: {
+    dampingFactor?: number; maxIterations?: number; convergenceThreshold?: number
+  }): Promise<Map<NodeId, number>> {
+    this._ensureOpen()
+    const allNodes = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return pagerank(getNeighbors, allNodes, options)
+  }
+
+  /**
+   * 最短路径（无权图）
+   * 使用 BFS 计算从 start 到 end 的最短路径
+   * @param start - 起始节点 ID
+   * @param end - 目标节点 ID
+   * @returns { path, distance } | null
+   */
+  async shortestPath(start: NodeId, end: NodeId): Promise<{
+    path: NodeId[]; distance: number
+  } | null> {
+    this._ensureOpen()
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    const result = bfs(getNeighbors, start)
+    if (!result.has(end)) return null
+    // 回溯路径
+    const path: NodeId[] = []
+    let current: NodeId | null = end
+    while (current !== null) {
+      path.unshift(current)
+      current = result.get(current)!.parent
+    }
+    return { path, distance: result.get(end)!.distance }
+  }
+
+  /**
+   * Dijkstra 最短路径（带权图）
+   * @param startNode - 起始节点 ID
+   * @returns Map<nodeId, { distance, parent }>
+   */
+  async dijkstra(startNode: NodeId): Promise<Map<NodeId, { distance: number; parent: NodeId | null }>> {
+    this._ensureOpen()
+    const getWeightedNeighbors = (nid: NodeId) =>
+      this.neighbors(nid).edges.map(e => ({ nodeId: e.dst, weight: 1 }))
+    return dijkstra(getWeightedNeighbors, startNode)
+  }
+
   private _ensureOpen(): void {
     if (!this._isOpen) {
       throw new Error('GraphEngine is not open. Call open() first.')
+    }
+  }
+
+  // ── Transaction API (Round 6: MVCC 增强) ──
+
+  private _defaultTxnManager = new TransactionManager()
+
+  beginTransaction(txnManager?: TransactionManager): Transaction {
+    const mgr = txnManager ?? this._defaultTxnManager
+    return mgr.begin()
+  }
+
+  async withTransaction<T>(
+    fn: (txn: Transaction) => Promise<T>,
+    txnManager?: TransactionManager,
+  ): Promise<T> {
+    const mgr = txnManager ?? this._defaultTxnManager
+    const txn = mgr.begin()
+    try {
+      const result = await fn(txn)
+      await txn.commit()
+      return result
+    } catch (err) {
+      await txn.rollback()
+      throw err
+    }
+  }
+
+  async execInTransaction(
+    nodeId: NodeId,
+    operation: 'upsert' | 'delete',
+    data?: { typeId?: number; name?: string; props?: Record<string, any> },
+    txnManager?: TransactionManager,
+  ): Promise<void> {
+    const mgr = txnManager ?? this._defaultTxnManager
+    const txn = mgr.begin()
+    try {
+      if (operation === 'upsert' && data) {
+        txn.upsertNode(data.typeId!, data.name!, data.props)
+      } else if (operation === 'delete') {
+        txn.deleteNode(nodeId)
+      }
+      await txn.commit()
+    } catch (err) {
+      await txn.rollback()
+      throw err
     }
   }
 }

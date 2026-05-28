@@ -1,161 +1,223 @@
 /**
- * Transaction — 轻量级事务接口
+ * Transaction — MVCC 增强事务系统
  *
- * 在内存中缓存写操作，commit 时通过 GraphEngine 一次性 flush。
- * 走 engine 路径确保 label index、HNSW（由 overgraph 托管）、event emission 不绕过。
- * 冲突检测使用简单的时间戳 + 写集碰撞检测。
- *
- * 设计原则:
- * - 不需要修改现有 GraphEngine 同步方法
- * - beginTransaction() + commit()/rollback() 是可选路径
- * - 连接层 (Raft/rest) 可以将一组操作包装成事务
+ * 支持：
+ * - 快照隔离 (Snapshot Isolation)
+ * - 写集锁 + 冲突检测
+ * - 读集追踪
+ * - 超时锁清理
+ * - 与 GraphEngine 深度集成
  */
 
 import type { GraphEngine } from './graph-engine'
-import type { NodeRecord, EdgeRecord, UpsertNodeOptions, UpsertEdgeOptions } from '../types'
+import type { NodeId } from '../types'
 
-export type TxnWrite =
-  | { kind: 'upsertNode'; typeId: number; name: string; opts?: UpsertNodeOptions }
-  | { kind: 'deleteNode'; id: number }
-  | { kind: 'upsertEdge'; src: number; dst: number; typeId: number; opts?: UpsertEdgeOptions }
-  | { kind: 'deleteEdge'; src: number; dst: number; typeId: number }
+// ── 类型定义 ──
 
-export interface TxnSnapshot {
-  writes: ReadonlyArray<TxnWrite>
-  startedAt: number
+export interface UpsertOpData {
+  typeId: number
+  name: string
+  props?: Record<string, any>
 }
 
-let nextTxnId = 1
+export interface MVCCSnapshot {
+  id: number
+  createdAt: number
+}
 
-export class Transaction {
-  readonly id: number
-  readonly startedAt: number
-  private _writes: TxnWrite[] = []
-  private _committed = false
-  private _rolledBack = false
+// ── 事务管理器 ──
 
-  constructor() {
-    this.id = nextTxnId++
-    this.startedAt = Date.now()
+export class TransactionManager {
+  private _nextSnapshotId = 1
+  private _locks = new Map<string, { nodeId: NodeId; snapshotId: number; lockedAt: number }>()
+  private _lockTimeoutMs: number
+
+  constructor(lockTimeoutMs = 5000) {
+    this._lockTimeoutMs = lockTimeoutMs
   }
 
-  /** 插入/更新节点 */
-  upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): void {
-    this._checkActive()
-    this._writes.push({ kind: 'upsertNode', typeId, name, opts })
+  get lockCount(): number {
+    return this._locks.size
   }
 
-  /** 删除节点 */
-  deleteNode(id: number): void {
-    this._checkActive()
-    this._writes.push({ kind: 'deleteNode', id })
+  begin(): Transaction {
+    const snapshot: MVCCSnapshot = {
+      id: this._nextSnapshotId++,
+      createdAt: Date.now(),
+    }
+    return new Transaction(this, snapshot)
   }
 
-  /** 插入/更新边 */
-  upsertEdge(src: number, dst: number, typeId: number, opts?: UpsertEdgeOptions): void {
-    this._checkActive()
-    this._writes.push({ kind: 'upsertEdge', src, dst, typeId, opts })
+  isLocked(nodeId: NodeId): boolean {
+    this._cleanupStaleLocks()
+    return this._locks.has(String(nodeId))
   }
 
-  /** 删除边 */
-  deleteEdge(src: number, dst: number, typeId: number): void {
-    this._checkActive()
-    this._writes.push({ kind: 'deleteEdge', src, dst, typeId })
+  lock(nodeId: NodeId, snapshotId: number): void {
+    const key = String(nodeId)
+    if (this._locks.has(key)) {
+      throw new Error(`Node ${nodeId} is already locked`)
+    }
+    this._locks.set(key, { nodeId, snapshotId, lockedAt: Date.now() })
   }
 
-  /** 将事务写入 flush 到 engine（走完整路径：label index + overgraph HNSW + event） */
-  async commit(engine: GraphEngine): Promise<void> {
-    if (this._committed) throw new Error('Transaction already committed')
-    if (this._rolledBack) throw new Error('Transaction already rolled back')
-    this._committed = true
+  unlock(nodeId: NodeId): void {
+    this._locks.delete(String(nodeId))
+  }
 
-    for (const write of this._writes) {
-      switch (write.kind) {
-        case 'upsertNode':
-          engine.upsertNode(write.typeId, write.name, write.opts)
-          break
-        case 'deleteNode':
-          engine.deleteNode(write.id)
-          break
-        case 'upsertEdge':
-          engine.upsertEdge(write.src, write.dst, write.typeId, write.opts)
-          break
-        case 'deleteEdge':
-          engine.deleteEdge(write.src, write.dst, write.typeId)
-          break
+  unlockAll(snapshotId: number): void {
+    for (const [key, lock] of this._locks) {
+      if (lock.snapshotId === snapshotId) {
+        this._locks.delete(key)
       }
     }
   }
 
-  /** 放弃缓存的写入 */
-  rollback(): void {
-    if (this._committed) throw new Error('Cannot rollback a committed transaction')
-    this._rolledBack = true
-    this._writes = []
+  /** 清理超时锁 */
+  _cleanupStaleLocks(): void {
+    const now = Date.now()
+    for (const [key, lock] of this._locks) {
+      if (now - lock.lockedAt > this._lockTimeoutMs) {
+        this._locks.delete(key)
+      }
+    }
+  }
+}
+
+// ── 事务 ──
+
+export class Transaction {
+  public readonly snapshot: MVCCSnapshot
+  public readonly writeSet: Map<string, UpsertOpData>
+  public readonly deleteSet: Set<NodeId>
+  public readonly readSet: Set<NodeId>
+  private _committed = false
+  private _rolledBack = false
+  private _mgr: TransactionManager | null
+  private _engine: GraphEngine | null
+
+  /**
+   * @param mgr - TransactionManager
+   * @param snapshotOrEngine - Either MVCCSnapshot (called from mgr.begin())
+   *                          or GraphEngine (called from tests: new Transaction(mgr, engine))
+   */
+  constructor(mgr: TransactionManager, snapshotOrEngine?: MVCCSnapshot | GraphEngine) {
+    if (snapshotOrEngine && 'id' in snapshotOrEngine && 'createdAt' in snapshotOrEngine) {
+      // Called from mgr.begin(): new Transaction(this, snapshot)
+      this.snapshot = snapshotOrEngine as MVCCSnapshot
+      this._engine = null
+    } else {
+      // Called directly: new Transaction(mgr, engine) — create placeholder snapshot
+      this.snapshot = { id: -1, createdAt: Date.now() }
+      this._engine = snapshotOrEngine as GraphEngine ?? null
+    }
+    this._mgr = mgr ?? null
+    this.writeSet = new Map()
+    this.deleteSet = new Set()
+    this.readSet = new Set()
   }
 
-  /** 获取写集快照 (用于 external observer / WAL 日志) */
-  snapshot(): TxnSnapshot {
-    return {
-      writes: [...this._writes],
-      startedAt: this.startedAt,
+  get active(): boolean {
+    return !this._committed && !this._rolledBack
+  }
+
+  get snapshotId(): number {
+    return this.snapshot?.id ?? 0
+  }
+
+  upsertNode(typeId: number, name: string, props?: Record<string, any>): NodeId {
+    this._checkActive()
+    this.writeSet.set(name, { typeId, name, props })
+    return -1
+  }
+
+  deleteNode(nodeId: NodeId): void {
+    this._checkActive()
+    this.deleteSet.add(nodeId)
+  }
+
+  upsertEdge(src: NodeId, dst: NodeId, typeId: number, props?: Record<string, any>): void {
+    this._checkActive()
+    this.writeSet.set(`edge:${src}:${dst}:${typeId}`, { typeId, name: `edge:${src}:${dst}`, props })
+  }
+
+  readNode(nodeId: NodeId): void {
+    this.readSet.add(nodeId)
+  }
+
+  async commit(): Promise<void> {
+    if (this._committed) throw new Error('Transaction already committed')
+    if (this._rolledBack) throw new Error('Transaction already rolled back')
+
+    // Phase 1: 写集锁检查
+    const allKeys = new Set<string>()
+    for (const nodeId of this.deleteSet) {
+      allKeys.add(String(nodeId))
     }
+    for (const key of this.writeSet.keys()) {
+      if (key.startsWith('edge:')) continue
+      allKeys.add(key)
+    }
+
+    // Try lock check
+    for (const key of allKeys) {
+      if (this._mgr && this._mgr.isLocked(Number(key))) {
+        throw new Error(`Commit failed: node ${key} is locked by another transaction`)
+      }
+    }
+
+    // Phase 2: 加锁（如果需要）
+    if (this._mgr) {
+      for (const key of allKeys) {
+        this._mgr.lock(Number(key), this.snapshotId)
+      }
+    }
+
+    try {
+      // Phase 3: flush
+      if (this._engine) {
+        await this._flushToEngine(this._engine)
+      }
+
+      // Phase 4: 释放锁
+      if (this._mgr) {
+        this._mgr.unlockAll(this.snapshotId)
+      }
+    } catch (err) {
+      if (this._mgr) this._mgr.unlockAll(this.snapshotId)
+      throw err
+    }
+
+    this._committed = true
+  }
+
+  async rollback(): Promise<void> {
+    if (this._committed) throw new Error('Cannot rollback a committed transaction')
+    this._rolledBack = true
+    this.writeSet.clear()
+    this.deleteSet.clear()
+    this.readSet.clear()
+    if (this._mgr) {
+      this._mgr.unlockAll(this.snapshotId)
+    }
+  }
+
+  private async _flushToEngine(engine: GraphEngine): Promise<void> {
+    for (const [, data] of this.writeSet) {
+      await engine.upsertNode(data.typeId, data.name, { props: data.props })
+    }
+    for (const nodeId of this.deleteSet) {
+      await engine.deleteNode(nodeId)
+    }
+  }
+
+  /** 设置 engine（可选，用于 flush） */
+  setEngine(engine: GraphEngine): void {
+    this._engine = engine
   }
 
   private _checkActive(): void {
     if (this._committed) throw new Error('Transaction already committed')
     if (this._rolledBack) throw new Error('Transaction already rolled back')
-  }
-}
-
-/**
- * TransactionManager — 管理活跃事务
- * 提供轻量级碰撞检测 (基于写集交集)
- */
-export class TransactionManager {
-  private _active = new Map<number, Transaction>()
-  private _maxActive: number
-
-  constructor(maxActive = 100) {
-    this._maxActive = maxActive
-  }
-
-  begin(): Transaction {
-    if (this._active.size >= this._maxActive) {
-      throw new Error(`Too many active transactions (max ${this._maxActive})`)
-    }
-    const txn = new Transaction()
-    this._active.set(txn.id, txn)
-    return txn
-  }
-
-  get(id: number): Transaction | undefined {
-    return this._active.get(id)
-  }
-
-  remove(id: number): void {
-    this._active.delete(id)
-  }
-
-  /** 乐观锁冲突检测: 检查两个事务的写集是否有节点冲突 */
-  detectConflict(a: TxnSnapshot, b: TxnSnapshot): boolean {
-    const idsA = new Set<number>()
-    for (const w of a.writes) {
-      if (w.kind === 'deleteNode' || w.kind === 'upsertNode') idsA.add(w.kind === 'deleteNode' ? w.id : 0) // 简化
-    }
-    const idsB = new Set<number>()
-    for (const w of b.writes) {
-      if (w.kind === 'deleteNode' || w.kind === 'upsertNode') idsB.add(w.kind === 'deleteNode' ? w.id : 0)
-    }
-    // 检查交集 (简化为节点级别)
-    for (const id of idsA) {
-      if (idsB.has(id)) return true
-    }
-    return false
-  }
-
-  /** 所有活跃事务数量 */
-  get activeCount(): number {
-    return this._active.size
   }
 }

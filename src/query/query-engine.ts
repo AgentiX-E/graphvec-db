@@ -97,6 +97,7 @@ export interface EdgeStepAST {
     name: string | null
     label: string | null
     direction: 'out' | 'in' | 'any'
+    range?: { min: number; max: number | null }
   }
   node: NodePatternAST
 }
@@ -220,6 +221,8 @@ export interface TraverseStep {
   targetAlias: string
   targetLabel: string | null
   targetProps: Record<string, unknown> | null
+  /** 变长路径范围（如果此步为变长路径） */
+  range?: { min: number; max: number | null }
 }
 
 export interface FilterClause {
@@ -409,14 +412,19 @@ export function planFromAST(ast: QueryAST): QueryPlan {
 
       // 处理遍历步骤
       for (const step of pattern.edges) {
-        plan.steps.push({
+        const traverseStep: TraverseStep = {
           source: step.node.name,
           direction: step.edge.direction,
           edgeLabel: step.edge.label,
           targetAlias: step.node.name,
           targetLabel: step.node.label,
           targetProps: step.node.props,
-        })
+        }
+        // 如果边模式包含 range，添加到 traverseStep
+        if (step.edge.range) {
+          traverseStep.range = step.edge.range
+        }
+        plan.steps.push(traverseStep)
       }
 
       // 处理 WHERE

@@ -14,6 +14,9 @@
  *   MATCH (n) SET n.name = "val"
  *   MERGE (n:Label {id: 1})
  *   CREATE (n) RETURN n
+ *   变长路径: MATCH (a)-[:TYPE*1..5]->(b) RETURN b
+ *   变长路径（精确步数）: MATCH (a)-[:TYPE*3]->(b) RETURN b
+ *   变长路径（最小步数）: MATCH (a)-[:TYPE*2..]->(b) RETURN b
  *
  * 不实现（Cypher-lite 边界）：
  *   UNION / FOREACH / CALL
@@ -156,8 +159,14 @@ PatternList
 
 PathPattern
   = node:NodePattern rest:(_ EdgePattern _ NodePattern)* {
-      return { type: 'PATH', node, edges: rest.map(r => ({ edge: r[1], node: r[3] })) }
+      const edges = rest.map(r => ({ edge: r[1], node: r[3] }))
+      return { type: 'PATH', node, edges }
     }
+
+Range
+  = '*' min:Integer '..' max:Integer { return { min, max } }
+  / '*' min:Integer '..' { return { min, max: null } }
+  / '*' exact:Integer !'.' { return { min: exact, max: exact } }
 
 // ── 节点模式 ─────────────────────────────────────────────
 
@@ -176,7 +185,9 @@ NodePattern
 // ── 边模式 ─────────────────────────────────────────────
 
 EdgePattern
-  = "-[" _ name:Identifier _ ":" _ type:Label _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out' } }
+  = "-[" _ name:Identifier _ ":" _ type:Label _ range:Range _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range } }
+  / "-[" _ ":" _ type:Label _ range:Range _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', range } }
+  / "-[" _ name:Identifier _ ":" _ type:Label _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out' } }
   / "-[" _ ":" _ type:Label _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out' } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "]-"  { return { type: 'EDGE', name, label: type, direction: 'any' } }
   / "-[" _ ":" _ type:Label _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any' } }

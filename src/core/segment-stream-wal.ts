@@ -65,6 +65,53 @@ interface SegmentInfo {
 }
 
 /**
+ * SegmentStreamWalAppendStream — 带策略化 fsync 的追加写入流包装
+ *
+ * 在底层 fd 之上添加 fsync 策略控制：
+ * - 'lazy':   不主动 fsync（依赖系统缓存刷新），最快但最不安全
+ * - 'always': 每次 append 后立即 fsync，最安全但最慢
+ * - 'every-n': 每 N 次 append 后 fsync 一次，折中方案
+ *
+ * 默认 'lazy' 保持向后兼容。
+ */
+export class SegmentStreamWalAppendStream {
+  private _fd: number
+  private _fsyncStrategy: 'lazy' | 'always' | 'every-n'
+  private _fsyncEveryN: number
+  private _fsyncCounter: number = 0
+
+  constructor(
+    fd: number,
+    options?: {
+      fsyncStrategy?: 'lazy' | 'always' | 'every-n'
+      fsyncEveryN?: number
+    },
+  ) {
+    this._fd = fd
+    this._fsyncStrategy = options?.fsyncStrategy ?? 'lazy'
+    this._fsyncEveryN = options?.fsyncEveryN ?? 10
+  }
+
+  /**
+   * 追加二进制数据到文件末尾，触发 fsync
+   */
+  append(buf: Buffer): void {
+    fs.writeSync(this._fd, buf)
+
+    if (this._fsyncStrategy === 'always') {
+      fs.fsyncSync(this._fd)
+    } else if (this._fsyncStrategy === 'every-n') {
+      this._fsyncCounter++
+      if (this._fsyncCounter >= this._fsyncEveryN) {
+        fs.fsyncSync(this._fd)
+        this._fsyncCounter = 0
+      }
+    }
+    // 'lazy': 不主动 fsync
+  }
+}
+
+/**
  * SegmentStreamWal — 基于固定大小 segment 的消息持久化队列
  *
  * 与 StreamWal API 完全兼容，但内部使用多 segment 文件。
