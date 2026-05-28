@@ -803,3 +803,518 @@ EventBus (机器级别)
    - TcpServer.start() → bind(50051 + index)
    - EventBus.start() → ROUTER bind(4300X)
    - DatabaseManager.createDatabase("orders", { peers: [B,C], shards: 2 })
+
+---
+
+## 8. 删除数据库（三阶段标志位 + 冷静期 + GC）
+
+### 8.1 问题定义
+
+删除一个分布式数据库（含所有 RaftGroup）在单机是 trivial 的（`rm -rf`），但在多节点环境下面临：
+
+- **不一致性**: A 删了数据库，B 不知道，继续发送 AppendEntries → 浪费日志 + WARN
+- **残留数据**: 同一批 RaftGroup 中某个节点宕机，恢复后发现 peers 已不承认这个 group
+- **误操作风险**: 删了就不可逆
+
+### 8.2 三阶段流程总览
+
+```
+                 时间线 ──────────────────────────────────────────────►
+
+  Phase 0               Phase 1               Phase 2               Phase 3
+  ╔═══════════════╗    ╔═══════════════╗    ╔══════════════════╗    ╔═══════════════════╗
+  ║ proposeDelete  ║    ║ Tombstone     ║    ║ Grace Period     ║    ║ GC Cleanup       ║
+  ║ (R10 广播)     ║──►║ 写入本地      ║──►║ 可配置等待       ║──►║ 物理删除         ║
+  ║                ║    ║ (标记删除)    ║    ║ (默认 1h)        ║    ║ (不可逆)         ║
+  ╚═══════════════╝    ╚═══════════════╝    ╚══════════════════╝    ╚═══════════════════╝
+                                                      │
+                                                      ├─ 可回滚 (remove tombstone)
+                                                      │   → 恢复为活动数据库
+                                                      │   → 需通知所有 peer 恢复
+                                                      └─ 可观察状态: "deleting"
+```
+
+### 8.3 核心数据结构
+
+#### 墓碑文件 `tombstone.json`
+
+位于数据库根目录（如 `/data/orders/.tombstone.json`），是 GC 的判断依据。
+
+```typescript
+interface Tombstone {
+  /** 数据库名 (group 粒度的 tombstone) */
+  database: string
+  
+  /** 本节点的删除请求发起时间 (ISO-8601) */
+  requestedAt: string
+  
+  /** 冷静期时长 (秒) */
+  gracePeriodSeconds: number
+  
+  /** GC 最早可执行时间 = requestedAt + gracePeriod */
+  gcEarliestAt: string
+  
+  /** 当前状态 */
+  phase: 'proposing' | 'tombstone-committed' | 'gc-ready' | 'gc-complete'
+  
+  /**
+   * 已确认 tombstone 的节点列表。
+   * 只有 >= 多数派节点确认后，本地才能推进到 gc-ready。
+   */
+  ackNodes: string[]
+  
+  /** 数据库所属的所有 RaftGroup ID 列表 */
+  groupIds: string[]
+  
+  /** 如果是误操作回滚，记录恢复时间 */
+  restoredAt?: string
+}
+```
+
+#### 内存状态
+
+```typescript
+interface DatabaseInstanceState {
+  status: 'active' | 'deleting' | 'deleted'
+  tombstone?: Tombstone
+  gcTimer?: NodeJS.Timeout          // 冷静期计时器
+  activeClients: Set<string>        // 活跃连接引用（阻止 GC）
+}
+```
+
+### 8.4 Phase 0 — 发起删除（R10 广播）
+
+```typescript
+class DatabaseManager {
+  /**
+   * 发起数据库删除。
+   * 重用现有的 AppMembershipManager 广播机制。
+   */
+  async deleteDatabase(name: string, options?: {
+    gracePeriodSeconds?: number  // 默认 3600 (1 小时)
+  }): Promise<void> {
+    const db = this.databases.get(name)
+    if (!db) throw new Error(`Database '${name}' not found`)
+    if (db.status !== 'active') throw new Error(`Database '${name}' already deleting`)
+    
+    const gracePeriod = options?.gracePeriodSeconds ?? 3600
+    const now = new Date().toISOString()
+    
+    // 本地初始化 tombstone
+    const tombstone: Tombstone = {
+      database: name,
+      requestedAt: now,
+      gracePeriodSeconds: gracePeriod,
+      gcEarliestAt: new Date(Date.now() + gracePeriod * 1000).toISOString(),
+      phase: 'proposing',
+      ackNodes: [this.nodeId],
+      groupIds: db.ranges.map(r => r.groupId),
+    }
+    
+    // 写入本地墓碑目录
+    await this._writeTombstone(name, tombstone)
+    
+    // 切换状态
+    db.status = 'deleting'
+    
+    // 通过 R10 AppMembershipManager 广播删除提案
+    await this.membershipManager.proposeChange({
+      type: 'delete-database',
+      database: name,
+      tombstone,  // 完整墓碑信息，各节点写入本地
+    })
+    
+    // !!! 注意: proposeChange 返回时只代表本地提案已发出
+    // Phase 1 的回调在 onMembershipChange 中处理
+  }
+}
+```
+
+### 8.5 Phase 1 — Tombstone 提交（R10 commit 回调）
+
+`AppMembershipManager.onMembershipChange()` 收到 commit 回调后，各节点独立写入墓碑并开始计时：
+
+```typescript
+class DatabaseManager {
+  /**
+   * 当 R10 broadcast.commit 返回时由 AppMembershipManager 调用。
+   * 此回调在集群的所有节点上执行。
+   */
+  async onDatabaseDeleteCommit(proposal: DeleteDatabaseProposal): Promise<void> {
+    const { database, tombstone } = proposal
+    
+    // 1. 写入本地墓碑（可能覆盖 Phase 0 已写的临时版本）
+    await this._writeTombstone(database, {
+      ...tombstone,
+      phase: 'tombstone-committed',
+    })
+    
+    // 2. 更新状态
+    const db = this.databases.get(database)
+    if (db) {
+      db.status = 'deleting'
+      db.tombstone = tombstone
+    }
+    
+    // 3. 启动冷静期计时器
+    this._startGraceTimer(database, tombstone)
+  }
+}
+```
+
+### 8.6 Phase 2 — 冷静期
+
+```typescript
+class DatabaseManager {
+  private _startGraceTimer(database: string, tombstone: Tombstone): void {
+    const db = this.databases.get(database)
+    if (!db) return
+    
+    const graceMs = tombstone.gracePeriodSeconds * 1000
+    const elapsed = Date.now() - new Date(tombstone.requestedAt).getTime()
+    const remaining = Math.max(0, graceMs - elapsed)
+    
+    db.gcTimer = setTimeout(() => {
+      this._gcDatabase(database)
+    }, remaining)
+    
+    // 冷静期内允许回滚
+  }
+  
+  /**
+   * 冷静期内回滚删除（移除墓碑，恢复数据库）。
+   * 仅在 status === 'deleting' 时有效。
+   */
+  async restoreDatabase(name: string): Promise<void> {
+    const db = this.databases.get(name)
+    if (!db) throw new Error(`Database '${name}' not found`)
+    if (db.status !== 'deleting') throw new Error(`Database '${name}' not in deleting state`)
+    
+    // 1. 清除墓碑
+    await this._removeTombstone(name)
+    
+    // 2. 取消 GC 计时器
+    if (db.gcTimer) {
+      clearTimeout(db.gcTimer)
+      db.gcTimer = undefined
+    }
+    
+    // 3. 恢复状态
+    db.status = 'active'
+    db.tombstone = undefined
+    
+    // 4. 恢复 Mux handler（如果之前已注销则重新注册）
+    for (const range of db.ranges) {
+      this.mux.registerGroup(range.groupId, range.messageHandler)
+    }
+    
+    // 5. 广播回滚通知（通知其他节点也恢复）
+    await this.membershipManager.proposeChange({
+      type: 'restore-database',
+      database: name,
+    })
+  }
+}
+```
+
+**冷静期内，已标记删除的数据库对外行为**：
+
+| 操作 | 行为 |
+|------|------|
+| 客户端查询/写入 | ✅ 正常响应（数据还在）|
+| Raft AppendEntries | ✅ 正常处理 |
+| 分区检测 (R9) | ✅ 正常工作 |
+| Outbox 发送 | ✅ 正常 |
+| 重新发起删除 | ❌ 拒绝（已处于 deleting）|
+| 列出数据库 | 🟡 标记为 `(deleting)` |
+| GC 触发 | ❌ 未触发 |
+
+### 8.7 Phase 3 — GC 物理清除
+
+```typescript
+class DatabaseManager {
+  private async _gcDatabase(name: string): Promise<void> {
+    const db = this.databases.get(name)
+    if (!db || db.status !== 'deleting') return
+    
+    logger.info(`[GC] Starting cleanup for database '${name}'`)
+    
+    // 0. 检查活跃客户端
+    if (db.activeClients.size > 0) {
+      logger.warn(`[GC] Database '${name}' has ${db.activeClients.size} active clients, deferring GC`)
+      // 重新调度（30 分钟后重试），防止无限重试
+      setTimeout(() => this._gcDatabase(name), 30 * 60_000).unref()
+      return
+    }
+    
+    // 1. 停止所有 RaftGroup
+    for (const range of db.ranges) {
+      try {
+        await this.raftGroupManager.removeGroup(range.groupId)
+        logger.info(`[GC] Group '${range.groupId}' stopped`)
+      } catch (err) {
+        logger.error(`[GC] Failed to stop group '${range.groupId}': ${err}`)
+        // 继续执行，不阻塞 GC
+      }
+    }
+    
+    // 2. 注销所有 Mux handler
+    for (const range of db.ranges) {
+      this.mux.unregisterGroup(range.groupId)
+    }
+    
+    // 3. 物理删除文件
+    try {
+      const dbDir = this._databaseDir(name)
+      await fs.promises.rm(dbDir, { recursive: true, force: true })
+      logger.info(`[GC] Database directory '${dbDir}' removed`)
+    } catch (err) {
+      logger.error(`[GC] Failed to remove directory for '${name}': ${err}`)
+      // 允许手动清理
+    }
+    
+    // 4. 更新墓碑阶段
+    const tombstonePath = this._tombstonePath(name)
+    try {
+      const current = JSON.parse(await fs.promises.readFile(tombstonePath, 'utf-8'))
+      current.phase = 'gc-complete'
+      await fs.promises.writeFile(tombstonePath, JSON.stringify(current, null, 2))
+    } catch { /* tombstone 已随目录删除 */ }
+    
+    // 5. 清除内存状态
+    this.databases.delete(name)
+    
+    logger.info(`[GC] Database '${name}' cleanup complete`)
+  }
+}
+```
+
+### 8.8 启动时恢复
+
+```typescript
+class DatabaseManager {
+  async loadExistingDatabases(): Promise<void> {
+    const entries = await fs.promises.readdir(this.baseDir, { withFileTypes: true })
+    
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const dbDir = path.join(this.baseDir, entry.name)
+      const tombstonePath = path.join(dbDir, '.tombstone.json')
+      
+      let tombstone: Tombstone | null = null
+      try {
+        tombstone = JSON.parse(await fs.promises.readFile(tombstonePath, 'utf-8'))
+      } catch { /* 无墓碑文件，正常数据库 */ }
+      
+      if (tombstone) {
+        if (tombstone.phase === 'gc-complete') {
+          // 上一个生命周期 GC 已完成但 tombstone 文件残留
+          await fs.promises.rm(dbDir, { recursive: true, force: true })
+          continue
+        }
+        
+        // 恢复 deleting 状态
+        const db = this._createDatabaseInstance(entry.name, dbDir)
+        db.status = 'deleting'
+        db.tombstone = tombstone
+        
+        // 重新计算冷静期剩余时间
+        this._resumeGraceTimer(entry.name, tombstone)
+        this.databases.set(entry.name, db)
+        logger.info(`[Start] Database '${entry.name}' resumed in 'deleting' state`)
+      } else {
+        // 正常数据库
+        const db = await this._loadDatabase(entry.name, dbDir)
+        db.status = 'active'
+        this.databases.set(entry.name, db)
+        logger.info(`[Start] Database '${entry.name}' loaded (active)`)
+      }
+    }
+  }
+  
+  private _resumeGraceTimer(database: string, tombstone: Tombstone): void {
+    const now = Date.now()
+    const gcTime = new Date(tombstone.gcEarliestAt).getTime()
+    const remaining = Math.max(0, gcTime - now)
+    
+    if (remaining <= 0) {
+      // 冷静期已过，立即 GC
+      logger.info(`[Start] Grace period already elapsed for '${database}', starting GC`)
+      // 在下一个 tick 执行（不阻塞启动流程）
+      setImmediate(() => this._gcDatabase(database))
+    } else {
+      // 继续等待
+      const db = this.databases.get(database)
+      if (db) {
+        db.gcTimer = setTimeout(() => this._gcDatabase(database), remaining)
+        logger.info(`[Start] Grace timer for '${database}' resumes in ${Math.round(remaining / 1000)}s`)
+      }
+    }
+  }
+}
+```
+
+### 8.9 错误场景与容错
+
+| 错误场景 | 行为 | 恢复 |
+|----------|------|------|
+| **Phase 1 commit 时节点宕机** | 启动时检测 tombstone（phase=proposing），如果已过 GC 时间直接 GC，否则继续等待 | 自动 |
+| **冷静期内节点宕机重启** | `_resumeGraceTimer` 重新计算剩余时间 | 自动 |
+| **GC 阶段节点宕机** | 启动时检测 tombstone（phase=tombstone-committed 或 gc-ready），重新执行 GC | 自动 |
+| **GC 文件删除失败（权限/磁盘坏道）** | log error，继续，不阻塞 | 手动 `rm -rf` 后重启 |
+| **冷静期内快照后误回滚** | restoreDatabase() + 广播通知所有 peer | 手动触发 |
+| **多数派 tombstone 未达成（部分节点永久宕机）** | 冷静期过期后本地仍可 GC（自保行为） | 自动，但不等同集群状态 |
+
+**majority tombstone vs 本地 GC**: 设计上，Phase 1 的 R10 commit 本身就是 majority 确认。一旦 commit 回调触发，说明集群中的多数派已收到删除通知。此时即使剩余节点永久宕机，存活节点可以安全地各自 GC——因为 R10 commit 是分布式共识，多数派同意的操作视为有效。
+
+### 8.10 删除状态查看
+
+```typescript
+class DatabaseManager {
+  /**
+   * 列出所有数据库，包括正在删除的。
+   */
+  listDatabases(): DatabaseInfo[] {
+    const result: DatabaseInfo[] = []
+    
+    for (const [name, db] of this.databases) {
+      result.push({
+        name,
+        status: db.status,
+        rangeCount: db.ranges.length,
+        groupIds: db.ranges.map(r => r.groupId),
+        tombstone: db.tombstone
+          ? {
+              requestedAt: db.tombstone.requestedAt,
+              phase: db.tombstone.phase,
+              gcEarliestAt: db.tombstone.gcEarliestAt,
+              remainingSeconds: db.tombstone.gcEarliestAt
+                ? Math.max(0, Math.round(
+                    (new Date(db.tombstone.gcEarliestAt).getTime() - Date.now()) / 1000
+                  ))
+                : undefined,
+            }
+          : undefined,
+      })
+    }
+    
+    return result
+  }
+}
+```
+
+示例输出:
+
+```
+> db.list()
+[
+  { name: "orders",     status: "active",   groups: 2 },
+  { name: "inventory",  status: "active",   groups: 1 },
+  { name: "archive",    status: "deleting", groups: 4,
+    tombstone: { phase: "tombstone-committed",
+                 gcEarliestAt: "2026-05-28T10:19:00Z",
+                 remainingSeconds: 2347 } }
+]
+```
+
+---
+
+## 9. 执行计划
+
+### 9.1 阶段划分
+
+#### Phase A — 共享基础设施（预估 4-6 天）
+
+**目标**: 建立 TcpServer 单例 + ConnectionPool + Mux 多路复用
+
+| 步骤 | 文件 | 工作内容 | 测试方法 |
+|------|------|---------|---------|
+| A1 | `src/consensus/endpoint-manager.ts` (新) | CURVE 密钥 + mTLS 证书统一管理；curveDir 扫描发现；curveWatcher | 单元测试：Mock fs，验证生成/发现/通知 |
+| A2 | `src/consensus/transport-mux.ts` (新) | MuxCodec 编解码 + Mux 分发 | 单元测试：编解码一致性，多 group 路由 |
+| A3 | `src/consensus/transport.ts` (重构) | TcpServer 全局单例 + ConnectionPool；从 `net.Server` 改为 `tls.createServer` | E2E：3 节点 fork，验证单端口共享 |
+| A4 | 集成测试 | 多 group 消息隔离、mTLS 握手、连接池复用 | CI 套件 |
+
+#### Phase B — RaftGroup 管理（预估 3-4 天）
+
+**目标**: 支持创建/启动/停止多个 RaftGroup，共享 ConnectionPool
+
+| 步骤 | 文件 | 工作内容 | 测试方法 |
+|------|------|---------|---------|
+| B1 | `src/consensus/raft-group-manager.ts` (新) | RaftGroup 生命周期（create/start/remove）；GroupTransportHandle RPC 实现 | 单元测试 + 集成测试 |
+| B2 | `src/consensus/raft-core.ts` (适配) | 接入 GroupTransportHandle，从 Transport 接口得到 RPC 响应 | 集成：多 group 单机 |
+| B3 | `src/core/database-manager.ts` (重构) | createDatabase() 同时创建 RaftGroup；为每个 Range 注入 RaftCore | 集成：2 数据库 × 2 Range |
+
+#### Phase C — 删除数据库（预估 2-3 天）
+
+**目标**: 三阶段删除实现
+
+| 步骤 | 文件 | 工作内容 | 测试方法 |
+|------|------|---------|---------|
+| C1 | `src/core/database-manager.ts` (新增方法) | `deleteDatabase()` Phase 0 + R10 broadcast 集成 | 单元测试：tombstone 写/读 |
+| C2 | `src/core/database-manager.ts` (回调) | `onDatabaseDeleteCommit()` Phase 1 + 冷静期计时器 | 单元：计时器回滚 |
+| C3 | `src/core/database-manager.ts` (GC) | `_gcDatabase()` Phase 3：停止 Group + 删文件 + 注销 handler | 单元：Mock fs |
+| C4 | `src/core/database-manager.ts` (恢复) | `restoreDatabase()` 回滚 + `loadExistingDatabases()` 启动恢复 | 集成：重启后状态正确 |
+| C5 | 集成/E2E 测试 | 全流程：创建 → 标记删除 → 回滚 → 冷静期 → GC → 启动恢复 | CI |
+
+#### Phase D — WorkerPool 增强 + 清理（预估 2-3 天）
+
+**目标**: WorkerPool 1:1 映射 + 指数退避 + 空载放慢
+
+| 步骤 | 文件 | 工作内容 | 测试方法 |
+|------|------|---------|---------|
+| D1 | `event-bus-worker-pool.ts` (重构) | 从一致性 hash 改为 1:1 Worker-Peer | 集成测试 |
+| D2 | `outbox-replication.ts` (增强) | 指数退避 + 抖动 + 空载放慢 | 集成测试 |
+| D3 | `event-bus.ts` (清理) | `(this as any)` → 私有字段类型安全 | 无功能变更 |
+
+### 9.2 依赖关系
+
+```
+Phase A ──────────────────────────────────────────────────
+  A1 EndpointManager ───┐
+                        ├──► A3 TcpServer Singleton + ConnectionPool
+  A2 MuxCodec ──────────┘             │
+                                       ▼
+Phase B ───────────────────────────────┴──────────────────
+  B1 RaftGroupManager ──► B2 RaftCore 适配 ──► B3 DatabaseManager 改造
+                                       │
+Phase C ───────────────────────────────┘──────────────────
+  C1 deleteDatabase() ──► C2 冷静期 ──► C3 GC ──► C4 恢复 ──► C5 测试
+                                       │
+Phase D ───────────────────────────────┘──────────────────
+  D1 WorkerPool 1:1 ──► D2 退避增强 ──► D3 类型清理
+```
+
+**关键路径**: A1→A2→A3→B1→B2→B3→C 各阶段串行，D 与 C 可并行。
+
+### 9.3 风险与缓解
+
+| 风险 | 概率 | 影响 | 缓解 |
+|------|------|------|------|
+| mTLS 证书生成/验证复杂度超出预估 | 中 | 高 | 先使用自签名测试证书，生产用 CA 签名放在后续迭代 |
+| TcpServer 单例改造导致现有 E2E 测试大面积失败 | 高 | 中 | Phase A 在 git branch 独立开发，完成后再 merge |
+| GroupTransportHandle 的 RPC 超时/重试逻辑与现有 Transport 接口不兼容 | 中 | 中 | 适配器模式，保持 Transport 接口不变 |
+| 删除流程中 R10 broadcast 与 Raft 自身成员变更冲突 | 低 | 高 | 删除作为独立的 R10 proposal type（`type: 'delete-database'`） |
+| 高并发 GC 与活跃 Raft 消息竞争 | 低 | 中 | GC 前 stop RaftGroup（内部 drain 队列）|
+
+### 9.4 里程碑
+
+```
+M1: Phase A 完成  ─── mTLS 共享连接测试通过（节点 fork + 消息路由）
+M2: Phase B 完成  ─── 多数据库创建 + RaftGroup 管理 E2E
+M3: Phase C 完成  ─── 三阶段删除 E2E（创建 → 标记 → GC → 启动恢复）
+M4: Phase D 完成  ─── WorkerPool 增强 + 全量测试通过
+M5: Final         ─── 文档更新 + 全量验收
+```
+
+### 9.5 估算工时
+
+| 阶段 | 天数 | 并行度 |
+|------|------|--------|
+| Phase A | 4-6 | 串行 |
+| Phase B | 3-4 | 需 A 完成后 |
+| Phase C | 2-3 | 需 B 完成后 |
+| Phase D | 2-3 | 可与 C 并行 |
+| 集成/E2E 测试 | 2-3 | 贯穿各阶段 |
+| 文档 + 全量验收 | 1 | 最后 |
+| **总计** | **14-20 天** | |
+
