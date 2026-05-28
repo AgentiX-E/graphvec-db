@@ -167,7 +167,15 @@ export class FullTextIndex {
       }
     }
 
-    // 2) 回放 WAL
+    // 2) 回放 WAL（优先回放 .old 文件，再回放当前 .wal）
+    const rotatedPath = this._walPath ? this._walPath + '.old' : null
+    if (rotatedPath && fs.existsSync(rotatedPath)) {
+      try {
+        this._replayWalFile(rotatedPath)
+      } catch (e) {
+        console.warn('[FullTextIndex] rotated WAL replay failed:', e)
+      }
+    }
     if (this._walPath && fs.existsSync(this._walPath)) {
       try {
         this._replayWal()
@@ -206,11 +214,25 @@ export class FullTextIndex {
   }
 
   /**
-   * 回放 WAL 中的条目
+   * 回放 WAL 中的条目（主 WAL 文件）
    */
   private _replayWal(): void {
     if (!this._walPath) return
-    const content = fs.readFileSync(this._walPath, 'utf-8')
+    this._replayWalFile(this._walPath)
+
+    // 回放完成后截断 WAL
+    this._closeWalFd()
+    fs.writeFileSync(this._walPath, '', 'utf-8')
+    this._walSize = 0
+    this._openWalForAppend()
+  }
+
+  /**
+   * 从指定文件回放 WAL 条目
+   */
+  private _replayWalFile(filePath: string): void {
+    if (!fs.existsSync(filePath)) return
+    const content = fs.readFileSync(filePath, 'utf-8')
     for (const line of content.split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
@@ -257,13 +279,6 @@ export class FullTextIndex {
         }
       }
     }
-
-    // 回放完成后截断 WAL
-    // 注意：truncate 对 append-only 模式可能不安全，所以我们先 close 后 write
-    this._closeWalFd()
-    fs.writeFileSync(this._walPath, '', 'utf-8')
-    this._walSize = 0
-    this._openWalForAppend()
   }
 
   /**

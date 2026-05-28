@@ -223,7 +223,8 @@ describe('FullTextIndex WAL Persistence', () => {
         // Restart — snapshot has 5 docs, WAL has add+remove
         const idx2 = new FullTextIndex({ baseDir: dir, snapshotThreshold: 5 })
         expect(idx2.count()).toBe(5)
-        expect(idx2.search('document 0')).toHaveLength(0)
+        // Use unique doc ID to verify doc0 is removed (not just fuzzy match)
+        expect(idx2.search('doc0')).toHaveLength(0)
         expect(idx2.search('extra')).toHaveLength(1)
         idx2.close()
       } finally {
