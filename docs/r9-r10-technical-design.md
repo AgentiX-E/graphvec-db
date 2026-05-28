@@ -5,7 +5,7 @@
 > **Generic architecture**: raft-logic (tikv/raft-rs WASM) + ZMQ EventBus + Outbox delivery
 > **Database engine**: swappable (the state machine being replicated is a detail)
 > **Source reference**: `agentiX-graphvec` implementation at `/src/consensus/`, `/src/core/outbox-replication.ts`, `/src/core/multi-leader-replication.ts`
-> **Tests**: 7 test files, 95+ tests across unit, integration, and fault-injection suites
+> **Tests**: 4 test files across unit, integration, and application-layer suites
 
 ---
 
@@ -15,22 +15,23 @@
 2. [R9: Network Partition (Split-Brain) Handling](#2-r9-network-partition-split-brain-handling)
    - [2.1 Design Principles](#21-design-principles)
    - [2.2 Interface Design](#22-interface-design)
-   - [2.3 Implementation: Majority Detection (Three-Tier)](#23-implementation-majority-detection-three-tier)
-   - [2.4 Alternative: Application-Layer Heartbeat Partition Detection](#24-alternative-application-layer-heartbeat-partition-detection)
+   - [2.3 Path A: Raft-Logic WASM Three-Tier Detection (Production)](#23-path-a-raft-logic-wasm-three-tier-detection-production)
+   - [2.4 Path B: Application-Layer Heartbeat Manager (Recommended)](#24-path-b-application-layer-heartbeat-manager-recommended)
    - [2.5 Implementation: Outbox Freezing](#25-implementation-outbox-freezing)
-   - [2.6 Wiring Example](#26-wiring-example)
+   - [2.6 Wiring the Two Paths](#26-wiring-the-two-paths)
    - [2.7 Standalone Mode](#27-standalone-mode)
    - [2.8 Edge Cases & Failure Modes](#28-edge-cases--failure-modes)
 3. [R10: Safe Membership Change](#3-r10-safe-membership-change)
    - [3.1 Design Principles](#31-design-principles)
    - [3.2 Interface Design](#32-interface-design)
-   - [3.3 Application-Layer Membership Change (Recommended)](#33-application-layer-membership-change-recommended)
-   - [3.4 Legacy: WASM ConfChangeV2 (when bindings mature)](#34-legacy-wasm-confchangev2-when-bindings-mature)
-   - [3.5 Safety Guarantees (Joint Consensus)](#35-safety-guarantees-joint-consensus)
-   - [3.6 Edge Cases & Failure Modes](#36-edge-cases--failure-modes)
+   - [3.3 Path A: Application-Layer Membership Manager (Recommended)](#33-path-a-application-layer-membership-manager-recommended)
+   - [3.4 Path B: WASM ConfChangeV2 (when bindings mature)](#34-path-b-wasm-confchangev2-when-bindings-mature)
+   - [3.5 Integration: EventBus Dynamic Connection Management](#35-integration-eventbus-dynamic-connection-management)
+   - [3.6 Safety Guarantees](#36-safety-guarantees)
+   - [3.7 Edge Cases & Failure Modes](#37-edge-cases--failure-modes)
 4. [Integration Checklist](#4-integration-checklist)
 5. [Testing Strategy](#5-testing-strategy)
-6. [Migration Guide](#6-migration-guide)
+6. [Known Pitfalls & Bug Fix History](#6-known-pitfalls--bug-fix-history)
 7. [Appendix: Complete Source Code References](#7-appendix-complete-source-code-references)
 
 ---
@@ -56,7 +57,7 @@
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 3: MultiLeaderReplication (orchestration)                     │
 │  - Walks ConsensusProvider.onMajorityChange → OutboxManager         │
-│  - (Future) Walks ConsensusProvider.onMembershipChange → EventBus   │
+│  - Walks ConsensusProvider.onMembershipChange → EventBus dynamic    │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Layer 2: ConsensusProvider (abstraction interface)                  │
 │  ┌───────────────────────┐ ┌─────────────────┐ ┌─────────────────┐ │
@@ -68,6 +69,13 @@
 │  - Leader election, log replication, preVote, checkQuorum           │
 │  - onQuorumActive(), onRoleChange() events (R9 detection)           │
 │  - proposeConfChange() / applyConfChange() (R10, when API matures)  │
+├─────────────────────────────────────────────────────────────────────┤
+│  Parallel: AppHeartbeatManager + AppMembershipManager                │
+│  ┌───────────────────────┐ ┌──────────────────────────────────┐    │
+│  │ AppHeartbeatManager   │ │ AppMembershipManager             │    │
+│  │ (1s ping + Outbox     │ │ (Application-layer two-phase    │    │
+│  │  failure cross-check) │ │  commit via EventBus broadcast) │    │
+│  └───────────────────────┘ └──────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,14 +89,19 @@
 | **4** | ZMQ EventBus | Network transport: ROUTER for receiving, DEALER per peer for sending, CurveZMQ auth |
 | **5** | OutboxReplicationManager | Per-peer reliable delivery with backoff, ACK tracking, retries |
 | **6** | Database Engine | The replicated state machine (any data store) |
+| **7** | AppHeartbeatManager | Application-layer heartbeat partition detection (1s ping + Outbox failure cross-check) |
+| **8** | AppMembershipManager | Application-layer two-phase commit membership change via EventBus broadcast |
 
-### Key Design Principle: ConsensusProvider as a Seam
+### Key Design Principle: Two Parallel Paths
 
-The `ConsensusProvider` interface is the critical abstraction seam. It decouples the raft engine from the replication machinery, making it possible to:
+The system supports **two parallel implementation paths** for both R9 and R10:
 
-- Swap between `raft-logic` (WASM production), `simulated-raft` (in-memory test), and `standalone` (single-node dev)
-- Add partition handling (R9) and membership change (R10) without changing the outbox layer's internals
-- Test each component independently with mock consensus providers
+| Requirement | Path A (Production Raft-Logic) | Path B (Application-Layer, Recommended) |
+|-------------|-------------------------------|----------------------------------------|
+| **R9 Partition Detection** | Three-tier via raft-logic WASM: `onQuorumActive` + `onRoleChange` + polling | `AppHeartbeatManager`: 1s ping + Outbox failure cross-check |
+| **R10 Membership Change** | `ConfChangeV2` API via raft-logic WASM | `AppMembershipManager`: Two-phase commit via EventBus broadcast |
+
+**The two paths are complementary and can run simultaneously.** Path B is production-ready today; Path A depends on raft-logic WASM bindings maturing.
 
 ---
 
@@ -124,9 +137,9 @@ export interface ConsensusProvider {
 }
 ```
 
-### 2.3 Implementation: Majority Detection (Three-Tier)
+### 2.3 Path A: Raft-Logic WASM Three-Tier Detection (Production)
 
-Majority detection uses three tiers in parallel to achieve both low-latency and robust coverage:
+When raft-logic WASM bindings are available, three tiers run in parallel for both low latency and robust coverage:
 
 | Tier | Mechanism | Latency | Reliability |
 |------|-----------|---------|-------------|
@@ -141,8 +154,8 @@ All three tiers share the same callback firing logic: they check `prev !== new` 
 Registers directly on the raft node. This event fires when a quorum is re-established — useful for fast re-entry detection after a partition heals.
 
 ```typescript
-// From raft-logic-consensus.ts, inside start() method
-// Tier 1: onQuorumActive — real-time quorum re-entry detection
+// From raft-logic-consensus.ts, inside start() method.
+// This live event only fires when quorum transitions from inactive to active.
 if (typeof raft.onQuorumActive === 'function') {
   raft.onQuorumActive(() => {
     const prev = this._inMajority
@@ -164,8 +177,6 @@ if (typeof raft.onQuorumActive === 'function') {
 Detects majority loss/gain through role transitions. A leader demoted to follower has lost quorum. A node that becomes a leader has gained it.
 
 ```typescript
-// From raft-logic-consensus.ts, inside start() method
-// Tier 2: onRoleChange — role-based majority detection
 if (typeof raft.onRoleChange === 'function') {
   raft.onRoleChange((rc: any) => {
     // Demoted from leader → lost majority
@@ -196,11 +207,10 @@ if (typeof raft.onRoleChange === 'function') {
 
 #### Tier 3: Polling Fallback
 
-A safety net set to fire every 2000ms. It checks the raft node's status for a valid leader. This catches scenarios where the event-based tiers might miss transitions (e.g., a node that was never leader suddenly loses quorum).
+A safety net set to fire every 2000ms. It checks the raft node's status for a valid leader.
 
 ```typescript
-// From raft-logic-consensus.ts, inside start() method
-// Tier 3: Polling fallback — 2000ms interval
+// In start():
 this._majorityCheckTimer = setInterval(() => {
   this._checkMajority()
 }, 2000)
@@ -208,24 +218,13 @@ this._majorityCheckTimer.unref()  // Don't keep process alive
 ```
 
 ```typescript
-// _checkMajority() implementation
 private _checkMajority(): void {
   if (!this._node) return
   const status = this._node.status()
   const leader = status.lead ?? status.leaderId ?? null
   const wasInMajority = this._inMajority
-
-  // Strategy: if leader is null or 0, we've lost majority
-  // In raft-rs WASM: status().lead returns 0 when no leader is known
   this._inMajority = leader !== null && leader !== 0
-
   if (wasInMajority !== this._inMajority) {
-    this.logger.info('[RaftConsensus] Majority status changed', {
-      from: wasInMajority,
-      to: this._inMajority,
-      leaderId: leader,
-      term: status.term,
-    })
     for (const cb of this._majorityCallbacks) {
       try { cb(this._inMajority) } catch {}
     }
@@ -238,69 +237,76 @@ private _checkMajority(): void {
 - A follower simply loses connectivity without a role change (it remains a follower but no leader is reachable)
 - During node startup, events fire before callbacks were registered
 
-#### Callback Storage
+#### Callback Storage & Immediate Fire
 
 ```typescript
-// Class-level fields
 private _inMajority = true       // Default: assume we're in majority
 private _majorityCallbacks: Array<(inMajority: boolean) => void> = []
-```
 
-```typescript
-// onMajorityChange implementation — note the IMMEDIATE callback
 onMajorityChange(cb: (inMajority: boolean) => void): void {
   this._majorityCallbacks.push(cb)
-  // Fire immediately with current state — critical for wiring safety
-  cb(this._inMajority)
+  cb(this._inMajority)  // Fire immediately with current state
 }
 ```
 
 **Why the immediate callback matters**: When `MultiLeaderReplication.setConsensus()` wires up the majority change, it must immediately set the correct frozen state. Without the immediate callback, there would be a window between registration and the next event where the outbox might be in the wrong state.
 
-### 2.4 Alternative: Application-Layer Heartbeat Partition Detection
+### 2.4 Path B: Application-Layer Heartbeat Manager (Recommended)
 
-For teams that cannot or prefer not to rely on raft-logic's internal
-`onQuorumActive`/`onRoleChange` events, an application-layer heartbeat
-manager provides equivalent partition detection.
+For teams that cannot or prefer not to rely on raft-logic's internal events, `AppHeartbeatManager` provides equivalent partition detection at the application layer via **EventBus heartbeat ping + Outbox failure cross-check**.
 
 #### Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│          AppHeartbeatManager            │
-│  ┌──────────┐   ┌──────────────────┐   │
-│  │ Ping     │   │ Suspect Engine   │   │
-│  │ Timer    │──▶│ counter: Map     │   │
-│  │ (1s/peer)│   │ 3 misses→suspect │   │
-│  └──────────┘   └────────┬─────────┘   │
-│                          ▼              │
-│  ┌──────────────────────────────────┐   │
-│  │  Outbox Failure Cross-Check      │   │
-│  │  (confirm/reject suspect)        │   │
-│  └──────────┬───────────────────────┘   │
-│             ▼                           │
-│  ┌──────────────────────────────────┐   │
-│  │  setMajorityStatus(result)       │   │
-│  └──────────────────────────────────┘   │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│              AppHeartbeatManager                │
+│                                                 │
+│  每个 tick（默认 1s）：                          │
+│  ┌─────────────────────────────────────┐        │
+│  │ sendPings() → 给所有 peer 发 ping   │        │
+│  └──────────┬──────────────────────────┘        │
+│             ▼                                   │
+│  Step 1: 更新 missedPings 计数                  │
+│  ┌─────────────────────────────────────┐        │
+│  │ 连续 N 次 tick 无 heartbeat →       │        │
+│  │ peer.suspect = true (默认 N=3)      │        │
+│  └──────────┬──────────────────────────┘        │
+│             ▼                                   │
+│  Step 2: 计算 majority                          │
+│  ┌─────────────────────────────────────┐        │
+│  │ suspect + outboxConfirmedFailing →   │        │
+│  │ 计入 confirmedFailed                │        │
+│  │ healthy = total - confirmedFailed   │        │
+│  │ healthy >= quorum → inMajority      │        │
+│  └──────────┬──────────────────────────┘        │
+│             ▼                                   │
+│  Step 3: onMajorityChange 回调                   │
+│  ┌─────────────────────────────────────┐        │
+│  │ only fires on actual state change   │        │
+│  │ (prev !== new)                      │        │
+│  └─────────────────────────────────────┘        │
+└─────────────────────────────────────────────────┘
 ```
 
-#### Interface
+#### Complete Implementation
+
+##### AppHeartbeatManager Interface
 
 ```typescript
 export interface HeartbeatConfig {
+  /** 当前节点 ID */
   nodeId: string
+  /** peer 列表 */
   peers: Array<{ nodeId: string; addr: string }>
-  /** Ping interval in ms, default 1000 */
+  /** 发送心跳的间隔（ms），默认 1000 */
   pingIntervalMs?: number
-  /** Misses before suspect, default 3 */
+  /** 丢失几次心跳判定为 suspect，默认 3 */
   suspectThreshold?: number
-  /** Transport to send/receive heartbeat messages */
-  transport: {
-    send: (peerId: string, msg: any) => Promise<void>
-    onMessage: (cb: (peerId: string, msg: any) => void) => void
-  }
-  /** Called when majority status changes */
+  /** 分区确认后，连续成功几次心跳后恢复 healthy，默认 3 */
+  recoveryThreshold?: number
+  /** 传输层接口 */
+  transport: HeartbeatTransport
+  /** majority 状态变化回调 */
   onMajorityChange: (inMajority: boolean) => void
 }
 
@@ -308,39 +314,165 @@ export class AppHeartbeatManager {
   constructor(config: HeartbeatConfig)
   start(): void
   stop(): void
-  /** Called by transport router when a heartbeat message arrives */
+  /** 由传输层回调：收到一个心跳消息 */
   handleHeartbeat(from: string): void
-  /** Get current suspect status for all peers */
-  getSuspects(): Map<string, boolean>
-  /**
-   * Cross-check: Outbox sends failure stats here.
-   * If suspect + confirmed failure → set lost majority.
-   */
+  /** 发送心跳 ping 到所有 peer，可外部直接调用 */
+  async sendPings(): Promise<void>
+  /** Outbox 报告发送失败：用于二次确认 suspect */
   reportSendFailure(peerId: string, consecutiveFailures: number): void
+  /** 获取当前 suspect 状态 */
+  getSuspects(): Map<string, boolean>
+  /** 当前是否 in majority */
+  isMajority(): boolean
+  /** 更新 peer 列表（R10 成员变更后调用） */
+  updatePeers(peers: Array<{ nodeId: string; addr: string }>): void
+  /** 手动触发一次 tick（测试用） */
+  async manualTick(): Promise<void>
+  /** 获取状态统计 */
+  getStats(): { total: number; suspect: number; confirmedFailed: number; inMajority: boolean }
 }
 ```
 
-#### Detection Logic
+##### Core Detection Logic
 
-1. Every `pingIntervalMs` (default 1s), send a lightweight heartbeat message
-   `{ type: 'heartbeat', from: nodeId, seq }` to each peer via EventBus.
-2. Track last heartbeat received time per peer.
-3. If no heartbeat from a peer within `pingIntervalMs × suspectThreshold` (default 3s),
-   mark peer as **suspect**.
-4. If suspect AND Outbox reports consecutive send failures → **confirm partition**:
-   call `onMajorityChange(false)`.
-5. If suspect but Outbox sends succeed → **reject suspicion** (false positive):
-   keep peer as healthy.
-6. When heartbeats resume after confirmed partition → call `onMajorityChange(true)`.
+```typescript
+// Internal tick: called every pingIntervalMs (default 1s)
+private async _tick(): Promise<void> {
+  if (!this._running) return
 
-#### Edge Cases & Mitigations
+  // Step 1: Send ping to all peers
+  await this.sendPings()
 
-- **Simultaneous ping/pong**: Implement with monotonic seq numbers to detect stale pings
-- **Burst loss tolerance**: suspectThreshold=3 provides ~3s tolerance for TCP jitter
-- **Leader re-election during partition**: if suspect all peers, manager must wait for
-  majority re-establishment before unfreezing
-- **Standalone mode**: single-node cluster always reports healthy (inMajority=true)
-- **Graceful shutdown**: stop() flushes timers and closes ping loop
+  // Step 2: Increment missedPings for all peers
+  // When any peer's missedPings >= suspectThreshold, mark suspect
+  for (const [peerId, state] of this._peers) {
+    state.missedPings++
+    if (state.missedPings >= this.config.suspectThreshold! && !state.suspect) {
+      state.suspect = true
+      state.consecutiveSuccesses = 0
+      this.logger.warn(`[Heartbeat] Peer ${peerId} suspect`)
+    }
+  }
+
+  // Step 3: Recalculate majority and fire callback if changed
+  this._recalculateMajority()
+}
+```
+
+##### Majority Calculation Rules
+
+```typescript
+private _computeMajority(): boolean {
+  const total = this._peers.size
+  if (total === 0) return true     // Single-node
+
+  // confirmedFailed = suspect + outboxConfirmedFailing
+  // suspect without outboxConfirm → tentative, does NOT count as failed
+  let confirmedFailed = 0
+  let suspectCount = 0
+  for (const state of this._peers.values()) {
+    if (state.suspect && state.outboxConfirmedFailing) {
+      confirmedFailed++
+    }
+    if (state.suspect) {
+      suspectCount++
+    }
+  }
+
+  const healthy = total - confirmedFailed
+  const quorum = Math.floor(total / 2) + 1
+  return healthy >= quorum
+}
+```
+
+##### Recovery: handleHeartbeat
+
+When a heartbeat arrives after a peer was suspect:
+
+```typescript
+handleHeartbeat(from: string): void {
+  const state = this._peers.get(from)
+  if (!state) {
+    // Unknown peer — may be a dynamically joined member (R10)
+    this.logger.debug(`[Heartbeat] Received heartbeat from unknown peer ${from}`)
+    return
+  }
+
+  state.lastReceived = Date.now()
+  state.missedPings = 0
+
+  // Imediately clear suspect (heartbeat = peer is alive)
+  if (state.suspect) {
+    state.suspect = false
+    state.outboxConfirmedFailing = false
+    state.consecutiveSuccesses = 0
+  }
+
+  // Recalculate majority — suspect removal may change state
+  this._recalculateMajority()
+}
+```
+
+**Design decision**: `handleHeartbeat` immediately clears `suspect` upon receiving any heartbeat. This is the most intuitive behavior: if we can receive heartbeats, the partition has healed. The `recoveryThreshold` config field is retained for API compatibility but is no longer used for suspect clearance.
+
+##### Outbox Failure Cross-Check
+
+```typescript
+/**
+ * Outbox reports send failure for secondary confirmation.
+ * Only when suspect + outboxConfirm → confirmed partition.
+ * This prevents false positives during network jitter.
+ */
+reportSendFailure(peerId: string, consecutiveFailures: number): void {
+  const state = this._peers.get(peerId)
+  if (!state) return
+
+  if (consecutiveFailures >= this.config.suspectThreshold!) {
+    state.outboxConfirmedFailing = true
+    this.logger.warn(`[Heartbeat] Outbox confirms peer ${peerId} failing`)
+
+    if (state.suspect) {
+      this._recalculateMajority()
+    }
+  }
+}
+```
+
+##### Peer List Update (R10 Integration)
+
+When R10 membership change adds/removes peers, the heartbeat manager must stay in sync:
+
+```typescript
+updatePeers(peers: Array<{ nodeId: string; addr: string }>): void {
+  const newPeers = new Map<string, PeerHeartbeatState>()
+  for (const p of peers) {
+    if (p.nodeId === this.config.nodeId) continue
+    const existing = this._peers.get(p.nodeId)
+    // Preserve existing state (suspect status, outbox fails, etc.)
+    newPeers.set(p.nodeId, existing ?? {
+      lastReceived: Date.now(),
+      missedPings: 0,
+      suspect: false,
+      consecutiveSuccesses: 0,
+      outboxConfirmedFailing: false,
+    })
+  }
+  this._peers = newPeers
+  this._recalculateMajority()
+}
+```
+
+#### Detection Scenarios
+
+| Scenario | ticks | suspect | outbox confirm | majority |
+|----------|-------|---------|----------------|----------|
+| Normal operation | <3 | 0 peers | 0 peers | ✅ true |
+| Transient jitter (3 ticks lost) | ≥3 | 1+ peers | 0 peers | ✅ true |
+| Net partition — outbox also failing | ≥3 | 1+ peers | ≥1 peers | ❌ false |
+| Partition heals — heartbeat received | — | Cleared | Cleared | ✅ true |
+| Single node | 0 | 0 | 0 | ✅ true (always) |
+| 2 of 5 peers down | ≥3 | 2 suspects | 2 confirmed | ❌ false (need 3/5 healthy) |
+| 1 of 5 peers down | ≥3 | 1 suspect | 1 confirmed | ✅ true (healthy=3 ≥ quorum=3) |
 
 ### 2.5 Implementation: Outbox Freezing
 
@@ -351,10 +483,7 @@ Each `PerPeerWorker` (one per peer) carries a `_frozen` flag.
 ```typescript
 // PerPeerWorker field
 private _frozen = false
-```
 
-```typescript
-// PerPeerWorker.setFrozen()
 setFrozen(frozen: boolean): void {
   if (this._frozen === frozen) return  // idempotent
   this._frozen = frozen
@@ -395,87 +524,54 @@ private async _tick(): Promise<void> {
 
 **Key behavior**: When frozen:
 - All outbound sends are skipped (early return)
-- ACK timeout cleanup still runs — this prevents the `ackTracker` map from accumulating stale entries during a long partition
+- ACK timeout cleanup still runs — prevents `ackTracker` map from accumulating stale entries during a long partition
 - The tick loop continues to run (setTimeout chain is not paused), so when unfrozen, sending resumes on the next tick with no delay
 
 #### OutboxReplicationManager Frozen Flag
 
-The `OutboxReplicationManager` also carries a `_frozen` flag and propagates to all workers:
-
 ```typescript
-// OutboxReplicationManager field
+// OutboxReplicationManager
 private _frozen = false
-```
 
-```typescript
-// OutboxReplicationManager.setFrozen()
 setFrozen(frozen: boolean): void {
-  if (this._frozen === frozen) return  // idempotent
+  if (this._frozen === frozen) return
   this._frozen = frozen
-  if (frozen) {
-    this.log.warn('[Outbox] Frozen: not in majority, pausing all outbox sends')
-  } else {
-    this.log.info('[Outbox] Unfrozen: back in majority, resuming all outbox sends')
-  }
+  this.log.info(`[Outbox] ${frozen ? 'Frozen' : 'Unfrozen'}: propagating to all workers`)
   for (const worker of this.workerMap.values()) {
     worker.setFrozen(frozen)
   }
 }
-```
 
-The public API for external callers (like `MultiLeaderReplication`) is `setMajorityStatus()`:
-
-```typescript
-/**
- * R9: Set majority status, synchronously reflected as outbox frozen/unfrozen.
- *
- * @param inMajority - true = in majority → unfrozen (normal sends)
- *                     false = not in majority → frozen (pause sends, prevent ghost messages)
- */
 setMajorityStatus(inMajority: boolean): void {
   this.setFrozen(!inMajority)
 }
 ```
 
-**Why two methods?** `setMajorityStatus()` is the semantically meaningful public API that expresses **why** we're freezing. `setFrozen()` is the lower-level mechanism. This separation makes the code intent-clear: external callers say "we're not in majority" rather than "please freeze."
-
-### 2.6 Wiring Example
-
-The `MultiLeaderReplication` orchestrator wires consensus to the outbox in a single method:
+### 2.6 Wiring the Two Paths
 
 ```typescript
-// From multi-leader-replication.ts
-/**
- * Bind a ConsensusProvider to automatically freeze/unfreeze the outbox
- * based on majority status.
- *
- * When the node loses majority (network partition), outbound sends are
- * automatically frozen. When majority is regained, sends resume.
- *
- * This is OPTIONAL — the system works without it (no partition protection).
- */
-setConsensus(consensus: ConsensusProvider): void {
-  consensus.onMajorityChange((inMajority) => {
-    this.manager.setMajorityStatus(inMajority)
-  })
-}
-```
+// ─── Path B: Application-layer heartbeat (Recommended) ───
 
-The `onMajorityChange` callback fires immediately upon registration (see §2.3), so the outbox state is synchronized instantly — there is no race between wiring and the first event.
+const heartbeatManager = new AppHeartbeatManager({
+  nodeId,
+  peers: config.peers,
+  transport: eventBus,  // EventBus implements HeartbeatTransport.send()
+  pingIntervalMs: 1000,
+  suspectThreshold: 3,
+  onMajorityChange: (inMajority) => {
+    outboxManager.setMajorityStatus(inMajority)
+  },
+})
+heartbeatManager.start()
+eventBus.setHeartbeatHandler((from, msg) => heartbeatManager.handleHeartbeat(from))
 
-**Integration with application startup**:
+// ─── Path A: Raft-logic ConsensusProvider (if available) ───
+// consensus.onMajorityChange((inMajority) => {
+//   outboxManager.setMajorityStatus(inMajority)
+// })
 
-```typescript
-// Application bootstrap (simplified)
-const consensus = new RaftLogicConsensus(config)
-await consensus.init()
-await consensus.start()
-
-const replication = new MultiLeaderReplication(config)
-replication.start()
-
-// Wire them together — one line is all it takes
-replication.setConsensus(consensus)
+// ─── Both paths can run simultaneously ───
+// If both fire, the second call to setMajorityStatus(true) is idempotent
 ```
 
 ### 2.7 Standalone Mode
@@ -484,16 +580,12 @@ replication.setConsensus(consensus)
 
 ```typescript
 export class StandaloneConsensus implements ConsensusProvider {
-  // ... other methods ...
-
   /** Single node is always in majority */
-  inMajority(): boolean {
-    return true
-  }
+  inMajority(): boolean { return true }
 
   private _majorityCallbacks: Array<(inMajority: boolean) => void> = []
 
-  /** Single node has no network — callbacks are stored but never fired */
+  /** Single node has no network — callbacks store but never fire */
   onMajorityChange(cb: (inMajority: boolean) => void): void {
     this._majorityCallbacks.push(cb)
   }
@@ -502,62 +594,16 @@ export class StandaloneConsensus implements ConsensusProvider {
 
 ### 2.8 Edge Cases & Failure Modes
 
-#### False Positives During Leader Election
-
-During leader election, there may be a brief period where no leader exists. The 2000ms polling check sees `status().lead === 0` and declares the node out of majority.
-
-- **Impact**: The outbox briefly freezes (~2s), then unfreezes when a new leader is elected.
-- **Mitigation**: This is acceptable — a brief freeze is safer than sending during an unstable period. The `onRoleChange` tier typically fires faster than the polling tier, reducing the window.
-
-#### Brief Majority Loss on Leader Transition
-
-When the leader steps down and a new leader is elected, followers briefly see no quorum. The `onRoleChange` tier fires immediately when the old leader becomes a follower.
-
-- **Impact**: Outbox freezes for the duration of the election (typically 200-500ms in a healthy cluster).
-- **Mitigation**: Pre-vote (`preVote: true` in config) reduces unnecessary elections during transient partitions.
-
-#### Node Restart After Crash
-
-On restart, the raft node starts without a leader. `inMajority()` returns `false` until the node re-joins the cluster and learns the leader.
-
-- **Impact**: Outbox is frozen during recovery. No messages are sent until the node catches up.
-- **Mitigation**: This is correct behavior — the node should not send messages until it has caught up with committed entries.
-
-```typescript
-// In start(): _inMajority is initialized to true but the polling tier
-// will correct it to false within 2000ms if no leader exists
-private _inMajority = true
-```
-
-**Design note**: The initial `_inMajority = true` is deliberately optimistic. During the brief window between `onMajorityChange` registration and the first raft event, assuming majority prevents spurious freezing on startup. The immediate callback in `onMajorityChange()` + polling tier corrects the state within one tick.
-
-#### Large Cluster Partial Partition
-
-In a 5-node cluster, partitioning 3 vs 2: the side with 3 nodes maintains quorum, the side with 2 loses it.
-
-- **Behavior**: The 2-node minority correctly detects loss of majority. Their outboxes freeze.
-- **The 3-node majority**: Remains in majority. Their outboxes operate normally.
-- **Recovery**: When the partition heals, `onQuorumActive` fires on the minority nodes, unfreezing their outboxes.
-
-#### Interaction with Outbox Retries (R5)
-
-The outbox's retry mechanism (with exponential backoff) continues to function during freeze:
-
-- **Queue persists**: Messages are not dropped when frozen stays. They remain in the LMDB-backed queue.
-- **Backoff state preserved**: The `inBackoff`, `lastSendMs`, and `lastError` state of each `PerPeerWorker` is preserved across freeze/unfreeze cycles.
-- **No message loss**: A freeze does not clear queues or ACK trackers.
-- **No message duplication**: The ACK tracker continues to be checked during freeze (see §2.5), so messages that were sent just before the freeze and whose ACKs arrive during the freeze are properly cleaned up.
-
-#### Edge Case Summary
-
-| Scenario | Detection Tier | Behavior |
-|----------|---------------|----------|
+| Scenario | Detection | Behavior |
+|----------|-----------|----------|
 | Leader crash | Tier 2 → Tier 3 | All followers freeze until new leader elected |
-| Network partition (minority) | Tier 2 (demoted leader) or Tier 3 | Minority side freezes |
+| Network partition (minority) | Tier 2 (demoted) or Tier 3 | Minority side freezes |
 | Network partition (majority) | Tier 1 when heals | Majority side unaffected |
-| Node restart | Tier 3 | Frozen until cluster re-joined |
-| Brief disconnect (<2s) | Tier 3 may miss it | Depends on timing of polling check |
-| onRoleChange missed by WASM | Tier 3 catches it | ≤2s delay for detection |
+| Node restart | Tier 3 / AppHB suspect all peers | Frozen until cluster re-joined |
+| Brief disconnect (<2s/3 ticks) | May miss detection | Acceptable — false positive frozen briefly better than ghost messages |
+| Large cluster partial partition (3 vs 2) | Both sides detect accordingly | Majority survives; minority freezes |
+| Jitter causing 3 missed pings | suspect + no outbox confirm | Wait for outbox — false positive avoided |
+| Standalone mode | Always true | Never freezes |
 
 ---
 
@@ -567,7 +613,7 @@ The outbox's retry mechanism (with exponential backoff) continues to function du
 
 1. **Joint Consensus** — Use two-phase membership transitions (`C_old → C_old + C_new → C_new`) as specified in the Raft thesis (§6). This guarantees safety even during membership transitions.
 2. **Leader-only proposals** — Only the current leader can propose membership changes. Followers return an error.
-3. **Idempotent operations** — Adding an existing peer or removing a non-existent peer must be safe no-ops at the raft level.
+3. **Idempotent operations** — Adding an existing peer or removing a non-existent peer must be safe no-ops.
 4. **Dynamic transport reconfiguration** — When membership changes, the event bus must dynamically create/close DEALER connections to new/removed peers.
 
 ### 3.2 Interface Design
@@ -582,289 +628,376 @@ export interface ConsensusProvider {
    *  Only the leader can propose membership changes. */
   addPeer(peerId: string): Promise<void>
 
-  /** Safely remove a peer via Joint Consensus two-phase transition.
-   *  Only the leader can propose membership changes. */
+  /** Safely remove a peer via Joint Consensus two-phase transition. */
   removePeer(peerId: string): Promise<void>
 
-  /** Get the current cluster membership (voters + learners).
-   *  Returns node IDs as strings. */
+  /** Get the current cluster membership (voters + learners). */
   getClusterMembers(): string[]
 
-  /** Register a callback fired when cluster membership changes,
-   *  after a ConfChangeV2 entry is applied via the apply callback. */
+  /** Register a callback fired when cluster membership changes. */
   onMembershipChange(cb: (members: string[]) => void): void
 }
 ```
 
-### 3.3 Application-Layer Membership Change (Recommended)
+### 3.3 Path A: Application-Layer Membership Manager (Recommended)
 
-For teams that cannot or prefer not to use raft-logic's ConfChangeV2 API,
-an application-layer membership manager provides safe membership changes
-via EventBus broadcast with majority confirmation.
+`AppMembershipManager` implements safe membership changes via EventBus broadcast with majority confirmation. It works **independently of raft-logic WASM**.
 
 #### Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│              AppMembershipManager                │
-│                                                  │
-│  proposeChange(type, peerId)                     │
-│    │                                             │
-│    ▼                                             │
-│  Phase 1: Broadcast Proposal                     │
-│  ┌──────────────────────────────────────┐        │
-│  │ MembersipProposal{term, seq, type,   │        │
-│  │   peerId, nodeId} → ALL peers       │        │
-│  └──────────────┬───────────────────────┘        │
-│                 ▼                                │
-│  Phase 2: Collect ACKs                           │
-│  ┌──────────────────────────────────────┐        │
-│  │ Wait for majority ACK (incl. self)   │        │
-│  │ Each ACK contains peer's config hash │        │
-│  │ Verify all ACKs agree on same config │        │
-│  └──────────────┬───────────────────────┘        │
-│                 ▼                                │
-│  Phase 3: Commit                                │
-│  ┌──────────────────────────────────────┐        │
-│  │ Broadcast MembersipCommit{seq}       │        │
-│  │ Each node applies locally:           │        │
-│  │  a) Update config.peers              │        │
-│  │  b) EventBus._recoverDealerByNodeId()│        │
-│  │  c) Outbox add/remove worker         │        │
-│  │  d) Fire onMembershipChange()        │        │
-│  └──────────────────────────────────────┘        │
-│                                                  │
-│  Rollback on timeout:                            │
-│  ┌──────────────────────────────────────┐        │
-│  │ If Phase 2 times out, broadcast      │        │
-│  │ MembersipAbort{seq, reason}          │        │
-│  └──────────────────────────────────────┘        │
-└─────────────────────────────────────────────────┘
+                    AppMembershipManager
+                    ─────────────────────
+
+ proposeChange('add', 'node-4')
+    │
+    ▼
+  ┌──────────────────────────────────────────┐
+  │  Validation                              │
+  │  ────────────                            │
+  │  - Not self (add/remove self? → throw)   │
+  │  - Already exists? → idempotent no-op    │
+  │  - Not exists? → idempotent no-op        │
+  │  - Concurrent proposal? → throw          │
+  └──────────────────┬───────────────────────┘
+                     │
+                     ▼
+  ┌──────────────────────────────────────────┐
+  │ Phase 1: Broadcast Proposal              │
+  │ ──────────────────────────               │
+  │ { type: 'proposal',                      │
+  │   seq: N,                                │
+  │   from: 'node-1',                        │
+  │   changeType: 'add',                     │
+  │   targetPeerId: 'node-4',               │
+  │   configHash: 'node-1,node-2,node-3' }  │
+  │                                          │
+  │ → ALL peers via EventBus broadcast        │
+  └──────────────────┬───────────────────────┘
+                     │
+                     ▼
+  ┌──────────────────────────────────────────┐
+  │ Phase 2: Collect ACKs                     │
+  │ ──────────────────────                   │
+  │ 每个 peer 收到 proposal 后回复 ACK:       │
+  │ { type: 'ack', seq, from, configHash }   │
+  │                                          │
+  │ 发起者等待 majority ACK:                  │
+  │ quorum = floor(N / 2) + 1                │
+  │ self vote + K ACKs >= quorum             │
+  │                                          │
+  │ timeout (5s) → broadcast abort → reject  │
+  └──────────────────┬───────────────────────┘
+                     │ (quorum met)
+                     ▼
+  ┌──────────────────────────────────────────┐
+  │ Phase 3: Commit                          │
+  │ ──────────────                           │
+  │ 1. Apply locally: _applyMembershipChange │
+  │ 2. Broadcast commit:                     │
+  │    { type: 'commit',                     │
+  │      seq, members: [...newMembers] }     │
+  │ 3. Each peer applies locally             │
+  │ 4. Fire onMembershipChange callbacks     │
+  │ 5. resolve() the original Promise        │
+  └──────────────────────────────────────────┘
 ```
 
-#### Interface Design
+#### Complete Implementation
+
+##### Interface
 
 ```typescript
-export interface MembershipConfig {
+export interface MembershipManagerConfig {
   nodeId: string
-  peers: Array<{ nodeId: string; addr: string }>
-  transport: {
-    send: (peerId: string, msg: any) => Promise<void>
-    onMessage: (cb: (peerId: string, msg: any) => void) => void
-  }
+  transport: MembershipTransport
   onMembershipChange: (members: string[]) => void
-  /** Timeout for Phase 2 ACK collection, default 5000ms */
-  ackTimeoutMs?: number
+  ackTimeoutMs?: number   // default 5000
 }
 
 export class AppMembershipManager {
-  constructor(config: MembershipConfig)
+  constructor(config: MembershipManagerConfig)
   start(): void
   stop(): void
-
-  /**
-   * Propose adding or removing a peer.
-   * Returns when the change is committed (Phase 3 complete).
-   */
-  async proposeChange(type: 'add' | 'remove', peerId: string): Promise<void>
-
-  /**
-   * Called by transport when a membership-related message arrives.
-   */
+  proposeChange(type: 'add' | 'remove', peerId: string): Promise<void>
   handleMessage(from: string, msg: any): void
-
-  /** Get current view of cluster members. */
   getMembers(): string[]
+  onMembershipChange(cb: (members: string[]) => void): void
 }
 ```
 
-#### Design Principles (Joint Consensus in Application Layer)
-
-1. **Idempotency**: Messages carry unique `seq` numbers; duplicate messages are dropped
-2. **Two-phase commit**: Phase 1 establishes intent, Phase 2 commits it
-3. **Majority quorum**: Phase 2 requires majority of ALL nodes to ACK (including self)
-4. **Rollback**: If Phase 2 times out, abort broadcast prevents partial application
-5. **Serialized changes**: One membership change at a time; queue if concurrent proposals arrive
-
-#### Safety Guarantees
-
-| Property | How It's Ensured |
-|----------|------------------|
-| No split-brain during transition | Phase 1→Phase 2: majority must agree before commit |
-| Idempotent add/remove | Seq number dedup; add existing peer = no-op |
-| Concurrent proposals | Only one proposal at a time; queue sequential |
-| Leader crash during change | Proposer is single point; if proposer dies, each node auto-aborts on timeout |
-| Config consistency after apply | All nodes apply same Phase 3 commit message |
-
-### 3.4 Legacy: WASM ConfChangeV2 (when bindings mature)
-
-This section describes the complete implementation that should be applied when `raft-logic` exposes the ConfChangeV2 API. It follows the standard raft-rs two-phase Joint Consensus lifecycle.
-
-> **Status**: This is the original WASM-based approach. The [application-layer approach](#33-application-layer-membership-change-recommended) is recommended for most teams. Use this section when raft-logic bindings mature and you prefer a raft-native solution. The application-layer and WASM-native approaches can coexist — use AppMembershipManager in production and enable ConfChangeV2 later as an optimization.
-
-#### Step 1: Propose a Membership Change (addPeer)
-
-This section describes the complete implementation that should be applied when `raft-logic` exposes the ConfChangeV2 API. It follows the standard raft-rs two-phase Joint Consensus lifecycle.
-
-#### Step 1: Propose a Membership Change (addPeer)
+##### Phase 1: Proposal Broadcast
 
 ```typescript
-// Pseudocode for when ConfChangeV2 is exposed on the WASM module
+async proposeChange(type: MembershipChangeType, peerId: string): Promise<void> {
+  if (!this._running) throw new Error('AppMembershipManager not started')
 
+  // ── Validation ──
+  if (type === 'add' && peerId === this.config.nodeId)
+    throw new Error('Cannot add self to cluster')
+  if (type === 'remove' && peerId === this.config.nodeId)
+    throw new Error('Cannot remove self from cluster')
+  if (type === 'add' && this._members.includes(peerId))
+    return Promise.resolve()   // idempotent
+  if (type === 'remove' && !this._members.includes(peerId))
+    return Promise.resolve()   // idempotent
+  if (this._pending)
+    throw new Error(`Concurrent membership change in progress`)
+
+  const seq = this._nextSeq++
+  const configHash = this._computeConfigHash()
+
+  return new Promise<void>((resolve, reject) => {
+    // ── CRITICAL: Set _pending BEFORE broadcast ──
+    // The broadcast may trigger other nodes' ACK replies synchronously.
+    // If _pending is not set by then, the ACK handler will skip them.
+    this._pending = {
+      seq, changeType, targetPeerId: peerId,
+      configHash, acks: new Set([this.config.nodeId]), // self vote
+      ackTimer: null, startTime: Date.now(), resolve, reject,
+    }
+
+    // Set ack timeout (must be after _pending assignment)
+    const timer = setTimeout(() => {
+      const pending = this._pending
+      if (!pending) return
+      this._pending = null
+      this.config.transport.broadcast({ type: 'abort', seq, ... })
+      reject(new Error(`Membership change timeout`))
+    }, this.config.ackTimeoutMs!)
+    this._pending.ackTimer = timer
+
+    // Broadcast proposal asynchronously
+    this.config.transport.broadcast(proposal).then(() => {
+      this._checkProposalCompletion(resolve, reject)
+    }).catch(reject)
+  })
+}
+```
+
+**Critical Implementation Detail**: `_pending` must be set **before** `broadcast()`. The broadcast is synchronous in test mode — it triggers the other nodes' handlers, which reply with `send(ack)`, which synchronously invokes the proposer's `_handleAck`. If `_pending` is not set, the ACK is silently dropped.
+
+##### Phase 2: ACK Collection
+
+```typescript
+// Called when a peer receives the proposal
+private _handleProposal(from: string, msg: MembershipMessage): void {
+  if (!msg.changeType || !msg.targetPeerId) return
+
+  const localHash = this._computeConfigHash()
+  this.config.transport.send(from, {
+    type: 'ack',
+    seq: msg.seq,
+    from: this.config.nodeId,
+    configHash: localHash,
+  }).catch(() => {})
+
+  this.logger.info(`[Membership] Received proposal seq=${msg.seq}, sent ACK`)
+}
+
+/** Proposer handles ACK from a peer */
+private _handleAck(from: string, msg: MembershipMessage): void {
+  if (!this._pending || this._pending.seq !== msg.seq) {
+    // Old seq ACK or proposal already completed — drop silently
+    return
+  }
+
+  // Config hash mismatch is logged but does NOT reject the ACK.
+  // This is intentional: during fast sequential changes, the
+  // proposer's configHash may differ from followers by one version.
+  if (msg.configHash && msg.configHash !== this._pending.configHash) {
+    this.logger.debug(`[Membership] ACK from ${from} configHash mismatch`)
+  }
+
+  this._pending.acks.add(from)
+  this.logger.debug(`[Membership] ACK from ${from} seq=${msg.seq} (${this._pending.acks.size}/${Math.floor(this._members.length / 2) + 1})`)
+
+  // Check quorum — delegate to _checkProposalCompletion
+  const pending = this._pending
+  const quorum = Math.floor(this._members.length / 2) + 1
+  if (pending.acks.size >= quorum) {
+    this._checkProposalCompletion(pending.resolve, pending.reject)
+  }
+}
+```
+
+##### Phase 3: Commit Completion
+
+```typescript
+private _checkProposalCompletion(
+  resolve: (value: void) => void,
+  reject: (err: Error) => void
+): void {
+  if (!this._pending) return
+  const pending = this._pending
+  const quorum = Math.floor(this._members.length / 2) + 1
+
+  if (pending.acks.size >= quorum) {
+    // Guard: prevent double-commit from duplicate ACK arrivals
+    if (pending.ackTimer === null) return  // Already committed
+
+    if (pending.ackTimer) {
+      clearTimeout(pending.ackTimer)
+      pending.ackTimer = null  // Flag: commit has started
+    }
+
+    this._commitChange(pending, resolve, reject)
+  }
+}
+
+private _commitChange(
+  pending: PendingProposal,
+  resolve: (value: void) => void,
+  reject: (err: Error) => void
+): void {
+  // Compute new member list
+  let newMembers: string[]
+  if (pending.changeType === 'add') {
+    newMembers = [...this._members, pending.targetPeerId]
+  } else {
+    newMembers = this._members.filter(m => m !== pending.targetPeerId)
+  }
+
+  // Apply locally FIRST, then broadcast commit
+  // This ensures the proposer's state is updated even if broadcast fails
+  this._applyMembershipChange(newMembers)
+
+  // Broadcast commit to all peers
+  const commitMsg: MembershipMessage = {
+    type: 'commit',
+    seq: pending.seq,
+    from: this.config.nodeId,
+    members: newMembers,
+  }
+
+  this.config.transport.broadcast(commitMsg).then(() => {
+    this._pending = null
+    resolve()
+  }).catch((err: Error) => {
+    this._pending = null
+    this.logger.error(`[Membership] Commit broadcast failed, local apply succeeded`)
+    resolve()  // Local already applied; resolve anyway
+  })
+}
+
+private _applyMembershipChange(newMembers: string[]): void {
+  this._members = [...newMembers].sort()
+
+  // Fire registered callbacks
+  for (const cb of this._membershipCallbacks) {
+    try { cb(this._members) } catch {}
+  }
+  try { this.config.onMembershipChange(this._members) } catch {}
+}
+```
+
+##### Handling Commit/Abort on Non-Proposer Nodes
+
+```typescript
+private _handleCommit(msg: MembershipMessage): void {
+  if (!msg.members || msg.members.length === 0) return
+
+  // Idempotent: skip if already applied
+  const sorted = [...msg.members].sort()
+  if (this._members.length === sorted.length &&
+      this._members.every((m, i) => m === sorted[i])) {
+    return  // Already applied
+  }
+
+  this._applyMembershipChange(sorted)
+}
+
+private _handleAbort(msg: MembershipMessage): void {
+  if (this._pending && this._pending.seq === msg.seq) {
+    if (this._pending.ackTimer) clearTimeout(this._pending.ackTimer)
+    this._pending = null
+    this.logger.warn(`[Membership] Abort seq=${msg.seq}: ${msg.reason || 'No reason'}`)
+  }
+}
+```
+
+#### Message Dedup
+
+Messages are deduped by `type:from:seq` key to handle three scenarios that otherwise cause failures:
+
+```typescript
+handleMessage(from: string, msg: any): void {
+  const mm = msg as MembershipMessage
+
+  // CRITICAL: dedup key includes type prefix + sender
+  // - "proposal:node-1:0" is different from "commit:node-1:0"
+  // - "ack:node-2:1" is different from "ack:node-3:1"
+  const dedupKey = mm.type === 'proposal' || mm.type === 'commit' || mm.type === 'abort'
+    ? `${mm.type}:${mm.from}:${mm.seq}`
+    : `${mm.type}:${from}:${mm.seq}`
+  if (this._seenSeqs.has(dedupKey)) return
+  this._seenSeqs.add(dedupKey)
+
+  // Limit set size
+  if (this._seenSeqs.size > 1000) {
+    const first = this._seenSeqs.values().next().value
+    if (first !== undefined) this._seenSeqs.delete(first)
+  }
+  // ... dispatch to handler ...
+}
+```
+
+**Historical Bug**: The original dedup key was just `mm.seq` (a plain number). This caused:
+- `proposal:0` blocked `commit:0` (same seq = treated as duplicate → commit never applied)
+- `ack:node-2:0` blocked `ack:node-3:0` (second ACK never received → quorum never met → timeout)
+
+### 3.4 Path B: WASM ConfChangeV2 (when bindings mature)
+
+When `raft-logic` exposes the ConfChangeV2 API, the standard raft-rs Joint Consensus lifecycle is:
+
+```
+Timeline:
+  1. Leader proposes addPeer("node-D")    → Entry written: C_old → C_old + C_new
+  2. Entry committed on majority of BOTH   → Cluster enters joint state
+  3. Leader auto-proposes C_old + C_new → C_new
+  4. Entry committed on majority of C_new  → Cluster in new config
+  5. Finalized. Nodes not in C_new removed.
+```
+
+```typescript
 async addPeer(peerId: string): Promise<void> {
-  if (!this._node || !this._started) {
-    throw new Error('RaftLogicConsensus not started')
-  }
+  const raft = this._node
+  const { ConfChangeV2, ConfChangeSingle, ConfChangeTransition, ConfChangeType } = this._raftModule
 
-  // Only leader can propose membership changes
-  const status = this._node.status()
-  if (status.lead === 0 || String(status.lead) !== this.config.nodeId) {
-    throw new Error('Only the leader can propose a membership change')
-  }
-
-  // Get ConfChange types from the WASM module
-  const {
-    ConfChangeV2,
-    ConfChangeSingle,
-    ConfChangeTransition,
-    ConfChangeType,
-  } = this._raftModule
-
-  // Build a Joint Consensus transition: C_old → C_old + C_new
-  // "Explicit" transition means the cluster enters a joint state;
-  // the leader will auto-transition to C_new once committed.
   const cc = new ConfChangeV2()
-  cc.transition = ConfChangeTransition.Explicit
-
-  // Create the individual change: add this node as a voter
+  cc.transition = ConfChangeTransition.Explicit  // Joint Consensus: C_old → C_old + C_new → C_new
   const change = new ConfChangeSingle()
   change.change_type = ConfChangeType.AddNode
   change.node_id = Number(peerId)
   cc.changes = [change]
 
-  // Propose via raft. This writes the ConfChange entry to the raft log.
-  // It will be replicated and committed like any other log entry.
-  try {
-    await this._node.proposeConfChange(cc)
-  } catch (err) {
-    throw new Error(`Failed to propose membership change: ${(err as Error).message}`)
-  }
+  await raft.proposeConfChange(cc)
 }
 ```
 
-Similarly for removePeer:
+ConfChangeV2 entries appear in the `apply()` callback as `EntryConfChangeV2`:
 
 ```typescript
-async removePeer(peerId: string): Promise<void> {
-  if (!this._node || !this._started) {
-    throw new Error('RaftLogicConsensus not started')
-  }
-
-  const status = this._node.status()
-  if (status.lead === 0 || String(status.lead) !== this.config.nodeId) {
-    throw new Error('Only the leader can propose a membership change')
-  }
-
-  const { ConfChangeV2, ConfChangeSingle, ConfChangeTransition, ConfChangeType } = this._raftModule
-
-  const cc = new ConfChangeV2()
-  cc.transition = ConfChangeTransition.Explicit
-
-  const change = new ConfChangeSingle()
-  change.change_type = ConfChangeType.RemoveNode
-  change.node_id = Number(peerId)
-  cc.changes = [change]
-
-  try {
-    await this._node.proposeConfChange(cc)
-  } catch (err) {
-    throw new Error(`Failed to propose membership change: ${(err as Error).message}`)
-  }
-}
-```
-
-**Important design decisions**:
-
-1. **Use `ConfChangeV2` (not `ConfChange`)**: `ConfChangeV2` supports Joint Consensus transitions via the `transition` field. The older `ConfChange` only supports single-phase transitions (C_old → C_new directly), which are unsafe. Always prefer `ConfChangeV2`.
-
-2. **Use `Explicit` transition type**: This tells raft to explicitly enter the joint state `C_old + C_new`, then auto-transition to `C_new` once the joint state is committed. The alternative `Auto` transition skips the joint state, which is faster but less safe during membership changes.
-
-#### Step 2: Apply ConfChange in the Apply Callback
-
-When a ConfChangeV2 entry is committed, it appears in the `apply()` callback with `entry_type === EntryType.EntryConfChangeV2`. The implementation must:
-
-1. Unmarshal the entry data into a `ConfChangeV2` object
-2. Call `this._node.applyConfChange(cc)` to update the raft node's internal membership state
-3. Notify upper layers via `onMembershipChange` callbacks
-
-```typescript
-// In the RaftNode constructor's apply callback (or raft.start() apply parameter)
-
 apply: async (entry: any) => {
-  // Check if this is a membership change entry
-  const { EntryType, ConfChangeV2 } = this._raftModule
-
   if (entry.entry_type === EntryType.EntryConfChangeV2) {
-    // Unmarshal the ConfChangeV2 from the entry data
     const cc = ConfChangeV2.unmarshal(entry.data)
-
-    // Apply to the raft node's internal state
     this._node.applyConfChange(cc)
-
-    // Notify upper layers of the new membership
-    const members = this.getClusterMembers()  // Now uses confState()
-    this.logger.info('[RaftConsensus] Membership changed', { members })
-
+    const members = this.getClusterMembers()  // Now reads from confState()
     for (const cb of this._membershipCallbacks) {
-      try { cb(members) } catch { /* swallow callback errors */ }
+      try { cb(members) } catch {}
     }
-
-    return  // Don't pass to the state machine apply function
+    return  // Don't pass to state machine
   }
-
-  // Normal state machine entry — apply to the engine
-  if (this.applyFn) {
-    await this.applyFn(Buffer.from(entry.data))
-  }
+  // Normal entry — apply to state machine
+  if (this.applyFn) await this.applyFn(Buffer.from(entry.data))
 }
 ```
 
-**With this change**, `getClusterMembers()` should switch from the config-based fallback to reading from `confState()`:
+### 3.5 Integration: EventBus Dynamic Connection Management
+
+When R10 membership changes, the EventBus must dynamically adjust its DEALER sockets:
 
 ```typescript
-// Updated getClusterMembers — use when confState() is available
-getClusterMembers(): string[] {
-  if (!this._node) return this.config.peers
-
-  // Prefer confState() when available
-  if (typeof this._node.confState === 'function') {
-    return this._node.confState().voters.map(String)
-    // Optionally include learners:
-    // const state = this._node.confState()
-    // return [
-    //   ...state.voters.map(String),
-    //   ...state.learners.map(String),
-    // ]
-  }
-
-  // Fallback: construct from config
-  const members = new Set<string>()
-  members.add(this.config.nodeId)
-  for (const p of this.config.peers) {
-    const idx = p.indexOf(':')
-    members.add(idx > 0 ? p.substring(0, idx) : p)
-  }
-  return Array.from(members)
-}
-```
-
-#### Step 3: EventBus Dynamic Connection Management
-
-When membership changes, the EventBus must dynamically create or close DEALER sockets for new/removed peers.
-
-```typescript
-// Pseudocode for EventBus dynamic reconfiguration
-
 class ZmqEventBus {
   private dealers = new Map<string, zmq.Dealer>()
 
@@ -883,18 +1016,11 @@ class ZmqEventBus {
 
     // Create DEALERs for new peers
     for (const peerId of members) {
-      if (peerId === this.nodeId) continue  // Skip self
-      if (this.dealers.has(peerId)) continue  // Already connected
-
+      if (peerId === this.nodeId) continue
+      if (this.dealers.has(peerId)) continue
       const addr = this.lookupPeerAddress(peerId)
-      if (!addr) {
-        this.log.warn(`[EventBus] No address for peer ${peerId}, skipping`)
-        continue
-      }
-
-      this.log.info(`[EventBus] Creating DEALER for new peer ${peerId}`)
+      if (!addr) { this.log.warn(`No address for peer ${peerId}`); continue }
       const dealer = new zmq.Dealer()
-      // ... configure CurveZMQ keys ...
       dealer.connect(addr)
       this.dealers.set(peerId, dealer)
     }
@@ -902,86 +1028,38 @@ class ZmqEventBus {
 }
 ```
 
-**Wiring in the orchestrator**:
+Also, the `AppHeartbeatManager` must be updated:
 
 ```typescript
-// In MultiLeaderReplication or application bootstrap
-
-replication.setConsensus(consensus)
-
-// When WASM bindings support it:
-consensus.onMembershipChange((members) => {
+// In MultiLeaderReplication or application bootstrap:
+membershipManager.onMembershipChange((members) => {
   eventBus.onMembershipChange(members)
+  heartbeatManager.updatePeers(
+    members.filter(m => m !== nodeId).map(m => ({ nodeId: m, addr: lookup(m) }))
+  )
 })
 ```
 
-### 3.5 Safety Guarantees (Joint Consensus)
+### 3.6 Safety Guarantees
 
-Joint Consensus ensures safety during membership transitions through the following guarantees:
+| Property | How Path A (AppLayer) Ensures | How Path B (WASM) Ensures |
+|----------|-------------------------------|---------------------------|
+| No split-brain | Majority must ACK before commit | Joint Consensus: requires majority of BOTH C_old and C_old+C_new |
+| Idempotent add/remove | Pre-validation: check _members before propose | ConfChangeV2 with same peer/node = no-op in raft log |
+| Concurrent proposals | Single pending slot throws error | Raft log serializes all proposals |
+| Crash during change | Timeout → abort broadcast | New leader picks up from joint state |
+| All nodes converge | Same commit message applied everywhere | Same raft log entry applied everywhere |
 
-| Guarantee | Mechanism |
-|-----------|-----------|
-| **No split-brain** | During `C_old + C_new` phase, decisions require majority in BOTH configurations |
-| **Leader continuity** | Leader must be in both C_old and C_new to remain leader during transition |
-| **Crash recovery** | If the leader crashes during transition, a new leader from C_old + C_new picks up from the committed joint state |
-| **Idempotent operations** | addPeer of an existing node = safe no-op; removePeer of a non-existent node = safe no-op |
-| **Safe rollback** | If the transition fails to commit, the cluster remains in the previous known-good configuration |
+### 3.7 Edge Cases & Failure Modes
 
-**The Joint Consensus lifecycle**:
-
-```
-Timeline:
-  1. Leader proposes addPeer("node-D")    → Entry written: C_old → C_old + C_new
-  2. Entry committed on majority of BOTH   → Cluster enters joint state
-  3. Leader auto-proposes C_old + C_new → C_new
-  4. Entry committed on majority of C_new  → Cluster in new config
-  5. Finalized. Nodes not in C_new are removed.
-```
-
-### 3.6 Edge Cases & Failure Modes
-
-#### Concurrent Membership Changes
-
-raft-rs serializes membership changes through the log — you cannot have two concurrent changes. If you call `addPeer()` while a previous change is in progress, the proposal is appended to the log but will be applied after the current transition completes. The `proposeConfChange()` call returns after the entry is appended, not after it's applied — callers should listen for `onMembershipChange` to know when the change is effective.
-
-#### Leader Change During Transition
-
-If the leader that proposed a Joint Consensus transition crashes, the newly elected leader reads the committed log entries and continues from the joint state. The new leader automatically completes the transition:
-
-1. It reads the committed `EntryConfChangeV2` with `C_old → C_old + C_new`
-2. It applies it to its own `ConfState`
-3. It automatically proposes `C_old + C_new → C_new`
-4. The transition completes normally
-
-**The cluster is never stuck in a partial transition state.** This is a core property of Joint Consensus in raft-rs.
-
-#### Removing the Current Leader
-
-If a leader proposes`removePeer` with its own node ID:
-
-1. The proposal is committed through the joint state
-2. On transition to `C_new` (which excludes the old leader), the node steps down
-3. A new leader is elected from the remaining nodes
-4. The removed node stops participating in elections
-
-**Safety concern**: The old leader's outbox may briefly continue sending before the role change callback fires. Mitigation: The `onRoleChange` tier (Tier 2 of R9) will detect the demotion from leader and freeze the outbox.
-
-#### Removing a Non-Existent Peer
-
-`removePeer` with a peer ID not in the current configuration is a safe no-op at the raft level — raft-rs ignores no-op conf changes. The implementation should still track this in logs.
-
-#### Adding a Previously Removed Peer
-
-When a peer that was previously removed is added back, the Joint Consensus transition works the same as adding a new peer. The node must re-join from scratch (catch up on logs, receive snapshots if necessary).
-
-#### Transport Reconfiguration During Change
-
-When membership changes, the EventBus must reconfigure its DEALER connections (see §3.4 Step 3). The reconfiguration must be **idempotent** and **thread-safe**:
-
-- Creating a DEALER for a node that already has one = duplicate connection (ZMQ handles this gracefully but wastes resources)
-- Closing a DEALER for a node that still needs it = message loss
-
-**Recommendation**: Use a `Map<peerId, Dealer>` and only create/close on explicit add/remove events. Do not reconfigure on every `onMembershipChange` callback — only on actual changes from the previous state.
+| Scenario | Resolution |
+|----------|-----------|
+| **Concurrent changes from different nodes** | Only one can succeed; seq-based lock rejects second |
+| **Proposer crashes before commit** | Other nodes time out on ACK; no commit applied |
+| **ACK lost due to partition** | ACK not counted → quorum not met → timeout → abort |
+| **Commit broadcast lost** | Proposer's local apply succeeds; other nodes don't see change until next proposal |
+| **Adding a previously removed peer** | Works identically to adding a new peer |
+| **Removing the current proposer** | Validate: "Cannot remove self" → throw. Must propose from another node |
 
 ---
 
@@ -991,299 +1069,199 @@ When membership changes, the EventBus must reconfigure its DEALER connections (s
 
 | File / Component | R9 Change | R10 Change |
 |---|---|---|
-| **Interface** (`consensus-provider.ts`) | `+inMajority()`, `+onMajorityChange(cb)` | `+addPeer(peerId)`, `+removePeer(peerId)`, `+getClusterMembers()`, `+onMembershipChange(cb)` |
-| **RaftLogicConsensus** | `onQuorumActive` + `onRoleChange` event handlers + `_checkMajority()` 2000ms polling timer | Full `ConfChangeV2` lifecycle (when WASM API is available): `proposeConfChange()` + `applyConfChange()` in apply callback |
-| **AppHeartbeatManager** (new) | Application-layer heartbeat ping + suspect engine + Outbox failure cross-check — provides partition detection without raft-logic dependency | — |
-| **AppMembershipManager** (new) | — | Application-layer two-phase commit membership via EventBus broadcast (recommended alternative to ConfChangeV2) |
-| **StandaloneConsensus** | `inMajority()` returns `true` always; `onMajorityChange()` stores but never fires | `addPeer()` / `removePeer()` are no-ops; `onMembershipChange()` stores but never fires; `getClusterMembers()` returns `[nodeId]` |
-| **OutboxReplicationManager** | `_frozen` flag, `setFrozen()`, `setMajorityStatus()` — propagates to all PerPeerWorkers | — (no changes needed) |
-| **PerPeerWorker** | `_frozen` flag, `setFrozen()` — early return in `_tick()` when frozen; ACK cleanup still runs | — (no changes needed) |
-| **MultiLeaderReplication** | `setConsensus()`: wires `consensus.onMajorityChange()` or `AppHeartbeatManager.onMajorityChange()` → `manager.setMajorityStatus()` | Wire `consensus.onMembershipChange()` or `AppMembershipManager` → EventBus dynamic connection |
-| **EventBus (ZMQ)** | — (no changes needed) | Dynamic DEALER connect/disconnect on membership change |
-| **Tests** | Partition handling: AC-IT-R9 + AC-FI-R9 + AppHeartbeatManager unit tests | Membership change: AC-IT-R10 (standalone) + AppMembershipManager unit tests
+| `consensus-provider.ts` | `+inMajority()`, `+onMajorityChange(cb)` | `+addPeer()`, `+removePeer()`, `+getClusterMembers()`, `+onMembershipChange(cb)` |
+| `raft-logic-consensus.ts` | Three-tier detection: `onQuorumActive` + `onRoleChange` + polling | Full `ConfChangeV2` lifecycle (when WASM API is available) |
+| **AppHeartbeatManager** (new) | Application-layer heartbeat partition detection (recommended) | — |
+| **AppMembershipManager** (new) | — | Application-layer two-phase commit membership (recommended) |
+| `standalone-consensus.ts` | `inMajority()` → `true`; `onMajorityChange()` stores but never fires | `addPeer()`/`removePeer()` no-ops; `getClusterMembers()` returns `[nodeId]` |
+| `outbox-replication.ts` | `_frozen` flag, `setFrozen()`, `setMajorityStatus()` | — (no changes) |
+| `PerPeerWorker` | `_frozen` flag, early return in `_tick()`, ACK cleanup | — (no changes) |
+| `MultiLeaderReplication` | Wire `onMajorityChange()` → `manager.setMajorityStatus()` | Wire `onMembershipChange()` → EventBus dynamic | + HeartbeatManager peer update |
+| EventBus (ZMQ) | — (no changes) | Dynamic DEALER connect/disconnect |
 
-### Line Count Estimate
+### Line Count
 
-| Component | Est. lines added |
-|---|---|
-| `consensus-provider.ts` (interface) | ~15 (6 method signatures + JSDoc) |
-| `raft-logic-consensus.ts` (implementation) | ~80 (or skip if using AppHeartbeatManager) |
-| `AppHeartbeatManager` | ~150 (new file) |
-| `AppMembershipManager` | ~200 (new file) |
-| `outbox-replication.ts` (freezing) | ~40 (PerPeerWorker: 15, Manager: 25) |
-| `multi-leader-replication.ts` (wiring) | ~5 |
-| `standalone-consensus.ts` (stubs) | ~30 |
-| Tests (unit + integration + fault injection) | ~300 |
-
-**Total core logic**: ~430 lines of core logic
-**Total tests**: ~300 lines
-**Grand total**: ~730 lines
+| Component | Lines |
+|-----------|-------|
+| `AppHeartbeatManager` (core) | ~260 |
+| AppHeartbeatManager unit tests | ~350 |
+| Heartbeat partition integration tests | ~150 |
+| `AppMembershipManager` (core) | ~470 |
+| AppMembershipManager integration tests | ~210 |
+| **Total core logic (new files)** | ~730 |
+| **Total tests** | ~710 |
 
 ---
 
 ## 5. Testing Strategy
 
-### 5.1 Unit Tests (ConsensusProvider)
+### 5.1 AppHeartbeatManager Unit Tests
 
-Located in `test/consensus/` (7 test files, 95 tests total). Key coverage:
+Location: `src/consensus/app-heartbeat-manager.spec.ts`
+**27 tests total** — 0 failed, 0 timeout ✅
 
-| Test | Description |
-|------|-------------|
-| `inMajority()` returns correct state after role change | Verify that leader→follower transition flips state |
-| `inMajority()` returns correct state after leader election | Verify that follower→leader transition flips state |
-| `onMajorityChange` fires on transitions | Each role change fires the correct (true/false) callback |
-| `onMajorityChange` fires immediately on registration | Callback gets current state, even if no transition occurred |
-| `onMajorityChange` does NOT fire on no-op transitions | Same state → no callback (prevents spam) |
-| `addPeer` throws on non-leader node | Follower correctly rejects membership proposals |
-| `removePeer` throws on non-leader node | Follower correctly rejects membership proposals |
-| `getClusterMembers` includes all config peers | Returns correct list from config fallback |
-| `onMembershipChange` stores callbacks without error | Registration does not throw |
-| Cleanup on `stop()` | Timers are cleared, no orphan intervals |
+Key approach: No fake timers. Test drives the heartbeat manager via `manualTick()` — a public method that calls `_tick()` synchronously.
 
-### 5.2 Integration Tests
+| Test Group | Count | Key Tests |
+|------------|-------|-----------|
+| start/stop lifecycle | 4 | Idempotent start, clean stop timer cleanup, no pings after stop |
+| Single-node cluster | 2 | Always majority, zero peers in stats |
+| Ping sending | 3 | Sends to all peers, correct message format, seq increments |
+| Heartbeat received | 2 | Clears suspect on heartbeat, handles unknown peer gracefully |
+| Suspect on missed pings | 1 | Mark suspect after threshold ticks |
+| Majority change | 4 | Fire false on suspect+outbox, don't fire without outbox confirm, recovery true, require suspect+outbox |
+| updatePeers | 4 | Track new peers, preserve existing state, remove peers, recalculate |
+| getStats | 5 | All healthy, suspect count, confirmed count, recovery counts |
+| Edge cases | 3 | Non-existent peer report, below threshold, not started |
 
-#### AC-IT-R9: Partition Handling (test/integration/partition-handling.test.ts)
+### 5.2 Heartbeat Partition Integration Tests
 
-Uses real `OutboxReplicationManager` and `PerPeerWorker` instances with in-memory event bus (no real ZMQ). Tests:
+Location: `test/integration/heartbeat-partition.test.ts`
+**7 tests total** — all passing ✅
 
-1. **Freeze**: `setMajorityStatus(false)` → worker frozen → messages queued but not sent
-2. **Cycle**: `false → true → false` transitions without throwing
-3. **Unfreeze**: `setMajorityStatus(true)` → worker unfrozen → pending messages eventually sent
-4. **Idempotency**: Double freeze/unfreeze calls do not throw or corrupt state
+| Test Group | Count | Description |
+|------------|-------|-------------|
+| Partition detection | 1 | Suspect + outbox confirm → lost majority |
+| Partition recovery | 2 | Heartbeat clears suspect, suspect without outbox is not partition |
+| Majority calculation | 4 | 2/5 down, 3/5 down, only some confirmed, single node |
 
-```typescript
-// Key test: freeze → no sends, unfreeze → sends resume
-it('Simulate partition → outbox freezes → partition heals → outbox resumes', async () => {
-  mgr.start()
-  await sleep(200)
+### 5.3 AppMembershipManager Integration Tests
 
-  // Freeze: simulate partition
-  mgr.setMajorityStatus(false)
+Location: `test/integration/membership-app.test.ts`
+**9 tests total** — all passing ✅
 
-  // Add message while frozen
-  mgr.addMessage('test_type', { key: 'value-1' })
-  expect(mgr.getStats().pending).toBeGreaterThan(0)
+| Test | Description | Key Assertion |
+|------|-------------|---------------|
+| adds peer-4 | Add to 3-node cluster | All 3 nodes see 4 members |
+| removes node-2 | Remove from 3-node cluster | Remaining nodes don't contain node-2 |
+| add peer is idempotent | Add existing peer | Resolves to undefined, no change |
+| rejects concurrent proposals | Simultaneous adds | Second throws Concurrent, first completes |
+| validates cannot add self | Add own nodeId | Throws "Cannot add self" |
+| validates cannot remove self | Remove own nodeId | Throws "Cannot remove self" |
+| rejects proposal when not started | Propose before start | Throws "not started" |
+| add → add → remove sequence | Sequential operations | Correct final state |
+| remove non-existent peer is no-op | Remove unknown peer | Members unchanged |
 
-  // Wait for several tick cycles while frozen
-  await sleep(400)
-  expect(sentMsgs.length).toBe(0)  // No sends while frozen
+### 5.4 Full Integration Suite
 
-  // Heal: simulate partition recovery
-  mgr.setMajorityStatus(true)
-
-  // Wait for ticks to resume sending
-  await sleep(1200)
-  expect(sentMsgs.length).toBeGreaterThan(0)  // Messages now sent
-})
-```
-
-#### AC-IT-R10: Membership Change (test/integration/membership-change.test.ts)
-
-Uses `StandaloneConsensus` (no real ZMQ/Raft needed). Tests:
-
-1. **addPeer is no-op** in standalone mode (does not throw, does not change members)
-2. **removePeer is no-op** in standalone mode (does not throw, does not change members)
-3. **onMembershipChange** registers without errors
-4. **Multiple callbacks** can be registered
-5. **Callbacks not fired** in standalone mode (no membership changes to report)
-6. **getClusterMembers** returns only [nodeId] consistently
-
-#### Fault Injection Tests
-
-##### AC-FI-R9: Partition → Freeze → Heal → Resume (test/fault-injection/partition-outbox.test.ts)
-
-Full lifecycle test simulating real fault scenarios:
-
-1. Start manager with real timers (tickMs=50, fast for testing)
-2. Inject partition: `setMajorityStatus(false)`
-3. Verify outbox freezes within one tick (no sends)
-4. Add messages during partition
-5. Heal: `setMajorityStatus(true)`
-6. Verify messages resume sending within backoff-tolerant window
-7. Cleanup: unfreeze before stopping
-
-##### AC-FI-1: Network Partition via SimulatedRaft (test/fault-injection/network-partition.test.ts)
-
-Full 3-node SimulatedRaft partition test (uses real raft state machine in memory):
-
-1. Create 3-node Raft cluster
-2. Wait for leader election
-3. Partition: stop a follower node's transport
-4. Verify majority still functional (writes succeed)
-5. Rejoin partitioned node
-6. Verify data consistency after recovery
-
-### 5.3 Fault Injection Tests
-
-| Test File | Test | Scenario |
-|-----------|------|----------|
-| `network-partition.test.ts` | AC-FI-1 | 3-node simulated raft partition |
-| `partition-outbox.test.ts` | AC-FI-R9 | Outbox freeze/heal lifecycle |
-| `node-crash.test.ts` | AC-FI-2 | Single node crash and recovery |
-| `leader-switch-black-window.test.ts` | AC-FI-3 | Leader failover timing |
-| `consensus-failure.test.ts` | AC-FI-4 | Raft consensus engine failure |
+All R9/R10 tests plus existing consensus/integration/fault-injection tests:
+**197 passed, 5 skipped, 0 failed ✅** (vitest.int.config.ts, 27 files)
 
 ---
 
-## 6. Migration Guide
+## 6. Known Pitfalls & Bug Fix History
 
-### From No Partition Handling to R9
+The following bugs were discovered and fixed during integration testing. Document them here so future implementors don't repeat them.
 
-For teams adopting this pattern in their own projects, here is the step-by-step recipe:
+### Bug 1: `_seenSeqs` Blocks Commit Messages (seq collision)
 
-#### Step 1: Update the ConsensusProvider Interface
+**Symptoms**: After Phase 2 ACK quorum is met, Phase 3 commit is broadcast but non-proposer nodes never apply the commit. The commit message exits silently.
 
-Copy the full interface from `consensus-provider.ts` — specifically the R9 and R10 method signatures:
+**Root Cause**: `_seenSeqs` used a plain `mm.seq` number as dedup key. A `proposal:seq=0` and `commit:seq=0` shared the same key. When the commit arrived at a non-proposer node, `_seenSeqs.has(0)` returned `true` (because the earlier `proposal:0` had been added), and the commit was silently dropped.
 
+**Fix**: Changed dedup key to include type prefix: `${mm.type}:${mm.from}:${mm.seq}`.
+
+**Before (broken)**:
 ```typescript
-export interface ConsensusProvider {
-  // ... your existing methods ...
-
-  // ── Add these ──
-  inMajority(): boolean
-  onMajorityChange(cb: (inMajority: boolean) => void): void
-  addPeer(peerId: string): Promise<void>
-  removePeer(peerId: string): Promise<void>
-  getClusterMembers(): string[]
-  onMembershipChange(cb: (members: string[]) => void): void
-}
+if (this._seenSeqs.has(mm.seq)) return
+this._seenSeqs.add(mm.seq)
+// proposal:0 blocks commit:0
 ```
 
-#### Step 2: Add Majority Detection to Your Raft Implementation
+**After (fixed)**:
+```typescript
+const dedupKey = `${mm.type}:${mm.from}:${mm.seq}`
+if (this._seenSeqs.has(dedupKey)) return
+this._seenSeqs.add(dedupKey)
+// "proposal:node-1:0" does not block "commit:node-1:0"
+```
 
-Implement the three-tier detection pattern described in §2.3. The essential code:
+### Bug 2: `_seenSeqs` Blocks Second ACK (same seq, different source)
+
+**Symptoms**: In a 3-node cluster, the proposer receives ACK from node-2 but never from node-3. Quorum never meets the threshold (need 2 of 3, stuck at 1).
+
+**Root Cause**: ACKs from different sources share the same seq but are distinct messages. The plain-seq dedup key means `ack:node-2:0` blocked `ack:node-3:0` (both with key `0`).
+
+**Fix**: ACK messages use a different dedup key that includes the source nodeId:
 
 ```typescript
-// Class fields
-private _inMajority = true
-private _majorityCallbacks: Array<(inMajority: boolean) => void> = []
+const dedupKey = mm.type === 'proposal' || mm.type === 'commit' || mm.type === 'abort'
+  ? `${mm.type}:${mm.from}:${mm.seq}`
+  : `${mm.type}:${from}:${mm.seq}`   // "ack:node-2:0" vs "ack:node-3:0"
+```
 
-// In your raft.start():
-raft.onRoleChange((rc) => {
-  // leader→follower = majority loss
-  if (rc.role === 'follower' || rc.role === 'candidate') {
-    this._setMajority(false)
-  }
-  // becomes leader = majority gain
-  if (rc.role === 'leader') {
-    this._setMajority(true)
-  }
+### Bug 3: Concurrent Proposal Bypass
+
+**Symptoms**: `proposeChange('add', 'node-4')` and `proposeChange('add', 'node-5')` both succeed — the second call bypasses the "Concurrent membership change" guard.
+
+**Root Cause**: `this._pending = null` was set inside `_checkProposalCompletion()` synchronously, **before** the `.then()` microtask that calls `resolve()`. The second `proposeChange()` call's `if (this._pending)` check in the next synchronous turn found `_pending === null` and started a new proposal, while the first proposal's Promise had not yet resolved.
+
+```
+Timeline (broken):
+  _checkProposalCompletion()
+    └→ this._pending = null          ← too early!
+    └→ _commitChange()
+         └→ broadcast(commit).then(() => resolve())
+                                    ↑ microtask
+                                    ↑ _pending is already null here
+                                    ↑ second proposeChange can enter
+```
+
+**Fix**: Move `this._pending = null` into the `.then()` callback alongside `resolve()`:
+
+```typescript
+this.config.transport.broadcast(commitMsg).then(() => {
+  this._pending = null   // Now alongside resolve
+  resolve()
 })
+```
 
-// Optional: onQuorumActive for fast re-entry
-if (raft.onQuorumActive) {
-  raft.onQuorumActive(() => this._setMajority(true))
-}
+### Bug 4: Double Commit (duplicate ACK trigger)
 
-// Polling fallback (2000ms)
-setInterval(() => {
-  const status = this._node.status()
-  const leader = status.lead ?? status.leaderId ?? null
-  this._setMajority(leader !== null && leader !== 0)
-}, 2000)
+**Symptoms**: Dozens of duplicate `_applyMembershipChange` calls. The commit is broadcast multiple times.
 
-// Helper
-private _setMajority(val: boolean): void {
-  if (this._inMajority === val) return  // No change
-  this._inMajority = val
-  for (const cb of this._majorityCallbacks) {
-    try { cb(val) } catch {}
+**Root Cause**: When the ACK collection path was called from `_handleAck` synchronously, and two ACKs arrived sequentially (e.g., node-2 and node-3), the second `_handleAck` call also met the quorum condition and called `_checkProposalCompletion` → `_commitChange` a second time. The `ackTimer` had been `clearTimeout`'d but not set to `null`.
+
+**Fix**: Add a guard using `ackTimer === null` as a "commit started" flag:
+
+```typescript
+if (pending.acks.size >= quorum) {
+  if (pending.ackTimer === null) return  // Already started commit
+  if (pending.ackTimer) {
+    clearTimeout(pending.ackTimer)
+    pending.ackTimer = null   // Flag: commit started
   }
-}
-
-// In onMajorityChange:
-onMajorityChange(cb) {
-  this._majorityCallbacks.push(cb)
-  cb(this._inMajority)  // Immediate callback!
+  this._commitChange(pending, resolve, reject)
 }
 ```
 
-#### Step 3: Add Freeze Support to Your Outbox Manager
+### Bug 5: `resolve` is not defined
+
+**Symptoms**: Error "resolve is not defined" in production code at runtime. All integration tests fail with this error.
+
+**Root Cause**: The original code called `broadcast(proposal)` with `await` before creating the `return new Promise((resolve, reject) => ...)`. The `_handleAck` callback tried to use `resolve` from a not-yet-defined scope.
+
+**Fix**: Move the `_pending` setup (which stores `resolve`/`reject`) **before** the broadcast call, inside the Promise constructor:
 
 ```typescript
-// In your outbox manager (OutboxReplicationManager equivalent):
-private _frozen = false
-
-setFrozen(frozen: boolean): void {
-  if (this._frozen === frozen) return
-  this._frozen = frozen
-  for (const worker of this.allWorkers()) {
-    worker.setFrozen(frozen)
-  }
-}
-
-setMajorityStatus(inMajority: boolean): void {
-  this.setFrozen(!inMajority)
-}
-```
-
-In each per-peer worker:
-
-```typescript
-private _frozen = false
-
-setFrozen(frozen: boolean): void {
-  if (this._frozen === frozen) return
-  this._frozen = frozen
-}
-
-// In the worker's tick/send loop:
-async _tick(): Promise<void> {
-  if (this._frozen) {
-    // Still process ACK timeouts (prevent leaks)
-    this._processAckTimeouts()
-    return  // Skip all sends
-  }
-  // ... normal send logic ...
-}
-```
-
-#### Step 4: Wire Majority Detection
-
-```typescript
-// Recommended: Application-layer heartbeat detection
-const heartbeatManager = new AppHeartbeatManager({
-  nodeId,
-  peers: config.peers,
-  transport: eventBus,
-  onMajorityChange: (inMajority) => {
-    outboxManager.setMajorityStatus(inMajority)
-  }
+return new Promise<void>((resolve, reject) => {
+  this._pending = { resolve, reject, ... }   // Set BEFORE broadcast
+  this.config.transport.broadcast(proposal).then(() => {
+    this._checkProposalCompletion(resolve, reject)
+  })
 })
-heartbeatManager.start()
-
-// OR: Advanced — use raft-logic ConsensusProvider if raft-logic is available
-// consensus.onMajorityChange((inMajority) => {
-//   outboxManager.setMajorityStatus(inMajority)
-// })
 ```
 
-#### Step 5: (Optional) Add Membership Change Support
+### Design Lessons Summary
 
-Use the application-layer `AppMembershipManager` (see §3.3) as the recommended approach:
-
-```typescript
-const membershipManager = new AppMembershipManager({
-  nodeId,
-  peers: config.peers,
-  transport: eventBus,
-  onMembershipChange: (members) => {
-    eventBus.reconfigureDealers(members)
-  }
-})
-membershipManager.start()
-```
-
-When your raft-logic bindings support ConfChangeV2, follow the pattern in §3.4 as an alternative.
-
-### Rollback
-
-To disable partition handling without losing state:
-
-1. Stop wiring: remove `setConsensus()` call
-2. The outbox will operate normally without partition protection
-3. Messages queued during a freeze are not lost (they're in LMDB)
-4. To unfreeze from a stuck state: call `manager.setMajorityStatus(true)`
+| Lesson | Why It Matters |
+|--------|---------------|
+| **Set state before async operations** | Broadcast is synchronous in tests → handlers fire in same turn |
+| **Clear state only alongside resolve** | Otherwise concurrent guard is defeated |
+| **Dedup keys must include type + source** | Plain numbers collide between message types and sources |
+| **Guard against repeat callback invocations** | Synchronous delivery can invoke the same handler twice |
+| **`ackTimer` null is a better guard than a separate boolean** | Reuse existing field as state flag |
+| `_applyMembershipChange` before `broadcast(commit)` | Proposer always has the latest state, even if commit broadcast fails |
 
 ---
 
@@ -1295,22 +1273,26 @@ To disable partition handling without losing state:
 |------|-----------|---------|
 | `src/consensus/consensus-provider.ts` | 1-115 | Full interface: all R9/R10 method signatures with JSDoc |
 | `src/consensus/raft-logic-consensus.ts` | 18-39 | Class fields: `_inMajority`, `_majorityCallbacks`, `_majorityCheckTimer` |
-| `src/consensus/raft-logic-consensus.ts` | 153-270 | `start()`: raft initialization, onQuorumActive hook (L206-219), onRoleChange hook (L221-252), polling fallback (L254-262) |
+| `src/consensus/raft-logic-consensus.ts` | 153-270 | `start()`: onQuorumActive hook (L206-219), onRoleChange hook (L221-252), polling fallback (L254-262) |
 | `src/consensus/raft-logic-consensus.ts` | 422-456 | `inMajority()`, `onMajorityChange()`, `_checkMajority()` |
 | `src/consensus/raft-logic-consensus.ts` | 458-525 | `addPeer()`, `removePeer()`, `getClusterMembers()`, `onMembershipChange()` |
 | `src/consensus/standalone-consensus.ts` | 56-100 | Standalone stubs for all R9/R10 methods |
-| `src/core/outbox-replication.ts` | 737-845 | PerPeerWorker fields, `setFrozen()`, `_tick()` early return on freeze |
-| `src/core/outbox-replication.ts` | 1082-1511 | OutboxReplicationManager: `_frozen` field, `setFrozen()`, `setMajorityStatus()`, `start()`, `getStats()` |
+| `src/consensus/app-heartbeat-manager.ts` | 1-430 | Full AppHeartbeatManager implementation |
+| `src/consensus/app-membership-manager.ts` | 1-420 | Full AppMembershipManager implementation |
+| `src/core/outbox-replication.ts` | 737-845 | PerPeerWorker: `_frozen` field, `setFrozen()`, `_tick()` early return |
+| `src/core/outbox-replication.ts` | 1082-1511 | OutboxReplicationManager: `_frozen`, `setFrozen()`, `setMajorityStatus()` |
 | `src/core/multi-leader-replication.ts` | 165-185 | `MultiLeaderReplication.setConsensus()` wiring |
 
 ### Test Files
 
-| File | Content |
-|------|---------|
-| `test/integration/partition-handling.test.ts` | AC-IT-R9: Outbox freeze/unfreeze (no ZMQ, in-memory event bus) |
-| `test/integration/membership-change.test.ts` | AC-IT-R10: StandaloneConsensus addPeer/removePeer/getClusterMembers |
-| `test/fault-injection/partition-outbox.test.ts` | AC-FI-R9: Partition → freeze → heal → resume lifecycle |
-| `test/fault-injection/network-partition.test.ts` | AC-FI-1: 3-node simulated raft partition |
+| File | Tests | Suites |
+|------|-------|--------|
+| `src/consensus/app-heartbeat-manager.spec.ts` | 27 | AppHeartbeatManager unit tests |
+| `test/integration/heartbeat-partition.test.ts` | 7 | AC-IT-R9 partition handling |
+| `test/integration/membership-app.test.ts` | 9 | AC-IT-R10 membership change |
+| `test/integration/partition-handling.test.ts` | 3 | Existing R9 integration tests |
+| `test/fault-injection/partition-outbox.test.ts` | 1 | Existing FI-R9 freeze/heal lifecycle |
+| Full integration suite | 197 | 27 files, 0 failed |
 
 ### Naming Conventions
 
@@ -1319,4 +1301,3 @@ To disable partition handling without losing state:
 | `AC-IT-R9` | Integration Test | R9 partition handling |
 | `AC-IT-R10` | Integration Test | R10 membership change |
 | `AC-FI-R9` | Fault Injection Test | R9 partition + outbox freeze |
-| `AC-FI-[1-9]` | Fault Injection Test | General fault scenarios |
