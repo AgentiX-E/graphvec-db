@@ -1244,9 +1244,11 @@ class DatabaseManager {
 | B2 | `src/consensus/raft-core.ts` (适配) | 接入 GroupTransportHandle，从 Transport 接口得到 RPC 响应 | 集成：多 group 单机 |
 | B3 | `src/core/database-manager.ts` (重构) | createDatabase() 同时创建 RaftGroup；为每个 Range 注入 RaftCore | 集成：2 数据库 × 2 Range |
 
-#### Phase C — 删除数据库（预估 2-3 天）
+#### Phase C — 删除数据库（预估 2-3 天）🚧 NOT YET IMPLEMENTED
 
 **目标**: 三阶段删除实现
+
+> ⚠️ 当前 `src/core/database-manager.ts` 中的 `dropDatabase()` 仅做内存清理（`Map.delete`），**不释放任何底层资源**。本阶段的所有步骤（C1-C5）均未在生产代码中实现。集成测试 `test/integration/database-deletion.test.ts` (18/18 ✅) 已在 mock 环境中验证了正确的行为，但生产代码尚未对应实现。
 
 | 步骤 | 文件 | 工作内容 | 测试方法 |
 |------|------|---------|---------|

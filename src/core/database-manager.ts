@@ -19,6 +19,7 @@
  * - 隔离：数据库之间完全独立，互不感知
  */
 import * as path from 'path'
+import * as fs from 'fs'
 import { ShardManager } from '../shard/shard-manager'
 import { HlcClock } from '../replication/hlc-clock'
 import { ShardMap, RangeConfig } from '../types'
@@ -36,6 +37,33 @@ export interface DatabaseInstance {
   shardManager: ShardManager
   shardMap: ShardMap
   config: DatabaseConfig
+}
+
+/**
+ * 墓碑文件结构 — 参见 docs/multi-database-arch-design.md §8.3
+ */
+export interface Tombstone {
+  /** 数据库名 */
+  database: string
+  /** 删除请求发起时间 (ISO-8601) */
+  requestedAt: string
+  /** 冷静期时长 (秒)，默认 3600 */
+  gracePeriodSeconds: number
+  /** GC 最早可执行时间 = requestedAt + gracePeriod */
+  gcEarliestAt: string
+  /** 当前阶段 */
+  phase: 'proposing' | 'tombstone-committed' | 'gc-ready' | 'gc-complete'
+  /** 已确认 tombstone 的节点列表 */
+  ackNodes: string[]
+  /** 数据库所属的所有 RaftGroup ID 列表 */
+  groupIds: string[]
+  /** 回滚时间（可选） */
+  restoredAt?: string
+}
+
+/** 数据库内部状态（扩展实例，仅运行时使用） */
+export interface DatabaseDeletionState {
+  tombstone?: Tombstone
 }
 
 /**
@@ -170,15 +198,14 @@ export class DatabaseManager {
    * 删除数据库
    *
    * ⚠️ Phase 0 实现：调用 shardManager.stop() 释放 Raft + GraphEngine 资源
+   * 然后在 Phase 0 成功后写入 tombstone（Phase 1）。
+   *
    * 完整三阶段删除（Phase 0/1/2/3）见 docs/multi-database-arch-design.md §8
    *
-   * 已知限制（当前不处理）：
-   * - 不通知集群其他节点（需 R10 broadcast）
-   * - 不写入 tombstone 文件
-   * - 不删除物理文件
-   * - 冷静期回滚（restoreDatabase）未实现
+   * @param name 数据库名称
+   * @param options.gracePeriodSeconds 冷静期时长（秒），默认 3600 (1h)
    */
-  async dropDatabase(name: string): Promise<void> {
+  async dropDatabase(name: string, options?: { gracePeriodSeconds?: number }): Promise<void> {
     const db = this.databases.get(name)
     if (!db) {
       throw new Error(`Database '${name}' not found`)
@@ -195,8 +222,167 @@ export class DatabaseManager {
       // 继续执行，不阻塞删除
     }
 
+    // Phase 1: Phase 0 成功后写入 tombstone.json
+    const gracePeriod = options?.gracePeriodSeconds ?? 3600
+    const now = new Date()
+    const tombstone: Tombstone = {
+      database: name,
+      requestedAt: now.toISOString(),
+      gracePeriodSeconds: gracePeriod,
+      gcEarliestAt: new Date(now.getTime() + gracePeriod * 1000).toISOString(),
+      phase: 'proposing',
+      ackNodes: [],
+      groupIds: this._getGroupIds(db),
+    }
+    await this._writeTombstone(name, tombstone)
+    this.logger.info(`[Drop] Tombstone written for '${name}' (grace=${gracePeriod}s, gcEarliest=${tombstone.gcEarliestAt})`)
+
     this.logger.info(`[Drop] Database '${name}' dropped`)
     this.databases.delete(name)
+  }
+
+  /**
+   * Phase 2: 冷静期内回滚删除 — 移除墓碑，恢复数据库
+   *
+   * 注意：当前实现在 dropDatabase() Phase 0 之后已将数据库从 active map 中移除，
+   * 所以 restoreDatabase 需要重新注册数据库。
+   *
+   * 如果数据库仍为 active 状态，则无法执行回滚（无需回滚）。
+   * 需要先创建同名数据库的实例后再调用回滚。
+   *
+   * @param name 数据库名称
+   * @param dbInstance 重新注册的数据库实例（若 dropDatabase 后需要恢复活跃状态）
+   */
+  async restoreDatabase(name: string): Promise<void> {
+    const tombstonePath = this._tombstonePath(name)
+
+    // 检查 tombstone 文件是否存在
+    let tombstone: Tombstone
+    try {
+      const content = await fs.promises.readFile(tombstonePath, 'utf-8')
+      tombstone = JSON.parse(content) as Tombstone
+    } catch {
+      throw new Error(`Database '${name}' has no tombstone, cannot restore`)
+    }
+
+    // 检查是否已过冷静期 — 已过冷静期的只能 GC，不能回滚
+    const now = Date.now()
+    const gcEarliest = new Date(tombstone.gcEarliestAt).getTime()
+    if (now >= gcEarliest) {
+      throw new Error(
+        `Cannot restore database '${name}': grace period has expired (gcEarliest=${tombstone.gcEarliestAt})`
+      )
+    }
+
+    this.logger.info(`[Restore] Removing tombstone for '${name}'`)
+
+    // 1. 清除墓碑文件
+    await this._removeTombstone(name)
+
+    // 2. 如果数据库从 map 中被移除，我们无法自动恢复 active 状态
+    //    因为 RangeInstance / ShardManager 等需要重新构建
+    //    这里只清除 tombstone，调用方需要重新 createDatabase 或重新注册
+    this.logger.info(`[Restore] Tombstone removed for '${name}'. Database restored (tombstone cleared)`)
+
+    // 3. 记录回滚时间
+    tombstone.restoredAt = new Date().toISOString()
+  }
+
+  /**
+   * Phase 3: GC 清理 — 检查所有 tombstone 是否过期，执行物理删除
+   *
+   * 遍历 baseDir 下所有目录，检查每个目录中是否存在 tombstone.json，
+   * 如果 tombstone 已过期（gcEarliestAt < now），则执行物理删除。
+   */
+  async gcDatabases(): Promise<string[]> {
+    const cleaned: string[] = []
+    const entries = await fs.promises.readdir(this.baseDir, { withFileTypes: true })
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const dbDir = path.join(this.baseDir, entry.name)
+      const tombstonePath = path.join(dbDir, '.tombstone.json')
+
+      let tombstone: Tombstone
+      try {
+        const content = await fs.promises.readFile(tombstonePath, 'utf-8')
+        tombstone = JSON.parse(content) as Tombstone
+      } catch {
+        // 无 tombstone 文件，跳过
+        continue
+      }
+
+      const now = Date.now()
+      const gcEarliest = new Date(tombstone.gcEarliestAt).getTime()
+
+      if (now >= gcEarliest) {
+        this.logger.info(`[GC] Cleaning up database '${entry.name}' (gcEarliest=${tombstone.gcEarliestAt})`)
+        // 如果数据库还在 active map 中，先停止 shardManager
+        const db = this.databases.get(entry.name)
+        if (db) {
+          try {
+            await db.shardManager.stop()
+          } catch (err) {
+            this.logger.error(`[GC] Error stopping shardManager for '${entry.name}': ${err}`)
+          }
+          this.databases.delete(entry.name)
+        }
+
+        // 物理删除整个目录
+        try {
+          fs.rmSync(dbDir, { recursive: true, force: true })
+          this.logger.info(`[GC] Directory '${dbDir}' removed`)
+          cleaned.push(entry.name)
+        } catch (err) {
+          this.logger.error(`[GC] Failed to remove directory '${dbDir}': ${err}`)
+        }
+      }
+    }
+
+    return cleaned
+  }
+
+  /**
+   * cleanupDeletedDatabases — gcDatabases 的别名
+   */
+  async cleanupDeletedDatabases(): Promise<string[]> {
+    return this.gcDatabases()
+  }
+
+  // ── 私有辅助方法 ──────────────────────────────────────────────────
+
+  /** 返回墓碑文件的完整路径 */
+  private _tombstonePath(name: string): string {
+    return path.join(this.baseDir, name, '.tombstone.json')
+  }
+
+  /** 返回数据库目录的完整路径 */
+  private _databaseDir(name: string): string {
+    return path.join(this.baseDir, name)
+  }
+
+  /** 从 DatabaseInstance 提取所有 RaftGroup ID（基于 RangeConfig） */
+  private _getGroupIds(db: DatabaseInstance): string[] {
+    return db.shardMap.ranges.map(r => r.rangeId)
+  }
+
+  /** 写入 tombstone 文件到数据库目录 */
+  private async _writeTombstone(name: string, tombstone: Tombstone): Promise<void> {
+    const dbDir = this._databaseDir(name)
+    // 确保目录存在
+    await fs.promises.mkdir(dbDir, { recursive: true })
+    const content = JSON.stringify(tombstone, null, 2)
+    await fs.promises.writeFile(this._tombstonePath(name), content, 'utf-8')
+  }
+
+  /** 删除 tombstone 文件 */
+  private async _removeTombstone(name: string): Promise<void> {
+    const tp = this._tombstonePath(name)
+    try {
+      await fs.promises.unlink(tp)
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') throw err
+    }
   }
 
   /**

@@ -104,23 +104,48 @@ describe('AC-IT-R10: Membership Change (StandaloneConsensus)', () => {
     })
   })
 
-  describe('Raft-logic specific (skip if no raft-logic WASM)', () => {
-    // These tests would need the actual raft-logic WASM module.
-    // They are kept as documentation of what needs testing when
-    // addPeer/removePeer are implemented in RaftLogicConsensus.
-    describe.skip('raft-logic-specific', () => {
-      it('addPeer on started RaftLogicConsensus throws "not supported"', async () => {
-        // Placeholder: import { RaftLogicConsensus } from '../../src/consensus/raft-logic-consensus'
-        // Would test: addPeer throws correct error message
-      })
-
-      it('removePeer on started RaftLogicConsensus throws "not supported"', async () => {
-        // Placeholder: Would test correct error
-      })
-
-      it('membership callbacks registered on RaftLogicConsensus', () => {
-        // Placeholder: Would test callback registration
-      })
+  it('onMembershipChange callback fires in StandaloneConsensus after addPeer', () => {
+    // StandaloneConsensus.addPeer 是空操作但 callback 注册存在
+    // 验证注册本身不抛异常
+    const consensus = new StandaloneConsensus({
+      mode: 'standalone',
+      nodeId: 'mem-cb-node',
+      peers: [],
     })
+    expect(() => {
+      consensus.onMembershipChange(() => {})
+    }).not.toThrow()
+  })
+
+  it('RaftLogicConsensus addPeer throws correct error', async () => {
+    // 动态 import 但跳过 start（已知 mock 不完整）
+    // 验证 addPeer/removePeer 在 not started 状态下也抛正确错误
+    const { RaftLogicConsensus } = await import('../../src/consensus/raft-logic-consensus')
+    const consensus = new RaftLogicConsensus(
+      { mode: 'raft-logic', nodeId: 'test', peers: [] },
+    )
+    await expect(consensus.addPeer('peer-2')).rejects.toThrow('RaftLogicConsensus not started')
+    await expect(consensus.removePeer('peer-2')).rejects.toThrow('RaftLogicConsensus not started')
+  })
+
+  it('RaftLogicConsensus addPeer/removePeer error message mentions ConfChange', async () => {
+    // 直接检查源代码确认错误消息包含 ConfChange 说明
+    // 这是对 RaftLogicConsensus 实现在不 start WASM 情况下的契约验证
+    const { RaftLogicConsensus } = await import('../../src/consensus/raft-logic-consensus')
+    const consensus = new RaftLogicConsensus(
+      { mode: 'raft-logic', nodeId: 'test', peers: [] },
+    )
+    // 手动设置 _started 和 _node 绕过 start
+    ;(consensus as any)._started = true
+    ;(consensus as any)._node = {}
+    ;(consensus as any)._transport = { sendTo: () => true, onMessage: () => {} }
+    ;(consensus as any).logger = new (await import('../../src/ops/logger')).Logger('test')
+
+    await expect(consensus.addPeer('peer-2')).rejects.toThrow(
+      'addPeer not available: raft-logic WASM does not expose ConfChange API',
+    )
+    await expect(consensus.removePeer('peer-2')).rejects.toThrow(
+      'removePeer not available: raft-logic WASM does not expose ConfChange API',
+    )
   })
 })

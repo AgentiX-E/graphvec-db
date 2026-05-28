@@ -335,7 +335,7 @@ describe('AC-IT-M6: Outbox replay on reconnection', () => {
    * Simulate peer disconnect by using a send stub that drops messages.
    * Write data → verify Outbox accumulates pending entries.
    */
-  it.skip('6.1 Entries accumulate in Outbox when peer is unreachable', async () => {
+  it('6.1 Entries accumulate in Outbox when peer is unreachable', async () => {
     const baseDir = tmpDir('m6-accumulate')
     const dataDir = path.join(baseDir, 'data')
     const outboxDbPath = path.join(baseDir, 'outbox.db')
@@ -364,12 +364,19 @@ describe('AC-IT-M6: Outbox replay on reconnection', () => {
       entryTTLDays: 14,
       eventBus: {
         send: disconnectedSend,
+        _recoverDealerByNodeId: async (_nodeId: string) => {},
+        _handleDealerSendError: (_nodeId: string, _err: Error) => {},
       },
     })
 
     const stream = createLocalEventStream('m6-writer-node', walDir)
     const engine = new GraphEngine({ path: dataDir }, undefined, stream, ml)
     engine.open()
+
+    // 写入 .pub 文件使 PerPeerWorker 通过连接就绪检查
+    const peerKeys = EventBus.generateCurveKeys()
+    EventBus.writePublicKeyToDir(baseDir, 'm6-offline-peer', 1, peerKeys.publicKey)
+
     ml.start()
 
     try {
@@ -402,7 +409,7 @@ describe('AC-IT-M6: Outbox replay on reconnection', () => {
    * Phase 2 (reconnected) accepts sends.
    * Verify entries are removed from pending after reconnection.
    */
-  it.skip('6.2 Pending entries drain after peer reconnection', async () => {
+  it('6.2 Pending entries drain after peer reconnection', async () => {
     const baseDir = tmpDir('m6-replay')
     const dataDir = path.join(baseDir, 'data')
     const outboxDbPath = path.join(baseDir, 'outbox.db')
@@ -434,12 +441,19 @@ describe('AC-IT-M6: Outbox replay on reconnection', () => {
       entryTTLDays: 14,
       eventBus: {
         send: sendFn,
+        _recoverDealerByNodeId: async (_nodeId: string) => {},
+        _handleDealerSendError: (_nodeId: string, _err: Error) => {},
       },
     })
 
     const stream = createLocalEventStream('m6-replay-node', walDir)
     const engine = new GraphEngine({ path: dataDir }, undefined, stream, ml)
     engine.open()
+
+    // 写入 .pub 文件使 PerPeerWorker 通过连接就绪检查
+    const peerKeys = EventBus.generateCurveKeys()
+    EventBus.writePublicKeyToDir(baseDir, 'm6-recovered-peer', 1, peerKeys.publicKey)
+
     ml.start()
 
     try {

@@ -31,7 +31,7 @@
     "test:shard-routing": "NODE_OPTIONS='--max-old-space-size=4096' npx vitest run --config vitest.config.ts --root . src/shard/scatter-gather* src/shard/edge-affinity*",
     "test:shard-stability": "NODE_OPTIONS='--max-old-space-size=4096' npx vitest run --config vitest.config.ts --root . src/shard/shard-health* src/shard/shard-dual*",
     "test:security": "npx vitest run --config vitest.config.ts --root . src/security",
-    "test:core-base": "npx vitest run --config vitest.config.ts --root . src/core/graph-algorithms.spec.ts src/core/graph-config.spec.ts src/core/graph-engine.spec.ts src/core/graph-engine-eventstream.spec.ts src/core/label-index.spec.ts src/core/multi-leader-replication.spec.ts src/core/safe-reader.spec.ts src/core/segment-stream-wal.spec.ts src/core/stream-wal-stress.spec.ts src/core/transaction.spec.ts",
+    "test:core-base": "npx vitest run --config vitest.config.ts --root . src/core/graph-algorithms.spec.ts src/core/graph-config.spec.ts src/core/graph-engine.spec.ts src/core/graph-engine-eventstream.spec.ts src/core/label-index.spec.ts src/core/multi-leader-replication.spec.ts src/core/safe-reader.spec.ts src/core/segment-stream-wal.spec.ts src/core/stream-wal-stress.spec.ts src/core/transaction.spec.ts src/core/database-manager.spec.ts",
     "test:algorithms": "npx vitest run --config vitest.config.ts --root . src/algorithms",
     "test:api": "npx vitest run --config vitest.config.ts --root . src/api",
     "test:import": "npx vitest run --config vitest.config.ts --root . src/import",

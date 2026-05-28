@@ -275,6 +275,40 @@ export class RaftCore {
     }
   }
 
+  /**
+   * Q05: Stale/Follower read — 检测 follower 是否可安全提供读取服务
+   *
+   * 原则（Raft §6.2 + §8）：
+   * - Follower 可以服务读请求，前提是它已经赶上了 leader 的 commitIndex
+   * - 如果 `lagSafeThreshold` 配置为 0, 则 follower 必须已完全同步（commitIndex = leaderCommitIndex）
+   * - 如果配置 > 0, follower 的 commitIndex 与 leader 的差距在此范围内即可提供读
+   *
+   * @param leaderCommitIndex 来自 leader 的 commitIndex（从心跳中获取）
+   * @param lagSafeThreshold 可接受的最大滞后量（0=完全同步，默认3）
+   * @returns follower 是否可以响应读请求
+   */
+  canServeStaleRead(leaderCommitIndex: number, lagSafeThreshold: number = 3): boolean {
+    if (this._role === 'leader') return true   // leader 始终可读
+    if (this._role !== 'follower') return false // candidate 不可读
+
+    // Follower 的已提交索引 ≥ leader 的已提交索引 - 滞后阈值
+    const safe = this._commitIndex >= (leaderCommitIndex - lagSafeThreshold)
+    if (!safe) {
+      this.logger.debug(
+        `Stale read blocked: follower commitIndex=${this._commitIndex}, ` +
+        `leaderCommitIndex=${leaderCommitIndex}, threshold=${lagSafeThreshold}`
+      )
+    }
+    return safe
+  }
+
+  /**
+   * 获取当前 commit index（供外部判断 Follower read 使用）
+   */
+  getCommitIndex(): number {
+    return this._commitIndex
+  }
+
   // ─── 角色查询 ──────────────────────────────────────────
 
   getRole(): RaftRole { return this._role }
