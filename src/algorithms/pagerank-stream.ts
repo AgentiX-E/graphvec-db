@@ -140,6 +140,24 @@ export async function pagerankStream(
   const n = state.allNodes.length
   if (n === 0) return new Map()
 
+  // 重建全局 incoming 索引
+  const globalIncoming = new Map<NodeId, NodeId[]>()
+  for (const node of state.allNodes) {
+    globalIncoming.set(node, [])
+  }
+  for (const src of state.allNodes) {
+    const nbMap = state.neighbors.get(src)
+    if (!nbMap) continue
+    const nbArr = nbMap.get(src) ?? []
+    const deg = state.outDegree.get(src) ?? 0
+    if (deg > 0) {
+      for (const dst of nbArr) {
+        const list = globalIncoming.get(dst)
+        if (list) list.push(src)
+      }
+    }
+  }
+
   const teleport = (1 - dampingFactor) / n
 
   for (let iter = 0; iter < maxIterations; iter++) {
@@ -155,7 +173,7 @@ export async function pagerankStream(
 
     for (const node of state.allNodes) {
       let incomingSum = 0
-      const srcList = incoming.get(node) ?? []
+      const srcList = globalIncoming.get(node) ?? []
       for (const src of srcList) {
         incomingSum += (state.rank.get(src) ?? 0) / (state.outDegree.get(src) ?? 1)
       }

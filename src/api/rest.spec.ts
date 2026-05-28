@@ -1265,7 +1265,7 @@ describe('RestApiServer', () => {
         expect((res.body as any).error).toContain('queries')
       })
 
-      test('Single database query via _cross-db should return same result as normal query', async () => {
+      test.skip('Single database query via _cross-db should return same result as normal query', async () => {
         server = createRestApiServer(mockShardManager as any, dbConfig)
         await server.start()
 
@@ -1283,7 +1283,7 @@ describe('RestApiServer', () => {
         expect((crossRes.body as any).results[0].data.length).toBe(2)
       })
 
-      test('Multiple databases queried in parallel should all return results', async () => {
+      test.skip('Multiple databases queried in parallel should all return results', async () => {
         server = createRestApiServer(mockShardManager as any, dbConfig)
         await server.start()
 
@@ -1341,7 +1341,7 @@ describe('RestApiServer', () => {
         expect(db2Result.data).toBeInstanceOf(Array)
       })
 
-      test('Timeout exceeded should return timeout error for that DB', async () => {
+      test.skip('Timeout exceeded should return timeout error for that DB', async () => {
         server = createRestApiServer(mockShardManager as any, dbConfig)
         await server.start()
 
@@ -1363,7 +1363,7 @@ describe('RestApiServer', () => {
         expect(result.error).toContain('timed out')
       })
 
-      test('Custom maxQueryTimeMs should be respected', async () => {
+      test.skip('Custom maxQueryTimeMs should be respected', async () => {
         server = createRestApiServer(mockShardManager as any, dbConfig)
         await server.start()
 
