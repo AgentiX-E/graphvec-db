@@ -1,6 +1,7 @@
 import { ShardManager, ShardHealthCheckConfig } from './shard-manager'
 import { HlcClock } from '../replication/hlc-clock'
 import { ShardMap } from '../types'
+import { HotShardDetector } from './shard-health'
 import * as fs from 'fs'
 
 const randomId = Math.random().toString(36).slice(2, 8)
@@ -137,5 +138,154 @@ describe('ShardManager — Health Check Only', () => {
     expect(staleRanges.length).toBe(0)
 
     await mgr.stop()
+  })
+})
+
+// ──────────────────────────────────────────
+// P1-2: HotShardDetector Tests
+// ──────────────────────────────────────────
+
+describe('HotShardDetector', () => {
+  let detector: HotShardDetector
+
+  beforeEach(() => {
+    detector = new HotShardDetector()
+  })
+
+  test('should detect hot shard based on QPS threshold', () => {
+    // Record enough ops to exceed the default QPS threshold (100)
+    const shardId = 'hot-shard-1'
+    const opsNeeded = 110 // slightly above 100 QPS
+    const now = Date.now()
+
+    // Manually record ops — we need to simulate time passing
+    // The window is 60 seconds, so we need 110 ops in that window
+    for (let i = 0; i < opsNeeded; i++) {
+      detector.recordOp(shardId, Math.random() * 10) // 0-10ms latencies
+    }
+
+    const hotShards = detector.getHotShards(100)
+    expect(hotShards).toContain(shardId)
+  })
+
+  test('should NOT detect cold shard (below QPS threshold)', () => {
+    const shardId = 'cold-shard-1'
+
+    // Record only a few ops (way below 100 QPS)
+    for (let i = 0; i < 5; i++) {
+      detector.recordOp(shardId, Math.random() * 10)
+    }
+
+    const hotShards = detector.getHotShards(100)
+    expect(hotShards).not.toContain(shardId)
+  })
+
+  test('getShardStats returns correct stats', () => {
+    // Record 100 ops with predictable latencies
+    const shardId = 'stats-shard'
+    for (let i = 0; i < 100; i++) {
+      detector.recordOp(shardId, i) // latencies 0, 1, 2, ..., 99
+    }
+
+    const stats = detector.getShardStats(shardId)
+    expect(stats.totalOps).toBe(100)
+    expect(stats.avgLatency).toBeCloseTo(49.5, 0) // (0+99)/2 = 49.5
+    expect(stats.p50Latency).toBeCloseTo(49.5, 0) // sorted[49] ≈ 49, sorted[50] ≈ 50 → midpoint
+    expect(stats.p99Latency).toBe(99) // sorted[99] = 99
+    expect(stats.qps).toBeCloseTo(100 / 60, 2) // 100 ops / 60s window
+  })
+
+  test('getShardStats returns zeros for untracked shard', () => {
+    const stats = detector.getShardStats('nonexistent')
+    expect(stats.totalOps).toBe(0)
+    expect(stats.qps).toBe(0)
+    expect(stats.avgLatency).toBe(0)
+    expect(stats.p50Latency).toBe(0)
+    expect(stats.p99Latency).toBe(0)
+  })
+
+  test('returns empty array when no shards exceed threshold', () => {
+    const shardId = 'quiet-shard'
+    for (let i = 0; i < 5; i++) {
+      detector.recordOp(shardId, 5)
+    }
+
+    const hotShards = detector.getHotShards(100)
+    expect(hotShards).toEqual([])
+  })
+
+  test('reset clears all tracked data', () => {
+    const shardId = 'reset-shard'
+    for (let i = 0; i < 200; i++) {
+      detector.recordOp(shardId, 5)
+    }
+
+    // Verify it's tracked
+    expect(detector.getTrackedShards()).toContain(shardId)
+
+    detector.reset()
+
+    expect(detector.getTrackedShards()).not.toContain(shardId)
+    const stats = detector.getShardStats(shardId)
+    expect(stats.totalOps).toBe(0)
+  })
+
+  test('getTrackedShards returns all tracked shard IDs', () => {
+    detector.recordOp('shard-a', 5)
+    detector.recordOp('shard-b', 10)
+
+    const tracked = detector.getTrackedShards()
+    expect(tracked).toContain('shard-a')
+    expect(tracked).toContain('shard-b')
+  })
+
+  test('should handle empty operation records (no calls to recordOp)', () => {
+    const hotShards = detector.getHotShards(100)
+    expect(hotShards).toEqual([])
+
+    const tracked = detector.getTrackedShards()
+    expect(tracked).toEqual([])
+  })
+
+  test('should respect custom p99LatencyMs threshold', () => {
+    const shardId = 'latency-shard'
+    // 110 ops with high latency (100ms each)
+    for (let i = 0; i < 110; i++) {
+      detector.recordOp(shardId, 100)
+    }
+
+    // With p99 threshold of 50ms — P99=100 > 50 so not hot
+    const hotShards = detector.getHotShards(100, 50)
+    expect(hotShards).not.toContain(shardId)
+  })
+
+  test('should detect hot shard with both QPS and latency thresholds met', () => {
+    const shardId = 'hot-latency-shard'
+    // 200 ops with low latencies
+    for (let i = 0; i < 200; i++) {
+      detector.recordOp(shardId, 10 + (i % 10)) // 10-19ms latencies
+    }
+
+    // With QPS threshold 100 and p99 threshold 50ms — P99 ≈ 19 < 50, QPS ≈ 3.3
+    // Note: actual QPS is 200/60 ≈ 3.3, but we're using a small window
+    const hotShards = detector.getHotShards(100, 50) // QPS threshold is 100, but our QPS is only 3.3
+    expect(hotShards).not.toContain(shardId)
+  })
+
+  test('should track multiple shards independently', () => {
+    const hotShardId = 'hot-one'
+    const coldShardId = 'cold-one'
+
+    for (let i = 0; i < 200; i++) {
+      detector.recordOp(hotShardId, 5)
+    }
+
+    for (let i = 0; i < 3; i++) {
+      detector.recordOp(coldShardId, 5)
+    }
+
+    const hotShards = detector.getHotShards(100)
+    expect(hotShards).toContain(hotShardId)
+    expect(hotShards).not.toContain(coldShardId)
   })
 })

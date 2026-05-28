@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "segments": [],
+  "next_node_id": 1,
+  "next_edge_id": 1,
+  "dense_vector": null,
+  "prune_policies": {},
+  "next_engine_seq": 0,
+  "next_wal_generation_id": 0,
+  "active_wal_generation_id": 0,
+  "pending_flush_epochs": [],
+  "secondary_indexes": [],
+  "next_secondary_index_id": 1
+}

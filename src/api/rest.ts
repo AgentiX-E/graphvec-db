@@ -1010,6 +1010,78 @@ export function createRestApiServer(
         }
       },
     )
+
+    // ── 跨数据库查询 ──────────────────────────
+
+    // POST /api/v1/_cross-db/query — 并行跨库查询
+    routes.push({
+      method: 'POST',
+      path: '/api/v1/_cross-db/query',
+      requireAuth: true,
+      requiredPermission: 'read',
+      handler: async (req, res, _parsed, _params, _auth) => {
+        const body = await parseBody(req) as Record<string, unknown>
+
+        const queries = body.queries as Array<{ db: string; cypher: string; params?: any }> | undefined
+        if (!Array.isArray(queries) || queries.length === 0) {
+          jsonResponse(res, 400, { error: 'queries array is required and must be non-empty' })
+          return
+        }
+
+        const maxQueryTimeMs = body.maxQueryTimeMs !== undefined ? Number(body.maxQueryTimeMs) : 30000
+
+        // 并行执行每个查询，独立错误处理
+        const results = await Promise.allSettled(
+          queries.map(async (q) => {
+            let instance: DatabaseInstance
+            try {
+              instance = dbm.resolve(q.db)
+            } catch {
+              return { db: q.db, data: null, error: `Database '${q.db}' not found` }
+            }
+
+            const sm = instance.shardManager
+
+            // 构建带超时的查询 Promise
+            const queryPromise = (async () => {
+              try {
+                const spec: QuerySpec = { match: { typeId: undefined } }
+                // 使用 cypher 构建查询
+                const spec2 = parseQueryString(q.cypher)
+                const plan = buildIRFromSpec(spec2)
+                const optimized = optimizeIR(plan)
+                const data = await executeIR(optimized, sm)
+                return { db: q.db, data }
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : 'Query execution failed'
+                return { db: q.db, data: null, error: msg }
+              }
+            })()
+
+            // 超时处理
+            const timeoutPromise = new Promise<{ db: string; data: null; error: string }>((resolve) => {
+              setTimeout(() => {
+                resolve({ db: q.db, data: null, error: `Query timed out after ${maxQueryTimeMs}ms` })
+              }, maxQueryTimeMs)
+            })
+
+            return Promise.race([queryPromise, timeoutPromise])
+          }),
+        )
+
+        // Promise.allSettled 对内部捕获的 result 不会产生 rejected promise
+        // 但作为兜底，safe 映射
+        const mappedResults: Array<{ db: string; data: any; error?: string }> = results.map((r) => {
+          if (r.status === 'fulfilled') {
+            return r.value
+          }
+          // Promise.allSettled 不应走到这里（内部已 catch），但保留安全兜底
+          return { db: 'unknown', data: null, error: 'Internal cross-db query error' }
+        })
+
+        jsonResponse(res, 200, { results: mappedResults })
+      },
+    })
   }
 
   // 注册 admin 路由（如果有 replicationManager）

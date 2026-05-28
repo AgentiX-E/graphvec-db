@@ -9,7 +9,7 @@
  * - 进程崩溃后恢复（模拟）
  */
 
-import { SegmentStreamWal, StreamMessage, FLAG_PENDING, FLAG_ACKED, FLAG_CONSUMED } from './segment-stream-wal'
+import { SegmentStreamWal, SegmentStreamWalAppendStream, StreamMessage, FLAG_PENDING, FLAG_ACKED, FLAG_CONSUMED } from './segment-stream-wal'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 
@@ -304,6 +304,68 @@ describe('SegmentStreamWal — 旧文件迁移', () => {
     expect(fs.existsSync(path.join(migrateDir, '00000001.log'))).toBe(true)
 
     migratedWal.drop()
+  })
+})
+
+describe('SegmentStreamWalAppendStream — fsync 策略与公开方法', () => {
+  let tmpPath: string
+
+  beforeEach(() => {
+    tmpPath = path.join(TEST_DIR, `append-stream-${Date.now()}-${Math.random()}.log`)
+  })
+
+  afterEach(() => {
+    try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+  })
+
+  it('无选项构造时默认 fsync 策略为 every-n', () => {
+    const fd = fs.openSync(tmpPath, 'w')
+    const stream = new SegmentStreamWalAppendStream(fd)
+    expect((stream as any)._fsyncStrategy).toBe('every-n')
+    expect((stream as any)._fsyncEveryN).toBe(10)
+    fs.closeSync(fd)
+  })
+
+  it('显式指定 lazy 策略仍可覆盖默认值', () => {
+    const fd = fs.openSync(tmpPath, 'w')
+    const stream = new SegmentStreamWalAppendStream(fd, { fsyncStrategy: 'lazy' })
+    expect((stream as any)._fsyncStrategy).toBe('lazy')
+    fs.closeSync(fd)
+  })
+
+  it('fsync() 公开方法可独立调用，不抛出异常', () => {
+    const fd = fs.openSync(tmpPath, 'w')
+    const stream = new SegmentStreamWalAppendStream(fd)
+
+    // 先写入一些数据
+    stream.append(Buffer.from('hello'))
+
+    // fsync() 应能安全调用
+    expect(() => stream.fsync()).not.toThrow()
+    fs.closeSync(fd)
+  })
+
+  it('fsync() 方法存在且是函数', () => {
+    const fd = fs.openSync(tmpPath, 'w')
+    const stream = new SegmentStreamWalAppendStream(fd)
+    expect(typeof stream.fsync).toBe('function')
+    fs.closeSync(fd)
+  })
+
+  it('every-n 策略每 N 次 append 触发 fsync', () => {
+    const fd = fs.openSync(tmpPath, 'w')
+    const stream = new SegmentStreamWalAppendStream(fd, { fsyncEveryN: 3 })
+
+    // 模拟 append 3 次（计数器达到 N 应触发 fsync）
+    stream.append(Buffer.from('a'))
+    expect((stream as any)._fsyncCounter).toBe(1)
+    stream.append(Buffer.from('b'))
+    expect((stream as any)._fsyncCounter).toBe(2)
+    stream.append(Buffer.from('c'))
+    // 第三次后计数器重置为 0
+    expect((stream as any)._fsyncCounter).toBe(0)
+
+    fs.closeSync(fd)
   })
 })
 

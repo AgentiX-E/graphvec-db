@@ -134,3 +134,22 @@
 | 2026-05-29 | Round 5: SH01/SH02/SH04 Reshard 自动化 (migrate完整/持久化/auto-split) | F12 |
 | 2026-05-29 | Round 5: SH03 Rebalancer 一致性校验 + Q05 Follower/Stale read | F12/F18 |
 | 2026-05-29 | Round 5: 审计报告文档同步 & 深度审查修复 | ALL |
+| 2026-05-29 | Round 6: 深度竞争研究 v2 (Neo4j/Dgraph/ArangoDB/JanusGraph 7维度对比) | ALL |
+| 2026-05-29 | Round 6: 事务系统升级 MVCC (TransactionManager + Transaction + Snapshot Isolation) | F08 |
+| 2026-05-29 | Round 6: InstallSnapshot WASM 回调 + StorageProvider Snapshot API | F01 |
+| 2026-05-29 | Round 6: fsync 策略增强 (lazy/always/every-n 可配置) | F04 |
+| 2026-05-29 | Round 6: BFS/DFS/PageRank/Dijkstra 图算法 | F26 |
+| 2026-05-29 | Round 6: 查询优化器统计收集 (直方图+选择率估算) | F19 |
+| 2026-05-29 | Round 6: 变长路径查询 (cypher-lite *min..max 语法) | F18 |
+| 2026-05-29 | Round 7: Step 1 文档同步 (11项P0+P1写入审计/设计/白皮书) | ALL |
+| 2026-05-29 | Round 7: P0-1 ACID 事务 SSI + 版本链 + 死锁检测 | F08 |
+| 2026-05-29 | Round 7: P0-2 InstallSnapshot log compaction→snapshot→recovery | F01 |
+| 2026-05-29 | Round 7: P0-3 fsync 默认策略 + Raft commit 联动 | F04 |
+| 2026-05-29 | Round 7: P0-4 StorageProvider 流式分块快照 | F01 |
+| 2026-05-29 | Round 7: P1-1 查询优化器 CBO (StatsCollector→planner) | F19 |
+| 2026-05-29 | Round 7: P1-2 热分片检测 + 自动再平衡 | F12 |
+| 2026-05-29 | Round 7: P1-3 跨数据库 REST 查询路由 | F23 |
+| 2026-05-29 | Round 7: P1-4 BFS/DFS/PageRank 流式批处理 | F26 |
+| 2026-05-29 | Round 7: P1-5 基准测试套件 (benchmark npm) | ALL |
+| 2026-05-29 | Round 7: P1-6 自动墓碑 GC 清理 | F07 |
+| 2026-05-29 | Round 7: P1-7 全文索引 WAL 持久化 | F24 |

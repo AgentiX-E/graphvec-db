@@ -72,7 +72,7 @@ interface SegmentInfo {
  * - 'always': 每次 append 后立即 fsync，最安全但最慢
  * - 'every-n': 每 N 次 append 后 fsync 一次，折中方案
  *
- * 默认 'lazy' 保持向后兼容。
+ * 默认 'every-n'（n=10），兼顾安全与性能。
  */
 export class SegmentStreamWalAppendStream {
   private _fd: number
@@ -88,8 +88,16 @@ export class SegmentStreamWalAppendStream {
     },
   ) {
     this._fd = fd
-    this._fsyncStrategy = options?.fsyncStrategy ?? 'lazy'
+    this._fsyncStrategy = options?.fsyncStrategy ?? 'every-n'
     this._fsyncEveryN = options?.fsyncEveryN ?? 10
+  }
+
+  /**
+   * 强制刷盘当前 active segment
+   * 供外部在关键点（如 Raft commit 后）调用，确保数据持久化
+   */
+  fsync(): void {
+    fs.fsyncSync(this._fd)
   }
 
   /**

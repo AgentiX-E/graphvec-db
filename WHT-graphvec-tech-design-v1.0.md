@@ -185,6 +185,56 @@ Storage Path:
 
 ## 已知限制
 
+### 8.2 InstallSnapshot WASM 回调
+
+**当前**: raft-logic-consensus.ts L525 有 TODO 注释，raft-install-snapshot.spec.ts 仅测试 RaftCore.js。
+
+**目标**: follower 收到 InstallSnapshot RPC 时正确调用 WASM onSnapshot 回调 + StorageProvider 导出/导入快照。
+
+**方案**: raft-logic-consensus 实现 onSnapshot 回调注册 -> 收到快照时写入本地文件 -> 通过 InstallSnapshotResponse 返回 success=false 或 true。
+
+**状态**: ✅ 已实现（raft-logic-consensus 和 overgraph-storage 均已实现）
+
+### 8.3 ACID 事务增强 — SSI + 版本链 + 死锁检测（P0）
+
+**问题**: 现有 SI 级事务缺少写偏斜检测、多版本链、死锁检测。
+
+**方案**: Transaction.ts 增加 Serializable Snapshot Isolation 模式：读集冲突检测 + 等待图死锁检测 + 版本链支持。
+
+**状态**: ⬜ 待 Round 7 实现
+
+### 8.4 InstallSnapshot 自动化 — log compaction + crash recovery（P0）
+
+**问题**: snapshot 手动触发，follower crash 后无恢复。
+
+**方案**: 基于 Log 大小阈值自动压缩，follower recovery 从 StorageProvider 重装。
+
+**状态**: ⬜ 待 Round 7 实现
+
+### 8.5 StorageProvider 流式快照（P0）
+
+**问题**: 大图整图序列化 OOM，无原子操作。
+
+**方案**: 分块导出（4MB） + 临时文件 rename + 校验和。
+
+**状态**: ⬜ 待 Round 7 实现
+
+### 8.6 查询优化器 CBO（P1）
+
+**问题**: 无成本估算、Join ordering、谓词选择性。
+
+**方案**: StatsCollector.estimateSelectivity() 接入 QueryPlanner。
+
+**状态**: ⬜ 待 Round 7 实现
+
+### 8.7 算法流式模式（P1）
+
+**问题**: BFS/DFS/PageRank 全内存，大图 OOM。
+
+**方案**: BatchProcessor 分块加载 + 迭代收敛。
+
+**状态**: ⬜ 待 Round 7 实现
+
 ### L1: 数据库删除未清理 Raft 资源（🔴 高）
 
 **文件**: `src/core/database-manager.ts` — `dropDatabase()`

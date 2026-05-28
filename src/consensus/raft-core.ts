@@ -78,6 +78,7 @@ export class RaftCore {
   // ─── 依赖 ───
   private transport: Transport
   private stateMachine: ((data: Uint8Array) => Promise<void>) | null = null
+  private _onCommitFsync: (() => void) | null = null
   private config: RaftCoreConfig
   private timerProvider: TimerProvider
   private logger: Logger
@@ -136,6 +137,15 @@ export class RaftCore {
 
   setApply(fn: (data: Uint8Array) => Promise<void>): void {
     this.stateMachine = fn
+  }
+
+  /**
+   * 设置 commit 完成后触发的 fsync 回调
+   * Raft commit 将数据应用到状态机后，通过此回调通知外部 fsync
+   * 状态机的底层存储，确保状态变更已持久化到磁盘。
+   */
+  setOnCommitFsync(fn: (() => void) | null): void {
+    this._onCommitFsync = fn
   }
 
   // ─── Snapshot API ──────────────────────────────────────
@@ -811,6 +821,11 @@ export class RaftCore {
           this.logger.error(`Apply failed entry ${entry.index}:`, err as Error)
         }
       }
+    }
+
+    // Raft commit → WAL fsync linkage: 状态机变更持久化后刷盘
+    if (this._onCommitFsync) {
+      this._onCommitFsync()
     }
   }
 

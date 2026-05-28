@@ -1,16 +1,20 @@
 /**
  * 图算法纯函数单元测试
  *
- * 测试 bfs / dfs / pagerank / dijkstra 四个纯函数算法。
+ * 测试 bfs / dfs / pagerank / dijkstra 四个纯函数算法，
+ * 以及 BatchProcessor、pagerankStream、bfsStream 流式变体。
  * 不依赖 GraphEngine，仅测试算法逻辑正确性。
  */
 
 import { describe, test, expect } from 'vitest'
-import { NodeId } from '../types'
+import { NodeId, NodeRecord } from '../types'
 import { bfs } from './bfs'
 import { dfs } from './dfs'
 import { pagerank } from './pagerank'
 import { dijkstra } from './dijkstra'
+import { BatchProcessor } from './batch-processor'
+import { pagerankStream } from './pagerank-stream'
+import { bfsStream } from './bfs-stream'
 
 // ──────────────────────────────────────────
 // 测试图：有向图
@@ -48,6 +52,38 @@ function createWeightedGraph() {
   }
   return {
     getWeightedNeighbors: (nid: NodeId) => neighbors[nid] ?? [],
+  }
+}
+
+// ──────────────────────────────────────────
+// 辅助：构建 AsyncIterable<NodeRecord[]> 用于流式测试
+// ──────────────────────────────────────────
+
+async function* iterableBatches<T>(batches: T[][]): AsyncIterable<T[]> {
+  for (const batch of batches) {
+    yield batch
+  }
+}
+
+function toNodeRecords(ids: NodeId[]): NodeRecord[] {
+  return ids.map(id => ({ id, type: 1, name: String(id), props: {} }))
+}
+
+// ──────────────────────────────────────────
+// 辅助：创建大规模图用于流式测试
+// ──────────────────────────────────────────
+
+function createLargeGraph(nodeCount: number) {
+  const neighbors: Record<number, number[]> = {}
+  for (let i = 0; i < nodeCount; i++) {
+    // 链式结构方便验证
+    const nb: number[] = []
+    if (i + 1 < nodeCount) nb.push(i + 1)
+    neighbors[i] = nb
+  }
+  return {
+    allNodes: Array.from({ length: nodeCount }, (_, i) => i) as NodeId[],
+    getNeighbors: (nid: NodeId) => neighbors[nid] ?? [],
   }
 }
 
@@ -189,5 +225,269 @@ describe('dijkstra', () => {
     const result = dijkstra(() => [], 42 as NodeId)
     expect(result.get(42 as NodeId)!.distance).toBe(0)
     expect(result.get(42 as NodeId)!.parent).toBeNull()
+  })
+})
+
+// ──────────────────────────────────────────
+// BatchProcessor
+// ──────────────────────────────────────────
+
+describe('BatchProcessor', () => {
+  const bp = new BatchProcessor()
+
+  test('splitIntoBatches should divide array correctly', () => {
+    const items = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    expect(bp.splitIntoBatches(items, 3)).toEqual([
+      [1, 2, 3],
+      [4, 5, 6],
+      [7, 8, 9],
+      [10],
+    ])
+  })
+
+  test('splitIntoBatches with batchSize equal to length', () => {
+    const items = [1, 2, 3]
+    expect(bp.splitIntoBatches(items, 3)).toEqual([[1, 2, 3]])
+  })
+
+  test('splitIntoBatches with empty array', () => {
+    expect(bp.splitIntoBatches([], 10)).toEqual([])
+  })
+
+  test('splitIntoBatches throws on zero or negative batchSize', () => {
+    expect(() => bp.splitIntoBatches([1], 0)).toThrow('batchSize must be > 0')
+    expect(() => bp.splitIntoBatches([1], -1)).toThrow('batchSize must be > 0')
+  })
+
+  test('processInBatches processes all items', async () => {
+    const items = [1, 2, 3, 4, 5]
+    const result = await bp.processInBatches(
+      items,
+      async (batch) => batch.map(x => x * 2),
+      2,
+    )
+    expect(result).toEqual([2, 4, 6, 8, 10])
+  })
+
+  test('processInBatches with empty items returns empty', async () => {
+    const result = await bp.processInBatches(
+      [],
+      async (batch) => batch,
+      10,
+    )
+    expect(result).toEqual([])
+  })
+
+  test('processInBatches preserves order across batches', async () => {
+    const items = Array.from({ length: 100 }, (_, i) => i)
+    const result = await bp.processInBatches(
+      items,
+      async (batch) => batch,
+      10,
+    )
+    expect(result).toEqual(items)
+  })
+})
+
+// ──────────────────────────────────────────
+// pagerankStream
+// ──────────────────────────────────────────
+
+describe('pagerankStream', () => {
+  test('should match full-memory PageRank on small graph within 1%', async () => {
+    const { getNeighbors, allNodes } = createTestGraph()
+
+    // 全内存 PageRank
+    const expected = pagerank(getNeighbors, allNodes)
+
+    // 流式 PageRank：分 2 批
+    const batches = iterableBatches([
+      toNodeRecords([0, 1, 2]),
+      toNodeRecords([3, 4]),
+    ])
+    const result = await pagerankStream(getNeighbors, batches, {
+      maxIterations: 100,
+      convergenceThreshold: 1e-6,
+      localIterations: 5,
+    })
+
+    // 每个节点的 rank 偏差 < 1%
+    for (const node of allNodes) {
+      const expectedRank = expected.get(node)!
+      const actualRank = result.get(node)!
+      // 处理极小值的边界情况
+      if (expectedRank > 1e-10) {
+        const diff = Math.abs(actualRank - expectedRank) / expectedRank
+        expect(diff).toBeLessThan(0.01)
+      }
+    }
+  })
+
+  test('should match full-memory PageRank on 10K chain graph within 1%', async () => {
+    const nodeCount = 10_000
+    const { getNeighbors, allNodes } = createLargeGraph(nodeCount)
+
+    // 全内存 PageRank（降低迭代次数和阈值以控制时间）
+    const expected = pagerank(getNeighbors, allNodes, {
+      maxIterations: 20,
+      convergenceThreshold: 1e-4,
+    })
+
+    // 流式 PageRank：按 2500 一批分 4 批
+    const batches = iterableBatches([
+      toNodeRecords(allNodes.slice(0, 2500)),
+      toNodeRecords(allNodes.slice(2500, 5000)),
+      toNodeRecords(allNodes.slice(5000, 7500)),
+      toNodeRecords(allNodes.slice(7500)),
+    ])
+    const result = await pagerankStream(getNeighbors, batches, {
+      maxIterations: 20,
+      convergenceThreshold: 1e-4,
+      localIterations: 5,
+    })
+
+    // 抽样检查前 20 个节点，偏差 < 1%
+    const sampleSize = Math.min(20, allNodes.length)
+    for (let i = 0; i < sampleSize; i++) {
+      const node = allNodes[i]
+      const expectedRank = expected.get(node)!
+      const actualRank = result.get(node)!
+      if (expectedRank > 1e-10) {
+        const diff = Math.abs(actualRank - expectedRank) / expectedRank
+        expect(diff).toBeLessThan(0.01)
+      }
+    }
+  })
+
+  test('should handle single batch same as full memory', async () => {
+    const { getNeighbors, allNodes } = createTestGraph()
+    const expected = pagerank(getNeighbors, allNodes)
+
+    const batches = iterableBatches([toNodeRecords(allNodes)])
+    const result = await pagerankStream(getNeighbors, batches)
+
+    expect(result.size).toBe(expected.size)
+    for (const node of allNodes) {
+      const diff = Math.abs(result.get(node)! - expected.get(node)!)
+      expect(diff).toBeLessThan(0.01)
+    }
+  })
+
+  test('empty graph returns empty map', async () => {
+    const result = await pagerankStream(
+      () => [],
+      iterableBatches([]),
+    )
+    expect(result.size).toBe(0)
+  })
+})
+
+// ──────────────────────────────────────────
+// bfsStream
+// ──────────────────────────────────────────
+
+describe('bfsStream', () => {
+  test('should find same reachable set as full BFS on small graph', async () => {
+    const { getNeighbors } = createTestGraph()
+
+    // 全内存 BFS
+    const expected = bfs(getNeighbors, 0 as NodeId)
+
+    // 流式 BFS
+    const batches = iterableBatches([
+      toNodeRecords([0, 1]),
+      toNodeRecords([2, 3, 4]),
+    ])
+    const result = await bfsStream(getNeighbors, 0 as NodeId, batches)
+
+    // 可达集相同
+    for (const node of expected.keys()) {
+      expect(result.has(node)).toBe(true)
+    }
+    expect(result.size).toBe(expected.size)
+
+    // distance 也应一致
+    for (const [node, { distance }] of expected) {
+      expect(result.get(node)!.distance).toBe(distance)
+    }
+  })
+
+  test('should find same reachable set on 10K chain graph', async () => {
+    const nodeCount = 10_000
+    const { getNeighbors, allNodes } = createLargeGraph(nodeCount)
+
+    for (const node of allNodes) {
+      const nb = getNeighbors(node)
+      // First 10 nodes check
+    }
+
+    // 全内存 BFS
+    const expected = bfs(getNeighbors, 0 as NodeId)
+
+    // 流式 BFS：按 1000 一批分 10 批
+    const batchSize = 1000
+    const batches: NodeRecord[][] = []
+    for (let i = 0; i < nodeCount; i += batchSize) {
+      batches.push(toNodeRecords(allNodes.slice(i, i + batchSize)))
+    }
+    const result = await bfsStream(
+      getNeighbors,
+      0 as NodeId,
+      iterableBatches(batches),
+    )
+
+    // 可达集相同
+    expect(result.size).toBe(expected.size)
+    for (const node of expected.keys()) {
+      expect(result.has(node)).toBe(true)
+    }
+  })
+
+  test('should respect maxBatchSize option', async () => {
+    const nodeCount = 1000
+    const { getNeighbors, allNodes } = createLargeGraph(nodeCount)
+
+    const expected = bfs(getNeighbors, 0 as NodeId)
+
+    const batches = iterableBatches([toNodeRecords(allNodes)])
+    const result = await bfsStream(
+      getNeighbors,
+      0 as NodeId,
+      batches,
+      { maxBatchSize: 100 },
+    )
+
+    expect(result.size).toBe(expected.size)
+    for (const node of expected.keys()) {
+      expect(result.has(node)).toBe(true)
+    }
+  })
+
+  test('single node stream returns {startNode: distance 0}', async () => {
+    const result = await bfsStream(
+      () => [],
+      42 as NodeId,
+      iterableBatches([toNodeRecords([42])]),
+    )
+    expect(result.size).toBe(1)
+    expect(result.get(42 as NodeId)!.distance).toBe(0)
+    expect(result.get(42 as NodeId)!.parent).toBeNull()
+  })
+
+  test('disconnected node is not in result', async () => {
+    const neighbors: Record<number, number[]> = {}
+    const getNeighbors = (nid: NodeId) => {
+      // 5 是孤立节点
+      const r: Record<number, number[]> = { 0: [1], 1: [0], 5: [] }
+      return r[nid] ?? []
+    }
+    const batches = iterableBatches([
+      toNodeRecords([0, 1, 5]),
+    ])
+    const result = await bfsStream(getNeighbors as any, 0 as NodeId, batches)
+    expect(result.has(0 as NodeId)).toBe(true)
+    expect(result.has(1 as NodeId)).toBe(true)
+    // 5 不可达
+    expect(result.has(5 as NodeId)).toBe(false)
   })
 })

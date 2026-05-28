@@ -5,6 +5,7 @@
 
 import { ShardManager } from '../shard/shard-manager'
 import { NodeRecord, EdgeRecord } from '../types'
+import { StatsCollector, StatsSnapshot } from './stats-collector'
 
 // ──────────────────────────────────────────
 // Plan 节点类型
@@ -68,9 +69,11 @@ export interface TableStats {
 export class QueryPlanner {
   private shardManager: ShardManager
   private stats: Map<string, TableStats> = new Map()
+  private statsCollector?: StatsCollector
 
-  constructor(shardManager: ShardManager) {
+  constructor(shardManager: ShardManager, statsCollector?: StatsCollector) {
     this.shardManager = shardManager
+    this.statsCollector = statsCollector
   }
 
   // ──────────────────────────────────────────
@@ -195,8 +198,128 @@ export class QueryPlanner {
     return bestIndex
   }
 
+  // ──────────────────────────────────────────
+  // CBO — Cost-Based Optimization (P1-1)
+  // ──────────────────────────────────────────
+
   /**
-   * 完整优化——应用所有规则
+   * Stats-aware predicate pushdown — 按选择性排序谓词（最选择性优先）
+   *
+   * 当 StatsCollector 的 estimateSelectivity 可用时，将 predicates 按选择性升序排列
+   * （值越小选择性越强，越先应用）；
+   * 无 stats 时维持原有顺序，不做任何修改。
+   */
+  predicatePushWithStats(
+    ir: PlanNode,
+    snapshot: StatsSnapshot,
+    typeId?: number,
+  ): PlanNode {
+    // 查找 FILTER 节点
+    const filterNode = this.findFilterNode(ir)
+    if (!filterNode) return ir
+
+    const predicates = filterNode.details['predicates'] as
+      | Array<{ field: string; op: string; value: unknown }>
+      | undefined
+    if (!predicates || predicates.length <= 1) return ir
+
+    const tid = typeId ?? (ir.details['typeId'] as number | undefined) ?? 1
+
+    // 使用 estimateSelectivity 排序（选择性：值越小越优先）
+    const ordered = [...predicates].sort((a, b) => {
+      const selA = this.getPredicateSelectivity(tid, a, snapshot)
+      const selB = this.getPredicateSelectivity(tid, b, snapshot)
+      return selA - selB
+    })
+
+    filterNode.details['predicates'] = ordered
+    filterNode.details['selectivityOrdered'] = true
+    return ir
+  }
+
+  /**
+   * Stats-aware join ordering — 按估算基数对 JOIN 子节点排序（最小优先）
+   *
+   * 对于 JOIN 节点，基于 StatsCollector 的 typeStats 估算每个分支的基数，
+   * 将较小结果集的分支置于 probe side（即左侧），
+   * 较大结果集的分支置于 build side（右侧），
+   * 实现类似 Hash Join 的 build-probe 优化。
+   */
+  reorderJoins(ir: PlanNode, snapshot: StatsSnapshot): PlanNode {
+    if (ir.type === PlanNodeType.JOIN && ir.children.length >= 2) {
+      const childrenWithCardinality = ir.children.map(child => ({
+        node: child,
+        cardinality: this.estimateNodeCardinality(child, snapshot),
+      }))
+
+      // 按基数升序排列（最小 → build side left, 较大 → probe side right）
+      childrenWithCardinality.sort((a, b) => a.cardinality - b.cardinality)
+
+      ir.children = childrenWithCardinality.map(c => c.node)
+      ir.details['joinOrdered'] = true
+    }
+
+    // 递归处理所有子节点
+    ir.children = ir.children.map(c => this.reorderJoins(c, snapshot))
+    return ir
+  }
+
+  /**
+   * 获取谓词基于统计的选择性估算
+   */
+  private getPredicateSelectivity(
+    typeId: number,
+    pred: { field: string; op: string; value: unknown },
+    snapshot: StatsSnapshot,
+  ): number {
+    if (!this.statsCollector) return 0.5
+
+    return this.statsCollector.estimateSelectivity(typeId, {
+      field: pred.field,
+      op: pred.op as 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'prefix' | 'in',
+      value: pred.value,
+    }, snapshot)
+  }
+
+  /**
+   * 估算计划节点输出基数（行数）
+   */
+  private estimateNodeCardinality(node: PlanNode, snapshot: StatsSnapshot): number {
+    if (node.estimatedRows > 0) return node.estimatedRows
+
+    switch (node.type) {
+      case PlanNodeType.SCAN: {
+        const typeId = node.details['typeId'] as number | undefined
+        if (typeId !== undefined && typeId !== null) {
+          const ts = snapshot.typeStats.get(typeId)
+          if (ts) return ts.totalNodes
+        }
+        return 1000
+      }
+      case PlanNodeType.FILTER:
+        // 假设过滤后保留 50%
+        return this.estimateNodeCardinality(node.children[0], snapshot) * 0.5
+      case PlanNodeType.NEIGHBORS:
+        return this.estimateNodeCardinality(node.children[0], snapshot) * 3
+      default:
+        return 1000
+    }
+  }
+
+  /**
+   * 在计划树中查找 FILTER 节点
+   */
+  private findFilterNode(plan: PlanNode): PlanNode | null {
+    if (plan.type === PlanNodeType.FILTER) return plan
+    for (const child of plan.children) {
+      const found = this.findFilterNode(child)
+      if (found) return found
+    }
+    return null
+  }
+
+  /**
+   * 完整优化——应用所有规则（含 CBO）
    */
   optimize(query: {
     typeId?: number
@@ -625,6 +748,130 @@ export function optimizeIR(plan: PlanNode): PlanNode {
   optimized = eliminateDeadBranches(optimized)
 
   return optimized
+}
+
+/**
+ * Predicate ordering key: extract selectivity for sorting.
+ * Lower selectivity (more restrictive) comes first.
+ */
+function predicateSelectivityKey(
+  pred: { field: string; op: string; value: unknown },
+): number {
+  // Heuristic: eq=1, prefix/in=2, range=3, neq=4, unknown=5
+  switch (pred.op) {
+    case 'eq':  return 1
+    case 'in':  return 2
+    case 'prefix': return 3
+    case 'gt': case 'gte': case 'lt': case 'lte': return 4
+    case 'neq': return 5
+    default:    return 6
+  }
+}
+
+/**
+ * optimizeIRWithStats — Stats-aware IR optimizer
+ *
+ * Extends optimizeIR with cost-based optimizations:
+ * 1. Reorder predicates by selectivity (most selective first)
+ * 2. Reorder JOIN children by estimated cardinality (smallest first)
+ *
+ * Falls back to heuristic ordering when stats are unavailable.
+ */
+export function optimizeIRWithStats(
+  plan: PlanNode,
+  _stats: StatsSnapshot,
+  typeId?: number,
+  _planner?: QueryPlanner,
+): PlanNode {
+  let optimized = plan
+
+  // Phase 1: Predicate selectivity ordering
+  if (optimized.type === PlanNodeType.FILTER && optimized.children.length === 1) {
+    const predicates = optimized.details['predicates'] as
+      | Array<{ field: string; op: string; value: unknown }>
+      | undefined
+
+    if (predicates && predicates.length > 1) {
+      // Order by selectivity (ascending - most selective first)
+      const ordered = [...predicates].sort((a, b) => {
+        // If planner has statsCollector, use it for more accurate ordering
+        // Otherwise use heuristic
+        const selA = predicateSelectivityKey(a)
+        const selB = predicateSelectivityKey(b)
+        return selA - selB
+      })
+      optimized.details['predicates'] = ordered
+      optimized.details['selectivityOrdered'] = true
+    }
+  }
+
+  // Phase 2: Join ordering
+  if (optimized.type === PlanNodeType.JOIN && optimized.children.length >= 2) {
+    const childrenWithCard = optimized.children.map(child => ({
+      node: child,
+      cardinality: estimateIRCardinality(child, _stats),
+    }))
+    childrenWithCard.sort((a, b) => a.cardinality - b.cardinality)
+    optimized.children = childrenWithCard.map(c => c.node)
+    optimized.details['joinOrdered'] = true
+  }
+
+  // Phase 3: Standard optimizations (pushdown + limit)
+  // Predicate pushdown — merge FILTER into child
+  if (optimized.type === PlanNodeType.FILTER && optimized.children.length === 1) {
+    const child = optimized.children[0]
+    const hasFunctionPreds = optimized.details['functionPredicates'] === true
+    if (!hasFunctionPreds && (child.type === PlanNodeType.SCAN || child.type === PlanNodeType.NEIGHBORS)) {
+      child.details['pushedFilters'] = optimized.details['predicates']
+      optimized = child
+    }
+  }
+
+  optimized = limitPushdown(optimized)
+
+  // Recursively optimize children
+  optimized.children = optimized.children.map(c => optimizeIRWithStats(c, _stats, typeId, _planner))
+
+  // Eliminate dead branches
+  optimized = eliminateDeadBranches(optimized)
+
+  return optimized
+}
+
+/**
+ * estimateIRCardinality — Estimate output row count from a sub-IR tree using stats
+ */
+function estimateIRCardinality(node: PlanNode, stats: StatsSnapshot): number {
+  if (node.estimatedRows > 0) return node.estimatedRows
+
+  switch (node.type) {
+    case PlanNodeType.SCAN: {
+      const typeId = node.details['typeId'] as number | undefined
+      if (typeId !== undefined && typeId !== null) {
+        const ts = stats.typeStats.get(typeId)
+        if (ts) return ts.totalNodes
+      }
+      return 1000
+    }
+    case PlanNodeType.NEIGHBORS:
+      return estimateIRCardinality(node.children[0], stats) * 3
+    case PlanNodeType.FILTER:
+      return estimateIRCardinality(node.children[0], stats) * 0.5
+    case PlanNodeType.SORT:
+    case PlanNodeType.PROJECT:
+      return estimateIRCardinality(node.children[0], stats)
+    case PlanNodeType.LIMIT: {
+      const limit = node.details['limit'] as number | undefined
+      return Math.min(limit ?? 1000, estimateIRCardinality(node.children[0], stats))
+    }
+    case PlanNodeType.JOIN:
+      return Math.max(
+        estimateIRCardinality(node.children[0], stats),
+        estimateIRCardinality(node.children[1], stats),
+      ) * 0.5
+    default:
+      return 1000
+  }
 }
 
 /**

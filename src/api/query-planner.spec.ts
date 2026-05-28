@@ -2,8 +2,10 @@
 // QueryPlanner 测试
 // ============================================================
 
-import { QueryPlanner, PlanNodeType, PlanNode, ColumnStat } from './query-planner'
+import { QueryPlanner, PlanNodeType, PlanNode, ColumnStat, optimizeIRWithStats } from './query-planner'
+import { StatsCollector, StatsSnapshot, Predicate } from './stats-collector'
 import { NodeRecord, EdgeRecord } from '../types'
+import { GraphEngine } from '../core/graph-engine'
 
 // ──────────────────────────────────────────
 // MockShardManager
@@ -310,6 +312,378 @@ describe('QueryPlanner', () => {
       })
       expect(optimized).toBeDefined()
       expect(optimized.details['chosenIndex']).toBe('type')
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // CBO — Cost-Based Optimization (P1-1)
+  // ──────────────────────────────────────────
+
+  describe('CBO 查询优化器', () => {
+    describe('predicatePushWithStats', () => {
+      test('should order predicates by selectivity (most selective first)', () => {
+        // Mock StatsCollector that returns known selectivities
+        const mockEstimator = {
+          estimateSelectivity: (_typeId: number, pred: Predicate, _stats?: StatsSnapshot) => {
+            // eq type=1 → 0.1; eq name=A → 0.02; eq age=30 → 0.5
+            if (pred.field === 'name') return 0.02
+            if (pred.field === 'type') return 0.1
+            if (pred.field === 'age') return 0.5
+            return 0.5
+          },
+        } as unknown as StatsCollector
+
+        const plannerWithStats = new QueryPlanner(mockShardManager as any, mockEstimator)
+
+        // Create a StatsSnapshot
+        const snapshot: StatsSnapshot = {
+          typeStats: new Map([[1, { typeId: 1, totalNodes: 100, totalEdges: 200, propertyStats: new Map() }]]),
+          totalNodes: 100,
+          totalEdges: 200,
+          collectedAt: Date.now(),
+        }
+
+        // Build a FILTER plan with predicates in any order
+        const ir: PlanNode = {
+          type: PlanNodeType.FILTER,
+          estimatedCost: 50,
+          estimatedRows: 10,
+          children: [{
+            type: PlanNodeType.SCAN,
+            estimatedCost: 100,
+            estimatedRows: 100,
+            children: [],
+            details: { typeId: 1 },
+          }],
+          details: {
+            predicates: [
+              { field: 'type', op: 'eq', value: 2 },    // selectivity 0.1
+              { field: 'age', op: 'eq', value: 30 },    // selectivity 0.5 (least selective)
+              { field: 'name', op: 'eq', value: 'Alice' }, // selectivity 0.02 (most selective)
+            ],
+          },
+        }
+
+        const result = plannerWithStats.predicatePushWithStats(ir, snapshot, 1)
+        const predicates = (result.details['predicates'] as Array<{ field: string; op: string; value: unknown }>)
+
+        expect(predicates.length).toBe(3)
+        // name (0.02) should be first, type (0.1) second, age (0.5) third
+        expect(predicates[0].field).toBe('name')
+        expect(predicates[1].field).toBe('type')
+        expect(predicates[2].field).toBe('age')
+        expect(result.details['selectivityOrdered']).toBe(true)
+      })
+
+      test('should not reorder single predicate', () => {
+        const mockEstimator = {
+          estimateSelectivity: () => 0.5,
+        } as unknown as StatsCollector
+        const plannerWithStats = new QueryPlanner(mockShardManager as any, mockEstimator)
+
+        const snapshot: StatsSnapshot = {
+          typeStats: new Map(),
+          totalNodes: 100,
+          totalEdges: 200,
+          collectedAt: Date.now(),
+        }
+
+        const ir: PlanNode = {
+          type: PlanNodeType.FILTER,
+          estimatedCost: 50,
+          estimatedRows: 10,
+          children: [{
+            type: PlanNodeType.SCAN,
+            estimatedCost: 100,
+            estimatedRows: 100,
+            children: [],
+            details: { typeId: 1 },
+          }],
+          details: {
+            predicates: [
+              { field: 'name', op: 'eq', value: 'Alice' },
+            ],
+          },
+        }
+
+        const result = plannerWithStats.predicatePushWithStats(ir, snapshot, 1)
+        expect((result.details['predicates'] as Array<unknown>).length).toBe(1)
+      })
+
+      test('should fall back to existing heuristic when stats collector is not provided', () => {
+        const plannerNoStats = new QueryPlanner(mockShardManager as any)
+
+        const ir: PlanNode = {
+          type: PlanNodeType.FILTER,
+          estimatedCost: 50,
+          estimatedRows: 10,
+          children: [{
+            type: PlanNodeType.SCAN,
+            estimatedCost: 100,
+            estimatedRows: 100,
+            children: [],
+            details: { typeId: 1 },
+          }],
+          details: {
+            predicates: [
+              { field: 'age', op: 'eq', value: 30 },
+              { field: 'name', op: 'eq', value: 'Alice' },
+            ],
+          },
+        }
+
+        // Without stats, predicatePushWithStats won't crash but won't reorder either
+        // since it relies on this.statsCollector which is undefined
+        // The method should still work but estimateSelectivity will return 0.5
+        expect(() => {
+          // This would need a snapshot, but without collector it doesn't matter
+          const snapshot: StatsSnapshot = {
+            typeStats: new Map(),
+            totalNodes: 100,
+            totalEdges: 200,
+            collectedAt: Date.now(),
+          }
+          plannerNoStats.predicatePushWithStats(ir, snapshot, 1)
+        }).not.toThrow()
+      })
+    })
+
+    describe('reorderJoins', () => {
+      test('should order join children by estimated cardinality (smallest first)', () => {
+        const mockEstimator = {
+          estimateSelectivity: () => 0.5,
+        } as unknown as StatsCollector
+        const plannerWithStats = new QueryPlanner(mockShardManager as any, mockEstimator)
+
+        const snapshot: StatsSnapshot = {
+          typeStats: new Map([
+            [1, { typeId: 1, totalNodes: 1000, totalEdges: 200, propertyStats: new Map() }],
+            [2, { typeId: 2, totalNodes: 100, totalEdges: 20, propertyStats: new Map() }],
+          ]),
+          totalNodes: 1100,
+          totalEdges: 220,
+          collectedAt: Date.now(),
+        }
+
+        const ir: PlanNode = {
+          type: PlanNodeType.JOIN,
+          estimatedCost: 100,
+          estimatedRows: 500,
+          children: [
+            {
+              type: PlanNodeType.SCAN,
+              estimatedCost: 100,
+              estimatedRows: 1000,
+              children: [],
+              details: { typeId: 1 }, // 1000 nodes
+            },
+            {
+              type: PlanNodeType.SCAN,
+              estimatedCost: 100,
+              estimatedRows: 100,
+              children: [],
+              details: { typeId: 2 },  // 100 nodes
+            },
+          ],
+          details: { joinType: 'inner' },
+        }
+
+        const result = plannerWithStats.reorderJoins(ir, snapshot)
+
+        // typeId=2 (100 nodes) should come first (build side)
+        expect(result.children.length).toBe(2)
+        expect(result.children[0].details['typeId']).toBe(2)
+        expect(result.children[1].details['typeId']).toBe(1)
+        expect(result.details['joinOrdered']).toBe(true)
+      })
+
+      test('should not reorder single child join', () => {
+        const plannerNoStats = new QueryPlanner(mockShardManager as any)
+
+        const snapshot: StatsSnapshot = {
+          typeStats: new Map(),
+          totalNodes: 100,
+          totalEdges: 200,
+          collectedAt: Date.now(),
+        }
+
+        const ir: PlanNode = {
+          type: PlanNodeType.JOIN,
+          estimatedCost: 100,
+          estimatedRows: 500,
+          children: [
+            {
+              type: PlanNodeType.SCAN,
+              estimatedCost: 100,
+              estimatedRows: 100,
+              children: [],
+              details: { typeId: 1 },
+            },
+          ],
+          details: { joinType: 'inner' },
+        }
+
+        const result = plannerNoStats.reorderJoins(ir, snapshot)
+        expect(result.children.length).toBe(1)
+        expect(result.details['joinOrdered']).toBeUndefined()
+      })
+    })
+
+    describe('optimizeIRWithStats', () => {
+      test('should reorder predicates by selectivity and push them down', () => {
+        const snapshot: StatsSnapshot = {
+          typeStats: new Map([
+            [1, { typeId: 1, totalNodes: 100, totalEdges: 200, propertyStats: new Map() }],
+          ]),
+          totalNodes: 100,
+          totalEdges: 200,
+          collectedAt: Date.now(),
+        }
+
+        const ir: PlanNode = {
+          type: PlanNodeType.FILTER,
+          estimatedCost: 50,
+          estimatedRows: 10,
+          children: [{
+            type: PlanNodeType.SCAN,
+            estimatedCost: 100,
+            estimatedRows: 100,
+            children: [],
+            details: { typeId: 1 },
+          }],
+          details: {
+            predicates: [
+              { field: 'neq', op: 'neq', value: 'XYZ' },   // heuristic key=5
+              { field: 'name', op: 'eq', value: 'Alice' },  // heuristic key=1 (most selective)
+              { field: 'age', op: 'gt', value: 18 },        // heuristic key=4
+            ],
+          },
+        }
+
+        const result = optimizeIRWithStats(ir, snapshot, 1)
+
+        // After optimization, FILTER should be merged into SCAN (pushdown)
+        // The predicates should be reordered: eq first (key=1), gt (key=4), neq (key=5)
+        const pushedFilters = result.details['pushedFilters'] as Array<{ field: string; op: string; value: unknown }>
+        expect(pushedFilters).toBeDefined()
+        expect(pushedFilters.length).toBe(3)
+        expect(pushedFilters[0].field).toBe('name')
+        expect(pushedFilters[1].field).toBe('age')
+        expect(pushedFilters[2].field).toBe('neq')
+      })
+
+      test('should reorder join children by cardinality', () => {
+        const snapshot: StatsSnapshot = {
+          typeStats: new Map([
+            [10, { typeId: 10, totalNodes: 500, totalEdges: 100, propertyStats: new Map() }],
+            [20, { typeId: 20, totalNodes: 50, totalEdges: 10, propertyStats: new Map() }],
+          ]),
+          totalNodes: 550,
+          totalEdges: 110,
+          collectedAt: Date.now(),
+        }
+
+        const ir: PlanNode = {
+          type: PlanNodeType.JOIN,
+          estimatedCost: 100,
+          estimatedRows: 200,
+          children: [
+            {
+              type: PlanNodeType.SCAN,
+              estimatedCost: 100,
+              estimatedRows: 500,
+              children: [],
+              details: { typeId: 10 },  // 500 nodes
+            },
+            {
+              type: PlanNodeType.SCAN,
+              estimatedCost: 100,
+              estimatedRows: 50,
+              children: [],
+              details: { typeId: 20 },  // 50 nodes
+            },
+          ],
+          details: { joinType: 'inner' },
+        }
+
+        const result = optimizeIRWithStats(ir, snapshot, undefined)
+
+        expect(result.children.length).toBe(2)
+        // Smaller type (20 → 50 nodes) should be first
+        expect(result.children[0].details['typeId']).toBe(20)
+        expect(result.children[1].details['typeId']).toBe(10)
+        expect(result.details['joinOrdered']).toBe(true)
+      })
+    })
+
+    describe('CBO fallback behavior', () => {
+      test('no stats available → falls back to existing heuristic without crash', () => {
+        // When Planner is constructed without StatsCollector, no crash
+        // even when used with optimizeIRWithStats
+        const snapshot: StatsSnapshot = {
+          typeStats: new Map(),
+          totalNodes: 0,
+          totalEdges: 0,
+          collectedAt: Date.now(),
+        }
+
+        const ir: PlanNode = {
+          type: PlanNodeType.FILTER,
+          estimatedCost: 50,
+          estimatedRows: 10,
+          children: [{
+            type: PlanNodeType.SCAN,
+            estimatedCost: 100,
+            estimatedRows: 100,
+            children: [],
+            details: { typeId: 1 },
+          }],
+          details: {
+            predicates: [
+              { field: 'name', op: 'eq', value: 'Alice' },
+            ],
+          },
+        }
+
+        // Should not throw even with empty stats
+        expect(() => optimizeIRWithStats(ir, snapshot)).not.toThrow()
+      })
+
+      test('optimizeIRWithStats on simple scan (no filter/join) should not crash', () => {
+        const snapshot: StatsSnapshot = {
+          typeStats: new Map(),
+          totalNodes: 0,
+          totalEdges: 0,
+          collectedAt: Date.now(),
+        }
+
+        const ir: PlanNode = {
+          type: PlanNodeType.SCAN,
+          estimatedCost: 100,
+          estimatedRows: 100,
+          children: [],
+          details: { typeId: 1 },
+        }
+
+        expect(() => optimizeIRWithStats(ir, snapshot)).not.toThrow()
+      })
+    })
+
+    describe('CBO constructor integration', () => {
+      test('QueryPlanner accepts StatsCollector in constructor', () => {
+        const mockCollector = {
+          getLastSnapshot: () => null,
+          estimateSelectivity: () => 0.5,
+        } as unknown as StatsCollector
+
+        const p = new QueryPlanner(mockShardManager as any, mockCollector)
+        expect(p).toBeDefined()
+      })
+
+      test('QueryPlanner works without StatsCollector', () => {
+        const p = new QueryPlanner(mockShardManager as any)
+        expect(p).toBeDefined()
+      })
     })
   })
 })

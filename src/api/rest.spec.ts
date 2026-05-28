@@ -1229,5 +1229,161 @@ describe('RestApiServer', () => {
       expect(db2Sm.getAllNodes().length).toBe(1)
       expect(db2Sm.getAllNodes()[0].name).toBe('concurrent-db2')
     })
+
+    // ──────────────────────────────────────────
+    // 跨数据库查询测试
+    // ──────────────────────────────────────────
+
+    describe('跨数据库查询 (_cross-db/query)', () => {
+      beforeEach(() => {
+        // Add nodes to both databases for cross-db query testing
+        db1Sm.setNodes([
+          { id: 1, type: 1, name: 'db1-node-1', props: {}, createdAt: Date.now(), degree: 0 },
+          { id: 2, type: 1, name: 'db1-node-2', props: {}, createdAt: Date.now(), degree: 0 },
+        ])
+        db2Sm.setNodes([
+          { id: 10, type: 2, name: 'db2-node-1', props: {}, createdAt: Date.now(), degree: 0 },
+          { id: 20, type: 2, name: 'db2-node-2', props: {}, createdAt: Date.now(), degree: 0 },
+        ])
+      })
+
+      test('POST /api/v1/_cross-db/query should return 400 when queries is missing', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'POST', '/api/v1/_cross-db/query', {})
+        expect(res.statusCode).toBe(400)
+        expect((res.body as any).error).toContain('queries')
+      })
+
+      test('POST /api/v1/_cross-db/query should return 400 when queries is empty', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'POST', '/api/v1/_cross-db/query', { queries: [] })
+        expect(res.statusCode).toBe(400)
+        expect((res.body as any).error).toContain('queries')
+      })
+
+      test('Single database query via _cross-db should return same result as normal query', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        // Via cross-db endpoint
+        const crossRes = await makeRequest(server, 'POST', '/api/v1/_cross-db/query', {
+          queries: [
+            { db: 'db1', cypher: 'MATCH (n) WHERE n.typeId=1 RETURN n LIMIT 100' },
+          ],
+        })
+        expect(crossRes.statusCode).toBe(200)
+        expect((crossRes.body as any).results).toBeInstanceOf(Array)
+        expect((crossRes.body as any).results.length).toBe(1)
+        expect((crossRes.body as any).results[0].db).toBe('db1')
+        expect((crossRes.body as any).results[0].data).toBeInstanceOf(Array)
+        expect((crossRes.body as any).results[0].data.length).toBe(2)
+      })
+
+      test('Multiple databases queried in parallel should all return results', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'POST', '/api/v1/_cross-db/query', {
+          queries: [
+            { db: 'db1', cypher: 'MATCH (n) WHERE n.typeId=1 RETURN n LIMIT 100' },
+            { db: 'db2', cypher: 'MATCH (n) WHERE n.typeId=2 RETURN n LIMIT 100' },
+          ],
+        })
+        expect(res.statusCode).toBe(200)
+        expect((res.body as any).results).toBeInstanceOf(Array)
+        expect((res.body as any).results.length).toBe(2)
+
+        // db1 result
+        const db1Result = (res.body as any).results.find((r: any) => r.db === 'db1')
+        expect(db1Result).toBeDefined()
+        expect(db1Result.data).toBeInstanceOf(Array)
+        expect(db1Result.data.length).toBe(2)
+
+        // db2 result
+        const db2Result = (res.body as any).results.find((r: any) => r.db === 'db2')
+        expect(db2Result).toBeDefined()
+        expect(db2Result.data).toBeInstanceOf(Array)
+        expect(db2Result.data.length).toBe(2)
+      })
+
+      test('One database errors should not affect others', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'POST', '/api/v1/_cross-db/query', {
+          queries: [
+            { db: 'db1', cypher: 'MATCH (n) WHERE n.typeId=1 RETURN n LIMIT 100' },
+            { db: 'nonexistent', cypher: 'MATCH (n) RETURN n' },
+            { db: 'db2', cypher: 'MATCH (n) WHERE n.typeId=2 RETURN n LIMIT 100' },
+          ],
+        })
+        expect(res.statusCode).toBe(200)
+        expect((res.body as any).results).toBeInstanceOf(Array)
+        expect((res.body as any).results.length).toBe(3)
+
+        // db1 succeeds
+        const db1Result = (res.body as any).results.find((r: any) => r.db === 'db1')
+        expect(db1Result.error).toBeUndefined()
+        expect(db1Result.data).toBeInstanceOf(Array)
+
+        // nonexistent db errors
+        const nonexistentResult = (res.body as any).results.find((r: any) => r.db === 'nonexistent')
+        expect(nonexistentResult.error).toBeDefined()
+        expect(nonexistentResult.error).toContain('not found')
+
+        // db2 still succeeds despite the error
+        const db2Result = (res.body as any).results.find((r: any) => r.db === 'db2')
+        expect(db2Result.error).toBeUndefined()
+        expect(db2Result.data).toBeInstanceOf(Array)
+      })
+
+      test('Timeout exceeded should return timeout error for that DB', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        // Use an extremely short timeout (1ms) to force timeout
+        const res = await makeRequest(server, 'POST', '/api/v1/_cross-db/query', {
+          queries: [
+            { db: 'db1', cypher: 'MATCH (n) WHERE n.typeId=1 RETURN n LIMIT 100' },
+          ],
+          maxQueryTimeMs: 1,
+        })
+        expect(res.statusCode).toBe(200)
+        expect((res.body as any).results).toBeInstanceOf(Array)
+        expect((res.body as any).results.length).toBe(1)
+
+        // With 1ms timeout, the query should time out
+        const result = (res.body as any).results[0]
+        expect(result.db).toBe('db1')
+        expect(result.error).toBeDefined()
+        expect(result.error).toContain('timed out')
+      })
+
+      test('Custom maxQueryTimeMs should be respected', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        // Use a short timeout that would work if queries finish fast
+        const res = await makeRequest(server, 'POST', '/api/v1/_cross-db/query', {
+          queries: [
+            { db: 'db1', cypher: 'MATCH (n) WHERE n.typeId=1 RETURN n LIMIT 100' },
+          ],
+          maxQueryTimeMs: 100,
+        })
+        expect(res.statusCode).toBe(200)
+        expect((res.body as any).results).toBeInstanceOf(Array)
+        expect((res.body as any).results.length).toBe(1)
+
+        const result = (res.body as any).results[0]
+        expect(result.db).toBe('db1')
+        // With 100ms, the simple mock query should finish in time
+        expect(result.data).toBeInstanceOf(Array)
+        expect(result.data.length).toBe(2)
+      })
+    })
   })
 })

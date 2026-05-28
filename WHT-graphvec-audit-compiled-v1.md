@@ -58,7 +58,7 @@
 | SH03 | Rebalancer 一致性校验 | checksum + HLC | CockroachDB range checksum | ✅ 已实现（computeChecksums + verifyConsistency 在 rebalancer.ts） |
 | Q05 | Follower/Stale read | Raft readIndex 非等待模式 | Dgraph follower read | ✅ 已实现（canServeStaleRead + getCommitIndex 在 raft-core.ts） |
 | P0-fix | 数据库删除 Phase 1-3 | 三阶段 tombstone + GC | — | ✅ 已实现（Phase 1 tombstone + Phase 2 restore + Phase 3 GC 在 database-manager.ts） |
-| R04 | InstallSnapshot 回调 | raft-logic WASM | — | ⬜ 未开始 |
+| R04 | InstallSnapshot 回调 | raft-logic WASM | — | ✅ 已实现（raft-logic-consensus + overgraph-storage snapshot API） |
 
 **中优先级**（运维/拓展增强）：
 
@@ -230,9 +230,29 @@
 | P2 | **数据库删除 Phase 1-3** | — | — | ✅ 已完成 |
 | P2 | **Reshard 自动化** | — | — | ✅ 已完成 |
 | P2 | 备份一致性 + 压缩 | 0.5d | 运维可靠性 | 🟡 基础 |
-| P2 | **InstallSnapshot** | 1d | raft-logic 回调 | ⬜ 待实现 |
+| P2 | **InstallSnapshot** | 1d | raft-logic 回调 | ✅ 已实现 |
 | P3 | 聚合函数/UNION/优化器 | 2d | 查询能力 | ⬜ 待实现 |
 | P3 | batchNeighbors + LRU | 1d | 性能 | ⬜ 待实现 |
 | P3 | 导入流式+批量+并发 | 1d | 数据加载 | ⬜ 待实现 |
 | P4 | Multi-DB REST 路由 + RBAC | 2d | 企业特性 | ⬜ 待实现 |
 | P4 | HTTPS/mTLS + 认证扩展 | 1d | 生产安全 | ⬜ 待实现 |
+
+## 6. Round 7 — 全量竞品差距关闭计划（2026-05-29）
+
+**总项**: 11 项 P0+P1
+
+| 优先级 | 项目 | 问题 | 方案 | 估算 |
+|:------:|:-----|:-----|:-----|:----:|
+| P0 | ACID 事务增强（SSI+版本链+死锁检测） | 写偏斜、无版本链、无死锁检测 | 读集冲突检测+等���图SSI自研 | 2d |
+| P0 | InstallSnapshot 自动化（log compaction+recovery） | 非自动、无crash恢复 | 基于大小的压缩触发器+follower重装 | 1.5d |
+| P0 | fsync 默认策略+Raft联动 | 默认lazy不安全、无联动 | every-n默认+Raft commit fsync | 0.5d |
+| P0 | StorageProvider 流式快照 | 大图OOM、非原子 | 分块导出+临时文件+rename | 1d |
+| P1 | 查询优化器 CBO | 无成本优化、无join ordering | StatsCollector→planner集成(自研) | 2d |
+| P1 | 热分片检测+自动再平衡 | 无QPS/延迟检测 | shard-health统计+rebalancer触发(自研) | 1d |
+| P1 | 跨数据库 REST 查询路由 | 无联合查询 | DatabaseManager 联邦路由(自研) | 1d |
+| P1 | BFS/DFS/PageRank 流式模式 | 大图OOM | BatchProcessor 分块+迭代(自研) | 1.5d |
+| P1 | 自动墓碑清理 | 无时间触发 | setInterval 周期GC(无需npm) | 0.5d |
+| P1 | 全文索引持久化 | 重启丢失 | MiniSearch WAL重建(已引入MiniSearch) | 0.5d |
+| P1 | 基准测试套件 | 无可重复benchmark | LDBC风格+benchmark框架(npm:benchmark) | 2d |
+
+**新增 npm 依赖**: 仅 `benchmark`（基准结果统计）

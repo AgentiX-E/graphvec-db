@@ -3,6 +3,7 @@ import { RangeInstance } from './range-instance'
 import { Logger } from '../ops/logger'
 import { NodeId, NodeRecord, EdgeRecord, ShardMap } from '../types'
 import { HlcClock } from '../replication/hlc-clock'
+import { HotShardDetector } from './shard-health'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -16,6 +17,9 @@ export interface RebalancerOptions {
   loadFactorThreshold?: number      // 负载因子阈值（默认 2.0 = 平均的 2 倍）
   maxNodesPerRange?: number         // SH04: 单个 range 最大节点数，超过时触发 auto-split（默认 10000）
   autoSplitEnabled?: boolean        // SH04: 是否启用自动分裂（默认 true）
+  enableHotShardSplit?: boolean     // P1-2: 是否启用热分片自动分裂（默认 true）
+  hotShardMinQps?: number           // P1-2: 热分片 QPS 阈值（默认 100）
+  hotShardP99LatencyMs?: number     // P1-2: 热分片 P99 延迟阈值 ms（默认 undefined = 不检查延迟）
 }
 
 export interface RangeLoad {
@@ -101,6 +105,7 @@ export class Rebalancer {
   private _opCounts: Map<string, number> = new Map()
   private _reshardState: ReshardState
   private _reshardStateFile: string
+  private _hotShardDetector: HotShardDetector
 
   constructor(manager: ShardManager, options?: RebalancerOptions) {
     this.manager = manager
@@ -111,11 +116,18 @@ export class Rebalancer {
       loadFactorThreshold: options?.loadFactorThreshold ?? 2.0,
       maxNodesPerRange: options?.maxNodesPerRange ?? DEFAULT_MAX_NODES_PER_RANGE,
       autoSplitEnabled: options?.autoSplitEnabled ?? true,
+      enableHotShardSplit: options?.enableHotShardSplit ?? true,
+      hotShardMinQps: options?.hotShardMinQps ?? 100,
+      hotShardP99LatencyMs: options?.hotShardP99LatencyMs ?? 0,
     }
     this._reshardStateFile = options?.autoSplitEnabled !== undefined
       ? RESHARD_STATE_FILE
       : RESHARD_STATE_FILE
     this._reshardState = this._loadReshardState()
+    this._hotShardDetector = new HotShardDetector({
+      minQpsThreshold: options?.hotShardMinQps ?? 100,
+      p99LatencyThresholdMs: options?.hotShardP99LatencyMs,
+    })
   }
 
   // ──────────────────────────────────────────
@@ -1030,6 +1042,7 @@ export class Rebalancer {
 
   /**
    * SH04: 检查是否有 range 超过 maxNodesPerRange 并触发分裂
+   * P1-2: 同时检查热分片（高 QPS）并触发分裂
    *
    * 在 _checkAndRebalance 之前或之后调用。
    */
@@ -1038,6 +1051,21 @@ export class Rebalancer {
 
     const allRanges = this.manager.getAllRanges()
     let splits = 0
+    const _splitTargets = new Set<string>()
+
+    // P1-2: 检查热分片
+    if (this.options.enableHotShardSplit) {
+      const hotShards = this._hotShardDetector.getHotShards(this.options.hotShardMinQps)
+      for (const hotShardId of hotShards) {
+        if (allRanges.has(hotShardId)) {
+          this.logger.info('P1-2: Hot shard detected, scheduling split', {
+            rangeId: hotShardId,
+            minQps: this.options.hotShardMinQps,
+          })
+          _splitTargets.add(hotShardId)
+        }
+      }
+    }
 
     for (const [rangeId, instance] of allRanges) {
       // 跳过 draining range
@@ -1047,17 +1075,25 @@ export class Rebalancer {
         const stats = await instance.read(engine => engine.stats())
         const nodeCount = stats.nodeCount ?? 0
 
+        // SH04: 检查 size 阈值
         if (nodeCount > this.options.maxNodesPerRange) {
-          this.logger.info('SH04: Range exceeds maxNodesPerRange, auto-splitting', {
+          _splitTargets.add(rangeId)
+        }
+
+        if (_splitTargets.has(rangeId)) {
+          const reason = nodeCount > this.options.maxNodesPerRange
+            ? `nodeCount=${nodeCount} exceeds maxNodesPerRange=${this.options.maxNodesPerRange}`
+            : `hot shard (QPS >= ${this.options.hotShardMinQps})`
+          this.logger.info('SH04/P1-2: Auto-splitting range', {
             rangeId,
             nodeCount,
-            maxNodesPerRange: this.options.maxNodesPerRange,
+            reason,
           })
           await this._splitRange(rangeId)
           splits++
         }
       } catch (err) {
-        this.logger.error('SH04: Failed to check range for auto-split', err as Error, { rangeId })
+        this.logger.error('SH04/P1-2: Failed to check range for split', err as Error, { rangeId })
       }
     }
 
@@ -1212,6 +1248,30 @@ export class Rebalancer {
     return {
       maxNodesPerRange: this.options.maxNodesPerRange,
       autoSplitEnabled: this.options.autoSplitEnabled,
+    }
+  }
+
+  /**
+   * P1-2: 获取热分片检测器（用于外部录制操作和验证）
+   */
+  getHotShardDetector(): HotShardDetector {
+    return this._hotShardDetector
+  }
+
+  /**
+   * P1-2: 录制一次操作到热分片检测器
+   */
+  recordOp(shardId: string, latencyMs: number): void {
+    this._hotShardDetector.recordOp(shardId, latencyMs)
+  }
+
+  /**
+   * P1-2: 获取热分片检测配置
+   */
+  getHotShardConfig(): { enableHotShardSplit: boolean; hotShardMinQps: number } {
+    return {
+      enableHotShardSplit: this.options.enableHotShardSplit,
+      hotShardMinQps: this.options.hotShardMinQps,
     }
   }
 }

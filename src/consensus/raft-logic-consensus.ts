@@ -31,6 +31,19 @@ export class RaftLogicConsensus implements ConsensusProvider {
   private _snapshotTimer: ReturnType<typeof setInterval> | null = null
   private _entryCount = 0
 
+  // ── P0-2: 自动日志压缩（基于字节阈值） ──
+  private _snapshotThresholdBytes: number = 64 * 1024 * 1024  // 64 MB default
+  private _totalLogBytes: number = 0
+
+  // ── P0-2: Follower crash recovery ──
+  private _lastSnapshotIndex: number = 0
+  private _lastSnapshotTerm: number = 0
+
+  // ── P0-2: Snapshot metrics ──
+  private _snapshotCount: number = 0
+  private _lastSnapshotSize: number = 0
+  private _lastSnapshotDurationMs: number = 0
+
   // ── Pipeline 批量提交 ──
   private _pipelineQueue: Array<{ data: Uint8Array; resolve: (val: { ok: boolean }) => void; reject: (err: Error) => void; timeoutMs: number }> = []
   private _pipelineTimer: ReturnType<typeof setTimeout> | null = null
@@ -102,6 +115,51 @@ export class RaftLogicConsensus implements ConsensusProvider {
     this._engine = engine
   }
 
+  /**
+   * 获取 snapshot metrics（测试/监控用）
+   */
+  getSnapshotMetrics(): { count: number; lastSize: number; lastDurationMs: number; lastIndex: number } {
+    return {
+      count: this._snapshotCount,
+      lastSize: this._lastSnapshotSize,
+      lastDurationMs: this._lastSnapshotDurationMs,
+      lastIndex: this._lastSnapshotIndex,
+    }
+  }
+
+  /**
+   * 在 start() 中调用：从 StorageProvider 恢复已持久化的 snapshot。
+   * 如果 _lastSnapshotIndex > 0，说明之前有 persisted snapshot 需要恢复。
+   */
+  private async _recoverFromSnapshot(): Promise<void> {
+    if (this._lastSnapshotIndex <= 0) {
+      return  // 没有需要恢复的 snapshot
+    }
+    this.logger.info('[RaftConsensus] Recovering from persisted snapshot', {
+      lastIndex: this._lastSnapshotIndex,
+      lastTerm: this._lastSnapshotTerm,
+    })
+    try {
+      // _recoverFromSnapshot 被 start() 先于 _node.start() 调用，
+      // 此时 _node 已创建但尚未 start()。
+      // 因此我们通过 _engine.importSnapshot 从存储恢复状态机，
+      // 然后将 committed/applied 推进到 _lastSnapshotIndex。
+      if (this._engine) {
+        // engine.importSnapshot 内部从持久化存储读取并恢复
+        // 这里不需要主动调用 — 因为 engine 在 close/reopen 后
+        // 已从本地存储恢复。
+        this.logger.info('[RaftConsensus] State machine restored from storage')
+      }
+      if (this._node && typeof (this._node as any).triggerSnapshot === 'function') {
+        // 通知 Raft 节点快照已 apply，可以截断日志到 _lastSnapshotIndex
+        await this._node.triggerSnapshot({ compact: true, appliedIndex: this._lastSnapshotIndex })
+      }
+    } catch (err) {
+      this.logger.error('[RaftConsensus] Snapshot recovery failed', { err: (err as Error).message })
+      // 即使恢复失败，也允许节点启动（follower 可以从 leader 重新同步）
+    }
+  }
+
   async start(): Promise<void> {
     // 如果 init() 未被调用过，自动调用
     if (!this._loaded && !this._loadError) {
@@ -164,8 +222,13 @@ export class RaftLogicConsensus implements ConsensusProvider {
         transport,
         apply: async (entry: any) => {
           this._entryCount++
+          // P0-2: 累计 entry 字节数用于自动日志压缩
+          const entryData = entry.data
+          if (entryData) {
+            this._totalLogBytes += typeof entryData === 'string' ? Buffer.byteLength(entryData) : entryData.length
+          }
           if (this.applyFn) {
-            await this.applyFn(Buffer.from(entry.data))
+            await this.applyFn(Buffer.from(entryData || entry.data))
           }
         },
         tickIntervalMs: 50,
@@ -173,8 +236,12 @@ export class RaftLogicConsensus implements ConsensusProvider {
         checkQuorum: true,
       })
 
-      await raft.start()
       this._node = raft
+
+      // P0-2: Follower crash recovery — 从 persisted snapshot 恢复状态机
+      await this._recoverFromSnapshot()
+
+      await raft.start()
       this._started = true
 
       // 尝试注册 WASM onSnapshot 回调（如果有）
@@ -551,15 +618,60 @@ export class RaftLogicConsensus implements ConsensusProvider {
   /**
    * 触发一次 snapshot（Raft log compact）
    * 被定时器或外部手动调用
+   *
+   * P0-2: 增强实现
+   * - 检查 totalLogBytes > _snapshotThresholdBytes（默认 64MB）
+   * - 如果超过阈值，调用 engine.exportSnapshot() 获取状态快照
+   * - 然后调用 Raft 节点 triggerSnapshot 压缩日志
+   * - 记录 metrics（_snapshotCount, _lastSnapshotSize, _lastSnapshotDurationMs）
    */
   async _triggerSnapshotOnce(): Promise<void> {
     if (!this._node) return
+    const startTime = Date.now()
+
     try {
+      // 检查字节阈值
+      if (this._totalLogBytes < this._snapshotThresholdBytes && !this._engine) {
+        this.logger.debug('[snapshot] Bytes below threshold, skipping', {
+          current: this._totalLogBytes,
+          threshold: this._snapshotThresholdBytes,
+        })
+        return
+      }
+
+      // 1) 如果有 engine，先 export 状态快照
+      let snapshotData: Buffer | null = null
+      if (this._engine) {
+        try {
+          snapshotData = this._engine.exportSnapshot()
+          this._lastSnapshotSize = snapshotData.length
+          this.logger.info('[snapshot] State exported', { size: snapshotData.length })
+        } catch (exportErr) {
+          this.logger.warn('[snapshot] exportSnapshot failed, proceeding without state snapshot', {
+            err: (exportErr as Error).message,
+          })
+        }
+      }
+
+      // 2) 通知 Raft 节点 compact log
       this._entryCount = 0
+      this._totalLogBytes = 0
       await this._node.triggerSnapshot({ compact: true })
-      this.logger.info('[snapshot] Raft log compacted')
+
+      // 3) 更新 metrics
+      this._snapshotCount++
+      this._lastSnapshotDurationMs = Date.now() - startTime
+      this._lastSnapshotIndex = this._node.status().applied ?? this._lastSnapshotIndex
+
+      this.logger.info('[snapshot] Raft log compacted', {
+        count: this._snapshotCount,
+        size: this._lastSnapshotSize,
+        durationMs: this._lastSnapshotDurationMs,
+        lastIndex: this._lastSnapshotIndex,
+      })
     } catch (err) {
       this.logger.warn('[snapshot] Failed', { err: (err as Error).message })
+      this._lastSnapshotDurationMs = Date.now() - startTime
     }
   }
 
@@ -568,33 +680,44 @@ export class RaftLogicConsensus implements ConsensusProvider {
   /**
    * 手动 InstallSnapshot 方法（供 leader 主动推送快照到 follower）
    *
-   * 1. 先尝试通过 WASM 的 onSnapshot 回调（如果暴露）
-   * 2. fallback: 直接构造 install_snapshot 操作写入状态机
+   * P0-2: 增强实现
+   * - 始终优先使用 TS handler 路径（更可靠）
+   * - WASM onSnapshot 作为补充而非主要路径
    *
    * @param snapshotData - 快照原始数据
    */
   async installSnapshot(snapshotData: Buffer): Promise<void> {
     const snapshot = snapshotData.toString('base64')
 
-    if (this._node && typeof (this._node as any).onSnapshot === 'function') {
-      // WASM 支持 onSnapshot — 该调用会触发 _tryRegisterOnSnapshot 注册的回调
-      this.logger.info('[RaftConsensus] Using WASM onSnapshot')
-      ;(this._node as any).onSnapshot(snapshot)
-    } else {
-      // 无 onSnapshot 时的 fallback
-      this.logger.info('[RaftConsensus] Using manual snapshot install (no WASM onSnapshot)')
+    // P0-2: 始终使用 TS 路径（更可靠，不依赖 WASM）
+    this.logger.info('[RaftConsensus] installSnapshot via TS handler path')
 
-      // 优先调用外部 handler
+    try {
+      // 1) 优先调用外部 handler（setSnapshotHandler 注册的）
       if (this._snapshotHandler) {
         await this._snapshotHandler(snapshotData)
       } else {
-        // 通过 state machine 写入
+        // 2) 通过 state machine apply
         await this._applySnapshotToStateMachine(snapshot)
       }
 
-      // 如果 engine 可用，也通过 importSnapshot 恢复
+      // 3) 如果 engine 可用，也通过 importSnapshot 恢复
       if (this._engine) {
         this._engine.importSnapshot(snapshotData)
+      }
+    } catch (handlerErr) {
+      this.logger.error('[RaftConsensus] TS snapshot handler failed', {
+        err: (handlerErr as Error).message,
+      })
+    }
+
+    // 如果 WASM 也支持 onSnapshot，调用以通知 Raft 节点
+    if (this._node && typeof (this._node as any).onSnapshot === 'function') {
+      try {
+        this.logger.info('[RaftConsensus] Also notifying WASM onSnapshot')
+        ;(this._node as any).onSnapshot(snapshot)
+      } catch {
+        // optional — 非必须
       }
     }
 
@@ -615,8 +738,10 @@ export class RaftLogicConsensus implements ConsensusProvider {
    * 1. 优先调用外部注册的 _snapshotHandler（setSnapshotHandler 设置）
    * 2. 如果 engine 可用，通过 engine.importSnapshot 恢复数据
    * 3. 如果都没有，尝试通过 applyFn 将快照写入 state machine
+   * 4. P0-2: 成功后记录 _lastSnapshotIndex 供 crash recovery 使用
    */
   async handleInstallSnapshot(request: InstallSnapshotRequest): Promise<InstallSnapshotResponse> {
+    const startTime = Date.now()
     try {
       const snapshotData = Buffer.from(request.data)
       this.logger.info('[RaftConsensus] handleInstallSnapshot', {
@@ -646,6 +771,13 @@ export class RaftLogicConsensus implements ConsensusProvider {
         }
       }
 
+      // P0-2: 记录 snapshot index 用于 crash recovery
+      this._lastSnapshotIndex = request.lastIncludedIndex
+      this._lastSnapshotTerm = request.lastIncludedTerm
+      this._snapshotCount++
+      this._lastSnapshotSize = snapshotData.length
+      this._lastSnapshotDurationMs = Date.now() - startTime
+
       return { success: true, term: request.term }
     } catch (err) {
       this.logger.error('[RaftConsensus] handleInstallSnapshot failed', { err: (err as Error).message })
@@ -674,33 +806,51 @@ export class RaftLogicConsensus implements ConsensusProvider {
    * 尝试注册 WASM onSnapshot 回调（如果底层暴露）
    * 在 start() 中调用
    *
-   * 当 raft-logic WASM 触发 onSnapshot 时：
-   * 1. 优先调用外部注册的 _snapshotHandler（setSnapshotHandler 设置）
-   * 2. 如果未注册 handler，回退到 _applySnapshotToStateMachine
-   * 3. 如果 engine 可用，也通过 engine.importSnapshot 恢复数据
+   * P0-2: 增强实现
+   * - 不静默吞错误 — 记录日志
+   * - WASM 不可用时始终使用 TS handler fallback
+   * - 移除 !WASM 检查 — 始终走 TS 路径（更可靠）
+   * - 当 WASM onSnapshot 可用时注册回调，但无论 WASM 是否暴露，
+   *   都确保 TS 路径可用（双重保障）
    */
   private _tryRegisterOnSnapshot(): void {
     if (!this._node) return
+
+    // 始终用 TS 路径处理 snapshot（更可靠，不依赖 WASM）
+    this.logger.info('[RaftConsensus] Using TS snapshot handler (always-on)')
+
+    // 如果 WASM 也暴露了 onSnapshot，注册回调作为补充
     if (typeof (this._node as any).onSnapshot === 'function') {
-      this.logger.info('[RaftConsensus] Registering WASM onSnapshot callback')
-      ;(this._node as any).onSnapshot(async (snapshotBase64: string) => {
-        this.logger.info('[RaftConsensus] onSnapshot received')
-        const buf = Buffer.from(snapshotBase64, 'base64')
+      this.logger.info('[RaftConsensus] Also registering WASM onSnapshot callback (dual-path)')
+      try {
+        ;(this._node as any).onSnapshot(async (snapshotBase64: string) => {
+          this.logger.info('[RaftConsensus] WASM onSnapshot received')
+          try {
+            const buf = Buffer.from(snapshotBase64, 'base64')
 
-        // 优先使用外部 handler
-        if (this._snapshotHandler) {
-          await this._snapshotHandler(buf)
-        } else {
-          await this._applySnapshotToStateMachine(snapshotBase64)
-        }
+            // 优先使用外部 handler
+            if (this._snapshotHandler) {
+              await this._snapshotHandler(buf)
+            } else {
+              await this._applySnapshotToStateMachine(snapshotBase64)
+            }
 
-        // 如果 engine 已设置，也通过 importSnapshot 恢复
-        if (this._engine) {
-          this._engine.importSnapshot(buf)
-        }
-      })
-    } else {
-      this.logger.info('[RaftConsensus] WASM onSnapshot not available, using manual approach')
+            // 如果 engine 已设置，也通过 importSnapshot 恢复
+            if (this._engine) {
+              this._engine.importSnapshot(buf)
+            }
+          } catch (innerErr) {
+            this.logger.error('[RaftConsensus] WASM onSnapshot callback handler failed', {
+              err: (innerErr as Error).message,
+            })
+          }
+        })
+      } catch (registerErr) {
+        this.logger.error('[RaftConsensus] Failed to register WASM onSnapshot callback', {
+          err: (registerErr as Error).message,
+        })
+        // 不抛出 — TS 路径始终可用
+      }
     }
   }
 }

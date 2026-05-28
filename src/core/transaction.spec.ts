@@ -1,4 +1,4 @@
-import { Transaction, TransactionManager, MVCCSnapshot } from './transaction'
+import { Transaction, TransactionManager, MVCCSnapshot, IsolationLevel, BeginOptions } from './transaction'
 import { GraphEngine } from './graph-engine'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
@@ -362,6 +362,341 @@ describe('GraphEngine transaction API', () => {
     })
 
     expect(true).toBe(true)
+    engine.close()
+  })
+})
+
+// ──────────────────────────────────────────
+// Round 7: P0-1 ACID 事务增强
+// ──────────────────────────────────────────
+
+describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
+  test('[RC01] read-set conflict: T1 reads X, T2 writes X → T1 commit fails in serializable mode', async () => {
+    const engine = createTempEngine()
+    engine.open()
+
+    // Create initial node
+    await engine.upsertNode(1, 'conflict-node', { value: 100 })
+
+    // T1 read-set check via commit
+    const mgr = new TransactionManager()
+
+    // Simulate: T1 reads X
+    const txn1 = mgr.begin({ isolation: 'serializable' })
+    ;(txn1 as any)._engine = engine
+    txn1.readNode(1)
+
+    // T2 modifies X
+    const txn2 = mgr.begin()
+    ;(txn2 as any)._engine = engine
+    txn2.upsertNode(1, 'conflict-node', { value: 200 })
+    await txn2.commit()
+
+    // T1 commit should fail — readSet conflict
+    // Simulate: mark node as updated since txn1's snapshot
+    const node = engine.getNode(1)
+    if (node) {
+      ;(node as any).updatedAt = txn1.snapshot.createdAt + 1
+    }
+
+    // Manually set updatedAt to trigger conflict detection
+    // The engine's getNode returns node props, so we need to ensure conflictNode exists
+    await engine.upsertNode(1, 'conflict-node-updated', { value: 300 })
+    const updatedNode = engine.getNode(1)
+    if (updatedNode) {
+      ;(updatedNode as any).updatedAt = txn1.snapshot.createdAt + 1
+    }
+
+    // Check read-set conflict directly
+    const hasConflict = txn1._checkReadSetConflict(engine)
+    expect(hasConflict).toBe(true)
+
+    engine.close()
+  })
+
+  test('[RC02] read-set no conflict when no concurrent modification', async () => {
+    const engine = createTempEngine()
+    engine.open()
+    await engine.upsertNode(1, 'stable-node', { value: 50 })
+
+    const mgr = new TransactionManager()
+    const txn = mgr.begin({ isolation: 'serializable' })
+    ;(txn as any)._engine = engine
+    txn.readNode(1)
+
+    // No concurrent modification
+    const hasConflict = txn._checkReadSetConflict(engine)
+    expect(hasConflict).toBe(false)
+
+    // Commit should succeed
+    await expect(txn.commit()).resolves.toBeUndefined()
+
+    engine.close()
+  })
+
+  test('[RC03] read-set conflict: own write in writeSet does not count as conflict', async () => {
+    const engine = createTempEngine()
+    engine.open()
+    await engine.upsertNode(1, 'own-write-node', { value: 10 })
+
+    const mgr = new TransactionManager()
+    const txn = mgr.begin({ isolation: 'serializable' })
+    ;(txn as any)._engine = engine
+    txn.readNode(1)
+    txn.upsertNode(1, 'own-write-node', { value: 20 })
+
+    // Own write should not trigger read-set conflict
+    const hasConflict = txn._checkReadSetConflict(engine)
+    expect(hasConflict).toBe(false)
+
+    engine.close()
+  })
+
+  test('[RC04] SSI write-skew: concurrent read of disjoint nodes with conditional write', async () => {
+    const engine = createTempEngine()
+    engine.open()
+    await engine.upsertNode(1, 'account-a', { balance: 100 })
+    await engine.upsertNode(2, 'account-b', { balance: 100 })
+
+    const mgr = new TransactionManager()
+
+    // T1 reads A and B, wants to transfer from A (if total > 0)
+    const txn1 = mgr.begin({ isolation: 'serializable' })
+    ;(txn1 as any)._engine = engine
+    txn1.readNode(1)
+    txn1.readNode(2)
+    // T1 will later write to A (debit)
+
+    // T2 reads A and B concurrently, wants to transfer from B
+    const txn2 = mgr.begin({ isolation: 'serializable' })
+    ;(txn2 as any)._engine = engine
+    txn2.readNode(1)
+    txn2.readNode(2)
+
+    // T2 writes to B first
+    txn2.upsertNode(2, 'account-b', { balance: 50 })
+    await txn2.commit()
+
+    // Simulate: T2's write updated the node timestamp
+    const nodeB = engine.getNode(2)
+    if (nodeB) {
+      ;(nodeB as any).updatedAt = txn1.snapshot.createdAt + 1
+    }
+
+    // T1 tries to commit — should fail because readSet includes node 2 which was just modified
+    // T1 writes to A
+    txn1.upsertNode(1, 'account-a', { balance: 50 })
+
+    // Check - txn1's readSet includes node 2, which was modified after snapshot
+    const hasConflict = txn1._checkReadSetConflict(engine)
+    // Since node 2 was updated after snapshot, this IS a write-skew
+    expect(hasConflict).toBe(true)
+
+    // In snapshot isolation, write skew can occur (disjoint writesets don't overlap)
+    // In serializable mode, read-set detection catches it
+
+    engine.close()
+  })
+
+  test('[RC05] serializable commit rejects when read-set conflict found', async () => {
+    const mgr = new TransactionManager()
+    const engine = createTempEngine()
+    engine.open()
+    await engine.upsertNode(1, 'read-node', { value: 1 })
+
+    const txn = mgr.begin({ isolation: 'serializable' })
+    ;(txn as any)._engine = engine
+    txn.readNode(1)
+
+    // Simulate concurrent modification by setting updatedAt past snapshot
+    const node = engine.getNode(1)
+    if (node) {
+      ;(node as any).updatedAt = txn.snapshot.createdAt + 1000
+    }
+
+    // txn.commit() should throw because read-set has been modified
+    await expect(txn.commit()).rejects.toThrow(
+      'serialization conflict detected'
+    )
+    expect(txn.active).toBe(false)
+
+    engine.close()
+  })
+})
+
+describe('P0-1 ACID — Deadlock Detection', () => {
+  test('[DD01] detectDeadlock returns null with no locks', () => {
+    const mgr = new TransactionManager()
+    const txn = mgr.begin()
+    expect(mgr.detectDeadlock(txn.snapshotId)).toBeNull()
+  })
+
+  test('[DD02] detectDeadlockFull detects circular wait between two transactions', async () => {
+    const engine = createTempEngine()
+    engine.open()
+    const mgr = new TransactionManager()
+
+    // T1 locks node 1, T2 locks node 2
+    mgr.lock(1, 100) // T1 (snapshotId=100) holds lock on node 1
+    mgr.lock(2, 101) // T2 (snapshotId=101) holds lock on node 2
+
+    // T1 requests node 2 (blocked by T2)
+    mgr._registerLockRequest(2, 100) // T1 waiting for node 2 held by T2
+    // T2 requests node 1 (blocked by T1)
+    mgr._registerLockRequest(1, 101) // T2 waiting for node 1 held by T1
+
+    // Wait-for graph: 100 → 101, 101 → 100 → cycle
+    const deadlock = mgr.detectDeadlockFull(100)
+    expect(deadlock).not.toBeNull()
+    expect(deadlock).toContain('Deadlock detected')
+
+    engine.close()
+  })
+
+  test('[DD03] no deadlock with single transaction', () => {
+    const mgr = new TransactionManager()
+    mgr.lock(1, 100)
+    mgr.lock(2, 100)
+    mgr._registerLockRequest(3, 100)
+
+    const deadlock = mgr.detectDeadlockFull(100)
+    expect(deadlock).toBeNull()
+  })
+
+  test('[DD04] no deadlock with non-circular waiting', () => {
+    const mgr = new TransactionManager()
+    mgr.lock(1, 100)
+    mgr.lock(2, 101)
+    mgr._registerLockRequest(2, 100) // T1 waits for node 2 held by T2
+    // No reverse request → no cycle
+
+    const deadlock = mgr.detectDeadlockFull(100)
+    expect(deadlock).toBeNull()
+  })
+
+  test('[DD05] three-way deadlock detected', () => {
+    const mgr = new TransactionManager()
+    // T1 holds 1, T2 holds 2, T3 holds 3
+    mgr.lock(1, 100)
+    mgr.lock(2, 101)
+    mgr.lock(3, 102)
+
+    // T1 waits 2, T2 waits 3, T3 waits 1 → cycle of 3
+    mgr._registerLockRequest(2, 100)
+    mgr._registerLockRequest(3, 101)
+    mgr._registerLockRequest(1, 102)
+
+    const deadlock = mgr.detectDeadlockFull(100)
+    expect(deadlock).not.toBeNull()
+    expect(deadlock).toContain('Deadlock detected')
+    expect(deadlock).toContain('100')
+  })
+
+  test('[DD06] wait-for graph correctly maps relationships', () => {
+    const mgr = new TransactionManager()
+    mgr.lock(1, 100)
+    mgr.lock(2, 101)
+    mgr._registerLockRequest(2, 100)
+
+    const graph = mgr.getWaitForGraph()
+    expect(graph.size).toBeGreaterThan(0)
+    expect(graph.has(100)).toBe(true)
+    const neighbors = graph.get(100)
+    expect(neighbors).toBeDefined()
+    expect(neighbors!.has(101)).toBe(true)
+  })
+})
+
+describe('P0-1 ACID — Version Chain', () => {
+  test('[VC01] snapshot has version field', () => {
+    const mgr = new TransactionManager()
+    const txn = mgr.begin()
+    expect(txn.snapshot.version).toBeDefined()
+    expect(txn.snapshot.version).toBe(txn.snapshot.id)
+  })
+
+  test('[VC02] snapshot versions monotonically increase', () => {
+    const mgr = new TransactionManager()
+    const versions: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const txn = mgr.begin()
+      expect(txn.snapshot.version).toBe(txn.snapshotId)
+      versions.push(txn.snapshot.version!)
+    }
+    for (let i = 1; i < versions.length; i++) {
+      expect(versions[i]).toBeGreaterThan(versions[i - 1])
+    }
+  })
+
+  test('[VC03] readNodeVersioned gracefully returns null without engine', () => {
+    const mgr = new TransactionManager()
+    const txn = mgr.begin()
+    const result = txn.readNodeVersioned(1)
+    expect(result).toBeNull()
+  })
+
+  test('[VC04] readNodeVersioned reads snapshot-time value via engine', async () => {
+    const engine = createTempEngine()
+    engine.open()
+    await engine.upsertNode(1, 'versioned-node', { value: 42 })
+
+    const mgr = new TransactionManager()
+    const txn = mgr.begin({ isolation: 'snapshot' })
+    ;(txn as any)._engine = engine
+    txn.readNode(1)
+
+    // readNodeVersioned should add to readSet
+    txn.readNodeVersioned(1, engine)
+    expect(txn.readSet.has(1)).toBe(true)
+
+    engine.close()
+  })
+})
+
+describe('P0-1 ACID — Isolation Levels', () => {
+  test('[IL01] default isolation is snapshot', () => {
+    const mgr = new TransactionManager()
+    const txn = mgr.begin()
+    expect(txn.isolation).toBe('snapshot')
+  })
+
+  test('[IL02] can specify read-committed isolation', () => {
+    const mgr = new TransactionManager()
+    const txn = mgr.begin({ isolation: 'read-committed' })
+    expect(txn.isolation).toBe('read-committed')
+  })
+
+  test('[IL03] can specify serializable isolation', () => {
+    const mgr = new TransactionManager()
+    const txn = mgr.begin({ isolation: 'serializable' })
+    expect(txn.isolation).toBe('serializable')
+  })
+
+  test('[IL04] snapshot isolation commit succeeds without conflict', async () => {
+    const engine = createTempEngine()
+    engine.open()
+    await engine.upsertNode(1, 'snapshot-test', { value: 10 })
+
+    const mgr = new TransactionManager()
+    const txn = mgr.begin({ isolation: 'snapshot' })
+    ;(txn as any)._engine = engine
+    txn.readNode(1)
+    txn.upsertNode(2, 'new-node', { value: 20 })
+
+    await expect(txn.commit()).resolves.toBeUndefined()
+    engine.close()
+  })
+
+  test('[IL05] read-committed isolation commit succeeds', async () => {
+    const engine = createTempEngine()
+    engine.open()
+
+    const mgr = new TransactionManager()
+    const txn = mgr.begin({ isolation: 'read-committed' })
+    ;(txn as any)._engine = engine
+    txn.upsertNode(1, 'rc-test', { value: 1 })
+
+    await expect(txn.commit()).resolves.toBeUndefined()
     engine.close()
   })
 })
