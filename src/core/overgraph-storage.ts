@@ -31,10 +31,10 @@ import { encode, decode } from 'msgpackr'
 //   9       4      Total chunks     (uint32 LE, 数据块专用; 最终块=0xFFFFFFFF)
 //  13       4      Data length      (uint32 LE, 本块 payload 字节数)
 //  17      32      SHA-256 digest   (数据块: chunk 数据的 hash; 最终块: 全量数据的 hash)
-//  49       N      Payload data     (截取的原生快照数据片段 or 空)
+//  49       N      Payload data     (分片数据 or 空)
 //
 // 流结束：发送一个 flags=0 (非数据) 的最终校验块，totalChunks=0xFFFFFFFF，
-//        其 SHA-256 为全量原生快照的哈希。
+//        其 SHA-256 为全量数据的哈希。
 
 /** 块头大小（Magic 4 + Flags 1 + ChkIdx 4 + TotalChunks 4 + DataLen 4 + SHA256 32 = 49 字节） */
 const CHUNK_HEADER_SIZE = 49
@@ -44,7 +44,7 @@ const FLAG_FINAL_CHECKSUM = 0x00
 const FINAL_TOTAL_CHUNKS = 0xFFFFFFFF
 
 /** 组装一个数据块的 Buffer */
-function buildDataChunk(chunkIndex: number, totalChunks: number, data: Buffer): Buffer {
+export function buildDataChunk(chunkIndex: number, totalChunks: number, data: Buffer): Buffer {
   const sha = crypto.createHash('sha256').update(data).digest()
   const header = Buffer.alloc(CHUNK_HEADER_SIZE)
   MAGIC.copy(header, 0)
@@ -57,7 +57,7 @@ function buildDataChunk(chunkIndex: number, totalChunks: number, data: Buffer): 
 }
 
 /** 组装最终校验块 */
-function buildFinalChecksumChunk(fullSha256: Buffer): Buffer {
+export function buildFinalChecksumChunk(fullSha256: Buffer): Buffer {
   const header = Buffer.alloc(CHUNK_HEADER_SIZE)
   MAGIC.copy(header, 0)
   header[4] = FLAG_FINAL_CHECKSUM
@@ -68,8 +68,8 @@ function buildFinalChecksumChunk(fullSha256: Buffer): Buffer {
   return header
 }
 
-/** 解析结果 */
-interface ParsedChunk {
+/** 解析后的块 */
+export interface ParsedChunk {
   isData: boolean
   chunkIndex: number
   totalChunks: number
@@ -82,7 +82,7 @@ interface ParsedChunk {
  * 解析一个完整的块。
  * @throws 如果 Magic 不符或长度不足
  */
-function parseChunk(buf: Buffer): ParsedChunk {
+export function parseChunk(buf: Buffer): ParsedChunk {
   if (buf.length < CHUNK_HEADER_SIZE) {
     throw new Error(`Snapshot chunk too short: ${buf.length} < ${CHUNK_HEADER_SIZE}`)
   }
@@ -108,6 +108,149 @@ function parseChunk(buf: Buffer): ParsedChunk {
   }
   return { isData, chunkIndex, totalChunks, dataLength, sha256, data }
 }
+
+/**
+ * 将一个 Buffer 分片为块序列（包含最终校验块）。
+ * 这是纯函数，不依赖 any 存储实例。
+ *
+ * @param data   要分片的数据
+ * @param chunkSize  每块 payload 最大字节数（默认 4MB）
+ */
+export function* chunkBuffer(data: Buffer, chunkSize: number = 4 * 1024 * 1024): Generator<Buffer> {
+  const fullSha = crypto.createHash('sha256').update(data).digest()
+  const totalChunks = Math.ceil(data.length / chunkSize)
+  let offset = 0
+  for (let i = 0; i < totalChunks; i++) {
+    const end = Math.min(offset + chunkSize, data.length)
+    const chunkData = Buffer.from(data.subarray(offset, end))
+    yield buildDataChunk(i, totalChunks, chunkData)
+    offset = end
+  }
+  yield buildFinalChecksumChunk(fullSha)
+}
+
+/**
+ * 从流式块序列重组数据并校验。
+ * 返回原始数据 Buffer。
+ * @throws 任意块校验失败或最终校验不匹配
+ */
+export async function reassembleFromStream(stream: AsyncIterable<Buffer>): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let totalChunksReported = 0
+  let finalSha256: Buffer | null = null
+
+  for await (const raw of stream) {
+    const chunk = parseChunk(raw)
+
+    if (chunk.isData) {
+      totalChunksReported = chunk.totalChunks
+      // 校验单块数据哈希
+      const actualSha = crypto.createHash('sha256').update(chunk.data).digest()
+      if (!actualSha.equals(chunk.sha256)) {
+        throw new Error(
+          `Snapshot chunk #${chunk.chunkIndex} checksum mismatch: ` +
+          `expected ${chunk.sha256.toString('hex')}, got ${actualSha.toString('hex')}`
+        )
+      }
+      chunks.push(chunk.data)
+    } else {
+      // 最终校验块
+      if (chunk.totalChunks !== FINAL_TOTAL_CHUNKS) {
+        throw new Error(
+          `Invalid final checksum chunk: expected totalChunks=0xFFFFFFFF, got ${chunk.totalChunks}`
+        )
+      }
+      finalSha256 = chunk.sha256
+    }
+  }
+
+  if (!finalSha256) {
+    throw new Error('Snapshot stream missing final checksum chunk')
+  }
+  if (chunks.length !== totalChunksReported) {
+    throw new Error(
+      `Snapshot chunk count mismatch: expected ${totalChunksReported}, got ${chunks.length}`
+    )
+  }
+
+  const fullData = Buffer.concat(chunks)
+
+  // 全量数据校验
+  const actualFullSha = crypto.createHash('sha256').update(fullData).digest()
+  if (!actualFullSha.equals(finalSha256)) {
+    throw new Error(
+      `Snapshot full-data checksum mismatch: ` +
+      `expected ${finalSha256.toString('hex')}, got ${actualFullSha.toString('hex')}`
+    )
+  }
+
+  return fullData
+}
+
+/**
+ * 原子方式写入流式快照到文件。
+ *
+ * 步骤：
+ * 1. 创建 `.tmp` 临时文件
+ * 2. 逐块写入
+ * 3. 全部写入完成后重命名为 `.snap`
+ * 4. 任意步骤失败 → 删除 .tmp 文件
+ *
+ * @param snapPath  目标 .snap 文件路径
+ * @param stream    块迭代器
+ */
+export async function writeSnapshotStreamToFile(
+  snapPath: string,
+  stream: AsyncIterable<Buffer>,
+): Promise<void> {
+  const dir = path.dirname(snapPath)
+  const base = path.basename(snapPath, '.snap')
+  const tmpPath = path.join(dir, `${base}.tmp`)
+
+  try {
+    const ws = fs.createWriteStream(tmpPath)
+    for await (const chunk of stream) {
+      ws.write(chunk)
+    }
+    await new Promise<void>((resolve, reject) => {
+      ws.end((err) => (err ? reject(err) : resolve()))
+    })
+    await fsp.rename(tmpPath, snapPath)
+  } catch (err) {
+    try { await fsp.unlink(tmpPath) } catch { /* ignore */ }
+    throw err
+  }
+}
+
+/**
+ * 从 `.snap` 文件读取所有块，返回数据迭代器。
+ */
+export async function* readChunksFromFile(filePath: string): AsyncGenerator<Buffer> {
+  const bytes = await fsp.readFile(filePath)
+  let offset = 0
+  while (offset < bytes.length) {
+    if (offset + CHUNK_HEADER_SIZE > bytes.length) break
+    const hdr = Buffer.from(bytes.subarray(offset, offset + CHUNK_HEADER_SIZE))
+    const isData = (hdr[4] & FLAG_DATA) !== 0
+    let chunkLen: number
+    if (isData) {
+      const dataLen = hdr.readUInt32LE(13)
+      chunkLen = CHUNK_HEADER_SIZE + dataLen
+    } else {
+      chunkLen = CHUNK_HEADER_SIZE
+    }
+    if (offset + chunkLen > bytes.length) {
+      throw new Error(`Snapshot file truncated at offset ${offset}`)
+    }
+    yield Buffer.from(bytes.subarray(offset, offset + chunkLen))
+    offset += chunkLen
+  }
+}
+
+
+// ═══════════════════════════════════════════════
+// OverGraphStorage
+// ═══════════════════════════════════════════════
 
 export class OverGraphStorage implements StorageProvider {
   private _db: OverGraphDB | null = null
@@ -285,57 +428,69 @@ export class OverGraphStorage implements StorageProvider {
     }
   }
 
-  // ── 快照（全量 Buffer） ────────────────────
-
   /**
    * 导出快照 — 使用 msgpackr 序列化
    *
    * 格式: { rangeId, nodes: [...], edges: [...] }
    * - nodes: 每个 node 记录 { typeId, name, props }
    * - edges: 每个 edge 记录 { src, dst, typeId, props }
-   *
-   * 优先通过 OverGraph 原生 API 获取全量节点数据。
-   * 当原生 exportSnapshot 可用时，使用原生数据并回填结构化格式。
    */
   exportSnapshot(): Buffer {
-    if (typeof (this._db as any).exportSnapshot === 'function') {
-      // OverGraph v0.7.0 原生快照 — 直接用 msgpackr 包装
-      const nativeData = (this._db as any).exportSnapshot()
-      const data = {
-        rangeId: '',
-        nodes: [] as Array<{ typeId: number; name: string; props?: Record<string, unknown> }>,
-        edges: [] as Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown> }>,
-        _native: Buffer.from(nativeData),
+    // 通过 OverGraph API 遍历所有数据
+    const nodes: Array<{ id: number; typeId: number; name: string; props?: Record<string, unknown> }> = []
+    const edges: Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown> }> = []
+
+    // 使用 exportAdjacency 获取节点和边信息
+    const adj = this._db!.exportAdjacency()
+    const nodeIds = Array.from(adj.nodeIds as Float64Array)
+
+    for (const id of nodeIds) {
+      const node = this._db!.getNode(id, true)
+      if (node) {
+        nodes.push({
+          id: node.id,
+          typeId: node.typeId,
+          name: node.key,
+          props: node.props as Record<string, unknown> | undefined,
+        })
       }
-      return Buffer.from(encode(data))
     }
 
-    // fallback: 无原生快照时返回空
-    return Buffer.alloc(0)
+    // 边信息
+    const fromIds = adj.edgeFrom as Float64Array
+    const toIds = adj.edgeTo as Float64Array
+    const typeIds = adj.edgeTypeIds as Uint32Array
+
+    for (let i = 0; i < fromIds.length; i++) {
+      const edge = this._db!.getEdge(fromIds[i], toIds[i], typeIds[i])
+      edges.push({
+        src: fromIds[i],
+        dst: toIds[i],
+        typeId: typeIds[i],
+        props: edge?.props as Record<string, unknown> | undefined,
+      })
+    }
+
+    const data = {
+      rangeId: '',
+      nodes,
+      edges,
+    }
+    return Buffer.from(encode(data))
   }
 
   /**
    * 导入快照
    *
-   * 尝试解析 msgpackr 格式。
-   * 如果包含 _native 原生快照数据，优先使用原生导入。
-   * 否则逐条 upsert 节点和边。
+   * 解析 msgpackr 格式，逐条写入数据库。
    */
   importSnapshot(data: Buffer): void {
     const snapshot = decode(Buffer.from(data)) as {
       rangeId?: string
-      nodes?: Array<{ typeId: number; name: string; props?: Record<string, unknown> }>
+      nodes?: Array<{ id: number; typeId: number; name: string; props?: Record<string, unknown> }>
       edges?: Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown> }>
-      _native?: Buffer | Uint8Array
     }
 
-    // 1) 优先使用原生快照恢复
-    if (snapshot._native && typeof (this._db as any).importSnapshot === 'function') {
-      ;(this._db as any).importSnapshot(Buffer.from(snapshot._native))
-      return
-    }
-
-    // 2) 逐条 upsert（fallback / 可移植格式）
     if (snapshot.nodes && snapshot.nodes.length > 0) {
       for (const node of snapshot.nodes) {
         this.upsertNode(node.typeId, node.name, { props: node.props })
@@ -348,42 +503,17 @@ export class OverGraphStorage implements StorageProvider {
     }
   }
 
-  // ═══════════════════════════════════════════════
-  // 流式分块快照 (Streaming Chunked Snapshot)
-  // ═══════════════════════════════════════════════
-
   /**
    * 分块导出快照 — 返回 AsyncGenerator，按 chunkSize 分块发出 Buffer。
    *
-   * 流程：
-   * 1. 调用 OverGraph 原生 exportSnapshot() 获取全量快照数据
-   * 2. 将数据按 chunkSize 切片，每片组装为带头的块发出
-   * 3. 所有数据块发送完后，发出一个最终 SHA-256 校验块
-   *
-   * 块接收方收到最终校验块后可验证完整数据的一致性。
-   * 无需一次分配全量缓冲区（流式切片处理）。
+   * 调用 exportSnapshot() 获取完整快照数据，然后按 chunkSize 分片。
+   * 最后发出 SHA-256 最终校验块。
    */
   async *exportSnapshotChunked(chunkSize: number = 4 * 1024 * 1024): AsyncGenerator<Buffer> {
-    if (!this._db) throw new Error('Storage not open')
-    if (typeof (this._db as any).exportSnapshot !== 'function') {
-      throw new Error('Native exportSnapshot not available')
+    const data = this.exportSnapshot()
+    for (const chunk of chunkBuffer(data, chunkSize)) {
+      yield chunk
     }
-
-    const nativeData = (this._db as any).exportSnapshot() as Uint8Array
-    const data = Buffer.from(nativeData)
-    const fullSha = crypto.createHash('sha256').update(data).digest()
-    const totalChunks = Math.ceil(data.length / chunkSize)
-
-    let offset = 0
-    for (let i = 0; i < totalChunks; i++) {
-      const end = Math.min(offset + chunkSize, data.length)
-      const chunkData = Buffer.from(data.subarray(offset, end))
-      yield buildDataChunk(i, totalChunks, chunkData)
-      offset = end
-    }
-
-    // 最终校验块
-    yield buildFinalChecksumChunk(fullSha)
   }
 
   /**
@@ -392,133 +522,29 @@ export class OverGraphStorage implements StorageProvider {
    * 步骤：
    * 1. 创建临时文件 `snapshot-{id}.tmp`
    * 2. 逐块写入
-   * 3. 全部写入完成后，重命名为 `snapshot-{id}.snap`（原子重命名）
+   * 3. 全部写入完成后重命名为 `*.snap`
    * 4. 任意步骤失败 → 删除 .tmp 文件
    */
   async exportSnapshotAtomic(
     filePath: string,
     chunkSize: number = 4 * 1024 * 1024,
   ): Promise<void> {
-    const dir = path.dirname(filePath)
-    const base = path.basename(filePath, '.snap')
-    const tmpPath = path.join(dir, `${base}.tmp`)
-
-    try {
-      const stream = fs.createWriteStream(tmpPath)
-      for await (const chunk of this.exportSnapshotChunked(chunkSize)) {
-        stream.write(chunk)
-      }
-      await new Promise<void>((resolve, reject) => {
-        stream.end((err) => (err ? reject(err) : resolve()))
-      })
-      // 原子重命名
-      await fsp.rename(tmpPath, filePath)
-    } catch (err) {
-      // 清理 tmp 文件
-      try { await fsp.unlink(tmpPath) } catch { /* ignore */ }
-      throw err
-    }
+    await writeSnapshotStreamToFile(filePath, this.exportSnapshotChunked(chunkSize))
   }
 
   /**
    * 从流式数据导入分块快照。
-   *
-   * 流程：
-   * 1. 逐块读取校验
-   * 2. 数据块按序重组为原生快照 Buffer
-   * 3. 最终校验块验证全量 SHA-256
-   * 4. 调用 OverGraph 原生 importSnapshot() 恢复
-   *
-   * @throws 任意块校验失败或最终校验不匹配
+   * 校验每个块及最终 SHA-256，然后调用 importSnapshot() 恢复。
    */
   async importSnapshotStream(stream: AsyncIterable<Buffer>): Promise<void> {
-    if (!this._db) throw new Error('Storage not open')
-    if (typeof (this._db as any).importSnapshot !== 'function') {
-      throw new Error('Native importSnapshot not available')
-    }
-
-    const chunks: Buffer[] = []
-    let totalChunksReported = 0
-    let finalSha256: Buffer | null = null
-
-    for await (const raw of stream) {
-      const chunk = parseChunk(raw)
-
-      if (chunk.isData) {
-        totalChunksReported = chunk.totalChunks
-        // 校验单块数据哈希
-        const actualSha = crypto.createHash('sha256').update(chunk.data).digest()
-        if (!actualSha.equals(chunk.sha256)) {
-          throw new Error(
-            `Snapshot chunk #${chunk.chunkIndex} checksum mismatch: ` +
-            `expected ${chunk.sha256.toString('hex')}, got ${actualSha.toString('hex')}`
-          )
-        }
-        chunks.push(chunk.data)
-      } else {
-        // 最终校验块
-        if (chunk.totalChunks !== FINAL_TOTAL_CHUNKS) {
-          throw new Error(
-            `Invalid final checksum chunk: expected totalChunks=0xFFFFFFFF, got ${chunk.totalChunks}`
-          )
-        }
-        finalSha256 = chunk.sha256
-      }
-    }
-
-    if (!finalSha256) {
-      throw new Error('Snapshot stream missing final checksum chunk')
-    }
-    if (chunks.length !== totalChunksReported) {
-      throw new Error(
-        `Snapshot chunk count mismatch: expected ${totalChunksReported}, got ${chunks.length}`
-      )
-    }
-
-    // 组装全量数据
-    const fullData = Buffer.concat(chunks)
-
-    // 全量数据校验
-    const actualFullSha = crypto.createHash('sha256').update(fullData).digest()
-    if (!actualFullSha.equals(finalSha256)) {
-      throw new Error(
-        `Snapshot full-data checksum mismatch: ` +
-        `expected ${finalSha256.toString('hex')}, got ${actualFullSha.toString('hex')}`
-      )
-    }
-
-    // 导入原生快照
-    ;(this._db as any).importSnapshot(fullData)
+    const fullData = await reassembleFromStream(stream)
+    this.importSnapshot(fullData)
   }
 
   /**
-   * 从 `.snap` 文件导入快照（读取所有块并恢复）
+   * 从 `.snap` 文件导入快照。
    */
   async importSnapshotFile(filePath: string): Promise<void> {
-    // 流式读取文件的所有块并馈入 importSnapshotStream
-    const bytes = await fsp.readFile(filePath)
-    const chunks: Buffer[] = []
-    let offset = 0
-    while (offset < bytes.length) {
-      // 需要至少一个 header 大小
-      if (offset + CHUNK_HEADER_SIZE > bytes.length) break
-      // 读取 header 判断数据长度
-      const header = bytes.subarray(offset, offset + CHUNK_HEADER_SIZE)
-      const hdr = Buffer.from(header)
-      const isData = (hdr[4] & FLAG_DATA) !== 0
-      let chunkLen: number
-      if (isData) {
-        const dataLen = hdr.readUInt32LE(13)
-        chunkLen = CHUNK_HEADER_SIZE + dataLen
-      } else {
-        chunkLen = CHUNK_HEADER_SIZE
-      }
-      if (offset + chunkLen > bytes.length) {
-        throw new Error(`Snapshot file truncated at offset ${offset}`)
-      }
-      chunks.push(Buffer.from(bytes.subarray(offset, offset + chunkLen)))
-      offset += chunkLen
-    }
-    await this.importSnapshotStream(chunks[Symbol.asyncIterator]())
+    await this.importSnapshotStream(readChunksFromFile(filePath))
   }
 }

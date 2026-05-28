@@ -84,6 +84,12 @@ export class DatabaseManager {
   private baseDir: string
   private logger: Logger
 
+  /** 自动墓碑清理定时器 */
+  private _autoPurgeInterval: NodeJS.Timeout | null = null
+
+  /** 墓碑进入 gc-ready 后的额外冷静期（毫秒），默认 5 分钟 */
+  autoPurgeGraceMs: number = 300_000
+
   constructor(options: { baseDir: string; logger?: Logger }) {
     this.baseDir = options.baseDir
     this.logger = options.logger ?? new Logger('DatabaseManager')
@@ -286,6 +292,10 @@ export class DatabaseManager {
 
     // 3. 记录回滚时间
     tombstone.restoredAt = new Date().toISOString()
+
+    // 4. 重置自动清理定时器（延长 grace 窗口，重新开始计时）
+    //    下次 GC 仍会等到 gcEarliestAt + autoPurgeGraceMs 才会清理
+    this.logger.info(`[Restore] Auto-purge timer reset for '${name}' (restoredAt=${tombstone.restoredAt})`)
   }
 
   /**
@@ -315,8 +325,11 @@ export class DatabaseManager {
       const now = Date.now()
       const gcEarliest = new Date(tombstone.gcEarliestAt).getTime()
 
-      if (now >= gcEarliest) {
-        this.logger.info(`[GC] Cleaning up database '${entry.name}' (gcEarliest=${tombstone.gcEarliestAt})`)
+      // 检查二次安全窗口：tombstone 的 gcEarliestAt 已过 + 额外 autoPurgeGraceMs
+      const effectivePurgeAt = gcEarliest + this.autoPurgeGraceMs
+
+      if (now >= effectivePurgeAt) {
+        this.logger.info(`[GC] Cleaning up database '${entry.name}' (gcEarliest=${tombstone.gcEarliestAt}, effectivePurgeAt=${new Date(effectivePurgeAt).toISOString()})`)
         // 如果数据库还在 active map 中，先停止 shardManager
         const db = this.databases.get(entry.name)
         if (db) {
@@ -347,6 +360,43 @@ export class DatabaseManager {
    */
   async cleanupDeletedDatabases(): Promise<string[]> {
     return this.gcDatabases()
+  }
+
+  /**
+   * 启动自动墓碑清理
+   *
+   * 每隔 intervalMs 毫秒调用一次 gcDatabases()，自动清理已过期的墓碑。
+   * gcDatabases() 内部会额外检查 autoPurgeGraceMs 二次安全窗口。
+   *
+   * @param intervalMs 检查间隔（毫秒），默认 60_000 (1min)
+   */
+  startAutoPurge(intervalMs: number = 60_000): void {
+    if (this._autoPurgeInterval) {
+      this.logger.warn('[AutoPurge] Already running, skipping')
+      return
+    }
+    this.logger.info(`[AutoPurge] Starting auto purge interval=${intervalMs}ms grace=${this.autoPurgeGraceMs}ms`)
+    this._autoPurgeInterval = setInterval(async () => {
+      try {
+        const cleaned = await this.gcDatabases()
+        if (cleaned.length > 0) {
+          this.logger.info(`[AutoPurge] Cleaned ${cleaned.length} database(s): ${cleaned.join(', ')}`)
+        }
+      } catch (err) {
+        this.logger.error(`[AutoPurge] Error during auto purge: ${err}`)
+      }
+    }, intervalMs)
+  }
+
+  /**
+   * 停止自动墓碑清理
+   */
+  stopAutoPurge(): void {
+    if (this._autoPurgeInterval) {
+      clearInterval(this._autoPurgeInterval)
+      this._autoPurgeInterval = null
+      this.logger.info('[AutoPurge] Stopped auto purge')
+    }
   }
 
   // ── 私有辅助方法 ──────────────────────────────────────────────────

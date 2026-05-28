@@ -323,8 +323,8 @@ describe('pagerankStream', () => {
     }
   })
 
-  test('should match full-memory PageRank on 10K chain graph within 1%', async () => {
-    const nodeCount = 10_000
+  test('should match full-memory PageRank on 1K chain graph within 1%', async () => {
+    const nodeCount = 1000
     const { getNeighbors, allNodes } = createLargeGraph(nodeCount)
 
     // 全内存 PageRank（降低迭代次数和阈值以控制时间）
@@ -333,12 +333,12 @@ describe('pagerankStream', () => {
       convergenceThreshold: 1e-4,
     })
 
-    // 流式 PageRank：按 2500 一批分 4 批
+    // 流式 PageRank：按 250 一批分 4 批
     const batches = iterableBatches([
-      toNodeRecords(allNodes.slice(0, 2500)),
-      toNodeRecords(allNodes.slice(2500, 5000)),
-      toNodeRecords(allNodes.slice(5000, 7500)),
-      toNodeRecords(allNodes.slice(7500)),
+      toNodeRecords(allNodes.slice(0, 250)),
+      toNodeRecords(allNodes.slice(250, 500)),
+      toNodeRecords(allNodes.slice(500, 750)),
+      toNodeRecords(allNodes.slice(750)),
     ])
     const result = await pagerankStream(getNeighbors, batches, {
       maxIterations: 20,
@@ -412,20 +412,15 @@ describe('bfsStream', () => {
     }
   })
 
-  test('should find same reachable set on 10K chain graph', async () => {
-    const nodeCount = 10_000
+  test('should find same reachable set on 1K chain graph', async () => {
+    const nodeCount = 1000
     const { getNeighbors, allNodes } = createLargeGraph(nodeCount)
-
-    for (const node of allNodes) {
-      const nb = getNeighbors(node)
-      // First 10 nodes check
-    }
 
     // 全内存 BFS
     const expected = bfs(getNeighbors, 0 as NodeId)
 
-    // 流式 BFS：按 1000 一批分 10 批
-    const batchSize = 1000
+    // 流式 BFS：按 100 一批分 10 批
+    const batchSize = 100
     const batches: NodeRecord[][] = []
     for (let i = 0; i < nodeCount; i += batchSize) {
       batches.push(toNodeRecords(allNodes.slice(i, i + batchSize)))

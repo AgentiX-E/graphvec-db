@@ -8,9 +8,17 @@
  * - 自定义分析器
  * - 无依赖，零 native 编译
  *
+ * 支持 WAL（Write-Ahead Log）持久化：
+ * - JSONL 格式，append-only
+ * - 启动时自动回放恢复索引
+ * - 超过 1MB 自动轮转
+ * - 文档数达到 10K（可配置）时生成快照并清理 WAL
+ *
  * 接口兼容旧 FullTextIndex，100% 替换现有代码。
  */
 import MiniSearch from 'minisearch'
+import * as fs from 'fs'
+import * as path from 'path'
 
 export interface SearchOptions {
   limit?: number
@@ -32,12 +40,45 @@ export interface FullTextOptions {
   defaultFieldWeight?: number
   fieldWeights?: Record<string, number>
   analyzer?: 'simple' | 'standard' | 'cjk'
+  baseDir?: string
+  snapshotThreshold?: number  // 触发快照的文档数阈值，默认 10000
+}
+
+// ── WAL 条目类型 ──
+interface WalAddEntry {
+  op: 'add'
+  id: string
+  text: string
+}
+
+interface WalRemoveEntry {
+  op: 'remove'
+  id: string
+}
+
+type WalEntry = WalAddEntry | WalRemoveEntry
+
+// ── 快照格式 ──
+interface SnapshotData {
+  storedFields: Record<string, Record<string, string>>
+  fieldIds: Record<string, number>
 }
 
 export class FullTextIndex {
   private ms: MiniSearch
   private options: Required<FullTextOptions>
   private _store: Map<string, Record<string, string>> = new Map()
+
+  // ── WAL 持久化相关 ──
+  private _baseDir: string | null = null
+  private _walPath: string | null = null
+  private _snapshotPath: string | null = null
+  private _walFd: number | null = null
+  private _walSize = 0
+  private _snapshotThreshold: number
+  private static readonly MAX_WAL_BYTES = 1 * 1024 * 1024  // 1MB
+  private static readonly WAL_FILENAME = 'fulltext-index.wal'
+  private static readonly SNAPSHOT_FILENAME = 'fulltext-index.snapshot.json'
 
   constructor(options?: FullTextOptions) {
     this.options = {
@@ -61,7 +102,310 @@ export class FullTextIndex {
         return term.toLowerCase()
       },
     })
+
+    this._snapshotThreshold = options?.snapshotThreshold ?? 10000
+
+    // ── WAL 恢复 ──
+    if (options?.baseDir) {
+      this._baseDir = options.baseDir
+      this._walPath = path.join(options.baseDir, FullTextIndex.WAL_FILENAME)
+      this._snapshotPath = path.join(options.baseDir, FullTextIndex.SNAPSHOT_FILENAME)
+      this._recoverFromWAL()
+    }
   }
+
+  // ──────────────────────────────────────────────
+  //  WAL 持久化：公共关闭/刷新方法
+  // ──────────────────────────────────────────────
+
+  /**
+   * 关闭 WAL 文件句柄。在不再需要写入 WAL 时调用。
+   * 注意：close() 后 add/remove 仍可工作，只是不再写入 WAL。
+   */
+  close(): void {
+    this._closeWalFd()
+  }
+
+  /**
+   * 获取当前 WAL 文件字节数（主要用于测试和监控）
+   */
+  get walSize(): number {
+    return this._walSize
+  }
+
+  /**
+   * 强制将当前索引状态写入快照文件并清空 WAL。
+   * 通常由内部自动触发（文档数达到阈值时），也可以手动调用。
+   */
+  forceSnapshot(): void {
+    this._takeSnapshot()
+  }
+
+  /**
+   * 返回当前已加载的文档数（含从 WAL/快照恢复的部分）
+   */
+  count(): number {
+    return this.ms.documentCount
+  }
+
+  // ──────────────────────────────────────────────
+  //  WAL 恢复逻辑
+  // ──────────────────────────────────────────────
+
+  /**
+   * 启动时回放 WAL，恢复索引状态。
+   * 如果存在快照文件，优先从快照恢复，然后回放 WAL 增量。
+   */
+  private _recoverFromWAL(): void {
+    // 1) 尝试从快照恢复
+    if (this._snapshotPath && fs.existsSync(this._snapshotPath)) {
+      try {
+        this._loadSnapshot()
+      } catch (e) {
+        // 快照损坏，忽略，从 WAL 恢复
+        console.warn('[FullTextIndex] snapshot corrupted, falling back to WAL replay:', e)
+      }
+    }
+
+    // 2) 回放 WAL
+    if (this._walPath && fs.existsSync(this._walPath)) {
+      try {
+        this._replayWal()
+      } catch (e) {
+        console.warn('[FullTextIndex] WAL replay failed, starting empty:', e)
+      }
+    }
+
+    // 3) 打开 WAL 供追加写入（append mode）
+    this._openWalForAppend()
+  }
+
+  /**
+   * 从快照文件加载索引状态
+   */
+  private _loadSnapshot(): void {
+    if (!this._snapshotPath) return
+    const raw = fs.readFileSync(this._snapshotPath, 'utf-8')
+    const snapshot: SnapshotData = JSON.parse(raw)
+
+    // 重建 store
+    for (const [id, docFields] of Object.entries(snapshot.storedFields ?? {})) {
+      this._store.set(id, { ...docFields })
+    }
+
+    // 重建 MiniSearch 索引：逐个添加文档
+    for (const [id, docFields] of Object.entries(snapshot.storedFields ?? {})) {
+      try {
+        this.ms.add({ id, ...docFields })
+      } catch {
+        // 重复 id 时先删后加
+        this.ms.remove({ id } as any)
+        this.ms.add({ id, ...docFields })
+      }
+    }
+  }
+
+  /**
+   * 回放 WAL 中的条目
+   */
+  private _replayWal(): void {
+    if (!this._walPath) return
+    const content = fs.readFileSync(this._walPath, 'utf-8')
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+
+      let entry: WalEntry
+      try {
+        entry = JSON.parse(trimmed)
+      } catch {
+        continue  // 跳过格式错误的条目
+      }
+
+      if (entry.op === 'add') {
+        const docFields: Record<string, string> = {}
+        // text 字段包含原始文本，需要将字段权重中定义的字段填充
+        const fields = Object.keys(this.options.fieldWeights)
+        for (const f of fields) {
+          docFields[f] = entry.text
+        }
+        // 如果 text 本身是 JSON 格式，尝试解析为多字段
+        try {
+          const parsed = JSON.parse(entry.text)
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            for (const [k, v] of Object.entries(parsed)) {
+              docFields[k] = String(v)
+            }
+          }
+        } catch {
+          // not JSON, use as-is
+        }
+
+        this._store.set(entry.id, { ...docFields })
+        try {
+          this.ms.add({ id: entry.id, ...docFields })
+        } catch {
+          this.ms.remove({ id: entry.id } as any)
+          this.ms.add({ id: entry.id, ...docFields })
+        }
+      } else if (entry.op === 'remove') {
+        this._store.delete(entry.id)
+        try {
+          this.ms.remove({ id: entry.id } as any)
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // 回放完成后截断 WAL
+    // 注意：truncate 对 append-only 模式可能不安全，所以我们先 close 后 write
+    this._closeWalFd()
+    fs.writeFileSync(this._walPath, '', 'utf-8')
+    this._walSize = 0
+    this._openWalForAppend()
+  }
+
+  /**
+   * 打开 WAL 文件用于追加写入
+   */
+  private _openWalForAppend(): void {
+    if (!this._walPath) return
+
+    // 如果文件不存在，创建空文件
+    if (!fs.existsSync(this._walPath)) {
+      try {
+        fs.mkdirSync(path.dirname(this._walPath), { recursive: true })
+      } catch {
+        // 目录可能已存在
+      }
+      fs.writeFileSync(this._walPath, '', 'utf-8')
+      this._walSize = 0
+    } else {
+      // 获取现有文件大小
+      try {
+        const stat = fs.statSync(this._walPath)
+        this._walSize = stat.size
+      } catch {
+        this._walSize = 0
+      }
+    }
+
+    try {
+      this._walFd = fs.openSync(this._walPath, 'a')
+    } catch (e) {
+      console.warn('[FullTextIndex] cannot open WAL for append:', e)
+      this._walFd = null
+    }
+  }
+
+  /**
+   * 关闭 WAL 文件句柄
+   */
+  private _closeWalFd(): void {
+    if (this._walFd !== null) {
+      try {
+        fs.closeSync(this._walFd)
+      } catch {
+        // ignore
+      }
+      this._walFd = null
+    }
+  }
+
+  /**
+   * 追加一条 WAL 条目，并在必要时轮转或快照
+   */
+  private _appendWal(entry: WalEntry): void {
+    const line = JSON.stringify(entry) + '\n'
+    const bytes = Buffer.byteLength(line, 'utf-8')
+
+    // 如果当前 WAL + 新条目超过上限，先轮转（rename），然后重新打开
+    if (this._walSize + bytes > FullTextIndex.MAX_WAL_BYTES) {
+      this._rotateWal()
+    }
+
+    if (this._walFd !== null && this._walPath) {
+      try {
+        fs.writeSync(this._walFd, line)
+        this._walSize += bytes
+      } catch (e) {
+        console.warn('[FullTextIndex] WAL write failed:', e)
+      }
+    }
+
+    // 如果文档数达到快照阈值，自动生成快照
+    if (this.ms.documentCount >= this._snapshotThreshold) {
+      this._takeSnapshot()
+    }
+  }
+
+  /**
+   * 轮转 WAL：将当前 WAL 重命名为 .old 后缀，重新创建新 WAL
+   */
+  private _rotateWal(): void {
+    if (!this._walPath) return
+
+    this._closeWalFd()
+
+    const rotatedPath = this._walPath + '.old'
+    try {
+      // 如果 .old 已存在，先删除
+      if (fs.existsSync(rotatedPath)) {
+        fs.unlinkSync(rotatedPath)
+      }
+      fs.renameSync(this._walPath, rotatedPath)
+    } catch (e) {
+      console.warn('[FullTextIndex] WAL rotation failed:', e)
+    }
+
+    this._walSize = 0
+    this._openWalForAppend()
+  }
+
+  /**
+   * 生成快照：将当前索引状态（store + fieldIds）写入 JSON 文件，然后清空 WAL
+   */
+  private _takeSnapshot(): void {
+    if (!this._snapshotPath || !this._baseDir) return
+
+    this._closeWalFd()
+
+    // 构建 snapshot 数据
+    const storedFields: Record<string, Record<string, string>> = {}
+    for (const [id, fields] of this._store.entries()) {
+      storedFields[id] = { ...fields }
+    }
+
+    // fieldIds 从 options.fieldWeights 的 keys 构建（仅用于 format 兼容）
+    const fieldIds: Record<string, number> = {}
+    Object.keys(this.options.fieldWeights).forEach((f, i) => {
+      fieldIds[f] = i
+    })
+
+    const snapshot: SnapshotData = { storedFields, fieldIds }
+
+    // 写入临时文件，然后原子性 rename（防止写一半崩溃）
+    const tmpPath = this._snapshotPath + '.tmp'
+    try {
+      fs.mkdirSync(path.dirname(this._snapshotPath), { recursive: true })
+    } catch {
+      // ignore
+    }
+    fs.writeFileSync(tmpPath, JSON.stringify(snapshot), 'utf-8')
+    fs.renameSync(tmpPath, this._snapshotPath)
+
+    // 清空 WAL
+    fs.writeFileSync(this._walPath!, '', 'utf-8')
+    this._walSize = 0
+
+    // 重新打开 WAL
+    this._openWalForAppend()
+  }
+
+  // ──────────────────────────────────────────────
+  //  公开接口（addDocument / removeDocument 已嵌入 WAL）
+  // ──────────────────────────────────────────────
 
   addDocument(docId: string, fields: Record<string, string | string[]>): void {
     // MiniSearch 不支持 string[] 值，转换为逗号分隔字符串
@@ -70,13 +414,17 @@ export class FullTextIndex {
       flatFields[k] = Array.isArray(v) ? v.join(' ') : v
     }
     this._store.set(docId, { ...flatFields })
+
+    // 先删后加（处理重复 id）
     try {
       this.ms.add({ id: docId, ...flatFields })
     } catch {
-      // 重复 id 时先删后加
       this.ms.remove({ id: docId } as any)
       this.ms.add({ id: docId, ...flatFields })
     }
+
+    // WAL: 将多字段序列化为 JSON 字符串保存
+    this._appendWal({ op: 'add', id: docId, text: JSON.stringify(flatFields) })
   }
 
   removeDocument(docId: string): void {
@@ -86,7 +434,13 @@ export class FullTextIndex {
     } catch {
       // 文档不存在时静默忽略
     }
+
+    this._appendWal({ op: 'remove', id: docId })
   }
+
+  // ──────────────────────────────────────────────
+  //  搜索 / 查询接口（不变）
+  // ──────────────────────────────────────────────
 
   search(query: string, options?: SearchOptions): SearchResult[] {
     if (!query.trim()) return []
@@ -138,10 +492,6 @@ export class FullTextIndex {
     }))
   }
 
-  count(): number {
-    return this.ms.documentCount
-  }
-
   setOptions(opts: Partial<FullTextOptions>): void {
     // MiniSearch 不支持动态更新 field weights，per-query 搜索时通过 boost 参数覆盖
     if (opts.fieldWeights) {
@@ -158,6 +508,7 @@ export class FullTextIndex {
 
   clear(): void {
     this.ms.removeAll()
+    this._store.clear()
   }
 
   highlight(docId: string, query: string, before: string = '<b>', after: string = '</b>'): Record<string, string> {
@@ -261,15 +612,19 @@ export class FullTextIndex {
   }
 
   async saveToFile(filePath: string): Promise<void> {
-    const fs = await import('fs/promises')
-    await fs.writeFile(filePath, this.serialize(), 'utf-8')
+    const fsp = await import('fs/promises')
+    await fsp.writeFile(filePath, this.serialize(), 'utf-8')
   }
 
   static async loadFromFile(filePath: string): Promise<FullTextIndex> {
-    const fs = await import('fs/promises')
-    const data = await fs.readFile(filePath, 'utf-8')
+    const fsp = await import('fs/promises')
+    const data = await fsp.readFile(filePath, 'utf-8')
     return FullTextIndex.deserialize(data)
   }
+
+  // ──────────────────────────────────────────────
+  //  Tokenizer（不变）
+  // ──────────────────────────────────────────────
 
   /**
    * CJK-aware tokenizer using character bigrams (overlapping 2-grams) for CJK text

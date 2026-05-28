@@ -155,7 +155,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
         await this._node.triggerSnapshot({ compact: true, appliedIndex: this._lastSnapshotIndex })
       }
     } catch (err) {
-      this.logger.error('[RaftConsensus] Snapshot recovery failed', { err: (err as Error).message })
+      this.logger.error('[RaftConsensus] Snapshot recovery failed', err as Error)
       // 即使恢复失败，也允许节点启动（follower 可以从 leader 重新同步）
     }
   }
@@ -706,9 +706,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
         this._engine.importSnapshot(snapshotData)
       }
     } catch (handlerErr) {
-      this.logger.error('[RaftConsensus] TS snapshot handler failed', {
-        err: (handlerErr as Error).message,
-      })
+      this.logger.error('[RaftConsensus] TS snapshot handler failed', handlerErr as Error)
     }
 
     // 如果 WASM 也支持 onSnapshot，调用以通知 Raft 节点
@@ -780,7 +778,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
 
       return { success: true, term: request.term }
     } catch (err) {
-      this.logger.error('[RaftConsensus] handleInstallSnapshot failed', { err: (err as Error).message })
+      this.logger.error('[RaftConsensus] handleInstallSnapshot failed', err as Error)
       return { success: false, term: request.term }
     }
   }
@@ -840,15 +838,11 @@ export class RaftLogicConsensus implements ConsensusProvider {
               this._engine.importSnapshot(buf)
             }
           } catch (innerErr) {
-            this.logger.error('[RaftConsensus] WASM onSnapshot callback handler failed', {
-              err: (innerErr as Error).message,
-            })
+            this.logger.error('[RaftConsensus] WASM onSnapshot callback handler failed', innerErr as Error)
           }
         })
       } catch (registerErr) {
-        this.logger.error('[RaftConsensus] Failed to register WASM onSnapshot callback', {
-          err: (registerErr as Error).message,
-        })
+        this.logger.error('[RaftConsensus] Failed to register WASM onSnapshot callback', registerErr as Error)
         // 不抛出 — TS 路径始终可用
       }
     }

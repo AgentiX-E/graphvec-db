@@ -90,6 +90,24 @@ export async function pagerankStream(
     const teleport = (1 - dampingFactor) / n
 
     // 局部迭代：只跑几轮近似更新
+    // Pre-compute inverse adjacency: for each node, store which nodes point to it
+    const incoming = new Map<NodeId, NodeId[]>()
+    for (const node of state.allNodes) {
+      incoming.set(node, [])
+    }
+    for (const src of state.allNodes) {
+      const nbMap = state.neighbors.get(src)
+      if (!nbMap) continue
+      const nbArr = nbMap.get(src) ?? []
+      const deg = state.outDegree.get(src) ?? 0
+      if (deg > 0) {
+        for (const dst of nbArr) {
+          const list = incoming.get(dst)
+          if (list) list.push(src)
+        }
+      }
+    }
+
     for (let iter = 0; iter < localIterations; iter++) {
       let danglingRank = 0
       for (const node of state.allNodes) {
@@ -103,16 +121,9 @@ export async function pagerankStream(
 
       for (const node of state.allNodes) {
         let incomingSum = 0
-        // 遍历全部节点：检查入边贡献
-        for (const src of state.allNodes) {
-          const nb = state.neighbors.get(src)
-          const deg = state.outDegree.get(src) ?? 0
-          if (nb && deg > 0) {
-            const nbArr = nb.get(src) ?? []
-            if (nbArr.includes(node)) {
-              incomingSum += (state.rank.get(src) ?? 0) / deg
-            }
-          }
+        const srcList = incoming.get(node) ?? []
+        for (const src of srcList) {
+          incomingSum += (state.rank.get(src) ?? 0) / (state.outDegree.get(src) ?? 1)
         }
         newRank.set(node, teleport + dampingFactor * incomingSum + danglingContribution)
       }
@@ -144,15 +155,9 @@ export async function pagerankStream(
 
     for (const node of state.allNodes) {
       let incomingSum = 0
-      for (const src of state.allNodes) {
-        const nb = state.neighbors.get(src)
-        const deg = state.outDegree.get(src) ?? 0
-        if (nb && deg > 0) {
-          const nbArr = nb.get(src) ?? []
-          if (nbArr.includes(node)) {
-            incomingSum += (state.rank.get(src) ?? 0) / deg
-          }
-        }
+      const srcList = incoming.get(node) ?? []
+      for (const src of srcList) {
+        incomingSum += (state.rank.get(src) ?? 0) / (state.outDegree.get(src) ?? 1)
       }
       newRank.set(node, teleport + dampingFactor * incomingSum + danglingContribution)
     }

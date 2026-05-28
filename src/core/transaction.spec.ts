@@ -374,42 +374,26 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
   test('[RC01] read-set conflict: T1 reads X, T2 writes X → T1 commit fails in serializable mode', async () => {
     const engine = createTempEngine()
     engine.open()
+    await engine.upsertNode(10, 'conflict-node', { value: 100 })
 
-    // Create initial node
-    await engine.upsertNode(1, 'conflict-node', { value: 100 })
-
-    // T1 read-set check via commit
     const mgr = new TransactionManager()
 
-    // Simulate: T1 reads X
+    // T1 reads X (node 10)
     const txn1 = mgr.begin({ isolation: 'serializable' })
     ;(txn1 as any)._engine = engine
-    txn1.readNode(1)
+    txn1.readNode(10)
 
-    // T2 modifies X
+    // T2 writes to node 10 and commits — records write in mgr
     const txn2 = mgr.begin()
     ;(txn2 as any)._engine = engine
-    txn2.upsertNode(1, 'conflict-node', { value: 200 })
+    txn2.upsertNode(10, 'conflict-node', { value: 200 })
     await txn2.commit()
 
-    // T1 commit should fail — readSet conflict
-    // Simulate: mark node as updated since txn1's snapshot
-    const node = engine.getNode(1)
-    if (node) {
-      ;(node as any).updatedAt = txn1.snapshot.createdAt + 1
-    }
-
-    // Manually set updatedAt to trigger conflict detection
-    // The engine's getNode returns node props, so we need to ensure conflictNode exists
-    await engine.upsertNode(1, 'conflict-node-updated', { value: 300 })
-    const updatedNode = engine.getNode(1)
-    if (updatedNode) {
-      ;(updatedNode as any).updatedAt = txn1.snapshot.createdAt + 1
-    }
-
-    // Check read-set conflict directly
-    const hasConflict = txn1._checkReadSetConflict(engine)
-    expect(hasConflict).toBe(true)
+    // T1 commit fails because node 10 was modified after txn1 snapshot
+    await expect(txn1.commit()).rejects.toThrow(
+      'serialization conflict detected'
+    )
+    expect(txn1.active).toBe(false)
 
     engine.close()
   })
@@ -417,37 +401,36 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
   test('[RC02] read-set no conflict when no concurrent modification', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(1, 'stable-node', { value: 50 })
+    await engine.upsertNode(20, 'stable-node', { value: 50 })
 
     const mgr = new TransactionManager()
     const txn = mgr.begin({ isolation: 'serializable' })
     ;(txn as any)._engine = engine
-    txn.readNode(1)
+    txn.readNode(20)
 
-    // No concurrent modification
-    const hasConflict = txn._checkReadSetConflict(engine)
-    expect(hasConflict).toBe(false)
-
-    // Commit should succeed
+    // No concurrent modification — commit should succeed
     await expect(txn.commit()).resolves.toBeUndefined()
 
     engine.close()
   })
 
-  test('[RC03] read-set conflict: own write in writeSet does not count as conflict', async () => {
+  test('[RC03] read-set: own write in writeSet does not count as conflict', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(1, 'own-write-node', { value: 10 })
+    await engine.upsertNode(30, 'own-write-node', { value: 10 })
 
     const mgr = new TransactionManager()
     const txn = mgr.begin({ isolation: 'serializable' })
     ;(txn as any)._engine = engine
-    txn.readNode(1)
-    txn.upsertNode(1, 'own-write-node', { value: 20 })
+    txn.readNode(30)
+    txn.upsertNode(30, 'own-write-node', { value: 20 })
 
-    // Own write should not trigger read-set conflict
-    const hasConflict = txn._checkReadSetConflict(engine)
+    // Own write in writeSet — conflict check should skip it
+    const hasConflict = txn._checkReadSetConflict(null)
     expect(hasConflict).toBe(false)
+
+    // commit should succeed
+    await expect(txn.commit()).resolves.toBeUndefined()
 
     engine.close()
   })
@@ -455,66 +438,53 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
   test('[RC04] SSI write-skew: concurrent read of disjoint nodes with conditional write', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(1, 'account-a', { balance: 100 })
-    await engine.upsertNode(2, 'account-b', { balance: 100 })
+    await engine.upsertNode(40, 'account-a', { balance: 100 })
+    await engine.upsertNode(50, 'account-b', { balance: 100 })
 
     const mgr = new TransactionManager()
 
-    // T1 reads A and B, wants to transfer from A (if total > 0)
+    // T1 reads A (40) and B (50)
     const txn1 = mgr.begin({ isolation: 'serializable' })
     ;(txn1 as any)._engine = engine
-    txn1.readNode(1)
-    txn1.readNode(2)
-    // T1 will later write to A (debit)
+    txn1.readNode(40)
+    txn1.readNode(50)
 
-    // T2 reads A and B concurrently, wants to transfer from B
-    const txn2 = mgr.begin({ isolation: 'serializable' })
+    // T2 writes to B (50) and commits — B modified after txn1 snapshot
+    const txn2 = mgr.begin()
     ;(txn2 as any)._engine = engine
-    txn2.readNode(1)
-    txn2.readNode(2)
-
-    // T2 writes to B first
-    txn2.upsertNode(2, 'account-b', { balance: 50 })
+    txn2.readNode(40)
+    txn2.readNode(50)
+    txn2.upsertNode(50, 'account-b', { balance: 50 })
     await txn2.commit()
 
-    // Simulate: T2's write updated the node timestamp
-    const nodeB = engine.getNode(2)
-    if (nodeB) {
-      ;(nodeB as any).updatedAt = txn1.snapshot.createdAt + 1
-    }
+    // T1 tries to commit with write to A (40) — write-skew on B (50)
+    txn1.upsertNode(40, 'account-a', { balance: 50 })
 
-    // T1 tries to commit — should fail because readSet includes node 2 which was just modified
-    // T1 writes to A
-    txn1.upsertNode(1, 'account-a', { balance: 50 })
-
-    // Check - txn1's readSet includes node 2, which was modified after snapshot
-    const hasConflict = txn1._checkReadSetConflict(engine)
-    // Since node 2 was updated after snapshot, this IS a write-skew
-    expect(hasConflict).toBe(true)
-
-    // In snapshot isolation, write skew can occur (disjoint writesets don't overlap)
-    // In serializable mode, read-set detection catches it
+    await expect(txn1.commit()).rejects.toThrow(
+      'serialization conflict detected'
+    )
 
     engine.close()
   })
 
-  test('[RC05] serializable commit rejects when read-set conflict found', async () => {
-    const mgr = new TransactionManager()
+  test('[RC05] serializable commit rejects when read-set conflict found by committed writes', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(1, 'read-node', { value: 1 })
+    await engine.upsertNode(60, 'read-node', { value: 1 })
+
+    const mgr = new TransactionManager()
 
     const txn = mgr.begin({ isolation: 'serializable' })
     ;(txn as any)._engine = engine
-    txn.readNode(1)
+    txn.readNode(60)
 
-    // Simulate concurrent modification by setting updatedAt past snapshot
-    const node = engine.getNode(1)
-    if (node) {
-      ;(node as any).updatedAt = txn.snapshot.createdAt + 1000
-    }
+    // Another transaction writes the same node
+    const txnOther = mgr.begin()
+    ;(txnOther as any)._engine = engine
+    txnOther.upsertNode(60, 'read-node', { value: 2 })
+    await txnOther.commit()
 
-    // txn.commit() should throw because read-set has been modified
+    // txn.commit() throws because read-set node 60 was modified after snapshot
     await expect(txn.commit()).rejects.toThrow(
       'serialization conflict detected'
     )
