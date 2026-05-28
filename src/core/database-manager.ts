@@ -168,16 +168,35 @@ export class DatabaseManager {
 
   /**
    * 删除数据库
+   *
+   * ⚠️ Phase 0 实现：调用 shardManager.stop() 释放 Raft + GraphEngine 资源
+   * 完整三阶段删除（Phase 0/1/2/3）见 docs/multi-database-arch-design.md §8
+   *
+   * 已知限制（当前不处理）：
+   * - 不通知集群其他节点（需 R10 broadcast）
+   * - 不写入 tombstone 文件
+   * - 不删除物理文件
+   * - 冷静期回滚（restoreDatabase）未实现
    */
   async dropDatabase(name: string): Promise<void> {
-    if (!this.databases.has(name)) {
+    const db = this.databases.get(name)
+    if (!db) {
       throw new Error(`Database '${name}' not found`)
     }
 
-    // 等待清理
-    await new Promise(resolve => setTimeout(resolve, 100))
+    this.logger.info(`[Drop] Stopping all ranges for database '${name}'`)
+
+    // Phase 0: 最少必要清理 — 停止 Raft 引擎 + 关闭 GraphEngine 文件
+    try {
+      await db.shardManager.stop()
+      this.logger.info(`[Drop] All ranges for '${name}' stopped successfully`)
+    } catch (err) {
+      this.logger.error(`[Drop] Error stopping ranges for '${name}': ${err}`)
+      // 继续执行，不阻塞删除
+    }
+
+    this.logger.info(`[Drop] Database '${name}' dropped`)
     this.databases.delete(name)
-    this.logger.info(`Database '${name}' dropped`)
   }
 
   /**
