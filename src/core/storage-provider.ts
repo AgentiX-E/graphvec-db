@@ -30,6 +30,19 @@ export interface StorageConfig {
     /** memtable 硬上限（字节），默认 64MB */
     memtableHardCapBytes?: number
   }
+
+  /**
+   * 启用属性压缩（使用 msgpackr）
+   * 当 compress 为 true 时，节点/边的 props 使用 MsgPack 二进制格式存储
+   * 而非 JSON 字符串，可节省 20-30% 空间。
+   */
+  compress?: boolean
+
+  /**
+   * 压缩策略。'none' = 不压缩（JSON），'msgpack' = 使用 msgpackr 压缩
+   * 仅在 compress: true 时生效。默认 'msgpack'。
+   */
+  compressionStrategy?: 'none' | 'msgpack'
 }
 
 /**

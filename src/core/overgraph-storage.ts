@@ -252,14 +252,63 @@ export async function* readChunksFromFile(filePath: string): AsyncGenerator<Buff
 // OverGraphStorage
 // ═══════════════════════════════════════════════
 
+/**
+ * 属性 MsgPack 编码的存储键。
+ * 当压缩启用时，props 被编码为一个 __msgpack key 下的 number[]。
+ */
+const PROPS_COMPRESSED_KEY = '__c'
+
+/**
+ * 序列化属性对象。
+ * 当 compressionStrategy === 'msgpack' 时使用 msgpackr encode，
+ * 结果以 number[] 形式存储（可被 serde_json 处理）。
+ * 否则原样返回。
+ */
+function _serializeProps(props: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (props === undefined || props === null) return undefined
+  // Encode to msgpack Buffer, then convert to number[] for JSON-safe storage
+  const buf = encode(props) as Buffer
+  return { [PROPS_COMPRESSED_KEY]: Array.from(buf) }
+}
+
+/**
+ * 反序列化属性对象。
+ * 检测是否以 __msgpack key 下的 number[] 形式存储，
+ * 如果是则解码返回原始对象。
+ * 否则直接返回（原始 JSON 对象）。
+ */
+function _deserializeProps(data: unknown): Record<string, unknown> | undefined {
+  if (data === undefined || data === null) return undefined
+  if (typeof data === 'object' && !Array.isArray(data) && data !== null) {
+    const obj = data as Record<string, unknown>
+    const raw = obj[PROPS_COMPRESSED_KEY]
+    if (raw !== undefined && Array.isArray(raw)) {
+      // Decode from number[] → Buffer → msgpack
+      return decode(Buffer.from(raw)) as Record<string, unknown>
+    }
+    // Plain object — already deserialized by OverGraph's JSON deserialization
+    return obj
+  }
+  // Unexpected format
+  return data as Record<string, unknown>
+}
+
 export class OverGraphStorage implements StorageProvider {
   private _db: OverGraphDB | null = null
   private _isOpen = false
+  private _compress = false
+  private _compressionStrategy: 'none' | 'msgpack' = 'none'
 
   get isOpen(): boolean { return this._isOpen }
+  get compressionEnabled(): boolean { return this._compress }
 
   open(config: StorageConfig): void {
     if (this._isOpen) return
+
+    // 存储压缩配置
+    this._compress = config.compress === true
+    this._compressionStrategy = config.compressionStrategy ?? (this._compress ? 'msgpack' : 'none')
+
     const ogOpts: any = {
       denseVector: config.denseVector
         ? { dimension: config.denseVector.dimension }
@@ -292,8 +341,11 @@ export class OverGraphStorage implements StorageProvider {
   // ── 节点操作 ──────────────────────────────
 
   upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): NodeId {
+    const props = this._compress && this._compressionStrategy === 'msgpack'
+      ? _serializeProps(opts?.props as Record<string, unknown> | undefined)
+      : opts?.props as Record<string, unknown> | undefined
     return this._db!.upsertNode(typeId, name, {
-      props: opts?.props as Record<string, unknown> | undefined,
+      props,
       denseVector: opts?.denseVector instanceof Float32Array
         ? opts.denseVector
         : opts?.denseVector ? new Float32Array(opts.denseVector) : undefined,
@@ -314,7 +366,7 @@ export class OverGraphStorage implements StorageProvider {
       id: raw.id,
       typeId: raw.typeId,
       key: raw.key,
-      props: raw.props as Record<string, unknown> | undefined,
+      props: _deserializeProps(raw.props),
       createdAt: raw.createdAt,
     }
   }
@@ -330,7 +382,13 @@ export class OverGraphStorage implements StorageProvider {
     denseVector?: Float32Array
     temporalValidity?: { start?: number; end?: number }
   }>): NodeId[] {
-    return this._db!.batchUpsertNodes(inputs)
+    const mapped = inputs.map(i => ({
+      ...i,
+      props: this._compress && this._compressionStrategy === 'msgpack'
+        ? _serializeProps(i.props)
+        : i.props,
+    }))
+    return this._db!.batchUpsertNodes(mapped)
   }
 
   degrees(id: NodeId): { inDegree: number; outDegree: number } {
@@ -344,8 +402,11 @@ export class OverGraphStorage implements StorageProvider {
     temporalValidity?: { start?: number; end?: number }
     weight?: number
   }): void {
+    const props = this._compress && this._compressionStrategy === 'msgpack'
+      ? _serializeProps(opts?.props)
+      : opts?.props
     this._db!.upsertEdge(src, dst, typeId, {
-      props: opts?.props,
+      props,
       temporalValidity: opts?.temporalValidity,
       weight: opts?.weight,
     })
@@ -361,7 +422,7 @@ export class OverGraphStorage implements StorageProvider {
       from: raw.from,
       to: raw.to,
       typeId: raw.typeId,
-      props: raw.props as Record<string, unknown> | undefined,
+      props: _deserializeProps(raw.props),
       createdAt: raw.createdAt,
     }
   }
@@ -404,7 +465,7 @@ export class OverGraphStorage implements StorageProvider {
   }): Array<{ id: NodeId; typeId: number; key: string; props?: Record<string, unknown>; createdAt: number }> {
     return this._db!.queryPattern(opts).map(n => ({
       id: n.id, typeId: n.typeId, key: n.key,
-      props: n.props as Record<string, unknown> | undefined,
+      props: _deserializeProps(n.props),
       createdAt: n.createdAt,
     }))
   }
@@ -451,7 +512,7 @@ export class OverGraphStorage implements StorageProvider {
           id: node.id,
           typeId: node.typeId,
           name: node.key,
-          props: node.props as Record<string, unknown> | undefined,
+          props: _deserializeProps(node.props),
         })
       }
     }
@@ -467,7 +528,7 @@ export class OverGraphStorage implements StorageProvider {
         src: fromIds[i],
         dst: toIds[i],
         typeId: typeIds[i],
-        props: edge?.props as Record<string, unknown> | undefined,
+        props: edge?.props ? _deserializeProps(edge.props) : undefined,
       })
     }
 

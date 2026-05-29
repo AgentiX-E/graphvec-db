@@ -22,6 +22,7 @@
  */
 
 import { parser } from './cypher-lite-parser'
+import { LRUCache } from 'lru-cache'
 
 // ── AST 类型 ─────────────────────────────────────────────────
 
@@ -821,19 +822,17 @@ function _assertKnownProp(propName: string, lite: LiteSchema, context: string): 
 /**
  * Simple LRU-like in-memory cache for pre-compiled QueryPlan objects.
  *
- * Cache key = hash of the normalized query string.
+ * Cache key = djb2 hash of normalized query string (computed inline).
  * Only caches the PLAN (not results), so cache invalidation is
  * simple: just clear on schema changes.
  * Max size prevents unbounded memory growth.
- * No external dependencies.
+ * Backed by lru-cache v11.
  */
 export class QueryPlanCache {
-  private _map: Map<string, QueryPlan>
-  private _maxSize: number
+  private _lru: LRUCache<string, QueryPlan>
 
   constructor(maxSize = 128) {
-    this._map = new Map()
-    this._maxSize = maxSize
+    this._lru = new LRUCache({ max: maxSize })
   }
 
   /** Normalize a query string for hashing */
@@ -857,40 +856,27 @@ export class QueryPlanCache {
 
   /** Get cached plan, or undefined on miss */
   get(query: string): QueryPlan | undefined {
-    const key = QueryPlanCache.key(query)
-    const val = this._map.get(key)
-    if (val !== undefined) {
-      // Move to end (most recently used) — delete then re-set
-      this._map.delete(key)
-      this._map.set(key, val)
-    }
-    return val
+    return this._lru.get(QueryPlanCache.key(query))
   }
 
   /** Store a plan in the cache */
   set(query: string, plan: QueryPlan): void {
-    const key = QueryPlanCache.key(query)
-    // Evict least recently used (first inserted) if at capacity
-    if (this._map.size >= this._maxSize) {
-      const lruKey = this._map.keys().next().value
-      if (lruKey !== undefined) this._map.delete(lruKey)
-    }
-    this._map.set(key, plan)
+    this._lru.set(QueryPlanCache.key(query), plan)
   }
 
   /** Remove a specific entry */
   delete(query: string): void {
-    this._map.delete(QueryPlanCache.key(query))
+    this._lru.delete(QueryPlanCache.key(query))
   }
 
   /** Clear all cached plans */
   clear(): void {
-    this._map.clear()
+    this._lru.clear()
   }
 
   /** Current cache size */
   get size(): number {
-    return this._map.size
+    return this._lru.size
   }
 }
 

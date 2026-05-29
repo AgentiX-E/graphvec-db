@@ -13,6 +13,12 @@ import { bfs } from '../algorithms/bfs'
 import { dfs } from '../algorithms/dfs'
 import { pagerank } from '../algorithms/pagerank'
 import { dijkstra } from '../algorithms/dijkstra'
+import { wcc as wccAlgo } from '../algorithms/wcc'
+import { scc as sccAlgo } from '../algorithms/scc'
+import { triangleCount as triangleCountAlgo } from '../algorithms/triangle-count'
+import { labelPropagation as labelPropagationAlgo } from '../algorithms/label-propagation'
+import { degreeCentrality as degreeCentralityAlgo } from '../algorithms/degree-centrality'
+import { astar as astarAlgo, HeuristicFn } from '../algorithms/astar'
 import { getEventBus } from './event-bus'
 import { EventStream } from './event-stream'
 import { MultiLeaderReplication } from './multi-leader-replication'
@@ -293,6 +299,8 @@ export class GraphEngine {
         : undefined,
       defaultRetention: this.config.defaultRetention,
       overgraph: this.config.overgraph,
+      compress: this.config.storageCompression,
+      compressionStrategy: this.config.storageCompression ? 'msgpack' : 'none',
     })
 
     // 注册远程事件应用回调 — 收到集群内其他节点的变更事件时持久化到本地
@@ -1648,6 +1656,88 @@ export class GraphEngine {
     const getWeightedNeighbors = (nid: NodeId) =>
       this.neighbors(nid).edges.map(e => ({ nodeId: e.dst, weight: 1 }))
     return dijkstra(getWeightedNeighbors, startNode)
+  }
+
+  // ── Round 6: Additional Graph Algorithms (Gap 6) ──
+
+  /**
+   * Weakly Connected Components (WCC)
+   * Uses graphology-components internally.
+   * @returns { components, count }
+   */
+  async wcc(): Promise<{ components: number[][]; count: number }> {
+    this._ensureOpen()
+    const nodeIds = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return wccAlgo(nodeIds, getNeighbors)
+  }
+
+  /**
+   * Strongly Connected Components (SCC)
+   * Uses graphology-components internally.
+   * @returns { components, count }
+   */
+  async scc(): Promise<{ components: number[][]; count: number }> {
+    this._ensureOpen()
+    const nodeIds = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return sccAlgo(nodeIds, getNeighbors)
+  }
+
+  /**
+   * Triangle counting
+   * Self-implemented node-iteration method.
+   * @returns { count, triangles }
+   */
+  async triangleCount(): Promise<{ count: number; triangles: [number, number, number][] }> {
+    this._ensureOpen()
+    const nodeIds = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return triangleCountAlgo(nodeIds, getNeighbors)
+  }
+
+  /**
+   * Label Propagation community detection
+   * @param options - Optional { maxIterations }
+   * @returns { labels, communityCount, iterations, converged }
+   */
+  async labelPropagation(options?: { maxIterations?: number }): Promise<{
+    labels: Map<number, number>; communityCount: number; iterations: number; converged: boolean
+  }> {
+    this._ensureOpen()
+    const nodeIds = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return labelPropagationAlgo(nodeIds, getNeighbors, options)
+  }
+
+  /**
+   * Degree centrality
+   * @param options - Optional { normalized, direction }
+   * @returns { scores }
+   */
+  async degreeCentrality(options?: {
+    normalized?: boolean; direction?: 'in' | 'out' | 'all'
+  }): Promise<{ scores: Map<number, number> }> {
+    this._ensureOpen()
+    const nodeIds = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return degreeCentralityAlgo(nodeIds, getNeighbors, undefined, options)
+  }
+
+  /**
+   * A* shortest path
+   * @param start - Start node ID
+   * @param end - Goal node ID
+   * @param heuristic - Optional heuristic function (default: zero = Dijkstra)
+   * @returns { path, cost } | null
+   */
+  async astar(start: NodeId, end: NodeId, heuristic?: HeuristicFn): Promise<{
+    path: NodeId[]; cost: number
+  } | null> {
+    this._ensureOpen()
+    const getWeightedNeighbors = (nid: NodeId) =>
+      this.neighbors(nid).edges.map(e => ({ nodeId: e.dst, weight: 1 }))
+    return astarAlgo(getWeightedNeighbors, start, end, heuristic)
   }
 
   private _ensureOpen(): void {

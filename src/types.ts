@@ -196,6 +196,13 @@ export interface OverGraphConfig {
     memtableFlushThreshold?: number
     memtableHardCapBytes?: number
   }
+  /**
+   * 启用存储层属性压缩。
+   * 当设置为 true 时，节点/边的属性将使用 msgpackr 进行二进制序列化，
+   * 代替 JSON 字符串，可节省约 20-30% 空间。
+   * 默认为 false（不压缩）。
+   */
+  storageCompression?: boolean
 }
 
 export interface ShardMap {

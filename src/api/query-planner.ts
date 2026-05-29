@@ -6,6 +6,45 @@
 import { ShardManager } from '../shard/shard-manager'
 import { NodeRecord, EdgeRecord } from '../types'
 import { StatsCollector, StatsSnapshot } from './stats-collector'
+import { LRUCache } from 'lru-cache'
+
+// ──────────────────────────────────────────
+// Query Plan Cache
+// ──────────────────────────────────────────
+
+/**
+ * Compute a djb2 hash of the given string.
+ */
+function djb2Hash(s: string): string {
+  let hash = 5381
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) + hash + s.charCodeAt(i)) | 0
+  }
+  return String(hash)
+}
+
+/**
+ * Normalize a query string: collapse whitespace and trim.
+ */
+function normalizeQuery(query: string): string {
+  return query.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Generate a plan cache key from a query string.
+ * Uses djb2 hash of the normalized (whitespace-collapsed) query.
+ */
+export function makePlanCacheKey(query: string): string {
+  return djb2Hash(normalizeQuery(query))
+}
+
+/**
+ * Global LRU cache for query plans (max 1000 entries).
+ * Cache key = djb2 hash of normalized query string.
+ * Value = { plan, statsTime? } wrapper to support staleness detection.
+ * Used by both QueryPlanner and QueryEngine to avoid rebuilding plans.
+ */
+export const planCache = new LRUCache<string, { plan: PlanNode; statsTime?: number }>({ max: 1000 })
 
 // ──────────────────────────────────────────
 // Plan 节点类型
@@ -368,10 +407,59 @@ export class QueryPlanner {
       rowCount: totalNodes,
       columnStats: colStats,
     })
+
+    // Stats changed — invalidate all cached plans since they may be stale
+    this.invalidateCache()
   }
 
   getStats(): Map<string, TableStats> {
     return this.stats
+  }
+
+  // ──────────────────────────────────────────
+  // Query Plan Cache
+  // ──────────────────────────────────────────
+
+  /**
+   * Get a cached query plan for the given query string.
+   * If a `statsSnapshot` is provided and its collectedAt differs from
+   * the cached plan's recorded stats timestamp, the cache entry is
+   * considered stale and will be invalidated (return undefined).
+   *
+   * Cache key = djb2 hash of normalized (whitespace-collapsed) query string.
+   */
+  getCachedPlan(queryString: string, statsSnapshot?: StatsSnapshot): PlanNode | undefined {
+    const key = makePlanCacheKey(queryString)
+    const entry = planCache.get(key) as { plan: PlanNode; statsTime?: number } | undefined
+    if (!entry) return undefined
+
+    // If stats have changed since this entry was cached, invalidate
+    if (statsSnapshot && entry.statsTime !== undefined && entry.statsTime !== statsSnapshot.collectedAt) {
+      planCache.delete(key)
+      return undefined
+    }
+
+    return entry.plan
+  }
+
+  /**
+   * Cache a query plan for future reuse.
+   * Optionally records the stats snapshot timestamp for staleness detection.
+   */
+  cachePlan(queryString: string, plan: PlanNode, statsSnapshot?: StatsSnapshot): void {
+    const key = makePlanCacheKey(queryString)
+    planCache.set(key, {
+      plan,
+      statsTime: statsSnapshot?.collectedAt,
+    })
+  }
+
+  /**
+   * Invalidate the entire query plan cache.
+   * Call this when table schema changes or stats are re-collected.
+   */
+  invalidateCache(): void {
+    planCache.clear()
   }
 
   // ──────────────────────────────────────────

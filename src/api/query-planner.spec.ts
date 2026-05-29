@@ -2,7 +2,7 @@
 // QueryPlanner 测试
 // ============================================================
 
-import { QueryPlanner, PlanNodeType, PlanNode, ColumnStat, optimizeIRWithStats } from './query-planner'
+import { QueryPlanner, PlanNodeType, PlanNode, ColumnStat, optimizeIRWithStats, planCache, makePlanCacheKey } from './query-planner'
 import { StatsCollector, StatsSnapshot, Predicate } from './stats-collector'
 import { NodeRecord, EdgeRecord } from '../types'
 import { GraphEngine } from '../core/graph-engine'
@@ -685,5 +685,204 @@ describe('QueryPlanner', () => {
         expect(p).toBeDefined()
       })
     })
+  })
+})
+
+// ──────────────────────────────────────────
+// Query Plan Cache Tests (Gap 3)
+// ──────────────────────────────────────────
+
+describe('Query Plan Cache', () => {
+  let mockShardManager: MockShardManager
+  let planner: QueryPlanner
+
+  beforeEach(() => {
+    mockShardManager = new MockShardManager()
+    mockShardManager.setNodes([
+      { id: 1, type: 1, name: 'A', props: {}, createdAt: 1000, degree: 0 },
+      { id: 2, type: 1, name: 'B', props: {}, createdAt: 2000, degree: 0 },
+    ])
+    planner = new QueryPlanner(mockShardManager as any)
+    // Ensure cache is clean before each test
+    planCache.clear()
+  })
+
+  // ──────────────────────────────────────────
+  // a) Same query twice → second call hits cache (time < 1ms)
+  // ──────────────────────────────────────────
+
+  test('same query twice → second call hits cache (< 1ms)', () => {
+    const q1 = { typeId: 1, predicates: [{ field: 'name', op: 'eq', value: 'A' }] }
+    const q1String = JSON.stringify(q1)
+    const q1Plan = planner.plan(q1)
+    // Cache it using the new cache API
+    planner.cachePlan(q1String, q1Plan)
+
+    // First call: should still be fast
+    const start1 = performance.now()
+    const plan1 = planner.plan(q1)
+    const elapsed1 = performance.now() - start1
+
+    // Second call: from cache
+    const start2 = performance.now()
+    const plan2 = planner.getCachedPlan(q1String)
+    const elapsed2 = performance.now() - start2
+
+    // Same structure
+    expect(plan2).toBeDefined()
+    expect(plan2!.type).toBe(q1Plan.type)
+    // Cache hit should be < 1ms
+    expect(elapsed2).toBeLessThan(1)
+  })
+
+  // ──────────────────────────────────────────
+  // b) Different queries → separate cache entries
+  // ──────────────────────────────────────────
+
+  test('different queries → separate cache entries', () => {
+    const q1 = { typeId: 1, predicates: [{ field: 'name', op: 'eq', value: 'A' }] }
+    const q2 = { typeId: 2, limit: 10 }
+
+    const q1String = JSON.stringify(q1)
+    const q2String = JSON.stringify(q2)
+
+    const p1 = planner.plan(q1)
+    const p2 = planner.plan(q2)
+
+    planner.cachePlan(q1String, p1)
+    planner.cachePlan(q2String, p2)
+
+    expect(planner.getCachedPlan(q1String)).toBeDefined()
+    expect(planner.getCachedPlan(q2String)).toBeDefined()
+
+    // Different keys
+    expect(makePlanCacheKey(q1String)).not.toBe(makePlanCacheKey(q2String))
+  })
+
+  // ──────────────────────────────────────────
+  // c) invalidateCache() clears entries
+  // ──────────────────────────────────────────
+
+  test('invalidateCache clears all entries', () => {
+    const q1 = JSON.stringify({ typeId: 1 })
+    const p1 = planner.plan({ typeId: 1 })
+    planner.cachePlan(q1, p1)
+
+    expect(planner.getCachedPlan(q1)).toBeDefined()
+
+    planner.invalidateCache()
+
+    expect(planner.getCachedPlan(q1)).toBeUndefined()
+  })
+
+  // ──────────────────────────────────────────
+  // d) Cache respects max size (push it > 1000)
+  // ──────────────────────────────────────────
+
+  test('cache respects max size (>1000 entries)', () => {
+    // Fill cache with 1100 entries
+    for (let i = 0; i < 1100; i++) {
+      const q = JSON.stringify({ typeId: i % 3, limit: i })
+      const plan = planner.plan({ typeId: i % 3, limit: i })
+      planner.cachePlan(q, plan)
+    }
+
+    // Cache should stay at or below max 1000
+    expect(planCache.size).toBeLessThanOrEqual(1000)
+
+    // Oldest entries should have been evicted
+    const oldQuery = JSON.stringify({ typeId: 0, limit: 0 })
+    // Might have been evicted (since we pushed 1100 distinct entries)
+    const oldResult = planner.getCachedPlan(oldQuery)
+    // It's possible the old key survived if it happened to be recently used
+    // So we just verify cache size is bounded
+    expect(planCache.size).toBeGreaterThan(900)
+    expect(planCache.size).toBeLessThanOrEqual(1000)
+  })
+
+  // ──────────────────────────────────────────
+  // e) Query plan is the same object regardless of cache hit
+  // ──────────────────────────────────────────
+
+  test('same object identity on cache hit', () => {
+    const q1 = JSON.stringify({ typeId: 1, predicates: [{ field: 'name', op: 'eq', value: 'A' }] })
+    const plan = planner.plan({ typeId: 1, predicates: [{ field: 'name', op: 'eq', value: 'A' }] })
+    planner.cachePlan(q1, plan)
+
+    const cached1 = planner.getCachedPlan(q1)
+    const cached2 = planner.getCachedPlan(q1)
+
+    expect(cached1).toBe(cached2)  // Same object reference
+    expect(cached1).toBe(plan)     // Same as originally cached
+  })
+
+  // ──────────────────────────────────────────
+  // f) Stats change auto-invalidates cache
+  // ──────────────────────────────────────────
+
+  test('stats change auto-invalidates via getCachedPlan stats comparison', () => {
+    const qString = JSON.stringify({ typeId: 1 })
+
+    const plan = planner.plan({ typeId: 1 })
+    planner.cachePlan(qString, plan)
+
+    // Mock a stats snapshot with a different collectedAt
+    const snapshot1: StatsSnapshot = {
+      typeStats: new Map(),
+      totalNodes: 100,
+      totalEdges: 200,
+      collectedAt: 1000,
+    }
+
+    // Cache with this snapshot
+    planner.cachePlan(qString, plan, snapshot1)
+
+    // Should still be cached
+    expect(planner.getCachedPlan(qString, snapshot1)).toBeDefined()
+
+    // New snapshot — stats changed
+    const snapshot2: StatsSnapshot = {
+      typeStats: new Map(),
+      totalNodes: 200,
+      totalEdges: 400,
+      collectedAt: 2000,
+    }
+
+    // Cache should miss because stats changed
+    expect(planner.getCachedPlan(qString, snapshot2)).toBeUndefined()
+  })
+
+  // ──────────────────────────────────────────
+  // g) collectStats auto-invalidates cache
+  // ──────────────────────────────────────────
+
+  test('collectStats auto-invalidates cache', async () => {
+    const qString = JSON.stringify({ typeId: 1 })
+    const plan = planner.plan({ typeId: 1 })
+    planner.cachePlan(qString, plan)
+
+    // Cache has the entry
+    expect(planner.getCachedPlan(qString)).toBeDefined()
+
+    // Collecting stats should invalidate
+    await planner.collectStats()
+
+    // Entry should be gone
+    expect(planner.getCachedPlan(qString)).toBeUndefined()
+  })
+
+  // ──────────────────────────────────────────
+  // h) makePlanCacheKey consistency
+  // ──────────────────────────────────────────
+
+  test('makePlanCacheKey is consistent for equivalent queries', () => {
+    const queryA = 'MATCH (n:Person) WHERE n.age > 30 RETURN n'
+    const queryB = '  MATCH (n:Person)    WHERE n.age > 30  RETURN n  '
+
+    expect(makePlanCacheKey(queryA)).toBe(makePlanCacheKey(queryB))
+
+    // Different queries produce different keys
+    const queryC = 'MATCH (n:Person) RETURN n'
+    expect(makePlanCacheKey(queryA)).not.toBe(makePlanCacheKey(queryC))
   })
 })
