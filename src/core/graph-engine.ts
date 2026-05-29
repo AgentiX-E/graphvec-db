@@ -13,6 +13,8 @@ import { bfs } from '../algorithms/bfs'
 import { dfs } from '../algorithms/dfs'
 import { pagerank } from '../algorithms/pagerank'
 import { dijkstra } from '../algorithms/dijkstra'
+import { GraphProjection } from '../algorithms/graph-projection'
+import { StreamingPageRank } from '../algorithms/streaming-pagerank'
 import { wcc as wccAlgo } from '../algorithms/wcc'
 import { scc as sccAlgo } from '../algorithms/scc'
 import { triangleCount as triangleCountAlgo } from '../algorithms/triangle-count'
@@ -210,6 +212,16 @@ export class GraphEngine {
   private _cacheMaxSize: number
   private _cacheDefaultTTLSec: number
 
+  // ── LRU Cache for individual nodes/edges (Gap 12) ──
+  private _nodeCache: LRUCache<NodeId, NodeRecord>
+  private _edgeCache: LRUCache<string, EdgeRecord>
+  private _nodeCacheSize: number
+  private _edgeCacheSize: number
+  private _nodeCacheHits = 0
+  private _nodeCacheMisses = 0
+  private _edgeCacheHits = 0
+  private _edgeCacheMisses = 0
+
   /** Schema 类型定义（可选） */
   private _schema?: SchemaDef
 
@@ -254,6 +266,11 @@ export class GraphEngine {
       this._cacheMaxSize,
       this._cacheDefaultTTLSec,
     )
+    // ── 初始化 node/edge 缓存 (Gap 12) ──
+    this._nodeCacheSize = config.nodeCacheSize ?? 1000
+    this._edgeCacheSize = config.edgeCacheSize ?? 500
+    this._nodeCache = new LRUCache<NodeId, NodeRecord>(this._nodeCacheSize, 60)
+    this._edgeCache = new LRUCache<string, EdgeRecord>(this._edgeCacheSize, 60)
     this.logger = new Logger('GraphEngine')
 
     // 注册 EventStream 远程数据处理（见 open() 方法）
@@ -396,6 +413,8 @@ export class GraphEngine {
     }
 
     const id = this.storage.upsertNode(typeId, name, opts)
+    // 清除节点缓存（Gap 12）
+    this._nodeCache.delete(id)
     if (!this._nodeIds.has(id)) {
       this._nodeIds.add(id)
       this._nodeCount++
@@ -430,6 +449,17 @@ export class GraphEngine {
    */
   getNode(id: NodeId, ctx?: RLSContext): NodeRecord | null {
     this._ensureOpen()
+
+    // LRU cache hit — only when no RLS context
+    if (!ctx) {
+      const cached = this._nodeCache.get(id)
+      if (cached !== undefined) {
+        this._nodeCacheHits++
+        return cached
+      }
+    }
+    this._nodeCacheMisses++
+
     const raw = this.storage.getNode(id, true)
     if (!raw) return null
 
@@ -447,7 +477,8 @@ export class GraphEngine {
     } catch {
       // storage 可能在某些状态下不支持 degrees() 调用
     }
-    return {
+
+    const record: NodeRecord = {
       id: raw.id,
       type: raw.typeId,
       name: raw.key,
@@ -455,6 +486,13 @@ export class GraphEngine {
       createdAt: raw.createdAt,
       degree,
     }
+
+    // Populate cache on miss (only when no RLS context)
+    if (!ctx) {
+      this._nodeCache.set(id, record)
+    }
+
+    return record
   }
 
   /**
@@ -482,6 +520,8 @@ export class GraphEngine {
     }
 
     this._labelIndex.removeNode(node.typeId, id)
+    // 清除节点缓存（Gap 12）
+    this._nodeCache.delete(id)
     this._fulltext?.removeDocument(String(id))
     this.storage.deleteNode(id)
     this._nodeIds.delete(id)
@@ -571,6 +611,8 @@ export class GraphEngine {
       weight: opts?.weight,
     })
     const ek = `${src}:${dst}:${typeId}`
+    // 清除边缓存（Gap 12）
+    this._edgeCache.delete(ek)
     if (!this._edgeKeys.has(ek)) {
       this._edgeKeys.add(ek)
       this._edgeCount++
@@ -603,15 +645,27 @@ export class GraphEngine {
    */
   getEdge(src: NodeId, dst: NodeId, typeId: number): EdgeRecord | null {
     this._ensureOpen()
+    const edgeKey = `${src}:${dst}:${typeId}`
+
+    // Edge cache check
+    const cached = this._edgeCache.get(edgeKey)
+    if (cached !== undefined) {
+      this._edgeCacheHits++
+      return cached
+    }
+    this._edgeCacheMisses++
+
     const raw = this.storage.getEdge(src, dst, typeId)
     if (raw) {
-      return {
+      const record: EdgeRecord = {
         src: raw.from,
         dst: raw.to,
         type: raw.typeId,
         props: raw.props as NodeProperties,
         timestamp: raw.createdAt,
       }
+      this._edgeCache.set(edgeKey, record)
+      return record
     }
     // Fallback: search via neighbors to find the matching edge
     const entries = this.storage.neighbors(src, { maxDepth: 1, edgeTypeFilter: [typeId] })
@@ -634,6 +688,8 @@ export class GraphEngine {
   async deleteEdge(src: NodeId, dst: NodeId, typeId: number, skipReplication = false): Promise<boolean> {
     this._ensureOpen()
     const result = this.storage.deleteEdge(src, dst, typeId)
+    // 清除边缓存（Gap 12）
+    this._edgeCache.delete(`${src}:${dst}:${typeId}`)
     if (result) {
       this._edgeCount = Math.max(0, this._edgeCount - 1)
     }
@@ -1436,6 +1492,30 @@ export class GraphEngine {
     this.storage.compact()
   }
 
+  // ── 复合索引 ──────────────────────────────
+
+  /**
+   * 创建复合索引。
+   * 代理到 storage 的实现。
+   */
+  createCompositeIndex(fields: string[], name: string, options?: { unique?: boolean }): void {
+    this._ensureOpen()
+    if (this.storage.createCompositeIndex) {
+      this.storage.createCompositeIndex(fields, name, options)
+    }
+  }
+
+  /**
+   * 删除复合索引。
+   * 代理到 storage 的实现。
+   */
+  dropCompositeIndex(name: string): void {
+    this._ensureOpen()
+    if (this.storage.dropCompositeIndex) {
+      this.storage.dropCompositeIndex(name)
+    }
+  }
+
   /**
    * 聚合计数
    * @param typeFilter - 可选，按 typeId 过滤（节点类型）
@@ -1740,10 +1820,101 @@ export class GraphEngine {
     return astarAlgo(getWeightedNeighbors, start, end, heuristic)
   }
 
+  // ── Gap 7: Streaming Algorithm Engine with Graph Projection ──
+
+  /**
+   * 创建子图投影（GraphProjection）
+   *
+   * 从当前引擎中提取子图，以 CSR 格式存储邻接表。
+   * 适用于大图上的内存高效计算。
+   *
+   * @param options - 投影选项（nodeFilter, edgeFilter, maxDepth, maxNodes, seedNodes）
+   * @returns GraphProjection 实例
+   */
+  async createProjection(options?: {
+    nodeFilter?: (node: import('../types').NodeRecord) => boolean
+    edgeFilter?: (edge: import('../types').EdgeRecord) => boolean
+    maxDepth?: number
+    maxNodes?: number
+    seedNodes?: import('../types').NodeId[]
+  }): Promise<GraphProjection> {
+    this._ensureOpen()
+    return GraphProjection.create(this, options)
+  }
+
+  /**
+   * 在子图投影上执行 PageRank
+   *
+   * 使用 GraphProjection 的 streamBatches() 进行内存高效的流式 PageRank 计算。
+   * 适用于 10M+ 节点图上的 PageRank。
+   *
+   * @param options - 算法参数（damping, iterations, batchSize, nodeFilter, edgeFilter, maxDepth, maxNodes, seedNodes）
+   * @param onProgress - 进度回调
+   * @returns Map<nodeId, score>
+   */
+  async projectionPageRank(
+    options?: {
+      damping?: number
+      iterations?: number
+      batchSize?: number
+      nodeFilter?: (node: import('../types').NodeRecord) => boolean
+      edgeFilter?: (edge: import('../types').EdgeRecord) => boolean
+      maxDepth?: number
+      maxNodes?: number
+      seedNodes?: import('../types').NodeId[]
+    },
+    onProgress?: (progress: { iteration: number; totalIterations: number; batchIndex: number; totalBatches: number }) => void,
+  ): Promise<Map<import('../types').NodeId, number>> {
+    this._ensureOpen()
+
+    const projection = await GraphProjection.create(this, {
+      nodeFilter: options?.nodeFilter,
+      edgeFilter: options?.edgeFilter,
+      maxDepth: options?.maxDepth,
+      maxNodes: options?.maxNodes,
+      seedNodes: options?.seedNodes,
+    })
+
+    return StreamingPageRank.compute(projection, {
+      damping: options?.damping,
+      iterations: options?.iterations,
+      batchSize: options?.batchSize,
+      onProgress,
+    })
+  }
+
   private _ensureOpen(): void {
     if (!this._isOpen) {
       throw new Error('GraphEngine is not open. Call open() first.')
     }
+  }
+
+  // ── Node/Edge cache API (Gap 12) ──
+
+  /**
+   * Get node/edge cache hit/miss statistics.
+   */
+  getNodeCacheStats(): { nodeHits: number; nodeMisses: number; edgeHits: number; edgeMisses: number } {
+    return {
+      nodeHits: this._nodeCacheHits,
+      nodeMisses: this._nodeCacheMisses,
+      edgeHits: this._edgeCacheHits,
+      edgeMisses: this._edgeCacheMisses,
+    }
+  }
+
+  /**
+   * Clear the node cache entirely.
+   */
+  clearNodeCache(): void {
+    this._nodeCache.clear()
+  }
+
+  /**
+   * Clear the edge cache entirely.
+   */
+  clearEdgeCache(): void {
+    this._edgeCache.clear()
   }
 
   // ── Transaction API (Round 6: MVCC 增强) ──
@@ -1790,5 +1961,46 @@ export class GraphEngine {
       await txn.rollback()
       throw err
     }
+  }
+
+  // ── Geospatial Queries (Gap 5) ──
+
+  /**
+   * Query nodes within a given radius from a geographic point.
+   * Requires nodes to have been indexed with `_lat`/`_lng` props.
+   *
+   * @param lat - Center latitude
+   * @param lng - Center longitude
+   * @param radiusKm - Search radius in kilometers
+   * @returns Array of matching NodeIds
+   */
+  async geoNearby(lat: number, lng: number, radiusKm: number): Promise<number[]> {
+    this._ensureOpen()
+    if (this.storage instanceof OverGraphStorage) {
+      return (this.storage as OverGraphStorage).geoNearby(lat, lng, radiusKm)
+    }
+    throw new Error('Geo queries require OverGraphStorage')
+  }
+
+  /**
+   * K-Nearest Neighbors geospatial query.
+   * Finds the k closest nodes to a given geographic point.
+   *
+   * @param lat - Center latitude
+   * @param lng - Center longitude
+   * @param k - Number of nearest neighbors to return
+   * @param maxRadiusKm - Optional maximum search radius (for performance)
+   * @returns Array of matching NodeIds sorted by distance (closest first)
+   */
+  async geoKnn(
+    lat: number, lng: number,
+    k: number,
+    maxRadiusKm?: number,
+  ): Promise<number[]> {
+    this._ensureOpen()
+    if (this.storage instanceof OverGraphStorage) {
+      return (this.storage as OverGraphStorage).geoKnn(lat, lng, k, maxRadiusKm)
+    }
+    throw new Error('Geo queries require OverGraphStorage')
   }
 }

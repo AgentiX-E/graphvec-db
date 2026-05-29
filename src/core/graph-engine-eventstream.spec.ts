@@ -137,4 +137,37 @@ describe('GraphEngine + EventStream 集成', () => {
 
     ge.close()
   })
+
+  it('GraphEngine with EventStream still works with cache', async () => {
+    const es = new EventStream(createES())
+    es.open()
+    const ge = makeEngine(es)
+
+    const id = await ge.upsertNode(1, 'cache-es-node')
+    expect(typeof id).toBe('number')
+
+    // First getNode: cache miss
+    const n1 = ge.getNode(id)
+    expect(n1).not.toBeNull()
+    expect(n1!.name).toBe('cache-es-node')
+
+    // Second getNode: cache hit
+    const n2 = ge.getNode(id)
+    expect(n2).not.toBeNull()
+    expect(n2!.name).toBe('cache-es-node')
+
+    // Edge: create and get + cache
+    const src = await ge.upsertNode(1, 'cache-es-src')
+    const dst = await ge.upsertNode(1, 'cache-es-dst')
+    await ge.upsertEdge(src, dst, 10)
+
+    const e1 = ge.getEdge(src, dst, 10)
+    expect(e1).not.toBeNull()
+
+    const e2 = ge.getEdge(src, dst, 10)
+    expect(e2).not.toBeNull()
+
+    ge.close()
+    es.close()
+  })
 })

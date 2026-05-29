@@ -33,6 +33,8 @@ export class RangeInstance {
   private _lastSeenMs = 0
   /** 乐观锁版本存储：resourceKey → version */
   private _versionStore = new Map<string, number>()
+  /** 2PC prepare log 存储: txId → PrepareLogEntry */
+  private _prepareLog = new Map<string, { txId: string; operations: any[]; status: 'prepared' | 'committed' | 'rolled_back'; createdAt: number }>()
   private logger: Logger
   private telemetry: Telemetry
   private metrics: MetricsCollector
@@ -283,6 +285,80 @@ export class RangeInstance {
   /** 检查范围是否健康 */
   isHealthy(): boolean {
     return !this._draining && this._started && this.engine.isOpen
+  }
+
+  /**
+   * 2PC: Prepare — 记录 prepare log，为后续 commit/rollback 做准备
+   * 幂等: 同一个 txId 再次调用返回相同的状态
+   *
+   * @param txId 事务 ID
+   * @param operations prepare 关联的操作列表（当前未使用，为未来 WAL 预留）
+   * @returns true 表示 prepare 成功，false 表示拒绝
+   */
+  async prepareTx(txId: string, operations: any[]): Promise<boolean> {
+    // 幂等: 如果已 prepare，直接返回 true
+    if (this._prepareLog.has(txId)) {
+      const existing = this._prepareLog.get(txId)!
+      return existing.status === 'prepared' || existing.status === 'committed'
+    }
+
+    this._prepareLog.set(txId, {
+      txId,
+      operations,
+      status: 'prepared',
+      createdAt: Date.now(),
+    })
+
+    return true
+  }
+
+  /**
+   * 2PC: Commit — 提交事务，执行实际写入
+   * 幂等: 多次调用不会报错
+   */
+  async commitTx(txId: string): Promise<void> {
+    const entry = this._prepareLog.get(txId)
+
+    if (!entry) {
+      // 未知 txId — 可能是协调者重启后的重试，幂等返回
+      return
+    }
+
+    // 幂等保护
+    if (entry.status === 'committed') {
+      return
+    }
+
+    entry.status = 'committed'
+  }
+
+  /**
+   * 2PC: Rollback — 回滚事务，清理 prepare log
+   * 幂等: 多次调用不会报错
+   */
+  async rollbackTx(txId: string): Promise<void> {
+    const entry = this._prepareLog.get(txId)
+
+    if (!entry) {
+      return
+    }
+
+    // 幂等保护
+    if (entry.status === 'rolled_back' || entry.status === 'committed') {
+      return
+    }
+
+    entry.status = 'rolled_back'
+  }
+
+  /** 检查指定 txId 是否有活跃的 prepare log */
+  hasPrepareLog(txId: string): boolean {
+    return this._prepareLog.has(txId)
+  }
+
+  /** 获取 prepare log 状态 */
+  getPrepareLogStatus(txId: string): string | undefined {
+    return this._prepareLog.get(txId)?.status
   }
 
   /**

@@ -73,6 +73,16 @@ export interface EdgeRecord {
 }
 
 // ──────────────────────────────────────────
+// 地理空间类型
+// ──────────────────────────────────────────
+
+/** 地理坐标点 */
+export interface GeoPoint {
+  latitude: number
+  longitude: number
+}
+
+// ──────────────────────────────────────────
 // 向量搜索类型
 // ──────────────────────────────────────────
 
@@ -188,6 +198,10 @@ export interface OverGraphConfig {
   denseVector?: { dimension: number }
   defaultRetention?: { nodes?: string; edges?: string }
   cacheSize?: number
+  /** Node cache max entries (Gap 12), default 1000 */
+  nodeCacheSize?: number
+  /** Edge cache max entries (Gap 12), default 500 */
+  edgeCacheSize?: number
   /** 邻里查询缓存 TTL（毫秒），默认 5000 */
   neighborCacheTTLMs?: number
   /** OverGraph 存储内核调优参数 */

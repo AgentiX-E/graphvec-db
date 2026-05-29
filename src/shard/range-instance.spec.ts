@@ -327,4 +327,123 @@ describe('RangeInstance', () => {
       expect(instance.getVersion('nonexistent-key')).toBe(0)
     })
   })
+
+  // ──────────────────────────────────────────
+  // 2PC prepareTx / commitTx / rollbackTx
+  // ──────────────────────────────────────────
+
+  describe('2PC prepareTx/commitTx/rollbackTx', () => {
+    test('prepareTx succeeds and creates prepare log', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      const result = await instance.prepareTx('test-tx-1', [{ type: 'upsert_node', name: 'test' }])
+      expect(result).toBe(true)
+      expect(instance.hasPrepareLog('test-tx-1')).toBe(true)
+      expect(instance.getPrepareLogStatus('test-tx-1')).toBe('prepared')
+
+      await instance.stop()
+    })
+
+    test('prepareTx is idempotent', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      const r1 = await instance.prepareTx('test-tx-2', [{ type: 'upsert_node' }])
+      expect(r1).toBe(true)
+
+      const r2 = await instance.prepareTx('test-tx-2', [{ type: 'different' }])
+      expect(r2).toBe(true) // idempotent: returns last status
+      expect(instance.getPrepareLogStatus('test-tx-2')).toBe('prepared')
+
+      await instance.stop()
+    })
+
+    test('commitTx transitions prepare log to committed', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      await instance.prepareTx('test-tx-3', [])
+      expect(instance.getPrepareLogStatus('test-tx-3')).toBe('prepared')
+
+      await instance.commitTx('test-tx-3')
+      expect(instance.getPrepareLogStatus('test-tx-3')).toBe('committed')
+
+      await instance.stop()
+    })
+
+    test('commitTx is idempotent', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      await instance.prepareTx('test-tx-4', [])
+      await instance.commitTx('test-tx-4')
+      await expect(instance.commitTx('test-tx-4')).resolves.toBeUndefined()
+      expect(instance.getPrepareLogStatus('test-tx-4')).toBe('committed')
+
+      await instance.stop()
+    })
+
+    test('commitTx on unknown txId is no-op', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      await expect(instance.commitTx('unknown-tx')).resolves.toBeUndefined()
+      expect(instance.hasPrepareLog('unknown-tx')).toBe(false)
+
+      await instance.stop()
+    })
+
+    test('rollbackTx transitions prepare log to rolled_back', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      await instance.prepareTx('test-tx-5', [])
+      expect(instance.getPrepareLogStatus('test-tx-5')).toBe('prepared')
+
+      await instance.rollbackTx('test-tx-5')
+      expect(instance.getPrepareLogStatus('test-tx-5')).toBe('rolled_back')
+
+      await instance.stop()
+    })
+
+    test('rollbackTx is idempotent', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      await instance.prepareTx('test-tx-6', [])
+      await instance.rollbackTx('test-tx-6')
+      await expect(instance.rollbackTx('test-tx-6')).resolves.toBeUndefined()
+      expect(instance.getPrepareLogStatus('test-tx-6')).toBe('rolled_back')
+
+      await instance.stop()
+    })
+
+    test('rollbackTx on unknown txId is no-op', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      await expect(instance.rollbackTx('unknown-tx')).resolves.toBeUndefined()
+
+      await instance.stop()
+    })
+
+    test('rollbackTx after commitTx is no-op (committed finalized)', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      await instance.start()
+
+      await instance.prepareTx('test-tx-7', [])
+      await instance.commitTx('test-tx-7')
+      // rollback after commit should not change status
+      await instance.rollbackTx('test-tx-7')
+      expect(instance.getPrepareLogStatus('test-tx-7')).toBe('committed')
+
+      await instance.stop()
+    })
+
+    test('hasPrepareLog returns false for unknown tx', async () => {
+      const instance = new RangeInstance(makeTestConfig(), clock)
+      expect(instance.hasPrepareLog('nonexistent')).toBe(false)
+    })
+  })
 })

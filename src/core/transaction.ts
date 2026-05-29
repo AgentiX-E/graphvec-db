@@ -35,6 +35,8 @@ export interface MVCCSnapshot {
 
 export interface BeginOptions {
   isolation?: IsolationLevel
+  /** 跨分片 aware: 如果指定了多个 rangeIds，启用 2PC */
+  rangeIds?: string[]
 }
 
 // ── 事务管理器 ──
@@ -62,7 +64,13 @@ export class TransactionManager {
       createdAt: Date.now(),
     }
     const isolation = opts?.isolation ?? 'snapshot'
-    return new Transaction(this, snapshot, isolation)
+    const txn = new Transaction(this, snapshot, isolation)
+    // 跨分片 awareness: 如果指定了多个 range，启用 2PC
+    if (opts?.rangeIds && opts.rangeIds.length > 1) {
+      ;(txn as any)._use2PC = true
+      ;(txn as any)._rangeIds = [...opts.rangeIds]
+    }
+    return txn
   }
 
   isLocked(nodeId: NodeId): boolean {
@@ -367,6 +375,10 @@ export class Transaction {
   public readonly deleteSet: Set<NodeId>
   public readonly readSet: Set<NodeId>
   public readonly isolation: IsolationLevel
+  /** 是否使用 2PC — 跨分片事务标志 */
+  readonly _use2PC: boolean
+  /** 关联的跨分片 range IDs */
+  readonly _rangeIds: string[]
   private _committed = false
   private _rolledBack = false
   private _mgr: TransactionManager | null
@@ -394,6 +406,9 @@ export class Transaction {
     this.isolation = isolation ?? 'snapshot'
     // 为 snapshot 设置版本号，支持版本链
     this.snapshot.version = this.snapshot.id
+    // 跨分片 awareness
+    this._use2PC = false
+    this._rangeIds = []
   }
 
   get active(): boolean {

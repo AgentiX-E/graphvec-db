@@ -16,6 +16,7 @@ import {
   NodeId, UpsertNodeOptions, UpsertEdgeOptions,
 } from '../types'
 import { encode, decode } from 'msgpackr'
+import { GeoIndex } from './geo-index'
 
 // ── 流式分块快照协议 (Streaming Chunked Snapshot Protocol) ──
 //
@@ -293,11 +294,30 @@ function _deserializeProps(data: unknown): Record<string, unknown> | undefined {
   return data as Record<string, unknown>
 }
 
+/**
+ * 复合索引条目定义
+ */
+export interface CompositeIndexDef {
+  fields: string[]
+  unique: boolean
+  /** 索引数据: compositeKey → nodeId[] */
+  data: Map<string, number[]>
+}
+
 export class OverGraphStorage implements StorageProvider {
   private _db: OverGraphDB | null = null
   private _isOpen = false
   private _compress = false
   private _compressionStrategy: 'none' | 'msgpack' = 'none'
+
+  /** 地理空间索引 */
+  private _geoIndex: GeoIndex = new GeoIndex()
+  /** 地理坐标属性字段名（纬度、经度），可通过 config 覆盖 */
+  private _geoLatField: string = '_lat'
+  private _geoLngField: string = '_lng'
+
+  /** 复合索引集合: name → index definition */
+  private _compositeIndexes: Map<string, CompositeIndexDef> = new Map()
 
   get isOpen(): boolean { return this._isOpen }
   get compressionEnabled(): boolean { return this._compress }
@@ -308,6 +328,12 @@ export class OverGraphStorage implements StorageProvider {
     // 存储压缩配置
     this._compress = config.compress === true
     this._compressionStrategy = config.compressionStrategy ?? (this._compress ? 'msgpack' : 'none')
+
+    // 地理索引配置
+    if (config.geoSpatial) {
+      this._geoLatField = config.geoLatField ?? '_lat'
+      this._geoLngField = config.geoLatField ?? '_lng'
+    }
 
     const ogOpts: any = {
       denseVector: config.denseVector
@@ -341,10 +367,11 @@ export class OverGraphStorage implements StorageProvider {
   // ── 节点操作 ──────────────────────────────
 
   upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): NodeId {
+    const rawProps = opts?.props as Record<string, unknown> | undefined
     const props = this._compress && this._compressionStrategy === 'msgpack'
-      ? _serializeProps(opts?.props as Record<string, unknown> | undefined)
-      : opts?.props as Record<string, unknown> | undefined
-    return this._db!.upsertNode(typeId, name, {
+      ? _serializeProps(rawProps)
+      : rawProps
+    const id = this._db!.upsertNode(typeId, name, {
       props,
       denseVector: opts?.denseVector instanceof Float32Array
         ? opts.denseVector
@@ -354,6 +381,19 @@ export class OverGraphStorage implements StorageProvider {
       decayFactor: opts?.decayFactor,
       retentionPolicy: opts?.ttlSeconds ? { ttlSeconds: opts.ttlSeconds } : undefined,
     })
+    // 更新复合索引
+    if (this._compositeIndexes.size > 0 && rawProps) {
+      this._updateCompositeIndex(typeId, id, rawProps)
+    }
+    // 更新地理索引
+    if (rawProps) {
+      const lat = rawProps[this._geoLatField]
+      const lng = rawProps[this._geoLngField]
+      if (typeof lat === 'number' && typeof lng === 'number') {
+        this._geoIndex.addNode(id, lat, lng)
+      }
+    }
+    return id
   }
 
   getNode(id: NodeId, includeProps: boolean): {
@@ -372,6 +412,12 @@ export class OverGraphStorage implements StorageProvider {
   }
 
   deleteNode(id: NodeId): boolean {
+    this._geoIndex.removeNode(id)
+    // 清理复合索引
+    for (const [, def] of this._compositeIndexes) {
+      const key = `${def.name}:${id}`
+      this._compositeIndexStore?.delete(key)
+    }
     this._db!.deleteNode(id)
     return true
   }
@@ -607,5 +653,230 @@ export class OverGraphStorage implements StorageProvider {
    */
   async importSnapshotFile(filePath: string): Promise<void> {
     await this.importSnapshotStream(readChunksFromFile(filePath))
+  }
+
+  // ── 复合索引实现 ────────────────────────
+
+  /**
+   * 创建复合索引。
+   * 如果索引名称已存在则跳过。
+   * 创建后会立即从所有已有的节点重建索引数据。
+   */
+  createCompositeIndex(fields: string[], name: string, options?: { unique?: boolean }): void {
+    if (this._compositeIndexes.has(name)) {
+      return // 已存在，跳过
+    }
+    const unique = options?.unique ?? false
+    const indexData = new Map<string, number[]>()
+    const def: CompositeIndexDef = { fields, unique, data: indexData }
+    this._compositeIndexes.set(name, def)
+
+    // 重建索引：扫描所有已有节点
+    if (!this._db) return
+    const allNodeIds = this._collectAllNodeIds()
+    for (const id of allNodeIds) {
+      const node = this._db!.getNode(id, true)
+      if (node && node.props) {
+        const values: Record<string, unknown> = {}
+        let hasAllFields = true
+        for (const f of fields) {
+          if (node.props[f] !== undefined) {
+            values[f] = node.props[f]
+          } else {
+            hasAllFields = false
+            break
+          }
+        }
+        if (hasAllFields) {
+          this._addToCompositeIndex(name, values, id)
+        }
+      }
+    }
+  }
+
+  /**
+   * 删除复合索引。
+   */
+  dropCompositeIndex(name: string): void {
+    this._compositeIndexes.delete(name)
+  }
+
+  /**
+   * 根据索引字段的值生成复合键。
+   */
+  private _getCompositeIndexKey(values: Record<string, unknown>): string {
+    return Object.keys(values)
+      .sort()
+      .map(k => String(values[k] ?? ''))
+      .join('|')
+  }
+
+  /**
+   * 向复合索引中添加一个条目。
+   */
+  private _addToCompositeIndex(indexName: string, values: Record<string, unknown>, nodeId: number): void {
+    const def = this._compositeIndexes.get(indexName)
+    if (!def) return
+
+    const key = def.fields.map(f => String(values[f] ?? '')).join('|')
+
+    if (def.unique) {
+      if (def.data.has(key)) {
+        const existing = def.data.get(key)!
+        // 允许同一个节点 ID 重复添加到同一个键（幂等）
+        if (existing.length > 0 && existing[0] !== nodeId) {
+          throw new Error(
+            `Unique constraint violation on composite index "${indexName}": ` +
+            `key "${key}" already exists for node ${existing[0]}`
+          )
+        }
+      }
+    }
+
+    if (!def.data.has(key)) {
+      def.data.set(key, [])
+    }
+    const ids = def.data.get(key)!
+    if (!ids.includes(nodeId)) {
+      ids.push(nodeId)
+    }
+  }
+
+  /**
+   * 从复合索引中移除一个节点。
+   */
+  private _removeFromCompositeIndex(indexName: string, nodeId: number): void {
+    const def = this._compositeIndexes.get(indexName)
+    if (!def) return
+
+    for (const [key, ids] of def.data.entries()) {
+      const idx = ids.indexOf(nodeId)
+      if (idx !== -1) {
+        ids.splice(idx, 1)
+        if (ids.length === 0) {
+          def.data.delete(key)
+        }
+        break
+      }
+    }
+  }
+
+  /**
+   * 更新所有复合索引（在 upsertNode 时调用）。
+   */
+  _updateCompositeIndex(typeId: number, nodeId: number, props: Record<string, unknown>): void {
+    for (const [name, def] of this._compositeIndexes.entries()) {
+      const values: Record<string, unknown> = {}
+      let allFieldsPresent = true
+      for (const f of def.fields) {
+        if (props[f] !== undefined) {
+          values[f] = props[f]
+        } else {
+          allFieldsPresent = false
+          break
+        }
+      }
+
+      if (allFieldsPresent) {
+        // 先移除旧的键
+        this._removeFromCompositeIndex(name, nodeId)
+        // 添加新键
+        this._addToCompositeIndex(name, values, nodeId)
+      }
+    }
+  }
+
+  /**
+   * 通过复合索引查找节点 ID。
+   * 支持精确匹配（fields 长度与索引一致）和前缀匹配（fields 是索引前缀）。
+   * 如果找不到匹配的索引，返回 null（需要调用方回退到全表扫描）。
+   */
+  _findByCompositeIndex(fields: string[], values: Record<string, unknown>): number[] | null {
+    for (const [, def] of this._compositeIndexes.entries()) {
+      if (this._isIndexPrefixMatch(def.fields, fields)) {
+        // 前缀匹配：需要遍历所有以 query 键为前缀的条目
+        const prefix = fields.map(f => String(values[f] ?? '')).join('|')
+        const results: number[] = []
+        for (const [key, ids] of def.data.entries()) {
+          if (key === prefix || key.startsWith(prefix + '|')) {
+            for (const id of ids) {
+              if (!results.includes(id)) {
+                results.push(id)
+              }
+            }
+          }
+        }
+        return results
+      }
+    }
+    return null
+  }
+
+  /**
+   * 判断 queryFields 是否是 indexFields 的前缀。
+   */
+  private _isIndexPrefixMatch(indexFields: string[], queryFields: string[]): boolean {
+    if (queryFields.length > indexFields.length) return false
+    for (let i = 0; i < queryFields.length; i++) {
+      if (indexFields[i] !== queryFields[i]) return false
+    }
+    return true
+  }
+
+  /**
+   * 收集所有节点 ID。
+   */
+  private _collectAllNodeIds(): number[] {
+    if (!this._db) return []
+    const ids: number[] = []
+    try {
+      const adj = (this._db as any).exportAdjacency?.()
+      if (adj && adj.nodeIds) {
+        const nodeIds = adj.nodeIds as Float64Array
+        for (let i = 0; i < nodeIds.length; i++) {
+          ids.push(nodeIds[i])
+        }
+      }
+    } catch {
+      // fallback: 尝试扫描已知节点范围
+      for (let i = 1; i < 1000000; i++) {
+        try {
+          const node = this._db!.getNode(i, false)
+          if (node) ids.push(i)
+        } catch {
+          break
+        }
+      }
+    }
+    return ids
+  }
+
+  // ── 地理空间查询 ──────────────────────────
+
+  /** 获取 GeoIndex 引用（供 GraphEngine 使用） */
+  get geoIndex(): GeoIndex {
+    return this._geoIndex
+  }
+
+  /** 查询半径内的所有节点 ID */
+  geoNearby(lat: number, lng: number, radiusKm: number): number[] {
+    return this._geoIndex.queryRadius(lat, lng, radiusKm)
+  }
+
+  /** 查询指定包围盒内的所有节点 ID */
+  geoBBox(
+    southWest: [number, number],
+    northEast: [number, number],
+  ): number[] {
+    return this._geoIndex.queryBBox(southWest, northEast)
+  }
+
+  /** KNN 地理查询 */
+  geoKnn(
+    lat: number, lng: number,
+    k: number,
+    maxRadiusKm?: number,
+  ): number[] {
+    return this._geoIndex.kNearest(lat, lng, k, maxRadiusKm)
   }
 }

@@ -43,6 +43,16 @@ export interface StorageConfig {
    * 仅在 compress: true 时生效。默认 'msgpack'。
    */
   compressionStrategy?: 'none' | 'msgpack'
+
+  /**
+   * 地理索引配置
+   * geoSpatial: 启用地理空间 R-tree 索引
+   * geoLatField: 纬度属性名（默认 '_lat'）
+   * geoLatField: 经度属性名（默认 '_lng'）
+   */
+  geoSpatial?: boolean
+  geoLatField?: string
+  geoLatField?: string
 }
 
 /**
@@ -134,6 +144,22 @@ export interface StorageProvider {
   deleteEdge(src: NodeId, dst: NodeId, typeId: number): boolean
 
   neighbors(id: NodeId, opts?: NeighborsOptions): NeighborEntry[]
+
+  // ── 复合索引 ──────────────────────────────
+
+  /**
+   * 创建复合索引
+   * @param fields - 参与索引的字段名列表
+   * @param name - 索引名称（唯一标识）
+   * @param options - 可选的索引选项（如 unique: true 表示唯一约束）
+   */
+  createCompositeIndex?(fields: string[], name: string, options?: { unique?: boolean }): void
+
+  /**
+   * 删除复合索引
+   * @param name - 索引名称
+   */
+  dropCompositeIndex?(name: string): void
 
   // ── 搜索 ──────────────────────────────────
 
