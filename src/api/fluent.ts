@@ -131,6 +131,29 @@ export class GraphQuery {
   }
 
   /**
+   * 更新边的属性（upsert 语义 — 存在则更新，不存在则创建）
+   * @param src 源节点 ID
+   * @param dst 目标节点 ID
+   * @param typeId 边类型
+   * @param updates 要更新/设置的属性
+   */
+  async updateEdge(src: number, dst: number, typeId: number, updates?: Record<string, unknown>): Promise<void> {
+    await this.manager.upsertEdge(src, dst, typeId, {
+      props: updates as any,
+    })
+  }
+
+  /**
+   * 删除边
+   * @param src 源节点 ID
+   * @param dst 目标节点 ID
+   * @param typeId 边类型
+   */
+  async deleteEdge(src: number, dst: number, typeId: number): Promise<void> {
+    await this.manager.deleteEdge(src, dst, typeId)
+  }
+
+  /**
    * 执行查询并返回节点结果
    */
   async return(): Promise<NodeRecord[]> {

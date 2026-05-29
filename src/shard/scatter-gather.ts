@@ -12,6 +12,19 @@ export interface ScatterGatherOptions {
   timeoutMs?: number
 }
 
+/**
+ * 超时包装器：在指定 ms 内未 resolve 则返回 fallback
+ */
+function promiseWithTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms)
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      () => { clearTimeout(timer); resolve(fallback) },
+    )
+  })
+}
+
 export class ScatterGather {
   private _getRanges: () => RangeInstance[]
 
@@ -20,15 +33,16 @@ export class ScatterGather {
   }
 
   /**
-   * 向量搜索 — 广播到所有 Range
+   * 向量搜索 — 广播到所有 Range（带可选超时）
    */
   async vectorSearch(query: VectorSearchOptions, options?: ScatterGatherOptions): Promise<VectorSearchResult[]> {
     const ranges = this._getRanges()
+    const timeoutMs = options?.timeoutMs
     const results = await Promise.all(
       ranges.map(async (range) => {
         try {
-          // 通过 Raft 读确保线性一致性
-          return await range.read(engine => engine.vectorSearch(query))
+          const op = range.read(engine => engine.vectorSearch(query))
+          return timeoutMs ? await promiseWithTimeout(op, timeoutMs, []) : await op
         } catch {
           return [] as VectorSearchResult[]
         }
@@ -42,24 +56,27 @@ export class ScatterGather {
   }
 
   /**
-   * 获取所有节点（带可选分页）
+   * 获取所有节点（带可选分页，超时兜底）
    */
-  async getAllNodes(page = 0, pageSize = 100): Promise<Array<{ id: number; record: NodeRecord }>> {
+  async getAllNodes(page = 0, pageSize = 100, options?: ScatterGatherOptions): Promise<Array<{ id: number; record: NodeRecord }>> {
     const ranges = this._getRanges()
+    const timeoutMs = options?.timeoutMs
     const results = await Promise.all(
-      ranges.map(range => range.read(engine => {
-        // 简单扫描
-        const nodes: Array<{ id: number; record: NodeRecord }> = []
-        // 获取所有节点 (存储层假设有 scanNodes)
-        const allIds = engine['_nodeIds'] as Set<number> | undefined
-        if (allIds) {
-          for (const id of allIds) {
-            const rec = engine.getNode(id)
-            if (rec) nodes.push({ id, record: rec })
+      ranges.map(async range => {
+        const op = range.read(engine => {
+          // 简单扫描
+          const nodes: Array<{ id: number; record: NodeRecord }> = []
+          const allIds = engine['_nodeIds'] as Set<number> | undefined
+          if (allIds) {
+            for (const id of allIds) {
+              const rec = engine.getNode(id)
+              if (rec) nodes.push({ id, record: rec })
+            }
           }
-        }
-        return nodes
-      })),
+          return nodes
+        })
+        return timeoutMs ? promiseWithTimeout(op, timeoutMs, []) : op
+      }),
     )
 
     const all = results.flat()
@@ -75,17 +92,24 @@ export class ScatterGather {
    * 2. 按 range 节点数加权合并
    * 3. 排序取 topK
    */
-  async personalizedPageRank(opts: { sourceNode: number; k?: number }): Promise<Array<{ nodeId: number; score: number }>> {
+  async personalizedPageRank(opts: { sourceNode: number; k?: number }, options?: ScatterGatherOptions): Promise<Array<{ nodeId: number; score: number }>> {
     const ranges = this._getRanges()
+    const timeoutMs = options?.timeoutMs
     const results = await Promise.all(
-      ranges.map(range => range.read(engine => {
-        return engine.personalizedPageRank({ sourceNode: opts.sourceNode, topK: opts.k })
-      })),
+      ranges.map(async range => {
+        const op = range.read(engine => {
+          return engine.personalizedPageRank({ sourceNode: opts.sourceNode, topK: opts.k })
+        })
+        return timeoutMs ? promiseWithTimeout(op, timeoutMs, []) : op
+      }),
     )
 
     // 收集每个 range 的节点数（用于加权）
     const rangeSizes = await Promise.all(
-      ranges.map(range => range.read(engine => engine.stats().nodeCount)),
+      ranges.map(async range => {
+        const op = range.read(engine => engine.stats().nodeCount)
+        return timeoutMs ? promiseWithTimeout(op, timeoutMs, 0) : op
+      }),
     )
     const totalNodes = rangeSizes.reduce((a, b) => a + b, 0)
     if (totalNodes === 0) return []

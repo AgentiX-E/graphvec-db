@@ -49,6 +49,14 @@ class MockShardManager {
     return 0
   }
 
+  async upsertEdge(_src: number, _dst: number, _typeId: number, _opts?: any): Promise<void> {
+    return
+  }
+
+  async deleteEdge(_src: number, _dst: number, _typeId: number): Promise<void> {
+    return
+  }
+
   async getNode(id: number): Promise<NodeRecord | null> {
     return this.allNodes.find(n => n.id === id) ?? null
   }
@@ -431,6 +439,43 @@ describe('GraphQuery (Fluent API)', () => {
       expect(str).toContain('where(1 predicates)')
       expect(str).toContain('neighbors(depth=2')
       expect(str).toContain('limit(5)')
+    })
+  })
+
+  describe('updateEdge', () => {
+    it('调用 upsertEdge 更新边属性', async () => {
+      const mock = new MockShardManager()
+      const upsertSpy = vi.spyOn(mock, 'upsertEdge')
+      const q = new TestGraphQuery(mock)
+
+      await q.updateEdge(1, 2, 10, { weight: 5, label: 'friend' })
+
+      expect(upsertSpy).toHaveBeenCalledWith(1, 2, 10, { props: { weight: 5, label: 'friend' } })
+      upsertSpy.mockRestore()
+    })
+
+    it('不带 updates 参数调用', async () => {
+      const mock = new MockShardManager()
+      const upsertSpy = vi.spyOn(mock, 'upsertEdge')
+      const q = new TestGraphQuery(mock)
+
+      await q.updateEdge(1, 2, 10)
+
+      expect(upsertSpy).toHaveBeenCalledWith(1, 2, 10, { props: undefined })
+      upsertSpy.mockRestore()
+    })
+  })
+
+  describe('deleteEdge', () => {
+    it('调用 deleteEdge 删除边', async () => {
+      const mock = new MockShardManager()
+      const deleteSpy = vi.spyOn(mock, 'deleteEdge')
+      const q = new TestGraphQuery(mock)
+
+      await q.deleteEdge(1, 2, 10)
+
+      expect(deleteSpy).toHaveBeenCalledWith(1, 2, 10)
+      deleteSpy.mockRestore()
     })
   })
 })

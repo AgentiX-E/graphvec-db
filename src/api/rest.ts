@@ -1082,6 +1082,77 @@ export function createRestApiServer(
       },
     )
 
+    // ── Ops 管理路由 ──────────────────────────
+
+    // GET /api/v1/databases — 列出所有数据库
+    routes.push({
+      method: 'GET',
+      path: '/api/v1/databases',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req, res, _parsed, _params, _auth) => {
+        try {
+          const names = dbm.listDatabases()
+          const dbs = names.map((name) => {
+            const instance = dbm.resolve(name)
+            const sm = instance.shardManager
+            const status = sm.getShardStatus()
+            const totalNodes = status.reduce((sum, s) => sum + s.nodeCount, 0)
+            // Get edge count from range engine stats
+            let totalEdges = 0
+            for (const [, range] of sm.getAllRanges()) {
+              totalEdges += range.getStatus().storage.edgeCount
+            }
+            return {
+              name,
+              status: sm.getAllRanges().size > 0 ? 'active' : 'inactive',
+              nodeCount: totalNodes,
+              edgeCount: totalEdges,
+              createdAt: '',
+            }
+          })
+          jsonResponse(res, 200, { databases: dbs })
+        } catch (err: unknown) {
+          jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Failed to list databases' })
+        }
+      },
+    })
+
+    // GET /api/v1/shard/:id/info — 分片详情
+    routes.push({
+      method: 'GET',
+      path: '/api/v1/shard/:id/info',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req, res, _parsed, params, _auth) => {
+        const id = params.id
+        // Search across all databases for this shard
+        let shardInfo: {
+          id: string
+          rangeCount: number
+          nodeCount: number
+          edgeCount: number
+          status: string
+          leader: string | null
+          peers: string[]
+        } | null = null
+        let foundDb: string | null = null
+        for (const name of dbm.listDatabases()) {
+          const instance = dbm.resolve(name)
+          if (instance.shardManager.getRange(id)) {
+            shardInfo = instance.shardManager.getShardInfo(id)
+            foundDb = name
+            break
+          }
+        }
+        if (!shardInfo) {
+          jsonResponse(res, 404, { error: `Shard '${id}' not found` })
+          return
+        }
+        jsonResponse(res, 200, { database: foundDb, ...shardInfo })
+      },
+    })
+
     // ── 跨数据库查询 ──────────────────────────
 
     // POST /api/v1/_cross-db/query — 并行跨库查询

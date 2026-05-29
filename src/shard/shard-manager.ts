@@ -357,6 +357,17 @@ export class ShardManager {
     )
   }
 
+  /** 删除边 — 跟随源节点（按名称）路由 */
+  async deleteEdge(src: NodeId, dst: NodeId, typeId: number): Promise<void> {
+    const rangeId = this._getRangeForNodeId(src)
+    await this._writeWithDualWrite(rangeId, (range) =>
+      range.write({
+        type: 'delete_edge',
+        payload: { src, dst, typeId },
+      })
+    )
+  }
+
   /** Batch 写入多个节点 — 按 shard 分组并行写入（自动添加租户前缀） */
   async batchUpsertNodes(
     inputs: Array<{ typeId: number; name: string; opts?: UpsertNodeOptions }>
@@ -747,6 +758,30 @@ export class ShardManager {
       result.push({ rangeId, raftRole: status.raft.role, nodeCount: status.storage.nodeCount })
     }
     return result
+  }
+
+  /** 获取单个分片的详细信息（用于 GET /api/v1/shard/:id/info） */
+  getShardInfo(rangeId: string): {
+    id: string
+    rangeCount: number
+    nodeCount: number
+    edgeCount: number
+    status: string
+    leader: string | null
+    peers: string[]
+  } | null {
+    const instance = this.ranges.get(rangeId)
+    if (!instance) return null
+    const status = instance.getStatus()
+    return {
+      id: rangeId,
+      rangeCount: this.ranges.size,
+      nodeCount: status.storage.nodeCount,
+      edgeCount: status.storage.edgeCount,
+      status: instance.isHealthy() ? 'healthy' : 'unhealthy',
+      leader: status.raft.leaderId ?? null,
+      peers: [], // ShardManager-level peer tracking is per-range via raft config
+    }
   }
 
   /** 获取所有 Range 实例（用于 Resharding） */

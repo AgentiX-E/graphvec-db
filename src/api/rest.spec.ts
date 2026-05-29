@@ -244,6 +244,78 @@ class MockShardManager {
     return m
   }
 
+  getRange(rangeId: string): any {
+    if (rangeId !== 'range-0') return undefined
+    return {
+      engine: {
+        stats: () => ({
+          nodeCount: this.allNodes.length,
+          edgeCount: this.edgeStore.size,
+          diskSizeBytes: 0,
+        }),
+        deleteEdge: (src: number, dst: number, typeId: number) => this.deleteEdge(src, dst, typeId),
+      },
+      write: (op: any) => {
+        if (op.type === 'delete_edge') {
+          const { src, dst, typeId } = op.payload
+          return this.deleteEdge(src, dst, typeId)
+        }
+        if (op.type === 'upsert_edge') {
+          const { src, dst, typeId } = op.payload
+          return this.upsertEdge(src, dst, typeId)
+        }
+        if (op.type === 'upsert_node') {
+          const { typeId, name } = op.payload
+          return this.upsertNode(typeId, name)
+        }
+        if (op.type === 'batch_upsert') {
+          const { inputs } = op.payload
+          const ids = this.batchUpsertNodes(inputs)
+          const result: Record<string, number> = {}
+          for (let i = 0; i < inputs.length; i++) {
+            result[inputs[i].name] = ids[i]
+          }
+          return result
+        }
+        if (op.type === 'delete_node') {
+          const { id } = op.payload
+          return this.deleteNode(id)
+        }
+        return undefined
+      },
+      read: (fn: (engine: any) => any) => {
+        return fn(this.getRange('range-0').engine)
+      },
+      isHealthy: () => true,
+      getStatus: () => ({
+        raft: {
+          role: 'leader',
+          leaderId: 'node-0',
+          term: 1,
+        },
+        storage: {
+          nodeCount: this.allNodes.length,
+          edgeCount: this.edgeStore.size,
+          diskSizeBytes: 0,
+        },
+      }),
+    }
+  }
+
+  getShardInfo(rangeId: string): any {
+    if (!this.getRange(rangeId)) return null
+    const status = this.getRange(rangeId).getStatus()
+    return {
+      id: rangeId,
+      rangeCount: this.getAllRanges().size,
+      nodeCount: status.storage.nodeCount,
+      edgeCount: status.storage.edgeCount,
+      status: 'healthy',
+      leader: status.raft.leaderId ?? null,
+      peers: [],
+    }
+  }
+
   async deleteNode(id: number): Promise<void> {
     const idx = this.allNodes.findIndex(n => n.id === id)
     if (idx >= 0) this.allNodes.splice(idx, 1)
@@ -1383,6 +1455,73 @@ describe('RestApiServer', () => {
         // With 100ms, the simple mock query should finish in time
         expect(result.data).toBeInstanceOf(Array)
         expect(result.data.length).toBe(2)
+      })
+    })
+
+    // ────────────────────────────────────────────────────
+    // Ops 管理路由测试 — GET /api/v1/databases / GET /api/v1/shard/:id/info
+    // ────────────────────────────────────────────────────
+
+    describe('Ops 管理路由', () => {
+
+      test('GET /api/v1/databases should list all databases with status', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'GET', '/api/v1/databases')
+        expect(res.statusCode).toBe(200)
+        const body = res.body as any
+        expect(body.databases).toBeInstanceOf(Array)
+        expect(body.databases.length).toBe(2)
+
+        const names = body.databases.map((d: any) => d.name).sort()
+        expect(names).toEqual(['db1', 'db2'])
+
+        for (const db of body.databases) {
+          expect(db.status).toBe('active')
+          expect(typeof db.nodeCount).toBe('number')
+          expect(typeof db.edgeCount).toBe('number')
+          expect(typeof db.createdAt).toBe('string')
+        }
+      })
+
+      test('GET /api/v1/databases should require admin permission', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'GET', '/api/v1/databases', undefined, readerAgent)
+        expect(res.statusCode).toBe(403)
+      })
+
+      test('GET /api/v1/shard/:id/info should return shard info for existing shard', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'GET', '/api/v1/shard/range-0/info')
+        expect(res.statusCode).toBe(200)
+        const body = res.body as any
+        expect(body.id).toBe('range-0')
+        expect(body.rangeCount).toBeGreaterThanOrEqual(1)
+        expect(typeof body.nodeCount).toBe('number')
+        expect(typeof body.edgeCount).toBe('number')
+        expect(body.status).toBe('healthy')
+        expect(body.database).toBeDefined()
+      })
+
+      test('GET /api/v1/shard/:id/info should return 404 for non-existent shard', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'GET', '/api/v1/shard/non-existent/info')
+        expect(res.statusCode).toBe(404)
+      })
+
+      test('GET /api/v1/shard/:id/info should require admin permission', async () => {
+        server = createRestApiServer(mockShardManager as any, dbConfig)
+        await server.start()
+
+        const res = await makeRequest(server, 'GET', '/api/v1/shard/range-0/info', undefined, readerAgent)
+        expect(res.statusCode).toBe(403)
       })
     })
   })
