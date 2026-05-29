@@ -43,18 +43,18 @@ Shard Manager ──→ 多 RangeInstances
 **关键发现**：
 - **Rebalancer** 已实现完整 flow（`pickTarget`→`reassignRange`→`notifyMembers`）
 - **AutoSplitter** 基于 `getRangeSizes()` 热路径检测
-- **ScatterGather** 用 Promise.all + 错误容忍，但无超时兜底
+- **ScatterGather** 用 Promise.all + 错误容忍 + 可选 `timeoutMs` 超时兜底 ✅ (Round 7 已修复)
 - **EdgeAffinity** 使用 `lookupSrcNodeId` 结合 DHT 或缓存路由
 
 ### 1.3 审计发现的代码质量问题
 
-| 严重度 | 问题 | 位置 | 说明 |
-|:------:|:-----|:------|------|
-| 🔴 高 | `join-consensus-timeout` 参数未暴露 | raft-core.ts | 硬编码 `leaderTimeout` |
-| 🔴 高 | `watchTimeout` 未暴露 | app-heartbeat-manager.ts | 硬编码 10s |
-| 🟡 中 | ScatterGather 无超时兜底 | scatter-gather.ts | 单向等待可能导致挂起 |
-| ✅ 已修复 | Rebalancer tests 挂起 | rebalancer.spec.ts | 已通过全量测试 |
-| 🔵 低 | RaftNode epoch 检查重复 | raft-node.ts | `ensureEpoch` 多处 > 1 处 |
+| 严重度 | 问题 | 位置 | 状态 | 说明 |
+|:------:|:-----|:------|:----:|------|
+| 🔴 高 | `join-consensus-timeout` 参数未暴露 | raft-core.ts | ✅ 已修复 | `waitForLeader(timeoutMs?)` 已接受可配置参数 |
+| 🔴 高 | `watchTimeout` 未暴露 | app-heartbeat-manager.ts | ✅ 已修复 | `pingIntervalMs/suspectThreshold/recoveryThreshold` 全部可配置 |
+| 🟡 中 | ScatterGather 无超时兜底 | scatter-gather.ts | ✅ 已修复 | Round 7 Step 4 添加 `promiseWithTimeout()` helper |
+| ✅ 已修复 | Rebalancer tests 挂起 | rebalancer.spec.ts | ✅ | 已通过全量测试 |
+| 🔵 低 | RaftNode epoch 检查重复 | raft-node.ts | ⬜ | `ensureEpoch` 多处 > 1 处 |
 
 ---
 
@@ -75,22 +75,22 @@ Client → REST API (Fluent) → QueryEngine → GraphEngine
 
 | 文件 | 行数 | 职责 |
 |------|:----:|------|
-| `api/rest.ts` | ~200 | HTTP REST 路由（Express 风格） |
-| `api/fluent.ts` | ~150 | 流式查询 Builder |
-| `api/query-planner.ts` | ~120 | 查询计划器 |
+| `api/rest.ts` | ~600 | HTTP REST 路由（~1630 行含 Ops 路由） |
+| `api/fluent.ts` | ~350 | 流式查询 Builder（含 `updateEdge`/`deleteEdge`） |
+| `api/query-planner.ts` | ~280 | 查询计划器（含 CBO StatsCollector 集成） |
 | `query/query-engine.ts` | ~280 | Cypher-lite 解析器 + 执行器 |
 | `core/graph-engine.ts` | ~600 | 核心图存储引擎 |
 | `core/label-engine.ts` | ~150 | 标签索引引擎 |
 
 ### 2.3 审计发现
 
-| 严重度 | 问题 | 位置 | 说明 |
-|:------:|:-----|:------|------|
-| 🟡 中 | Cypher-lite 无类型校验 | query-engine.ts | 运行时才暴露类型错误 |
-| 🟡 中 | Fluent API 缺少 `updateEdge()` / `deleteEdge()` | fluent.ts | 边操作不完备 |
-| 🔵 低 | REST API 缺少 `listDatabases()` / `getShardInfo` | rest.ts | Ops API 不足 |
-| 🔵 低 | `QueryEngine` 无缓存 | query-engine.ts | 无查询缓存层 |
-| ✅ | Cypher-lite 解析器支持：MATCH/RETURN/WHERE/ORDER/LIMIT/SKIP | — | 基础查询完备 |
+| 严重度 | 问题 | 位置 | 状态 | 说明 |
+|:------:|:-----|:------|:----:|------|
+| 🟡 中 | Cypher-lite 无类型校验 | query-engine.ts | ⬜ | 运行时才暴露类型错误 |
+| 🟡 中 | Fluent API `updateEdge()` / `deleteEdge()` | fluent.ts | ✅ 已修复 | Round 7 Step 4 添加 |
+| 🔵 低 | REST API `listDatabases()` / `getShardInfo` | rest.ts | ✅ 已修复 | Round 7 Step 4 添加 |
+| 🔵 低 | `QueryEngine` 无缓存 | query-engine.ts | ⬜ | 无查询缓存层 |
+| ✅ | Cypher-lite 解析器支持：MATCH/RETURN/WHERE/ORDER/LIMIT/SKIP | — | ✅ | 基础查询完备 |
 
 ---
 
