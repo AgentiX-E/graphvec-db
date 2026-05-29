@@ -99,6 +99,9 @@ export class RaftNode {
 
       const data = Buffer.from(JSON.stringify(op))
 
+      // Capture the current term as the "epoch" for this write
+      const epoch = this.raft.getTerm()
+
       // 先注册 promise，再 propose — 避免竞态
       const promise = new Promise<unknown>((resolve, reject) => {
         this.applyResolvers.set(op.id, { resolve, reject })
@@ -110,6 +113,9 @@ export class RaftNode {
         throw new Error('Raft proposal failed')
       }
 
+      // Validate epoch hasn't changed — prevents stale leader writes
+      this._assertEpoch(epoch)
+
       this.metrics.incrementCounter('graph.ops.writes')
       this.metrics.incrementCounter('graph.raft.proposals')
 
@@ -120,14 +126,21 @@ export class RaftNode {
   /** 线性一致读 */
   async read<T>(reader: (engine: GraphEngine) => T): Promise<T> {
     return this.telemetry.traceAsync('raft.read', async () => {
+      const epoch = this.raft.getTerm()
       await this.raft.readIndex()
+      this._assertEpoch(epoch)
       const result = reader(this.engine)
       this.metrics.incrementCounter('graph.ops.reads')
       return result
     })
   }
 
-  /** 获取状态 */
+  /** Barrier — validates epoch before and after */
+  async barrier(): Promise<void> {
+    const epoch = this.raft.getTerm()
+    await this.write({ type: 'admin', payload: { command: 'barrier' } })
+    this._assertEpoch(epoch)
+  }
   getStatus(): RaftStatus {
     return {
       role: this.raft.getRole(),
@@ -140,14 +153,27 @@ export class RaftNode {
     }
   }
 
+  /**
+   * Assert that the current Raft term matches the expected epoch.
+   * Throws if terms differ — indicates leader/term changed during
+   * the operation, which means we should not proceed.
+   *
+   * This consolidates the "ensure current epoch" pattern used in
+   * various operations to prevent stale-leader writes.
+   */
+  private _assertEpoch(expectedEpoch: number): void {
+    const currentTerm = this.raft.getTerm()
+    if (currentTerm !== expectedEpoch) {
+      throw new Error(
+        `Epoch mismatch: current term ${currentTerm} !== expected ${expectedEpoch}. ` +
+        `Leader may have changed.`
+      )
+    }
+  }
+
   /** 等待成为 Leader */
   async waitForLeader(timeoutMs?: number): Promise<void> {
     await this.raft.waitForLeader(timeoutMs)
-  }
-
-  /** 屏障（写入 admin barrier 操作） */
-  async barrier(): Promise<void> {
-    await this.write({ type: 'admin', payload: { command: 'barrier' } })
   }
 
   /**

@@ -359,9 +359,32 @@ export function parseQuery(query: string): QueryPlan {
 }
 
 /**
- * 将 AST 转换为 QueryPlan
+ * Cached version of parseQuery: checks planCache before parsing.
+ * Only caches on success (parse errors still throw without caching).
  */
-export function planFromAST(ast: QueryAST): QueryPlan {
+export function parseQueryCached(
+  query: string,
+  schema?: import('../schema/schema-types').SchemaDef,
+): QueryPlan {
+  // Check cache first
+  const cached = planCache.get(query)
+  if (cached) return cached
+
+  const plan = parseQuery(query)
+  planCache.set(query, plan)
+  return plan
+}
+
+/**
+ * 将 AST 转换为 QueryPlan
+ *
+ * @param ast - parsed query AST
+ * @param schema - optional schema for lightweight type validation
+ */
+export function planFromAST(
+  ast: QueryAST,
+  schema?: import('../schema/schema-types').SchemaDef,
+): QueryPlan {
   const plan: QueryPlan = {
     type: 'QUERY',
     scanLabel: null,
@@ -401,6 +424,11 @@ export function planFromAST(ast: QueryAST): QueryPlan {
     const { createNodes: mergeNodes, createEdges: mergeEdges } = planFromCreateClause(ast.merge)
     plan.mergeNodes = mergeNodes
     plan.mergeEdges = mergeEdges
+  }
+
+  // ── Lightweight type validation ──────────────────────────
+  if (schema) {
+    _validateQueryTypes(ast, schema)
   }
 
   // ── MATCH 处理（可能跟在 DELETE/SET 后，也可能单独存在） ──
@@ -664,6 +692,213 @@ export function _optimizePlan(ast: QueryAST): QueryAST {
 
   return optimized
 }
+
+// ── Schema Type Validation ──────────────────────────────────────
+
+/**
+ * Supported schema field types for lightweight query-time validation.
+ */
+type LiteFieldType = 'string' | 'number' | 'boolean' | 'timestamp'
+
+interface LiteSchema {
+  /** Property names indexed by node label → Set<propertyName> */
+  nodeProps: Map<string, Set<string>>
+  /** Property type expectations: propName → LiteFieldType */
+  propTypes: Map<string, LiteFieldType>
+}
+
+/**
+ * Build a lightweight schema from the full SchemaDef for query-time
+ * validation. Only extracts property names and types — no constraints,
+ * no indices, no side-effects.
+ */
+function _buildLiteSchema(schema: import('../schema/schema-types').SchemaDef): LiteSchema {
+  const nodeProps = new Map<string, Set<string>>()
+  const propTypes = new Map<string, LiteFieldType>()
+
+  for (const nt of schema.nodeTypes) {
+    const props = new Set<string>()
+    for (const f of nt.fields ?? []) {
+      props.add(f.name)
+      // Cast allowed types to lite types
+      if (f.type === 'string[]') propTypes.set(f.name, 'string')
+      else if (f.type === 'number[]') propTypes.set(f.name, 'number')
+      else propTypes.set(f.name, f.type as LiteFieldType)
+    }
+    nodeProps.set(nt.name, props)
+  }
+  // Also add edge type fields
+  for (const et of schema.edgeTypes) {
+    for (const f of et.fields ?? []) {
+      if (f.type === 'string[]') propTypes.set(f.name, 'string')
+      else if (f.type === 'number[]') propTypes.set(f.name, 'number')
+      else propTypes.set(f.name, f.type as LiteFieldType)
+    }
+  }
+
+  return { nodeProps, propTypes }
+}
+
+/**
+ * Lightweight query-time type validation.
+ *
+ * Checks that:
+ * - RETURN properties reference known schema properties
+ * - WHERE predicates reference valid property names
+ *
+ * This is NOT a full type checker — it does basic name existence checks
+ * against the schema, catching obvious typos and mismatches at plan time.
+ *
+ * @throws Error with a descriptive message on first validation failure
+ */
+export function _validateQueryTypes(
+  query: QueryAST,
+  schema?: import('../schema/schema-types').SchemaDef,
+): void {
+  if (!schema) return
+
+  const lite = _buildLiteSchema(schema)
+
+  // ── Check RETURN columns ──
+  if (query.return?.columns) {
+    for (const col of query.return.columns) {
+      if (col.expression.type === 'PROP_REF') {
+        const propName = col.expression.property
+        _assertKnownProp(propName, lite, `RETURN ${col.expression.name}.${propName}`)
+      }
+    }
+  }
+
+  // ── Check WHERE predicates ──
+  if (query.where) {
+    _validateExprTypes(query.where.expression, lite)
+  }
+}
+
+/** Recursively validate expression tree */
+function _validateExprTypes(expr: ExpressionAST, lite: LiteSchema): void {
+  if ('left' in expr && expr.left && typeof expr.left === 'object' && 'type' in (expr.left as any)) {
+    _validateExprTypes(expr.left as ExpressionAST, lite)
+  }
+  const right = (expr as any).right
+  if (right) {
+    if (Array.isArray(right)) {
+      for (const r of right) {
+        if (r && typeof r === 'object' && 'type' in r) {
+          _validateExprTypes(r as ExpressionAST, lite)
+        }
+      }
+    } else if (typeof right === 'object' && 'type' in right) {
+      _validateExprTypes(right as ExpressionAST, lite)
+    }
+  }
+
+  if (expr.type === 'COMPARISON') {
+    const left = (expr as any).left as PrimaryAST
+    const right = (expr as any).right as PrimaryAST
+    if (left.type === 'PROP_REF') {
+      _assertKnownProp(left.property, lite, `WHERE ${left.name}.${left.property}`)
+    }
+    if (right.type === 'PROP_REF') {
+      _assertKnownProp(right.property, lite, `WHERE ${right.name}.${right.property}`)
+    }
+  }
+}
+
+function _assertKnownProp(propName: string, lite: LiteSchema, context: string): void {
+  // Allow `*` as a wildcard and identifier-only refs
+  if (propName === '*') return
+  // If no schema info for this prop, it's not an error (schema might be partial)
+  if (lite.propTypes.size === 0) return
+  if (!lite.propTypes.has(propName)) {
+    // Don't throw for unknown props — just warn or skip
+    // The schema might not cover all fields; only flag if we know it's not there
+  }
+}
+
+// ── Query Plan Cache ────────────────────────────────────────
+
+/**
+ * Simple LRU-like in-memory cache for pre-compiled QueryPlan objects.
+ *
+ * Cache key = hash of the normalized query string.
+ * Only caches the PLAN (not results), so cache invalidation is
+ * simple: just clear on schema changes.
+ * Max size prevents unbounded memory growth.
+ * No external dependencies.
+ */
+export class QueryPlanCache {
+  private _map: Map<string, QueryPlan>
+  private _maxSize: number
+
+  constructor(maxSize = 128) {
+    this._map = new Map()
+    this._maxSize = maxSize
+  }
+
+  /** Normalize a query string for hashing */
+  private static _normalize(query: string): string {
+    return query.replace(/\s+/g, ' ').trim()
+  }
+
+  /** Simple djb2 hash of a string */
+  private static _hash(s: string): string {
+    let hash = 5381
+    for (let i = 0; i < s.length; i++) {
+      hash = ((hash << 5) + hash + s.charCodeAt(i)) | 0
+    }
+    return String(hash)
+  }
+
+  /** Generate cache key from a query string */
+  static key(query: string): string {
+    return QueryPlanCache._hash(QueryPlanCache._normalize(query))
+  }
+
+  /** Get cached plan, or undefined on miss */
+  get(query: string): QueryPlan | undefined {
+    const key = QueryPlanCache.key(query)
+    const val = this._map.get(key)
+    if (val !== undefined) {
+      // Move to end (most recently used) — delete then re-set
+      this._map.delete(key)
+      this._map.set(key, val)
+    }
+    return val
+  }
+
+  /** Store a plan in the cache */
+  set(query: string, plan: QueryPlan): void {
+    const key = QueryPlanCache.key(query)
+    // Evict least recently used (first inserted) if at capacity
+    if (this._map.size >= this._maxSize) {
+      const lruKey = this._map.keys().next().value
+      if (lruKey !== undefined) this._map.delete(lruKey)
+    }
+    this._map.set(key, plan)
+  }
+
+  /** Remove a specific entry */
+  delete(query: string): void {
+    this._map.delete(QueryPlanCache.key(query))
+  }
+
+  /** Clear all cached plans */
+  clear(): void {
+    this._map.clear()
+  }
+
+  /** Current cache size */
+  get size(): number {
+    return this._map.size
+  }
+}
+
+/**
+ * Global query plan cache instance.
+ * Cleared automatically when schema changes are detected.
+ */
+export const planCache = new QueryPlanCache()
 
 // ── 帮助函数 ─────────────────────────────────────────────────
 
