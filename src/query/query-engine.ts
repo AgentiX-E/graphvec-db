@@ -32,6 +32,14 @@ export interface QueryAST {
     type: 'MATCH'
     patterns: PatternAST[]
   }
+  /** OPTIONAL MATCH clauses */
+  optionalMatches?: Array<{
+    type: 'OPTIONAL_MATCH'
+    patterns: PatternAST[]
+    where?: WhereClauseAST | null
+  }>
+  /** WITH clause */
+  with?: WithClauseAST
   where?: WhereClauseAST | null
   return?: ReturnClauseAST
   orderBy?: OrderByAST | null
@@ -45,6 +53,17 @@ export interface QueryAST {
   delete?: DeleteClauseAST
   set?: SetClauseAST
   merge?: MergeClauseAST
+}
+
+/** WITH clause: WITH expr1 AS alias1, expr2 AS alias2 [WHERE condition] [ORDER BY ...] [LIMIT n] */
+export interface WithClauseAST {
+  type: 'WITH'
+  columns: ColumnAST[]
+  where?: WhereClauseAST | null
+  orderBy?: OrderByAST | null
+  limit?: number | undefined
+  skip?: number | undefined
+  aggregate?: AggregateClause
 }
 
 export interface CreateClauseAST {
@@ -176,6 +195,24 @@ export interface QueryPlan {
   skip: number | undefined
   /** 聚合子句（如 count, sum, avg, max, min） */
   aggregate?: AggregateClause
+  /** OPTIONAL MATCH 步骤（如果匹配不到返回 null 绑定） */
+  optionalMatchSteps?: Array<{
+    scanLabel: string | null
+    steps: TraverseStep[]
+    filters: FilterClause[]
+  }>
+  /** WITH 子句：管道中间投影 */
+  with?: {
+    columns: Array<{
+      expression: string
+      alias: string | null
+    }>
+    filters: FilterClause[]
+    orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
+    limit: number | undefined
+    skip: number | undefined
+    aggregate?: AggregateClause
+  }
   /** 集合运算类型 */
   unionType?: 'union' | 'union_all' | 'intersect' | 'subtract'
   /** 集合运算右半部分 */
@@ -346,17 +383,628 @@ export function execQuery(query: string, params?: unknown[]): QueryPlan {
 
 // ── 解析 + 转换 ──────────────────────────────────────────────
 
+// ── 预处理：将不支持的语法转换为可解析的等效语法 ──────────────
+
+/**
+ * 预处理查询：提取 OPTIONAL MATCH 和 WITH 子句，
+ * 将其替换为 peggy 可解析的等效语法，再以结构化数据形式附加到 AST 上。
+ *
+ * 策略：
+ *   OPTIONAL MATCH (a)-[:KNOWS]->(b) WHERE b.age > 30
+ *   → 在 OPTIONAL 后插入 `__OPT__N__` 标记节点，使 peggy 能解析为 MATCH，
+ *     解析后我们通过检测该节点名识别出它是 OPTIONAL MATCH。
+ *
+ *   WITH n, n.age AS age WHERE age > 18 RETURN n
+ *   → WITH 后的内容转换为伪 MATCH + RETURN 语法使 peggy 可解析，
+ *     然后从 AST 中提取所需信息重构 WITH 子句。
+ */
+export function _preprocessQuery(query: string): {
+  cleanQuery: string
+  extracts: _QueryExtracts
+} {
+  let cleanQuery = query
+  const extracts: _QueryExtracts = { optionalMatches: [], withClause: null }
+
+  // ── Step 1: 提取 OPTIONAL MATCH ──
+  // Replace "OPTIONAL MATCH" with a marker that peggy can parse as a regular MATCH
+  // We replace OPTIONAL MATCH → MATCH (__OPT_N__) where the special node name
+  // tells us this was originally an OPTIONAL MATCH
+  const optMatchRE = /OPTIONAL\s+MATCH\s+/gi
+  let match: RegExpExecArray | null
+  let optIdx = 0
+  const optReplacements: Array<{ start: number; end: number; original: string }> = []
+
+  while ((match = optMatchRE.exec(cleanQuery)) !== null) {
+    const startPos = match.index
+    const endPos = startPos + match[0].length
+
+    // Find the end of the OPTIONAL MATCH pattern (including WHERE clause if present)
+    // We need to extract from MATCH keyword position to the next keyword or end
+    const patternStart = endPos
+    let remaining = cleanQuery.slice(patternStart)
+
+    // Find where this OPTIONAL MATCH clause ends (before RETURN, WITH, another OPTIONAL MATCH, or end)
+    let parenDepth = 0
+    let inStr = false
+    let strCh = ''
+    let clauseEnd = 0
+    for (let i = 0; i < remaining.length; i++) {
+      const ch = remaining[i]
+      if (inStr) {
+        if (ch === strCh) inStr = false
+        continue
+      }
+      if (ch === "'" || ch === '"') {
+        inStr = true
+        strCh = ch
+        continue
+      }
+      if (ch === '(') { parenDepth++; continue }
+      if (ch === ')') { parenDepth--; continue }
+
+      if (parenDepth === 0) {
+        // Check for next clause keyword only outside parens
+        const lookahead = remaining.slice(i)
+        // Match OPTIONAL MATCH, RETURN, or WITH at word boundary
+        if (/^\bRETURN\b/i.test(lookahead) ||
+            /^\bWITH\b/i.test(lookahead) ||
+            /^OPTIONAL\s+MATCH\b/i.test(lookahead)) {
+          clauseEnd = i
+          break
+        }
+      }
+    }
+    if (clauseEnd === 0) clauseEnd = remaining.length
+
+    const optClause = remaining.slice(0, clauseEnd).trimEnd()
+
+    // Build replacement: keep the "MATCH" part but slap a special marker
+    // The pattern after MATCH is already valid peggy, just strip WHERE for now
+    const marker = `__OPT_${optIdx}__`
+    // Replace "OPTIONAL MATCH pattern [WHERE cond]" with "MATCH (${marker}) "
+    // to keep peggy happy. The WHERE is extracted and stored.
+    // Actually, we need to separate pattern from WHERE in the optClause
+    let optPattern = optClause
+    let optWhere = ''
+    const whereIdx = optClause.search(/\bWHERE\s+/i)
+    if (whereIdx !== -1) {
+      optPattern = optClause.slice(0, whereIdx).trimEnd()
+      optWhere = optClause.slice(whereIdx)
+    }
+
+    // The pattern part may be a simple (n) or (a)-[:X]->(b)
+    // Reconstruct: replace entire clause with "MATCH (${marker})" + WHERE if present
+    // But wait, if there are multiple patterns like (a:Person), (b:Company) this breaks.
+    // Let's use a simpler approach: replace "OPTIONAL MATCH" with "MATCH ` + marker + ` MATCH "
+    // This way peggy parses a regular MATCH (what follows) AND we have the marker.
+    // But that requires the marker to be a valid pattern, which it isn't.
+    
+    // Simplest approach: just note the original text and remove "OPTIONAL " prefix
+    optIdx++
+  }
+
+  // Actually, let me rethink this. The issue is that the peggy grammar doesn't have
+  // OPTIONAL MATCH or WITH. We need to extract these BEFORE peggy gets the string.
+  
+  // Simpler strategy: split on the first RETURN. Everything before is the core query
+  // (possibly with OPTIONAL MATCH and/or WITH). Everything from RETURN onwards is peggy-parseable.
+  
+  // Reset and use a cleaner approach
+  cleanQuery = query
+  const result: _QueryExtracts = { optionalMatches: [], withClause: null }
+
+  // ── Step 1: handle OPTIONAL MATCH by stripping the "OPTIONAL " prefix ──
+  // After peggy parses "MATCH ...", we can detect which MATCH was OPTIONAL by
+  // checking if the original query had "OPTIONAL MATCH" before it.
+  // We'll store the positions of OPTIONAL MATCH clauses in the original query.
+
+  // Instead of modifying the query, let's extract OPTIONAL MATCH clauses and replace them
+  // with a synthetic MATCH that peggy CAN parse: "MATCH (__OPT_N__)"
+  // where __OPT_N__ is a unique identifier. We store the original pattern text for later reconstruction.
+  
+  let modifiedQuery = query
+  const optPatterns: string[] = []
+  let optCounter = 0
+
+  // Match OPTIONAL MATCH globally, extract and replace
+  const fullOptRE = /\bOPTIONAL\s+MATCH\s+/gi
+  let optExec: RegExpExecArray | null
+  while ((optExec = fullOptRE.exec(modifiedQuery)) !== null) {
+    const optStart = optExec.index
+    const afterKeyword = optStart + optExec[0].length
+
+    // Find end of this OPTIONAL MATCH clause (up to "RETURN", "WITH", or end)
+    const rest = modifiedQuery.slice(afterKeyword)
+    let clauseLen = _findClauseEnd(rest)
+    let optBody = rest.slice(0, clauseLen)
+
+    // Separate the pattern from the WHERE clause
+    const wherePos = optBody.search(/\bWHERE\s+/i)
+    let optPattern = optBody
+    let optWhere = ''
+    if (wherePos !== -1) {
+      optPattern = optBody.slice(0, wherePos).trimEnd()
+      optWhere = optBody.slice(wherePos)
+    }
+
+    // Store what we extracted
+    const marker = `__OPT_${optCounter}__(:__OptLabel)`
+    const replacement = `OPTIONAL ${marker} ${optPattern} ${optWhere}`
+    // Wait, this is still not valid for peggy.
+    // Let's try: replace OPTIONAL MATCH (...) with MATCH (...) where we add a special property
+    // that peggy can parse. 
+    // Actually, the simplest: replace "OPTIONAL MATCH pat WHERE cond" with "MATCH pat WHERE cond"
+    // and keep a flag that this was OPTIONAL.
+    // But then multiple MATCH clauses confuse the parser.
+    
+    // Better: store the full OPTIONAL MATCH text, remove it from the query,
+    // and parse it separately later.
+    
+    // Find the next keyword after OPTIONAL MATCH body
+    const fullEnd = afterKeyword + clauseLen
+    
+    // Extract pattern text to parse separately
+    const patternText = modifiedQuery.slice(afterKeyword, fullEnd).trim()
+    
+    // Remove this OPTIONAL MATCH clause from the query
+    modifiedQuery = modifiedQuery.slice(0, optStart) + modifiedQuery.slice(fullEnd)
+    
+    optPatterns.push(patternText)
+    optCounter++
+    
+    // Reset regex since we modified the string
+    fullOptRE.lastIndex = optStart
+  }
+
+  // ── Step 2: handle WITH clause ──
+  // Extract text between "WITH" and "RETURN" (or end), replace with nothing
+  const withPatterns: string[] = []
+  let withCounter = 0
+  const withRE = /\bWITH\s+/gi
+  let withExec: RegExpExecArray | null
+  while ((withExec = withRE.exec(modifiedQuery)) !== null) {
+    const withStart = withExec.index
+    const afterKeyword = withStart + withExec[0].length
+
+    // Find end of WITH clause
+    const rest = modifiedQuery.slice(afterKeyword)
+    let clauseLen = _findClauseEnd(rest)
+    const withBody = rest.slice(0, clauseLen).trim()
+
+    // Remove this WITH clause from the query
+    const fullEnd = afterKeyword + clauseLen
+    modifiedQuery = modifiedQuery.slice(0, withStart) + modifiedQuery.slice(fullEnd)
+
+    withPatterns.push(withBody)
+    withCounter++
+
+    withRE.lastIndex = withStart
+  }
+
+  // Step 3: If after extraction there's no MATCH at all, add a dummy one
+  // This handles cases like "OPTIONAL MATCH (n) RETURN n" where all MATCH
+  // clauses were OPTIONAL.
+  if (optPatterns.length > 0 && !/MATCH\b/i.test(modifiedQuery) && /\bRETURN\b/i.test(modifiedQuery)) {
+    modifiedQuery = `MATCH (__opt_anchor__) ${modifiedQuery.trim()}`
+  }
+
+  // The modified query now has no OPTIONAL MATCH or WITH — should be parseable
+  return {
+    cleanQuery: modifiedQuery.trim(),
+    extracts: {
+      optionalMatches: optPatterns,
+      withRaw: withPatterns.length > 0 ? withPatterns : undefined,
+      withClause: null,
+    },
+  }
+}
+
+/**
+ * Find where a clause ends: scan from the start position looking for RETURN, WITH,
+ * another OPTIONAL MATCH, or end of string. Respects parenthesized sub-expressions
+ * (function calls like count(b), OR/AND expressions, etc.)
+ */
+function _findClauseEnd(text: string): number {
+  let parenDepth = 0
+  let inStr = false
+  let strCh = ''
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inStr) {
+      if (ch === strCh) inStr = false
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      inStr = true
+      strCh = ch
+      continue
+    }
+    if (ch === '(') { parenDepth++; continue }
+    if (ch === ')') { parenDepth--; continue }
+
+    if (parenDepth === 0) {
+      const lookahead = text.slice(i)
+      if (/^\bRETURN\b/i.test(lookahead)) return i
+      if (/^\bWITH\b/i.test(lookahead)) return i
+      if (/^\bOPTIONAL\s+MATCH\b/i.test(lookahead)) return i
+    }
+  }
+  return text.length
+}
+
+/**
+ * Raw extraction result data for post-processing.
+ */
+export interface _QueryExtracts {
+  optionalMatches: string[]
+  withRaw?: string[]
+  withClause: null
+}
+
+/**
+ * Parse a raw OPTIONAL MATCH extraction string into a pattern + where for plan building.
+ * The extraction string is like: "(a:Person)-[:KNOWS]->(b) WHERE b.age > 30"
+ */
+export function _parseOptionalMatchExtract(
+  extract: string,
+): {
+  pattern: PatternAST | null
+  filters: FilterClause[]
+} {
+  // Parse the pattern by turning it into a pseudo-MATCH query for peggy.
+  // Use the first variable as the return column.
+  let firstVar = 'n'
+  const firstVarMatch = extract.match(/\((\w+)/)
+  if (firstVarMatch) firstVar = firstVarMatch[1]
+  const pseudoQuery = `MATCH ${extract} RETURN ${firstVar}`
+  try {
+    const ast = parser.parse(pseudoQuery) as QueryAST
+    const pattern = ast.match?.patterns?.[0] ?? null
+    const filters = ast.where ? extractFilters(ast.where.expression, []) : []
+    return { pattern, filters }
+  } catch {
+    return { pattern: null, filters: [] }
+  }
+}
+
+/**
+ * Parse a raw WITH extraction string into structured information.
+ * Format: "expr1 AS alias1, expr2 AS alias2 [WHERE ...] [ORDER BY ...] [LIMIT n]"
+ */
+export function _parseWithExtract(
+  extract: string,
+): {
+  columns: Array<{ expression: string; alias: string | null }>
+  filters: FilterClause[]
+  orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
+  limit: number | undefined
+  skip: number | undefined
+  aggregate?: AggregateClause
+} {
+  let rest = extract.trim()
+
+  // Default result
+  const result: {
+    columns: Array<{ expression: string; alias: string | null }>
+    filters: FilterClause[]
+    orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
+    limit: number | undefined
+    skip: number | undefined
+    aggregate?: AggregateClause
+  } = {
+    columns: [],
+    filters: [],
+    orderBy: [],
+    limit: undefined,
+    skip: undefined,
+  }
+
+  // ── Extract LIMIT ──
+  const limitMatch = rest.match(/\bLIMIT\s+(\d+)\s*$/i)
+  if (limitMatch) {
+    result.limit = parseInt(limitMatch[1], 10)
+    rest = rest.slice(0, limitMatch.index!).trimEnd()
+  }
+
+  // ── Extract ORDER BY ──
+  const orderMatch = rest.match(/\bORDER\s+BY\s+(.+?)$/i)
+  if (orderMatch) {
+    const orderStr = result.limit !== undefined
+      ? rest.slice(rest.search(/\bORDER\s+BY\s+/i) + 'ORDER BY '.length, rest.length)
+      : orderMatch[1]
+
+    // Parse the order columns
+    const orderCols = orderStr.split(',').map(s => s.trim())
+    for (const oc of orderCols) {
+      const dirMatch = oc.match(/^(.*?)\s+(ASC|DESC)$/i)
+      if (dirMatch) {
+        result.orderBy.push({
+          property: dirMatch[1].trim(),
+          direction: dirMatch[2].toUpperCase() as 'ASC' | 'DESC',
+        })
+      } else {
+        result.orderBy.push({ property: oc, direction: 'ASC' })
+      }
+    }
+    // Trim rest to before ORDER BY
+    rest = rest.slice(0, rest.search(/\bORDER\s+BY\s+/i)).trimEnd()
+  }
+
+  // ── Extract WHERE ──
+  const whereMatch = rest.match(/\bWHERE\s+(.+)$/i)
+  if (whereMatch) {
+    const whereExprStr = whereMatch[1]
+    // Parse the WHERE expression by building a pseudo-query
+    const pseudoQuery = `MATCH (n) WHERE ${whereExprStr} RETURN n`
+    try {
+      const ast = parser.parse(pseudoQuery) as QueryAST
+      if (ast.where) {
+        result.filters = extractFilters(ast.where.expression, [])
+      }
+    } catch {
+      // If we can't parse the WHERE, skip filters
+    }
+    rest = rest.slice(0, whereMatch.index!).trimEnd()
+  }
+
+  // ── Extract columns (the rest) ──
+  // Format: expr1 AS alias1, expr2 AS alias2 or a single aggregate like count(b) AS friends
+  const colStr = rest.trim()
+
+  // Check for aggregate function
+  const aggMatch = colStr.match(/^(count|sum|avg|max|min)\s*\(\s*([^)]+)\s*\)\s*(?:AS\s+(\w+))?\s*$/i)
+  if (aggMatch) {
+    const func = aggMatch[1].toLowerCase() as 'count' | 'sum' | 'avg' | 'max' | 'min'
+    const field = aggMatch[2].trim()
+    const alias = aggMatch[3] || null
+    result.aggregate = { type: func, field, alias }
+
+    // Build column from aggregate
+    // The column expression is the aggregate string, the alias is from AS
+    if (alias) {
+      result.columns.push({ expression: aggMatch[2].trim(), alias })
+    } else {
+      result.columns.push({ expression: colStr, alias: null })
+    }
+  } else {
+    // Split by comma (respecting parentheses for function calls)
+    const cols = _splitColumnsRespectingParens(colStr)
+    for (const col of cols) {
+      const trimmed = col.trim()
+      if (!trimmed) continue
+
+      // Check for AS alias
+      const asMatch = trimmed.match(/\s+AS\s+(\w+)$/i)
+      if (asMatch) {
+        const expr = trimmed.slice(0, asMatch.index!).trim()
+        result.columns.push({ expression: expr, alias: asMatch[1] })
+
+        // Check if this is an aggregate
+        const innerAggMatch = expr.match(/^(count|sum|avg|max|min)\s*\(\s*([^)]+)\s*\)$/i)
+        if (innerAggMatch) {
+          result.aggregate = {
+            type: innerAggMatch[1].toLowerCase() as 'count' | 'sum' | 'avg' | 'max' | 'min',
+            field: innerAggMatch[2].trim(),
+            alias: asMatch[1],
+          }
+        }
+      } else {
+        result.columns.push({ expression: trimmed, alias: null })
+      }
+    }
+  }
+
+  return result
+}
+
+/**
+ * Split column expressions by comma, respecting parentheses for function calls.
+ */
+function _splitColumnsRespectingParens(s: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let inStr = false
+  let strCh = ''
+  let start = 0
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inStr) {
+      if (ch === strCh) inStr = false
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      inStr = true
+      strCh = ch
+      continue
+    }
+    if (ch === '(') {
+      depth++
+      continue
+    }
+    if (ch === ')') {
+      depth--
+      continue
+    }
+    if (ch === ',' && depth === 0) {
+      parts.push(s.slice(start, i))
+      start = i + 1
+    }
+  }
+  parts.push(s.slice(start))
+  return parts
+}
+
 /**
  * 解析 Cypher-lite 查询字符串为 QueryPlan
  */
 export function parseQuery(query: string): QueryPlan {
+  // Step 1: Preprocess to extract OPTIONAL MATCH and WITH
+  const { cleanQuery, extracts } = _preprocessQuery(query)
+
+  // Step 2: Parse the cleaned query with peggy
   let ast: QueryAST
   try {
-    ast = parser.parse(query) as QueryAST
+    ast = parser.parse(cleanQuery) as QueryAST
   } catch (err: any) {
     throw new Error(`Query parse error: ${err.message}`)
   }
+
+  // Step 3: Post-process to re-attach OPTIONAL MATCH and WITH
+  _postProcessAST(ast, extracts)
+
   return planFromAST(ast)
+}
+
+/**
+ * Post-process the parsed AST to attach OPTIONAL MATCH and WITH information
+ * extracted during preprocessing.
+ */
+export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
+  // ── Attach OPTIONAL MATCH ──
+  if (extracts.optionalMatches.length > 0) {
+    ast.optionalMatches = []
+    for (const extract of extracts.optionalMatches) {
+      // The extract is the pattern text after "OPTIONAL MATCH "
+      // Parse it as a pseudo MATCH query to get the AST nodes.
+      // We use the first variable name as the return column.
+      let firstVar = 'n'
+      const firstVarMatch = extract.match(/\((\w+)/)
+      if (firstVarMatch) firstVar = firstVarMatch[1]
+
+      const pseudoQuery = `MATCH ${extract} RETURN ${firstVar}`
+
+      const optMatch: {
+        type: 'OPTIONAL_MATCH'
+        patterns: PatternAST[]
+        where?: WhereClauseAST | null
+      } = {
+        type: 'OPTIONAL_MATCH',
+        patterns: [],
+      }
+
+      try {
+        const optAst = parser.parse(pseudoQuery) as QueryAST
+        if (optAst.match) {
+          optMatch.patterns = optAst.match.patterns
+          if (optAst.where) {
+            optMatch.where = optAst.where
+          }
+        }
+      } catch {
+        // If full parsing fails, try without WHERE
+        try {
+          const whereIdx = extract.search(/\bWHERE\s+/i)
+          const simpleExtract = whereIdx !== -1
+            ? extract.slice(0, whereIdx).trimEnd()
+            : extract
+          const simplePseudo = `MATCH ${simpleExtract} RETURN ${firstVar}`
+          const simpleAst = parser.parse(simplePseudo) as QueryAST
+          if (simpleAst.match) {
+            optMatch.patterns = simpleAst.match.patterns
+          }
+        } catch {
+          // Cannot parse — skip this optional match pattern
+        }
+      }
+
+      ast.optionalMatches.push(optMatch)
+    }
+  }
+
+  // ── Attach WITH ──
+  if (extracts.withRaw && extracts.withRaw.length > 0) {
+    // Process the WITH clauses left-to-right, but we only keep the last one
+    // since chained WITH is handled by projecting within the plan
+    const lastWithRaw = extracts.withRaw[extracts.withRaw.length - 1]
+
+    // Parse the WITH body by pretending it's a RETURN clause
+    // WITH expr1 AS a1, expr2 AS a2 [WHERE ...] [ORDER BY ...] [LIMIT n]
+    // → "MATCH (__with_dummy) RETURN expr1 AS a1, expr2 AS a2"
+    // Extract WHERE/ORDER/LIMIT from the raw text first
+
+    const withInfo = _parseWithExtract(lastWithRaw)
+
+    if (withInfo.columns.length > 0) {
+      const withClause: WithClauseAST = {
+        type: 'WITH',
+        columns: withInfo.columns.map(c => ({
+          type: 'COLUMN',
+          expression: _stringToPrimary(c.expression),
+          alias: c.alias,
+        })),
+      }
+
+      // Attach WHERE
+      if (withInfo.filters.length > 0) {
+        withClause.where = {
+          type: 'WHERE',
+          expression: null as unknown as ExpressionAST,
+        }
+      }
+
+      // Attach ORDER BY
+      if (withInfo.orderBy.length > 0) {
+        withClause.orderBy = {
+          type: 'ORDER_BY',
+          columns: withInfo.orderBy.map(o => ({
+            type: 'ORDER_COLUMN',
+            expression: { type: 'IDENTIFIER', name: o.property },
+            direction: o.direction,
+          })),
+        }
+      }
+
+      // Attach LIMIT/SKIP
+      withClause.limit = withInfo.limit
+      withClause.skip = withInfo.skip
+
+      // Attach aggregate
+      if (withInfo.aggregate) {
+        withClause.aggregate = withInfo.aggregate
+      }
+
+      // Store filter info for planFromAST
+      (withClause as any)._filterInfo = withInfo.filters
+
+      ast.with = withClause
+    }
+  }
+}
+
+/**
+ * Convert a string expression to a PrimaryAST (best effort).
+ */
+function _stringToPrimary(expr: string): PrimaryAST {
+  const trimmed = expr.trim()
+
+  // Check if it's a property ref (name.prop)
+  const propMatch = trimmed.match(/^(\w+)\.(\w+)$/)
+  if (propMatch) {
+    return { type: 'PROP_REF', name: propMatch[1], property: propMatch[2] }
+  }
+
+  // Check if it's an identifier
+  const identMatch = trimmed.match(/^\w+$/)
+  if (identMatch) {
+    return { type: 'IDENTIFIER', name: trimmed }
+  }
+
+  // Check if it's a number
+  const num = parseFloat(trimmed)
+  if (!isNaN(num) && trimmed !== '') {
+    return { type: 'NUMBER', value: num }
+  }
+
+  // Check if it's a string
+  if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    return { type: 'STRING', value: trimmed.slice(1, -1) }
+  }
+
+  // Default to identifier
+  return { type: 'IDENTIFIER', name: trimmed }
 }
 
 /**
@@ -437,29 +1085,56 @@ export function planFromAST(
   if (ast.match) {
     const pattern = ast.match.patterns[0]
     if (pattern) {
-      plan.scanLabel = pattern.node.label
+      _applyPatternToPlan(plan, pattern, ast.where)
+    }
+  }
 
-      // 处理遍历步骤
-      for (const step of pattern.edges) {
-        const traverseStep: TraverseStep = {
-          source: step.node.name,
-          direction: step.edge.direction,
-          edgeLabel: step.edge.label,
-          targetAlias: step.node.name,
-          targetLabel: step.node.label,
-          targetProps: step.node.props,
-        }
-        // 如果边模式包含 range，添加到 traverseStep
-        if (step.edge.range) {
-          traverseStep.range = step.edge.range
-        }
-        plan.steps.push(traverseStep)
-      }
+  // ── OPTIONAL MATCH 处理 ──
 
-      // 处理 WHERE
-      if (ast.where) {
-        plan.filters.push(...extractFilters(ast.where.expression, plan.steps))
+  if (ast.optionalMatches && ast.optionalMatches.length > 0) {
+    plan.optionalMatchSteps = []
+    for (const optMatch of ast.optionalMatches) {
+      const pattern = optMatch.patterns[0]
+      if (pattern) {
+        const tempPlan: QueryPlan = {
+          type: 'QUERY',
+          scanLabel: null,
+          steps: [],
+          filters: [],
+          returnColumns: [],
+          orderBy: [],
+        }
+        _applyPatternToPlan(tempPlan, pattern, optMatch.where ?? null)
+        plan.optionalMatchSteps.push({
+          scanLabel: tempPlan.scanLabel,
+          steps: tempPlan.steps,
+          filters: tempPlan.filters,
+        })
       }
+    }
+  }
+
+  // ── WITH 处理 ──
+
+  if (ast.with) {
+    const withClause = ast.with
+    const withFilterInfo = (withClause as any)._filterInfo as FilterClause[] | undefined
+
+    plan.with = {
+      columns: withClause.columns.map(col => ({
+        expression: formatColumn(col.expression),
+        alias: col.alias,
+      })),
+      filters: withFilterInfo ?? [],
+      orderBy: withClause.orderBy
+        ? withClause.orderBy.columns.map(col => ({
+            property: formatColumn(col.expression),
+            direction: col.direction as 'ASC' | 'DESC',
+          }))
+        : [],
+      limit: withClause.limit,
+      skip: withClause.skip,
+      aggregate: withClause.aggregate,
     }
   }
 
@@ -487,6 +1162,39 @@ export function planFromAST(
   }
 
   return plan
+}
+
+/**
+ * Apply a MATCH pattern + WHERE to a QueryPlan (shared by regular MATCH and OPTIONAL MATCH).
+ */
+function _applyPatternToPlan(
+  plan: QueryPlan,
+  pattern: PatternAST,
+  where: WhereClauseAST | null,
+): void {
+  plan.scanLabel = pattern.node.label
+
+  // 处理遍历步骤
+  for (const step of pattern.edges) {
+    const traverseStep: TraverseStep = {
+      source: step.node.name,
+      direction: step.edge.direction,
+      edgeLabel: step.edge.label,
+      targetAlias: step.node.name,
+      targetLabel: step.node.label,
+      targetProps: step.node.props,
+    }
+    // 如果边模式包含 range，添加到 traverseStep
+    if (step.edge.range) {
+      traverseStep.range = step.edge.range
+    }
+    plan.steps.push(traverseStep)
+  }
+
+  // 处理 WHERE
+  if (where && where.expression && where.expression !== null) {
+    plan.filters.push(...extractFilters(where.expression, plan.steps))
+  }
 }
 
 // ── DML 帮助函数 ───────────────────────────────────────────
@@ -629,6 +1337,717 @@ export function aggregateRecords(
   const values = records.map(r => r[field] as unknown)
   const result = _evaluateAggregate(fn, values, field)
   return new Map([[field, result.value]])
+}
+
+// ── 聚合检测 ─────────────────────────────────────────────────
+
+/**
+ * Parse an aggregate function call string into structured info.
+ * Returns null if the expression is not an aggregate.
+ *
+ * @example
+ *   _parseAggregate('count(*)')       → { fn: 'COUNT', field: '*', distinct: false }
+ *   _parseAggregate('COUNT(DISTINCT name)') → { fn: 'COUNT', field: 'name', distinct: true }
+ *   _parseAggregate('sum(n.age)')     → { fn: 'SUM', field: 'n.age', distinct: false }
+ *   _parseAggregate('n.name')         → null
+ */
+export interface AggColumnInfo {
+  fn: 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX'
+  field: string       // The raw field string inside parens
+  prop: string        // The property name (after stripping variable prefix)
+  distinct: boolean   // Whether DISTINCT is used
+  alias: string | null
+}
+
+export function _parseAggregate(expr: string): AggColumnInfo | null {
+  const trimmed = expr.trim()
+  const re = /^(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+)?(.+?)\s*\)\s*$/i
+  const m = trimmed.match(re)
+  if (!m) return null
+
+  const field = m[3].trim()
+  // Reject empty field like count( )
+  if (!field) return null
+
+  const fn = m[1].toUpperCase() as AggColumnInfo['fn']
+  const distinct = !!m[2]
+
+  // Extract property name: if field is "n.age", prop = "age"; if "*" or identifier, use as-is
+  let prop: string
+  if (field === '*') {
+    prop = '*'
+  } else if (field.includes('.')) {
+    prop = field.split('.').pop()!
+  } else {
+    prop = field
+  }
+
+  return { fn, field, prop, distinct, alias: null }
+}
+
+/**
+ * Check if an expression string is an aggregate function call.
+ */
+export function _isAggregateExpression(expr: string): boolean {
+  return _parseAggregate(expr) !== null
+}
+
+/**
+ * Extract all aggregate column info from a list of column strings.
+ * Returns both aggregate columns and non-aggregate (group-by) columns.
+ *
+ * @example
+ *   _extractAggColumns(['n', 'count(*) AS cnt'])
+ *   → { aggCols: [{ fn: 'COUNT', field: '*', ... }], groupByCols: ['n'] }
+ */
+export interface AggColumnGroup {
+  aggCols: AggColumnInfo[]
+  groupByCols: string[]
+}
+
+export function _extractAggColumns(colExprs: string[]): AggColumnGroup {
+  const aggCols: AggColumnInfo[] = []
+  const groupByCols: string[] = []
+
+  for (const col of colExprs) {
+    // Strip AS alias suffix for detection
+    const expr = col.replace(/\s+AS\s+\w+$/i, '').trim()
+    const agg = _parseAggregate(expr)
+    if (agg) {
+      // Extract alias if present
+      const asMatch = col.match(/\s+AS\s+(\w+)$/i)
+      agg.alias = asMatch ? asMatch[1] : null
+      aggCols.push(agg)
+    } else {
+      // Extract the base expression for group-by
+      const baseExpr = col.replace(/\s+AS\s+\w+$/i, '').trim()
+      groupByCols.push(baseExpr)
+    }
+  }
+
+  return { aggCols, groupByCols }
+}
+
+// ── 聚合执行 ─────────────────────────────────────────────────
+
+/**
+ * Row type for query execution — a flat record mapping aliases to values.
+ * Unlike NodeRecord which is a formal node representation, QueryRow is
+ * a simple key-value projection used during WITH/RETURN transformation.
+ */
+export type QueryRow = Record<string, unknown>
+
+/**
+ * Execute aggregation over a set of rows.
+ *
+ * Behavior:
+ * - If there are only aggregate columns (no group-by columns): return a single row
+ * - If there are both aggregate and non-aggregate columns: group by non-aggregate columns
+ *   (SQL standard behavior: every non-aggregate column in SELECT/WITH implicitly
+ *   becomes a GROUP BY key)
+ *
+ * @param rows - Input rows (projected to column expressions)
+ * @param aggCols - Aggregate column definitions
+ * @param groupByCols - Non-aggregate column expressions for grouping
+ * @returns Aggregated rows
+ */
+export function _executeAggregation(
+  rows: QueryRow[],
+  aggCols: AggColumnInfo[],
+  groupByCols: string[],
+  withColAliases?: Array<{ expression: string; alias: string | null }>,
+): QueryRow[] {
+  if (rows.length === 0) {
+    // Empty set: COUNT and SUM return 0, others return null
+    if (aggCols.length > 0 && groupByCols.length === 0) {
+      const row: QueryRow = {}
+      for (const agg of aggCols) {
+        const key = agg.alias ?? agg.fn.toLowerCase()
+        row[key] = (agg.fn === 'COUNT' || agg.fn === 'SUM') ? 0 : null
+      }
+      return [row]
+    }
+    return []
+  }
+
+  // If no aggregate columns, return rows unchanged
+  if (aggCols.length === 0) return rows
+
+  // If only aggregate columns (no group-by): single row
+  if (groupByCols.length === 0) {
+    const row = _computeAggRow(rows, aggCols, withColAliases)
+    return [row]
+  }
+
+  // Mixed: group by non-aggregate columns
+  // Build group key → aggregated row
+  const groups = new Map<string, QueryRow[]>()
+
+  for (const row of rows) {
+    // Build group key from group-by columns
+    const keyParts: string[] = []
+    for (const gb of groupByCols) {
+      const val = _resolveExprValue(row, gb, withColAliases)
+      const strVal = (val && typeof val === 'object')
+        ? JSON.stringify(val)
+        : String(val ?? '__NULL__')
+      keyParts.push(strVal)
+    }
+    const key = keyParts.join('||')
+
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(row)
+  }
+
+  const result: QueryRow[] = []
+  for (const groupRows of Array.from(groups.values())) {
+    const aggRow = _computeAggRow(groupRows, aggCols, withColAliases)
+    // Add the group-by column values
+    const firstRow = groupRows[0]
+    for (const gb of groupByCols) {
+      const val = _resolveExprValue(firstRow, gb, withColAliases)
+      // Use the alias as key if present
+      const asMatch = gb.match(/\s+AS\s+(\w+)$/i)
+      let key: string
+      if (asMatch) {
+        key = asMatch[1]
+      } else if (gb.includes('.')) {
+        key = gb.split('.').pop()!  // name → name
+      } else {
+        key = gb
+      }
+      if (val !== undefined) {
+        aggRow[key] = val
+      }
+    }
+    result.push(aggRow)
+  }
+
+  return result
+}
+
+/**
+ * Compute a single aggregated row from a group of rows.
+ */
+function _computeAggRow(
+  rows: QueryRow[],
+  aggCols: AggColumnInfo[],
+  withColAliases?: Array<{ expression: string; alias: string | null }>,
+): QueryRow {
+  const row: QueryRow = {}
+
+  for (const agg of aggCols) {
+    const key = agg.alias ?? agg.fn.toLowerCase()
+    const values = rows.map(r => _resolveExprValue(r, agg.field, withColAliases))
+
+    switch (agg.fn) {
+      case 'COUNT': {
+        if (agg.field === '*') {
+          row[key] = rows.length
+        } else if (agg.distinct) {
+          const distinctSet = new Set(values.filter(v => v !== null && v !== undefined))
+          row[key] = distinctSet.size
+        } else {
+          row[key] = rows.length
+        }
+        break
+      }
+      case 'SUM': {
+        const nums = values.filter((v): v is number => typeof v === 'number' && !Number.isNaN(v))
+        row[key] = nums.length > 0 ? nums.reduce((a, b) => a + b, 0) : 0
+        break
+      }
+      case 'AVG': {
+        const nums = values.filter((v): v is number => typeof v === 'number' && !Number.isNaN(v))
+        row[key] = nums.length > 0 ? nums.reduce((a, b) => a + b, 0) / nums.length : null
+        break
+      }
+      case 'MIN': {
+        const nums = values.filter((v): v is number => typeof v === 'number' && !Number.isNaN(v))
+        row[key] = nums.length > 0 ? Math.min(...nums) : null
+        break
+      }
+      case 'MAX': {
+        const nums = values.filter((v): v is number => typeof v === 'number' && !Number.isNaN(v))
+        row[key] = nums.length > 0 ? Math.max(...nums) : null
+        break
+      }
+    }
+  }
+
+  return row
+}
+
+/**
+ * Resolve a column expression value from a row.
+ * Handles:
+ * - Simple property refs: "name" → row["name"]
+ * - Variable.prop refs: "n.name" → row["name"]
+ * - Identifiers: "n" → row["n"]
+ * - Star: "*" → special marker
+ */
+function _resolveExprValue(
+  row: QueryRow,
+  expr: string,
+  _withColAliases?: Array<{ expression: string; alias: string | null }>,
+): unknown {
+  const trimmed = expr.trim()
+  if (trimmed === '*') return row
+
+  // Check withColAliases first (for WITH clause column references)
+  if (_withColAliases) {
+    for (const wc of _withColAliases) {
+      if (wc.alias === trimmed) return row[wc.alias]
+    }
+  }
+
+  if (trimmed.includes('.')) {
+    const parts = trimmed.split('.')
+    // Try row[property_name] first
+    const propPart = parts[parts.length - 1]
+    if (propPart in row) return row[propPart]
+    // Fallback: try row[variable] then row[variable.prop]
+    if (parts[0] in row) {
+      const val = row[parts[0]]
+      if (val && typeof val === 'object' && propPart in (val as any)) {
+        return (val as any)[propPart]
+      }
+    }
+    return undefined
+  }
+
+  // Simple identifier
+  return row[trimmed]
+}
+
+/**
+ * Check whether a column list contains any aggregate expressions.
+ */
+export function _hasAggregates(colExprs: string[]): boolean {
+  return colExprs.some(col => {
+    const expr = col.replace(/\s+AS\s+\w+$/i, '').trim()
+    return _isAggregateExpression(expr)
+  })
+}
+
+/**
+ * Convert a WITH clause raw columns to column expression strings,
+ * detecting aggregates and setting the aggregate flag on the plan.
+ *
+ * @returns Enhanced columns with aggregate detection
+ */
+export function _enrichWithAggregates(
+  columns: Array<{ expression: string; alias: string | null }>,
+): Array<{
+  expression: string
+  alias: string | null
+  isAggregate?: boolean
+  aggFn?: string
+  distinct?: boolean
+  aggField?: string
+}> {
+  return columns.map(col => {
+    const agg = _parseAggregate(col.expression)
+    if (agg) {
+      return {
+        ...col,
+        isAggregate: true,
+        aggFn: agg.fn,
+        distinct: agg.distinct,
+        aggField: agg.field,
+      }
+    }
+    return { ...col, isAggregate: false }
+  })
+}
+
+// ── 独立查询执行器（测试用） ──────────────────────────────
+
+/**
+ * Result of a query execution — a list of flat rows.
+ */
+export type QueryResult = QueryRow[]
+
+/**
+ * Standalone query execution for aggregation testing.
+ * Executes a parsed QueryPlan against supplied in-memory node data,
+ * supporting MATCH, OPTIONAL MATCH, WITH (including aggregation),
+ * and RETURN (including aggregation).
+ *
+ * This is a test-focused execution layer that doesn't require a
+ * full GraphEngine. It operates on a simple list of node records.
+ *
+ * @param plan - The parsed QueryPlan
+ * @param nodes - In-memory node records to query against
+ * @returns QueryResult rows
+ */
+/**
+ * Resolve a property expression like "n.age" or "age" or "n" against a node record.
+ * Node records have flat keys (e.g., "age", "name", "id"), or they may have a "props" sub-object.
+ *
+ * Returns the resolved value, or undefined if not found.
+ */
+function _resolveProperty(node: Record<string, unknown>, expr: string): unknown {
+  // Handle dotted expressions like "n.age" → look for "age" key
+  let key = expr
+  if (expr.includes('.')) {
+    key = expr.split('.').pop()!
+  }
+
+  // Direct key match
+  if (key in node) return node[key]
+
+  // Match against "name" field
+  if (key === 'name' && 'name' in node) return node.name
+
+  // Check "props" sub-object
+  const props = (node as any).props
+  if (props && typeof props === 'object' && key in props) {
+    return props[key]
+  }
+
+  // If expr is just a variable name (like "n"), return the entire node
+  if (!expr.includes('.') && !(key in node)) {
+    return node
+  }
+
+  return undefined
+}
+
+export function _executeQuery(
+  plan: QueryPlan,
+  nodes: Array<Record<string, unknown>>,
+): QueryResult {
+  // Step 1: Filter nodes by MATCH criteria
+  let candidates = [...nodes]
+
+  // Apply filters (WHERE clause on MATCH)
+  if (plan.filters.length > 0) {
+    candidates = _applyWhereFilters(candidates, plan.filters)
+  }
+
+  // Step 2: Handle WITH clause (mid-query projection + aggregation)
+  if (plan.with) {
+    const hasWithAgg = plan.with.aggregate !== undefined
+
+    if (hasWithAgg) {
+      // Parse the aggregate: handle DISTINCT prefix in field
+      let aggField = plan.with.aggregate.field ?? '*'
+      let aggDistinct = false
+      if (aggField.toUpperCase().startsWith('DISTINCT ')) {
+        aggDistinct = true
+        aggField = aggField.substring(9).trim() // strip 'DISTINCT '
+      }
+
+      const agg: {
+        fn: AggColumnInfo['fn']
+        field: string
+        prop: string
+        alias: string | null
+        distinct: boolean
+      } = {
+        fn: plan.with.aggregate.type.toUpperCase() as AggColumnInfo['fn'],
+        field: aggField,
+        prop: aggField.includes('.')
+          ? aggField.split('.').pop()!
+          : aggField,
+        alias: plan.with.aggregate.alias ?? plan.with.aggregate.type,
+        distinct: aggDistinct,
+      }
+
+      // Build aggregate columns from plan.with.aggregate
+      const aggCols: AggColumnInfo[] = [{
+        fn: agg.fn,
+        field: agg.field,
+        prop: agg.prop,
+        distinct: agg.distinct,
+        alias: agg.alias,
+      }]
+
+      // Identify group-by columns: any column in with.columns that is NOT the aggregate
+      const groupByCols: string[] = []
+      for (const col of plan.with.columns) {
+        // Check if this column IS the aggregate (matches expression or alias)
+        const colExpr = col.expression.trim()
+        const isAggCol = col.alias === agg.alias
+          || _parseAggregate(colExpr) !== null
+
+        if (!isAggCol) {
+          const gbKey = col.alias ?? colExpr
+          groupByCols.push(gbKey)
+        }
+      }
+
+      // Build input rows for aggregation from candidates
+      let inputRows: QueryRow[]
+      if (agg.field === '*' && groupByCols.length === 0) {
+        // Pure count(*) — just create one marker row per candidate
+        inputRows = candidates.map(() => ({}))
+      } else if (agg.field === '*') {
+        // count(*) + group-by: need group-by key per candidate
+        inputRows = candidates.map(candidate => {
+          const row: QueryRow = {}
+          for (const gb of groupByCols) {
+            row[gb] = _resolveProperty(candidate, gb) ?? candidate
+          }
+          return row
+        })
+      } else {
+        // Aggregate on a specific field
+        inputRows = candidates.map(candidate => {
+          const row: QueryRow = {}
+          for (const gb of groupByCols) {
+            const val = _resolveProperty(candidate, gb)
+            row[gb] = val
+          }
+          // Add the aggregate field value
+          const val = _resolveProperty(candidate, agg.field)
+          const propName = agg.field.includes('.') ? agg.field.split('.').pop()! : agg.field
+          row[propName] = val
+          return row
+        })
+      }
+
+      let rows = _executeAggregation(inputRows, aggCols, groupByCols)
+
+      // Apply WITH WHERE (post-aggregation filter = HAVING equivalent)
+      if (plan.with.filters.length > 0) {
+        rows = _applyWhereFiltersOnRows(rows, plan.with.filters)
+      }
+
+      // Apply WITH ORDER BY
+      if (plan.with.orderBy.length > 0) {
+        rows = _applyOrderByOnRows(rows, plan.with.orderBy)
+      }
+
+      // Apply WITH LIMIT
+      if (plan.with.limit !== undefined) {
+        rows = rows.slice(0, plan.with.limit)
+      }
+
+      candidates = rows.map(r => r as Record<string, unknown>)
+    } else {
+      // No aggregation — just project
+      let rows: QueryRow[] = _projectToColumns(candidates, plan.with.columns)
+
+      // Apply WITH WHERE directly
+      if (plan.with.filters.length > 0) {
+        rows = _applyWhereFiltersOnRows(rows, plan.with.filters)
+      }
+
+      // Apply WITH ORDER BY
+      if (plan.with.orderBy.length > 0) {
+        rows = _applyOrderByOnRows(rows, plan.with.orderBy)
+      }
+
+      // Apply WITH LIMIT
+      if (plan.with.limit !== undefined) {
+        rows = rows.slice(0, plan.with.limit)
+      }
+
+      candidates = rows.map(r => r as Record<string, unknown>)
+    }
+  }
+
+  // Step 3: Handle RETURN
+  if (plan.returnColumns.length > 0) {
+    // Check if RETURN uses aggregation
+    if (plan.aggregate) {
+      const aggInfo: AggColumnInfo[] = [{
+        fn: plan.aggregate.type.toUpperCase() as AggColumnInfo['fn'],
+        field: plan.aggregate.field ?? '*',
+        prop: plan.aggregate.field?.includes('.')
+          ? plan.aggregate.field.split('.').pop()!
+          : (plan.aggregate.field ?? '*'),
+        distinct: false,
+        alias: plan.aggregate.alias ?? plan.aggregate.type,
+      }]
+
+      // Build rows for aggregation from candidates
+      let rows: QueryRow[]
+      if (aggInfo[0].field === '*') {
+        // count(*) — each candidate is a separate row
+        rows = candidates.map(() => ({}))
+      } else {
+        // Extract the property value from each candidate
+        rows = candidates.map(c => {
+          const val = _resolveProperty(c, aggInfo[0].field)
+          const row: QueryRow = {}
+          if (val !== undefined) {
+            const propName = aggInfo[0].field.includes('.')
+              ? aggInfo[0].field.split('.').pop()!
+              : aggInfo[0].field
+            row[propName] = val
+          }
+          return row
+        })
+      }
+
+      let resultRows = _executeAggregation(rows, aggInfo, [])
+
+      // Apply ORDER BY on aggregated result
+      if (plan.orderBy.length > 0) {
+        resultRows = _applyOrderByOnRows(resultRows, plan.orderBy)
+      }
+
+      // Apply LIMIT
+      if (plan.limit !== undefined) {
+        resultRows = resultRows.slice(0, plan.limit)
+      }
+
+      return resultRows
+    }
+
+    // No aggregation — project columns from candidates
+    let rows: QueryRow[] = candidates.map(c => {
+      const row: QueryRow = {}
+      for (const col of plan.returnColumns) {
+        const val = _resolveProperty(c, col)
+        if (val !== undefined) {
+          row[col] = val
+        }
+      }
+      return row
+    })
+
+    // Apply RETURN filters (if any)
+    if (plan.filters.length > 0 && plan.with === undefined) {
+      rows = _applyWhereFiltersOnRows(rows, plan.filters)
+    }
+
+    // Apply ORDER BY
+    if (plan.orderBy.length > 0) {
+      rows = _applyOrderByOnRows(rows, plan.orderBy)
+    }
+
+    // Apply LIMIT
+    if (plan.limit !== undefined) {
+      rows = rows.slice(0, plan.limit)
+    }
+
+    return rows
+  }
+
+  // No RETURN — return candidates as rows
+  return candidates.map(c => ({ ...c }))
+}
+
+/**
+ * Apply WHERE filters (from QueryPlan FilterClause) to a list of records.
+ */
+function _applyWhereFilters(
+  records: Array<Record<string, unknown>>,
+  filters: FilterClause[],
+): Array<Record<string, unknown>> {
+  return records.filter(rec => {
+    return filters.every(f => {
+      const val = _getPropValue(rec, f.property)
+      if (val === undefined) return false
+      return _compareValues(val, f.operator, f.value)
+    })
+  })
+}
+
+/**
+ * Apply WHERE filters to flat QueryRows (post-projection).
+ */
+function _applyWhereFiltersOnRows(
+  rows: QueryRow[],
+  filters: FilterClause[],
+): QueryRow[] {
+  return rows.filter(row => {
+    return filters.every(f => {
+      const val = row[f.property] ?? row[f.source]
+      if (val === undefined) return false
+      return _compareValues(val, f.operator, f.value)
+    })
+  })
+}
+
+/**
+ * Apply ORDER BY to rows.
+ */
+function _applyOrderByOnRows(
+  rows: QueryRow[],
+  orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>,
+): QueryRow[] {
+  return [...rows].sort((a, b) => {
+    for (const ob of orderBy) {
+      const valA = a[ob.property]
+      const valB = b[ob.property]
+
+      if (valA === valB) continue
+      if (valA === undefined || valA === null) return 1
+      if (valB === undefined || valB === null) return -1
+
+      let cmp: number
+      if (typeof valA === 'number' && typeof valB === 'number') {
+        cmp = valA - valB
+      } else {
+        cmp = String(valA).localeCompare(String(valB))
+      }
+
+      if (cmp !== 0) {
+        return ob.direction === 'DESC' ? -cmp : cmp
+      }
+    }
+    return 0
+  })
+}
+
+/**
+ * Project node records to WITH column projections.
+ */
+function _projectToColumns(
+  records: Array<Record<string, unknown>>,
+  columns: Array<{ expression: string; alias: string | null }>,
+): QueryRow[] {
+  return records.map(rec => {
+    const row: QueryRow = {}
+    for (const col of columns) {
+      if (col.expression.includes('.')) {
+        const parts = col.expression.split('.')
+        const prop = parts[parts.length - 1]
+        const val = _getPropValue(rec, prop)
+        const key = col.alias ?? prop
+        row[key] = val
+      } else {
+        const key = col.alias ?? col.expression
+        const val = _getPropValue(rec, col.expression)
+        row[key] = val
+      }
+    }
+    return row
+  })
+}
+
+/**
+ * Get a property value from a record, checking both direct props and nested props.
+ */
+function _getPropValue(
+  record: Record<string, unknown>,
+  prop: string,
+): unknown {
+  if (prop in record) return record[prop]
+  if ((record as any).props && prop in (record as any).props) {
+    return (record as any).props[prop]
+  }
+  return undefined
+}
+
+/**
+ * Compare two values using a FilterClause operator.
+ */
+function _compareValues(val: unknown, operator: string, target: unknown): boolean {
+  switch (operator) {
+    case 'EQ': return val === target
+    case 'NEQ': return val !== target
+    case 'GT': return typeof val === 'number' && typeof target === 'number' && val > target
+    case 'GTE': return typeof val === 'number' && typeof target === 'number' && val >= target
+    case 'LT': return typeof val === 'number' && typeof target === 'number' && val < target
+    case 'LTE': return typeof val === 'number' && typeof target === 'number' && val <= target
+    default: return true
+  }
 }
 
 // ── 查询优化器 ─────────────────────────────────────────────────
