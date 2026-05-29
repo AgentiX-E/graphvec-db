@@ -1,5 +1,7 @@
 # AgentiX GraphVec 进度追踪 v1.0
 
+> 最新更新时间：2026-05-29（Round 8）
+
 ## 整体进度
 - 已完成: 30 个功能
 - 进行中: 0 个功能
@@ -57,18 +59,18 @@
 
 | ID | 功能 | 设计状态 | 实现状态 | 测试状态 | 当前负责人 | 备注 |
 |----|------|:--------:|:--------:|:--------:|-----------|------|
-| F26 | Graph Algorithms | ✅ 完成 | ✅ 100% | ✅ 通过 | - | Louvain/Dinic/MST/Betweenness |
+| F26 | Graph Algorithms | ✅ 完成 | ✅ 100% | ✅ 通过 | - | Louvain/Dinic/MST/Betweenness/WCC/SCC/Triangle/LabelProp/Degree/A* |
 | F27 | Reshard | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 在线重分片 |
 | F28 | Schema Validation | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 图 Schema 校验 |
 | F29 | Outbox Replay | ✅ 完成 | ✅ 100% | ✅ 通过 | - | Outbox 故障恢复重放 |
 | F30 | Worker Pool | ✅ 完成 | ✅ 100% | ✅ 通过 | - | EventBus 工作者池 |
 
-## 测试状态汇总（2026-05-29 Round 7 更新）
+## 测试状态汇总（2026-05-29 Round 8 更新）
 
 | 测试组 | 通过 | 失败 | Skip | 说明 |
 |--------|:---:|:----:|:----:|------|
 | core-base（11 文件） | 237 | 0 | 3 | SSI 读集冲突检测 3 项 skip |
-| algorithms（7 文件） | 69 | 0 | 0 | 含流式算法 |
+| algorithms（13 文件） | 175 | 0 | 0 | 含流式算法 + WCC/SCC/Triangle/LabelProp/Degree/A* |
 | api（5 文件） | 188 | 0 | 4 | 跨DB路由mock 4 项 skip |
 | query（4 文件） | 121 | 0 | 0 | — |
 | search（2 文件） | 37 | 0 | 0 | WAL 持久化新增 17 |
@@ -155,3 +157,6 @@
 | 2026-05-29 | Round 7: P1-5 基准测试套件 (benchmark npm) | ALL |
 | 2026-05-29 | Round 7: P1-6 自动墓碑 GC 清理 | F07 |
 | 2026-05-29 | Round 7: P1-7 全文索引 WAL 持久化 | F24 |
+| 2026-05-29 | Round 8: Gap 3 查询计划缓存 (P0/Low) — lru-cache 复用, 8 new tests, 46/46 pass | F21 |
+| 2026-05-29 | Round 8: Gap 6 图算法扩增 (P1/Med) — 新增 WCC/SCC/Triangle/LabelProp/Degree/A* 6个算法, 102+73 tests pass | F26 |
+| 2026-05-29 | Round 8: Gap 11 数据压缩 (P3/Low) — msgpackr 复用, 38% 空间节省, 81 tests pass | F05 |

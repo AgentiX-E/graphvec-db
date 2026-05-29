@@ -1,5 +1,11 @@
 # AgentiX GraphVec 技术设计 v1.0
 
+## §1 本文件变更追踪
+
+| 日期 | 变更内容 |
+|------|----------|
+| 2026-05-29 | Round 8 新增：Query Plan Cache（§8.8）、Graph Algorithms Expansion（§8.9）、Data Compression（§8.10） |
+
 ## 架构概览
 
 ```
@@ -182,6 +188,49 @@ Consensus Path:
 Storage Path:
   F07 (DB Manager) ──→ F01 (Graph Engine) ──→ LMDB + WAL
   F11 (Auto-Split) ──→ F01 (Graph Engine) + F05 (Consensus)
+
+### F26: Query Plan Cache
+**设计目录**: `src/query/plan-cache.ts`
+**意图**: 缓存已编译的查询计划，避免重复的解析-优化-编译开销
+**接口**:
+- `planCache` — 单例缓存，使用 `lru-cache` v11，`max: 1000`
+- `parseQueryCached()` — 查询解析入口，命中直接返回，未命中解析后回写缓存
+**关键设计决策**:
+- 缓存 Key 使用 djb2 哈希算法，输入前做空白字符归一化（`/\s+/g → ' '` + `trim()`）
+- 自动失效：统计信息变更时 (`StatsCollector.onStatsChanged`) 清空缓存
+- `planCache` 作为模块级单例导出，整个进程共享
+**依赖**: F21 (Query Engine / QueryPlanner), F08 (StatsCollector)
+
+### F27: Graph Algorithms Expansion
+**设计目录**: `src/core/graph-algorithms.ts`
+**意图**: 在现有 BFS/DFS/PageRank 基础上增加 6 种图算法
+**接口**:
+- `WCC(graph)` — 弱连通分量（基于 graphology-components）
+- `SCC(graph)` — 强连通分量（基于 graphology-components 的 Kosaraju 算法）
+- `TriangleCount(graph)` — 三角计数
+- `LabelPropagation(graph, opts?)` — 标签传播社区发现
+- `DegreeCentrality(graph)` — 度中心性计算
+- `AStar(graph, source, target, heuristic?)` — A* 最短路径
+**关键设计决策**:
+- WCC/SCC 复用 `graphology-components` 已有实现，避免重复造轮子
+- 所有算法通过 `GraphEngine` 统一注册，`engine.runAlgorithm(name, params)` 入口调度
+- Triangle Count 和 Label Propagation 优先采用 graphology 社区贡献，无现成时自实现
+- 算法返回统一格式 `{ name, result, duration, nodeCount }`
+**依赖**: F01 (Graph Engine), graphology-components
+
+### F28: Data Compression
+**设计目录**: `src/core/compression.ts`
+**意图**: 基于 msgpackr 的透明序列化压缩，减少存储占用和网络传输大小
+**接口**:
+- `compress(value)` / `decompress(buffer)` — 压缩/解压顶层封装
+- 对 `number[]` 类型使用 `__c` 包装器兼容标记（标记 → 内部走差分编码）
+**关键设计决策**:
+- 透明序列化：属性写入前 `compress()`，读取后 `decompress()`，对上层业务代码无感知
+- 混合策略：小值（<256B）不压缩，中大值使用 msgpackr 紧凑二进制格式
+- 实测效果：节点/边的 `properties` 存储节省约 38%（取决于数据类型分布）
+- 配置开关：`GraphConfig.storageCompression`（`boolean`，默认 `false`）和 `compressionStrategy`（`'msgpackr' | 'none'`）
+- 启动时根据配置决定是否 hook 序列化管道，支持运行时动态调整（仅影响后续写入）
+**依赖**: msgpackr (已存在于技术栈), F01 (Graph Engine)
 
 ## 已知限制
 

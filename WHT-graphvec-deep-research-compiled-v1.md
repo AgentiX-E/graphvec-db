@@ -77,10 +77,10 @@ Client → REST API (Fluent) → QueryEngine → GraphEngine
 |------|:----:|------|
 | `api/rest.ts` | ~600 | HTTP REST 路由（~1630 行含 Ops 路由） |
 | `api/fluent.ts` | ~350 | 流式查询 Builder（含 `updateEdge`/`deleteEdge`） |
-| `api/query-planner.ts` | ~280 | 查询计划器（含 CBO StatsCollector 集成） |
-| `query/query-engine.ts` | ~280 | Cypher-lite 解析器 + 执行器 |
-| `core/graph-engine.ts` | ~600 | 核心图存储引擎 |
-| `core/label-engine.ts` | ~150 | 标签索引引擎 |
+| `api/query-planner.ts` | ~350 | 查询计划器（含 CBO + `planCache` 单例，lru-cache v11） |
+| `query/query-engine.ts` | ~330 | Cypher-lite 解析器 + 执行器（含 `parseQueryCached()`） |
+| `core/graph-engine.ts` | ~700 | 核心图存储引擎（含数据压缩、13 种图算法） |
+| `core/overgraph-storage.ts` | ~300 | OverGraph 存储适配层（含 msgpackr 透明压缩） |
 
 ### 2.3 审计发现
 
@@ -89,7 +89,7 @@ Client → REST API (Fluent) → QueryEngine → GraphEngine
 | 🟡 中 | Cypher-lite 无类型校验 | query-engine.ts | ⬜ | 运行时才暴露类型错误 |
 | 🟡 中 | Fluent API `updateEdge()` / `deleteEdge()` | fluent.ts | ✅ 已修复 | Round 7 Step 4 添加 |
 | 🔵 低 | REST API `listDatabases()` / `getShardInfo` | rest.ts | ✅ 已修复 | Round 7 Step 4 添加 |
-| 🔵 低 | `QueryEngine` 无缓存 | query-engine.ts | ⬜ | 无查询缓存层 |
+| 🔵 低 | `QueryEngine` 无缓存 | query-engine.ts | ✅ 已修复 | Round 8 添加 `planCache` (lru-cache v11) |
 | ✅ | Cypher-lite 解析器支持：MATCH/RETURN/WHERE/ORDER/LIMIT/SKIP | — | ✅ | 基础查询完备 |
 
 ---

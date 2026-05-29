@@ -256,3 +256,5 @@
 | P1 | 基准测试套件 | 无可重复benchmark | LDBC风格+benchmark框架(npm:benchmark) | 2d |
 
 **新增 npm 依赖**: 仅 `benchmark`（基准结果统计）
+
+> 后续 Round 8 (2026-05-29) 新增：查询计划缓存 (Gap 3)、图算法扩增 6个 (Gap 6)、数据压缩 (Gap 11) — 均未引入新 npm 依赖，复用已有 lru-cache/msgpackr/graphology-components
