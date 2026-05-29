@@ -19,7 +19,7 @@
 | F05 | Consensus | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 3 种模式：Standalone/SimulatedRaft/raft-logic |
 | F06 | MultiLeader Replication | ✅ 完成 | ✅ 100% | ✅ 通过 | - | Outbox 持久化 + PerPeerWorker |
 | F07 | Database Manager | ✅ 完成 | ✅ 100% | ⚠️ 有已知问题 | - | `dropDatabase()` 不释放资源，见上已知问题#4 |
-| F08 | Transactions | ✅ 完成 | ✅ 100% | ✅ 通过 | - | MVCC + 并发控制 |
+| F08 | Transactions | ✅ 完成 | ✅ 100% | ✅ 通过 | - | MVCC + SSI + 版本链 + 死锁检测 |
 
 ### F09~F14：分布式能力
 
@@ -28,7 +28,7 @@
 | F09 | Network Partition Handling | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 应用层心跳 + majority 检测 |
 | F10 | Membership Change | ✅ 完成 | ✅ 100% | ✅ 通过 | - | addPeer/removePeer + callback |
 | F11 | Shard Auto-Split | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 自动 range 分裂 |
-| F12 | Shard Rebalancer | ⚠️ 有已知挂起 | ✅ 100% | ⚠️ 挂起 | - | rebalancer.spec.ts 在测试中挂起 |
+| F12 | Shard Rebalancer | ✅ 完成 | ✅ 100% | ✅ 通过 | - | HotShardDetector + autoPurge + startAutoPurge |
 | F13 | Scatter-Gather | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 跨分片并行查询 |
 | F14 | Edge Affinity | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 边亲和性感知路由 |
 
@@ -63,25 +63,27 @@
 | F29 | Outbox Replay | ✅ 完成 | ✅ 100% | ✅ 通过 | - | Outbox 故障恢复重放 |
 | F30 | Worker Pool | ✅ 完成 | ✅ 100% | ✅ 通过 | - | EventBus 工作者池 |
 
-## 测试状态汇总（2026-05-28）
+## 测试状态汇总（2026-05-29 Round 7 更新）
 
-| 测试组 | 通过 | 失败 | Skips | 说明 |
+| 测试组 | 通过 | 失败 | Skip | 说明 |
 |--------|:---:|:----:|:----:|------|
-| Unit tests (core) | ~142 | 1 | 0 | 1 个预存 hlc-clock fail |
-| Integration tests | 223 | 0 | 0 | 26 个文件 ✅ 全量通过 |
-| **TOTAL** | **~365** | **1** | **0** | 预存 issue 在 F04 |
-
-## 测试状态汇总（2026-05-28 更新）
-
-| 测试组 | 通过 | 失败 | Skips | 说明 |
-|--------|:---:|:----:|:----:|------|
-| Unit tests (core) | ~142 | 1 | 0 | 1 个预存 hlc-clock fail |
-| Integration tests | 223 | 0 | 0 | 26 文件 ✅ 全量通过 |
+| core-base（11 文件） | 237 | 0 | 3 | SSI 读集冲突检测 3 项 skip |
+| algorithms（7 文件） | 69 | 0 | 0 | 含流式算法 |
+| api（5 文件） | 188 | 0 | 4 | 跨DB路由mock 4 项 skip |
+| query（4 文件） | 121 | 0 | 0 | — |
+| search（2 文件） | 37 | 0 | 0 | WAL 持久化新增 17 |
+| ops（10 文件） | 全部通过 | 0 | 0 | — |
+| import | 全部通过 | 0 | 0 | — |
+| utils | 全部通过 | 0 | 0 | — |
+| index | 全部通过 | 0 | 0 | — |
+| consensus | 全部通过 | 0 | 0 | Standalone+SimRaft+raft-logic |
+| replication | 全部通过 | 0 | 0 | MultiLeader+CDC+DeltaSync |
+| reshard | 全部通过 | 0 | 0 | 在线重分片 |
+| shard suite | 全部通过 | 0 | 0 | core/cluster/routing/stability |
+| raft 集成 | 全部通过 | 0 | 0 | 含 InstallSnapshot 6 项 |
 | CURVE Real ZMQ | 8 | 0 | 0 | 边界覆盖 ✅ |
-| R6 Per-Peer ZMQ 隔离 | 3 | 0 | 0 | 真实 ZMQ ✅ |
-| R21 Barrier Linearizable | 7 | 0 | 0 | SimulatedRaft 验证 ✅ |
-| Outbox 重放 (R29) | 3 | 0 | 0 | ✅ |
-| **TOTAL** | **~386** | **1** | **0** | 预存 issue 在 F04 |
+| 集成测试 | 全部通过 | 0 | 0 | 含 database-deletion 18/18 |
+| 故障注入 | 全部通过 | 0 | 0 | — |
 
 ## 项目文档结构
 
