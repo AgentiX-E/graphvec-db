@@ -83,6 +83,8 @@ export class DatabaseManager {
   private databases = new Map<string, DatabaseInstance>()
   private baseDir: string
   private logger: Logger
+  /** 持久化配置映射 — 用于恢复时快速查找已保存的 config */
+  private _dbConfig = new Map<string, DatabaseConfig>()
 
   /** 自动墓碑清理定时器 */
   private _autoPurgeInterval: NodeJS.Timeout | null = null
@@ -197,6 +199,11 @@ export class DatabaseManager {
     }
 
     this.databases.set(name, instance)
+    this._dbConfig.set(name, dbConfig)
+
+    // 持久化 config 到文件系统，以便重启后恢复
+    await this._writeConfig(name, dbConfig)
+
     return instance
   }
 
@@ -433,6 +440,95 @@ export class DatabaseManager {
     } catch (err: any) {
       if (err.code !== 'ENOENT') throw err
     }
+  }
+
+  // ── 持久化配置读写 ──────────────────────────────────────────────
+
+  /** 写入数据库配置到文件 */
+  private async _writeConfig(name: string, config: DatabaseConfig): Promise<void> {
+    const dbDir = this._databaseDir(name)
+    await fs.promises.mkdir(dbDir, { recursive: true })
+    const configPath = path.join(dbDir, 'config.json')
+    await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8')
+  }
+
+  /** 读取数据库配置文件 */
+  private async _readConfig(name: string): Promise<DatabaseConfig | null> {
+    try {
+      const configPath = path.join(this._databaseDir(name), 'config.json')
+      const content = await fs.promises.readFile(configPath, 'utf-8')
+      const parsed = JSON.parse(content) as DatabaseConfig
+      if (!parsed.name || !parsed.dataDir) {
+        this.logger.warn(`[Restore] Invalid config for '${name}': missing required fields`)
+        return null
+      }
+      return parsed
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 扫描 baseDir，恢复所有已持久化的数据库
+   *
+   * 遍历 baseDir 下所有子目录，对每个包含有效 config.json 的目录，
+   * 通过 createDatabase() 恢复其 DatabaseInstance。
+   *
+   * @returns 成功恢复的数据库数量
+   */
+  async loadExistingDatabases(): Promise<number> {
+    let restoredCount = 0
+    const dirEntries: fs.Dirent[] = []
+
+    // 读取 baseDir 目录列表
+    try {
+      const entries = await fs.promises.readdir(this.baseDir, { withFileTypes: true })
+      dirEntries.push(...entries)
+    } catch (err: any) {
+      if (err.code === 'ENOENT') {
+        this.logger.info('[Restore] baseDir does not exist, nothing to restore')
+        return 0
+      }
+      throw err
+    }
+
+    for (const entry of dirEntries) {
+      if (!entry.isDirectory()) continue
+
+      const dbName = entry.name
+
+      // 跳过已经加载的数据库（避免重复恢复）
+      if (this.databases.has(dbName)) continue
+
+      // 检查是否已被标记删除（有 tombstone）
+      const tombstonePath = path.join(this.baseDir, dbName, '.tombstone.json')
+      try {
+        await fs.promises.access(tombstonePath, fs.constants.F_OK)
+        // tombstone 存在，跳过恢复
+        this.logger.info(`[Restore] Skipping '${dbName}': tombstone present`)
+        continue
+      } catch {
+        // 没有 tombstone，继续恢复
+      }
+
+      const config = await this._readConfig(dbName)
+      if (!config) {
+        this.logger.warn(`[Restore] Skipping '${dbName}': no valid config.json found`)
+        continue
+      }
+
+      this.logger.info(`[Restore] Found database '${dbName}' at ${config.dataDir}`)
+
+      await this.createDatabase(dbName, {
+        shards: config.shards,
+        peers: config.peers,
+        raftPort: config.raftPort,
+      })
+      restoredCount++
+    }
+
+    this.logger.info(`[Restore] Loaded ${restoredCount} existing database(s) from ${this.baseDir}`)
+    return restoredCount
   }
 
   /**

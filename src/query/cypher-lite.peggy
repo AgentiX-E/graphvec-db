@@ -19,8 +19,8 @@
  *   变长路径（最小步数）: MATCH (a)-[:TYPE*2..]->(b) RETURN b
  *
  * 不实现（Cypher-lite 边界）：
- *   UNION / FOREACH / CALL
- *   聚合函数 / 子查询 / OPTIONAL MATCH
+ *   FOREACH / CALL / 子查询 / OPTIONAL MATCH
+ *   聚合函数 / UNION 已实现
  */
 
 Start
@@ -60,13 +60,14 @@ DMLStatement
     }
 
 MatchStatement
-  = matchClause:MatchClause whereClause:WhereClause? returnClause:ReturnClause orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
+  = matchClause:MatchClause whereClause:WhereClause? returnClause:ReturnClause groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
       if (unionClause) {
         return {
           type: 'QUERY',
           match: matchClause,
           where: whereClause,
           return: returnClause,
+          groupBy: groupByClause,
           orderBy: orderByClause,
           limit: limitSkip ? limitSkip.limit : undefined,
           skip: limitSkip ? limitSkip.skip : undefined,
@@ -79,6 +80,7 @@ MatchStatement
         match: matchClause,
         where: whereClause,
         return: returnClause,
+        groupBy: groupByClause,
         orderBy: orderByClause,
         limit: limitSkip ? limitSkip.limit : undefined,
         skip: limitSkip ? limitSkip.skip : undefined,
@@ -229,21 +231,47 @@ SumFunc
   = "sum"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
       return { func: 'sum', field: [name, prop], alias }
     }
+  / "sum"i _ "(" _ name:Identifier _ ")" alias:AsClause? {
+      return { func: 'sum', field: [name], alias }
+    }
 
 AvgFunc
   = "avg"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
       return { func: 'avg', field: [name, prop], alias }
+    }
+  / "avg"i _ "(" _ name:Identifier _ ")" alias:AsClause? {
+      return { func: 'avg', field: [name], alias }
     }
 
 MaxFunc
   = "max"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
       return { func: 'max', field: [name, prop], alias }
     }
+  / "max"i _ "(" _ name:Identifier _ ")" alias:AsClause? {
+      return { func: 'max', field: [name], alias }
+    }
 
 MinFunc
   = "min"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
       return { func: 'min', field: [name, prop], alias }
     }
+  / "min"i _ "(" _ name:Identifier _ ")" alias:AsClause? {
+      return { func: 'min', field: [name], alias }
+    }
+
+// ── GROUP BY ────────────────────────────────────────────────
+
+GroupByClause
+  = _ "GROUP"i _ "BY"i _ cols:GroupByList { return cols }
+
+GroupByList
+  = head:GroupByColumn tail:(_ "," _ GroupByColumn)* {
+      return [head, ...tail.map(t => t[3])]
+    }
+
+GroupByColumn
+  = ref:PropertyRef { return ref }
+  / name:Identifier { return { type: 'IDENTIFIER', name } }
 
 ColumnList
   = head:Column tail:(_ "," _ Column)* {
@@ -251,7 +279,15 @@ ColumnList
     }
 
 Column
-  = expr:PropertyRef alias:AsClause? {
+  = agg:AggregateFunc {
+      const field = agg.field ? agg.field.join('.') : undefined
+      return {
+        type: 'AGGREGATE_COLUMN',
+        expression: { type: 'AGGREGATE', func: agg.func, field },
+        alias: agg.alias,
+      }
+    }
+  / expr:PropertyRef alias:AsClause? {
       return {
         type: 'COLUMN',
         expression: expr,

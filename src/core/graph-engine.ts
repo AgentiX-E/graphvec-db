@@ -7,6 +7,7 @@ import {
 } from '../types'
 import { StorageProvider, StorageConfig, NeighborsOptions, NeighborEntry } from './storage-provider'
 import { OverGraphStorage } from './overgraph-storage'
+import { EncryptionAtRest, CipherConfig } from './cipher'
 
 import { LabelEngine } from './label-engine'
 import { bfs } from '../algorithms/bfs'
@@ -218,6 +219,8 @@ export class GraphEngine {
   private _nodeCacheSize: number
   private _edgeCacheSize: number
   private _nodeCacheHits = 0
+  /** 查询超时毫秒数（0 表示不超时） */
+  readonly queryTimeoutMs: number
   private _nodeCacheMisses = 0
   private _edgeCacheHits = 0
   private _edgeCacheMisses = 0
@@ -251,8 +254,16 @@ export class GraphEngine {
    */
   public onRecordChange?: (name: string, fields: Record<string, any>) => void
 
-  constructor(config: OverGraphConfig, storage?: StorageProvider, eventStream?: EventStream, mlReplication?: MultiLeaderReplication, fulltext?: FullTextIndex, rls?: RowLevelSecurity, planner?: QueryPlanner) {
-    this.storage = storage ?? new OverGraphStorage()
+  constructor(config: OverGraphConfig, storage?: StorageProvider, eventStream?: EventStream, mlReplication?: MultiLeaderReplication, fulltext?: FullTextIndex, rls?: RowLevelSecurity, planner?: QueryPlanner, cipherConfig?: CipherConfig) {
+    // Create cipher if config provided
+    let cipher: EncryptionAtRest | undefined
+    if (cipherConfig) {
+      cipher = new EncryptionAtRest(cipherConfig)
+      // Note: ready() must be called before open() — it's an async operation
+      // The caller should await cipher.ready() before using the engine
+      // For AES-256-GCM, initSync() can be used instead
+    }
+    this.storage = storage ?? new OverGraphStorage(cipher)
     this.config = config
     this._eventStream = eventStream ?? null
     this._mlReplication = mlReplication ?? null
@@ -272,6 +283,7 @@ export class GraphEngine {
     this._nodeCache = new LRUCache<NodeId, NodeRecord>(this._nodeCacheSize, 60)
     this._edgeCache = new LRUCache<string, EdgeRecord>(this._edgeCacheSize, 60)
     this.logger = new Logger('GraphEngine')
+    this.queryTimeoutMs = config.queryTimeoutMs ?? 30000
 
     // 注册 EventStream 远程数据处理（见 open() 方法）
     // 由 open() 调用 registerApplyHandler，避免构造函数重复注册
@@ -933,7 +945,7 @@ export class GraphEngine {
   private _executeOptimizedSync(plan: any, spec: QuerySpec): NodeRecord[] {
     // 简化实现：直接提取 SCAN 节点的过滤和限制条件，
     // 用 GraphEngine 的标准同步方法执行
-    let nodes = this._scanAll()
+    let nodes = this._scanAll(spec.skip && spec.limit ? spec.skip + spec.limit : spec.limit)
 
     // 获取下推的过滤条件
     const details = plan.details || {}
@@ -1080,15 +1092,18 @@ export class GraphEngine {
 
   /**
    * 执行 QueryPlan
+   * 支持 LIMIT/SKIP 下推：在扫描和每一步遍历后做早期截断，避免全量收集后再 slice
    */
   private _executeQueryPlan(plan: QueryPlan, ctx?: RLSContext): NodeRecord[] {
-    // Step 1: 扫描起始节点
+    // 计算下推 limit：在 SKIP 的基础上取需要的最大值
+    const effectiveLimit = plan.limit !== undefined ? (plan.skip || 0) + plan.limit : undefined
+
+    // Step 1: 扫描起始节点（带早期截断）
     let candidates: NodeRecord[]
     if (plan.scanLabel) {
-      // 用 label 字符串匹配所有节点的 typeName
-      candidates = this._scanNodesByLabel(plan.scanLabel)
+      candidates = this._scanNodesByLabel(plan.scanLabel, effectiveLimit)
     } else {
-      candidates = this._scanAll()
+      candidates = this._scanAll(effectiveLimit)
     }
 
     // RLS 过滤：扫描结果
@@ -1097,35 +1112,36 @@ export class GraphEngine {
     }
 
     if (candidates.length === 0) {
-      // 聚合函数在空结果集时返回预设值
       if (plan.aggregate) {
-        return this._execAggregation([], plan.aggregate)
+        return this._execAggregation([], plan.aggregate, plan.groupBy)
       }
       return []
     }
 
-    // Step 2: 执行遍历步（支持单跳和变长多跳）
+    // Step 2: 执行遍历步（带早期截断）
     let results: NodeRecord[] = [...candidates]
     for (const step of plan.steps) {
       if (step.range) {
-        // 变长路径：执行 BFS 多跳遍历
         const minDepth = step.range.min
-        const maxDepth = step.range.max ?? minDepth // null max means no upper bound, treat as min
+        const maxDepth = step.range.max ?? minDepth
         results = this._executeVariableLengthTraversal(results, {
           relationshipType: step.edgeLabel ? Number(step.edgeLabel) : undefined,
           minDepth,
           maxDepth,
           direction: step.direction,
           ctx,
+          limit: effectiveLimit, // 变长路径遍历也支持早期截断
         })
       } else {
-        // 单跳遍历（原有逻辑）
+        // 单跳遍历（带早期截断）
         const filtered: NodeRecord[] = []
         for (const node of results) {
+          if (effectiveLimit !== undefined && filtered.length >= effectiveLimit) break
           const neighborsRaw = this.storage.neighbors(node.id, {
             edgeTypeFilter: step.edgeLabel ? [Number(step.edgeLabel)] : undefined,
           })
           for (const entry of neighborsRaw) {
+            if (effectiveLimit !== undefined && filtered.length >= effectiveLimit) break
             const neighbor = this.getNode(entry.nodeId, ctx)
             if (neighbor) {
               if (step.targetLabel && neighbor.typeName !== step.targetLabel) continue
@@ -1138,19 +1154,19 @@ export class GraphEngine {
       if (results.length === 0) break
     }
 
-    // Step 3: 应用 WHERE 过滤器
+    // Step 3: 应用 WHERE 过滤器（此时结果集已因早期截断而很小）
     if (plan.filters.length > 0) {
       results = results.filter(node =>
         plan.filters.every(f => this._matchFilter(node, f))
       )
     }
 
-    // 如果检测到聚合函数，执行聚合（在 WHERE 之后，SKIP/LIMIT 之前）
+    // 聚合函数在 WHERE 之后、SKIP/LIMIT 之前
     if (plan.aggregate) {
-      return this._execAggregation(results, plan.aggregate)
+      return this._execAggregation(results, plan.aggregate, plan.groupBy)
     }
 
-    // Step 4: SKIP / LIMIT
+    // Step 4: 应用 SKIP / LIMIT（此时大部分数据已在下推阶段截断）
     if (plan.skip && plan.skip > 0) {
       results = results.slice(plan.skip)
     }
@@ -1163,8 +1179,19 @@ export class GraphEngine {
 
   /**
    * 执行聚合函数
+   * 支持 COUNT, SUM, AVG, MAX, MIN
+   * 如果 plan.groupBy 存在，执行 GROUP BY 分组聚合
    */
-  private _execAggregation(nodes: NodeRecord[], agg: { type: string; field?: string; alias?: string }): NodeRecord[] {
+  private _execAggregation(
+    nodes: NodeRecord[],
+    agg: { type: string; field?: string; alias?: string },
+    groupBy?: string[],
+  ): NodeRecord[] {
+    // 如果有 GROUP BY 列，执行分组聚合
+    if (groupBy && groupBy.length > 0) {
+      return this._execGroupByAggregation(nodes, agg, groupBy)
+    }
+
     // 提取实际属性名：如 n.age → age，n.score → score
     const rawField = agg.field ?? ''
     const propName = rawField.includes('.') ? rawField.split('.')[1] : rawField
@@ -1173,7 +1200,7 @@ export class GraphEngine {
 
     switch (agg.type) {
       case 'count':
-        value = nodes.length
+        value = this._aggregateCount(nodes, propName)
         break
       case 'sum':
         value = this._aggregateSum(nodes, propName)
@@ -1200,6 +1227,115 @@ export class GraphEngine {
       typeName: '',
       props: { [alias]: value },
     } as unknown as NodeRecord]
+  }
+
+  /**
+   * 执行 GROUP BY 分组聚合
+   * 按 groupBy 列分组，对每组分别执行聚合函数
+   */
+  private _execGroupByAggregation(
+    nodes: NodeRecord[],
+    agg: { type: string; field?: string; alias?: string },
+    groupBy: string[],
+  ): NodeRecord[] {
+    // 按 GROUP BY 列分组
+    const groups = new Map<string, NodeRecord[]>()
+    for (const node of nodes) {
+      const key = groupBy.map(gb => {
+        const val = node.props?.[gb] ?? node.name
+        return String(val ?? '__NULL__')
+      }).join('||')
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key)!.push(node)
+    }
+
+    // 提取属性名
+    const rawField = agg.field ?? ''
+    const propName = rawField.includes('.') ? rawField.split('.')[1] : rawField
+
+    const results: NodeRecord[] = []
+    let idx = 0
+    for (const [key, groupNodes] of groups.entries()) {
+      let aggValue: number
+
+      switch (agg.type) {
+        case 'count':
+          aggValue = this._aggregateCount(groupNodes, propName)
+          break
+        case 'sum':
+          aggValue = this._aggregateSum(groupNodes, propName)
+          break
+        case 'avg':
+          aggValue = this._aggregateAvg(groupNodes, propName)
+          break
+        case 'max':
+          aggValue = this._aggregateMax(groupNodes, propName)
+          break
+        case 'min':
+          aggValue = this._aggregateMin(groupNodes, propName)
+          break
+        default:
+          aggValue = 0
+      }
+
+      // 构造分组节点，包含 GROUP BY 键和聚合值
+      const keyParts = key.split('||')
+      const props: Record<string, unknown> = {}
+      for (let i = 0; i < groupBy.length; i++) {
+        props[groupBy[i]] = keyParts[i] === '__NULL__' ? null : keyParts[i]
+      }
+      const alias = agg.alias ?? agg.type
+      props[alias] = aggValue
+
+      const firstNode = groupNodes[0]
+      results.push({
+        id: -(idx + 1),
+        name: alias,
+        typeId: firstNode?.typeId ?? 0,
+        typeName: firstNode?.typeName ?? '',
+        props,
+      } as unknown as NodeRecord)
+      idx++
+    }
+
+    return results
+  }
+
+  /** 对节点数组计数 */
+  private _aggregateCount(nodes: NodeRecord[], field?: string): number {
+    if (!field || field === '' || field === '*') {
+      return nodes.length
+    }
+    // 若 field 包含 '.'（如 n.age），提取属性名后进行非 null 统计
+    if (field.includes('.')) {
+      const propName = field.split('.')[1]
+      if (!propName) return nodes.length
+      let count = 0
+      for (const n of nodes) {
+        const val = n.props?.[propName]
+        if (val !== null && val !== undefined) count++
+      }
+      return count
+    }
+    // count(n) / count(name) — 检查节点是否有该属性
+    let hasProp = false
+    for (const n of nodes) {
+      if (n.props && field in n.props) {
+        hasProp = true
+        break
+      }
+    }
+    if (hasProp) {
+      // 按 COUNT(col) 语义：统计该属性非空的节点数
+      let count = 0
+      for (const n of nodes) {
+        const val = n.props?.[field]
+        if (val !== null && val !== undefined) count++
+      }
+      return count
+    }
+    // 否则视为节点引用（如 count(n)），返回节点总数
+    return nodes.length
   }
 
   /** 对节点数组计算属性求和 */
@@ -1244,22 +1380,27 @@ export class GraphEngine {
   }
 
   /** 扫描所有节点 */
-  private _scanAll(): NodeRecord[] {
+  /** 全量扫描所有节点，可选 limit 早期截断 */
+  private _scanAll(limit?: number): NodeRecord[] {
     const records: NodeRecord[] = []
     for (const id of this._nodeIds) {
       const node = this.getNode(id)
-      if (node) records.push(node)
+      if (node) {
+        records.push(node)
+        if (limit !== undefined && records.length >= limit) break
+      }
     }
     return records
   }
 
-  /** 按 label (typeName) 扫描节点 */
-  private _scanNodesByLabel(label: string): NodeRecord[] {
+  /** 按 label (typeName) 扫描节点，可选 limit 早期截断 */
+  private _scanNodesByLabel(label: string, limit?: number): NodeRecord[] {
     const records: NodeRecord[] = []
     for (const id of this._nodeIds) {
       const node = this.getNode(id)
       if (node && node.typeName === label) {
         records.push(node)
+        if (limit !== undefined && records.length >= limit) break
       }
     }
     return records

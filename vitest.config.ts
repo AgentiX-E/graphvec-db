@@ -12,6 +12,7 @@ export default defineConfig({
     globals: true,
     pool: 'forks',
     singleFork: true,
+    fileParallelism: false,
     server: {
       deps: {
         exclude: ['raft-logic'],

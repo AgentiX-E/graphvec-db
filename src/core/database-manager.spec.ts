@@ -280,4 +280,167 @@ describe('DatabaseManager', () => {
       // setInterval 不会再触发 — 无法在单元测试中完美验证异步，但至少不抛异常
     })
   })
+
+  describe('loadExistingDatabases', () => {
+    const restoreBaseDir = '/tmp/test-load-existing-dbs'
+    let fs: typeof import('fs')
+    let path: typeof import('path')
+
+    beforeEach(async () => {
+      fs = await import('fs')
+      path = await import('path')
+      // 清理测试目录
+      try { fs.rmSync(restoreBaseDir, { recursive: true, force: true }) } catch { /* ignore */ }
+      dbm = new DatabaseManager({ baseDir: restoreBaseDir })
+    })
+
+    it('returns 0 when baseDir does not exist', async () => {
+      const count = await dbm.loadExistingDatabases()
+      expect(count).toBe(0)
+    })
+
+    it('returns 0 when no databases exist', async () => {
+      fs.mkdirSync(restoreBaseDir, { recursive: true })
+      const count = await dbm.loadExistingDatabases()
+      expect(count).toBe(0)
+    })
+
+    it('restores a database with valid config.json', async () => {
+      // 先手动创建一个数据库（通过 createDatabase 生成 config.json）
+      await dbm.createDatabase('db1', { shards: 2, peers: ['node1', 'node2'], raftPort: 9001 })
+
+      // 创建新的 DatabaseManager 实例（模拟重启）
+      const dbm2 = new DatabaseManager({ baseDir: restoreBaseDir })
+      expect(dbm2.hasDatabase('db1')).toBe(false)
+
+      const count = await dbm2.loadExistingDatabases()
+      expect(count).toBe(1)
+      expect(dbm2.hasDatabase('db1')).toBe(true)
+
+      const db = dbm2.getDatabase('db1')
+      expect(db.config.name).toBe('db1')
+      expect(db.config.shards).toBe(2)
+      expect(db.config.peers).toEqual(['node1', 'node2'])
+      expect(db.config.raftPort).toBe(9001)
+    })
+
+    it('restores multiple databases', async () => {
+      await dbm.createDatabase('orders', { shards: 2 })
+      await dbm.createDatabase('inventory', { shards: 3 })
+
+      const dbm2 = new DatabaseManager({ baseDir: restoreBaseDir })
+      const count = await dbm2.loadExistingDatabases()
+      expect(count).toBe(2)
+      expect(dbm2.listDatabases()).toContain('orders')
+      expect(dbm2.listDatabases()).toContain('inventory')
+    })
+
+    it('skips databases with an existing tombstone', async () => {
+      await dbm.createDatabase('to-be-deleted', { shards: 1 })
+      await dbm.dropDatabase('to-be-deleted', { gracePeriodSeconds: 3600 })
+
+      // 也创建一个正常数据库
+      await dbm.createDatabase('normal', { shards: 1 })
+
+      const dbm2 = new DatabaseManager({ baseDir: restoreBaseDir })
+      const count = await dbm2.loadExistingDatabases()
+
+      // 只有 normal 被恢复，to-be-deleted 被跳过
+      expect(count).toBe(1)
+      expect(dbm2.hasDatabase('normal')).toBe(true)
+      expect(dbm2.hasDatabase('to-be-deleted')).toBe(false)
+    })
+
+    it('skips directories without config.json', async () => {
+      fs.mkdirSync(path.join(restoreBaseDir, 'empty-dir'), { recursive: true })
+      fs.mkdirSync(path.join(restoreBaseDir, 'no-config'), { recursive: true })
+
+      const count = await dbm.loadExistingDatabases()
+      expect(count).toBe(0)
+    })
+
+    it('skips databases already loaded in memory', async () => {
+      await dbm.createDatabase('db1', { shards: 1 })
+
+      // 手动写入另一个数据库
+      await dbm.createDatabase('db2', { shards: 2 })
+
+      const count = await dbm.loadExistingDatabases()
+      // 两者都已加载，不会重复恢复
+      expect(count).toBe(0)
+    })
+
+    it('returns correct count with mixed valid/invalid directories', async () => {
+      // 有效数据库
+      await dbm.createDatabase('valid1', { shards: 1 })
+      await dbm.createDatabase('valid2', { shards: 1 })
+
+      // 直接写一个目录但没有 config.json
+      fs.mkdirSync(path.join(restoreBaseDir, 'no-config'), { recursive: true })
+
+      // 带 tombstone 的目录
+      await dbm.createDatabase('tombstoned', { shards: 1 })
+      await dbm.dropDatabase('tombstoned', { gracePeriodSeconds: 3600 })
+
+      const dbm2 = new DatabaseManager({ baseDir: restoreBaseDir })
+      // valid1 和 valid2 是原实例（dbm）创建的，对 dbm2 来说是新实例
+      const count = await dbm2.loadExistingDatabases()
+      expect(count).toBe(2)
+      expect(dbm2.listDatabases().sort()).toEqual(['valid1', 'valid2'])
+    })
+
+    it('works with tombstoned database where tombstone exists', async () => {
+      // 创建一个带 tombstone 的数据库目录
+      await dbm.createDatabase('tombstoned', { shards: 1 })
+      await dbm.dropDatabase('tombstoned', { gracePeriodSeconds: 3600 })
+
+      // 验证 tombstone 存在
+      const tsPath = path.join(restoreBaseDir, 'tombstoned', '.tombstone.json')
+      expect(fs.existsSync(tsPath)).toBe(true)
+
+      // 新实例
+      const dbm2 = new DatabaseManager({ baseDir: restoreBaseDir })
+      const count = await dbm2.loadExistingDatabases()
+      expect(count).toBe(0)
+      expect(dbm2.hasDatabase('tombstoned')).toBe(false)
+    })
+
+    it('preserves shardCount in restored databases', async () => {
+      await dbm.createDatabase('multi-shard', { shards: 5 })
+
+      const dbm2 = new DatabaseManager({ baseDir: restoreBaseDir })
+      await dbm2.loadExistingDatabases()
+
+      const db = dbm2.getDatabase('multi-shard')
+      expect(db.config.shards).toBe(5)
+      // shardMap 应该有 5 个 range
+      expect(db.shardMap.ranges.length).toBe(5)
+    })
+  })
+
+  describe('config.json persistence', () => {
+    const configBaseDir = '/tmp/test-config-persistence'
+
+    beforeEach(async () => {
+      const fs = await import('fs')
+      try { fs.rmSync(configBaseDir, { recursive: true, force: true }) } catch { /* ignore */ }
+      dbm = new DatabaseManager({ baseDir: configBaseDir })
+    })
+
+    it('creates config.json when database is created', async () => {
+      await dbm.createDatabase('test', { shards: 2, raftPort: 9999 })
+
+      const fs = await import('fs')
+      const path = await import('path')
+      const configPath = path.join(configBaseDir, 'test', 'config.json')
+      expect(fs.existsSync(configPath)).toBe(true)
+
+      const content = fs.readFileSync(configPath, 'utf-8')
+      const config = JSON.parse(content)
+      expect(config.name).toBe('test')
+      expect(config.shards).toBe(2)
+      expect(config.raftPort).toBe(9999)
+      expect(config.dataDir).toContain('test')
+    })
+  })
 })

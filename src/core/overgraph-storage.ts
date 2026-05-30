@@ -17,6 +17,7 @@ import {
 } from '../types'
 import { encode, decode } from 'msgpackr'
 import { GeoIndex } from './geo-index'
+import { EncryptionAtRest, CipherConfig } from './cipher'
 
 // ── 流式分块快照协议 (Streaming Chunked Snapshot Protocol) ──
 //
@@ -310,6 +311,9 @@ export class OverGraphStorage implements StorageProvider {
   private _compress = false
   private _compressionStrategy: 'none' | 'msgpack' = 'none'
 
+  /** Encryption at rest (optional) */
+  private _cipher: EncryptionAtRest | null = null
+
   /** 地理空间索引 */
   private _geoIndex: GeoIndex = new GeoIndex()
   /** 地理坐标属性字段名（纬度、经度），可通过 config 覆盖 */
@@ -321,6 +325,12 @@ export class OverGraphStorage implements StorageProvider {
 
   get isOpen(): boolean { return this._isOpen }
   get compressionEnabled(): boolean { return this._compress }
+  /** Get the EncryptionAtRest instance (null if not configured) */
+  get cipher(): EncryptionAtRest | null { return this._cipher }
+
+  constructor(cipher?: EncryptionAtRest) {
+    this._cipher = cipher ?? null
+  }
 
   open(config: StorageConfig): void {
     if (this._isOpen) return
@@ -583,7 +593,15 @@ export class OverGraphStorage implements StorageProvider {
       nodes,
       edges,
     }
-    return Buffer.from(encode(data))
+    const raw = Buffer.from(encode(data))
+
+    // Encrypt the snapshot if cipher is configured
+    if (this._cipher) {
+      const encrypted = this._cipher.encrypt(raw)
+      return EncryptionAtRest.prependFlag(encrypted)
+    }
+
+    return raw
   }
 
   /**
@@ -592,7 +610,22 @@ export class OverGraphStorage implements StorageProvider {
    * 解析 msgpackr 格式，逐条写入数据库。
    */
   importSnapshot(data: Buffer): void {
-    const snapshot = decode(Buffer.from(data)) as {
+    // Handle encrypted snapshots (flag byte prefix 0x01 = encrypted)
+    let raw: Buffer
+    if (data.length > 0 && (data[0] & 0x01) !== 0) {
+      if (!this._cipher) {
+        throw new Error(
+          'Snapshot is encrypted but encryption is not configured. ' +
+          'Provide an EncryptionAtRest instance to decrypt.'
+        )
+      }
+      const encrypted = EncryptionAtRest.stripFlag(data)
+      raw = this._cipher.decrypt(encrypted)
+    } else {
+      raw = data
+    }
+
+    const snapshot = decode(Buffer.from(raw)) as {
       rangeId?: string
       nodes?: Array<{ id: number; typeId: number; name: string; props?: Record<string, unknown> }>
       edges?: Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown> }>

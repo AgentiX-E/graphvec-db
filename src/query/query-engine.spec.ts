@@ -351,3 +351,78 @@ describe('parseQuery — DML 语句（CREATE / DELETE / SET / MERGE）', () => {
     expect(() => parseQuery('DELET n')).toThrow('Query parse error')
   })
 })
+
+// ── UNION / UNION ALL / INTERSECT / SUBTRACT 解析测试 ──
+
+describe('parseQuery — Set operations (UNION / UNION ALL / INTERSECT / SUBTRACT)', () => {
+  it('UNION — 解析左右查询', () => {
+    const plan = parseQuery('MATCH (a:Person) WHERE a.age = 30 RETURN a UNION MATCH (b:Person) WHERE b.age = 35 RETURN b')
+    expect(plan.unionType).toBe('union')
+    expect(plan.rightPlan).toBeDefined()
+    expect(plan.rightPlan!.scanLabel).toBe('Person')
+    expect(plan.rightPlan!.filters.length).toBe(1)
+    expect(plan.rightPlan!.filters[0].property).toBe('age')
+    expect(plan.rightPlan!.filters[0].operator).toBe('EQ')
+    expect(plan.rightPlan!.filters[0].value).toBe(35)
+    expect(plan.rightPlan!.returnColumns).toEqual(['b']) // right RETURN col
+  })
+
+  it('UNION ALL — 解析', () => {
+    const plan = parseQuery('MATCH (n) WHERE n.age = 30 RETURN n UNION ALL MATCH (m) WHERE m.age = 35 RETURN m')
+    expect(plan.unionType).toBe('union_all')
+    expect(plan.rightPlan).toBeDefined()
+  })
+
+  it('INTERSECT — 解析', () => {
+    const plan = parseQuery('MATCH (a) WHERE a.age >= 25 RETURN a INTERSECT MATCH (b) WHERE b.age <= 30 RETURN b')
+    expect(plan.unionType).toBe('intersect')
+    expect(plan.rightPlan).toBeDefined()
+  })
+
+  it('SUBTRACT — 解析', () => {
+    const plan = parseQuery('MATCH (a) WHERE a.age >= 25 RETURN a SUBTRACT MATCH (b) WHERE b.age > 30 RETURN b')
+    expect(plan.unionType).toBe('subtract')
+    expect(plan.rightPlan).toBeDefined()
+  })
+
+  it('UNION — 左右查询独立解析', () => {
+    // 左查询有 label 过滤，右查询有不同的 label 过滤
+    const plan = parseQuery("MATCH (a:Person) WHERE a.name = 'Alice' RETURN a.name UNION MATCH (b:Company) WHERE b.name = 'Acme' RETURN b.name")
+    expect(plan.unionType).toBe('union')
+    expect(plan.scanLabel).toBe('Person')
+    expect(plan.filters.length).toBe(1)
+    expect(plan.rightPlan!.scanLabel).toBe('Company')
+    expect(plan.rightPlan!.filters.length).toBe(1)
+    expect(plan.rightPlan!.filters[0].property).toBe('name')
+    expect(plan.rightPlan!.filters[0].value).toBe('Acme')
+  })
+})
+
+// ── _executeQuery UNION 执行测试 ──
+
+describe('_executeQuery — Set operations with in-memory data', () => {
+  // 测试用节点数据
+  const testNodes = [
+    { id: 1, name: 'Alice', age: 30 },
+    { id: 2, name: 'Bob', age: 25 },
+    { id: 3, name: 'Carol', age: 35 },
+    { id: 4, name: 'Dave', age: 30 },
+    { id: 5, name: 'Eve', age: 35 },
+  ]
+
+  it('UNION — 合并两个节点集，去重', () => {
+    // 使用 _executeQuery 但 union 的执行在 graph-engine 层
+    // 这里只验证 parse 结果正确即可，完整集成测试在 graph-engine.spec.ts
+    const plan = parseQuery('MATCH (n) WHERE n.age = 30 RETURN n UNION MATCH (m) WHERE m.age = 35 RETURN m')
+    expect(plan.unionType).toBe('union')
+    expect(plan.rightPlan).toBeDefined()
+    // 左查询返回 age=30 的节点
+    expect(plan.filters.length).toBe(1)
+    expect(plan.filters[0].property).toBe('age')
+    expect(plan.filters[0].value).toBe(30)
+    // 右查询返回 age=35 的节点
+    expect(plan.rightPlan!.filters.length).toBe(1)
+    expect(plan.rightPlan!.filters[0].property).toBe('age')
+    expect(plan.rightPlan!.filters[0].value).toBe(35)
+  })
+})

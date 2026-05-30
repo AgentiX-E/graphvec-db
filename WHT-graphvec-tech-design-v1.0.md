@@ -5,6 +5,7 @@
 | 日期 | 变更内容 |
 |------|----------|
 | 2026-05-29 | Round 8 新增：Query Plan Cache（§8.8）、Graph Algorithms Expansion（§8.9）、Data Compression（§8.10） |
+| 2026-05-29 | Round 8b 新增：Composite Index（§8.11）、Geo-Spatial Index（§8.12）、Streaming Algorithm Engine（§8.13）、Cross-Shard 2PC Transactions（§8.14）、LDBC Benchmark Suite（§8.15）、Security Audit & Threat Detection（§8.16）、Node/Edge LRU Cache（§8.17）、OPTIONAL MATCH / WITH Clause（§8.18）、Aggregate Functions（§8.19） |
 
 ## 架构概览
 
@@ -231,6 +232,131 @@ Storage Path:
 - 配置开关：`GraphConfig.storageCompression`（`boolean`，默认 `false`）和 `compressionStrategy`（`'msgpackr' | 'none'`）
 - 启动时根据配置决定是否 hook 序列化管道，支持运行时动态调整（仅影响后续写入）
 **依赖**: msgpackr (已存在于技术栈), F01 (Graph Engine)
+
+### F29: Composite Index (组合索引)
+**设计目录**: `src/index/composite-index.ts`
+**意图**: 支持多属性联合索引，提升多条件过滤查询性能
+**接口**:
+- `createCompositeIndex(names: string[], unique?: boolean)` — 在 OverGraph 中创建组合索引
+- 索引 key = 组合字段值列表 + 节点ID，存储在 LMDB 多键子数据库中
+- 查询时支持前缀匹配（部分列过滤也走索引）
+**关键设计决策**:
+- 深度集成到 StorageProvider 层，索引构建支持增量（写入时更新）和批量重建
+- QueryPlanner 代价评估时优先选择组合索引
+- 唯一索引在写入重复值时抛出约束异常
+**依赖**: F01 (Graph Engine), StorageProvider
+
+### F30: Geo-Spatial Index (地理空间索引)
+**设计目录**: `src/index/geo-index.ts`
+**意图**: 支持地理空间索引和查询（距离查询、范围查询）
+**接口**:
+- `createGeoIndex(field: string)` — 创建空间索引
+- `distance(a, b)` — 两点距离计算
+- `rangeQuery(lat1, lng1, lat2, lng2)` — 矩形范围查询
+**关键设计决策**:
+- 基于 `rbush` @3.0.1 R-tree 实现，支持插入/删除/范围查询/最近邻查询
+- 节点属性中 `latitude/longitude` 自动索引
+- Cypher-lite 扩展 `WHERE distance()` 函数
+- QueryPlanner 在空间查询时使用 R-tree 索引代替全表扫描
+**依赖**: F01 (Graph Engine), rbush (新增依赖)
+
+### F31: Streaming Algorithm Engine (流式算法引擎)
+**设计目录**: `src/algorithms/streaming-engine.ts`
+**意图**: 支持内存图投影 + 分页/流式算法 + Worker Pool 并行，在大图上可运行算法
+**接口**:
+- `project({type, maxDepth, nodeIds})` — 从存储引擎按需加载子图到内存
+- `runStreaming(algorithm, params)` — 分块执行算法
+- `runParallel(algorithm, params)` — Worker Pool 并行
+**关键设计决策**:
+- 图投影支持节点/边过滤、最大深度控制
+- PageRank 分片迭代：每轮只处理一个分片，结果合并
+- 利用 EventBusWorkerPool 将算法分解到多个 worker 进程
+- 支持脏标记机制：投影时存储变更可检测
+**依赖**: F01 (Graph Engine), F30 (Worker Pool)
+
+### F32: Cross-Shard 2PC Transactions (跨分片事务)
+**设计目录**: `src/shard/2pc-coordinator.ts`
+**意图**: 支持跨多个分片的原子提交（Percolator 模型）
+**接口**:
+- `TwoPhaseCoordinator` — 事务协调器
+- `prepare(txId, participants)` — 第一阶段：所有参与者准备
+- `commit(txId)` / `rollback(txId)` — 第二阶段：提交或回滚
+**关键设计决策**:
+- 基于 Percolator 模型（Bigtable 分布式事务模型）
+- 每个 RangeInstance 中添加 prepare/commit 日志
+- 协调器崩溃后启发生恢复（阅读参与者状态→决定推进）
+- 超时自动回滚防止悬挂事务
+**依赖**: F01 (Graph Engine), F11 (Shard Manager)
+
+### F33: LDBC Benchmark Suite (基准测试套件)
+**设计目录**: `src/ops/ldbc-benchmark.ts`
+**意图**: 支持 LDBC SNB 标准化基准测试
+**接口**:
+- `generateDataset(sf)` — 生成 SF-1 (1GB) LDBC 数据集
+- `runInteractive(id)` — 执行指定 Interactive 查询
+- `runBi(id)` — 执行指定 BI 查询
+- `report()` — 输出 P50/P90/P99 延迟 + QPS Markdown 报告
+**关键设计决策**:
+- 数据生成器输出 CSV 格式，通过 Importer 导入
+- 实现 20 个参考查询（10 Interactive + 10 BI）
+- 自动化运行脚本，结果可横向对比
+**依赖**: F01 (Graph Engine), F23 (REST API)
+
+### F34: Security Audit & Threat Detection (安全审计与威胁检测)
+**设计目录**: `src/security/security-audit.ts`
+**意图**: 启动安全基线检查 + 运行时入侵检测 + 合规报告
+**接口**:
+- `runBaselineCheck()` — 启动时检查 TLS/权限/数据目录
+- `ThreatDetector` — 运行时异常操作检测
+- `generateCisReport()` — 生成 CIS 基线检查报告
+**关键设计决策**:
+- 启动检查：TLS 配置、身份文件权限、数据目录权限、密码强度
+- 运行时监控：大量删除检测、大规模导出告警、频繁认证失败锁定
+- 合规报告输出 JSON + Markdown 格式
+**依赖**: F15 (Security), F16 (Audit)
+
+### F35: Node/Edge LRU Cache (节点/边 LRU 缓存)
+**设计目录**: `src/core/lru-cache.ts`
+**意图**: 增强邻居缓存，支持逐边粒度失效 + 写穿缓存 + 预加载
+**接口**:
+- 缓存 key: `{nodeId, edgeType, direction}` — 按边粒度缓存
+- `upsertEdge()` / `deleteEdge()` 时只清除受影响的缓存条目
+- 热点节点自动延长 TTL
+**关键设计决策**:
+- 利用已有的 `lru-cache` v11 实现，改进缓存粒度
+- 写穿策略：写入操作同时更新缓存
+- 邻接查询时批量预加载邻居节点
+- 缓存命中率目标 > 80%
+**依赖**: F01 (Graph Engine), lru-cache v11
+
+### F36: OPTIONAL MATCH / WITH Clause (可选匹配与管道)
+**设计目录**: `src/query/optional-match.ts`
+**意图**: 支持 Cypher 的 OPTIONAL MATCH（左外连接）和 WITH（查询管道）
+**接口**:
+- OPTIONAL MATCH 语法：`MATCH ... OPTIONAL MATCH ... RETURN`
+- WITH 管道：`MATCH ... WITH ... RETURN`
+- 多阶段查询执行
+**关键设计决策**:
+- PEG 语法扩展：增加 OptionalMatchClause 和 WithClause
+- 多阶段 AST：WITH 分隔的前后两段查询，结果传递
+- 左外连接实现：匹配不到时返回 null 填充
+- OPTIONAL MATCH 性能优化：缓存预加载增强
+**依赖**: F21 (Query Engine), F35 (LRU Cache)
+
+### F37: Aggregate Functions (聚合函数)
+**设计目录**: `src/query/aggregate.ts`
+**意图**: 支持 COUNT/SUM/AVG/MIN/MAX/GROUP BY/HAVING 全聚合
+**接口**:
+- `AggregateExpression` — PEG 语法中的聚合表达式节点
+- `GroupByClause` — GROUP BY 子句
+- `HavingClause` — HAVING 过滤
+- 执行层：归约式聚合计算
+**关键设计决策**:
+- Phase 1: Peggy 语法扩展 → Phase 2: AST 转换 → Phase 3: 执行层 → Phase 4: CBO 集成
+- 无需第三方 npm 包，全部自实现（~300 行）
+- NULL 属性处理：SUM/AVG 跳过 NULL，COUNT 统计非 NULL
+- QueryPlanner 代价模型支持聚合节点选择
+**依赖**: F21 (Query Engine), F27 (Query Plan Cache)
 
 ## 已知限制
 

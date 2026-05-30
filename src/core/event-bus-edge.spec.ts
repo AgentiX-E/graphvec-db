@@ -527,7 +527,7 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
   // ================================================================
   // Known flaky issue: CURVE in-process dual-child race causes receiver to miss messages.
   // In production this test is meaningful; skip in CI to avoid blocking the pipeline.
-  it.skip('should handle high-throughput ROUTER frames with ack batching (producer/consumer)', async () => {
+  it('should handle high-throughput ROUTER frames with ack batching (producer/consumer)', async () => {
     vi.setConfig({ testTimeout: 60000 })
     const rootDir = path.join(dirs.root, 'bench-15')
     fs.mkdirSync(rootDir, { recursive: true })
@@ -583,6 +583,31 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
       EBTN_ROLE: 'receiver',
     })
 
+    // 收集子进程输出
+    const linesA: string[] = []
+    const linesB: string[] = []
+
+    procB.stdout!.on('data', (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n').filter(Boolean)) {
+        linesB.push(line)
+      }
+    })
+
+    // 等待接收者就绪后再启动发送者
+    const gotBReady = new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        for (const line of linesB) {
+          try {
+            const msg = JSON.parse(line)
+            if (msg.type === 'ready') resolve()
+          } catch { /* skip */ }
+        }
+      }, 50)
+      setTimeout(() => { clearInterval(check); resolve() }, 20000)
+    })
+
+    await gotBReady
+
     const procA = spawnTestNode({
       EBTN_NODE_ID: 'node-a',
       EBTN_PORT: String(portA),
@@ -593,32 +618,10 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
       EBTN_COUNT: String(stressCount),
     })
 
-    // 收集子进程输出
-    const linesA: string[] = []
-    const linesB: string[] = []
-
     procA.stdout!.on('data', (chunk: Buffer) => {
       for (const line of chunk.toString().split('\n').filter(Boolean)) {
         linesA.push(line)
       }
-    })
-    procB.stdout!.on('data', (chunk: Buffer) => {
-      for (const line of chunk.toString().split('\n').filter(Boolean)) {
-        linesB.push(line)
-      }
-    })
-
-    // 等待两个进程 ready
-    const gotBReady = new Promise<void>((resolve) => {
-      const check = setInterval(() => {
-        for (const line of linesB) {
-          try {
-            const msg = JSON.parse(line)
-            if (msg.type === 'ready') resolve()
-          } catch { /* skip */ }
-        }
-      }, 50)
-      setTimeout(() => { clearInterval(check); resolve() }, 15000)
     })
 
     const gotADone = new Promise<void>((resolve) => {
@@ -632,8 +635,6 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
       }, 50)
       setTimeout(() => { clearInterval(check); resolve() }, 30000)
     })
-
-    await gotBReady
 
     // 通知接收者预期消息数
     procB.stdin!.write(JSON.stringify({ type: 'setCount', count: stressCount }) + '\n')

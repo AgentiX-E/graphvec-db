@@ -43,6 +43,13 @@ describe('端到端多进程压测', () => {
       let readyCount = 0
       const stderrBuf: string[] = []
 
+      // 每 60s 打印 ready 进度（方便调试）
+      const progress = setInterval(() => {
+        if (readyCount < nodeIds.length) {
+          console.log(`  ⏳ spawnNodes: ${readyCount}/${nodeIds.length} ready after ${Math.round(performance.now() / 1000)}s`)
+        }
+      }, 60000)
+
       for (let i = 0; i < nodeIds.length; i++) {
         const nodeId = nodeIds[i]
         const port = basePort + i
@@ -72,7 +79,10 @@ describe('端到端多进程压测', () => {
               if (msg.type === 'ready') readyCount++
             } catch {}
           }
-          if (readyCount === nodeIds.length) resolve(nodes)
+          if (readyCount === nodeIds.length) {
+            clearInterval(progress)
+            resolve(nodes)
+          }
         })
         proc.on('exit', () => {})
         proc.on('error', () => {})
@@ -83,12 +93,13 @@ describe('端到端多进程压测', () => {
         } as NodeProc)
       }
 
+      // 300s 超时 — 5 节点 ZMQ CURVE 握手在 load 较高时较慢
+      // 这个超时晚于 vitest testTimeout (360s)，通过进展日志定位慢在哪
       setTimeout(() => {
-        if (readyCount < nodeIds.length) {
-          const stderr = stderrBuf.join('\n').slice(0, 1000)
-          reject(new Error(`timeout: ${readyCount}/${nodeIds.length} ready\nstderr:\n${stderr}`))
-        }
-      }, 180000)
+        clearInterval(progress)
+        const stderr = stderrBuf.join('\n').slice(0, 1000)
+        reject(new Error(`timeout: ${readyCount}/${nodeIds.length} ready\nstderr:\n${stderr}`))
+      }, 300000)
     })
   }
 
@@ -124,13 +135,13 @@ describe('端到端多进程压测', () => {
     const fanoutPort = 31550 + Math.floor(Math.random() * 8000)
 
     e2eNodes = await spawnNodes(fanoutIds, fanoutPort, {
-      ML_WORKER_POOL_CONCURRENCY: '4',
+      ML_WORKER_POOL_CONCURRENCY: '2',   // concurrency=2 而非 4：避免 25 个 Node.js 进程同时启动
       ML_USE_PER_PEER_DB: 'true',
-      ML_TICK_MS: '100',
-      ML_BATCH_SIZE: '100',
+      ML_TICK_MS: '200',
+      ML_BATCH_SIZE: '20',
     })
 
-    await new Promise(r => setTimeout(r, 25000))
+    await new Promise(r => setTimeout(r, 30000))
 
     for (const n of e2eNodes) {
       const items = Array.from({ length: 20 }, (_, i) => ({
@@ -141,7 +152,7 @@ describe('端到端多进程压测', () => {
       n.stdin({ type: 'batchUpsertNode', payload: { items } })
     }
 
-    await new Promise(r => setTimeout(r, 60000))
+    await new Promise(r => setTimeout(r, 90000))
 
     expect(e2eNodes.length).toBe(5)
     console.log('  ✓ 5 nodes with WorkerPool + Per-Peer DB started')

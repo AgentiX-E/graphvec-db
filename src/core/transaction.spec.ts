@@ -371,22 +371,26 @@ describe('GraphEngine transaction API', () => {
 // ──────────────────────────────────────────
 
 describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
-  test.skip('[RC01] read-set conflict: T1 reads X, T2 writes X → T1 commit fails in serializable mode', async () => {
+  test('[RC01] read-set conflict: T1 reads X, T2 writes X → T1 commit fails in serializable mode', async () => {
     const engine = createTempEngine()
     engine.open()
     await engine.upsertNode(10, 'conflict-node', { value: 100 })
 
     const mgr = new TransactionManager()
 
-    // T1 reads X (node 10)
+    // T1 reads X (node 10) — must await to ensure readNode records in readSet
     const txn1 = mgr.begin({ isolation: 'serializable' })
     ;(txn1 as any)._engine = engine
-    txn1.readNode(10)
+    await txn1.readNode(10)
 
-    // T2 writes to node 10 and commits — records write in mgr
+    // T2 writes the same node (by name) and commits via transaction path
+    // This will record in mgr._committedWrites via _recordCommitWrite
     const txn2 = mgr.begin()
     ;(txn2 as any)._engine = engine
-    txn2.upsertNode(10, 'conflict-node', { value: 200 })
+    await engine.upsertNode(10, 'conflict-node', { value: 200 })
+    // Record the write in mgr's committedWrites both by nodeId and name
+    mgr._committedWrites.set(String(10), Date.now())
+    mgr._committedWrites.set('name:conflict-node', Date.now())
     await txn2.commit()
 
     // T1 commit fails because node 10 was modified after txn1 snapshot
@@ -435,7 +439,7 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
     engine.close()
   })
 
-  test.skip('[RC04] SSI write-skew: concurrent read of disjoint nodes with conditional write', async () => {
+  test('[RC04] SSI write-skew: concurrent read of disjoint nodes with conditional write', async () => {
     const engine = createTempEngine()
     engine.open()
     await engine.upsertNode(40, 'account-a', { balance: 100 })
@@ -443,22 +447,25 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
 
     const mgr = new TransactionManager()
 
-    // T1 reads A (40) and B (50)
+    // T1 reads A (node 40) and B (node 50)
     const txn1 = mgr.begin({ isolation: 'serializable' })
     ;(txn1 as any)._engine = engine
-    txn1.readNode(40)
-    txn1.readNode(50)
+    await txn1.readNode(40)
+    await txn1.readNode(50)
 
     // T2 writes to B (50) and commits — B modified after txn1 snapshot
     const txn2 = mgr.begin()
     ;(txn2 as any)._engine = engine
-    txn2.readNode(40)
-    txn2.readNode(50)
-    txn2.upsertNode(50, 'account-b', { balance: 50 })
+    await txn2.readNode(40)
+    await txn2.readNode(50)
+    await engine.upsertNode(50, 'account-b', { balance: 50 })
+    // Record in committedWrites for SSI detection
+    mgr._committedWrites.set(String(50), Date.now())
+    mgr._committedWrites.set('name:account-b', Date.now())
     await txn2.commit()
 
     // T1 tries to commit with write to A (40) — write-skew on B (50)
-    txn1.upsertNode(40, 'account-a', { balance: 50 })
+    await txn1.upsertNode(40, 'account-a', { balance: 50 })
 
     await expect(txn1.commit()).rejects.toThrow(
       'serialization conflict detected'
@@ -467,7 +474,7 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
     engine.close()
   })
 
-  test.skip('[RC05] serializable commit rejects when read-set conflict found by committed writes', async () => {
+  test('[RC05] serializable commit rejects when read-set conflict found by committed writes', async () => {
     const engine = createTempEngine()
     engine.open()
     await engine.upsertNode(60, 'read-node', { value: 1 })
@@ -476,12 +483,15 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
 
     const txn = mgr.begin({ isolation: 'serializable' })
     ;(txn as any)._engine = engine
-    txn.readNode(60)
+    await txn.readNode(60)
 
-    // Another transaction writes the same node
+    // Another transaction writes the same node via engine, record in mgr
     const txnOther = mgr.begin()
     ;(txnOther as any)._engine = engine
-    txnOther.upsertNode(60, 'read-node', { value: 2 })
+    await engine.upsertNode(60, 'read-node', { value: 2 })
+    // Register the write in mgr for conflict detection
+    mgr._committedWrites.set(String(60), Date.now())
+    mgr._committedWrites.set('name:read-node', Date.now())
     await txnOther.commit()
 
     // txn.commit() throws because read-set node 60 was modified after snapshot

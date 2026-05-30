@@ -542,3 +542,274 @@ describe('_enrichWithAggregates — Column enrichment', () => {
     expect(cols[0].distinct).toBe(true)
   })
 })
+
+// ── GROUP BY parsing (grammar integration) ──
+
+describe('GROUP BY — Parsing and execution via parseQuery', () => {
+
+  it('a. GROUP BY single key', () => {
+    const plan = parseQuery('MATCH (n) RETURN n.dept, count(*) AS cnt GROUP BY n.dept')
+    expect(plan.groupBy).toBeDefined()
+    expect(plan.groupBy!.length).toBe(1)
+    // formatColumn strips the node prefix: n.dept → dept
+    expect(plan.groupBy![0]).toBe('dept')
+  })
+
+  it('b. GROUP BY multiple keys', () => {
+    const plan = parseQuery('MATCH (n) RETURN n.city, n.dept, count(*) AS cnt GROUP BY n.city, n.dept')
+    expect(plan.groupBy).toBeDefined()
+    expect(plan.groupBy!.length).toBe(2)
+    expect(plan.groupBy![0]).toBe('city')
+    expect(plan.groupBy![1]).toBe('dept')
+  })
+
+  it('c. GROUP BY with aggregate in RETURN', () => {
+    const plan = parseQuery('MATCH (n) RETURN n.name, sum(n.age) AS total GROUP BY n.name')
+    expect(plan.groupBy).toBeDefined()
+    expect(plan.groupBy!.length).toBe(1)
+    expect(plan.groupBy![0]).toBe('name')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('sum')
+  })
+
+  it('d. GROUP BY with WHERE filter', () => {
+    const plan = parseQuery('MATCH (n) WHERE n.age > 25 RETURN n.dept, count(*) AS cnt GROUP BY n.dept')
+    expect(plan.groupBy).toBeDefined()
+    expect(plan.groupBy!.length).toBe(1)
+    expect(plan.filters.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('e. GROUP BY with ORDER BY', () => {
+    const plan = parseQuery('MATCH (n) RETURN n.dept, count(*) AS cnt GROUP BY n.dept ORDER BY cnt DESC')
+    expect(plan.groupBy).toBeDefined()
+    expect(plan.groupBy!.length).toBe(1)
+    expect(plan.orderBy.length).toBe(1)
+  })
+})
+
+// ── Aggregate with bare identifier (grammar integration) ──
+
+describe('Aggregate with bare identifier — parseQuery integration', () => {
+
+  it('a. COUNT(n) bare node ref', () => {
+    const plan = parseQuery('MATCH (n) RETURN count(n)')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('count')
+  })
+
+  it('b. SUM(n.age) — already supported, but verify', () => {
+    const plan = parseQuery('MATCH (n) RETURN sum(n.age)')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('sum')
+  })
+
+  it('c. AVG(n.age) — already supported, but verify', () => {
+    const plan = parseQuery('MATCH (n) RETURN avg(n.age)')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('avg')
+  })
+
+  it('d. MIN(n.age) — already supported, but verify', () => {
+    const plan = parseQuery('MATCH (n) RETURN min(n.age)')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('min')
+  })
+
+  it('e. MAX(n.age) — already supported, but verify', () => {
+    const plan = parseQuery('MATCH (n) RETURN max(n.age)')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('max')
+  })
+
+  it('f. COUNT(*)', () => {
+    const plan = parseQuery('MATCH (n) RETURN count(*)')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('count')
+    expect(plan.aggregate!.field).toBe('*')
+  })
+
+  it('g. Aggregate with alias', () => {
+    const plan = parseQuery('MATCH (n) RETURN count(n) AS total')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('count')
+    expect(plan.aggregate!.alias).toBe('total')
+  })
+
+  it('h. COUNT with property ref n.name', () => {
+    const plan = parseQuery('MATCH (n) RETURN count(n.name)')
+    expect(plan.aggregate).toBeDefined()
+    expect(plan.aggregate!.type).toBe('count')
+  })
+})
+
+// ── GROUP BY execution (via GraphEngine) ──
+
+describe('GROUP BY — Execution (via graph-engine)', () => {
+  // These tests import and use graph-engine through the query function
+  // Using _executeQuery for standalone execution that mocks graph engine behavior
+
+  it('a. GROUP BY single key with COUNT', () => {
+    const rows: QueryRow[] = [
+      { name: 'Alice', dept: 'Engineering' },
+      { name: 'Bob', dept: 'Engineering' },
+      { name: 'Charlie', dept: 'Sales' },
+      { name: 'Diana', dept: 'Sales' },
+      { name: 'Eve', dept: 'Engineering' },
+    ]
+    const plan = parseQuery('MATCH (n) RETURN n.dept, count(*) AS cnt GROUP BY n.dept')
+    // Simulate: scan matches all rows
+    const result = _executeQuery(plan, rows)
+    expect(result.length).toBe(2) // Engineering + Sales
+
+    const engRow = result.find(r => r.dept === 'Engineering')
+    expect(engRow).toBeDefined()
+    expect(engRow!.cnt).toBe(3)
+
+    const salesRow = result.find(r => r.dept === 'Sales')
+    expect(salesRow).toBeDefined()
+    expect(salesRow!.cnt).toBe(2)
+  })
+
+  it('b. GROUP BY with SUM', () => {
+    const rows: QueryRow[] = [
+      { name: 'Alice', dept: 'Engineering', age: 30 },
+      { name: 'Bob', dept: 'Engineering', age: 25 },
+      { name: 'Charlie', dept: 'Sales', age: 35 },
+      { name: 'Diana', dept: 'Sales', age: 28 },
+      { name: 'Eve', dept: 'Engineering', age: 40 },
+    ]
+    const plan = parseQuery('MATCH (n) RETURN n.dept, sum(n.age) AS total_age GROUP BY n.dept')
+    const result = _executeQuery(plan, rows)
+    expect(result.length).toBe(2)
+
+    const engRow = result.find(r => r.dept === 'Engineering')
+    expect(engRow).toBeDefined()
+    expect(engRow!.total_age).toBe(95) // 30 + 25 + 40
+
+    const salesRow = result.find(r => r.dept === 'Sales')
+    expect(salesRow).toBeDefined()
+    expect(salesRow!.total_age).toBe(63) // 35 + 28
+  })
+
+  it('c. GROUP BY with AVG', () => {
+    const rows: QueryRow[] = [
+      { name: 'Alice', dept: 'Engineering', age: 30 },
+      { name: 'Bob', dept: 'Engineering', age: 20 },
+      { name: 'Charlie', dept: 'Sales', age: 40 },
+      { name: 'Diana', dept: 'Sales', age: 60 },
+    ]
+    const plan = parseQuery('MATCH (n) RETURN n.dept, avg(n.age) AS avg_age GROUP BY n.dept')
+    const result = _executeQuery(plan, rows)
+    expect(result.length).toBe(2)
+
+    const engRow = result.find(r => r.dept === 'Engineering')
+    expect(engRow).toBeDefined()
+    expect(engRow!.avg_age).toBe(25) // avg(30, 20)
+
+    const salesRow = result.find(r => r.dept === 'Sales')
+    expect(salesRow).toBeDefined()
+    expect(salesRow!.avg_age).toBe(50) // avg(40, 60)
+  })
+
+  it('d. GROUP BY with MIN and MAX', () => {
+    const rows: QueryRow[] = [
+      { name: 'Alice', dept: 'Engineering', age: 30 },
+      { name: 'Bob', dept: 'Engineering', age: 20 },
+      { name: 'Charlie', dept: 'Sales', age: 40 },
+      { name: 'Diana', dept: 'Sales', age: 60 },
+    ]
+
+    const planMin = parseQuery('MATCH (n) RETURN n.dept, min(n.age) AS min_age GROUP BY n.dept')
+    const resultMin = _executeQuery(planMin, rows)
+    expect(resultMin.length).toBe(2)
+    expect(resultMin.find(r => r.dept === 'Engineering')!.min_age).toBe(20)
+    expect(resultMin.find(r => r.dept === 'Sales')!.min_age).toBe(40)
+
+    const planMax = parseQuery('MATCH (n) RETURN n.dept, max(n.age) AS max_age GROUP BY n.dept')
+    const resultMax = _executeQuery(planMax, rows)
+    expect(resultMax.length).toBe(2)
+    expect(resultMax.find(r => r.dept === 'Engineering')!.max_age).toBe(30)
+    expect(resultMax.find(r => r.dept === 'Sales')!.max_age).toBe(60)
+  })
+
+  it('e. GROUP BY with WHERE filter (pre-aggregation)', () => {
+    const rows: QueryRow[] = [
+      { name: 'Alice', dept: 'Engineering', age: 30 },
+      { name: 'Bob', dept: 'Engineering', age: 25 },
+      { name: 'Charlie', dept: 'Sales', age: 35 },
+      { name: 'Diana', dept: 'Sales', age: 28 },
+      { name: 'Eve', dept: 'Engineering', age: 45 },
+    ]
+    // WHERE age > 28 → Alice(30), Charlie(35), Eve(45) → Engineering: 2, Sales: 1
+    const plan = parseQuery('MATCH (n) WHERE n.age > 28 RETURN n.dept, count(*) AS cnt GROUP BY n.dept')
+    const result = _executeQuery(plan, rows)
+    expect(result.length).toBe(2)
+
+    const engRow = result.find(r => r.dept === 'Engineering')
+    expect(engRow).toBeDefined()
+    expect(engRow!.cnt).toBe(2)
+
+    const salesRow = result.find(r => r.dept === 'Sales')
+    expect(salesRow).toBeDefined()
+    expect(salesRow!.cnt).toBe(1)
+  })
+
+  it('f. Empty result set with GROUP BY', () => {
+    const rows: QueryRow[] = []
+    const plan = parseQuery('MATCH (n) RETURN n.dept, count(*) AS cnt GROUP BY n.dept')
+    const result = _executeQuery(plan, rows)
+    // Empty with GROUP BY → empty array (no groups to form)
+    expect(result.length).toBe(0)
+  })
+})
+
+// ── Aggregate with bare identifier execution ──
+
+describe('Aggregate with bare identifier — execution', () => {
+
+  it('a. COUNT on bare node ref returns total count', () => {
+    const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ id: i, name: `Node_${i}` }))
+    const plan = parseQuery('MATCH (n) RETURN count(n)')
+    const result = _executeQuery(plan, rows)
+    expect(result.length).toBe(1)
+    expect(result[0].count).toBe(10)
+  })
+
+  it('b. SUM with WHERE filter', () => {
+    const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ age: i + 1 }))
+    const plan = parseQuery('MATCH (n) WHERE n.age > 5 RETURN sum(n.age)')
+    const result = _executeQuery(plan, rows)
+    // ages > 5: 6+7+8+9+10 = 40
+    expect(result[0].sum).toBe(40)
+  })
+
+  it('c. AVG with WHERE filter', () => {
+    const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ age: (i + 1) * 10 }))
+    // ages: 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
+    const plan = parseQuery('MATCH (n) WHERE n.age > 50 RETURN avg(n.age)')
+    const result = _executeQuery(plan, rows)
+    // ages > 50: 60, 70, 80, 90, 100 → avg = 80
+    expect(result[0].avg).toBe(80)
+  })
+
+  it('d. Empty set with bare aggregate', () => {
+    const rows: QueryRow[] = []
+    const plan = parseQuery('MATCH (n) WHERE n.age > 200 RETURN count(n)')
+    const result = _executeQuery(plan, rows)
+    expect(result.length).toBe(1)
+    expect(result[0].count).toBe(0)
+  })
+})
+
+// ── ORDER BY + aggregate ──
+
+describe('ORDER BY with aggregate', () => {
+
+  it('a. RETURN aggregate ORDER BY aggregate alias', () => {
+    const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ id: i }))
+    const plan = parseQuery('MATCH (n) RETURN count(n) AS cnt ORDER BY cnt')
+    const result = _executeQuery(plan, rows)
+    expect(result.length).toBe(1)
+    expect(result[0].cnt).toBe(10)
+  })
+})

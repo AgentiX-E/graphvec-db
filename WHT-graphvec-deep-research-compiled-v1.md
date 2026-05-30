@@ -1,7 +1,8 @@
 # AgentiX GraphVec 深度研究编译 v1.0
 
 > 整合自：consensus-shard / query-api / security-ops 三层子 Agent 研究报告 + 运维/安全/复制全面审查
-> 编译日期：2026-05-28
+> 编译日期：2026-05-28  
+> Round 8b 更新：2026-05-29 — 9 个新模块已新增至文件映射
 
 ---
 
@@ -54,7 +55,7 @@ Shard Manager ──→ 多 RangeInstances
 | 🔴 高 | `watchTimeout` 未暴露 | app-heartbeat-manager.ts | ✅ 已修复 | `pingIntervalMs/suspectThreshold/recoveryThreshold` 全部可配置 |
 | 🟡 中 | ScatterGather 无超时兜底 | scatter-gather.ts | ✅ 已修复 | Round 7 Step 4 添加 `promiseWithTimeout()` helper |
 | ✅ 已修复 | Rebalancer tests 挂起 | rebalancer.spec.ts | ✅ | 已通过全量测试 |
-| 🔵 低 | RaftNode epoch 检查重复 | raft-node.ts | ⬜ | `ensureEpoch` 多处 > 1 处 |
+| 🔵 低 | RaftNode epoch 检查重复 | raft-node.ts | ✅ 已修复 | Round 8b 重构 `ensureEpoch` 方法 |
 
 ---
 
@@ -79,18 +80,29 @@ Client → REST API (Fluent) → QueryEngine → GraphEngine
 | `api/fluent.ts` | ~350 | 流式查询 Builder（含 `updateEdge`/`deleteEdge`） |
 | `api/query-planner.ts` | ~350 | 查询计划器（含 CBO + `planCache` 单例，lru-cache v11） |
 | `query/query-engine.ts` | ~330 | Cypher-lite 解析器 + 执行器（含 `parseQueryCached()`） |
-| `core/graph-engine.ts` | ~700 | 核心图存储引擎（含数据压缩、13 种图算法） |
+| `query/optional-match.ts` | ~150 | OPTIONAL MATCH / WITH 子句执行器 (Round 8b F38) |
+| `query/aggregate.ts` | ~300 | 聚合函数 COUNT/SUM/AVG/GROUP BY (Round 8b F39) |
+| `core/graph-engine.ts` | ~700 | 核心图存储引擎（含数据压缩、13 种图算法、LRU缓存F35） |
 | `core/overgraph-storage.ts` | ~300 | OverGraph 存储适配层（含 msgpackr 透明压缩） |
+| `core/lru-cache.ts` | ~80 | 增强逐边粒度失效+写穿缓存 (Round 8b F37) |
+| `index/composite-index.ts` | ~200 | 组合索引 (Round 8b F31) |
+| `index/geo-index.ts` | ~250 | 地理空间索引 (Round 8b F32) |
+| `algorithms/streaming-engine.ts` | ~350 | 流式算法引擎+图投影 (Round 8b F33) |
+| `shard/2pc-coordinator.ts` | ~400 | 跨分片2PC事务协调器 (Round 8b F34) |
+| `ops/ldbc-benchmark.ts` | ~300 | LDBC SNB 基准测试套件 (Round 8b F35) |
+| `security/security-audit.ts` | ~200 | 安全基线+威胁检测 (Round 8b F36) |
 
 ### 2.3 审计发现
 
 | 严重度 | 问题 | 位置 | 状态 | 说明 |
 |:------:|:-----|:------|:----:|------|
-| 🟡 中 | Cypher-lite 无类型校验 | query-engine.ts | ⬜ | 运行时才暴露类型错误 |
+| 🟡 中 | Cypher-lite 无类型校验 | query-engine.ts | ✅ 已解决 | Round 8b 通过 Schema Validation (F28) + Aggregate 解析集成实现类型感知 |
 | 🟡 中 | Fluent API `updateEdge()` / `deleteEdge()` | fluent.ts | ✅ 已修复 | Round 7 Step 4 添加 |
 | 🔵 低 | REST API `listDatabases()` / `getShardInfo` | rest.ts | ✅ 已修复 | Round 7 Step 4 添加 |
 | 🔵 低 | `QueryEngine` 无缓存 | query-engine.ts | ✅ 已修复 | Round 8 添加 `planCache` (lru-cache v11) |
 | ✅ | Cypher-lite 解析器支持：MATCH/RETURN/WHERE/ORDER/LIMIT/SKIP | — | ✅ | 基础查询完备 |
+| ✅ | OPTIONAL MATCH / WITH 子句 | — | ✅ | Round 8b 新增 (F38) |
+| ✅ | 聚合函数 (COUNT/SUM/AVG/GROUP BY) | — | ✅ | Round 8b 新增 (F39) |
 
 ---
 
@@ -106,6 +118,7 @@ Client → REST API (Fluent) → QueryEngine → GraphEngine
 | `security/tls.ts` | ~361 | TLS 配置（cert/key/CA + mTLS） | ✅ 完整 |
 | `security/rls.ts` | ~100 | 行级安全策略引擎 | 🟡 基础 |
 | `security/audit.ts` | ~80 | 审计日志触发 | 🟡 基础 |
+| `security/security-audit.ts` | ~200 | 安全基线检查+入侵检测+CIS报告 (Round 8b F36) | ✅ 新增 |
 
 ### 3.2 运维模块
 
@@ -131,11 +144,11 @@ Client → REST API (Fluent) → QueryEngine → GraphEngine
 
 | 严重度 | 问题 | 位置 | 说明 |
 |:------:|:-----|:------|------|
-| 🟡 中 | 无安全基线文档 | — | 合规文档缺失 |
-| 🟡 中 | 备份一致性未验证 | backup.ts | 无一致性校验 |
-| 🟡 中 | 无证书热加载 | tls.ts | 需重启进程 |
-| 🔵 低 | RLS 未对接 REST API | rls.ts | 策略存在未使能 |
-| 🔵 低 | 审计日志裁剪缺失 | audit-log.ts | 无日志轮替 |
+| 🟡 中 | 无安全基线文档 | — | ✅ 已解决 — Round 8b F36 安全基线+威胁检测+合规检查已实现 |
+| 🟡 中 | 备份一致性未验证 | backup.ts | 🟡 基础 — 快照一致性已在 F34 2PC 中改进 |
+| 🟡 中 | 无证书热加载 | tls.ts | ✅ 已解决 — chokidar 监视 cert/key/ca 变更 |
+| 🔵 低 | RLS 未对接 REST API | rls.ts | 🟡 基础 — 策略存在，REST API 层需手动集成 |
+| 🔵 低 | 审计日志裁剪缺失 | audit-log.ts | 🟡 基础 — 基础日志功能存在，轮替待配置 |
 
 ---
 
@@ -145,12 +158,13 @@ Client → REST API (Fluent) → QueryEngine → GraphEngine
 
 | 替代方向 | 推荐 npm 包 | 当前状态 | 替换优先级 |
 |----------|:-----------|:--------:|:----------:|
-| 全文搜索 | minisearch (已安装) | 未集成 | P0 |
-| 图算法 | graphology (已安装) | 部分集成 | P2 |
-| 备份压缩 | archiver (已安装) | 已集成 | ✅ |
-| 文本解析 | csv-parse (已安装) | 未集成 | P2 |
-| 元数据 KV | lmdb (已安装) | 未集成 WAL | P1 |
-| 对象哈希 | xxhash-wasm (已安装) | 已集成 | ✅ |
-| 调度 | node-cron (已安装) | 已集成 | ✅ |
+| 全文搜索 | minisearch (已安装) | ✅ 已集成 — 全文索引 WAL 持久化 (Round 7) | P0 ✅ |
+| 图算法 | graphology (已安装) | ✅ 已全部集成 — WCC/SCC 等 6 算法 (Round 8) | ✅ |
+| 备份压缩 | archiver (已安装) | ✅ 已集成 | ✅ |
+| 文本解析 | csv-parse (已安装) | 🟡 基础 — 导入器使用基本 CSV 解析 | P2 🟡 |
+| 元数据 KV | lmdb (已安装) | ✅ 已集成 — 全部存储路径使用 LMDB | ✅ |
+| 对象哈希 | xxhash-wasm (已安装) | ✅ 已集成 | ✅ |
+| 调度 | node-cron (已安装) | ✅ 已集成 | ✅ |
+| 空间索引 | rbush (新增 Round 8b) | ✅ 已集成 — 地理空间 R-tree (F32) | ✅ |
 
 **关键结论**：只有 minisearch 和 lmdb 两个已安装包未被完全集成，其余依赖均已就位。

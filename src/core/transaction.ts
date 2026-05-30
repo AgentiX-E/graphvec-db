@@ -112,12 +112,24 @@ export class TransactionManager {
    * 记录事务提交时的写入（用于 SSI 读集冲突检测）
    * 会记录 writeSet 中的 name 和 deleteSet 中的 nodeId
    */
-  _recordCommitWrite(snapshotId: number, writeSet: Map<string, UpsertOpData>, deleteSet: Set<NodeId>): void {
+  _recordCommitWrite(snapshotId: number, writeSet: Map<string, UpsertOpData>, deleteSet: Set<NodeId>, engine?: GraphEngine): void {
     const now = Date.now()
-    for (const [name] of writeSet) {
+    for (const [name, data] of writeSet) {
       // 如果不是边操作，按 name 记录
       if (!name.startsWith('edge:')) {
         this._committedWrites.set(`name:${name}`, now)
+        // 如果引擎可用，尝试通过 name 查询 nodeId 并记录 nodeId 键
+        // 这样读集冲突可以通过 nodeId 直接匹配
+        if (engine) {
+          try {
+            const node = engine.findNodeByName(name)
+            if (node !== null && node !== undefined) {
+              this._committedWrites.set(String((node as any).id ?? node), now)
+            }
+          } catch {
+            // 查询可能因 flush 后的 engine 状态变化失败，静默处理
+          }
+        }
       }
     }
     for (const nodeId of deleteSet) {
@@ -131,14 +143,13 @@ export class TransactionManager {
    */
   _checkNodeConflict(nodeId: NodeId, snapshotCreatedAt: number): boolean {
     const entry = this._committedWrites.get(String(nodeId))
-    if (entry && entry > snapshotCreatedAt) return true
+    // Use >= to handle same-ms race between snapshot and commit write
+    if (entry && entry >= snapshotCreatedAt) return true
 
     // 也检查 name: 前缀的条目（upsert 节点按 name 键）
     for (const [key, timestamp] of this._committedWrites) {
-      if (key.startsWith('name:') && timestamp > snapshotCreatedAt) {
-        // 如果该 name 引用了该 nodeId，检查是否存在冲突
-        // 对于测试场景，我们检查 nodeId 对应的数字是否在 key 中
-        // 但更简单的方式：直接检查 nodeId 本身
+      if (key.startsWith('name:') && timestamp >= snapshotCreatedAt) {
+        return true
       }
     }
     return false
@@ -465,7 +476,9 @@ export class Transaction {
    * 仅当 isolation === 'serializable' 时调用
    */
   _checkReadSetConflict(_engine: GraphEngine | null): boolean {
-    if (this.readSet.size === 0) return false
+    if (this.readSet.size === 0) {
+      return false
+    }
     if (!this._mgr) return false
 
     for (const nodeId of this.readSet) {
@@ -476,9 +489,8 @@ export class Transaction {
       }
 
       // 通过 TransactionManager 的 committedWrites 检查是否被其他事务修改
-      if (this._mgr._checkNodeConflict(nodeId, this.snapshot.createdAt)) {
-        return true
-      }
+      const conflict = this._mgr._checkNodeConflict(nodeId, this.snapshot.createdAt)
+      if (conflict) return true
     }
     return false
   }
@@ -559,7 +571,7 @@ export class Transaction {
 
       // 记录已提交的写入（用于 SSI 读集冲突检测）
       if (this._mgr) {
-        this._mgr._recordCommitWrite(this.snapshotId, this.writeSet, this.deleteSet)
+        this._mgr._recordCommitWrite(this.snapshotId, this.writeSet, this.deleteSet, this._engine)
       }
 
       // Phase 4: 释放锁

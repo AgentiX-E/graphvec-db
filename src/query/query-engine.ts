@@ -23,6 +23,7 @@
 
 import { parser } from './cypher-lite-parser'
 import { LRUCache } from 'lru-cache'
+import { planCache as plannerPlanCache, makePlanCacheKey } from '../api/query-planner'
 
 // ── AST 类型 ─────────────────────────────────────────────────
 
@@ -43,6 +44,8 @@ export interface QueryAST {
   where?: WhereClauseAST | null
   return?: ReturnClauseAST
   orderBy?: OrderByAST | null
+  /** GROUP BY columns */
+  groupBy?: PrimaryAST[]
   limit?: number | undefined
   skip?: number | undefined
   aggregate?: AggregateClause
@@ -195,6 +198,8 @@ export interface QueryPlan {
   skip: number | undefined
   /** 聚合子句（如 count, sum, avg, max, min） */
   aggregate?: AggregateClause
+  /** GROUP BY 列 */
+  groupBy?: string[]
   /** OPTIONAL MATCH 步骤（如果匹配不到返回 null 绑定） */
   optionalMatchSteps?: Array<{
     scanLabel: string | null
@@ -1147,9 +1152,37 @@ export function planFromAST(
       plan.aggregate = agg
       plan.returnColumns = [agg.alias ?? agg.field ?? agg.type]
     } else {
-      plan.returnColumns = ast.return.columns.map(col =>
-        col.alias ?? formatColumn(col.expression)
-      )
+      // Check for aggregate columns within the column list
+      let foundAggregate = false
+      for (const col of ast.return.columns) {
+        if (col.type === 'AGGREGATE_COLUMN' && col.expression?.type === 'AGGREGATE') {
+          const func = String(col.expression.func ?? '')
+          const field = String(col.expression.field ?? '')
+          const alias = col.alias
+          plan.aggregate = { type: func, field, alias }
+          foundAggregate = true
+        }
+      }
+      if (!foundAggregate) {
+        plan.returnColumns = ast.return.columns.map(col =>
+          col.alias ?? formatColumn(col.expression)
+        )
+      } else {
+        // For aggregate columns, set returnColumns from the aggregate info
+        const agg = plan.aggregate!
+        const unaliased = agg.field ?? agg.type
+        // If there are non-aggregate columns too (GROUP BY scenario),
+        // include them in returnColumns
+        const nonAggCols = ast.return.columns
+          .filter(col => col.type !== 'AGGREGATE_COLUMN')
+          .map(col => col.alias ?? formatColumn(col.expression))
+        plan.returnColumns = [...nonAggCols, agg.alias ?? unaliased]
+      }
+    }
+
+    // 处理 GROUP BY
+    if (ast.groupBy) {
+      plan.groupBy = ast.groupBy.map(col => formatColumn(col))
     }
 
     // 处理 ORDER BY（只有在有 RETURN 时才有效）
@@ -1863,13 +1896,14 @@ export function _executeQuery(
         alias: plan.aggregate.alias ?? plan.aggregate.type,
       }]
 
+      // Compute GROUP BY keys from plan.groupBy
+      const groupByKeys: string[] = plan.groupBy ?? []
+
       // Build rows for aggregation from candidates
       let rows: QueryRow[]
       if (aggInfo[0].field === '*') {
-        // count(*) — each candidate is a separate row
         rows = candidates.map(() => ({}))
       } else {
-        // Extract the property value from each candidate
         rows = candidates.map(c => {
           const val = _resolveProperty(c, aggInfo[0].field)
           const row: QueryRow = {}
@@ -1883,7 +1917,28 @@ export function _executeQuery(
         })
       }
 
-      let resultRows = _executeAggregation(rows, aggInfo, [])
+      // If GROUP BY, add group-by keys to each row
+      if (groupByKeys.length > 0) {
+        rows = candidates.map(c => {
+          const row: QueryRow = {}
+          // Add group-by key values
+          for (const gb of groupByKeys) {
+            const val = _resolveProperty(c, gb)
+            row[gb] = val ?? null
+          }
+          // Add aggregate field value
+          if (aggInfo[0].field !== '*') {
+            const propName = aggInfo[0].field.includes('.')
+              ? aggInfo[0].field.split('.').pop()!
+              : aggInfo[0].field
+            const val = _resolveProperty(c, aggInfo[0].field)
+            if (val !== undefined) row[propName] = val
+          }
+          return row
+        })
+      }
+
+      let resultRows = _executeAggregation(rows, aggInfo, groupByKeys)
 
       // Apply ORDER BY on aggregated result
       if (plan.orderBy.length > 0) {
@@ -2246,6 +2301,10 @@ function _assertKnownProp(propName: string, lite: LiteSchema, context: string): 
  * simple: just clear on schema changes.
  * Max size prevents unbounded memory growth.
  * Backed by lru-cache v11.
+ *
+ * Delegates to query-planner's global planCache for cross-module
+ * coordination — sets and clears are mirrored, and get() falls back
+ * to planner's cache with on-the-fly re-parse of cache key presence.
  */
 export class QueryPlanCache {
   private _lru: LRUCache<string, QueryPlan>
@@ -2275,22 +2334,62 @@ export class QueryPlanCache {
 
   /** Get cached plan, or undefined on miss */
   get(query: string): QueryPlan | undefined {
-    return this._lru.get(QueryPlanCache.key(query))
+    const key = QueryPlanCache.key(query)
+    const cached = this._lru.get(key)
+    if (cached) return cached
+
+    // Fallback: check if query-planner has an entry for this query.
+    // If so, its key is computed with the same normalization approach.
+    // We don't convert PlanNode→QueryPlan (different types), but
+    // we can provide a re-parse hint by storing the entry for next time.
+    const plannerKey = makePlanCacheKey(query)
+    if (plannerPlanCache.has(plannerKey)) {
+      // Planner has seen this query — re-parse and cache locally.
+      // Import the actual parseQuery at runtime to avoid circular deps.
+      // (parseQuery is defined in this module, so no circular issue.)
+      const plan = parseQuery(query)
+      this._lru.set(key, plan)
+      return plan
+    }
+
+    return undefined
   }
 
-  /** Store a plan in the cache */
+  /** Store a plan in the cache. Also mirrors to planner's cache when possible. */
   set(query: string, plan: QueryPlan): void {
-    this._lru.set(QueryPlanCache.key(query), plan)
+    const key = QueryPlanCache.key(query)
+    this._lru.set(key, plan)
+
+    // Mirror key to planner's cache for cross-module coordination.
+    // We store a lightweight sentinel value so plannerPlanCache.has()
+    // returns true; planner's own getCachedPlan() will discard this
+    // (stale/empty statsTime) and the planner's cachePlan() will
+    // overwrite with a real entry when actually needed.
+    const plannerKey = makePlanCacheKey(query)
+    if (!plannerPlanCache.has(plannerKey)) {
+      plannerPlanCache.set(plannerKey, {
+        plan: undefined as unknown as import('../api/query-planner').PlanNode,
+        statsTime: undefined,
+      })
+    }
   }
 
   /** Remove a specific entry */
   delete(query: string): void {
-    this._lru.delete(QueryPlanCache.key(query))
+    const key = QueryPlanCache.key(query)
+    this._lru.delete(key)
+
+    // Mirror delete to planner's cache
+    const plannerKey = makePlanCacheKey(query)
+    plannerPlanCache.delete(plannerKey)
   }
 
   /** Clear all cached plans */
   clear(): void {
     this._lru.clear()
+
+    // Mirror clear to planner's cache
+    plannerPlanCache.clear()
   }
 
   /** Current cache size */
@@ -2360,5 +2459,6 @@ function formatColumn(expr: PrimaryAST): string {
   if (expr.type === 'IDENTIFIER') return expr.name
   if (expr.type === 'STRING') return expr.value
   if (expr.type === 'NUMBER') return String(expr.value)
+  if (expr.type === 'AGGREGATE') return String(expr.func ?? '')
   return String(expr)
 }

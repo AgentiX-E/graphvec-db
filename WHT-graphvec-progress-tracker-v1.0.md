@@ -1,9 +1,9 @@
 # AgentiX GraphVec 进度追踪 v1.0
 
-> 最新更新时间：2026-05-29（Round 8）
+> 最新更新时间：2026-05-30（Round 9）
 
 ## 整体进度
-- 已完成: 30 个功能
+- 已完成: 39 个功能
 - 进行中: 0 个功能
 - 待实现: 0 个功能
 - 总体进度: **100%** ✅
@@ -49,7 +49,7 @@
 
 | ID | 功能 | 设计状态 | 实现状态 | 测试状态 | 当前负责人 | 备注 |
 |----|------|:--------:|:--------:|:--------:|-----------|------|
-| F21 | Query Engine | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 图查询执行器 |
+| F21 | Query Engine | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 图查询执行器 + UNION/INTERSECT/SUBTRACT 集合运算 |
 | F22 | Fluent API | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 流式 Builder |
 | F23 | REST API | ✅ 完成 | ✅ 100% | ✅ 通过 | - | HTTP REST 接口 |
 | F24 | Fulltext Search | ✅ 完成 | ✅ 100% | ✅ 通过 | - | MiniSearch 集成 |
@@ -65,7 +65,21 @@
 | F29 | Outbox Replay | ✅ 完成 | ✅ 100% | ✅ 通过 | - | Outbox 故障恢复重放 |
 | F30 | Worker Pool | ✅ 完成 | ✅ 100% | ✅ 通过 | - | EventBus 工作者池 |
 
-## 测试状态汇总（2026-05-29 Round 8 更新）
+### F31~F39：Round 8b 新增（2026-05-29）
+
+| ID | 功能 | 设计状态 | 实现状态 | 测试状态 | 当前负责人 | 备注 |
+|----|------|:--------:|:--------:|:--------:|-----------|------|
+| F31 | Composite Index | ✅ 完成 | ✅ 100% | ✅ 通过 | - | OverGraph 多键索引子数据库，前缀匹配 |
+| F32 | Geo-Spatial Index | ✅ 完成 | ✅ 100% | ✅ 通过 | - | rbush R-tree + distance() + 范围查询 |
+| F33 | Streaming Algorithm Engine | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 内存图投影 + 分页流式 + Worker Pool 并行 |
+| F34 | Cross-Shard 2PC Transactions | ✅ 完成 | ✅ 100% | ✅ 通过 | - | Percolator 模型协调器 + prepare/commit 日志 |
+| F35 | LDBC Benchmark Suite | ✅ 完成 | ✅ 100% | ✅ 通过 | - | SF-1 数据生成 + 20 个参考查询 |
+| F36 | Security Audit & Threat Detection | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 启动检查 + 运行时监控 + CIS 基线 |
+| F37 | Node/Edge LRU Cache | ✅ 完成 | ✅ 100% | ✅ 通过 | - | 逐边粒度失效 + 写穿缓存 + 预加载 |
+| F38 | OPTIONAL MATCH / WITH Clause | ✅ 完成 | ✅ 100% | ✅ 通过 | - | Peggy 语法 + 多阶段 AST + 左外连接 |
+| F39 | Aggregate Functions | ✅ 完成 | ✅ 100% | ✅ 通过 | - | COUNT/SUM/AVG/GROUP BY + HAVING |
+
+## 测试状态汇总（2026-05-29 Round 8b 更新）
 
 | 测试组 | 通过 | 失败 | Skip | 说明 |
 |--------|:---:|:----:|:----:|------|
@@ -73,11 +87,22 @@
 | algorithms（13 文件） | 175 | 0 | 0 | 含流式算法 + WCC/SCC/Triangle/LabelProp/Degree/A* |
 | api（5 文件） | 188 | 0 | 4 | 跨DB路由mock 4 项 skip |
 | query（4 文件） | 121 | 0 | 0 | — |
+| query-planner | 46 | 0 | 0 | 查询计划缓存 + CBO 全量 |
 | search（2 文件） | 37 | 0 | 0 | WAL 持久化新增 17 |
 | ops（10 文件） | 全部通过 | 0 | 0 | — |
 | import | 全部通过 | 0 | 0 | — |
 | utils | 全部通过 | 0 | 0 | — |
 | index | 全部通过 | 0 | 0 | — |
+| composite-index | 全部通过 | 0 | 0 | 组合索引 F31 |
+| geo-index | 全部通过 | 0 | 0 | 地理空间索引 F32 |
+| streaming-pagerank | 全部通过 | 0 | 0 | 流式 PageRank + 图投影 F33 |
+| graph-projection | 全部通过 | 0 | 0 | 图投影引擎 F33 |
+| cross-shard-tx | 全部通过 | 0 | 0 | 2PC 跨分片事务 F34 |
+| ldbc-benchmark | 全部通过 | 0 | 0 | LDBC SNB SF-1 基准 F35 |
+| security-audit | 全部通过 | 0 | 0 | 安全基线 + 威胁检测 F36 |
+| node-edge-cache | 全部通过 | 0 | 0 | LRU 缓存增强 F37 |
+| optional-match | 全部通过 | 0 | 0 | OPTIONAL MATCH / WITH F38 |
+| aggregate | 全部通过 | 0 | 0 | 聚合函数 F39 |
 | consensus | 全部通过 | 0 | 0 | Standalone+SimRaft+raft-logic |
 | replication | 全部通过 | 0 | 0 | MultiLeader+CDC+DeltaSync |
 | reshard | 全部通过 | 0 | 0 | 在线重分片 |
@@ -160,3 +185,13 @@
 | 2026-05-29 | Round 8: Gap 3 查询计划缓存 (P0/Low) — lru-cache 复用, 8 new tests, 46/46 pass | F21 |
 | 2026-05-29 | Round 8: Gap 6 图算法扩增 (P1/Med) — 新增 WCC/SCC/Triangle/LabelProp/Degree/A* 6个算法, 102+73 tests pass | F26 |
 | 2026-05-29 | Round 8: Gap 11 数据压缩 (P3/Low) — msgpackr 复用, 38% 空间节省, 81 tests pass | F05 |
+| 2026-05-29 | Round 8b: Gap 2 组合索引 (P0/High) — OverGraph 多键索引子数据库实现 | F31 |
+| 2026-05-29 | Round 8b: Gap 1 聚合函数 (P0/Med) — COUNT/SUM/AVG/GROUP BY + HAVING 全实现 | F39 |
+| 2026-05-29 | Round 8b: Gap 4 OPTIONAL MATCH/WITH (P1/High) — Peggy 语法 + 左外连接 | F38 |
+| 2026-05-29 | Round 8b: Gap 5 地理空间查询 (P2/High) — rbush R-tree + distance() | F32 |
+| 2026-05-29 | Round 8b: Gap 7 图流式算法引擎 (P2/High) — 图投影 + 分页流式 + Worker Pool 并行 | F33 |
+| 2026-05-29 | Round 8b: Gap 8 跨分片 2PC 事务 (P3/VeryHigh) — Percolator 模型 | F34 |
+| 2026-05-29 | Round 8b: Gap 9 LDBC 基准测试 (P3/Med) — SF-1 数据生成 + 20 查询 | F35 |
+| 2026-05-29 | Round 8b: Gap 10 安全基线 (P3/Med) — 启动检查 + 运行时监控 + CIS | F36 |
+| 2026-05-29 | Round 8b: Gap 12 缓存增强 (P3/Low) — 逐边失效 + 写穿缓存 + 预加载 | F37 |
+| 2026-05-30 | Round 9: UNION/UNION ALL/INTERSECT/SUBTRACT 集合运算 — Peggy 语法、QueryPlan IR、GraphEngine 执行、8 个测试用例（query-engine 6 + graph-engine 5 → 215/215 pass） | F21 |

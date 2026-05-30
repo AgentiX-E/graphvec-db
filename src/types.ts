@@ -217,6 +217,8 @@ export interface OverGraphConfig {
    * 默认为 false（不压缩）。
    */
   storageCompression?: boolean
+  /** 查询超时毫秒数（默认 30000，0 表示不超时） */
+  queryTimeoutMs?: number
 }
 
 export interface ShardMap {
