@@ -1196,6 +1196,11 @@ export class GraphEngine {
       return this._execAggregation(results, plan.aggregate, plan.groupBy)
     }
 
+    // Evaluate CASE expressions in RETURN columns (if any)
+    if (plan.caseColumns && plan.caseColumns.length > 0) {
+      results = this._execCaseColumns(results, plan)
+    }
+
     // Step 4: 应用 SKIP / LIMIT（此时大部分数据已在下推阶段截断）
     if (plan.skip && plan.skip > 0) {
       results = results.slice(plan.skip)
@@ -1534,12 +1539,131 @@ export class GraphEngine {
   ): NodeRecord[] {
     if (plan.returnColumns.length === 0) return rows
 
+    // Handle CASE expressions in RETURN columns
+    if (plan.caseColumns && plan.caseColumns.length > 0) {
+      return this._execCaseColumns(rows, plan)
+    }
+
     // For simple column projections from props
     if (plan.returnColumns.length === 1 && plan.returnColumns[0] in (rows[0]?.props || {})) {
       return rows
     }
 
     return rows
+  }
+
+  /**
+   * Execute CASE expressions in RETURN columns
+   */
+  private _execCaseColumns(rows: NodeRecord[], plan: QueryPlan): NodeRecord[] {
+    return rows.map(row => {
+      const newProps = { ...(row.props || {}) }
+      for (const cc of (plan.caseColumns || [])) {
+        newProps[cc.alias] = this._evaluateCaseExpr(cc.expression, row)
+      }
+      return { ...row, props: newProps }
+    })
+  }
+
+  /**
+   * Evaluate a CASE expression AST against a data row
+   */
+  private _evaluateCaseExpr(expr: any, row: NodeRecord): unknown {
+    const caseExpr = expr.caseExpr  // null for search CASE, value for simple CASE
+    const whens = expr.whens || []
+    const elseExpr = expr.elseExpr
+
+    for (const w of whens) {
+      let matched: boolean
+      if (caseExpr) {
+        // Simple CASE: CASE expr WHEN value -> expr === value
+        const left = this._resolvePrimaryExpr(caseExpr, row)
+        const right = this._resolvePrimaryExpr(w.condition, row)
+        matched = left === right
+      } else {
+        // Search CASE: CASE WHEN condition THEN result
+        matched = this._evaluateCondition(w.condition, row)
+      }
+      if (matched) {
+        return this._resolvePrimaryExpr(w.result, row)
+      }
+    }
+
+    // No WHEN matched: return ELSE or null
+    if (elseExpr) {
+      return this._resolvePrimaryExpr(elseExpr, row)
+    }
+    return null
+  }
+
+  /**
+   * Evaluate a boolean condition (WHERE-like expression) against a row
+   */
+  private _evaluateCondition(cond: any, row: NodeRecord): boolean {
+    if (!cond) return true
+
+    switch (cond.type) {
+      case 'COMPARISON': {
+        const left = this._resolvePrimaryExpr(cond.left, row)
+        const right = this._resolvePrimaryExpr(cond.right, row)
+        switch (cond.operator) {
+          case 'EQ':  return left === right
+          case 'NEQ': return left !== right
+          case 'GT':  return typeof left === 'number' && typeof right === 'number' && left > right
+          case 'GTE': return typeof left === 'number' && typeof right === 'number' && left >= right
+          case 'LT':  return typeof left === 'number' && typeof right === 'number' && left < right
+          case 'LTE': return typeof left === 'number' && typeof right === 'number' && left <= right
+          default: return true
+        }
+      }
+      case 'IN_EXPRESSION': {
+        const left = this._resolvePrimaryExpr(cond.left, row)
+        const list = cond.list?.type === 'LIST' ? (cond.list.items || []).map((i: any) => this._resolvePrimaryExpr(i, row)) : []
+        return list.includes(left)
+      }
+      case 'STRING_PREDICATE': {
+        const left = this._resolvePrimaryExpr(cond.left, row)
+        const right = this._resolvePrimaryExpr(cond.right, row)
+        if (typeof left !== 'string' || typeof right !== 'string') return false
+        switch (cond.operator) {
+          case 'STARTS_WITH': return left.startsWith(right)
+          case 'ENDS_WITH':   return left.endsWith(right)
+          case 'CONTAINS':    return left.includes(right)
+          default: return false
+        }
+      }
+      case 'AND': {
+        // flatten right
+        const rights = Array.isArray(cond.right) ? cond.right : [cond.right]
+        return this._evaluateCondition(cond.left, row) && rights.every((r: any) => this._evaluateCondition(r, row))
+      }
+      case 'OR': {
+        const rights = Array.isArray(cond.right) ? cond.right : [cond.right]
+        return this._evaluateCondition(cond.left, row) || rights.some((r: any) => this._evaluateCondition(r, row))
+      }
+      default: return true
+    }
+  }
+
+  /**
+   * Resolve a PrimaryAST value from a data row (supports PROP_REF, STRING, NUMBER, BOOLEAN, IDENTIFIER)
+   */
+  private _resolvePrimaryExpr(primary: any, row: NodeRecord): unknown {
+    if (!primary) return null
+    switch (primary.type) {
+      case 'PROP_REF':
+        return row.props?.[primary.property]
+      case 'STRING':
+        return primary.value
+      case 'NUMBER':
+        return primary.value
+      case 'BOOLEAN':
+        return primary.value
+      case 'IDENTIFIER':
+        return primary.name
+      default:
+        return null
+    }
   }
 
   /**

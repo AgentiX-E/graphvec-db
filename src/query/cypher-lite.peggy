@@ -516,6 +516,13 @@ Column
         alias: agg.alias,
       }
     }
+  / expr:CaseExpression alias:AsClause? {
+      return {
+        type: 'COLUMN',
+        expression: expr,
+        alias: alias,
+      }
+    }
   / expr:PropertyRef alias:AsClause? {
       return {
         type: 'COLUMN',
@@ -646,7 +653,8 @@ StringPredicateOp
   / "CONTAINS"i  { return 'CONTAINS' }
 
 Primary
-  = PropertyRef
+  = CaseExpression
+  / PropertyRef
   / StringLiteral
   / NumberLiteral
   / BooleanLiteral
@@ -675,6 +683,39 @@ BooleanLiteral
 
 Integer "integer"
   = digits:[0-9]+ { return parseInt(text(), 10) }
+
+// ── CASE / WHEN / THEN / ELSE ────────────────────────────
+
+CaseExpression
+  = "CASE"i _ expr:Primary _ whenList:CaseWhenList elseClause:CaseElseClause? _ "END"i {
+      return {
+        type: 'CASE',
+        caseExpr: expr,
+        whens: whenList,
+        elseExpr: elseClause || null,
+      }
+    }
+  / "CASE"i _ whenList:CaseWhenList elseClause:CaseElseClause? _ "END"i {
+      return {
+        type: 'CASE',
+        caseExpr: null,  // search CASE (no initial expression)
+        whens: whenList,
+        elseExpr: elseClause || null,
+      }
+    }
+
+CaseWhenList
+  = head:CaseWhenClause tail:(_ CaseWhenClause)* {
+      return [head, ...tail.map(t => t[1])]
+    }
+
+CaseWhenClause
+  = "WHEN"i _ cond:OrExpression _ "THEN"i _ result:Primary {
+      return { condition: cond, result }
+    }
+
+CaseElseClause
+  = _ "ELSE"i _ result:Primary { return result }
 
 // ── 属性映射 ──────────────────────────────────────────────
 

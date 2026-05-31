@@ -230,6 +230,11 @@ export interface QueryPlan {
     name: string
     var?: string  // 变量名引用（如 UNWIND list AS x 中 list 是变量名）
   }
+  /** CASE 表达式列（需要运行时求值的复杂表达式） */
+  caseColumns?: Array<{
+    expression: any  // CASE AST 节点
+    alias: string   // 该列名（与 returnColumns 对应）
+  }>
   // DML fields
   /** CREATE 节点 */
   createNodes?: Array<{
@@ -1217,9 +1222,25 @@ export function planFromAST(
         }
       }
       if (!foundAggregate) {
-        plan.returnColumns = ast.return.columns.map(col =>
-          col.alias ?? formatColumn(col.expression)
-        )
+        // Detect CASE expressions in RETURN columns
+        const caseCols: QueryPlan['caseColumns'] = []
+        const regularCols: string[] = []
+        for (const col of ast.return.columns) {
+          if (col.type === 'COLUMN' && col.expression?.type === 'CASE') {
+            caseCols.push({
+              expression: col.expression,
+              alias: col.alias ?? 'case',
+            })
+            // Also add to returnColumns so CASE results are included
+            regularCols.push(col.alias ?? 'case')
+          } else {
+            regularCols.push(col.alias ?? formatColumn(col.expression))
+          }
+        }
+        plan.returnColumns = regularCols
+        if (caseCols.length > 0) {
+          plan.caseColumns = caseCols
+        }
       } else {
         // For aggregate columns, set returnColumns from the aggregate info
         const agg = plan.aggregate!

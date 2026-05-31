@@ -1405,3 +1405,61 @@ describe('Phase 2: IN & String Predicates', () => {
     expect(results[0].props?.name).toBe('Eve')
   })
 })
+
+// ── Phase 2: CASE / WHEN / THEN / ELSE ──
+
+describe('Phase 2: CASE Expressions', () => {
+  let engine: GraphEngine
+
+  beforeAll(() => {
+    engine = new GraphEngine({ ...testEngineConfig, path: testEngineConfig.path + '-phase2-case' })
+    engine.open()
+    engine.upsertNode(1, 'alice', { props: { name: 'Alice', age: 30, city: 'NYC' } })
+    engine.upsertNode(2, 'bob', { props: { name: 'Bob', age: 25, city: 'SF' } })
+    engine.upsertNode(3, 'charlie', { props: { name: 'Charlie', age: 35, city: 'NYC' } })
+    engine.upsertNode(4, 'diana', { props: { name: 'Diana', age: 40, city: 'LA' } })
+    engine.upsertNode(5, 'eve', { props: { name: 'Eve', age: 45, city: 'SF' } })
+  })
+
+  afterAll(() => {
+    engine.close()
+  })
+
+  test('TC-CASE-1: Search CASE with ELSE', () => {
+    const results = engine.query("MATCH (n) RETURN CASE WHEN n.age > 30 THEN 'old' ELSE 'young' END AS ageGroup") as any[]
+    expect(results.length).toBe(5)
+    const totalYoung = results.filter(r => r.props?.ageGroup === 'young').length
+    const totalOld = results.filter(r => r.props?.ageGroup === 'old').length
+    expect(totalYoung).toBe(2)  // age 25, 30
+    expect(totalOld).toBe(3)    // age 35, 40, 45
+  })
+
+  test('TC-CASE-2: Search CASE with multiple WHEN', () => {
+    const results = engine.query("MATCH (n) RETURN CASE WHEN n.age < 26 THEN '20s' WHEN n.age < 40 THEN '30s' ELSE '40s' END AS decade") as any[]
+    expect(results.length).toBe(5)
+    const twenties = results.filter(r => r.props?.decade === '20s').length
+    const thirties = results.filter(r => r.props?.decade === '30s').length
+    const forties = results.filter(r => r.props?.decade === '40s').length
+    expect(twenties).toBe(1)  // age 25
+    expect(thirties).toBe(2)  // age 30, 35
+    expect(forties).toBe(2)   // age 40, 45
+  })
+
+  test('TC-CASE-3: Search CASE without ELSE returns null', () => {
+    const results = engine.query("MATCH (n) RETURN CASE WHEN n.age > 100 THEN 'old' END AS label") as any[]
+    expect(results.length).toBe(5)
+    const labels = results.map(r => r.props?.label)
+    expect(labels).toEqual([null, null, null, null, null])
+  })
+
+  test('TC-CASE-4: Simple CASE on string property', () => {
+    const results = engine.query("MATCH (n) RETURN CASE n.city WHEN 'NYC' THEN 'New York' WHEN 'SF' THEN 'San Francisco' ELSE 'Other' END AS cityFull") as any[]
+    expect(results.length).toBe(5)
+    const nyc = results.filter(r => r.props?.cityFull === 'New York').length
+    const sf = results.filter(r => r.props?.cityFull === 'San Francisco').length
+    const other = results.filter(r => r.props?.cityFull === 'Other').length
+    expect(nyc).toBe(2)   // Alice, Charlie
+    expect(sf).toBe(2)    // Bob, Eve
+    expect(other).toBe(1) // Diana
+  })
+})
