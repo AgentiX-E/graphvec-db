@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc",
     "test:unit": "npx vitest run --config vitest.config.ts --root .",
+    "test:all": "bash run-all-tests.sh",
     "test:core": "npx vitest run --config vitest.config.ts --root . src/core/*.spec.ts",
     "test:eventbus": "npx vitest run --config vitest.config.ts --root . src/core/event-bus-worker-pool.spec.ts src/core/event-stream.spec.ts",
     "test:eventbus-live": "NODE_OPTIONS='--max-old-space-size=4096' npx vitest run --config vitest.config.ts --root . src/core/event-bus.live.spec.ts",

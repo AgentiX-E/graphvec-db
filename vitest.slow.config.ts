@@ -1,6 +1,15 @@
 import { defineConfig } from 'vitest/config'
 import path from 'path'
 
+/**
+ * Slow config — only ZMQ-heavy & slow spec files that must run serially.
+ *
+ * These files spawn child processes with ZMQ sockets and cannot run
+ * in parallel with each other without port conflicts.
+ *
+ * Fast tests are handled by the main vitest.config.ts (which excludes
+ * these files and runs with fileParallelism: true).
+ */
 export default defineConfig({
   test: {
     environment: 'node',
@@ -11,6 +20,8 @@ export default defineConfig({
       '**/tls.spec.ts',
       '**/cert-monitor.spec.ts',
       '**/event-bus-edge.spec.ts',
+      '**/event-bus.live.spec.ts',
+      '**/event-bus-worker-pool.spec.ts',
       '**/reshard-manager.spec.ts',
       '**/multi-leader-integration.spec.ts',
       '**/multi-leader-edge.spec.ts',
