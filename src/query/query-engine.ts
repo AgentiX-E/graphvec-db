@@ -196,6 +196,8 @@ export interface QueryPlan {
   limit: number | undefined
   /** SKIP */
   skip: number | undefined
+  /** 是否来自 MATCH 扫描（用于区分无标签 MATCH 和纯 WITH/UNWIND） */
+  hasMatch?: boolean
   /** 聚合子句（如 count, sum, avg, max, min） */
   aggregate?: AggregateClause
   /** GROUP BY 列 */
@@ -222,6 +224,12 @@ export interface QueryPlan {
   unionType?: 'union' | 'union_all' | 'intersect' | 'subtract'
   /** 集合运算右半部分 */
   rightPlan?: QueryPlan
+  /** UNWIND 子句 */
+  unwind?: {
+    list: any[]
+    name: string
+    var?: string  // 变量名引用（如 UNWIND list AS x 中 list 是变量名）
+  }
   // DML fields
   /** CREATE 节点 */
   createNodes?: Array<{
@@ -632,6 +640,7 @@ function _findClauseEnd(text: string): number {
       const lookahead = text.slice(i)
       if (/^\bRETURN\b/i.test(lookahead)) return i
       if (/^\bWITH\b/i.test(lookahead)) return i
+      if (/^\bUNWIND\b/i.test(lookahead)) return i
       if (/^\bOPTIONAL\s+MATCH\b/i.test(lookahead)) return i
     }
   }
@@ -804,11 +813,12 @@ export function _parseWithExtract(
 }
 
 /**
- * Split column expressions by comma, respecting parentheses for function calls.
+ * Split column expressions by comma, respecting parentheses and brackets for function calls and lists.
  */
 function _splitColumnsRespectingParens(s: string): string[] {
   const parts: string[] = []
-  let depth = 0
+  let parenDepth = 0
+  let bracketDepth = 0
   let inStr = false
   let strCh = ''
   let start = 0
@@ -825,14 +835,22 @@ function _splitColumnsRespectingParens(s: string): string[] {
       continue
     }
     if (ch === '(') {
-      depth++
+      parenDepth++
       continue
     }
     if (ch === ')') {
-      depth--
+      parenDepth--
       continue
     }
-    if (ch === ',' && depth === 0) {
+    if (ch === '[') {
+      bracketDepth++
+      continue
+    }
+    if (ch === ']') {
+      bracketDepth--
+      continue
+    }
+    if (ch === ',' && parenDepth === 0 && bracketDepth === 0) {
       parts.push(s.slice(start, i))
       start = i + 1
     }
@@ -984,6 +1002,30 @@ export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
 function _stringToPrimary(expr: string): PrimaryAST {
   const trimmed = expr.trim()
 
+  // Check if it's a list literal [item1, item2, ...]
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    const inner = trimmed.slice(1, -1)
+    if (inner.trim() === '') {
+      return { type: 'LIST', items: [] }
+    }
+    const items = inner.split(',').map(s => s.trim()).filter(Boolean)
+    const parsedItems: any[] = items.map(item => {
+      // Try number
+      const num = parseFloat(item)
+      if (!isNaN(num) && item !== '') return { type: 'NUMBER', value: num }
+      // Try string
+      if ((item.startsWith("'") && item.endsWith("'")) || (item.startsWith('"') && item.endsWith('"'))) {
+        return { type: 'STRING', value: item.slice(1, -1) }
+      }
+      // Try boolean
+      if (item.toLowerCase() === 'true') return { type: 'BOOLEAN', value: true }
+      if (item.toLowerCase() === 'false') return { type: 'BOOLEAN', value: false }
+      // Default: identifier
+      return { type: 'IDENTIFIER', name: item }
+    })
+    return { type: 'LIST', items: parsedItems }
+  }
+
   // Check if it's a property ref (name.prop)
   const propMatch = trimmed.match(/^(\w+)\.(\w+)$/)
   if (propMatch) {
@@ -1088,6 +1130,7 @@ export function planFromAST(
   // ── MATCH 处理（可能跟在 DELETE/SET 后，也可能单独存在） ──
 
   if (ast.match) {
+    plan.hasMatch = true
     const pattern = ast.match.patterns[0]
     if (pattern) {
       _applyPatternToPlan(plan, pattern, ast.where)
@@ -1119,6 +1162,16 @@ export function planFromAST(
     }
   }
 
+  // ── UNWIND 处理 ──
+
+  if (ast.unwind) {
+    plan.unwind = {
+      list: ast.unwind.list,
+      name: ast.unwind.name,
+      var: ast.unwind.var,  // 传递给 _executeUnwind 用于变量引用解析
+    }
+  }
+
   // ── WITH 处理 ──
 
   if (ast.with) {
@@ -1127,7 +1180,7 @@ export function planFromAST(
 
     plan.with = {
       columns: withClause.columns.map(col => ({
-        expression: formatColumn(col.expression),
+        expression: col.expression as any,
         alias: col.alias,
       })),
       filters: withFilterInfo ?? [],
@@ -1801,7 +1854,7 @@ export function _executeQuery(
       const groupByCols: string[] = []
       for (const col of plan.with.columns) {
         // Check if this column IS the aggregate (matches expression or alias)
-        const colExpr = col.expression.trim()
+        const colExpr = typeof col.expression === 'string' ? col.expression.trim() : ''
         const isAggCol = col.alias === agg.alias
           || _parseAggregate(colExpr) !== null
 
@@ -2459,6 +2512,7 @@ function formatColumn(expr: PrimaryAST): string {
   if (expr.type === 'IDENTIFIER') return expr.name
   if (expr.type === 'STRING') return expr.value
   if (expr.type === 'NUMBER') return String(expr.value)
+  if (expr.type === 'LIST') return 'list'
   if (expr.type === 'AGGREGATE') return String(expr.func ?? '')
   return String(expr)
 }

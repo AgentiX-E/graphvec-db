@@ -17,15 +17,20 @@
  *   变长路径: MATCH (a)-[:TYPE*1..5]->(b) RETURN b
  *   变长路径（精确步数）: MATCH (a)-[:TYPE*3]->(b) RETURN b
  *   变长路径（最小步数）: MATCH (a)-[:TYPE*2..]->(b) RETURN b
+ *   OPTIONAL MATCH (a)-[:TYPE]->(b) RETURN a, b
+ *   WITH expr1 AS alias1, expr2 AS alias2 [ORDER BY ...] [LIMIT n] [SKIP n] WHERE condition
+ *   UNWIND [a, b, c] AS x RETURN x
  *
  * 不实现（Cypher-lite 边界）：
- *   FOREACH / CALL / 子查询 / OPTIONAL MATCH
+ *   FOREACH / CALL / 子查询
  *   聚合函数 / UNION 已实现
  */
 
 Start
   = _ stmt:DMLStatement _ { return stmt }
   / _ stmt:MatchStatement _ { return stmt }
+  / _ stmt:UnwindStatement _ { return stmt }
+  / _ stmt:WithStatement _ { return stmt }
 
 // ── 顶级语句 ───────────────────────────────────────────
 
@@ -60,22 +65,8 @@ DMLStatement
     }
 
 MatchStatement
-  = matchClause:MatchClause whereClause:WhereClause? returnClause:ReturnClause groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
-      if (unionClause) {
-        return {
-          type: 'QUERY',
-          match: matchClause,
-          where: whereClause,
-          return: returnClause,
-          groupBy: groupByClause,
-          orderBy: orderByClause,
-          limit: limitSkip ? limitSkip.limit : undefined,
-          skip: limitSkip ? limitSkip.skip : undefined,
-          unionType: unionClause.unionType,
-          rightQuery: unionClause.rightQuery,
-        }
-      }
-      return {
+  = optionalClauses:OptionalMatchClauseList? matchClause:MatchClause whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? returnClause:ReturnClause groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
+      const stmt = {
         type: 'QUERY',
         match: matchClause,
         where: whereClause,
@@ -85,7 +76,231 @@ MatchStatement
         limit: limitSkip ? limitSkip.limit : undefined,
         skip: limitSkip ? limitSkip.skip : undefined,
       }
+      if (optionalClauses && optionalClauses.length > 0) {
+        stmt.optionalMatches = optionalClauses
+      }
+      if (withClause) {
+        stmt.with = withClause
+      }
+      if (unwindClause) {
+        stmt.unwind = unwindClause
+      }
+      if (unionClause) {
+        stmt.unionType = unionClause.unionType
+        stmt.rightQuery = unionClause.rightQuery
+      }
+      return stmt
     }
+  / matchClause:MatchClause optionalClauses:OptionalMatchClauseList whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? returnClause:ReturnClause groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
+      // MATCH followed by OPTIONAL MATCH (e.g., MATCH (a) OPTIONAL MATCH (a)-[:KNOWS]->(b))
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: whereClause,
+        return: returnClause,
+        groupBy: groupByClause,
+        orderBy: orderByClause,
+        limit: limitSkip ? limitSkip.limit : undefined,
+        skip: limitSkip ? limitSkip.skip : undefined,
+      }
+      if (optionalClauses && optionalClauses.length > 0) {
+        stmt.optionalMatches = optionalClauses
+      }
+      if (withClause) {
+        stmt.with = withClause
+      }
+      if (unwindClause) {
+        stmt.unwind = unwindClause
+      }
+      if (unionClause) {
+        stmt.unionType = unionClause.unionType
+        stmt.rightQuery = unionClause.rightQuery
+      }
+      return stmt
+    }
+  / matchClause:MatchClause whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? returnClause:ReturnClause groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: whereClause,
+        return: returnClause,
+        groupBy: groupByClause,
+        orderBy: orderByClause,
+        limit: limitSkip ? limitSkip.limit : undefined,
+        skip: limitSkip ? limitSkip.skip : undefined,
+      }
+      if (withClause) {
+        stmt.with = withClause
+      }
+      if (unwindClause) {
+        stmt.unwind = unwindClause
+      }
+      if (unionClause) {
+        stmt.unionType = unionClause.unionType
+        stmt.rightQuery = unionClause.rightQuery
+      }
+      return stmt
+    }
+  / optionalClauses:OptionalMatchClauseList? withClause:WithClause? unwindClause:UnwindClause? returnClause:ReturnClause groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
+      // Standalone WITH or OPTIONAL MATCH without MATCH
+      const stmt = {
+        type: 'QUERY',
+        match: null,
+        return: returnClause,
+        groupBy: groupByClause,
+        orderBy: orderByClause,
+        limit: limitSkip ? limitSkip.limit : undefined,
+        skip: limitSkip ? limitSkip.skip : undefined,
+      }
+      if (optionalClauses && optionalClauses.length > 0) {
+        stmt.optionalMatches = optionalClauses
+      }
+      if (withClause) {
+        stmt.with = withClause
+      }
+      if (unwindClause) {
+        stmt.unwind = unwindClause
+      }
+      if (unionClause) {
+        stmt.unionType = unionClause.unionType
+        stmt.rightQuery = unionClause.rightQuery
+      }
+      return stmt
+    }
+
+// ── OPTIONAL MATCH ─────────────────────────────────────────
+
+OptionalMatchClauseList
+  = head:OptionalMatchClause tail:(_ OptionalMatchClause)* {
+      return [head, ...tail.map(t => t[1])]
+    }
+
+OptionalMatchClause
+  = _ "OPTIONAL"i _ m:MatchClause w:WhereClause? {
+      const result = {
+        type: 'OPTIONAL_MATCH',
+        patterns: m.patterns,
+      }
+      if (w) {
+        result.where = w
+      }
+      return result
+    }
+
+// ── WITH ───────────────────────────────────────────────────
+
+WithClause
+  = _ "WITH"i _ columns:ColumnList
+    where:WithWhereClause?
+    orderBy:WithOrderByClause?
+    limitSkip:WithLimitSkip? {
+      const result = {
+        type: 'WITH',
+        columns: columns,
+      }
+      if (where) result.where = where
+      if (orderBy) result.orderBy = orderBy
+      if (limitSkip) {
+        if (limitSkip.limit !== undefined) result.limit = limitSkip.limit
+        if (limitSkip.skip !== undefined) result.skip = limitSkip.skip
+      }
+
+      // Detect aggregate functions in WITH columns
+      let foundAggregate = null
+      for (const col of columns) {
+        if (col.type === 'AGGREGATE_COLUMN' && col.expression?.type === 'AGGREGATE') {
+          const func = String(col.expression.func ?? '')
+          const field = String(col.expression.field ?? '')
+          const alias = col.alias
+          foundAggregate = { type: func, field, alias }
+        }
+      }
+      if (foundAggregate) {
+        result.aggregate = foundAggregate
+      }
+
+      return result
+    }
+
+WithLimitSkip
+  = first:LIMIT_AND_SKIP_IN_WITH { return { limit: first.limit, skip: first.skip } }
+  / first:SKIP_AND_LIMIT_IN_WITH { return { limit: first.limit, skip: first.skip } }
+
+LIMIT_AND_SKIP_IN_WITH
+  = _ "LIMIT"i _ limitVal:Integer _ "SKIP"i _ skipVal:Integer { return { limit: limitVal, skip: skipVal } }
+  / _ "LIMIT"i _ limitVal:Integer { return { limit: limitVal, skip: undefined } }
+
+SKIP_AND_LIMIT_IN_WITH
+  = _ "SKIP"i _ skipVal:Integer _ "LIMIT"i _ limitVal:Integer { return { limit: limitVal, skip: skipVal } }
+  / _ "SKIP"i _ skipVal:Integer { return { limit: undefined, skip: skipVal } }
+
+WithWhereClause
+  = _ "WHERE"i _ expr:OrExpression { return { type: 'WHERE', expression: expr } }
+
+WithOrderByClause
+  = _ "ORDER"i _ "BY"i _ columns:WithOrderColumnList { return { type: 'ORDER_BY', columns: columns } }
+
+WithOrderColumnList
+  = head:WithOrderColumn tail:(_ "," _ WithOrderColumn)* {
+      return [head, ...tail.map(t => t[3])]
+    }
+
+WithOrderColumn
+  = expr:Primary dir:(_ "ASC"i / _ "DESC"i)? {
+      return { type: 'ORDER_COLUMN', expression: expr, direction: dir ? dir[1].toUpperCase() : 'ASC' }
+    }
+
+// ── UNWIND ─────────────────────────────────────────────────
+
+UnwindStatement
+  = u:UnwindClause r:ReturnClause? {
+      const result = {
+        type: 'QUERY',
+        unwind: u,
+        return: r,
+      }
+      return result
+    }
+
+WithStatement
+  = w:WithClause u:UnwindClause? r:ReturnClause? {
+      const result = {
+        type: 'QUERY',
+        with: w,
+        return: r,
+      }
+      if (u) result.unwind = u
+      return result
+    }
+
+UnwindClause
+  = _ "UNWIND"i _ list:UnwindList _ "AS"i _ name:Identifier {
+      return { type: 'UNWIND', list, name }
+    }
+  / _ "UNWIND"i _ varName:Identifier _ "AS"i _ name:Identifier {
+      return { type: 'UNWIND', var: varName, name }
+    }
+
+UnwindList
+  = "[" _ items:UnwindItemList? _ "]" {
+      return items || []
+    }
+
+UnwindItemList
+  = head:UnwindItem tail:(_ "," _ UnwindItem)* {
+      return [head, ...tail.map(t => t[3])]
+    }
+
+UnwindItem
+  = v:UnwindValue { return v }
+  / id:Identifier { return { type: 'IDENTIFIER', name: id } }
+
+UnwindValue
+  = s:StringLiteral { return s }
+  / n:NumberLiteral { return n }
+  / "true"i { return { type: 'BOOLEAN', value: true } }
+  / "false"i { return { type: 'BOOLEAN', value: false } }
+  / "null"i { return { type: 'IDENTIFIER', name: 'null' } }
 
 // ── CREATE ────────────────────────────────────────────────
 
@@ -291,6 +506,13 @@ Column
       return {
         type: 'COLUMN',
         expression: expr,
+        alias: alias,
+      }
+    }
+  / list:UnwindList alias:AsClause? {
+      return {
+        type: 'COLUMN',
+        expression: { type: 'LIST', items: list },
         alias: alias,
       }
     }

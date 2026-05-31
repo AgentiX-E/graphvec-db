@@ -82,6 +82,7 @@
     "msgpackr": "^2.0.1",
     "node-cron": "^4.2.1",
     "overgraph": "^0.7.0",
+    "peggy": "^5.1.0",
     "pino": "^9.0.0",
     "pino-pretty": "^13.0.0",
     "prom-client": "^15.1.3",

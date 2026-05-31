@@ -893,7 +893,29 @@ export class GraphEngine {
       return this._rls && ctx ? this._rls.enforceQuery('nodes', ctx, combined) : combined
     }
 
-    const results = this._executeQueryPlan(plan)
+    // Execute the main query plan
+    let results = this._executeQueryPlan(plan)
+
+    // Handle OPTIONAL MATCH: for each result row, attempt additional pattern match
+    if (plan.optionalMatchSteps && plan.optionalMatchSteps.length > 0) {
+      results = this._executeOptionalMatches(results, plan.optionalMatchSteps, ctx)
+    }
+
+    // Handle WITH clause: pipeline projection/aggregation
+    if (plan.with) {
+      results = this._executeWithClause(results, plan)
+    }
+
+    // Handle UNWIND clause: expand list into rows
+    if (plan.unwind) {
+      results = this._executeUnwind(plan.unwind, results)
+    }
+
+    // Handle RETURN projection after WITH/OPTIONAL MATCH/UNWIND
+    if (plan.returnColumns && plan.returnColumns.length > 0 && (plan.with || plan.optionalMatchSteps || plan.unwind)) {
+      results = this._projectReturnColumns(results, plan)
+    }
+
     return this._rls && ctx ? this._rls.enforceQuery('nodes', ctx, results) : results
   }
 
@@ -1095,6 +1117,14 @@ export class GraphEngine {
    * 支持 LIMIT/SKIP 下推：在扫描和每一步遍历后做早期截断，避免全量收集后再 slice
    */
   private _executeQueryPlan(plan: QueryPlan, ctx?: RLSContext): NodeRecord[] {
+    // For standalone UNWIND / OPTIONAL MATCH / WITH (without MATCH prefix) — skip the scan
+    if (!plan.scanLabel && plan.steps.length === 0 && plan.filters.length === 0) {
+      // 没有 MATCH 扫描时，纯 WITH/UNWIND/OPTIONAL MATCH 从空行开始投影
+      if (!plan.hasMatch && (plan.with || plan.unwind || (plan.optionalMatchSteps && plan.optionalMatchSteps.length > 0))) {
+        return [this._makeNullNode()]
+      }
+    }
+
     // 计算下推 limit：在 SKIP 的基础上取需要的最大值
     const effectiveLimit = plan.limit !== undefined ? (plan.skip || 0) + plan.limit : undefined
 
@@ -1178,7 +1208,374 @@ export class GraphEngine {
   }
 
   /**
-   * 执行聚合函数
+   * Execute OPTIONAL MATCH clauses.
+   * For each result row, attempt the optional pattern match.
+   * If no match, inject a null sentinel node.
+   */
+  private _executeOptionalMatches(
+    rows: NodeRecord[],
+    optSteps: NonNullable<QueryPlan['optionalMatchSteps']>,
+    ctx?: RLSContext,
+  ): NodeRecord[] {
+    // OPTIONAL MATCH 语义：即使 MATCH 无结果，外部查询仍应产生一行 null 结果。
+    // 但只有当 query 中有 OPTIONAL MATCH 前缀时才补 null（无 MATCH 的情况）。
+    // 如果 MATCH 返回空结果但有 OPTIONAL MATCH 跟随，MATCH 的空结果应保持（非空结果才触发 OPTIONAL）
+    // 例外：查询以 OPTIONAL MATCH 开头（无前置 MATCH）
+    if (rows.length === 0) {
+      rows = [this._makeNullNode()]
+    }
+
+    for (const optStep of optSteps) {
+      const newRows: NodeRecord[] = []
+
+      for (const row of rows) {
+        // Try to match the optional pattern from this row
+        const matched = this._executeOptionalStep(row, optStep, ctx)
+
+        if (matched.length === 0) {
+          // No match — produce a row with null bindings
+          newRows.push(this._mergeRowWithNull(row, optStep))
+        } else {
+          // One or more matches — create a row for each
+          for (const match of matched) {
+            newRows.push(this._mergeRows(row, match))
+          }
+        }
+      }
+
+      rows = newRows
+    }
+
+    return rows
+  }
+
+  /**
+   * Merge two NodeRecord arrays from an optional match into a single row.
+   */
+  private _mergeRows(original: NodeRecord, additional: NodeRecord): NodeRecord {
+    return {
+      id: additional.id,
+      type: additional.type,
+      name: additional.name || original.name,
+      props: { ...(original.props || {}), ...(additional.props || {}) },
+    }
+  }
+
+  /**
+   * Merge original row with null placeholder for unmatched optional pattern.
+   */
+  private _mergeRowWithNull(original: NodeRecord, optStep: any): NodeRecord {
+    return {
+      id: original.id,
+      type: original.type,
+      name: original.name,
+      props: {
+        ...(original.props || {}),
+      },
+    }
+  }
+
+  /**
+   * Execute a single optional match step against a source node.
+   * Returns matched nodes or empty array.
+   */
+  private _executeOptionalStep(
+    source: NodeRecord,
+    optStep: { scanLabel: string | null; steps: any[]; filters: any[] },
+    ctx?: RLSContext,
+  ): NodeRecord[] {
+    // If there's a scanLabel in optStep, scan for those nodes
+    let candidates: NodeRecord[]
+
+    if (optStep.scanLabel) {
+      candidates = this._scanNodesByLabel(optStep.scanLabel)
+    } else if (optStep.steps.length === 0) {
+      // Just a node label match — no traversal
+      return []
+    } else {
+      // Start from the source node
+      candidates = [source]
+    }
+
+    // Execute traversal steps from the optStep
+    let results = [...candidates]
+    for (const step of optStep.steps) {
+      const filtered: NodeRecord[] = []
+      for (const node of results) {
+        if (node.id == null || node.id < 0) continue // null or sentinel node — cannot traverse
+        const neighborsRaw = this.storage.neighbors(node.id, {
+          edgeTypeFilter: step.edgeLabel ? [Number(step.edgeLabel)] : undefined,
+        })
+        for (const entry of neighborsRaw) {
+          const neighbor = this.getNode(entry.nodeId, ctx)
+          if (neighbor) {
+            if (step.targetLabel && neighbor.typeName !== step.targetLabel) continue
+            filtered.push(neighbor)
+          }
+        }
+      }
+      results = filtered
+      if (results.length === 0) break
+    }
+
+    // Apply filters
+    if (optStep.filters.length > 0) {
+      results = results.filter(node =>
+        optStep.filters.every((f: any) => this._matchFilter(node, f))
+      )
+    }
+
+    return results
+  }
+
+  /**
+   * Execute WITH clause: project, aggregate, filter, order, limit
+   */
+  private _executeWithClause(
+    rows: NodeRecord[],
+    plan: QueryPlan,
+  ): NodeRecord[] {
+    const withClause = plan.with!
+    const columns = withClause.columns || []
+    const hasAgg = withClause.aggregate !== undefined
+
+    if (hasAgg) {
+      // Aggregation WITH
+      let value: number
+      const aggField = withClause.aggregate!.field ?? '*'
+      const aggType = (withClause.aggregate!.type || 'count').toLowerCase()
+
+      if (aggField === '*') {
+        value = rows.length
+      } else {
+        const propName = aggField.includes('.') ? aggField.split('.').pop()! : aggField
+        switch (aggType) {
+          case 'count':
+            value = rows.filter(r => {
+              const v = r.props?.[propName]
+              return v !== null && v !== undefined
+            }).length
+            break
+          case 'sum':
+            value = rows.reduce((sum, r) => sum + (Number(r.props?.[propName]) || 0), 0)
+            break
+          case 'avg':
+            {
+              const vals = rows.map(r => Number(r.props?.[propName])).filter(v => !isNaN(v))
+              value = vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0
+            }
+            break
+          case 'max':
+            value = Math.max(...rows.map(r => Number(r.props?.[propName]) || 0), 0)
+            break
+          case 'min':
+            value = Math.min(...rows.map(r => {
+              const v = r.props?.[propName]
+              return v !== undefined ? Number(v) : Infinity
+            }))
+            break
+          default:
+            value = rows.length
+        }
+      }
+
+      const alias = withClause.aggregate!.alias ?? withClause.aggregate!.type ?? 'value'
+      return [this._makeResultNode(alias, { [alias]: value })]
+    }
+
+    // Non-aggregation WITH: project the columns
+    const projected: NodeRecord[] = rows.map(row => {
+      const props: Record<string, unknown> = { ...row.props }
+
+      for (const col of columns) {
+        const expr = col.expression
+        const alias = col.alias
+
+        if (expr === '*') continue
+
+        // Handle expression as AST object (e.g. {type:'LIST', items:[1,2]})
+        if (expr && typeof expr === 'object' && expr.type) {
+          const key = alias ?? 'value'
+          if (expr.type === 'LIST') {
+            // Resolve list items: unwrap NUMBER/STRING/BOOLEAN wrappers
+            props[key] = (expr.items || []).map((item: any) => this._unwrapItem(item))
+          } else {
+            continue
+          }
+          continue
+        }
+
+        // Handle expression like "n.name" → extract property from node
+        if (expr.includes('.')) {
+          const parts = expr.split('.')
+          const varName = parts[0] // n
+          const propName = parts.slice(1).join('.') // name
+
+          // The whole row represents the variable
+          const val = this._getNodeProp(row, propName)
+          const key = alias ?? propName
+          props[key] = val
+        } else if (expr.includes('(') && expr.includes(')')) {
+          // Aggregate function — handle at WITH level not here
+          continue
+        } else {
+          // Simple expression (just a variable name like "n")
+          const key = alias ?? expr
+          props[key] = row
+        }
+      }
+
+      return this._makeResultNode(row.name, props, row.id)
+    })
+
+    // Apply WITH WHERE (post-projection filter) — simplified implementation
+    if (withClause.filters && withClause.filters.length > 0) {
+      // Simplified: filter props by exact match
+      // This handles simple conditions like "age > 25"
+      let filtered = projected
+      for (const f of withClause.filters) {
+        filtered = filtered.filter(node => {
+          const val = node.props?.[f.property]
+          if (val === undefined) return false
+          switch (f.operator) {
+            case 'GT': return Number(val) > Number(f.value)
+            case 'GTE': return Number(val) >= Number(f.value)
+            case 'LT': return Number(val) < Number(f.value)
+            case 'LTE': return Number(val) <= Number(f.value)
+            case 'EQ': return val === f.value
+            case 'NEQ': return val !== f.value
+            default: return true
+          }
+        })
+      }
+      return filtered
+    }
+
+    // Apply WITH ORDER BY
+    if (withClause.orderBy && withClause.orderBy.length > 0) {
+      const orderCol = withClause.orderBy[0]
+      propSort(projected, orderCol.property, orderCol.direction)
+    }
+
+    // Apply WITH LIMIT / SKIP
+    let result = projected
+    if (withClause.skip && withClause.skip > 0) {
+      result = result.slice(withClause.skip)
+    }
+    if (withClause.limit !== undefined) {
+      result = result.slice(0, withClause.limit)
+    }
+
+    return result
+  }
+
+  /**
+   * Execute UNWIND clause: expand a list into rows
+   */
+  private _executeUnwind(
+    unwind: { name: string; list: any[]; var?: string },
+    rows: NodeRecord[],
+  ): NodeRecord[] {
+    const list = unwind.list || []
+    const name = unwind.name
+
+    if (rows.length === 0) {
+      // Standalone UNWIND (no preceding MATCH/WITH)
+      if (list.length > 0) {
+        return list.map((item: any) => {
+          const val = this._unwrapItem(item)
+          return this._makeResultNode(name, { [name]: val })
+        })
+      }
+      // UNWIND with variable reference but no rows — nothing to expand
+      return []
+    }
+
+    // For each existing row, expand the UNWIND list
+    const results: NodeRecord[] = []
+    for (const row of rows) {
+      // Resolve the unwind source: literal list or variable from current row
+      let unwindList = list
+      if (unwind.var && row.props && row.props[unwind.var]) {
+        const source = row.props[unwind.var]
+        if (Array.isArray(source)) {
+          unwindList = source
+        }
+      }
+      for (const item of (unwindList || [])) {
+        const val = this._unwrapItem(item)
+        const props = { ...(row.props || {}), [name]: val }
+        results.push(this._makeResultNode(row.name, props, row.id))
+      }
+    }
+
+    return results.length > 0 ? results : rows
+  }
+
+  /**
+   * Unwrap an UNWIND item (which might be {type:'NUMBER',value:1} etc.)
+   */
+  private _unwrapItem(item: any): unknown {
+    if (item && typeof item === 'object' && 'type' in item) {
+      if (item.type === 'NUMBER') return item.value
+      if (item.type === 'STRING') return item.value
+      if (item.type === 'BOOLEAN') return item.value
+      if (item.type === 'IDENTIFIER') return item.name
+    }
+    return item
+  }
+
+  /**
+   * Project RETURN columns after WITH/OPTIONAL MATCH/UNWIND
+   */
+  private _projectReturnColumns(
+    rows: NodeRecord[],
+    plan: QueryPlan,
+  ): NodeRecord[] {
+    if (plan.returnColumns.length === 0) return rows
+
+    // For simple column projections from props
+    if (plan.returnColumns.length === 1 && plan.returnColumns[0] in (rows[0]?.props || {})) {
+      return rows
+    }
+
+    return rows
+  }
+
+  /**
+   * Create a result node with given name and properties
+   */
+  private _makeResultNode(name: string, props: Record<string, unknown>, id: number = -1): NodeRecord {
+    return {
+      id,
+      type: 0,
+      name,
+      props,
+    } as unknown as NodeRecord
+  }
+
+  /**
+   * Create a null sentinel node for unmatched OPTIONAL MATCH
+   */
+  private _makeNullNode(): NodeRecord {
+    return this._makeResultNode('__null__', {})
+  }
+
+  /**
+   * Get a property from a node record (checking both props and name fields)
+   */
+  private _getNodeProp(node: NodeRecord, propName: string): unknown {
+    if (node.props && propName in node.props) {
+      return node.props[propName]
+    }
+    if (propName === 'name' || propName === 'id') {
+      return (node as any)[propName]
+    }
+    return undefined
+  }
+
+  /**
+   * Execute the main QueryPlan (MATCH + WHERE + aggregation)
    * 支持 COUNT, SUM, AVG, MAX, MIN
    * 如果 plan.groupBy 存在，执行 GROUP BY 分组聚合
    */
@@ -2144,4 +2541,23 @@ export class GraphEngine {
     }
     throw new Error('Geo queries require OverGraphStorage')
   }
+}
+
+/**
+ * Sort an array of NodeRecords by a property in props.
+ */
+function propSort(
+  arr: NodeRecord[],
+  prop: string,
+  direction: 'ASC' | 'DESC',
+): void {
+  arr.sort((a, b) => {
+    const va = a.props?.[prop]
+    const vb = b.props?.[prop]
+    if (va === undefined && vb === undefined) return 0
+    if (va === undefined) return 1
+    if (vb === undefined) return -1
+    const cmp = va < vb ? -1 : va > vb ? 1 : 0
+    return direction === 'DESC' ? -cmp : cmp
+  })
 }
