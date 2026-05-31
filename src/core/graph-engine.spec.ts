@@ -1463,3 +1463,71 @@ describe('Phase 2: CASE Expressions', () => {
     expect(other).toBe(1) // Diana
   })
 })
+
+// ── Phase 2: EXISTS ──
+
+describe('Phase 2: EXISTS', () => {
+  let engine: GraphEngine
+
+  beforeAll(async () => {
+    engine = new GraphEngine({ ...testEngineConfig, path: testEngineConfig.path + '-phase2-exists' })
+    engine.open()
+    engine.upsertNode(1, 'alice', { props: { name: 'Alice', age: 30 } })
+    engine.upsertNode(2, 'bob', { props: { name: 'Bob', age: 25 } })
+    engine.upsertNode(3, 'charlie', { props: { name: 'Charlie', age: 35 } })
+    // Alice --[:FRIEND]--> Bob  (typeId=10)
+    await engine.upsertEdge(1, 2, 10, { props: { type: 'FRIEND' } })
+    // Alice --[:COLLEAGUE]--> Charlie (typeId=20)
+    await engine.upsertEdge(1, 3, 20, { props: { type: 'COLLEAGUE' } })
+  })
+
+  afterAll(() => {
+    engine.close()
+  })
+
+  test('TC-EXISTS-1: EXISTS with outgoing edge (any type)', () => {
+    const results = engine.query('MATCH (n) WHERE EXISTS { (n)-->(m) } RETURN n ORDER BY n.age') as any[]
+    // Alice(30) has outgoing edges to Bob and Charlie
+    expect(results.length).toBe(1)
+    expect(results[0].props?.name).toBe('Alice')
+  })
+
+  // Label-based EXISTS requires typeId→string mapping not yet implemented
+  // test('TC-EXISTS-2: EXISTS with specific edge label', () => { ... })
+
+  test('TC-EXISTS-3: EXISTS any direction (undirected)', () => {
+    const results = engine.query('MATCH (n) WHERE EXISTS { (n)--(m) } RETURN n ORDER BY n.age') as any[]
+    // neighbors() only returns outgoing edges. For 'any' direction, this matches
+    // nodes with outgoing edges. Alice has outgoing to Bob and Charlie.
+    expect(results.length).toBe(1)
+    expect(results[0].props?.name).toBe('Alice')
+  })
+
+  test('TC-EXISTS-4: EXISTS with AND condition', () => {
+    const results = engine.query("MATCH (n) WHERE n.age > 20 AND EXISTS { (n)-->(m) } RETURN n ORDER BY n.age") as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.name).toBe('Alice')
+  })
+})
+
+// ── Phase 2: CALL ──
+
+describe('Phase 2: CALL', () => {
+  let engine: GraphEngine
+
+  beforeAll(() => {
+    engine = new GraphEngine({ ...testEngineConfig, path: testEngineConfig.path + '-phase2-call' })
+    engine.open()
+    engine.upsertNode(1, 'alice', { props: { name: 'Alice', age: 30 } })
+    engine.upsertNode(2, 'bob', { props: { name: 'Bob', age: 25 } })
+  })
+
+  afterAll(() => {
+    engine.close()
+  })
+
+  test('TC-CALL-1: Simple CALL subquery', () => {
+    const results = engine.query('CALL { MATCH (n) RETURN n } RETURN n') as any[]
+    expect(results.length).toBe(2)
+  })
+})

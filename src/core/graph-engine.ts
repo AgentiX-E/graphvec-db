@@ -885,6 +885,11 @@ export class GraphEngine {
 
     const plan = parseQuery(queryString)
 
+    // Handle CALL subquery
+    if (plan.type === 'CALL' && plan.callQuery) {
+      return this._executeQueryPlan(plan.callQuery)
+    }
+
     // 处理集合运算（UNION / INTERSECT / SUBTRACT）
     if (plan.unionType && plan.rightPlan) {
       const leftResults = this._executeQueryPlan(plan)
@@ -1189,6 +1194,11 @@ export class GraphEngine {
       results = results.filter(node =>
         plan.filters.every(f => this._matchFilter(node, f))
       )
+    }
+
+    // Step 3b: 应用 EXISTS 过滤器（需要运行时边存在性检查）
+    if (plan.existsFilters && plan.existsFilters.length > 0) {
+      results = this._applyExistsFilters(results, plan.existsFilters)
     }
 
     // 聚合函数在 WHERE 之后、SKIP/LIMIT 之前
@@ -1925,6 +1935,91 @@ export class GraphEngine {
       }
     }
     return records
+  }
+
+  /**
+   * 应用 EXISTS 过滤器：对每条结果，检查是否存在指定模式的边。
+   */
+  private _applyExistsFilters(
+    nodes: NodeRecord[],
+    existsFilters: Array<{
+      source: string
+      edgeLabel: string | null
+      direction: 'out' | 'in' | 'any'
+      target: string
+    }>,
+  ): NodeRecord[] {
+    return nodes.filter(node => {
+      return existsFilters.every(ef => {
+        // 检查 source 是否匹配当前节点名
+        const srcName = ef.source
+        if (node.name !== srcName) {
+          // source 不匹配 — 跳过（但后面尝试匹配 target）
+          return this._checkExistsDirection(node, ef)
+        }
+        return this._checkExistsDirection(node, ef)
+      })
+    })
+  }
+
+  /**
+   * 检查节点在指定方向是否有邻居
+   */
+  private _checkExistsDirection(
+    node: NodeRecord,
+    ef: {
+      source: string
+      edgeLabel: string | null
+      direction: 'out' | 'in' | 'any'
+      target: string
+    },
+  ): boolean {
+    let typeFilter: number[] | undefined
+    if (ef.edgeLabel) {
+      // edgeLabel 是字符串（如 'FRIEND'），需要查找到对应的数字类型 ID
+      // 通过 nodes 查询找到匹配的 edgeType
+      typeFilter = [Number(ef.edgeLabel)]
+      // 如果不是数字（字符串标签名），不传 typeFilter，后续通过 edge.props 过滤
+      if (isNaN(typeFilter[0])) {
+        typeFilter = undefined
+      }
+    }
+
+    try {
+      const result = this.neighbors(node.id, { maxDepth: 1, edgeTypeFilter: typeFilter })
+      if (!result) return false
+
+      // 如果有字符串标签名，在边 props 中匹配
+      if (ef.edgeLabel && isNaN(Number(ef.edgeLabel))) {
+        const matched = result.edges.filter(e => {
+          // 检查 edge.props.type 是否匹配标签名
+          return e.props?.type === ef.edgeLabel || e.props?.label === ef.edgeLabel
+        })
+        if (matched.length === 0) return false
+        return ef.direction === 'any' || matched.some(edge => {
+          if (ef.direction === 'out') return edge.src === node.id
+          if (ef.direction === 'in') return edge.dst === node.id
+          return true
+        })
+      }
+
+      if (ef.direction === 'any') {
+        return result.edges.length > 0
+      }
+
+      // For direction-specific check, fall back to scanning edges
+      for (const edge of result.edges) {
+        if (ef.direction === 'out' && edge.src === node.id) {
+          return true
+        }
+        if (ef.direction === 'in' && edge.dst === node.id) {
+          return true
+        }
+      }
+      return false
+    } catch {
+      return false
+    }
   }
 
   /** 检查单条 filter 是否匹配 */

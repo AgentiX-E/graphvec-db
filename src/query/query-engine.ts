@@ -235,6 +235,15 @@ export interface QueryPlan {
     expression: any  // CASE AST 节点
     alias: string   // 该列名（与 returnColumns 对应）
   }>
+  /** EXISTS 子查询过滤器 */
+  existsFilters?: Array<{
+    source: string
+    edgeLabel: string | null
+    direction: 'out' | 'in' | 'any'
+    target: string
+  }>
+  /** CALL 子查询 */
+  callQuery?: QueryPlan
   // DML fields
   /** CREATE 节点 */
   createNodes?: Array<{
@@ -1127,6 +1136,14 @@ export function planFromAST(
     plan.mergeEdges = mergeEdges
   }
 
+  // ── CALL 子查询处理 ──────────────────────────────────────
+
+  if (ast.type === 'CALL' && ast.query) {
+    plan.type = 'CALL'
+    plan.callQuery = planFromAST(ast.query, schema)
+    return plan
+  }
+
   // ── Lightweight type validation ──────────────────────────
   if (schema) {
     _validateQueryTypes(ast, schema)
@@ -1298,10 +1315,68 @@ function _applyPatternToPlan(
     plan.steps.push(traverseStep)
   }
 
-  // 处理 WHERE
+  // 处理 WHERE：分离 EXISTS 和普通 filter
   if (where && where.expression && where.expression !== null) {
-    plan.filters.push(...extractFilters(where.expression, plan.steps))
+    const { exists, filters } = _splitExistsFromWhere(where.expression)
+    if (exists.length > 0) {
+      if (!plan.existsFilters) plan.existsFilters = []
+      plan.existsFilters.push(...exists)
+    }
+    if (filters.length > 0) {
+      plan.filters.push(...filters)
+    } else {
+      // If the entire WHERE was EXISTS, we should still push something?
+      // No — EXISTS alone needs no extra filter.
+    }
   }
+}
+
+/**
+ * 从 WHERE 表达式中分离 EXISTS 子句和普通 filter。
+ * EXISTS 子句需要运行时边存在性检查，不能由 _applyWhereFilters 处理。
+ */
+function _splitExistsFromWhere(
+  expr: any,
+): { exists: NonNullable<QueryPlan['existsFilters']>; filters: FilterClause[] } {
+  const exists: NonNullable<QueryPlan['existsFilters']> = []
+  const filters: FilterClause[] = []
+
+  if (!expr) return { exists, filters }
+
+  if (expr.type === 'EXISTS') {
+    exists.push({
+      source: expr.source,
+      edgeLabel: expr.edgeLabel,
+      direction: expr.direction,
+      target: expr.target,
+    })
+    // 不生成普通 filter
+  } else if (expr.type === 'AND') {
+    // AND 情况下分别处理左右
+    const leftResult = _splitExistsFromWhere(expr.left)
+    const rightResult = _splitExistsFromWhere(expr.right)
+    exists.push(...leftResult.exists, ...rightResult.exists)
+    // 重新组合非 EXISTS 的 filter
+    const nonExistsLeft = leftResult.filters
+    const nonExistsRight = rightResult.filters
+    if (nonExistsLeft.length > 0 && nonExistsRight.length > 0) {
+      // 如果有多个普通 filter 且来自 AND，保留它们
+      filters.push(...nonExistsLeft, ...nonExistsRight)
+    } else if (nonExistsLeft.length > 0) {
+      filters.push(...nonExistsLeft)
+    } else if (nonExistsRight.length > 0) {
+      filters.push(...nonExistsRight)
+    }
+  } else if (expr.type === 'OR') {
+    // OR with EXISTS is complex — for MVP, just fall through to normal extractFilters
+    // which will likely return empty filter for EXISTS nodes
+    filters.push(...extractFilters(expr, []))
+  } else {
+    // 普通表达式 → 正常 extractFilters
+    filters.push(...extractFilters(expr, []))
+  }
+
+  return { exists, filters }
 }
 
 // ── DML 帮助函数 ───────────────────────────────────────────

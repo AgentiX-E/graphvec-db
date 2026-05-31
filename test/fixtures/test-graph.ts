@@ -7,6 +7,10 @@ export const testEngineConfig: OverGraphConfig = {
   denseVector: { dimension: 384 },
 }
 
+// Common edge type IDs used across tests
+export const EDGE_TYPE_FRIEND = 10
+export const EDGE_TYPE_COLLEAGUE = 20
+
 /** 创建一个测试节点 */
 export function makeTestNode(name: string, opts?: Partial<UpsertNodeOptions>) {
   return {

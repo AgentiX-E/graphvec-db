@@ -28,6 +28,7 @@
 
 Start
   = _ stmt:DMLStatement _ { return stmt }
+  / _ stmt:CallStatement _ { return stmt }
   / _ stmt:MatchStatement _ { return stmt }
   / _ stmt:UnwindStatement _ { return stmt }
   / _ stmt:WithStatement _ { return stmt }
@@ -653,7 +654,8 @@ StringPredicateOp
   / "CONTAINS"i  { return 'CONTAINS' }
 
 Primary
-  = CaseExpression
+  = ExistsExpression
+  / CaseExpression
   / PropertyRef
   / StringLiteral
   / NumberLiteral
@@ -683,6 +685,62 @@ BooleanLiteral
 
 Integer "integer"
   = digits:[0-9]+ { return parseInt(text(), 10) }
+
+// ── EXISTS 子查询 ──────────────────────────────────────────
+
+ExistsExpression
+  = "EXISTS"i _ "{" _ pattern:ExistsPattern _ "}" {
+      return {
+        type: 'EXISTS',
+        source: pattern.source,
+        edgeLabel: pattern.edgeLabel,
+        direction: pattern.direction,
+        target: pattern.target,
+      }
+    }
+
+ExistsPattern
+  = "(" _ sourceName:Identifier _ ")" _ edge:ExistsEdge? _ "(" _ targetName:Identifier _ ")" {
+      return {
+        source: sourceName,
+        edgeLabel: edge ? edge.label : null,
+        direction: edge ? edge.direction : 'any',
+        target: targetName,
+      }
+    }
+
+ExistsEdge
+  = "-[" _ label:ExistsEdgeLabel _ "]->" {
+      return {
+        label: label,
+        direction: 'out',
+      }
+    }
+  / "<-[" _ label:ExistsEdgeLabel _ "]-" {
+      return {
+        label: label,
+        direction: 'in',
+      }
+    }
+  / "-[" _ label:ExistsEdgeLabel _ "]-" {
+      return {
+        label: label,
+        direction: 'any',
+      }
+    }
+  / "-->" {
+      return { label: null, direction: 'out' }
+    }
+  / "<--" {
+      return { label: null, direction: 'in' }
+    }
+  / "--" {
+      return { label: null, direction: 'any' }
+    }
+
+ExistsEdgeLabel
+  = ":" name:Identifier { return name }
+  / "" { return null }
 
 // ── CASE / WHEN / THEN / ELSE ────────────────────────────
 
@@ -731,6 +789,23 @@ PropertyMap
 
 PropertyEntry
   = key:Identifier _ ":" _ val:Primary { return { key, value: val } }
+
+// ── CALL 子查询 ──────────────────────────────────────────
+
+CallStatement
+  = "CALL"i _ "{" _ subq:MatchStatement _ "}" _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
+      const stmt = {
+        type: 'CALL',
+        query: subq,
+      }
+      if (rc) stmt.return = rc
+      if (ob) stmt.orderBy = ob
+      if (ls) {
+        stmt.limit = ls.limit
+        stmt.skip = ls.skip
+      }
+      return stmt
+    }
 
 // ── 空白与注释 ──────────────────────────────────────────
 
