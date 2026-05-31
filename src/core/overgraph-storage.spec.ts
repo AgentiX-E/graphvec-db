@@ -5,7 +5,7 @@ import * as fs from 'fs'
 import * as fsp from 'fs/promises'
 import * as path from 'path'
 
-const TEST_DIR = './test-data/og-snapshot-test'
+const TEST_DIR = '/tmp/og-snapshot-test'
 const SNAP_FILE = path.join(TEST_DIR, 'snapshot-test.snap')
 
 describe('OverGraphStorage — 分块快照', () => {

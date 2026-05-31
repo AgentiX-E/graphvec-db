@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { Importer } from './importer'
+import type { ImportProgress } from './importer'
 
 // ──────────────────────────────────────────
 // 辅助：创建临时文件
@@ -259,6 +260,196 @@ node,1,Alice,{"age":30}`
       expect(result.totalRows).toBe(0)
       expect(result.importedRows).toBe(0)
       expect(result.failedRows).toBe(0)
+    })
+  })
+
+  describe('importStream backpressure', () => {
+    it('should not buffer more than one batch worth of items during flush', async () => {
+      // Use a slow engine where each individual upsert takes time,
+      // forcing batchUpsertNodes to throw so it falls through to per-row upsertNode
+      const slowEngine = {
+        ...engine,
+        upsertNode: vi.fn(async () => {
+          // Simulate slow write
+          await new Promise(r => setTimeout(r, 20))
+          return 999
+        }),
+        upsertEdge: vi.fn(async () => {
+          await new Promise(r => setTimeout(r, 20))
+        }),
+        batchUpsertNodes: vi.fn(() => {
+          throw new Error('batch failed, fallback to individual')
+        }),
+      }
+
+      // A large CSV with 30 data rows, batchSize=10 means 3 batches
+      const numRows = 30
+      const lines: string[] = []
+      for (let i = 0; i < numRows; i++) {
+        lines.push(`node,1,User${i},{}\n`)
+      }
+      const csv = `type,typeId,name,props\n${lines.join('')}`
+      const filePath = writeTmp('test-backpressure.csv', csv)
+
+      const importer = new Importer(slowEngine as any)
+      const result = await importer.importCSV(filePath, { batchSize: 10, concurrency: 2 })
+
+      expect(result.totalRows).toBe(30)
+      expect(result.importedRows).toBe(30)
+      expect(result.failedRows).toBe(0)
+
+      // With backpressure, the CSV stream loop awaits each batch flush
+      // before reading more rows, so upsertNode is called exactly 30 times
+      expect(slowEngine.upsertNode).toHaveBeenCalledTimes(30)
+    })
+
+    it('should process rows correctly under backpressure with edge data', async () => {
+      const slowEdgeEngine = {
+        ...engine,
+        upsertEdge: vi.fn(async () => {
+          await new Promise(r => setTimeout(r, 10))
+        }),
+        upsertNode: vi.fn(async () => {
+          await new Promise(r => setTimeout(r, 5))
+          return 100
+        }),
+        batchUpsertNodes: vi.fn(() => ({})),
+      }
+
+      // Create 50 edge rows
+      const lines: string[] = []
+      for (let i = 0; i < 50; i++) {
+        lines.push(`edge,1,${i},${i + 100},{}\n`)
+      }
+      const csv = `type,typeId,src,dst,props\n${lines.join('')}`
+      const filePath = writeTmp('test-backpressure-edges.csv', csv)
+
+      const importer = new Importer(slowEdgeEngine as any)
+      const result = await importer.importCSV(filePath, { batchSize: 25, concurrency: 1 })
+
+      expect(result.totalRows).toBe(50)
+      expect(result.importedRows).toBe(50)
+      expect(result.failedRows).toBe(0)
+      expect(slowEdgeEngine.upsertEdge).toHaveBeenCalledTimes(50)
+    })
+  })
+
+  describe('importStream progress callback', () => {
+    it('should emit progress updates during CSV import', async () => {
+      const progressUpdates: ImportProgress[] = []
+      const numRows = 20
+      const lines: string[] = []
+      for (let i = 0; i < numRows; i++) {
+        lines.push(`node,1,ProgUser${i},{}\n`)
+      }
+      const csv = `type,typeId,name,props\n${lines.join('')}`
+      const filePath = writeTmp('test-progress.csv', csv)
+
+      const importer = new Importer(engine as any)
+
+      // Use a slow engine so progress reports actually fire
+      const slowEngine = {
+        ...engine,
+        upsertNode: vi.fn(async () => {
+          await new Promise(r => setTimeout(r, 5))
+          return 999
+        }),
+      }
+
+      const importerSlow = new Importer(slowEngine as any)
+      const result = await importerSlow.importCSV(filePath, {
+        batchSize: 5,
+        concurrency: 1,
+        onProgress: (p) => {
+          progressUpdates.push({ ...p, errors: [...p.errors] })
+        },
+      })
+
+      // Should have received progress updates (at minimum: after each batch flush)
+      // 20 rows / batchSize=5 = 4 batches → at least 4 progress updates + final
+      expect(progressUpdates.length).toBeGreaterThanOrEqual(4)
+
+      // The final result should match the last progress update
+      const lastUpdate = progressUpdates[progressUpdates.length - 1]
+      expect(lastUpdate.totalRows).toBe(result.totalRows)
+      expect(lastUpdate.importedRows).toBe(result.importedRows)
+      expect(lastUpdate.failedRows).toBe(result.failedRows)
+
+      // Progress should be cumulative (each update >= previous)
+      for (let i = 1; i < progressUpdates.length; i++) {
+        expect(progressUpdates[i].importedRows).toBeGreaterThanOrEqual(
+          progressUpdates[i - 1].importedRows,
+        )
+      }
+    })
+
+    it('should emit progress updates during NDJSON import', async () => {
+      const progressUpdates: ImportProgress[] = []
+
+      const ndjsonLines: string[] = []
+      for (let i = 0; i < 15; i++) {
+        ndjsonLines.push(JSON.stringify({ type: 'node', typeId: 1, name: `NdjsonUser${i}` }))
+      }
+      const ndjson = ndjsonLines.join('\n')
+      const filePath = writeTmp('test-progress.ndjson', ndjson)
+
+      const slowEngine = {
+        ...engine,
+        upsertNode: vi.fn(async () => {
+          await new Promise(r => setTimeout(r, 5))
+          return 999
+        }),
+      }
+
+      const importer = new Importer(slowEngine as any)
+      const result = await importer.importNDJSON(filePath, {
+        batchSize: 5,
+        concurrency: 1,
+        onProgress: (p) => {
+          progressUpdates.push({ ...p, errors: [...p.errors] })
+        },
+      })
+
+      // Should have at least 3 batch progress updates (15 rows / 5 per batch)
+      expect(progressUpdates.length).toBeGreaterThanOrEqual(3)
+
+      const lastUpdate = progressUpdates[progressUpdates.length - 1]
+      expect(lastUpdate.totalRows).toBe(result.totalRows)
+      expect(lastUpdate.importedRows).toBe(result.importedRows)
+
+      // Cumulative check
+      for (let i = 1; i < progressUpdates.length; i++) {
+        expect(progressUpdates[i].importedRows).toBeGreaterThanOrEqual(
+          progressUpdates[i - 1].importedRows,
+        )
+      }
+    })
+
+    it('should report error rows in progress callbacks', async () => {
+      const progressUpdates: ImportProgress[] = []
+
+      const ndjson = [
+        JSON.stringify({ type: 'node', typeId: 1, name: 'Good1' }),
+        '{bad json line}',
+        JSON.stringify({ type: 'node', typeId: 1, name: 'Good2' }),
+        JSON.stringify({ type: 'unknown', typeId: 1, name: 'BadType' }),
+      ].join('\n')
+      const filePath = writeTmp('test-progress-errors.ndjson', ndjson)
+
+      const importer = new Importer(engine as any)
+      const result = await importer.importNDJSON(filePath, {
+        batchSize: 2,
+        onProgress: (p) => {
+          progressUpdates.push({ ...p, errors: [...p.errors] })
+        },
+      })
+
+      expect(result.totalRows).toBe(4)
+      expect(result.failedRows).toBe(2)
+
+      // Errors should be reported in progress callbacks
+      const errorsReported = progressUpdates.some(p => p.errors.length > 0)
+      expect(errorsReported).toBe(true)
     })
   })
 })

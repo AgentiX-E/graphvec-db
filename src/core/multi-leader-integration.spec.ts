@@ -1,6 +1,8 @@
 /**
  * multi-leader-integration.spec.ts — Multi-Leader 多进程集成测试
  *
+ * @vitest-concurrent false
+ *
  * 启动子进程（通过 npx tsx 执行），通过 stdin/stdout JSON line 通信。
  * EventBus 使用 NAS 模式（共享曲线密钥目录），自动发现 peer。
  *

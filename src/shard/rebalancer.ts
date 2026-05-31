@@ -20,6 +20,8 @@ export interface RebalancerOptions {
   enableHotShardSplit?: boolean     // P1-2: 是否启用热分片自动分裂（默认 true）
   hotShardMinQps?: number           // P1-2: 热分片 QPS 阈值（默认 100）
   hotShardP99LatencyMs?: number     // P1-2: 热分片 P99 延迟阈值 ms（默认 undefined = 不检查延迟）
+  hotSpotThreshold?: number         // SH05: 热范围检测阈值（默认 1000），连续操作数/秒
+  hotSpotWindowMs?: number          // SH05: 热范围检测窗口（默认 60000ms = 1 分钟）
 }
 
 export interface RangeLoad {
@@ -27,6 +29,12 @@ export interface RangeLoad {
   nodeCount: number
   edgeCount: number
   operationCount: number
+}
+
+/** SH05: 热范围监控条目 */
+export interface RangeOpRecord {
+  count: number
+  windowStart: number
 }
 
 // ──────────────────────────────────────────
@@ -106,6 +114,8 @@ export class Rebalancer {
   private _reshardState: ReshardState
   private _reshardStateFile: string
   private _hotShardDetector: HotShardDetector
+  /** SH05: 操作记录 Map（范围级，用于 hot-spot 检测） */
+  private _rangeOpRecords: Map<string, RangeOpRecord> = new Map()
 
   constructor(manager: ShardManager, options?: RebalancerOptions) {
     this.manager = manager
@@ -119,6 +129,8 @@ export class Rebalancer {
       enableHotShardSplit: options?.enableHotShardSplit ?? true,
       hotShardMinQps: options?.hotShardMinQps ?? 100,
       hotShardP99LatencyMs: options?.hotShardP99LatencyMs ?? 0,
+      hotSpotThreshold: options?.hotSpotThreshold ?? 1000,
+      hotSpotWindowMs: options?.hotSpotWindowMs ?? 60000,
     }
     this._reshardStateFile = options?.autoSplitEnabled !== undefined
       ? RESHARD_STATE_FILE
@@ -1272,6 +1284,97 @@ export class Rebalancer {
     return {
       enableHotShardSplit: this.options.enableHotShardSplit,
       hotShardMinQps: this.options.hotShardMinQps,
+    }
+  }
+
+  // ──────────────────────────────────────────
+  // SH05: Hot-spot detection（简单窗口计数）
+  // ──────────────────────────────────────────
+
+  /**
+   * SH05: 记录一次操作到指定 range，用于 hot-spot 检测。
+   *
+   * 每次对 range 执行读/写操作时调用此方法，内部维护一个
+   * 窗口计数。窗口过期后会自动重置。
+   */
+  recordOperation(rangeId: string): void {
+    const now = Date.now()
+    const record = this._rangeOpRecords.get(rangeId)
+
+    if (!record || (now - record.windowStart) >= this.options.hotSpotWindowMs) {
+      // 新窗口或窗口已过期，重置
+      this._rangeOpRecords.set(rangeId, { count: 1, windowStart: now })
+    } else {
+      record.count++
+    }
+  }
+
+  /**
+   * SH05: 获取指定 range 在当前窗口内的操作计数。
+   * 如果窗口已过期，返回 0（自动清理）。
+   */
+  getOperationCount(rangeId: string): number {
+    const now = Date.now()
+    const record = this._rangeOpRecords.get(rangeId)
+    if (!record || (now - record.windowStart) >= this.options.hotSpotWindowMs) {
+      this._rangeOpRecords.delete(rangeId)
+      return 0
+    }
+    return record.count
+  }
+
+  /**
+   * SH05: 查找所有超过 hotSpotThreshold 的热范围。
+   *
+   * 计算方法：
+   * - 读取每个 range 在当前窗口内的操作计数
+   * - 计算操作速率 = count / (elapsed seconds)
+   * - 如果速率 >= hotSpotThreshold，标记为热范围
+   *
+   * @returns 热范围 ID 及其当前速率（ops/sec）的数组
+   */
+  findHotRanges(): Array<{ rangeId: string; opsPerSec: number }> {
+    const hotRanges: Array<{ rangeId: string; opsPerSec: number }> = []
+    const now = Date.now()
+
+    for (const [rangeId, record] of this._rangeOpRecords.entries()) {
+      const elapsedMs = now - record.windowStart
+      if (elapsedMs >= this.options.hotSpotWindowMs) {
+        // 窗口已过期，清理
+        this._rangeOpRecords.delete(rangeId)
+        continue
+      }
+
+      const elapsedSec = elapsedMs / 1000
+      const opsPerSec = elapsedSec > 0 ? record.count / elapsedSec : Infinity
+
+      if (opsPerSec >= this.options.hotSpotThreshold) {
+        hotRanges.push({ rangeId, opsPerSec })
+      }
+    }
+
+    return hotRanges
+  }
+
+  /**
+   * SH05: 获取 hotSpot 配置
+   */
+  getHotSpotConfig(): { hotSpotThreshold: number; hotSpotWindowMs: number } {
+    return {
+      hotSpotThreshold: this.options.hotSpotThreshold,
+      hotSpotWindowMs: this.options.hotSpotWindowMs,
+    }
+  }
+
+  /**
+   * SH05: 清理所有过期的操作记录
+   */
+  clearStaleOpRecords(): void {
+    const now = Date.now()
+    for (const [rangeId, record] of this._rangeOpRecords.entries()) {
+      if ((now - record.windowStart) >= this.options.hotSpotWindowMs) {
+        this._rangeOpRecords.delete(rangeId)
+      }
     }
   }
 }

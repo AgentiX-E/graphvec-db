@@ -4,6 +4,9 @@
 // 只支持 mTLS 认证。证书 CN 用作用户标识，身份文件配置授权。
 // ============================================================
 
+import { RBAC as RbacAcl } from './rbac'
+export { AclEntry, AclResourceType, AclAction } from './rbac'
+
 import * as http from 'http'
 import { AuthConfig, AuthResult, Role, AuthError } from '../types'
 import { Logger } from '../ops/logger'
@@ -272,6 +275,49 @@ export class RBAC {
   static getPermissions(role: Role): string[] {
     if (role === Role.ADMIN) return ['* (all)']
     return [...(RBAC.PERMISSIONS[role] || [])]
+  }
+
+  // ──────────────────────────────────────────
+  // ACL 方法（委托给 rbac.ts 的完整实现）
+  // ──────────────────────────────────────────
+
+  /**
+   * ACL-aware permission check.
+   * Checks ACLs first; falls back to role-based defaults if no ACLs defined.
+   * @throws { AuthError } if not authorized (statusCode=403)
+   */
+  static checkAclPermission(
+    role: Role,
+    action: string,
+    resource?: string,
+    resourceId?: string,
+  ): void {
+    return RbacAcl.checkAclPermission(role, action, resource, resourceId)
+  }
+
+  /** Add an ACL entry */
+  static addAcl(entry: { role: string; resource: string; resourceId?: string; actions: string[] }): void {
+    return RbacAcl.addAcl(entry)
+  }
+
+  /** Remove ACL entries matching the given criteria */
+  static removeAcl(role: string, resource: string, resourceId?: string): boolean {
+    return RbacAcl.removeAcl(role, resource, resourceId)
+  }
+
+  /** Check if ACL allows the action (boolean, doesn't throw) */
+  static aclAllows(role: string, action: string, resource?: string, resourceId?: string): boolean {
+    return RbacAcl.aclAllows(role, action, resource, resourceId)
+  }
+
+  /** Get ACL entries, optionally filtered by role */
+  static getAcls(role?: string): { role: string; resource: string; resourceId?: string; actions: string[] }[] {
+    return RbacAcl.getAcls(role)
+  }
+
+  /** Clear all ACLs (useful for testing) */
+  static clearAcls(): void {
+    return RbacAcl.clearAcls()
   }
 }
 

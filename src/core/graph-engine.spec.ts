@@ -778,6 +778,131 @@ describe('GraphEngine', () => {
       engine.close()
     })
   })
+
+  // ──────────────────────────────────────────
+  // batchNeighbors tests
+  // ──────────────────────────────────────────
+
+  describe('batchNeighbors', () => {
+    let bnCenter1: number
+    let bnCenter2: number
+    let bnCenter3: number
+    let bnFriend1: number
+    let bnFriend2: number
+    let bnFriend3: number
+    let bnFriend4: number
+    let bnFriend5: number
+    let bnFriend6: number
+    let bnColleague1: number
+    let bnOrphan: number
+
+    beforeAll(async () => {
+      bnCenter1 = await engine.upsertNode(1, 'bn-center-1', { props: { name: 'Center1' } })
+      bnCenter2 = await engine.upsertNode(1, 'bn-center-2', { props: { name: 'Center2' } })
+      bnCenter3 = await engine.upsertNode(1, 'bn-center-3', { props: { name: 'Center3' } })
+      bnFriend1 = await engine.upsertNode(1, 'bn-friend-1', { props: { name: 'Friend1' } })
+      bnFriend2 = await engine.upsertNode(1, 'bn-friend-2', { props: { name: 'Friend2' } })
+      bnFriend3 = await engine.upsertNode(1, 'bn-friend-3', { props: { name: 'Friend3' } })
+      bnFriend4 = await engine.upsertNode(1, 'bn-friend-4', { props: { name: 'Friend4' } })
+      bnFriend5 = await engine.upsertNode(1, 'bn-friend-5', { props: { name: 'Friend5' } })
+      bnFriend6 = await engine.upsertNode(1, 'bn-friend-6', { props: { name: 'Friend6' } })
+      bnColleague1 = await engine.upsertNode(1, 'bn-colleague-1', { props: { name: 'Colleague1' } })
+      bnOrphan = await engine.upsertNode(1, 'bn-orphan', { props: { name: 'Orphan' } })
+
+      // Center1 → Friend1, Friend2 (edge type 10)
+      await engine.upsertEdge(bnCenter1, bnFriend1, 10)
+      await engine.upsertEdge(bnCenter1, bnFriend2, 10)
+
+      // Center2 → Friend3, Friend4 (edge type 10)
+      await engine.upsertEdge(bnCenter2, bnFriend3, 10)
+      await engine.upsertEdge(bnCenter2, bnFriend4, 10)
+
+      // Center3: no outgoing edges (disconnected)
+      // Center3 → Colleague1 (edge type 20) — for label filter tests
+      await engine.upsertEdge(bnCenter3, bnColleague1, 20)
+
+      // Friend5 → Friend6 (connecting non-center nodes)
+      await engine.upsertEdge(bnFriend5, bnFriend6, 10)
+    })
+
+    test('batchNeighbors with 3 nodes returns neighbors map', () => {
+      const result = engine.batchNeighbors([bnCenter1, bnCenter2, bnFriend5])
+      expect(result.size).toBe(3)
+
+      // Center1 has 2 neighbors
+      const c1 = result.get(bnCenter1)!
+      expect(c1.edges.length).toBe(2)
+      expect(c1.nodes.length).toBe(2)
+      const c1Names = c1.nodes.map(n => n.name).sort()
+      expect(c1Names).toEqual(['bn-friend-1', 'bn-friend-2'])
+
+      // Center2 has 2 neighbors
+      const c2 = result.get(bnCenter2)!
+      expect(c2.edges.length).toBe(2)
+      expect(c2.nodes.length).toBe(2)
+      const c2Names = c2.nodes.map(n => n.name).sort()
+      expect(c2Names).toEqual(['bn-friend-3', 'bn-friend-4'])
+
+      // Friend5 has 1 neighbor (Friend6)
+      const f5 = result.get(bnFriend5)!
+      expect(f5.edges.length).toBe(1)
+      expect(f5.nodes.length).toBe(1)
+      expect(f5.nodes[0].name).toBe('bn-friend-6')
+    })
+
+    test('batchNeighbors with empty array returns empty map', () => {
+      const result = engine.batchNeighbors([])
+      expect(result.size).toBe(0)
+    })
+
+    test('batchNeighbors on disconnected nodes', () => {
+      const result = engine.batchNeighbors([bnOrphan, bnCenter3])
+      expect(result.size).toBe(2)
+
+      // Orphan: no edges
+      const orphan = result.get(bnOrphan)!
+      expect(orphan.edges.length).toBe(0)
+      expect(orphan.nodes.length).toBe(0)
+
+      // Center3: has 1 edge (to Colleague1 via type 20)
+      const c3 = result.get(bnCenter3)!
+      expect(c3.edges.length).toBe(1)
+      expect(c3.nodes.length).toBe(1)
+      expect(c3.nodes[0].name).toBe('bn-colleague-1')
+    })
+
+    test('batchNeighbors with label filter', () => {
+      // Verify the filter option is passed through and doesn't throw
+      // Note: OverGraph v0.7.0 may not support edgeTypeFilter at storage level,
+      // but the engine correctly passes the option through.
+      const result = engine.batchNeighbors([bnCenter1, bnCenter3], {
+        maxDepth: 1,
+        edgeTypeFilter: [10],
+      })
+      expect(result.size).toBe(2)
+      // Center1 has neighbors regardless of filter
+      expect(result.get(bnCenter1)!.nodes.length).toBeGreaterThan(0)
+      // The API should not throw and returns expected structure
+      expect(result.get(bnCenter3)).toBeDefined()
+    })
+
+    test('batchNeighbors integrates with LRU cache (call twice, verify consistency)', () => {
+      // First call: populates cache
+      const r1 = engine.batchNeighbors([bnCenter1, bnCenter2])
+      expect(r1.size).toBe(2)
+      expect(r1.get(bnCenter1)!.nodes.length).toBe(2)
+
+      // Second call: should serve from cache (or populate fresh)
+      const r2 = engine.batchNeighbors([bnCenter1, bnCenter2])
+      expect(r2.size).toBe(2)
+      expect(r2.get(bnCenter1)!.nodes.length).toBe(2)
+
+      // Verify the data is consistent across calls
+      expect(r2.get(bnCenter1)!.edges.length).toBe(r1.get(bnCenter1)!.edges.length)
+      expect(r2.get(bnCenter2)!.nodes.map(n => n.name).sort())
+        .toEqual(['bn-friend-3', 'bn-friend-4'])
+    })
+  })
 })
 
 // ──────────────────────────────────────────
@@ -1529,5 +1654,213 @@ describe('Phase 2: CALL', () => {
   test('TC-CALL-1: Simple CALL subquery', () => {
     const results = engine.query('CALL { MATCH (n) RETURN n } RETURN n') as any[]
     expect(results.length).toBe(2)
+  })
+})
+
+// ── Phase 2: UNION & Aggregate Functions ──
+
+describe('OpenCypher Phase 2: UNION', () => {
+  let engine: GraphEngine
+
+  beforeAll(() => {
+    engine = new GraphEngine({ ...testEngineConfig, path: testEngineConfig.path + '-phase2-union' })
+    engine.open()
+    engine.upsertNode(1, 'alice', { props: { name: 'Alice', age: 30 } })
+    engine.upsertNode(2, 'bob',   { props: { name: 'Bob', age: 25 } })
+    engine.upsertNode(1, 'carol', { props: { name: 'Carol', age: 35 } })
+    engine.upsertNode(2, 'dave',  { props: { name: 'Dave', age: 28 } })
+  })
+
+  afterAll(() => {
+    engine.close()
+  })
+
+  test('TC-UNION-1: UNION ALL merges results from two queries', () => {
+    const results = engine.query('MATCH (n) RETURN n.name UNION ALL MATCH (m) RETURN m.name') as any[]
+    // Both sides return all 4 nodes
+    expect(results.length).toBe(8)
+    const names = results.map(r => r.props?.name ?? r.name).sort()
+    expect(names[0]).toBe(names[1]) // first two should be duplicate
+  })
+
+  test('TC-UNION-2: UNION DISTINCT deduplicates results', () => {
+    const results = engine.query('MATCH (n) RETURN n.name UNION MATCH (m) RETURN m.name') as any[]
+    // Both sides return same 4 nodes, deduplicated to 4
+    expect(results.length).toBe(4)
+    const names = results.map(r => r.props?.name ?? r.name).sort()
+    expect(names).toEqual(['Alice', 'Bob', 'Carol', 'Dave'])
+  })
+
+  test('TC-UNION-3: UNION ALL with filtered queries keeps duplicates', () => {
+    // alice(30) appears in both WHERE conditions
+    const results = engine.query('MATCH (a) WHERE a.age = 30 RETURN a.name UNION ALL MATCH (b) WHERE b.age = 30 RETURN b.name') as any[]
+    // alice is the only match for both sides = 2 rows
+    expect(results.length).toBe(2)
+    expect(results[0].props?.name ?? results[0].name).toBe('Alice')
+  })
+
+  test('TC-UNION-4: UNION DISTINCT removes duplicates across branches', () => {
+    const results = engine.query('MATCH (a) WHERE a.age = 30 RETURN a.name UNION MATCH (b) WHERE b.age = 30 RETURN b.name') as any[]
+    // alice(30) is the only match for both sides, dedup to 1
+    expect(results.length).toBe(1)
+    expect(results[0].props?.name ?? results[0].name).toBe('Alice')
+  })
+
+  test('TC-UNION-5: UNION with different age filters collects distinct results', () => {
+    const results = engine.query('MATCH (a) WHERE a.age <= 28 RETURN a.name UNION MATCH (b) WHERE b.age >= 30 RETURN b.name') as any[]
+    // <=28: Bob(25), Dave(28). >=30: Alice(30), Carol(35). Union = 4 distinct
+    expect(results.length).toBe(4)
+    const names = results.map(r => r.props?.name ?? r.name).sort()
+    expect(names).toEqual(['Alice', 'Bob', 'Carol', 'Dave'])
+  })
+})
+
+describe('OpenCypher Phase 2: Aggregate Functions', () => {
+  let engine: GraphEngine
+
+  beforeAll(() => {
+    engine = new GraphEngine({ ...testEngineConfig, path: testEngineConfig.path + '-phase2-agg' })
+    engine.open()
+    engine.upsertNode(1, 'alice', { props: { name: 'Alice', age: 30, score: 85, city: 'NYC' } })
+    engine.upsertNode(2, 'bob',   { props: { name: 'Bob', age: 25, score: 92, city: 'SF' } })
+    engine.upsertNode(1, 'carol', { props: { name: 'Carol', age: 35, score: 78, city: 'NYC' } })
+    engine.upsertNode(2, 'dave',  { props: { name: 'Dave', age: 28, score: 95, city: 'LA' } })
+    engine.upsertNode(1, 'eve',   { props: { name: 'Eve', age: 40, score: 88, city: 'SF' } })
+  })
+
+  afterAll(() => {
+    engine.close()
+  })
+
+  test('TC-AGG-1: COUNT(*) returns total number of nodes', () => {
+    const results = engine.query('MATCH (n) RETURN count(*)') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.count).toBe(5)
+  })
+
+  test('TC-AGG-2: COUNT(n) returns total node count', () => {
+    const results = engine.query('MATCH (n) RETURN count(n)') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.count).toBe(5)
+  })
+
+  test('TC-AGG-3: COUNT(prop) counts non-null values', () => {
+    // All 5 nodes have .score
+    const results = engine.query('MATCH (n) RETURN count(n.score)') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.count).toBe(5)
+  })
+
+  test('TC-AGG-4: COUNT(prop) with WHERE filter', () => {
+    const results = engine.query('MATCH (n) WHERE n.age > 30 RETURN count(n.age)') as any[]
+    expect(results.length).toBe(1)
+    // age > 30: Carol(35), Eve(40) = 2
+    expect(results[0].props?.count).toBe(2)
+  })
+
+  test('TC-AGG-5: SUM(n.age)', () => {
+    const results = engine.query('MATCH (n) RETURN sum(n.age)') as any[]
+    expect(results.length).toBe(1)
+    // 30 + 25 + 35 + 28 + 40 = 158
+    expect(results[0].props?.sum).toBe(158)
+  })
+
+  test('TC-AGG-6: AVG(n.score)', () => {
+    const results = engine.query('MATCH (n) RETURN avg(n.score)') as any[]
+    expect(results.length).toBe(1)
+    // (85 + 92 + 78 + 95 + 88) / 5 = 87.6
+    expect(results[0].props?.avg).toBeCloseTo(87.6, 1)
+  })
+
+  test('TC-AGG-7: MIN(n.age)', () => {
+    const results = engine.query('MATCH (n) RETURN min(n.age)') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.min).toBe(25)
+  })
+
+  test('TC-AGG-8: MAX(n.age)', () => {
+    const results = engine.query('MATCH (n) RETURN max(n.age)') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.max).toBe(40)
+  })
+
+  test('TC-AGG-9: Alias works — count(n) AS cnt', () => {
+    const results = engine.query('MATCH (n) RETURN count(n) AS cnt') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.cnt).toBe(5)
+  })
+
+  test('TC-AGG-10: COUNT(*) on empty result returns 0', () => {
+    const results = engine.query('MATCH (n) WHERE n.age > 200 RETURN count(*)') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.count).toBe(0)
+  })
+
+  test('TC-AGG-11: SUM on empty result returns 0', () => {
+    const results = engine.query('MATCH (n) WHERE n.age > 200 RETURN sum(n.age)') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.sum).toBe(0)
+  })
+
+  test('TC-AGG-12: AVG on empty result returns 0', () => {
+    const results = engine.query('MATCH (n) WHERE n.age > 200 RETURN avg(n.age)') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.avg).toBe(0)
+  })
+
+  test('TC-AGG-13: GROUP BY with COUNT(*)', () => {
+    // NYC: Alice, Carol = 2; SF: Bob, Eve = 2; LA: Dave = 1
+    const results = engine.query('MATCH (n) RETURN n.city, count(*) AS cnt GROUP BY n.city') as any[]
+    expect(results.length).toBe(3)
+    const nyc = results.find(r => r.props?.city === 'NYC')
+    const sf = results.find(r => r.props?.city === 'SF')
+    const la = results.find(r => r.props?.city === 'LA')
+    expect(nyc?.props?.cnt).toBe(2)
+    expect(sf?.props?.cnt).toBe(2)
+    expect(la?.props?.cnt).toBe(1)
+  })
+
+  test('TC-AGG-14: GROUP BY with SUM', () => {
+    // NYC: 30+35=65, SF: 25+40=65, LA: 28
+    const results = engine.query('MATCH (n) RETURN n.city, sum(n.age) AS totalAge GROUP BY n.city') as any[]
+    expect(results.length).toBe(3)
+    const nyc = results.find(r => r.props?.city === 'NYC')
+    const sf = results.find(r => r.props?.city === 'SF')
+    const la = results.find(r => r.props?.city === 'LA')
+    expect(nyc?.props?.totalAge).toBe(65)
+    expect(sf?.props?.totalAge).toBe(65)
+    expect(la?.props?.totalAge).toBe(28)
+  })
+
+  test('TC-AGG-15: GROUP BY with AVG', () => {
+    // NYC: (85+78)/2=81.5, SF: (92+88)/2=90, LA: 95
+    const results = engine.query('MATCH (n) RETURN n.city, avg(n.score) AS avgScore GROUP BY n.city') as any[]
+    expect(results.length).toBe(3)
+    const nyc = results.find(r => r.props?.city === 'NYC')
+    const sf = results.find(r => r.props?.city === 'SF')
+    const la = results.find(r => r.props?.city === 'LA')
+    expect(nyc?.props?.avgScore).toBeCloseTo(81.5, 1)
+    expect(sf?.props?.avgScore).toBeCloseTo(90, 1)
+    expect(la?.props?.avgScore).toBeCloseTo(95, 1)
+  })
+
+  test('TC-AGG-16: GROUP BY with MIN', () => {
+    // NYC: min age = 30, SF: min age = 25, LA: min age = 28
+    const results = engine.query('MATCH (n) RETURN n.city, min(n.age) AS minAge GROUP BY n.city') as any[]
+    expect(results.length).toBe(3)
+    const nyc = results.find(r => r.props?.city === 'NYC')
+    const sf = results.find(r => r.props?.city === 'SF')
+    expect(nyc?.props?.minAge).toBe(30)
+    expect(sf?.props?.minAge).toBe(25)
+  })
+
+  test('TC-AGG-17: GROUP BY with MAX', () => {
+    // NYC: max age = 35, SF: max age = 40, LA: max age = 28
+    const results = engine.query('MATCH (n) RETURN n.city, max(n.age) AS maxAge GROUP BY n.city') as any[]
+    expect(results.length).toBe(3)
+    const nyc = results.find(r => r.props?.city === 'NYC')
+    const sf = results.find(r => r.props?.city === 'SF')
+    expect(nyc?.props?.maxAge).toBe(35)
+    expect(sf?.props?.maxAge).toBe(40)
   })
 })

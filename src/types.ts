@@ -45,6 +45,8 @@ export interface UpsertNodeOptions {
   ttlSeconds?: number
   /** 如果为 true，跳过 Multi-Leader 复制广播 */
   skipReplication?: boolean
+  /** MVCC 版本号（内部使用，由事务系统传入） */
+  _mvccVersion?: number
 }
 
 export interface UpsertEdgeOptions {
@@ -62,6 +64,8 @@ export interface NodeRecord {
   props: NodeProperties
   createdAt?: number
   degree?: number
+  /** MVCC 版本号（由事务系统设置，用于快照可见性检查） */
+  mvccVersion?: number
 }
 
 export interface EdgeRecord {

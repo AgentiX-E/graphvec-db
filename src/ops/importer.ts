@@ -21,16 +21,19 @@ export interface ImporterCSVOptions {
   delimiter?: string
   batchSize?: number
   concurrency?: number
+  onProgress?: ProgressCallback
 }
 
 export interface ImporterNDJSONOptions {
   batchSize?: number
   concurrency?: number
+  onProgress?: ProgressCallback
 }
 
 export interface ImporterStreamOptions {
   batchSize?: number
   concurrency?: number
+  onProgress?: ProgressCallback
 }
 
 export interface ImportProgress {
@@ -39,6 +42,8 @@ export interface ImportProgress {
   failedRows: number
   errors: string[]
 }
+
+export type ProgressCallback = (progress: ImportProgress) => void
 
 /** 导入行解析后的内部表示 */
 interface RowRecord {
@@ -104,6 +109,7 @@ export class Importer {
       delimiter = ',',
       batchSize = 100,
       concurrency = 4,
+      onProgress,
     } = options
 
     const readStream = createReadStream(filePath)
@@ -111,6 +117,7 @@ export class Importer {
       batchSize,
       concurrency,
       delimiter,
+      onProgress,
     })
   }
 
@@ -128,12 +135,14 @@ export class Importer {
     const {
       batchSize = 100,
       concurrency = 4,
+      onProgress,
     } = options
 
     const readStream = createReadStream(filePath)
     return this.importStream(readStream, 'ndjson', {
       batchSize,
       concurrency,
+      onProgress,
     })
   }
 
@@ -155,6 +164,7 @@ export class Importer {
       batchSize = 100,
       concurrency = 4,
       delimiter = ',',
+      onProgress,
     } = options
 
     const progress: ImportProgress = {
@@ -169,12 +179,12 @@ export class Importer {
         delimiter,
         batchSize,
         concurrency,
-      }, progress)
+      }, progress, onProgress)
     } else {
       await this._importNDJSONStream(readableStream, {
         batchSize,
         concurrency,
-      }, progress)
+      }, progress, onProgress)
     }
 
     return progress
@@ -188,6 +198,7 @@ export class Importer {
     stream: NodeJS.ReadableStream,
     options: Required<Omit<ImporterStreamOptions & { delimiter: string }, never>>,
     progress: ImportProgress,
+    onProgress?: ProgressCallback,
   ): Promise<void> {
     const { delimiter, batchSize, concurrencyLimit } = {
       ...options,
@@ -208,6 +219,8 @@ export class Importer {
 
     let isFirstLine = true
     let batch: RowRecord[] = []
+    let flushInProgress: Promise<void> | null = null
+    let drainResolve: (() => void) | null = null
 
     for await (const record of parser) {
       const cols = record as string[]
@@ -253,12 +266,14 @@ export class Importer {
           progress.failedRows++
           progress.totalRows++
           progress.errors.push(`Row ${progress.totalRows}: unknown type "${type}"`)
+          onProgress?.(snapshotProgress(progress))
           continue
         }
       } catch (err) {
         progress.failedRows++
         progress.totalRows++
         progress.errors.push(`Row ${progress.totalRows}: ${(err as Error).message}`)
+        onProgress?.(snapshotProgress(progress))
         continue
       }
 
@@ -270,11 +285,29 @@ export class Importer {
       if (batch.length >= batchSize) {
         const batchToFlush = batch
         batch = []
-        const result = await this._flushBatch(batchToFlush, concurrencyLimit)
-        progress.importedRows += result.imported
-        progress.failedRows += result.failed
-        progress.errors.push(...result.errors)
+        const flush = this._flushBatch(batchToFlush, concurrencyLimit).then((result) => {
+          progress.importedRows += result.imported
+          progress.failedRows += result.failed
+          progress.errors.push(...result.errors)
+          onProgress?.(snapshotProgress(progress))
+          if (drainResolve) {
+            drainResolve()
+            drainResolve = null
+          }
+        })
+        flushInProgress = flush
+
+        // Backpressure: wait for current flush to complete before reading more
+        // This prevents unbounded memory growth when the source is faster than
+        // the consumer (e.g., a fast file read vs slow database writes).
+        await flush
+        flushInProgress = null
       }
+    }
+
+    // Wait for any in-flight flush to complete
+    if (flushInProgress) {
+      await flushInProgress
     }
 
     // Flush any remaining
@@ -283,6 +316,7 @@ export class Importer {
       progress.importedRows += result.imported
       progress.failedRows += result.failed
       progress.errors.push(...result.errors)
+      onProgress?.(snapshotProgress(progress))
     }
   }
 
@@ -294,6 +328,7 @@ export class Importer {
     stream: NodeJS.ReadableStream,
     options: Required<Omit<ImporterStreamOptions, never>>,
     progress: ImportProgress,
+    onProgress?: ProgressCallback,
   ): Promise<void> {
     const { batchSize, concurrency: concurrencyLimit } = options
 
@@ -335,6 +370,7 @@ export class Importer {
       } catch (err) {
         progress.failedRows++
         progress.errors.push(`Row ${progress.totalRows}: ${(err as Error).message}`)
+        onProgress?.(snapshotProgress(progress))
         continue
       }
 
@@ -349,6 +385,7 @@ export class Importer {
         progress.importedRows += result.imported
         progress.failedRows += result.failed
         progress.errors.push(...result.errors)
+        onProgress?.(snapshotProgress(progress))
       }
     }
 
@@ -358,6 +395,7 @@ export class Importer {
       progress.importedRows += result.imported
       progress.failedRows += result.failed
       progress.errors.push(...result.errors)
+      onProgress?.(snapshotProgress(progress))
     }
   }
 
@@ -447,4 +485,11 @@ export class Importer {
       return undefined
     }
   }
+}
+
+/**
+ * Create a snapshot of progress (shallow copy) for use in callbacks
+ */
+function snapshotProgress(p: ImportProgress): ImportProgress {
+  return { ...p, errors: [...p.errors] }
 }

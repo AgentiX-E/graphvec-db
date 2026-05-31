@@ -9,7 +9,7 @@
  * - 进程崩溃后恢复（模拟）
  */
 
-import { SegmentStreamWal, SegmentStreamWalAppendStream, StreamMessage, FLAG_PENDING, FLAG_ACKED, FLAG_CONSUMED } from './segment-stream-wal'
+import { SegmentStreamWal, SegmentStreamWalAppendStream, SegmentStreamWalOptions, StreamMessage, FLAG_PENDING, FLAG_ACKED, FLAG_CONSUMED } from './segment-stream-wal'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 
@@ -304,6 +304,106 @@ describe('SegmentStreamWal — 旧文件迁移', () => {
     expect(fs.existsSync(path.join(migrateDir, '00000001.log'))).toBe(true)
 
     migratedWal.drop()
+  })
+})
+
+describe('SegmentStreamWal — fsyncOnWrite 选项', () => {
+  it('fsyncOnWrite=true 时 append 后 fsync 已调用', () => {
+    const wal = new SegmentStreamWal(walDir('fsync_true'), { fsyncOnWrite: true, segmentMaxBytes: 65536 })
+    wal.open()
+    wal.append(makeMsg(1))
+    wal.append(makeMsg(2))
+    // close 会触发 _flushAndCloseActiveFd（含 fsync），
+    // 不抛出异常即验证 fsync 调用是安全的
+    expect(() => wal.close()).not.toThrow()
+    // 重新打开后数据应完整
+    const wal2 = new SegmentStreamWal(walDir('fsync_true'), { fsyncOnWrite: true })
+    wal2.open()
+    expect(wal2.size).toBe(2)
+    const pending = wal2.readPending(Date.now() + 60000)
+    expect(pending.length).toBe(2)
+    wal2.drop()
+  })
+
+  it('fsyncOnWrite=false 时 append 更快（性能测量）', () => {
+    // 使用 tiny segment 避免滚动影响对比
+    const count = 5000
+    const msg = makeMsg(0)
+    const msgBuf = encodeMsg(msg, FLAG_PENDING)
+    const recordLen = msgBuf.length
+
+    // 测量 fsyncOnWrite=false 的时间
+    const walNoSync = new SegmentStreamWal(walDir('perf_nosync'), { fsyncOnWrite: false, segmentMaxBytes: 10 * 1024 * 1024 })
+    walNoSync.open()
+    const startNoSync = Date.now()
+    for (let i = 0; i < count; i++) {
+      walNoSync.append(makeMsg(i))
+    }
+    const elapsedNoSync = Date.now() - startNoSync
+    walNoSync.close()
+
+    // 测量 fsyncOnWrite=true 的时间
+    const walSync = new SegmentStreamWal(walDir('perf_sync'), { fsyncOnWrite: true, segmentMaxBytes: 10 * 1024 * 1024 })
+    walSync.open()
+    const startSync = Date.now()
+    for (let i = 0; i < count; i++) {
+      walSync.append(makeMsg(i))
+    }
+    const elapsedSync = Date.now() - startSync
+    walSync.close()
+
+    // fsyncOnWrite=false 应更快（或至少不显著慢）
+    // 在 CI/磁盘差异环境下，放宽条件
+    console.log(`fsyncOnWrite=false: ${elapsedNoSync}ms, fsyncOnWrite=true: ${elapsedSync}ms`)
+
+    // 验证：无 fsync 模式不应显著慢于有 fsync 模式
+    // 如果磁盘是 SSD/内存盘，差异可能很小，但至少无 fsync 不应比有 fsync 慢 50% 以上
+    expect(elapsedNoSync).toBeLessThanOrEqual(elapsedSync * 1.5)
+
+    // 两种模式的数据都完整
+    const walNoSync2 = new SegmentStreamWal(walDir('perf_nosync'), { fsyncOnWrite: false })
+    walNoSync2.open()
+    expect(walNoSync2.size).toBe(count)
+    walNoSync2.drop()
+
+    const walSync2 = new SegmentStreamWal(walDir('perf_sync'), { fsyncOnWrite: true })
+    walSync2.open()
+    expect(walSync2.size).toBe(count)
+    walSync2.drop()
+  })
+
+  it('fsyncOnWrite=false 的 WAL 仍可通过 close 和 sync 确保持久化', () => {
+    const wal = new SegmentStreamWal(walDir('fsync_false_persist'), { fsyncOnWrite: false })
+    wal.open()
+    wal.append(makeMsg(1))
+    wal.append(makeMsg(2))
+    wal.sync() // sync() 内部会 fsync
+    wal.close()
+
+    const wal2 = new SegmentStreamWal(walDir('fsync_false_persist'), { fsyncOnWrite: false })
+    wal2.open()
+    expect(wal2.size).toBe(2)
+    wal2.drop()
+  })
+
+  it('SegmentStreamWalOptions 接口导出 fsyncOnWrite 属性', () => {
+    const opt: SegmentStreamWalOptions = { fsyncOnWrite: false, segmentMaxBytes: 4096 }
+    expect(opt.fsyncOnWrite).toBe(false)
+    expect(opt.segmentMaxBytes).toBe(4096)
+  })
+
+  it('构造时传数字（旧 API）默认 fsyncOnWrite=true', () => {
+    const wal = new SegmentStreamWal(walDir('legacy_api'), 65536)
+    expect((wal as any)._fsyncOnWrite).toBe(true)
+    expect((wal as any)._segmentMaxBytes).toBe(65536)
+    wal.drop()
+  })
+
+  it('构造时不传第二个参数默认 fsyncOnWrite=true', () => {
+    const wal = new SegmentStreamWal(walDir('default_fsync'))
+    expect((wal as any)._fsyncOnWrite).toBe(true)
+    expect((wal as any)._segmentMaxBytes).toBe(64 * 1024 * 1024)
+    wal.drop()
   })
 })
 

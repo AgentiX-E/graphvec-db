@@ -1,0 +1,158 @@
+// ============================================================
+// GraphVec gRPC Service Definition
+// ============================================================
+
+syntax = "proto3";
+
+package graphvec;
+
+service GraphService {
+  // Node operations
+  rpc GetNode (GetNodeRequest) returns (Node);
+  rpc AddNode (AddNodeRequest) returns (Node);
+  rpc DeleteNode (DeleteNodeRequest) returns (DeleteNodeResponse);
+
+  // Edge operations
+  rpc GetEdge (GetEdgeRequest) returns (Edge);
+  rpc AddEdge (AddEdgeRequest) returns (AddEdgeResponse);
+  rpc DeleteEdge (DeleteEdgeRequest) returns (DeleteEdgeResponse);
+
+  // Query operations
+  rpc Query (QueryRequest) returns (QueryResponse);
+  rpc Neighbors (NeighborsRequest) returns (NeighborsResponse);
+
+  // Batch operations
+  rpc BatchNeighbors (BatchNeighborsRequest) returns (BatchNeighborsResponse);
+
+  // Health check
+  rpc Health (HealthRequest) returns (HealthResponse);
+}
+
+// ──────────── 类型定义 ────────────
+
+message Node {
+  int64 id = 1;
+  int32 type = 2;
+  string name = 3;
+  map<string, string> props = 4;
+  int64 created_at = 5;
+  double degree = 6;
+}
+
+message Edge {
+  int64 src = 1;
+  int64 dst = 2;
+  int32 type = 3;
+  map<string, string> props = 4;
+  int64 timestamp = 5;
+}
+
+// ──────────── 节点请求/响应 ────────────
+
+message GetNodeRequest {
+  int64 id = 1;
+}
+
+message AddNodeRequest {
+  int32 type_id = 1;
+  string name = 2;
+  map<string, string> props = 3;
+}
+
+message DeleteNodeRequest {
+  int64 id = 1;
+  bool cascade = 2;
+}
+
+message DeleteNodeResponse {
+  bool success = 1;
+}
+
+// ──────────── 边请求/响应 ────────────
+
+message GetEdgeRequest {
+  int64 src = 1;
+  int64 dst = 2;
+  int32 type = 3;
+}
+
+message AddEdgeRequest {
+  int64 src = 1;
+  int64 dst = 2;
+  int32 type_id = 3;
+  map<string, string> props = 4;
+  double weight = 5;
+}
+
+message AddEdgeResponse {
+  bool success = 1;
+}
+
+message DeleteEdgeRequest {
+  int64 src = 1;
+  int64 dst = 2;
+  int32 type_id = 3;
+}
+
+message DeleteEdgeResponse {
+  bool success = 1;
+}
+
+// ──────────── 查询 ────────────
+
+message QueryRequest {
+  string query = 1;
+  int32 limit = 2;
+  int32 skip = 3;
+}
+
+message QueryResponse {
+  repeated Node results = 1;
+  int32 count = 2;
+}
+
+message NeighborsRequest {
+  int64 node_id = 1;
+  int32 max_depth = 2;
+  repeated int32 edge_type_filter = 3;
+}
+
+message NeighborsResponse {
+  int64 node_id = 1;
+  repeated Edge edges = 2;
+  repeated Node nodes = 3;
+  int32 edge_count = 4;
+  int32 node_count = 5;
+}
+
+// ──────────── 批量操作 ────────────
+
+message BatchNeighborsRequest {
+  repeated int64 ids = 1;
+  int32 max_depth = 2;
+  repeated int32 edge_type_filter = 3;
+}
+
+message BatchResultEntry {
+  int64 node_id = 1;
+  repeated Edge edges = 2;
+  repeated Node nodes = 3;
+  int32 edge_count = 4;
+  int32 node_count = 5;
+}
+
+message BatchNeighborsResponse {
+  map<int64, BatchResultEntry> results = 1;
+  int32 total_count = 2;
+}
+
+// ──────────── 健康检查 ────────────
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  int64 uptime_ms = 2;
+  int32 node_count = 3;
+  int32 edge_count = 4;
+}

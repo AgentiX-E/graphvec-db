@@ -202,6 +202,8 @@ export class GraphEngine {
   private _nodeIds: Set<number> = new Set()
   private _edgeKeys: Set<string> = new Set()
   private _labelIndex: LabelEngine = new LabelEngine()
+  /** MVCC 版本跟踪：nodeId → 最后修改该节点的事务 snapshotId */
+  private _mvccVersions: Map<NodeId, number> = new Map()
   private _eventStream: EventStream | null = null
   /** Multi-Leader 同步复制层（可选） */
   private _mlReplication: MultiLeaderReplication | null = null
@@ -431,6 +433,10 @@ export class GraphEngine {
       this._nodeIds.add(id)
       this._nodeCount++
     }
+    // MVCC 版本跟踪
+    if (opts?._mvccVersion !== undefined) {
+      this._mvccVersions.set(id, opts._mvccVersion)
+    }
     this._labelIndex.addNode(typeId, id)
     this._fulltext?.addDocument(String(id), { name, ...(opts?.props ?? {}) })
     this.onRecordChange?.(name, { typeId, ...(opts?.props ?? {}) })
@@ -497,6 +503,7 @@ export class GraphEngine {
       props: raw.props as NodeProperties,
       createdAt: raw.createdAt,
       degree,
+      mvccVersion: this._mvccVersions.get(id),
     }
 
     // Populate cache on miss (only when no RLS context)
@@ -2696,7 +2703,10 @@ export class GraphEngine {
 
   beginTransaction(txnManager?: TransactionManager): Transaction {
     const mgr = txnManager ?? this._defaultTxnManager
-    return mgr.begin()
+    const txn = mgr.begin()
+    // 将 engine 绑定到事务，使 commit() 可以 flush 写入
+    txn.setEngine(this)
+    return txn
   }
 
   async withTransaction<T>(
@@ -2705,6 +2715,7 @@ export class GraphEngine {
   ): Promise<T> {
     const mgr = txnManager ?? this._defaultTxnManager
     const txn = mgr.begin()
+    txn.setEngine(this)
     try {
       const result = await fn(txn)
       await txn.commit()
@@ -2723,6 +2734,7 @@ export class GraphEngine {
   ): Promise<void> {
     const mgr = txnManager ?? this._defaultTxnManager
     const txn = mgr.begin()
+    txn.setEngine(this)
     try {
       if (operation === 'upsert' && data) {
         txn.upsertNode(data.typeId!, data.name!, data.props)
@@ -2734,6 +2746,50 @@ export class GraphEngine {
       await txn.rollback()
       throw err
     }
+  }
+
+  // ── MVCC 集成方法 ──
+
+  /**
+   * 获取节点的 MVCC 版本号
+   * 返回 undefined 表示节点没有版本信息（非 MVCC 写入）
+   */
+  getNodeVersion(nodeId: NodeId): number | undefined {
+    return this._mvccVersions.get(nodeId)
+  }
+
+  /**
+   * MVCC-aware 获取节点
+   * 在事务上下文中，只返回对事务快照可见的节点（版本 <= 事务 snapshotId）
+   * 返回 null 表示节点对当前事务不可见
+   */
+  getNodeWithTxn(nodeId: NodeId, txn: Transaction): NodeRecord | null {
+    this._ensureOpen()
+
+    // 先检查可见性
+    if (txn.isolation === 'snapshot' || txn.isolation === 'serializable') {
+      const version = this._mvccVersions.get(nodeId)
+      if (version !== undefined && version > txn.snapshotId) {
+        return null
+      }
+    }
+
+    return this.getNode(nodeId)
+  }
+
+  /**
+   * MVCC-aware 批量获取节点
+   * 过滤掉对事务不可见的节点
+   */
+  getNodesWithTxn(nodeIds: NodeId[], txn: Transaction): Map<NodeId, NodeRecord> {
+    const result = new Map<NodeId, NodeRecord>()
+    for (const id of nodeIds) {
+      const node = this.getNodeWithTxn(id, txn)
+      if (node) {
+        result.set(id, node)
+      }
+    }
+    return result
   }
 
   // ── Geospatial Queries (Gap 5) ──

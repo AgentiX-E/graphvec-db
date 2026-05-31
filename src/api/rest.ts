@@ -4,6 +4,7 @@
 
 import * as https from 'https'
 import * as http from 'http'
+import * as fs from 'fs'
 import { ShardManager } from '../shard/shard-manager'
 import { Authenticator, RBAC, bodySizeLimitMiddleware, BODY_SIZE_LIMIT } from '../security/auth'
 import { TLSConfig } from '../security/tls'
@@ -17,11 +18,25 @@ import { executeIR, QuerySpec, buildIRFromSpec, optimizeIR } from './query-plann
 // 类型定义
 // ──────────────────────────────────────────
 
+export interface TlsServerOptions {
+  /** Path to the TLS private key file (PEM format) */
+  key: string
+  /** Path to the TLS certificate file (PEM format) */
+  cert: string
+  /** Path to the CA certificate file for mTLS client verification (PEM format) */
+  ca?: string
+  /** Enable mutual TLS (requires ca and requestCert); when true, clients without a valid cert are rejected */
+  requestCert?: boolean
+}
+
 export interface RestApiConfig {
   port: number
   host: string
   authenticator: Authenticator
   tlsConfig: TLSConfig
+  /** Optional inline TLS options — when provided, creates the server directly with these certs.
+   *  Provides a simpler alternative to tlsConfig for cases that don't need cert hot-reload. */
+  tls?: TlsServerOptions
   /** 请求体大小限制（字节），默认 10MB；设为 0 拒绝所有；设为 undefined 不限制 */
   bodySizeLimit?: number
   enableCors?: boolean
@@ -98,12 +113,15 @@ interface RateLimitEntry {
   resetAt: number
 }
 
-class MemoryRateLimiter {
+export class MemoryRateLimiter {
   private entries = new Map<string, RateLimitEntry>()
-  private maxPerMin: number
+  private maxRequests: number
+  private windowMs: number
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null
 
-  constructor(maxPerMin: number = 1000) {
-    this.maxPerMin = maxPerMin
+  constructor(options?: Partial<{ maxRequests: number; windowMs: number }>) {
+    this.maxRequests = options?.maxRequests ?? 100
+    this.windowMs = options?.windowMs ?? 60_000
   }
 
   isAllowed(key: string): boolean {
@@ -111,16 +129,58 @@ class MemoryRateLimiter {
     const entry = this.entries.get(key)
 
     if (!entry || now >= entry.resetAt) {
-      this.entries.set(key, { count: 1, resetAt: now + 60000 })
+      this.entries.set(key, { count: 1, resetAt: now + this.windowMs })
       return true
     }
 
-    if (entry.count >= this.maxPerMin) {
+    if (entry.count >= this.maxRequests) {
       return false
     }
 
     entry.count++
     return true
+  }
+
+  check(key: string): { allowed: boolean; resetAt: number; remaining: number } {
+    const now = Date.now()
+    let entry = this.entries.get(key)
+
+    if (!entry || now >= entry.resetAt) {
+      entry = { count: 1, resetAt: now + this.windowMs }
+      this.entries.set(key, entry)
+      return { allowed: true, resetAt: entry.resetAt, remaining: this.maxRequests - 1 }
+    }
+
+    if (entry.count >= this.maxRequests) {
+      return { allowed: false, resetAt: entry.resetAt, remaining: 0 }
+    }
+
+    entry.count++
+    return { allowed: true, resetAt: entry.resetAt, remaining: this.maxRequests - entry.count }
+  }
+
+  startCleanup(intervalMs: number = 60_000): void {
+    this.stopCleanup()
+    this.cleanupInterval = setInterval(() => this.cleanup(), intervalMs)
+    if (this.cleanupInterval && typeof (this.cleanupInterval as any).unref === 'function') {
+      (this.cleanupInterval as any).unref()
+    }
+  }
+
+  stopCleanup(): void {
+    if (this.cleanupInterval !== null) {
+      clearInterval(this.cleanupInterval)
+      this.cleanupInterval = null
+    }
+  }
+
+  cleanup(): void {
+    const now = Date.now()
+    for (const [key, entry] of this.entries) {
+      if (now >= entry.resetAt) {
+        this.entries.delete(key)
+      }
+    }
   }
 
   reset(): void {
@@ -259,6 +319,46 @@ function applyBodySizeLimit(
 }
 
 // ──────────────────────────────────────────
+// 构建 HTTPS 服务器选项（内置 tls 字段）
+// ──────────────────────────────────────────
+
+/**
+ * 从 TlsServerOptions 构建 https.ServerOptions。
+ * 读取证书文件，如果文件不存在则抛出明确的错误信息。
+ */
+function buildHttpsOptions(tlsOpts: TlsServerOptions): https.ServerOptions {
+  if (!fs.existsSync(tlsOpts.key)) {
+    throw new Error(`TLS key file not found: ${tlsOpts.key}`)
+  }
+  if (!fs.existsSync(tlsOpts.cert)) {
+    throw new Error(`TLS cert file not found: ${tlsOpts.cert}`)
+  }
+
+  const opts: https.ServerOptions = {
+    key: fs.readFileSync(tlsOpts.key, 'utf-8'),
+    cert: fs.readFileSync(tlsOpts.cert, 'utf-8'),
+  }
+
+  // mTLS support: when ca is provided and requestCert is enabled
+  if (tlsOpts.ca && tlsOpts.requestCert) {
+    if (!fs.existsSync(tlsOpts.ca)) {
+      throw new Error(`TLS CA file not found: ${tlsOpts.ca}`)
+    }
+    opts.ca = fs.readFileSync(tlsOpts.ca, 'utf-8')
+    opts.requestCert = true
+    opts.rejectUnauthorized = true
+  } else if (tlsOpts.ca) {
+    // CA is provided without explicit requestCert — still add CA but don't require client cert
+    if (!fs.existsSync(tlsOpts.ca)) {
+      throw new Error(`TLS CA file not found: ${tlsOpts.ca}`)
+    }
+    opts.ca = fs.readFileSync(tlsOpts.ca, 'utf-8')
+  }
+
+  return opts
+}
+
+// ──────────────────────────────────────────
 // RestApiServer — 完整实现
 // ──────────────────────────────────────────
 
@@ -266,7 +366,10 @@ export function createRestApiServer(
   shardManager: ShardManager,
   config: RestApiConfig,
 ): RestApiServer {
-  const rateLimiter = new MemoryRateLimiter(config.maxRatelimitPerMin ?? 1000)
+  const rateLimiter = new MemoryRateLimiter({
+    maxRequests: config.maxRatelimitPerMin ?? 100,
+    windowMs: 60_000,
+  })
   const authenticator = config.authenticator
 
   const routes: Route[] = [
@@ -1212,9 +1315,11 @@ export function createRestApiServer(
     })
   }
 
-  const server = https.createServer({
-    ...config.tlsConfig.getServerOptions(),
-  })
+  const server = config.tls
+    ? https.createServer(buildHttpsOptions(config.tls))
+    : https.createServer({
+        ...config.tlsConfig.getServerOptions(),
+      })
 
   server.on('request', async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
@@ -1261,8 +1366,19 @@ export function createRestApiServer(
       // Rate limit
       if (config.enableRatelimit) {
         const clientIp = req.socket.remoteAddress ?? 'unknown'
-        if (!rateLimiter.isAllowed(clientIp)) {
-          jsonResponse(res, 429, { error: 'Too Many Requests' })
+        const result = rateLimiter.check(clientIp)
+        if (!result.allowed) {
+          const retryAfterSec = Math.max(1, Math.ceil((result.resetAt - Date.now()) / 1000))
+          const body = JSON.stringify({
+            error: 'Too Many Requests',
+            retryAfter: retryAfterSec,
+          })
+          res.writeHead(429, {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+            'Retry-After': String(retryAfterSec),
+          })
+          res.end(body)
           return
         }
       }
@@ -1304,10 +1420,10 @@ export function createRestApiServer(
           return
         }
 
-        // RBAC
+        // RBAC — ACL-aware permission check (falls back to role-based defaults)
         if (matched.requiredPermission) {
           try {
-            RBAC.checkPermission(auth.role, matched.requiredPermission)
+            RBAC.checkAclPermission(auth.role, matched.requiredPermission)
           } catch {
             jsonResponse(res, 403, { error: 'Forbidden: insufficient permissions' })
             return

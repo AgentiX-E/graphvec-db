@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import * as zlib from 'zlib'
 import { createRequire } from 'module'
 import { GraphEngine } from '../core/graph-engine'
 import { Logger } from './logger'
@@ -193,17 +194,14 @@ export class Backup {
         fs.renameSync(target, currentBackup)
       }
 
-      // 如果备份是压缩包，先解压
-      if (backupPath.endsWith('.tar.gz')) {
-        const tarReq = _tar
-        fs.mkdirSync(target, { recursive: true })
-        await tarReq.extract({
-          file: backupPath,
-          cwd: path.dirname(target),
-          strip: 1,
-        })
+      // 自动检测压缩格式（GZip magic bytes: 0x1f 0x8b）
+      if (this._isGzipped(backupPath)) {
+        await this._extractTarGz(backupPath, target)
+      } else if (backupPath.endsWith('.tar.gz') || backupPath.endsWith('.tgz')) {
+        await this._extractTarGz(backupPath, target)
       } else {
         // 复制备份数据（裸目录）
+        fs.mkdirSync(target, { recursive: true })
         this._copyDirSync(backupPath, target)
       }
     } catch (err) {
@@ -217,12 +215,58 @@ export class Backup {
   }
 
   /**
+   * 检测文件前 2 字节是否为 GZip 魔数（0x1f, 0x8b）
+   */
+  private _isGzipped(filePath: string): boolean {
+    try {
+      const fd = fs.openSync(filePath, 'r')
+      try {
+        const buf = Buffer.alloc(2)
+        const bytesRead = fs.readSync(fd, buf, 0, 2, 0)
+        return bytesRead === 2 && buf[0] === 0x1f && buf[1] === 0x8b
+      } finally {
+        fs.closeSync(fd)
+      }
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 解压并提取 .tar.gz 文件到目标目录
+   */
+  private async _extractTarGz(tarGzPath: string, target: string): Promise<void> {
+    const tarReq = _tar
+    fs.mkdirSync(target, { recursive: true })
+
+    await new Promise<void>((resolve, reject) => {
+      const readStream = fs.createReadStream(tarGzPath)
+      const gunzip = zlib.createGunzip()
+      const extractStream = tarReq.extract({
+        cwd: target,
+        strip: 1,
+      }) as NodeJS.WritableStream
+
+      extractStream.on('close', resolve)
+      extractStream.on('error', reject)
+      gunzip.on('error', reject)
+      readStream.on('error', reject)
+
+      readStream.pipe(gunzip).pipe(extractStream)
+    })
+  }
+
+  /**
    * 列出所有备份
    */
   listBackups(backupDir: string): string[] {
     try {
       return fs.readdirSync(backupDir)
-        .filter(name => name.startsWith('graphvec-backup-') && (fs.statSync(path.join(backupDir, name)).isDirectory() || name.endsWith('.tar.gz')))
+        .filter(name => {
+          if (!name.startsWith('graphvec-backup-')) return false
+          const fullPath = path.join(backupDir, name)
+          return fs.statSync(fullPath).isDirectory() || name.endsWith('.tar.gz') || name.endsWith('.tgz')
+        })
         .map(name => path.join(backupDir, name))
     } catch {
       return []
@@ -447,9 +491,16 @@ const ARCHIVE_PREFIX = 'wal-archive-'
 /**
  * 从备份目录路径解析时间戳。
  * 格式: graphvec-backup-2026-05-23T22-30-00-000Z
+ * 支持 .tar.gz / .tgz 后缀
  */
 function parseBackupTimestamp(backupPath: string): number | null {
-  const baseName = path.basename(backupPath)
+  let baseName = path.basename(backupPath)
+  // 去除压缩扩展名
+  if (baseName.endsWith('.tar.gz')) {
+    baseName = baseName.slice(0, -7)
+  } else if (baseName.endsWith('.tgz')) {
+    baseName = baseName.slice(0, -4)
+  }
   const match = baseName.match(/^graphvec-backup-(.+)$/)
   if (!match) return null
   try {

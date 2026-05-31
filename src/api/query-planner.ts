@@ -101,6 +101,27 @@ export interface TableStats {
   columnStats: Map<string, ColumnStat>
 }
 
+/**
+ * EnhancedStats — 增强的统计信息，支持 CBO 更精确的估算
+ */
+export interface EnhancedStats {
+  /** 按 label (typeId → count) 的节点分布 */
+  labelCounts: Map<number, number>
+  /** 按边类型 (typeId → count) 的边分布 */
+  edgeLabelCounts: Map<number, number>
+  /** 按属性名 → 统计信息的属性分布 */
+  propStats: Map<string, { min: number; max: number; cardinality: number; nullCount: number }>
+}
+
+/**
+ * IndexRecommendation — 索引推荐
+ */
+export interface IndexRecommendation {
+  label: number
+  property: string
+  type: 'range' | 'equality'
+}
+
 // ──────────────────────────────────────────
 // 查询计划器
 // ──────────────────────────────────────────
@@ -383,12 +404,22 @@ export class QueryPlanner {
     return plan
   }
 
+  /** 增强的统计信息（label 分布、边分布、属性分布） */
+  private _enhancedStats: EnhancedStats | null = null
+
   // ──────────────────────────────────────────
   // 统计收集
   // ──────────────────────────────────────────
 
   /**
-   * 收集统计信息
+   * 收集统计信息（增强版）
+   *
+   * 除了基础的全量节点计数外，还收集：
+   * - 按 label (typeId) 的节点分布计数
+   * - 按边类型的边分布计数
+   * - 按属性的值分布（min/max/cardinality/nullCount）
+   *
+   * 统计信息存储在 `_enhancedStats` 中，可通过 getEnhancedStats() 获取。
    */
   async collectStats(): Promise<void> {
     const status = this.shardManager.getShardStatus()
@@ -408,12 +439,204 @@ export class QueryPlanner {
       columnStats: colStats,
     })
 
+    // ========================================
+    // 增强统计：label 分布、边分布、属性分布
+    // ========================================
+    const labelCounts = new Map<number, number>()
+    const edgeLabelCounts = new Map<number, number>()
+    const propStats = new Map<string, { min: number; max: number; cardinality: number; nullCount: number }>()
+    const propValueSets = new Map<string, Set<unknown>>()
+    const propMinMap = new Map<string, number>()
+    const propMaxMap = new Map<string, number>()
+    const propNullMap = new Map<string, number>()
+
+    // 通过 shardManager 获取所有节点（如果支持 getAllNodes）
+    const mgr = this.shardManager as any
+    let allNodes: NodeRecord[] = []
+    if (typeof mgr.getAllNodes === 'function') {
+      try {
+        allNodes = mgr.getAllNodes()
+      } catch {
+        allNodes = []
+      }
+    }
+
+    for (const node of allNodes) {
+      // label 计数
+      const tid = node.type
+      labelCounts.set(tid, (labelCounts.get(tid) ?? 0) + 1)
+
+      // 属性分布
+      const fields: Record<string, unknown> = {
+        ...(node.props ?? {}),
+      }
+      // 纳入顶级字段（仅数字类型可做范围统计）
+      if (typeof node.id === 'number') {
+        fields['id'] = node.id
+      }
+      if (typeof node.name === 'string') {
+        fields['name'] = node.name
+      }
+      if (node.createdAt !== undefined) {
+        fields['createdAt'] = node.createdAt
+      }
+      if (node.degree !== undefined) {
+        fields['degree'] = node.degree
+      }
+
+      for (const [key, val] of Object.entries(fields)) {
+        if (!propValueSets.has(key)) {
+          propValueSets.set(key, new Set())
+          propNullMap.set(key, 0)
+        }
+
+        if (val === null || val === undefined) {
+          propNullMap.set(key, (propNullMap.get(key) ?? 0) + 1)
+        } else {
+          propValueSets.get(key)!.add(val)
+
+          if (typeof val === 'number') {
+            const curMin = propMinMap.get(key)
+            const curMax = propMaxMap.get(key)
+            if (curMin === undefined || val < curMin) propMinMap.set(key, val)
+            if (curMax === undefined || val > curMax) propMaxMap.set(key, val)
+          }
+        }
+      }
+    }
+
+    // 构建 propStats
+    for (const [key, values] of propValueSets) {
+      const min = propMinMap.get(key)
+      const max = propMaxMap.get(key)
+
+      propStats.set(key, {
+        min: min !== undefined ? min : 0,
+        max: max !== undefined ? max : 0,
+        cardinality: values.size,
+        nullCount: propNullMap.get(key) ?? 0,
+      })
+    }
+
+    // 尝试从 shardManager 获取边计数（按边类型）
+    if (typeof mgr.getAllEdges === 'function') {
+      try {
+        const allEdges: EdgeRecord[] = mgr.getAllEdges()
+        for (const edge of allEdges) {
+          const eid = edge.type
+          edgeLabelCounts.set(eid, (edgeLabelCounts.get(eid) ?? 0) + 1)
+        }
+      } catch {
+        // 静默失败
+      }
+    }
+
+    // 如果无法从 getAllEdges 获取，尝试通过 stats() 获取总边数
+    if (edgeLabelCounts.size === 0 && typeof mgr.stats === 'function') {
+      try {
+        const s = mgr.stats()
+        if (s && typeof s.edgeCount === 'number' && s.edgeCount > 0) {
+          // 无法按类型细分，合并为一条
+          edgeLabelCounts.set(0, s.edgeCount)
+        }
+      } catch {
+        // 静默失败
+      }
+    }
+
+    this._enhancedStats = {
+      labelCounts,
+      edgeLabelCounts,
+      propStats,
+    }
+
     // Stats changed — invalidate all cached plans since they may be stale
     this.invalidateCache()
   }
 
   getStats(): Map<string, TableStats> {
     return this.stats
+  }
+
+  /**
+   * 获取增强的统计信息（label 分布、边分布、属性分布）
+   *
+   * 在调用 collectStats() 之后调用此方法。
+   * 尚未收集时返回 null。
+   */
+  getEnhancedStats(): EnhancedStats | null {
+    return this._enhancedStats
+  }
+
+  // ──────────────────────────────────────────
+  // 索引推荐（基于增强统计信息）
+  // ──────────────────────────────────────────
+
+  /**
+   * 推荐可能受益于索引的 label+property 组合。
+   *
+   * 分析逻辑：
+   * - 节点数最多的 label → 高选择性潜力，推荐 range 索引
+   * - 高 cardinality 属性 → 适合 equality 索引（值均匀分布，可快速定位）
+   * - 低 cardinality + 高 nullCount → 低收益，不推荐
+   *
+   * @param topN - 返回最多 N 条推荐（默认 5）
+   * @returns 索引推荐列表
+   */
+  RecommendIndexes(topN: number = 5): IndexRecommendation[] {
+    const recommendations: IndexRecommendation[] = []
+
+    if (!this._enhancedStats) return recommendations
+
+    const { labelCounts, propStats } = this._enhancedStats
+
+    // 1. 找出节点数最多的 label → 推荐 range 索引
+    const sortedLabels = [...labelCounts.entries()]
+      .sort((a, b) => b[1] - a[1]) // 按节点数降序
+
+    for (const [label] of sortedLabels.slice(0, Math.min(topN, sortedLabels.length))) {
+      // range 索引：针对节点数多的 label，建议为 id/type 建索引
+      recommendations.push({
+        label,
+        property: 'id',
+        type: 'range',
+      })
+    }
+
+    // 2. 找出高 cardinality 属性 → 推荐 equality 索引
+    const propCardinality: Array<{ property: string; cardinality: number; nullCount: number }> = []
+    for (const [prop, stats] of propStats) {
+      // 排除 id 和 name 等基础字段（已在 range 索引中覆盖）
+      if (prop === 'id' || prop === 'name' || prop === 'type') continue
+      // 排除全是 null 的属性
+      if (stats.cardinality === 0) continue
+      const nullRatio = stats.nullCount / Math.max(stats.cardinality + stats.nullCount, 1)
+      // null 占比过高（> 80%）且 cardinality 低 → 低收益
+      if (nullRatio > 0.8 && stats.cardinality < 10) continue
+
+      propCardinality.push({
+        property: prop,
+        cardinality: stats.cardinality,
+        nullCount: stats.nullCount,
+      })
+    }
+
+    // 按 cardinality 降序排列（均匀分布的属性最有利于 equality 查询）
+    propCardinality.sort((a, b) => b.cardinality - a.cardinality)
+
+    // 为高 cardinality 属性推荐 equality 索引
+    // 关联到对应 label —— 取 labelCounts 中最大的 label
+    const topLabel = sortedLabels.length > 0 ? sortedLabels[0][0] : 1
+
+    for (const pc of propCardinality.slice(0, topN)) {
+      recommendations.push({
+        label: topLabel,
+        property: pc.property,
+        type: 'equality',
+      })
+    }
+
+    return recommendations
   }
 
   // ──────────────────────────────────────────

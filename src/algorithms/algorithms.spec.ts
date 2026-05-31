@@ -15,6 +15,7 @@ import { dijkstra } from './dijkstra'
 import { BatchProcessor } from './batch-processor'
 import { pagerankStream } from './pagerank-stream'
 import { bfsStream } from './bfs-stream'
+import { closeness } from './closeness'
 
 // ──────────────────────────────────────────
 // 测试图：有向图
@@ -484,5 +485,100 @@ describe('bfsStream', () => {
     expect(result.has(1 as NodeId)).toBe(true)
     // 5 不可达
     expect(result.has(5 as NodeId)).toBe(false)
+  })
+})
+
+// ──────────────────────────────────────────
+// Closeness Centrality
+// ──────────────────────────────────────────
+
+describe('Closeness Centrality', () => {
+  test('middle node has highest closeness in a 3-node chain', () => {
+    // Chain: 0 — 1 — 2
+    const neighbors: Record<number, number[]> = {
+      0: [1],
+      1: [0, 2],
+      2: [1],
+    }
+    const getNeighbors = (nid: NodeId) => neighbors[nid] ?? []
+    const allNodes: NodeId[] = [0, 1, 2]
+    const result = closeness(getNeighbors, allNodes)
+
+    // Node 1 (middle) should have the highest closeness
+    expect(result.get(0 as NodeId)!).toBeLessThan(result.get(1 as NodeId)!)
+    expect(result.get(2 as NodeId)!).toBeLessThan(result.get(1 as NodeId)!)
+
+    // Verify values:
+    // Node 0: distances to 1=1, 2=2 => sum=3, reachable=2 => score=2/3 ≈ 0.667
+    // Node 1: distances to 0=1, 2=1 => sum=2, reachable=2 => score=2/2 = 1.0
+    // Node 2: distances to 0=2, 1=1 => sum=3, reachable=2 => score=2/3 ≈ 0.667
+    expect(result.get(0 as NodeId)!).toBeCloseTo(2 / 3, 5)
+    expect(result.get(1 as NodeId)!).toBeCloseTo(1.0, 5)
+    expect(result.get(2 as NodeId)!).toBeCloseTo(2 / 3, 5)
+  })
+
+  test('single node returns score 0', () => {
+    const result = closeness(() => [], [42 as NodeId])
+    expect(result.get(42 as NodeId)).toBe(0)
+  })
+
+  test('disconnected node returns score 0', () => {
+    // Node 0 is connected to others, node 3 is disconnected
+    const neighbors: Record<number, number[]> = {
+      0: [1, 2],
+      1: [0],
+      2: [0],
+      3: [],
+    }
+    const getNeighbors = (nid: NodeId) => neighbors[nid] ?? []
+    const allNodes: NodeId[] = [0, 1, 2, 3]
+    const result = closeness(getNeighbors, allNodes)
+
+    // Disconnected node should score 0
+    expect(result.get(3 as NodeId)).toBe(0)
+
+    // Connected nodes should score > 0
+    expect(result.get(0 as NodeId)!).toBeGreaterThan(0)
+    expect(result.get(1 as NodeId)!).toBeGreaterThan(0)
+    expect(result.get(2 as NodeId)!).toBeGreaterThan(0)
+  })
+
+  test('all nodes return scores > 0 for fully connected graph', () => {
+    // Complete graph K4
+    const neighbors: Record<number, number[]> = {
+      0: [1, 2, 3],
+      1: [0, 2, 3],
+      2: [0, 1, 3],
+      3: [0, 1, 2],
+    }
+    const getNeighbors = (nid: NodeId) => neighbors[nid] ?? []
+    const allNodes: NodeId[] = [0, 1, 2, 3]
+    const result = closeness(getNeighbors, allNodes)
+
+    // In a complete graph, all nodes have closeness = (N-1)/(N-1) = 1.0
+    for (const node of allNodes) {
+      expect(result.get(node)!).toBeGreaterThan(0)
+      expect(result.get(node)!).toBeCloseTo(1.0, 5)
+    }
+  })
+
+  test('normalize=false returns raw 1/sumDistance values', () => {
+    // Chain: 0 — 1 — 2
+    const neighbors: Record<number, number[]> = {
+      0: [1],
+      1: [0, 2],
+      2: [1],
+    }
+    const getNeighbors = (nid: NodeId) => neighbors[nid] ?? []
+    const allNodes: NodeId[] = [0, 1, 2]
+    const result = closeness(getNeighbors, allNodes, { normalize: false })
+
+    // Raw values: 1/sumDistance
+    // Node 0: sumDist=3 => 1/3 ≈ 0.333
+    // Node 1: sumDist=2 => 1/2 = 0.5
+    // Node 2: sumDist=3 => 1/3 ≈ 0.333
+    expect(result.get(0 as NodeId)!).toBeCloseTo(1 / 3, 5)
+    expect(result.get(1 as NodeId)!).toBeCloseTo(1 / 2, 5)
+    expect(result.get(2 as NodeId)!).toBeCloseTo(1 / 3, 5)
   })
 })

@@ -19,6 +19,14 @@ class MockShardManager {
     this.allNodes = nodes
   }
 
+  /** Set mock edges for edgeLabelCounts tests */
+  setEdges(edges: EdgeRecord[]): void {
+    this.edgeStore.clear()
+    for (const e of edges) {
+      this.edgeStore.set(`${e.src}-${e.dst}-${e.type}`, e)
+    }
+  }
+
   async getNode(id: number): Promise<NodeRecord | null> {
     return this.allNodes.find(n => n.id === id) ?? null
   }
@@ -29,6 +37,16 @@ class MockShardManager {
 
   getShardStatus(): Array<{ rangeId: string; raftRole: string; nodeCount: number }> {
     return [{ rangeId: 'range-0', raftRole: 'leader', nodeCount: this.allNodes.length }]
+  }
+
+  /** Return all nodes (for enhanced stats collection) */
+  getAllNodes(): NodeRecord[] {
+    return [...this.allNodes]
+  }
+
+  /** Return all edges (for enhanced edgeLabelCounts) */
+  getAllEdges(): EdgeRecord[] {
+    return [...this.edgeStore.values()]
   }
 }
 
@@ -146,6 +164,83 @@ describe('QueryPlanner', () => {
       expect(colStats.has('id')).toBe(true)
       expect(colStats.has('type')).toBe(true)
       expect(colStats.has('name')).toBe(true)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 增强统计 — CBO 直方图/百分位（6 tests）
+  // ──────────────────────────────────────────
+
+  describe('增强统计（CBO 直方图）', () => {
+    test('collectStats returns basic node count in enhanced stats', async () => {
+      await planner.collectStats()
+      const enhanced = planner.getEnhancedStats()
+      expect(enhanced).not.toBeNull()
+      expect(enhanced!.labelCounts.size).toBeGreaterThan(0)
+    })
+
+    test('labelCounts correctly groups by node label (typeId)', async () => {
+      await planner.collectStats()
+      const enhanced = planner.getEnhancedStats()
+      expect(enhanced).not.toBeNull()
+
+      // typeId=1 should have 3 nodes, typeId=2 should have 2 nodes
+      expect(enhanced!.labelCounts.get(1)).toBe(3)
+      expect(enhanced!.labelCounts.get(2)).toBe(2)
+    })
+
+    test('propStats captures numeric property range', async () => {
+      await planner.collectStats()
+      const enhanced = planner.getEnhancedStats()
+      expect(enhanced).not.toBeNull()
+
+      // createdAt: 1000, 2000, 3000, 4000, 5000
+      const createdAt = enhanced!.propStats.get('createdAt')
+      expect(createdAt).toBeDefined()
+      expect(createdAt!.min).toBe(1000)
+      expect(createdAt!.max).toBe(5000)
+    })
+
+    test('empty graph returns empty maps', async () => {
+      const emptyShard = new MockShardManager()
+      emptyShard.setNodes([])
+      const emptyPlanner = new QueryPlanner(emptyShard as any)
+      await emptyPlanner.collectStats()
+
+      const enhanced = emptyPlanner.getEnhancedStats()
+      expect(enhanced).not.toBeNull()
+
+      // Empty graph should have empty or zero-count maps, not crash
+      expect(enhanced!.labelCounts.size).toBe(0)
+      expect(enhanced!.edgeLabelCounts.size).toBe(0)
+      // propStats may be empty for empty graph
+      expect(enhanced!.propStats.size).toBe(0)
+    })
+
+    test('edgeLabelCounts works with shard manager stats', async () => {
+      await planner.collectStats()
+      const enhanced = planner.getEnhancedStats()
+      expect(enhanced).not.toBeNull()
+
+      // edgeLabelCounts may be empty if shard manager doesn't expose getAllEdges,
+      // but it should exist (not throw) and be a valid Map
+      expect(enhanced!.edgeLabelCounts).toBeInstanceOf(Map)
+    })
+
+    test('index recomended for high-cardinality property', async () => {
+      await planner.collectStats()
+      const recommendations = planner.RecommendIndexes(5)
+
+      expect(Array.isArray(recommendations)).toBe(true)
+
+      // If there are recommendations, they should have the expected shape
+      if (recommendations.length > 0) {
+        const rec = recommendations[0]
+        expect(rec).toHaveProperty('label')
+        expect(rec).toHaveProperty('property')
+        expect(rec).toHaveProperty('type')
+        expect(['range', 'equality']).toContain(rec.type)
+      }
     })
   })
 

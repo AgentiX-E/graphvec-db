@@ -822,6 +822,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
       this.logger.info('[RaftConsensus] Also registering WASM onSnapshot callback (dual-path)')
       try {
         ;(this._node as any).onSnapshot(async (snapshotBase64: string) => {
+          const startTime = Date.now()
           this.logger.info('[RaftConsensus] WASM onSnapshot received')
           try {
             const buf = Buffer.from(snapshotBase64, 'base64')
@@ -836,6 +837,22 @@ export class RaftLogicConsensus implements ConsensusProvider {
             // 如果 engine 已设置，也通过 importSnapshot 恢复
             if (this._engine) {
               this._engine.importSnapshot(buf)
+            }
+
+            // P0-2: 更新 snapshot 元数据供 crash recovery 使用
+            this._snapshotCount++
+            this._lastSnapshotSize = buf.length
+            this._lastSnapshotDurationMs = Date.now() - startTime
+            if (this._node) {
+              const status = this._node.status()
+              const applied = status.applied ?? 0
+              const term = status.term ?? 0
+              if (applied > this._lastSnapshotIndex) {
+                this._lastSnapshotIndex = applied
+              }
+              if (term > this._lastSnapshotTerm) {
+                this._lastSnapshotTerm = term
+              }
             }
           } catch (innerErr) {
             this.logger.error('[RaftConsensus] WASM onSnapshot callback handler failed', innerErr as Error)

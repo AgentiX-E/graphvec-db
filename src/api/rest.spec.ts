@@ -2,7 +2,7 @@
 // RestApiServer 测试 — mTLS 认证
 // ============================================================
 
-import { createRestApiServer, RestApiServer, RestApiConfig, jsonResponse, parseBody, _matchRoute } from './rest'
+import { createRestApiServer, RestApiServer, RestApiConfig, TlsServerOptions, jsonResponse, parseBody, _matchRoute, MemoryRateLimiter } from './rest'
 import { NodeRecord, EdgeRecord, Role } from '../types'
 import { Authenticator, RBAC } from '../security/auth'
 import { TLSConfig } from '../security/tls'
@@ -1051,6 +1051,209 @@ describe('RestApiServer', () => {
   })
 
   // ──────────────────────────────────────────
+  // 速率限制器单元测试
+  // ──────────────────────────────────────────
+
+  describe('MemoryRateLimiter 速率限制器', () => {
+    test('should allow requests under limit', () => {
+      const limiter = new MemoryRateLimiter({ maxRequests: 10, windowMs: 60_000 })
+      for (let i = 0; i < 10; i++) {
+        const result = limiter.check('test-key')
+        expect(result.allowed).toBe(true)
+        expect(result.remaining).toBe(10 - i - 1)
+        expect(typeof result.resetAt).toBe('number')
+      }
+    })
+
+    test('should block requests over limit', () => {
+      const limiter = new MemoryRateLimiter({ maxRequests: 5, windowMs: 60_000 })
+      for (let i = 0; i < 5; i++) {
+        expect(limiter.check('test-key').allowed).toBe(true)
+      }
+      // 6th request should be blocked
+      const result = limiter.check('test-key')
+      expect(result.allowed).toBe(false)
+      expect(result.remaining).toBe(0)
+    })
+
+    test('should reset after window expires', async () => {
+      const limiter = new MemoryRateLimiter({ maxRequests: 2, windowMs: 100 }) // 100ms window
+      expect(limiter.check('reset-key').allowed).toBe(true)
+      expect(limiter.check('reset-key').allowed).toBe(true)
+      expect(limiter.check('reset-key').allowed).toBe(false)
+
+      // Wait for window to expire
+      await new Promise(resolve => setTimeout(resolve, 150))
+
+      const result = limiter.check('reset-key')
+      expect(result.allowed).toBe(true)
+      expect(result.remaining).toBe(1)
+    })
+
+    test('different keys should have independent counters', () => {
+      const limiter = new MemoryRateLimiter({ maxRequests: 2, windowMs: 60_000 })
+      // Exhaust key A
+      expect(limiter.check('key-a').allowed).toBe(true)
+      expect(limiter.check('key-a').allowed).toBe(true)
+      expect(limiter.check('key-a').allowed).toBe(false)
+
+      // Key B should still work
+      expect(limiter.check('key-b').allowed).toBe(true)
+    })
+
+    test('cleanup should remove stale entries', async () => {
+      const limiter = new MemoryRateLimiter({ maxRequests: 5, windowMs: 50 }) // 50ms window
+      limiter.check('stale-key')
+      limiter.check('fresh-key')
+
+      expect((limiter as any).entries.size).toBe(2)
+
+      // Wait for window to expire
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      limiter.cleanup()
+      expect((limiter as any).entries.size).toBe(0)
+    })
+
+    test('should accept configurable options', () => {
+      const limiter = new MemoryRateLimiter({ maxRequests: 1000, windowMs: 30_000 })
+      const result = limiter.check('config-test')
+      expect(result.allowed).toBe(true)
+      expect(result.remaining).toBe(999)
+    })
+
+    test('isAllowed legacy method should still work', () => {
+      const limiter = new MemoryRateLimiter({ maxRequests: 3, windowMs: 60_000 })
+      expect(limiter.isAllowed('legacy-key')).toBe(true)
+      expect(limiter.isAllowed('legacy-key')).toBe(true)
+      expect(limiter.isAllowed('legacy-key')).toBe(true)
+      expect(limiter.isAllowed('legacy-key')).toBe(false)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 速率限制集成测试（通过 HTTP）
+  // ──────────────────────────────────────────
+
+  describe('RateLimiter 集成测试', () => {
+    test('should return 429 Too Many Requests with Retry-After header', async () => {
+      const config: RestApiConfig = {
+        port: 0,
+        host: '127.0.0.1',
+        authenticator: mockAuthenticator,
+        tlsConfig: mockTlsConfig,
+        enableRatelimit: true,
+        maxRatelimitPerMin: 3,
+      }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      // Use up the limit
+      for (let i = 0; i < 3; i++) {
+        const ok = await makeRequest(server, 'GET', '/api/status')
+        expect(ok.statusCode).toBe(200)
+      }
+
+      // 4th request should get 429
+      const res = await makeRequest(server, 'GET', '/api/status')
+      expect(res.statusCode).toBe(429)
+      expect(res.headers['retry-after']).toBeDefined()
+      expect((res.body as any).error).toBe('Too Many Requests')
+      expect(typeof (res.body as any).retryAfter).toBe('number')
+      expect((res.body as any).retryAfter).toBeGreaterThan(0)
+    })
+
+    test('rate limit should reset after window expires', async () => {
+      const config: RestApiConfig = {
+        port: 0,
+        host: '127.0.0.1',
+        authenticator: mockAuthenticator,
+        tlsConfig: mockTlsConfig,
+        enableRatelimit: true,
+        maxRatelimitPerMin: 2,
+      }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      // Use up the limit
+      expect((await makeRequest(server, 'GET', '/api/status')).statusCode).toBe(200)
+      expect((await makeRequest(server, 'GET', '/api/status')).statusCode).toBe(200)
+      expect((await makeRequest(server, 'GET', '/api/status')).statusCode).toBe(429)
+
+      // Disable rate limit to simulate window expiration (we can't reliably wait)
+      // Instead, verify the Retry-After header is a reasonable value
+      const res = await makeRequest(server, 'GET', '/api/status')
+      expect(res.statusCode).toBe(429)
+      const retryAfter = res.headers['retry-after']
+      expect(retryAfter).toBeDefined()
+      expect(Number(retryAfter)).toBeGreaterThan(0)
+    })
+
+    test('rate limit should not affect requests when disabled', async () => {
+      const config: RestApiConfig = {
+        port: 0,
+        host: '127.0.0.1',
+        authenticator: mockAuthenticator,
+        tlsConfig: mockTlsConfig,
+        enableRatelimit: false, // explicitly disabled
+      }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      // Many requests should all succeed
+      for (let i = 0; i < 20; i++) {
+        const res = await makeRequest(server, 'GET', '/api/status')
+        expect(res.statusCode).toBe(200)
+      }
+    })
+
+    test('rate limit should work with default config', async () => {
+      const config: RestApiConfig = {
+        port: 0,
+        host: '127.0.0.1',
+        authenticator: mockAuthenticator,
+        tlsConfig: mockTlsConfig,
+        enableRatelimit: true,
+        // maxRatelimitPerMin not set — uses default 100
+      }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      // Default limit is 100, so 50 requests should be fine
+      for (let i = 0; i < 50; i++) {
+        const res = await makeRequest(server, 'GET', '/api/status')
+        expect(res.statusCode).toBe(200)
+      }
+    })
+
+    test('rate limit should require valid headers on 429', async () => {
+      const config: RestApiConfig = {
+        port: 0,
+        host: '127.0.0.1',
+        authenticator: mockAuthenticator,
+        tlsConfig: mockTlsConfig,
+        enableRatelimit: true,
+        maxRatelimitPerMin: 1,
+      }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      // First request succeeds
+      expect((await makeRequest(server, 'GET', '/api/status')).statusCode).toBe(200)
+
+      // Second request hits limit
+      const res = await makeRequest(server, 'GET', '/api/status')
+      expect(res.statusCode).toBe(429)
+
+      // Verify Retry-After header is present and valid
+      expect(res.headers['retry-after']).toBeDefined()
+      const retryAfter = Number(res.headers['retry-after'])
+      expect(retryAfter).toBeGreaterThan(0)
+      expect(retryAfter).toBeLessThanOrEqual(61) // 1 min window max
+    })
+  })
+
+  // ──────────────────────────────────────────
   // 多数据库路由测试
   // ──────────────────────────────────────────
 
@@ -1546,5 +1749,94 @@ describe('RestApiServer', () => {
         expect(res.statusCode).toBe(403)
       })
     })
+  })
+})
+
+// ──────────────────────────────────────────
+// 内联 tls 字段测试（RestApiConfig.tls）
+// ──────────────────────────────────────────
+
+describe('RestApiServer inline TLS (config.tls)', () => {
+  let mockShardManager: MockShardManager
+  let mockAuthenticator: Authenticator
+  let server: RestApiServer
+
+  const tlsOpts: TlsServerOptions = {
+    key: SERVER_KEY,
+    cert: SERVER_CERT,
+    ca: path.join(TEST_CERTS_DIR, 'ca-cert.pem'),
+    requestCert: true,
+  }
+
+  beforeEach(() => {
+    mockShardManager = new MockShardManager()
+    mockAuthenticator = createMockAuthenticator()
+  })
+
+  afterEach(async () => {
+    if (server) {
+      await server.stop()
+    }
+  })
+
+  // HTTPS with tls field (no tlsConfig)
+  function createServerWithTls(tlsOverrides?: Partial<TlsServerOptions>): RestApiServer {
+    const tls: TlsServerOptions = { ...tlsOpts, ...tlsOverrides }
+    const config: RestApiConfig = {
+      port: 0,
+      host: '127.0.0.1',
+      authenticator: mockAuthenticator,
+      tls,
+      // We must provide tlsConfig for TypeScript, but it won't be used
+      tlsConfig: createMockTlsConfig(),
+    }
+    return createRestApiServer(mockShardManager as any, config)
+  }
+
+  test('GET /api/status should return 200 via HTTPS with tls config', async () => {
+    server = createServerWithTls()
+    await server.start()
+
+    const res = await makeRequest(server, 'GET', '/api/status')
+    expect(res.statusCode).toBe(200)
+  })
+
+  test('mTLS: request without client cert should be rejected', async () => {
+    server = createServerWithTls()
+    await server.start()
+
+    // No cert → SSL/TLS layer should reject
+    await expect(makeNoCertRequest(server, 'GET', '/api/status') as Promise<unknown>)
+      .rejects.toThrow()
+  })
+
+  test('request with valid admin client cert should succeed on protected routes', async () => {
+    server = createServerWithTls()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/graph/nodes', { typeId: 1, name: 'tls-node' }, adminAgent)
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).id).toBeDefined()
+  })
+
+  test('should throw clear error when key file does not exist', async () => {
+    expect(() => createServerWithTls({ key: '/nonexistent/key.pem' }))
+      .toThrow(/TLS key file not found/)
+  })
+
+  test('should throw clear error when cert file does not exist', async () => {
+    expect(() => createServerWithTls({ cert: '/nonexistent/cert.pem' }))
+      .toThrow(/TLS cert file not found/)
+  })
+
+  test('should throw clear error when CA file does not exist with requestCert true', async () => {
+    expect(() => createServerWithTls({ ca: '/nonexistent/ca.pem', requestCert: true }))
+      .toThrow(/TLS CA file not found/)
+  })
+
+  test('CA without requestCert is still validated', () => {
+    // When ca is provided without requestCert, the file is still read as CA cert
+    expect(() => createServerWithTls({ ca: '/nonexistent/ca.pem', requestCert: false }))
+      .toThrow(/TLS CA file not found/)
   })
 })

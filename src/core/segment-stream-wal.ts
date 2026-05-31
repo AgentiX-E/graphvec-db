@@ -119,6 +119,20 @@ export class SegmentStreamWalAppendStream {
   }
 }
 
+/** SegmentStreamWal 构造选项 */
+export interface SegmentStreamWalOptions {
+  /** 单个 segment 最大字节数（默认 64MB） */
+  segmentMaxBytes?: number
+  /**
+   * 每次 append 后是否强制 fsync 刷盘。
+   * - true:  每次 append 后调用 fsyncSync（最安全，默认）
+   * - false: 不强制 fsync（性能更好，但崩溃时可能丢失最近写入）
+   *
+   * 即使设为 false，open() 和正常 close() 仍会 fsync。
+   */
+  fsyncOnWrite?: boolean
+}
+
 /**
  * SegmentStreamWal — 基于固定大小 segment 的消息持久化队列
  *
@@ -136,11 +150,24 @@ export class SegmentStreamWal {
   private _activeFd: number = -1
   private _activeSize: number = 0
   private _pruning = false
+  private _fsyncOnWrite: boolean
 
-  constructor(walPath: string, segmentMaxBytes?: number) {
-    this.walDir = walPath // 注意：walPath 现在是目录路径
+  constructor(walPath: string, options?: SegmentStreamWalOptions)
+  constructor(walPath: string, segmentMaxBytes?: number)
+  constructor(walPath: string, optionsOrBytes?: SegmentStreamWalOptions | number) {
+    this.walDir = walPath
     this.logger = new Logger('SegmentStreamWal')
-    this._segmentMaxBytes = segmentMaxBytes ?? DEFAULT_SEGMENT_MAX_BYTES
+
+    if (typeof optionsOrBytes === 'number') {
+      this._segmentMaxBytes = optionsOrBytes
+      this._fsyncOnWrite = true
+    } else if (optionsOrBytes) {
+      this._segmentMaxBytes = optionsOrBytes.segmentMaxBytes ?? DEFAULT_SEGMENT_MAX_BYTES
+      this._fsyncOnWrite = optionsOrBytes.fsyncOnWrite ?? true
+    } else {
+      this._segmentMaxBytes = DEFAULT_SEGMENT_MAX_BYTES
+      this._fsyncOnWrite = true
+    }
   }
 
   get isOpen(): boolean { return this._opened }
@@ -191,6 +218,11 @@ export class SegmentStreamWal {
 
   /**
    * 追加一条 PENDING 消息
+   *
+   * 当 fsyncOnWrite=true（默认）时，每次 append 后强制刷盘，
+   * 保证在进程崩溃时数据不丢失。
+   * 当 fsyncOnWrite=false 时，跳过 fsync，依赖操作系统批量刷盘，
+   * 性能更快但崩溃时可能丢失最近写入。
    */
   append(msg: StreamMessage): void {
     const buf = this._encode(msg, FLAG_PENDING)
@@ -202,7 +234,9 @@ export class SegmentStreamWal {
     }
 
     fs.writeSync(this._activeFd, buf)
-    fs.fsyncSync(this._activeFd) // 强制刷盘，保证崩溃恢复
+    if (this._fsyncOnWrite) {
+      fs.fsyncSync(this._activeFd) // 强制刷盘，保证崩溃恢复
+    }
     this._activeSize += recordLen
     this._entriesCount++
   }

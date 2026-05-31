@@ -204,6 +204,105 @@ describe('Raft InstallSnapshot (R04)', () => {
       expect(savedSnapshot!.length).toBeGreaterThan(0)
     })
 
+    it('should install snapshot and update crash recovery metadata', async () => {
+      const config: ConsensusConfig = {
+        mode: 'raft-logic',
+        nodeId: '2',
+        peers: ['1'],
+      }
+
+      consensus = new RaftLogicConsensus(config, mockModule)
+
+      let savedSnapshot: Buffer | null = null
+      const mockEngine = {
+        exportSnapshot: () => savedSnapshot || Buffer.alloc(0),
+        importSnapshot: (data: Buffer) => {
+          savedSnapshot = Buffer.from(data)
+        },
+      }
+      ;(consensus as any)._engine = mockEngine
+
+      // Register snapshot handler to track calls
+      let handlerCalled = false
+      consensus.setSnapshotHandler(async (data: Buffer) => {
+        handlerCalled = true
+      })
+
+      await consensus.start()
+
+      const snapshotData = createTestSnapshotData(256)
+      const request: InstallSnapshotRequest = {
+        term: 2,
+        leaderId: '1',
+        lastIncludedIndex: 150,
+        lastIncludedTerm: 2,
+        data: snapshotData,
+        done: true,
+      }
+
+      const response = await consensus.handleInstallSnapshot(request)
+      expect(response.success).toBe(true)
+
+      // Verify crash recovery metadata was updated
+      const metrics = consensus.getSnapshotMetrics()
+      expect(metrics.count).toBe(1)
+      expect(metrics.lastSize).toBe(256)
+      expect(metrics.lastIndex).toBe(150)
+
+      // Verify snapshot handler was called
+      expect(handlerCalled).toBe(true)
+
+      // Verify engine received the snapshot
+      expect(savedSnapshot).toBeTruthy()
+      expect(savedSnapshot!.length).toBe(256)
+    })
+
+    it('should trigger WASM onSnapshot callback when engine is updated', async () => {
+      const config: ConsensusConfig = {
+        mode: 'raft-logic',
+        nodeId: '2',
+        peers: ['1'],
+      }
+
+      consensus = new RaftLogicConsensus(config, mockModule)
+
+      let engineSnapshot: Buffer | null = null
+      const mockEngine = {
+        exportSnapshot: () => engineSnapshot || Buffer.alloc(0),
+        importSnapshot: (data: Buffer) => {
+          engineSnapshot = Buffer.from(data)
+        },
+      }
+      ;(consensus as any)._engine = mockEngine
+
+      // Register snapshot handler
+      let handlerData: Buffer | null = null
+      consensus.setSnapshotHandler(async (data: Buffer) => {
+        handlerData = Buffer.from(data)
+      })
+
+      await consensus.start()
+
+      // Simulate WASM onSnapshot callback firing
+      const snapshotData = createTestSnapshotData(128)
+      const node = (consensus as any)._node
+      expect(node).toBeTruthy()
+      expect(typeof node._fireSnapshot).toBe('function')
+
+      node._fireSnapshot(snapshotData.toString('base64'))
+
+      // Small delay for async callback
+      await new Promise(r => setTimeout(r, 10))
+
+      // Verify snapshot handler received the data
+      expect(handlerData).toBeTruthy()
+      expect(handlerData!.length).toBe(128)
+
+      // Verify engine also received the snapshot
+      expect(engineSnapshot).toBeTruthy()
+      expect(engineSnapshot!.length).toBe(128)
+    })
+
     it('should fail handleInstallSnapshot on invalid data', async () => {
       const config: ConsensusConfig = {
         mode: 'raft-logic',
@@ -460,6 +559,103 @@ describe('Raft InstallSnapshot (R04)', () => {
       for (let i = 0; i < 1024; i++) {
         expect(storedSnapshot![i]).toBe((i * 7 + 31) % 256)
       }
+
+      await followerConsensus.stop()
+      await leaderTransport.stop()
+      await followerTransport.stop()
+      MockTransport.reset()
+    })
+
+    it('should allow follower to serve queries after InstallSnapshot', async () => {
+      MockTransport.reset()
+
+      const leaderTransport = new MockTransport('lead-q-1')
+      const followerTransport = new MockTransport('foll-q-2')
+      await leaderTransport.start()
+      await followerTransport.start()
+
+      const mockModule = createMockRaftModule()
+
+      // Setup follower consensus with a stateful engine
+      const storedNodes: Map<number, { typeId: number; name: string }> = new Map()
+      let snapshotApplied = false
+
+      const followerConfig: ConsensusConfig = {
+        mode: 'raft-logic',
+        nodeId: 'foll-q-2',
+        peers: ['lead-q-1'],
+      }
+      const followerConsensus = new RaftLogicConsensus(followerConfig, mockModule)
+      const followerEngine = {
+        exportSnapshot: () => {
+          const data = JSON.stringify({ nodes: Array.from(storedNodes.entries()) })
+          return Buffer.from(data)
+        },
+        importSnapshot: (data: Buffer) => {
+          const parsed = JSON.parse(data.toString())
+          storedNodes.clear()
+          for (const [id, info] of parsed.nodes) {
+            storedNodes.set(id, info)
+          }
+          snapshotApplied = true
+        },
+      }
+      ;(followerConsensus as any)._engine = followerEngine
+      await followerConsensus.start()
+
+      // Register message handlers
+      followerTransport.onMessage((from: string, msg: any) => {
+        if (msg.type === 'InstallSnapshot') {
+          const req = msg.data as InstallSnapshotRequest
+          followerConsensus.handleInstallSnapshot(req).then(resp => {
+            MockTransport.sendResponse(from, 'foll-q-2', {
+              type: 'InstallSnapshotResponse',
+              term: resp.term,
+              from: 'foll-q-2',
+              to: from,
+              data: resp,
+            })
+          })
+        }
+      })
+
+      // Pre-populate follower with some data before snapshot (should be replaced)
+      storedNodes.set(1, { typeId: 1, name: 'old-node' })
+
+      // Create snapshot with different data
+      const snapshotPayload = JSON.stringify({
+        nodes: [
+          [10, { typeId: 2, name: 'snapshot-node-1' }],
+          [20, { typeId: 3, name: 'snapshot-node-2' }],
+        ],
+      })
+      const snapshotData = Buffer.from(snapshotPayload)
+
+      const req: InstallSnapshotRequest = {
+        term: 3,
+        leaderId: 'lead-q-1',
+        lastIncludedIndex: 400,
+        lastIncludedTerm: 3,
+        data: snapshotData,
+        done: true,
+      }
+
+      const response = await leaderTransport.installSnapshot('foll-q-2', req)
+      expect(response.success).toBe(true)
+
+      // Verify snapshot was applied
+      expect(snapshotApplied).toBe(true)
+
+      // Follower can accept queries after snapshot:
+      // The mock engine should have replaced old-data with snapshot data
+      expect(storedNodes.size).toBe(2)
+      expect(storedNodes.get(10)).toBeDefined()
+      expect(storedNodes.get(10)!.name).toBe('snapshot-node-1')
+      expect(storedNodes.get(20)).toBeDefined()
+      expect(storedNodes.get(20)!.name).toBe('snapshot-node-2')
+
+      // Old data should be replaced, not merged
+      expect(storedNodes.has(1)).toBe(false)
 
       await followerConsensus.stop()
       await leaderTransport.stop()

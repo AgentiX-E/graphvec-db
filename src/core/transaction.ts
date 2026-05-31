@@ -14,7 +14,7 @@
  */
 
 import type { GraphEngine } from './graph-engine'
-import type { NodeId } from '../types'
+import type { NodeId, NodeRecord } from '../types'
 
 // ── 类型定义 ──
 
@@ -546,7 +546,11 @@ export class Transaction {
     // Phase 2: 加锁（如果需要）
     if (this._mgr) {
       for (const key of allKeys) {
-        this._mgr.lock(Number(key), this.snapshotId)
+        // 只对数字 key 加锁（writeSet 中可能包含名字字符串，Number()=NaN）
+        const numKey = Number(key)
+        if (!isNaN(numKey)) {
+          this._mgr.lock(numKey, this.snapshotId)
+        }
       }
     }
 
@@ -604,11 +608,33 @@ export class Transaction {
 
   private async _flushToEngine(engine: GraphEngine): Promise<void> {
     for (const [, data] of this.writeSet) {
-      await engine.upsertNode(data.typeId, data.name, { props: data.props })
+      await engine.upsertNode(data.typeId, data.name, { props: data.props, _mvccVersion: this.snapshotId })
     }
     for (const nodeId of this.deleteSet) {
       await engine.deleteNode(nodeId)
     }
+  }
+
+  /**
+   * 从引擎读取节点，应用 MVCC 快照可见性
+   * 在 snapshot 隔离级别下，只返回在事务开始前已提交的节点
+   */
+  getNode(engine: GraphEngine, nodeId: NodeId): NodeRecord | null {
+    this.readSet.add(nodeId)
+    return engine.getNodeWithTxn(nodeId, this)
+  }
+
+  /**
+   * 检查引擎中节点的版本是否对当前快照可见
+   */
+  isNodeVisible(engine: GraphEngine, nodeId: NodeId): boolean {
+    const version = engine.getNodeVersion(nodeId)
+    if (version === undefined || version === null) {
+      // 没有版本信息的节点视为始终可见（非 MVCC 写入）
+      return true
+    }
+    // snapshot 隔离：只能看到 snapshotId 及之前写入的版本
+    return version <= this.snapshotId
   }
 
   /** 设置 engine（可选，用于 flush） */
