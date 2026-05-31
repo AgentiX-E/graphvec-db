@@ -1323,3 +1323,85 @@ describe('GraphEngine.nodeCache', () => {
     expect(statsAfter.edgeMisses).toBeGreaterThan(statsBefore.edgeMisses)
   })
 })
+
+// ── Phase 2: OpenCypher String Predicates + IN + CASE/WHEN ──
+
+describe('Phase 2: IN & String Predicates', () => {
+  let engine: GraphEngine
+
+  beforeAll(() => {
+    engine = new GraphEngine({ ...testEngineConfig, path: testEngineConfig.path + '-phase2' })
+    engine.open()
+    // Create test data
+    engine.upsertNode(1, 'alice', { props: { name: 'Alice', age: 30, city: 'NYC' } })
+    engine.upsertNode(2, 'bob', { props: { name: 'Bob', age: 25, city: 'SF' } })
+    engine.upsertNode(3, 'charlie', { props: { name: 'Charlie', age: 35, city: 'NYC' } })
+    engine.upsertNode(4, 'diana', { props: { name: 'Diana', age: 40, city: 'LA' } })
+    engine.upsertNode(5, 'eve', { props: { name: 'Eve', age: 45, city: 'SF' } })
+  })
+
+  afterAll(() => {
+    engine.close()
+  })
+
+  test('TC-IN-1: IN list literal', () => {
+    const results = engine.query('MATCH (n) WHERE n.age IN [25, 35] RETURN n.name ORDER BY n.name') as any[]
+    expect(results.length).toBe(2)
+    const names = results.map(r => r.props?.name).sort()
+    expect(names).toEqual(['Bob', 'Charlie'])
+  })
+
+  test('TC-IN-2: IN with string list', () => {
+    const results = engine.query('MATCH (n) WHERE n.city IN ["NYC", "SF"] RETURN n.name ORDER BY n.name') as any[]
+    expect(results.length).toBe(4)
+    const names = results.map(r => r.props?.name).sort()
+    expect(names).toEqual(['Alice', 'Bob', 'Charlie', 'Eve'])
+  })
+
+  test('TC-IN-3: IN with single-element list', () => {
+    const results = engine.query('MATCH (n) WHERE n.age IN [30] RETURN n.name') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.name).toBe('Alice')
+  })
+
+  test('TC-STR-1: STARTS WITH', () => {
+    const results = engine.query('MATCH (n) WHERE n.name STARTS WITH "A" RETURN n.name') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.name).toBe('Alice')
+  })
+
+  test('TC-STR-2: STARTS WITH empty string', () => {
+    const results = engine.query('MATCH (n) WHERE n.name STARTS WITH "" RETURN n.name ORDER BY n.name') as any[]
+    expect(results.length).toBe(5)
+  })
+
+  test('TC-STR-3: ENDS WITH', () => {
+    const results = engine.query('MATCH (n) WHERE n.name ENDS WITH "e" RETURN n.name ORDER BY n.name') as any[]
+    expect(results.length).toBe(3)
+    const names = results.map(r => r.props?.name).sort()
+    expect(names).toEqual(['Alice', 'Charlie', 'Eve'])
+  })
+
+  test('TC-STR-4: CONTAINS', () => {
+    const results = engine.query('MATCH (n) WHERE n.name CONTAINS "li" RETURN n.name ORDER BY n.name') as any[]
+    expect(results.length).toBe(2)
+    const names = results.map(r => r.props?.name).sort()
+    expect(names).toEqual(['Alice', 'Charlie'])
+  })
+
+  test('TC-STR-5: CONTAINS no match', () => {
+    const results = engine.query('MATCH (n) WHERE n.name CONTAINS "xyz" RETURN n.name') as any[]
+    expect(results.length).toBe(0)
+  })
+
+  test('TC-STR-6: STARTS WITH case sensitivity', () => {
+    const results = engine.query('MATCH (n) WHERE n.name STARTS WITH "a" RETURN n.name') as any[]
+    expect(results.length).toBe(0)
+  })
+
+  test('TC-IN-STR-1: Combine IN and STARTS WITH', () => {
+    const results = engine.query('MATCH (n) WHERE n.age IN [25, 35, 45] AND n.name STARTS WITH "E" RETURN n.name') as any[]
+    expect(results.length).toBe(1)
+    expect(results[0].props?.name).toBe('Eve')
+  })
+})

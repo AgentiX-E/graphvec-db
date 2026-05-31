@@ -279,7 +279,7 @@ export interface TraverseStep {
 export interface FilterClause {
   source: string
   property: string
-  operator: 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE'
+  operator: 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'IN' | 'STARTS_WITH' | 'ENDS_WITH' | 'CONTAINS'
   value: unknown
 }
 
@@ -573,7 +573,7 @@ export function _preprocessQuery(query: string): {
   // Extract text between "WITH" and "RETURN" (or end), replace with nothing
   const withPatterns: string[] = []
   let withCounter = 0
-  const withRE = /\bWITH\s+/gi
+  const withRE = /(?<!STARTS |ENDS )\bWITH\s+/gi
   let withExec: RegExpExecArray | null
   while ((withExec = withRE.exec(modifiedQuery)) !== null) {
     const withStart = withExec.index
@@ -2489,6 +2489,37 @@ function extractFilters(expr: ExpressionAST, steps: TraverseStep[]): FilterClaus
     return [{
       source: propRef.name,
       property: propRef.property,
+      operator: expr.operator as FilterClause['operator'],
+      value,
+    }]
+  }
+
+  if (expr.type === 'IN_EXPRESSION') {
+    const left = expr.left
+    if (left.type !== 'PROP_REF') return []
+    // Resolve the list: either a LIST literal or a variable reference
+    if (expr.list.type === 'LIST') {
+      const values = (expr.list.items || []).map((item: any) => resolvePrimary(item))
+      return [{
+        source: left.name,
+        property: left.property,
+        operator: 'IN' as FilterClause['operator'],
+        value: values,
+      }]
+    }
+    // Variable reference — can't resolve at plan time
+    return []
+  }
+
+  if (expr.type === 'STRING_PREDICATE') {
+    const left = expr.left
+    const right = expr.right
+    if (left.type !== 'PROP_REF') return []
+    const value = right.type === 'STRING' ? resolvePrimary(right) : null
+    if (value === null) return []
+    return [{
+      source: left.name,
+      property: left.property,
       operator: expr.operator as FilterClause['operator'],
       value,
     }]

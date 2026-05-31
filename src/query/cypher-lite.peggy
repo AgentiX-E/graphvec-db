@@ -282,9 +282,7 @@ UnwindClause
     }
 
 UnwindList
-  = "[" _ items:UnwindItemList? _ "]" {
-      return items || []
-    }
+  = head:ListLiteral { return head.items }
 
 UnwindItemList
   = head:UnwindItem tail:(_ "," _ UnwindItem)* {
@@ -301,6 +299,22 @@ UnwindValue
   / "true"i { return { type: 'BOOLEAN', value: true } }
   / "false"i { return { type: 'BOOLEAN', value: false } }
   / "null"i { return { type: 'IDENTIFIER', name: 'null' } }
+
+// ── 列表字面量 ────────────────────────────────────────────
+
+ListLiteral
+  = "[" _ items:ListItemList? _ "]" {
+      return { type: 'LIST', items: items || [] }
+    }
+
+ListItemList
+  = head:ListItem tail:(_ "," _ ListItem)* {
+      return [head, ...tail.map(t => t[3])]
+    }
+
+ListItem
+  = v:UnwindValue { return v }
+  / id:Identifier { return { type: 'IDENTIFIER', name: id } }
 
 // ── CREATE ────────────────────────────────────────────────
 
@@ -609,6 +623,12 @@ Comparison
   = lhs:Primary _ op:ComparisonOp _ rhs:Primary {
       return { type: 'COMPARISON', operator: op, left: lhs, right: rhs }
     }
+  / lhs:Primary _ "IN"i _ rhs:(ListLiteral / Primary) {
+      return { type: 'IN_EXPRESSION', left: lhs, list: rhs }
+    }
+  / lhs:Primary _ op:StringPredicateOp _ rhs:(StringLiteral / PropertyRef) {
+      return { type: 'STRING_PREDICATE', operator: op, left: lhs, right: rhs }
+    }
   / Primary
 
 ComparisonOp
@@ -619,6 +639,11 @@ ComparisonOp
   / "="  { return 'EQ' }
   / ">"  { return 'GT' }
   / "<"  { return 'LT' }
+
+StringPredicateOp
+  = "STARTS WITH"i { return 'STARTS_WITH' }
+  / "ENDS WITH"i { return 'ENDS_WITH' }
+  / "CONTAINS"i  { return 'CONTAINS' }
 
 Primary
   = PropertyRef

@@ -1813,6 +1813,22 @@ export class GraphEngine {
       case 'GTE': return typeof val === 'number' && typeof f.value === 'number' && val >= f.value
       case 'LT':  return typeof val === 'number' && typeof f.value === 'number' && val < f.value
       case 'LTE': return typeof val === 'number' && typeof f.value === 'number' && val <= f.value
+      case 'IN': {
+        if (!Array.isArray(f.value)) return true
+        return f.value.includes(val)
+      }
+      case 'STARTS_WITH': {
+        if (typeof val !== 'string' || typeof f.value !== 'string') return false
+        return val.startsWith(f.value as string)
+      }
+      case 'ENDS_WITH': {
+        if (typeof val !== 'string' || typeof f.value !== 'string') return false
+        return val.endsWith(f.value as string)
+      }
+      case 'CONTAINS': {
+        if (typeof val !== 'string' || typeof f.value !== 'string') return false
+        return val.includes(f.value as string)
+      }
       default: return true
     }
   }
