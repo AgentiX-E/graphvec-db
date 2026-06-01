@@ -957,6 +957,26 @@ export function createRestApiServer(
       },
     )
 
+    // 游标分页（P1-A3）
+    addMultiDbRoute('GET', '/api/v1/:db/nodes/cursor', true, 'read',
+      async (sm, req, res, parsed, params) => {
+        const query = parsed.searchParams
+        const limit = query.get('limit') ? Math.min(Math.max(Number(query.get('limit')), 1), 1000) : 100
+        const cursor = query.get('cursor') || null
+        try {
+          const result = (sm as any).engine?.scanNodesWithCursor({ limit, cursor })
+            ?? (sm as any).scanNodesWithCursor({ limit, cursor })
+          if (!result) {
+            jsonResponse(res, 500, { error: 'scanNodesWithCursor not available' })
+            return
+          }
+          jsonResponse(res, 200, result)
+        } catch (err: unknown) {
+          jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Cursor pagination failed' })
+        }
+      },
+    )
+
     addMultiDbRoute('GET', '/api/v1/:db/graph/node/:id', true, 'read',
       async (sm, _req, res, _parsed, params) => {
         const id = Number(params.id)

@@ -2068,6 +2068,51 @@ export class GraphEngine {
   }
 
   /**
+   * 基于游标的分页扫描——从指定的 lastSeenId（上一页最后一个节点的 ID）开始，
+   * 最多返回 `limit` 个节点。用于实现 REST API 的游标分页。
+   *
+   * @param opts 扫描选项
+   * @param opts.limit 每页最大节点数（默认 100）
+   * @param opts.cursor base64 编码的上一页最后一个节点 ID；null 或 undefined 从头部开始
+   * @returns { nodes: NodeRecord[], nextCursor: string | null }
+   *   nextCursor 为 null 表示已到最后一页
+   */
+  scanNodesWithCursor(opts: { limit?: number; cursor?: string | null }): {
+    nodes: NodeRecord[]
+    nextCursor: string | null
+  } {
+    const limit = opts.limit ?? 100
+    const lastSeenId = opts.cursor
+      ? Number(Buffer.from(opts.cursor, 'base64').toString('utf-8'))
+      : null
+
+    // 将节点 ID 排序，按序分页
+    const sortedIds = Array.from(this._nodeIds).sort((a, b) => a - b)
+
+    // 找到游标位置
+    const startIndex = lastSeenId !== null ? sortedIds.indexOf(lastSeenId) + 1 : 0
+
+    // 最多取 limit 个
+    const pageIds = sortedIds.slice(startIndex, startIndex + limit)
+
+    const nodes: NodeRecord[] = []
+    for (const id of pageIds) {
+      const node = this.getNode(id)
+      if (node) {
+        nodes.push(node)
+      }
+    }
+
+    // 计算下一个游标
+    const nextIndex = startIndex + limit
+    const nextCursor = nextIndex < sortedIds.length && pageIds.length > 0
+      ? Buffer.from(String(sortedIds[nextIndex - 1])).toString('base64')
+      : null
+
+    return { nodes, nextCursor }
+  }
+
+  /**
    * 应用 EXISTS 过滤器：对每条结果，检查是否存在指定模式的边。
    */
   private _applyExistsFilters(
