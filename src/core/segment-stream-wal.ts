@@ -242,6 +242,53 @@ export class SegmentStreamWal {
   }
 
   /**
+   * A-01: 批量追加多条消息，只做一次 fsync（真正的 Group Commit）
+   *
+   * 将多条 pending 消息合并编码后单次写入文件，然后只调用一次 fsync。
+   * 相比多次 append 分别 fsync，大幅减少系统调用次数。
+   *
+   * @param msgs 待追加的消息列表
+   */
+  appendBatch(msgs: StreamMessage[]): void {
+    if (msgs.length === 0) return
+
+    // 批量编码
+    const buffers: Buffer[] = []
+    for (const msg of msgs) {
+      const buf = this._encode(msg, FLAG_PENDING)
+      const recordLen = buf.length
+
+      // 如果当前 segment 放不下这条记录，滚动
+      if (this._activeSize + recordLen > this._segmentMaxBytes) {
+        // 先把已编码的写入
+        if (buffers.length > 0) {
+          const combined = Buffer.concat(buffers)
+          fs.writeSync(this._activeFd, combined)
+          this._activeSize += combined.length
+          buffers.length = 0
+        }
+        this._rollSegment()
+      }
+
+      buffers.push(buf)
+    }
+
+    // 一次写入所有剩余消息
+    if (buffers.length > 0) {
+      const combined = Buffer.concat(buffers)
+      fs.writeSync(this._activeFd, combined)
+      this._activeSize += combined.length
+    }
+
+    // 只调用一次 fsync
+    if (this._fsyncOnWrite) {
+      fs.fsyncSync(this._activeFd)
+    }
+
+    this._entriesCount += msgs.length
+  }
+
+  /**
    * 标记消息为 ACKED
    */
   acknowledge(msgIds: string[] | Set<string>): void {

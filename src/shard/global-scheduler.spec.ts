@@ -294,4 +294,80 @@ describe('GlobalScheduler', () => {
     const count = await s.scheduleNow()
     expect(count).toBe(0) // not hot, not too big, not too small
   })
+
+  // ── B-10: 反馈闭环 ──
+  test('reportResult updates suggestion history', async () => {
+    const suggestions: any[] = []
+    const s = new GlobalScheduler(
+      async () => ({
+        nodes: [makeNode({ nodeId: 'node-1' })],
+        shards: [makeShard({ rangeId: 'r1', nodeCount: 200000, localNodeId: 'node-1' })],
+      }),
+      (sg) => suggestions.push(sg),
+      { maxNodesPerRange: 100000 },
+    )
+
+    await s.scheduleNow()
+    expect(suggestions.length).toBe(1)
+
+    // 报告接受
+    s.reportResult('r1', 'split', 'accepted')
+    const history = s.getSuggestionHistory()
+    expect(history.length).toBeGreaterThanOrEqual(1)
+    expect(history[0].result).toBe('accepted')
+    expect(history[0].resultAt).toBeDefined()
+    expect(s.getAcceptedCount()).toBe(1)
+  })
+
+  test('reportResult rejected clears skipList for that range', async () => {
+    const suggestions: any[] = []
+    const s = new GlobalScheduler(
+      async () => ({
+        nodes: [makeNode({ nodeId: 'node-1' })],
+        shards: [makeShard({ rangeId: 'r1', nodeCount: 200000, localNodeId: 'node-1' })],
+      }),
+      (sg) => suggestions.push(sg),
+      { maxNodesPerRange: 100000 },
+    )
+
+    // First cycle
+    const count1 = await s.scheduleNow()
+    expect(count1).toBe(1)
+
+    // Second cycle — skipped due to skipList
+    const count2 = await s.scheduleNow()
+    expect(count2).toBe(0)
+
+    // Report rejected (clears skipList)
+    s.reportResult('r1', 'split', 'rejected')
+
+    // Third cycle — should be able to emit again
+    const count3 = await s.scheduleNow()
+    expect(count3).toBe(1)
+  })
+
+  test('suggestionHistory tracks all suggestions with timestamps', async () => {
+    const suggestions: any[] = []
+    const s = new GlobalScheduler(
+      async () => ({
+        nodes: [
+          makeNode({ nodeId: 'node-1' }),
+          makeNode({ nodeId: 'node-2' }),
+        ],
+        shards: [
+          makeShard({ rangeId: 'r1', nodeCount: 200000, localNodeId: 'node-1' }),
+          makeShard({ rangeId: 'r2', nodeCount: 180000, localNodeId: 'node-2' }),
+        ],
+      }),
+      (sg) => suggestions.push(sg),
+      { maxNodesPerRange: 100000, maxSuggestionsPerCycle: 10 },
+    )
+
+    await s.scheduleNow()
+    const history = s.getSuggestionHistory()
+    expect(history.length).toBe(2)
+    expect(history[0].emittedAt).toBeDefined()
+    expect(history[0].emittedAt).toBeGreaterThan(0)
+    expect(history[0].suggestion.type).toBe('split')
+  })
 })

@@ -118,4 +118,60 @@ describe('AutoSplitter', () => {
     await splitter.checkNow()
     expect(reshardCount).toBe(1)
   })
+
+  // ── B-11: 风暴预防 — maxSplitsPerCycle ──
+  test('should limit splits per cycle to maxSplitsPerCycle', async () => {
+    let reshardCount = 0
+    const suggestions: SplitSuggestion[] = []
+
+    // 10 个超过阈值范围的 Range
+    const ranges = Array.from({ length: 10 }, (_, i) => mockRange({
+      config: { rangeId: `r${i}` } as any,
+      isDraining: () => false,
+      engine: {
+        stats: () => ({ nodeCount: 200000, edgeCount: 50000, diskSizeBytes: 0 }),
+      },
+    } as RangeInstance))
+
+    const getRanges = () => ranges
+    const onReshard = (s?: SplitSuggestion) => {
+      if (s) { suggestions.push(s) }
+      reshardCount++
+    }
+
+    splitter = new AutoSplitter(getRanges, onReshard, {
+      maxNodesPerRange: 100000,
+      maxSplitsPerCycle: 2,
+    })
+    const count = await splitter.checkNow()
+    expect(count).toBe(2)
+    expect(suggestions.length).toBe(2)
+  })
+
+  test('should split all when maxSplitsPerCycle is large enough', async () => {
+    let reshardCount = 0
+    const suggestions: SplitSuggestion[] = []
+
+    const ranges = Array.from({ length: 5 }, (_, i) => mockRange({
+      config: { rangeId: `r${i}` } as any,
+      isDraining: () => false,
+      engine: {
+        stats: () => ({ nodeCount: 200000, edgeCount: 50000, diskSizeBytes: 0 }),
+      },
+    } as RangeInstance))
+
+    const getRanges = () => ranges
+    const onReshard = (s?: SplitSuggestion) => {
+      if (s) { suggestions.push(s) }
+      reshardCount++
+    }
+
+    splitter = new AutoSplitter(getRanges, onReshard, {
+      maxNodesPerRange: 100000,
+      maxSplitsPerCycle: 10,
+    })
+    const count = await splitter.checkNow()
+    expect(count).toBe(5)
+    expect(suggestions.length).toBe(5)
+  })
 })

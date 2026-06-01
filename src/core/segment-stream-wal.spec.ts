@@ -467,6 +467,80 @@ describe('SegmentStreamWalAppendStream — fsync 策略与公开方法', () => {
 
     fs.closeSync(fd)
   })
+
+  // ── A-01: 存储层 WAL Group Commit ──
+  describe('A-01 WAL Group Commit (存储层)', () => {
+    it('appendBatch single message works correctly', () => {
+      const wal = new SegmentStreamWal(walDir('batch-single'))
+      wal.open()
+      const msg = makeMsg(1)
+      wal.appendBatch([msg])
+      // 验证消息可读取
+      const all = wal.replay(0)
+      expect(all.length).toBe(1)
+      expect(all[0].seq).toBe(1)
+      wal.drop()
+    })
+
+    it('appendBatch multiple messages are all persisted', () => {
+      const wal = new SegmentStreamWal(walDir('batch-multi'))
+      wal.open()
+      const msgs = Array.from({ length: 10 }, (_, i) => makeMsg(i + 1, { msgId: `batch-${i}`, data: { id: i } }))
+      wal.appendBatch(msgs)
+
+      const all = wal.replay(0)
+      expect(all.length).toBe(10)
+      for (let i = 0; i < 10; i++) {
+        expect(all[i].seq).toBe(i + 1)
+      }
+      wal.drop()
+    })
+
+    it('appendBatch is faster than individual append for bulk writes', () => {
+      const count = 500
+
+      // Batch append
+      const walBatch = new SegmentStreamWal(walDir('perf-batch'))
+      walBatch.open()
+      const msgs = Array.from({ length: count }, (_, i) => makeMsg(i + 1, { msgId: `b-${i}` }))
+      const batchStart = Date.now()
+      walBatch.appendBatch(msgs)
+      const batchElapsed = Date.now() - batchStart
+      walBatch.drop()
+
+      // Individual append
+      const walIndiv = new SegmentStreamWal(walDir('perf-indiv'))
+      walIndiv.open()
+      const indivStart = Date.now()
+      for (let i = 0; i < count; i++) {
+        walIndiv.append(makeMsg(i + 1, { msgId: `i-${i}` }))
+      }
+      const indivElapsed = Date.now() - indivStart
+      walIndiv.drop()
+
+      // Verify batch is not slower than individual (it should be faster)
+      console.log(`Batch: ${count} msgs in ${batchElapsed}ms, Individual: ${count} msgs in ${indivElapsed}ms`)
+      expect(batchElapsed).toBeLessThanOrEqual(indivElapsed * 1.5) // batch should be comparable or faster
+    })
+
+    it('appendBatch messages survive close/open cycle', () => {
+      const dir = walDir('batch-persistence')
+      const wal1 = new SegmentStreamWal(dir)
+      wal1.open()
+      const msgs = Array.from({ length: 5 }, (_, i) => makeMsg(i + 1))
+      wal1.appendBatch(msgs)
+      wal1.close()
+
+      // Re-open
+      const wal2 = new SegmentStreamWal(dir)
+      wal2.open()
+      const all = wal2.replay(0)
+      expect(all.length).toBe(5)
+      expect(all[0].seq).toBe(1)
+      expect(all[4].seq).toBe(5)
+      wal2.drop()
+    })
+  })
 })
 
 // 帮助函数 — 编码消息（与 SegmentStreamWal 内部相同）

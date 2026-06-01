@@ -13,6 +13,199 @@ import pino from 'pino'
 import * as fs from 'fs'
 import * as path from 'path'
 
+// ──────────────────────────────────────────
+// RemoteAuditSink — HTTP POST 远程审计日志
+// ──────────────────────────────────────────
+
+/**
+ * RemoteAuditSink 配置
+ */
+export interface RemoteAuditSinkOptions {
+  /** 远程审计端点 URL */
+  endpoint: string
+  /** 请求超时（毫秒，默认 5000） */
+  timeoutMs?: number
+  /** 自定义 HTTP 头 */
+  headers?: Record<string, string>
+  /** 网络中断时本地缓存的最大条目数（默认 10000） */
+  maxCached?: number
+  /** 重试间隔（毫秒，默认 30000） */
+  retryIntervalMs?: number
+}
+
+/**
+ * RemoteAuditSink — 远程审计日志 Sink
+ *
+ * 将审计日志通过 HTTP POST 发送到远程端点。
+ * 网络中断时自动缓存到内存中，恢复后重发。
+ * 缓存达到上限时丢弃最旧的记录。
+ */
+export class RemoteAuditSink {
+  private endpoint: string
+  private timeoutMs: number
+  private headers: Record<string, string>
+  private maxCached: number
+  private retryIntervalMs: number
+  /** 本地缓存（网络中断时暂存） */
+  private cache: AuditEntry[] = []
+  /** 是否正在发送中 */
+  private sending: boolean = false
+  /** 重试定时器 */
+  private retryTimer: ReturnType<typeof setInterval> | null = null
+  /** 是否已关闭 */
+  private _closed: boolean = false
+  /** 日志计数器 */
+  private sentCount: number = 0
+  private failedCount: number = 0
+  private cachedCount: number = 0
+
+  constructor(options: RemoteAuditSinkOptions) {
+    this.endpoint = options.endpoint
+    this.timeoutMs = options.timeoutMs ?? 5000
+    this.headers = { 'Content-Type': 'application/json', ...options.headers }
+    this.maxCached = options.maxCached ?? 10000
+    this.retryIntervalMs = options.retryIntervalMs ?? 30000
+
+    // 启动重试定时器
+    this.retryTimer = setInterval(() => {
+      this._flushCache().catch(() => {})
+    }, this.retryIntervalMs)
+
+    if (this.retryTimer && typeof this.retryTimer === 'object' && 'unref' in this.retryTimer) {
+      (this.retryTimer as any).unref()
+    }
+  }
+
+  /**
+   * 发送审计日志条目
+   * 如果网络不可用，缓存到内存
+   */
+  async send(entry: AuditEntry): Promise<void> {
+    if (this._closed) return
+
+    try {
+      await this._postEntry(entry)
+      this.sentCount++
+      // 尝试顺便刷新缓存
+      if (this.cache.length > 0) {
+        this._flushCache().catch(() => {})
+      }
+    } catch {
+      // 网络中断，缓存
+      this._cacheEntry(entry)
+      this.failedCount++
+    }
+  }
+
+  /**
+   * 批量发送审计日志
+   */
+  async sendBatch(entries: AuditEntry[]): Promise<void> {
+    for (const entry of entries) {
+      await this.send(entry)
+    }
+  }
+
+  /**
+   * 获取统计信息
+   */
+  stats(): { sent: number; failed: number; cached: number } {
+    return {
+      sent: this.sentCount,
+      failed: this.failedCount,
+      cached: this.cache.length,
+    }
+  }
+
+  /**
+   * 关闭，停止重试定时器
+   */
+  close(): void {
+    this._closed = true
+    if (this.retryTimer) {
+      clearInterval(this.retryTimer)
+      this.retryTimer = null
+    }
+  }
+
+  // ─── 内部方法 ──────────────────────
+
+  /**
+   * 向远程端点 POST 单条审计日志
+   */
+  private async _postEntry(entry: AuditEntry): Promise<void> {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs)
+
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify(entry),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+
+  /**
+   * 缓存审计日志条目
+   * 超出 maxCached 时丢弃最旧记录
+   */
+  private _cacheEntry(entry: AuditEntry): void {
+    this.cache.push(entry)
+    this.cachedCount++
+    if (this.cache.length > this.maxCached) {
+      this.cache.shift() // 丢弃最旧的
+    }
+  }
+
+  /**
+   * 尝试刷新缓存中的所有条目
+   */
+  private async _flushCache(): Promise<void> {
+    if (this.sending || this.cache.length === 0 || this._closed) return
+
+    this.sending = true
+    const batch = [...this.cache]
+    this.cache = []
+
+    try {
+      // 批量发送缓存条目
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs * 2)
+
+      try {
+        const response = await fetch(this.endpoint, {
+          method: 'POST',
+          headers: this.headers,
+          body: JSON.stringify({ batch: true, entries: batch }),
+          signal: controller.signal,
+        })
+
+        if (response.ok) {
+          this.sentCount += batch.length
+        } else {
+          // 发送失败，重新缓存
+          this.cache.push(...batch)
+        }
+      } finally {
+        clearTimeout(timeoutId)
+      }
+    } catch {
+      // 再次失败，重新缓存
+      this.cache.push(...batch)
+    } finally {
+      this.sending = false
+    }
+  }
+}
+
 /** NDJSON 文件工具: append / read */
 const NDJSON = {
   append(filePath: string, entry: AuditEntry): void {

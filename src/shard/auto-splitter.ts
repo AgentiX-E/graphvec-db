@@ -19,6 +19,8 @@ export interface AutoSplitterConfig {
   checkIntervalMs?: number
   /** 最小分裂间隔（毫秒，同一个 Range 两次 split 之间，默认 60000 = 1min） */
   minSplitIntervalMs?: number
+  /** 每个检查周期最大分裂次数，超过此数则跳过后续 split（默认 2，防止 split 风暴） */
+  maxSplitsPerCycle?: number
 }
 
 /**
@@ -57,6 +59,7 @@ export class AutoSplitter {
       maxNodesPerRange: config?.maxNodesPerRange ?? 100000,
       checkIntervalMs: config?.checkIntervalMs ?? 30000,
       minSplitIntervalMs: config?.minSplitIntervalMs ?? 60000,
+      maxSplitsPerCycle: config?.maxSplitsPerCycle ?? 2,
     }
   }
 
@@ -95,6 +98,9 @@ export class AutoSplitter {
       for (const range of ranges) {
         // 跳过 draining range
         if (range.isDraining()) continue
+
+        // 风暴预防：一周期最多 split maxSplitsPerCycle 次
+        if (splits >= this._config.maxSplitsPerCycle) break
 
         const engine = range.engine
         const stats = engine.stats()

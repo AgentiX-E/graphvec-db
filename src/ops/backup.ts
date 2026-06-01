@@ -183,6 +183,8 @@ export class Backup {
    * @param backupPath 备份路径
    * @param restorePath 恢复目标路径（默认为原数据目录）
    * @param onProgress 进度回调（phase = 'preparation'|'backup_current'|'extraction'|'finalization'）
+   * 
+   * 在恢复过程中记录详细日志并报告进度。
    */
   async restore(
     backupPath: string,
@@ -191,47 +193,66 @@ export class Backup {
   ): Promise<void> {
     const target = restorePath || process.env.DATA_DIR || './data'
 
+    this.logger.info('Restore started', { source: backupPath, target })
     onProgress?.('preparation', 5)
 
     // 先验证备份源存在，避免在验证之前就修改目标
     if (!fs.existsSync(backupPath)) {
-      throw new Error(`Backup path does not exist: ${backupPath}`)
+      const errMsg = `Backup path does not exist: ${backupPath}`
+      this.logger.error(errMsg)
+      throw new Error(errMsg)
     }
 
     onProgress?.('preparation', 10)
+    this.logger.info('Restore - backup source verified', { backupPath })
 
     // 关闭当前引擎
+    this.logger.info('Restore - closing engine')
     this.engine.close()
+    this.logger.info('Restore - engine closed')
 
     onProgress?.('backup_current', 20)
+    this.logger.info('Restore - preparing rollback safety copy')
 
     try {
       // 备份当前数据（防止恢复失败）
       const currentBackup = `${target}.pre-restore`
       if (fs.existsSync(target)) {
+        this.logger.info('Restore - backing up current data to rollback location', {
+          rollbackPath: currentBackup,
+        })
         fs.renameSync(target, currentBackup)
       }
 
       onProgress?.('extraction', 35)
 
       // 自动检测压缩格式（GZip magic bytes: 0x1f 0x8b）
-      if (this._isGzipped(backupPath)) {
+      const isGzip = this._isGzipped(backupPath)
+      this.logger.info('Restore - extracting backup', {
+        isGzipCompressed: isGzip || backupPath.endsWith('.tar.gz') || backupPath.endsWith('.tgz'),
+      })
+
+      if (isGzip) {
         onProgress?.('extraction', 40)
+        this.logger.info('Restore - detected gzip via magic bytes, extracting tar.gz')
         await this._extractTarGz(backupPath, target)
         onProgress?.('extraction', 80)
       } else if (backupPath.endsWith('.tar.gz') || backupPath.endsWith('.tgz')) {
         onProgress?.('extraction', 40)
+        this.logger.info('Restore - extracting tar.gz by extension')
         await this._extractTarGz(backupPath, target)
         onProgress?.('extraction', 80)
       } else {
         // 复制备份数据（裸目录）
         onProgress?.('extraction', 50)
+        this.logger.info('Restore - copying raw directory')
         fs.mkdirSync(target, { recursive: true })
         this._copyDirSync(backupPath, target)
         onProgress?.('extraction', 80)
       }
 
       onProgress?.('finalization', 90)
+      this.logger.info('Restore - extraction complete, verifying consistency marker')
     } catch (err) {
       // 恢复失败时尝试回滚
       this.logger.error('Restore failed, attempting rollback...', err as Error)
@@ -239,9 +260,12 @@ export class Backup {
     }
 
     // 重新打开引擎
+    this.logger.info('Restore - re-opening engine')
     this.engine.open()
+    this.logger.info('Restore - engine opened successfully')
 
     onProgress?.('finalization', 100)
+    this.logger.info('Restore completed', { target })
   }
 
   /**

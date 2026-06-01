@@ -1,4 +1,7 @@
 import { CompositeIndex, IndexRecord, QueryCondition } from './composite-index'
+import * as fs from 'fs'
+import * as path from 'path'
+import * as os from 'os'
 
 describe('CompositeIndex', () => {
   let index: CompositeIndex
@@ -389,5 +392,180 @@ describe('CompositeIndex', () => {
     expect(index.indexName()).toBe('test-index')
     const idx2 = new CompositeIndex('other')
     expect(idx2.indexName()).toBe('other')
+  })
+
+  // ──────────────────────────────────────────
+  // 唯一约束唯一约束 (A-08)
+  // ──────────────────────────────────────────
+
+  describe('unique constraints', () => {
+    let ucIndex: CompositeIndex
+
+    beforeEach(() => {
+      ucIndex = new CompositeIndex('uc-test')
+    })
+
+    afterEach(() => {
+      ucIndex.clear()
+    })
+
+    test('should add unique constraint', () => {
+      ucIndex.addUniqueConstraint('uc_email', ['email'])
+      const constraints = ucIndex.getUniqueConstraints()
+      expect(constraints).toHaveLength(1)
+      expect(constraints[0].name).toBe('uc_email')
+      expect(constraints[0].fields).toEqual(['email'])
+      expect(constraints[0].enabled).toBe(true)
+    })
+
+    test('should reject duplicate constraint name', () => {
+      ucIndex.addUniqueConstraint('uc_email', ['email'])
+      expect(() => ucIndex.addUniqueConstraint('uc_email', ['name'])).toThrow(
+        'already exists',
+      )
+    })
+
+    test('should remove unique constraint', () => {
+      ucIndex.addUniqueConstraint('uc_email', ['email'])
+      ucIndex.removeUniqueConstraint('uc_email')
+      expect(ucIndex.getUniqueConstraints()).toHaveLength(0)
+    })
+
+    test('should throw when removing non-existent constraint', () => {
+      expect(() => ucIndex.removeUniqueConstraint('does_not_exist')).toThrow(
+        'not found',
+      )
+    })
+
+    test('should enable/disable unique constraint', () => {
+      ucIndex.addUniqueConstraint('uc_email', ['email'])
+      ucIndex.setUniqueConstraintEnabled('uc_email', false)
+      expect(ucIndex.getUniqueConstraints()[0].enabled).toBe(false)
+      ucIndex.setUniqueConstraintEnabled('uc_email', true)
+      expect(ucIndex.getUniqueConstraints()[0].enabled).toBe(true)
+    })
+
+    test('should reject duplicate email when unique constraint on email is active', () => {
+      ucIndex.addUniqueConstraint('uc_email', ['email'])
+      ucIndex.addRecord({ id: '1', fields: { email: 'alice@example.com' } })
+      expect(() =>
+        ucIndex.addRecord({ id: '2', fields: { email: 'alice@example.com' } }),
+      ).toThrow(/Unique constraint violation/)
+    })
+
+    test('should allow same email when constraint is disabled', () => {
+      ucIndex.addUniqueConstraint('uc_email', ['email'])
+      ucIndex.setUniqueConstraintEnabled('uc_email', false)
+      ucIndex.addRecord({ id: '1', fields: { email: 'alice@example.com' } })
+      expect(() =>
+        ucIndex.addRecord({ id: '2', fields: { email: 'alice@example.com' } }),
+      ).not.toThrow()
+      expect(ucIndex.size).toBe(2)
+    })
+
+    test('should enforce composite unique constraint across multiple fields', () => {
+      ucIndex.addUniqueConstraint('uc_name_city', ['name', 'city'])
+      ucIndex.addRecord({ id: '1', fields: { name: 'Alice', city: 'NYC' } })
+      // Same name and city => violation
+      expect(() =>
+        ucIndex.addRecord({ id: '2', fields: { name: 'Alice', city: 'NYC' } }),
+      ).toThrow(/Unique constraint violation/)
+      // Same name, different city => allowed
+      expect(() =>
+        ucIndex.addRecord({ id: '3', fields: { name: 'Alice', city: 'LA' } }),
+      ).not.toThrow()
+      // Different name, same city => allowed
+      expect(() =>
+        ucIndex.addRecord({ id: '4', fields: { name: 'Bob', city: 'NYC' } }),
+      ).not.toThrow()
+    })
+
+    test('should not trigger constraint for records missing some constraint fields', () => {
+      ucIndex.addUniqueConstraint('uc_name_city', ['name', 'city'])
+      // Record without 'city' field should not trigger constraint on 'name' alone
+      expect(() =>
+        ucIndex.addRecord({ id: '1', fields: { name: 'Alice' } }),
+      ).not.toThrow()
+      expect(() =>
+        ucIndex.addRecord({ id: '2', fields: { name: 'Alice' } }),
+      ).not.toThrow()
+      expect(ucIndex.size).toBe(2)
+    })
+
+    test('should allow updating a record when it is the only one with those values', () => {
+      ucIndex.addUniqueConstraint('uc_email', ['email'])
+      ucIndex.addRecord({ id: '1', fields: { email: 'alice@example.com' } })
+      // Update same record: should not throw (same id)
+      expect(() =>
+        ucIndex.addRecord({ id: '1', fields: { email: 'alice@example.com', name: 'Alice Updated' } }),
+      ).not.toThrow()
+    })
+
+    test('should reject adding a record with duplicate field only when constraint is enabled', () => {
+      ucIndex.addUniqueConstraint('uc_email', ['email'])
+      ucIndex.addRecord({ id: '1', fields: { email: 'alice@example.com' } })
+      expect(() =>
+        ucIndex.addRecord({ id: '2', fields: { email: 'alice@example.com' } }),
+      ).toThrow(/Unique constraint violation/)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 唯一约束持久化 (A-08)
+  // ──────────────────────────────────────────
+
+  describe('unique constraint persistence', () => {
+    let persistDir: string
+
+    beforeAll(() => {
+      persistDir = fs.mkdtempSync(path.join(os.tmpdir(), 'uc-persist-'))
+    })
+
+    afterAll(() => {
+      fs.rmSync(persistDir, { recursive: true, force: true })
+    })
+
+    test('should persist unique constraints to file', () => {
+      const idx = new CompositeIndex('persist-test')
+      idx.enablePersistence(persistDir)
+      idx.addUniqueConstraint('uc_email', ['email'])
+      idx.addUniqueConstraint('uc_name_city', ['name', 'city'])
+
+      // Check file exists
+      const filePath = path.join(persistDir, '.unique-constraints')
+      expect(fs.existsSync(filePath)).toBe(true)
+      const content = fs.readFileSync(filePath, 'utf-8')
+      const parsed = JSON.parse(content)
+      expect(parsed).toHaveLength(2)
+      expect(parsed[0].name).toBe('uc_email')
+      expect(parsed[1].name).toBe('uc_name_city')
+    })
+
+    test('should restore unique constraints on construction', () => {
+      // Create a new index in same persist dir — should load from file
+      const idx2 = new CompositeIndex('restore-test')
+      idx2.enablePersistence(persistDir)
+
+      const constraints = idx2.getUniqueConstraints()
+      expect(constraints).toHaveLength(2)
+      expect(constraints[0].name).toBe('uc_email')
+      expect(constraints[0].fields).toEqual(['email'])
+      expect(constraints[0].enabled).toBe(true)
+      expect(constraints[1].name).toBe('uc_name_city')
+    })
+
+    test('restored constraints actually enforce uniqueness', () => {
+      const idx3 = new CompositeIndex('enforce-test')
+      idx3.enablePersistence(persistDir)
+
+      // Should have loaded constraints
+      expect(idx3.getUniqueConstraints()).toHaveLength(2)
+
+      // Enforce
+      idx3.addRecord({ id: 'p1', fields: { email: 'persist@example.com' } })
+      expect(() =>
+        idx3.addRecord({ id: 'p2', fields: { email: 'persist@example.com' } }),
+      ).toThrow(/Unique constraint violation/)
+    })
   })
 })

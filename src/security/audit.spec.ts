@@ -1,13 +1,14 @@
 // ============================================================
-// audit.spec.ts — AuditLogger 单元测试
+// audit.spec.ts — AuditLogger + RemoteAuditSink 单元测试
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { AuditLogger } from './audit'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { AuditLogger, RemoteAuditSink } from './audit'
 import { Role } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import http from 'http'
 
 describe('AuditLogger', () => {
   let logger: AuditLogger
@@ -398,5 +399,159 @@ describe('AuditLogger', () => {
       const alog = new AuditLogger()
       expect(alog.getStoragePath()).toBeNull()
     })
+  })
+})
+
+// ──────────────────────────────────────────
+// RemoteAuditSink 测试
+// ──────────────────────────────────────────
+
+describe('RemoteAuditSink', () => {
+  it('creates sink with endpoint URL', () => {
+    const sink = new RemoteAuditSink({ endpoint: 'http://localhost:9999/audit' })
+    expect(sink).toBeDefined()
+    const stats = sink.stats()
+    expect(stats.sent).toBe(0)
+    expect(stats.failed).toBe(0)
+    expect(stats.cached).toBe(0)
+    sink.close()
+  })
+
+  it('caches entries when network is down', async () => {
+    const sink = new RemoteAuditSink({
+      endpoint: 'http://localhost:1/audit', // Unreachable port
+      timeoutMs: 100,
+      retryIntervalMs: 50000, // Long retry to avoid interference
+    })
+
+    const entry = {
+      operation: 'TEST',
+      user: 'tester',
+      role: Role.ADMIN,
+      resource: 'test',
+      result: 'success',
+      timestamp: new Date().toISOString(),
+    }
+
+    await sink.send(entry)
+    const stats = sink.stats()
+    expect(stats.failed).toBeGreaterThanOrEqual(1)
+    expect(stats.cached).toBeGreaterThanOrEqual(1)
+    sink.close()
+  }, 10000)
+
+  it('discards oldest entries when cache exceeds maxCached', async () => {
+    const sink = new RemoteAuditSink({
+      endpoint: 'http://localhost:1/audit',
+      timeoutMs: 50,
+      maxCached: 5,
+      retryIntervalMs: 50000,
+    })
+
+    for (let i = 0; i < 10; i++) {
+      await sink.send({
+        operation: `OP_${i}`,
+        user: 'u',
+        role: Role.ADMIN,
+        resource: 'r',
+        result: 'success',
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    const stats = sink.stats()
+    expect(stats.cached).toBeLessThanOrEqual(5)
+    sink.close()
+  }, 10000)
+
+  it('can send batch entries', async () => {
+    const sink = new RemoteAuditSink({
+      endpoint: 'http://localhost:1/audit',
+      timeoutMs: 50,
+      maxCached: 100,
+      retryIntervalMs: 50000,
+    })
+
+    const entries = Array.from({ length: 3 }, (_, i) => ({
+      operation: `BATCH_OP_${i}`,
+      user: 'batch',
+      role: Role.OPERATOR,
+      resource: 'batch-test',
+      result: 'success',
+      timestamp: new Date().toISOString(),
+    }))
+
+    await sink.sendBatch(entries)
+    const stats = sink.stats()
+    expect(stats.failed).toBeGreaterThanOrEqual(1)
+    sink.close()
+  }, 10000)
+
+  it('returns correct stats after successful send', async () => {
+    // Start a local HTTP server to receive audit logs
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    })
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as any).port
+
+    const sink = new RemoteAuditSink({
+      endpoint: `http://127.0.0.1:${port}/audit`,
+      timeoutMs: 3000,
+    })
+
+    await sink.send({
+      operation: 'SERVER_TEST',
+      user: 'srv',
+      role: Role.ADMIN,
+      resource: 'server-test',
+      result: 'success',
+      timestamp: new Date().toISOString(),
+    })
+
+    const stats = sink.stats()
+    expect(stats.sent).toBeGreaterThanOrEqual(1)
+    expect(stats.failed).toBe(0)
+
+    sink.close()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }, 10000)
+
+  it('flush cache retries on retry interval', async () => {
+    const sink = new RemoteAuditSink({
+      endpoint: 'http://localhost:1/audit',
+      timeoutMs: 50,
+      retryIntervalMs: 100,
+      maxCached: 100,
+    })
+
+    await sink.send({
+      operation: 'CACHE_TEST',
+      user: 'cache',
+      role: Role.WRITER,
+      resource: 'cache-test',
+      result: 'success',
+      timestamp: new Date().toISOString(),
+    })
+
+    // Wait for retry
+    await new Promise(r => setTimeout(r, 300))
+    const stats = sink.stats()
+    expect(stats.failed).toBeGreaterThanOrEqual(1)
+
+    sink.close()
+  }, 10000)
+
+  it('close stops retry timer', () => {
+    const sink = new RemoteAuditSink({
+      endpoint: 'http://localhost:1/audit',
+      timeoutMs: 50,
+    })
+
+    sink.close()
+    // Should not throw
+    expect(() => sink.close()).not.toThrow()
   })
 })

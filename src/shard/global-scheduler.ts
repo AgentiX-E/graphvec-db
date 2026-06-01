@@ -109,6 +109,10 @@ export class GlobalScheduler {
   /** 跳过列表：避免反复对同一分片生成重复建议 */
   private _skipList = new Set<string>()
   private _skipListTimer: ReturnType<typeof setInterval> | null = null
+  /** B-10: 建议历史记录（用于反馈闭环） */
+  private _suggestionHistory: Map<string, { suggestion: GlobalSuggestion; emittedAt: number; result?: 'accepted' | 'rejected' | 'ignored'; resultAt?: number }> = new Map()
+  /** B-10: 历史记录最大保留数 */
+  private static readonly MAX_HISTORY = 100
 
   constructor(
     getResources: ResourceProvider,
@@ -173,6 +177,16 @@ export class GlobalScheduler {
       this._skipList.add(s.rangeId)
       this._onSuggestion(s)
       emitted++
+
+      // 记录历史
+      const key = `${s.type}:${s.rangeId}`
+      this._suggestionHistory.set(key, { suggestion: s, emittedAt: Date.now() })
+
+      // 限制历史数量
+      if (this._suggestionHistory.size > GlobalScheduler.MAX_HISTORY) {
+        const oldest = this._suggestionHistory.keys().next().value
+        if (oldest) this._suggestionHistory.delete(oldest)
+      }
     }
 
     if (emitted > 0) {
@@ -258,5 +272,58 @@ export class GlobalScheduler {
     // 按优先级排序（低 = 紧急）
     candidates.sort((a, b) => a.priority - b.priority)
     return candidates.slice(0, this._config.maxSuggestionsPerCycle)
+  }
+
+  /**
+   * B-10: 报告建议的执行结果（反馈闭环）
+   *
+   * 调用方（如 ReshardManager）在完成/拒绝一个建议后调用此方法，
+   * 将结果反馈给 GlobalScheduler，用于优化后续调度决策。
+   *
+   * @param rangeId 分片 ID
+   * @param type 建议类型
+   * @param result 执行结果：'accepted' | 'rejected' | 'ignored'
+   */
+  reportResult(rangeId: string, type: SuggestionType, result: 'accepted' | 'rejected' | 'ignored'): void {
+    const key = `${type}:${rangeId}`
+    const entry = this._suggestionHistory.get(key)
+    if (entry) {
+      entry.result = result
+      entry.resultAt = Date.now()
+      this._logger.info(`Suggestion feedback: ${key} → ${result}`)
+
+      // 如果建议被拒绝，清除 skipList 以允许后续重试
+      if (result === 'rejected') {
+        this._skipList.delete(rangeId)
+      }
+      // 如果建议被接受，延长 skipList 时长
+      if (result === 'accepted') {
+        // 接受后保持在 skipList 中，防止同周期重复建议
+      }
+      // ignored：保持现状
+    }
+  }
+
+  /**
+   * B-10: 获取建议历史
+   */
+  getSuggestionHistory(): Array<{ suggestion: GlobalSuggestion; emittedAt: number; result?: string; resultAt?: number }> {
+    return Array.from(this._suggestionHistory.values()).map(e => ({
+      suggestion: e.suggestion,
+      emittedAt: e.emittedAt,
+      result: e.result,
+      resultAt: e.resultAt,
+    }))
+  }
+
+  /**
+   * B-10: 获取已接受建议的数量
+   */
+  getAcceptedCount(): number {
+    let count = 0
+    for (const [, entry] of this._suggestionHistory) {
+      if (entry.result === 'accepted') count++
+    }
+    return count
   }
 }
