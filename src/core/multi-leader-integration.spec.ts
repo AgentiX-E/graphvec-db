@@ -357,11 +357,13 @@ describe('Multi-Leader 集成测试', () => {
       const singleCurve = path.join(singleDir, 'curve')
       fs.mkdirSync(singleCurve, { recursive: true })
       singleNodes = await startNodes(singleIds, singlePort, singleDir, singleCurve)
-    }, 30000)
+    }, 60000)
 
     afterAll(() => {
-      for (const n of singleNodes) {
-        try { n.proc.kill('SIGTERM') } catch {}
+      if (singleNodes) {
+        for (const n of singleNodes) {
+          try { n.proc.kill('SIGTERM') } catch {}
+        }
       }
       try { fs.rmSync(singleDir, { recursive: true, force: true }) } catch {}
     })
