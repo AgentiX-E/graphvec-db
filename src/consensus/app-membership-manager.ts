@@ -552,13 +552,12 @@ export class AppMembershipManager {
 
       // 添加新成员路由（从 transport 获取地址）
       for (const member of sorted) {
-        if (!currentIds.has(member)) {
-          // 新成员已在 transport peers 中，但因为 handleCommit 来自广播
-          // 所以地址应该在 transport.getPeers() 中
-          const peerInfo = currentPeers.find(p => p.nodeId === member)
-          if (peerInfo) {
-            this.config.routeTable.setRoute(peerInfo.nodeId, peerInfo.addr)
-          }
+        // 已存在的路由跳过
+        if (this.config.routeTable.getAddr(member)) continue
+
+        const peerInfo = currentPeers.find(p => p.nodeId === member)
+        if (peerInfo) {
+          this.config.routeTable.setRoute(peerInfo.nodeId, peerInfo.addr)
         }
       }
     }
