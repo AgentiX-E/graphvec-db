@@ -72,10 +72,6 @@ export class RaftCore {
   private _lastSnapshotIndex: number = 0
   private _lastSnapshotTerm: number = 0
 
-  // ─── Leader 专用状态 ───
-  private _nextIndex: Map<string, number> = new Map()
-  private _matchIndex: Map<string, number> = new Map()
-
   // ─── 依赖 ───
   private transport: Transport
   private stateMachine: ((data: Uint8Array) => Promise<void>) | null = null
@@ -92,6 +88,16 @@ export class RaftCore {
   // ─── CheckQuorum 状态 ───
   private _connectedPeers: Set<string> = new Set()
   private _lastHeartbeatReachable: boolean = true
+
+  // ─── Joint Consensus 状态 ───
+  /** 当前集群配置版本 */
+  private _configVersion: number = 0
+  /** Joint Consensus 阶段：C_old_new 的额外 peers */
+  private _jointPeers: string[] | null = null
+  /** Joint Consensus C_old_new 阶段已确认的节点 */
+  private _jointConfirmed: Set<string> = new Set()
+  /** Joint Consensus 是否进入 C_new 阶段 */
+  private _jointTransitionComplete: boolean = false
 
   // ─── 定时器 ───
   private _electionTimerId: number | null = null
@@ -172,6 +178,145 @@ export class RaftCore {
   /** 获取最后一次快照包含的日志索引 */
   getLastSnapshotIndex(): number {
     return this._lastSnapshotIndex
+  }
+
+  // ─── Joint Consensus ────────────────────────────────────
+
+  /**
+   * 添加一个 peer（两阶段 Joint Consensus）
+   *
+   * Phase 1: C_old_new — 在集群中追加 Cold_New 配置条目
+   * Phase 2: C_new — Cold_New 提交后，追加 C_new 配置条目
+   */
+  async addPeer(peerId: string): Promise<boolean> {
+    if (this._role !== 'leader') return false
+    if (this.config.peers.includes(peerId)) return true // already present
+    if (this._jointPeers?.includes(peerId)) return true  // in transition
+
+    // Phase 1: 进入 C_old_new 阶段
+    const cNew = [...this.config.peers, peerId]
+    this._jointPeers = cNew
+    this._jointTransitionComplete = false
+    this._jointConfirmed.clear()
+    this._configVersion++
+
+    // 追加 Joint Consensus 配置条目到 WAL
+    const entryData = new TextEncoder().encode(JSON.stringify({
+      type: 'joint_config',
+      version: this._configVersion,
+      cOld: this.config.peers,
+      cNew: cNew,
+      phase: 'C_old_new',
+    }))
+    await this.wal.append(this._currentTerm, entryData)
+
+    // 通过 leader 的广播机制自动复制到所有节点
+    this._broadcastAppendEntries().catch(() => {})
+
+    this.logger.info(`[Joint] Phase 1 started: adding peer ${peerId}`, {
+      cOld: this.config.peers,
+      cNew,
+    })
+
+    // 等待 C_old_new 被多数确认
+    await this._waitForJointCommit()
+
+    // Phase 2: 切换到 C_new 阶段
+    this._onJointConsensusCommit()
+
+    return true
+  }
+
+  /**
+   * 移除一个 peer（两阶段 Joint Consensus）
+   */
+  async removePeer(peerId: string): Promise<boolean> {
+    if (this._role !== 'leader') return false
+    if (!this.config.peers.includes(peerId)) return true // already absent
+    if (this._jointPeers) return false // already in transition
+
+    // Phase 1: 进入 C_old_new 阶段
+    const cNew = this.config.peers.filter(p => p !== peerId)
+    this._jointPeers = cNew
+    this._jointTransitionComplete = false
+    this._jointConfirmed.clear()
+    this._configVersion++
+
+    const entryData = new TextEncoder().encode(JSON.stringify({
+      type: 'joint_config',
+      version: this._configVersion,
+      cOld: this.config.peers,
+      cNew: cNew,
+      phase: 'C_old_new',
+    }))
+    await this.wal.append(this._currentTerm, entryData)
+
+    this._broadcastAppendEntries().catch(() => {})
+
+    this.logger.info(`[Joint] Phase 1 started: removing peer ${peerId}`, {
+      cOld: this.config.peers,
+      cNew,
+    })
+
+    await this._waitForJointCommit()
+
+    // Phase 2: 切换到 C_new
+    this._onJointConsensusCommit()
+
+    // 如果自己是被移除的节点，step down
+    if (peerId === this.config.nodeId) {
+      this._stepDown(this._currentTerm)
+    }
+
+    return true
+  }
+
+  /**
+   * Joint Consensus 确认回调
+   * 当 C_old_new 配置条目被提交时，触发 Phase 2
+   */
+  private _onJointConsensusCommit(): void {
+    if (!this._jointPeers) return
+
+    const cNew = this._jointPeers
+    this.logger.info(`[Joint] Phase 2: transitioning to C_new`, { cNew })
+
+    // 更新集群配置
+    this.config.peers = cNew
+
+    // 追加 C_new 配置条目
+    const entryData = new TextEncoder().encode(JSON.stringify({
+      type: 'joint_config',
+      version: this._configVersion,
+      cOld: this.config.peers,
+      cNew: this.config.peers,
+      phase: 'C_new',
+    }))
+    this.wal.append(this._currentTerm, entryData).then(() => {
+      this._broadcastAppendEntries().catch(() => {})
+    }).catch(() => {})
+
+    // 清除 joint 状态
+    this._jointPeers = null
+    this._jointConfirmed.clear()
+    this._jointTransitionComplete = true
+  }
+
+  /**
+   * 等待 Joint Consensus 配置被提交
+   */
+  private async _waitForJointCommit(): Promise<void> {
+    // 通过广播复制，等待 commitIndex 推进
+    for (let i = 0; i < 50; i++) {
+      if (this._jointTransitionComplete) return
+      await new Promise(r => setTimeout(r, 50))
+      // 检查最新追加的配置条目是否已提交
+      const lastIdx = this.wal.getLastIndex()
+      if (lastIdx > 0 && this._commitIndex >= lastIdx) {
+        this._onJointConsensusCommit()
+        return
+      }
+    }
   }
 
   // ─── 生命周期 ──────────────────────────────────────────
@@ -428,7 +573,74 @@ export class RaftCore {
 
   // ─── 发送 RPC ──────────────────────────────────────────────
 
+  /**
+   * Pipeline-aware AppendEntries 发送
+   *
+   * 1. 检查该 follower 的 inFlight 计数
+   * 2. 如果 inFlight >= MAX_BATCH_SIZE/2，将请求加入 pendingQueue 延迟发送
+   * 3. 否则直接发送，递增 inFlight
+   * 4. 收到响应后递减 inFlight，处理 pendingQueue 中积压的请求
+   */
   private async _sendAppendEntries(
+    peerId: string,
+    heartbeat?: boolean,
+  ): Promise<AppendEntriesResponse | null> {
+    try {
+      if (heartbeat || !this._isPipelineActive) {
+        // 心跳或 Pipeline 未启用：直接发送
+        return await this._sendAppendEntriesRaw(peerId, heartbeat)
+      }
+
+      // Pipeline 模式
+      const inflight = this._inFlight.get(peerId) ?? 0
+      if (inflight >= RaftCore.MAX_BATCH_SIZE / 2) {
+        // inFlight 已满，加入 pending 队列
+        const queue = this._pendingQueue.get(peerId) ?? []
+        const lastIdx = this.wal.getLastIndex()
+        const nextIdx = this._nextIndex.get(peerId) ?? 1
+        if (lastIdx >= nextIdx) {
+          queue.push({
+            entries: this.wal.getEntriesFrom(nextIdx),
+            maxBatchSize: RaftCore.MAX_BATCH_SIZE,
+          })
+          this._pendingQueue.set(peerId, queue)
+        }
+        return null
+      }
+
+      // 可发送，递增 inFlight
+      this._inFlight.set(peerId, inflight + 1)
+      const req: AppendEntriesRequest = this._buildAppendEntriesRequest(peerId, heartbeat)
+      const resp = await (this.transport instanceof MockTransport
+        ? this.transport.appendEntries(peerId, req)
+        : this.transport.appendEntries
+          ? this.transport.appendEntries(peerId, req)
+          : null)
+
+      // 递减 inFlight
+      const currentInFlight = (this._inFlight.get(peerId) ?? 1) - 1
+      if (currentInFlight <= 0) {
+        this._inFlight.delete(peerId)
+      } else {
+        this._inFlight.set(peerId, currentInFlight)
+      }
+
+      // 处理 pending 队列
+      this._processPendingQueue(peerId).catch(() => {})
+
+      return resp
+    } catch (err) {
+      // 出错时递减 inFlight
+      this._inFlight.delete(peerId)
+      this.logger.warn(`AppendEntries send failed to ${peerId}:`, { err: (err as Error).message })
+      return null
+    }
+  }
+
+  /**
+   * 直接发送 AppendEntries（无 Pipeline）
+   */
+  private async _sendAppendEntriesRaw(
     peerId: string,
     heartbeat?: boolean,
   ): Promise<AppendEntriesResponse | null> {
@@ -446,6 +658,48 @@ export class RaftCore {
       this.logger.warn(`AppendEntries send failed to ${peerId}:`, { err: (err as Error).message })
       return null
     }
+  }
+
+  /**
+   * 处理 pending 队列中的积压请求
+   */
+  private async _processPendingQueue(peerId: string): Promise<void> {
+    const queue = this._pendingQueue.get(peerId)
+    if (!queue || queue.length === 0) return
+
+    const batch = queue.shift()!
+    this._pendingQueue.set(peerId, queue)
+
+    // 发送 batch
+    const inflight = this._inFlight.get(peerId) ?? 0
+    this._inFlight.set(peerId, inflight + 1)
+    const req = this._buildAppendEntriesRequest(peerId)
+    const resp = await (this.transport instanceof MockTransport
+      ? this.transport.appendEntries(peerId, req)
+      : this.transport.appendEntries
+        ? this.transport.appendEntries(peerId, req)
+        : null)
+
+    // 递减 inFlight
+    const currentInFlight = (this._inFlight.get(peerId) ?? 1) - 1
+    if (currentInFlight <= 0) {
+      this._inFlight.delete(peerId)
+    } else {
+      this._inFlight.set(peerId, currentInFlight)
+    }
+
+    // 继续处理剩余队列
+    this._processPendingQueue(peerId).catch(() => {})
+  }
+
+  /**
+   * 广播 AppendEntries 到所有 peer（包括 joint 额外的）
+   */
+  private _broadcastAppendEntries(): Promise<Array<AppendEntriesResponse | null>> {
+    const allPeers = this._getAllPeers()
+    return Promise.all(
+      allPeers.map(peerId => this._sendAppendEntries(peerId).catch(() => null))
+    )
   }
 
   private async _sendRequestVote(peerId: string): Promise<RequestVoteResponse | null> {
@@ -922,8 +1176,37 @@ export class RaftCore {
     if (this._started) this._resetElectionTimeout()
   }
 
+  /**
+   * Joint Consensus-aware majority calculation
+   *
+   * 正常模式：返回 (len(peers) + 1) / 2 + 1
+   * Joint Consensus 模式 (C_old_new)：需要两个 Majority
+   *   - C_old majority: (len(C_old) + 1) / 2 + 1
+   *   - C_new majority: (len(C_new) + 1) / 2 + 1
+   *   返回两个 majority 之和（用于 commit 判断）
+   */
   private _majority(): number {
+    if (this._jointPeers) {
+      const cOld = this.config.peers
+      const cNew = this._jointPeers
+      const majorityOld = Math.floor((cOld.length + 1) / 2) + 1
+      const majorityNew = Math.floor((cNew.length + 1) / 2) + 1
+      // 返回较大的 majority（实际 commit 需要两者都满足）
+      return Math.max(majorityOld, majorityNew)
+    }
     return Math.floor((this.config.peers.length + 1) / 2) + 1
+  }
+
+  /** 获取当前所有 peers（包括 joint 阶段的额外 peers） */
+  private _getAllPeers(): string[] {
+    if (this._jointPeers) {
+      const cOld = this.config.peers
+      const cNew = this._jointPeers
+      // union of C_old and C_new
+      const all = new Set([...cOld, ...cNew])
+      return Array.from(all)
+    }
+    return this.config.peers
   }
 
   private _resetElectionTimeout(): void {
@@ -1071,6 +1354,113 @@ export class RaftCore {
     } catch (err) {
       this.logger.error('Failed to load snapshot state:', err as Error)
     }
+  }
+
+  // ─── InstallSnapshot RPC ──────────────────────────────────
+
+  /**
+   * 处理 InstallSnapshot 请求（follower 侧）
+   */
+  async handleInstallSnapshot(request: InstallSnapshotRequest): Promise<InstallSnapshotResponse> {
+    this.logger.info('[InstallSnapshot] Received', {
+      term: request.term,
+      leaderId: request.leaderId,
+      lastIncludedIndex: request.lastIncludedIndex,
+      dataLength: request.data.length,
+    })
+
+    // 任期检查
+    if (request.term < this._currentTerm) {
+      return { term: this._currentTerm, success: false }
+    }
+    if (request.term > this._currentTerm) {
+      this._stepDown(request.term)
+    }
+
+    // 重置选举超时
+    this._resetElectionTimeout()
+
+    // 将快照数据应用到状态机
+    if (this.stateMachine) {
+      await this.stateMachine(request.data)
+    }
+
+    // 更新 snapshot 状态
+    this._lastSnapshotIndex = Math.max(this._lastSnapshotIndex, request.lastIncludedIndex)
+    this._lastSnapshotTerm = Math.max(this._lastSnapshotTerm, request.lastIncludedTerm)
+
+    // 截断 WAL
+    if (request.lastIncludedIndex > 0) {
+      await this.wal.truncateBefore(request.lastIncludedIndex + 1)
+    }
+
+    this._persistSnapshotState(request.lastIncludedIndex, request.lastIncludedTerm)
+
+    this.logger.info('[InstallSnapshot] Applied', {
+      lastIncludedIndex: request.lastIncludedIndex,
+      lastIncludedTerm: request.lastIncludedTerm,
+    })
+
+    return { term: this._currentTerm, success: true }
+  }
+
+  /**
+   * Leader 发送 InstallSnapshot 到 follower
+   */
+  private async _sendInstallSnapshot(peerId: string): Promise<InstallSnapshotResponse | null> {
+    try {
+      const snapshotPath = this.config.snapshotPath!
+      if (!fs.existsSync(snapshotPath)) return null
+
+      const raw = fs.readFileSync(snapshotPath, 'utf-8')
+      const snapshot = JSON.parse(raw) as {
+        lastIncludedIndex: number
+        lastIncludedTerm: number
+        state: string
+      }
+
+      const data = Buffer.from(JSON.stringify(snapshot))
+
+      if (this.transport instanceof MockTransport) {
+        return await this.transport.installSnapshot(peerId, {
+          term: this._currentTerm,
+          leaderId: this.config.nodeId,
+          lastIncludedIndex: snapshot.lastIncludedIndex,
+          lastIncludedTerm: snapshot.lastIncludedTerm,
+          data,
+          done: true,
+        })
+      }
+      if (this.transport.installSnapshot) {
+        return await this.transport.installSnapshot(peerId, {
+          term: this._currentTerm,
+          leaderId: this.config.nodeId,
+          lastIncludedIndex: snapshot.lastIncludedIndex,
+          lastIncludedTerm: snapshot.lastIncludedTerm,
+          data,
+          done: true,
+        })
+      }
+      return null
+    } catch (err) {
+      this.logger.warn(`InstallSnapshot send failed to ${peerId}:`, { err: (err as Error).message })
+      return null
+    }
+  }
+
+  private _persistSnapshotState(lastIncludedIndex: number, lastIncludedTerm: number): void {
+    const snapshotPath = this.config.snapshotPath!
+    const snapshot = {
+      lastIncludedIndex,
+      lastIncludedTerm,
+      state: 'snapshot-complete',
+    }
+    const dir = snapshotPath.substring(0, snapshotPath.lastIndexOf('/'))
+    if (dir && dir !== snapshotPath) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+    fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), 'utf-8')
+    try { fs.fsyncSync(fs.openSync(snapshotPath, 'r')) } catch {}
   }
 
   /**

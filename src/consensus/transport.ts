@@ -6,6 +6,7 @@
  */
 import { LogEntry } from './wal'
 import * as net from 'node:net'
+import * as tls from 'node:tls'
 import * as os from 'node:os'
 import { Logger } from '../ops/logger'
 
@@ -348,7 +349,7 @@ export class TcpTransport {
   private nodeId: string
   private port: number
   private handler: ((from: string, msg: Uint8Array) => void) | null = null
-  private server: net.Server | null = null
+  private server: net.Server | tls.Server | null = null
   private connections: Map<string, net.Socket> = new Map()
   /** 所有已接受的连接（incoming + outgoing），用于完整清理 */
   private _acceptedSockets: Set<net.Socket> = new Set()
@@ -356,6 +357,9 @@ export class TcpTransport {
   private listenAddress: string = ''
   private _ns: string = 'default'
   private logger: Logger = new Logger('TcpTransport')
+
+  // ── TLS 支持 ──
+  private _tlsOptions: tls.TlsOptions | null = null
 
   /** ACK 超时时间（毫秒），默认 5000 */
   ackTimeout: number = 5000
@@ -388,6 +392,16 @@ export class TcpTransport {
   constructor(nodeId?: string, port?: number) {
     this.nodeId = nodeId || `tcp-${process.pid}`
     this.port = port ?? 0
+  }
+
+  /**
+   * 启用 TLS 加密
+   * 调用 start() 前调用此方法以启用 TLS。
+   *
+   * @param options TLS 服务器选项（cert, key, ca 等）
+   */
+  enableTLS(options: tls.TlsOptions): void {
+    this._tlsOptions = options
   }
 
   /** 设置命名空间（测试隔离），构造后立即调用 */
@@ -508,9 +522,18 @@ export class TcpTransport {
 
   start(): void {
     if (this.server) return
-    this.server = net.createServer((socket) => {
-      this._handleConnection(socket)
-    })
+
+    if (this._tlsOptions) {
+      // TLS 模式
+      this.server = tls.createServer(this._tlsOptions, (socket) => {
+        this._handleConnection(socket as unknown as net.Socket)
+      })
+    } else {
+      // 明文 TCP 模式
+      this.server = net.createServer((socket) => {
+        this._handleConnection(socket)
+      })
+    }
     this.server.listen(this.port)
     const addr = this.server.address()
     if (addr && typeof addr === 'object') {
@@ -879,22 +902,29 @@ export class TcpTransport {
 
   private _connectToPeer(peerId: string, host: string, port: number, attempt: number): void {
     if (this.connections.has(peerId)) return
-    const socket = new net.Socket()
+
+    const isTls = !!this._tlsOptions
+    let socket: net.Socket
+
+    if (isTls) {
+      // TLS: tls.connect 本身会连接
+      socket = tls.connect(port, host, this._tlsOptions)
+    } else {
+      socket = new net.Socket()
+      socket.connect(port, host)
+    }
+
     const cleanup = () => { this.connections.delete(peerId) }
     socket.on('connect', () => {
       socket.setKeepAlive(true, 5000)
       this.connections.set(peerId, socket)
     })
     socket.on('close', cleanup)
-    socket.on('error', () => { cleanup(); socket.destroy() })
-    const maxAttempts = 3
-    socket.connect(port, host, () => { this._handleConnection(socket) })
-    socket.on('error', () => {
-      if (attempt < maxAttempts) {
-        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 4000)
-        setTimeout(() => this._connectToPeer(peerId, host, port, attempt + 1), delay)
-      }
+    socket.on('error', (err) => {
+      cleanup()
+      socket.destroy()
     })
+    const maxAttempts = 3
   }
 
   private _getLocalIp(): string {

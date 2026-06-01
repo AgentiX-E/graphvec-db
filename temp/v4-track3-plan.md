@@ -7,12 +7,12 @@
 
 ## 执行顺序
 
-### Batch 1 — 独立简单项（并行）
-- [ ] A-03: SimpleTxnManager SSI 冲突检测（writeSet/deleteSet）
-- [ ] A-07: WAL fsync策略调优（every-n n=100）
-- [ ] D-07: inEdges 度数缓存（inDegree/outDegree Map）
-- [ ] D-09: K8s 三探针（liveness/readiness/startup）
-- [ ] D-11: 慢查询日志 persistent rotating file
+### Batch 1 — 独立简单项 ✅
+- [x] A-03: SimpleTxnManager SSI 冲突检测（writeSet/deleteSet）✅ 34 tests pass
+- [x] A-07: WAL fsync策略调优（every-n n=100）✅ 
+- [x] D-07: inEdges 度数缓存（inDegree/outDegree Map）✅ 
+- [x] D-09: K8s 三探针（liveness/readiness/startup）✅ 15 tests pass
+- [x] D-11: 慢查询日志 persistent rotating file ✅ 15 tests pass
 
 ### Batch 2
 - [ ] D-13: 恢复可观测性（restore onProgress）
@@ -30,4 +30,4 @@
 - [ ] D-14: 审计日志远程 Sink
 
 ## 当前进度
-正在执行: Batch 1
+正在执行: Batch 2

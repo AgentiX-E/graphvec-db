@@ -182,17 +182,28 @@ export class Backup {
    * 从备份恢复
    * @param backupPath 备份路径
    * @param restorePath 恢复目标路径（默认为原数据目录）
+   * @param onProgress 进度回调（phase = 'preparation'|'backup_current'|'extraction'|'finalization'）
    */
-  async restore(backupPath: string, restorePath?: string): Promise<void> {
+  async restore(
+    backupPath: string,
+    restorePath?: string,
+    onProgress?: (phase: string, percent: number, eta?: number) => void,
+  ): Promise<void> {
     const target = restorePath || process.env.DATA_DIR || './data'
+
+    onProgress?.('preparation', 5)
 
     // 先验证备份源存在，避免在验证之前就修改目标
     if (!fs.existsSync(backupPath)) {
       throw new Error(`Backup path does not exist: ${backupPath}`)
     }
 
+    onProgress?.('preparation', 10)
+
     // 关闭当前引擎
     this.engine.close()
+
+    onProgress?.('backup_current', 20)
 
     try {
       // 备份当前数据（防止恢复失败）
@@ -201,16 +212,26 @@ export class Backup {
         fs.renameSync(target, currentBackup)
       }
 
+      onProgress?.('extraction', 35)
+
       // 自动检测压缩格式（GZip magic bytes: 0x1f 0x8b）
       if (this._isGzipped(backupPath)) {
+        onProgress?.('extraction', 40)
         await this._extractTarGz(backupPath, target)
+        onProgress?.('extraction', 80)
       } else if (backupPath.endsWith('.tar.gz') || backupPath.endsWith('.tgz')) {
+        onProgress?.('extraction', 40)
         await this._extractTarGz(backupPath, target)
+        onProgress?.('extraction', 80)
       } else {
         // 复制备份数据（裸目录）
+        onProgress?.('extraction', 50)
         fs.mkdirSync(target, { recursive: true })
         this._copyDirSync(backupPath, target)
+        onProgress?.('extraction', 80)
       }
+
+      onProgress?.('finalization', 90)
     } catch (err) {
       // 恢复失败时尝试回滚
       this.logger.error('Restore failed, attempting rollback...', err as Error)
@@ -219,6 +240,8 @@ export class Backup {
 
     // 重新打开引擎
     this.engine.open()
+
+    onProgress?.('finalization', 100)
   }
 
   /**

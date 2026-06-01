@@ -260,6 +260,48 @@ describe('Backup - Consistency', () => {
     if (fs.existsSync(tarGzPath)) fs.unlinkSync(tarGzPath)
   }, 30000)
 
+  it('should call onProgress during restore', async () => {
+    const onProgressManualDir = path.join(BACKUP_DIR, 'manual-progress-test')
+    cleanDir(onProgressManualDir)
+    cleanDir(DATA_DIR)
+    fs.mkdirSync(onProgressManualDir, { recursive: true })
+
+    // Create a minimal backup with consistency marker
+    const marker = {
+      snapshotId: 7,
+      hlcWallTime: 1700000000000,
+      hlcLogical: 1,
+      createdAt: '2025-06-01T00:00:00.000Z',
+    }
+    fs.writeFileSync(path.join(onProgressManualDir, 'manifest.current'), JSON.stringify({ test: true }))
+    fs.writeFileSync(path.join(onProgressManualDir, '.consistency-marker'), JSON.stringify(marker, null, 2))
+    fs.mkdirSync(path.join(onProgressManualDir, 'segments'), { recursive: true })
+
+    const config = { ...testEngineConfig, path: DATA_DIR }
+    const engine2 = new GraphEngine(config)
+    const backup2 = new Backup(engine2)
+
+    const progressCalls: { phase: string; percent: number }[] = []
+    const onProgress = (phase: string, percent: number, _eta?: number) => {
+      progressCalls.push({ phase, percent })
+    }
+
+    await backup2.restore(onProgressManualDir, DATA_DIR, onProgress)
+
+    // Verify progress was reported
+    expect(progressCalls.length).toBeGreaterThanOrEqual(4)
+    // Should cover key phases
+    const phases = progressCalls.map(p => p.phase)
+    expect(new Set(phases)).toContain('preparation')
+    expect(new Set(phases)).toContain('extraction')
+    expect(new Set(phases)).toContain('finalization')
+    // Percent should be monotonic
+    expect(progressCalls[0].percent).toBeLessThanOrEqual(progressCalls[progressCalls.length - 1].percent)
+
+    engine2.close()
+    cleanDir(onProgressManualDir)
+  }, 15000)
+
   it('should detect gzip magic bytes correctly', () => {
     const backup = new Backup(engine)
 

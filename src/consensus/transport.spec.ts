@@ -6,8 +6,9 @@
 // ============================================================
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { MockTransport } from './transport'
+import { MockTransport, TcpTransport } from './transport'
 import type { AppendEntriesRequest, AppendEntriesResponse, RequestVoteResponse, InstallSnapshotRequest, InstallSnapshotResponse } from './transport'
+import { generateSelfSignedCert } from '../security/tls'
 
 describe('MockTransport', () => {
   beforeEach(() => {
@@ -279,3 +280,85 @@ describe('MockTransport', () => {
     })
   })
 })
+
+describe('TcpTransport - TLS', () => {
+  let tcpTls: TcpTransport
+  let tcpTlsClient: TcpTransport
+  const _crypto = require('crypto')
+
+  beforeEach(() => {
+    // 生成自签名 TLS 证书
+    const { cert, key } = generateSelfSignedCert()
+    tcpTls = new TcpTransport('tls-server', 0)
+    tcpTls.setNamespace(`tls-test-${Date.now()}`)
+    tcpTls.enableTLS({ cert, key, rejectUnauthorized: false })
+
+    tcpTlsClient = new TcpTransport('tls-client', 0)
+    tcpTlsClient.setNamespace(`tls-test-${Date.now()}`)
+    tcpTlsClient.enableTLS({ cert, key, rejectUnauthorized: false })
+  })
+
+  afterEach(() => {
+    try { tcpTls.stop() } catch {}
+    try { tcpTlsClient.stop() } catch {}
+    TcpTransport.reset()
+  })
+
+  it('should start and listen with TLS', () => {
+    tcpTls.start()
+    expect(tcpTls.getPort()).toBeGreaterThan(0)
+  })
+
+  it('should connect and send message with TLS', async () => {
+    const receivedMessages: Buffer[] = []
+    tcpTls.setMessageHandler((from: string, msg: Uint8Array) => {
+      receivedMessages.push(Buffer.from(msg))
+    })
+    tcpTls.start()
+    const port = tcpTls.getPort()
+
+    tcpTlsClient.start()
+    tcpTlsClient.connectTo(`tls-server:127.0.0.1:${port}`)
+
+    // 等待连接建立
+    await new Promise(r => setTimeout(r, 500))
+
+    const testMsg = Buffer.from('hello-tls')
+    await tcpTlsClient.sendTo('tls-server', testMsg)
+
+    // 等待消息到达
+    await new Promise(r => setTimeout(r, 500))
+
+    expect(receivedMessages.length).toBe(1)
+    expect(receivedMessages[0].toString()).toBe('hello-tls')
+  })
+
+  it('should broadcast to TLS peers', async () => {
+    tcpTls.setMessageHandler(() => {})
+    tcpTls.start()
+    const port = tcpTls.getPort()
+
+    // 模拟两个 server 监听
+    const received: string[] = []
+    tcpTls.setMessageHandler((from: string, msg: Uint8Array) => {
+      received.push(Buffer.from(msg).toString())
+    })
+
+    tcpTlsClient.start()
+    tcpTlsClient.connectTo(`tls-server:127.0.0.1:${port}`)
+
+    await new Promise(r => setTimeout(r, 500))
+
+    // 客户端发送广播到服务器
+    const broadcastMsg = Buffer.from('tls-broadcast')
+    await tcpTlsClient.sendTo('tls-server', broadcastMsg)
+    await new Promise(r => setTimeout(r, 500))
+
+    expect(received.length).toBeGreaterThanOrEqual(1)
+    expect(received[0]).toBe('tls-broadcast')
+  })
+})
+
+// 辅助：生成自签名证书
+// generateSelfSignedCert 从 src/security/tls.ts import
+// 本地不再重复定义——直接使用 import 的版本
