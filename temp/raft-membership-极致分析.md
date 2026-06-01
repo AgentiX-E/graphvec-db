@@ -250,7 +250,7 @@ class PeerLogCatchUp {
 | 🥇 | 新节点数据预同步 + catch-up | 4h | ✅ 已完成 (11 tests) |
 | 🥈 | 三阶段 commit 增强（commit 前 syncCheck） | 2h | ✅ 已完成 (5 tests) |
 | 🥈 | stress 测试 + 分区测试 | 4h | ⬜ 待开发 |
-| 🥈 | 端到端集成测试（3 节点 ±1） | 3h | ⬜ 待开发 |
+| 🥈 | 端到端集成测试（3 节点 ±1） | 3h | ✅ 已完成 (15 tests) |
 
 **总估算**: 约 2 天（净开发），含测试 1.5 天。
 
@@ -286,9 +286,7 @@ class PeerLogCatchUp {
 ### Phase 3（当前已完成）
 1. ✅ **新节点数据预同步** — `PreSyncManager` Leader→新节点 snapshot+log 同步（11 tests）
 2. ✅ **三阶段 commit 增强** — syncCheck 提案通过后一致性检查 + preSyncCheck 提案前数据对齐确认（5 tests）
-3. ⬜ stress 测试 + 分区测试（4h）
-4. ⬜ 端到端集成测试——3节点 ±1（3h）
+3. ✅ **stress 测试 + 分区测试** — 21 tests (并发/延迟/超时/分区/flapping)
+4. ✅ **端到端集成测试** — 15 tests (3节点 MeshTransport 集群同步)
 
-### Phase 4（验证）
-1. stress 测试 + 分区测试（4h）
-2. 端到端集成测试——3节点 ±1（3h）
+### Phase 4（验证）✅ 已完成
