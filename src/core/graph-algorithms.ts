@@ -527,7 +527,8 @@ export class GraphAlgorithms {
     const localNodes = [...visited]
     const shardRouter = this.config!.shardRouter!
     try {
-      await shardRouter.fanOut('neighbors', { nodeIds: localNodes })
+      // fire-and-forget: fan-out 失败不影响本地结果
+      void shardRouter.fanOut('neighbors', { nodeIds: localNodes })
     } catch {
       // fan-out 失败不影响本地结果扫描
     }

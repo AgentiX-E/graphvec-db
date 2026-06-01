@@ -353,12 +353,18 @@ describe('FullTextIndex WAL Persistence', () => {
     test('CJK text persists correctly across restart', () => {
       const dir = tmpDir()
       try {
-        const idx = new FullTextIndex({ baseDir: dir })
+        const idx = new FullTextIndex({
+          baseDir: dir,
+          analyzer: 'cjk',
+        })
         idx.addDocument('doc1', { name: '我喜欢编程' })
         idx.addDocument('doc2', { name: 'Python编程guide' })
         idx.close()
 
-        const idx2 = new FullTextIndex({ baseDir: dir })
+        const idx2 = new FullTextIndex({
+          baseDir: dir,
+          analyzer: 'cjk',
+        })
         expect(idx2.search('编程')).toHaveLength(2)
         expect(idx2.search('guide')).toHaveLength(1)
         idx2.close()

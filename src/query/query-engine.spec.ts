@@ -2,7 +2,7 @@
  * query-engine 单元测试
  */
 
-import { parseQuery, execQuery, ParameterizedQuery, cypher, compileCypher } from './query-engine'
+import { parseQuery, execQuery, ParameterizedQuery, cypher, compileCypher, _executeQuery, DEFAULT_LIMIT } from './query-engine'
 
 describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
   it('简单 MATCH + RETURN', () => {
@@ -697,8 +697,6 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
       subQueries: [],
       matchPatterns: [],
     }
-
-    const { _executeQuery, DEFAULT_LIMIT } = require('./query-engine')
 
     // 生成 1500 条候选节点
     const manyNodes: Array<Record<string, unknown>> = []
