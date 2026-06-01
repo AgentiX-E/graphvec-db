@@ -10,9 +10,8 @@ export default defineConfig({
     testTimeout: 1200000,
     hookTimeout: 1200000,
     globals: true,
-    pool: 'forks',
-    singleFork: true,
-    fileParallelism: false,
+    pool: 'threads',
+    singleThread: true,
     server: {
       deps: {
         exclude: ['raft-logic'],
