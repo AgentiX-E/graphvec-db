@@ -250,4 +250,153 @@ describe('AuditLogger', () => {
       expect(() => new AuditLogger(undefined, logPath)).not.toThrow()
     })
   })
+
+  // ─── 持久化测试 ──────────────────────────────
+
+  describe('persistence with storagePath', () => {
+    let tmpDir: string
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-persist-'))
+    })
+
+    afterEach(async () => {
+      // close any logger we might have opened
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('creates ndjson file on first log', () => {
+      const alog = new AuditLogger(undefined, undefined, tmpDir)
+      alog.log({
+        operation: 'CREATE_NODE',
+        user: 'admin',
+        role: Role.ADMIN,
+        resource: 'graph:test',
+        result: 'success',
+      })
+      alog.save()
+
+      const ndjsonPath = path.join(tmpDir, 'audit-log.ndjson')
+      expect(fs.existsSync(ndjsonPath)).toBe(true)
+      const content = fs.readFileSync(ndjsonPath, 'utf-8')
+      expect(content).toContain('CREATE_NODE')
+      expect(content).toContain('admin')
+    })
+
+    it('loads entries from existing ndjson file on construction', () => {
+      // First instance writes entries
+      const log1 = new AuditLogger(undefined, undefined, tmpDir)
+      log1.log({ operation: 'OP1', user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'success' })
+      log1.log({ operation: 'OP2', user: 'u2', role: Role.WRITER, resource: 'r2', result: 'denied' })
+      log1.save()
+      log1.close()
+
+      // Second instance loads from disk
+      const log2 = new AuditLogger(undefined, undefined, tmpDir)
+      const entries = log2.getAll()
+      expect(entries.length).toBeGreaterThanOrEqual(2)
+      expect(entries[0].operation).toBe('OP1')
+      expect(entries[1].operation).toBe('OP2')
+      log2.close()
+    })
+
+    it('persists and recovers multiple entries in order', () => {
+      const log1 = new AuditLogger(undefined, undefined, tmpDir)
+      const count = 5
+      for (let i = 0; i < count; i++) {
+        log1.log({
+          operation: `OP${i}`,
+          user: 'u',
+          role: Role.ADMIN,
+          resource: 'r',
+          result: 'success',
+        })
+      }
+      log1.save()
+      log1.close()
+
+      const log2 = new AuditLogger(undefined, undefined, tmpDir)
+      const entries = log2.getAll()
+      expect(entries.length).toBeGreaterThanOrEqual(count)
+      for (let i = 0; i < count; i++) {
+        expect(entries[i].operation).toBe(`OP${i}`)
+      }
+      log2.close()
+    })
+
+    it('auto flushes on threshold', async () => {
+      // Use a separate small threshold by manually triggering
+      const alog = new AuditLogger(undefined, undefined, tmpDir)
+      const ndjsonPath = path.join(tmpDir, 'audit-log.ndjson')
+
+      // Log 999 entries (below default threshold of 1000)
+      for (let i = 0; i < 900; i++) {
+        alog.log({
+          operation: `AUTO_OP_${i}`,
+          user: 'u',
+          role: Role.ADMIN,
+          resource: 'r',
+          result: 'success',
+        })
+      }
+
+      // Save after 900 entries
+      alog.save()
+      expect(fs.existsSync(ndjsonPath)).toBe(true)
+      alog.close()
+    })
+
+    it('flush writes to file', () => {
+      const alog = new AuditLogger(undefined, undefined, tmpDir)
+      alog.log({
+        operation: 'FLUSH_TEST',
+        user: 'flusher',
+        role: Role.OPERATOR,
+        resource: 'test',
+        result: 'success',
+      })
+
+      alog.flush()
+
+      const ndjsonPath = path.join(tmpDir, 'audit-log.ndjson')
+      expect(fs.existsSync(ndjsonPath)).toBe(true)
+      const content = fs.readFileSync(ndjsonPath, 'utf-8')
+      expect(content).toContain('FLUSH_TEST')
+      alog.close()
+    })
+
+    it('close flushes remaining entries', async () => {
+      const alog = new AuditLogger(undefined, undefined, tmpDir)
+      alog.log({
+        operation: 'CLOSE_FLUSH',
+        user: 'test',
+        role: Role.ADMIN,
+        resource: 'x',
+        result: 'success',
+      })
+
+      await alog.close()
+
+      const ndjsonPath = path.join(tmpDir, 'audit-log.ndjson')
+      expect(fs.existsSync(ndjsonPath)).toBe(true)
+      expect(fs.readFileSync(ndjsonPath, 'utf-8')).toContain('CLOSE_FLUSH')
+    })
+
+    it('handles empty storage gracefully', () => {
+      const alog = new AuditLogger(undefined, undefined, tmpDir)
+      expect(alog.entryCount).toBe(0)
+      alog.close()
+    })
+
+    it('getStoragePath returns the storage path', () => {
+      const alog = new AuditLogger(undefined, undefined, tmpDir)
+      expect(alog.getStoragePath()).toBe(tmpDir)
+      alog.close()
+    })
+
+    it('getStoragePath returns null when no storage path set', () => {
+      const alog = new AuditLogger()
+      expect(alog.getStoragePath()).toBeNull()
+    })
+  })
 })

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { Authenticator, RBAC, validateAuthConfig, bodySizeLimitMiddleware, BODY_SIZE_LIMIT, BODY_READ_TIMEOUT } from './auth'
+import { Authenticator, RBAC, validateAuthConfig, bodySizeLimitMiddleware, BODY_SIZE_LIMIT, BODY_READ_TIMEOUT, JwtManager, ApiKeyManager } from './auth'
 import { Role, AuthError, AuthConfig } from '../types'
 import * as http from 'http'
 
@@ -496,6 +496,210 @@ describe('bodySizeLimitMiddleware', () => {
   it('exposes constants with expected values', () => {
     expect(BODY_SIZE_LIMIT).toBe(10485760)
     expect(BODY_READ_TIMEOUT).toBe(30000)
+  })
+})
+
+// ─── JWT Manager ──────────────────────────────────────────────
+
+describe('JwtManager', () => {
+  const TEST_SECRET = 'my-test-secret-key-at-least-16-bytes!'
+
+  it('signToken produces a valid JWT with three parts', () => {
+    const mgr = new JwtManager(TEST_SECRET)
+    const token = mgr.signToken('user1', Role.ADMIN, 3600)
+    const parts = token.split('.')
+    expect(parts).toHaveLength(3)
+    // Parts should be non-empty
+    expect(parts[0].length).toBeGreaterThan(0)
+    expect(parts[1].length).toBeGreaterThan(0)
+    expect(parts[2].length).toBeGreaterThan(0)
+  })
+
+  it('verifyToken returns valid payload for valid token', () => {
+    // JwtManager is imported
+    const mgr = new JwtManager(TEST_SECRET)
+    const token = mgr.signToken('alice', Role.WRITER, 3600)
+    const payload = mgr.verifyToken(token)
+    expect(payload.userId).toBe('alice')
+    expect(payload.role).toBe(Role.WRITER)
+    expect(payload.exp).toBeGreaterThan(Math.floor(Date.now() / 1000))
+    expect(payload.iat).toBeDefined()
+  })
+
+  it('verifyToken rejects expired token', () => {
+    // JwtManager is imported
+    const mgr = new JwtManager(TEST_SECRET)
+    const token = mgr.signToken('bob', Role.READER, 0) // 0 second expiry
+    // Wait a tiny bit for the token to be strictly expired
+    expect(() => mgr.verifyToken(token)).toThrow('has expired')
+  })
+
+  it('verifyToken rejects token signed with different secret', () => {
+    // JwtManager is imported
+    const mgr1 = new JwtManager(TEST_SECRET)
+    const mgr2 = new JwtManager('different-secret-key-here-too!')
+    const token = mgr1.signToken('eve', Role.ADMIN, 3600)
+    expect(() => mgr2.verifyToken(token)).toThrow('Invalid JWT signature')
+  })
+
+  it('verifyToken rejects malformed token', () => {
+    // JwtManager is imported
+    const mgr = new JwtManager(TEST_SECRET)
+    expect(() => mgr.verifyToken('not.a.token')).toThrow('Invalid JWT')
+    expect(() => mgr.verifyToken('')).toThrow('Invalid JWT')
+    expect(() => mgr.verifyToken('a.b.c.d')).toThrow('Invalid JWT')
+  })
+
+  it('authenticateFromHeader extracts bearer token correctly', () => {
+    // JwtManager is imported
+    const mgr = new JwtManager(TEST_SECRET)
+    const token = mgr.signToken('carol', Role.OPERATOR, 3600)
+    const payload = mgr.authenticateFromHeader(`Bearer ${token}`)
+    expect(payload.userId).toBe('carol')
+    expect(payload.role).toBe(Role.OPERATOR)
+  })
+
+  it('authenticateFromHeader rejects missing header', () => {
+    // JwtManager is imported
+    const mgr = new JwtManager(TEST_SECRET)
+    expect(() => mgr.authenticateFromHeader(undefined)).toThrow('Authorization header')
+    expect(() => mgr.authenticateFromHeader('')).toThrow('Authorization header')
+  })
+
+  it('authenticateFromHeader rejects non-bearer scheme', () => {
+    // JwtManager is imported
+    const mgr = new JwtManager(TEST_SECRET)
+    expect(() => mgr.authenticateFromHeader('Basic dXNlcjpwYXNz')).toThrow('Bearer scheme')
+  })
+
+  it('constructor generates random secret when none provided', () => {
+    // JwtManager is imported
+    const mgr1 = new JwtManager()
+    const mgr2 = new JwtManager()
+    const t1 = mgr1.signToken('u', Role.ADMIN, 60)
+    const t2 = mgr2.signToken('u', Role.ADMIN, 60)
+    // Different secrets → different tokens
+    expect(t1).not.toBe(t2)
+  })
+
+  it('rejects secret shorter than 16 bytes', () => {
+    // JwtManager is imported
+    expect(() => new JwtManager('short')).toThrow('at least 16 bytes')
+  })
+})
+
+// ─── API Key Manager ──────────────────────────────────────────
+
+describe('ApiKeyManager', () => {
+  it('generateApiKey produces key with agx_ prefix', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    const record = mgr.generateApiKey('user1', Role.ADMIN)
+    expect(record.key).toMatch(/^agx_[A-Za-z0-9_-]{43}=*$/)
+    expect(record.keyPrefix).toBe(record.key.substring(0, 12))
+    expect(record.userId).toBe('user1')
+    expect(record.role).toBe(Role.ADMIN)
+    expect(record.enabled).toBe(true)
+  })
+
+  it('validateApiKey returns identity for valid key', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    const record = mgr.generateApiKey('alice', Role.WRITER)
+    const result = mgr.validateApiKey(record.key)
+    expect(result).not.toBeNull()
+    expect(result!.userId).toBe('alice')
+    expect(result!.role).toBe(Role.WRITER)
+  })
+
+  it('validateApiKey returns null for invalid key', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    expect(mgr.validateApiKey('agx_invalidkey123456789')).toBeNull()
+    expect(mgr.validateApiKey('not-even-a-key')).toBeNull()
+    expect(mgr.validateApiKey('')).toBeNull()
+  })
+
+  it('revokeApiKey disables the key', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    const record = mgr.generateApiKey('bob', Role.READER)
+    expect(mgr.validateApiKey(record.key)).not.toBeNull()
+    expect(mgr.revokeApiKey(record.key)).toBe(true)
+    expect(mgr.validateApiKey(record.key)).toBeNull()
+  })
+
+  it('revokeApiKey returns false for unknown key', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    expect(mgr.revokeApiKey('agx_nonexistent')).toBe(false)
+  })
+
+  it('revokeByPrefix works correctly', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    const record = mgr.generateApiKey('carol', Role.OPERATOR)
+    expect(mgr.revokeByPrefix(record.keyPrefix)).toBe(true)
+    expect(mgr.validateApiKey(record.key)).toBeNull()
+  })
+
+  it('revokeByPrefix returns false for unknown prefix', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    expect(mgr.revokeByPrefix('agx_unknown')).toBe(false)
+  })
+
+  it('hasPrefix returns correct boolean', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    const record = mgr.generateApiKey('dave', Role.ADMIN)
+    expect(mgr.hasPrefix(record.keyPrefix)).toBe(true)
+    expect(mgr.hasPrefix('agx_nonexist')).toBe(false)
+  })
+
+  it('listActiveKeys returns only active keys', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    mgr.generateApiKey('u1', Role.ADMIN)
+    const r2 = mgr.generateApiKey('u2', Role.WRITER)
+    mgr.revokeApiKey(r2.key)
+    const active = mgr.listActiveKeys()
+    expect(active.length).toBe(1)
+    expect(active[0].userId).toBe('u1')
+  })
+
+  it('authenticateFromHeader handles Bearer scheme', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    const record = mgr.generateApiKey('eve', Role.READER)
+    const result = mgr.authenticateFromHeader(`Bearer ${record.key}`)
+    expect(result).not.toBeNull()
+    expect(result!.userId).toBe('eve')
+  })
+
+  it('authenticateFromHeader handles raw API Key', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    const record = mgr.generateApiKey('frank', Role.OPERATOR)
+    const result = mgr.authenticateFromHeader(record.key)
+    expect(result).not.toBeNull()
+    expect(result!.userId).toBe('frank')
+  })
+
+  it('authenticateFromHeader returns null for missing header', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    expect(mgr.authenticateFromHeader(undefined)).toBeNull()
+    expect(mgr.authenticateFromHeader('')).toBeNull()
+  })
+
+  it('generateApiKey produces unique keys each time', () => {
+    // ApiKeyManager is imported
+    const mgr = new ApiKeyManager()
+    const r1 = mgr.generateApiKey('u1', Role.ADMIN)
+    const r2 = mgr.generateApiKey('u1', Role.ADMIN)
+    expect(r1.key).not.toBe(r2.key)
+    expect(r1.keyPrefix).not.toBe(r2.keyPrefix)
   })
 })
 

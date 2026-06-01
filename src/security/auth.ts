@@ -1,7 +1,9 @@
 // ============================================================
-// Auth — mTLS 认证引擎（唯一认证方式）
+// Auth — mTLS 认证引擎 + JWT Token 签发/验证 + API Key 管理
 //
-// 只支持 mTLS 认证。证书 CN 用作用户标识，身份文件配置授权。
+// 主认证方式为 mTLS，同时提供：
+// - JWT bearer token (HMAC-SHA256) 供 REST API 使用
+// - API Key 供自动化/CI 场景使用
 // ============================================================
 
 import { RBAC as RbacAcl } from './rbac'
@@ -10,6 +12,7 @@ export { AclEntry, AclResourceType, AclAction } from './rbac'
 import * as http from 'http'
 import { AuthConfig, AuthResult, Role, AuthError } from '../types'
 import { Logger } from '../ops/logger'
+import * as crypto from 'crypto'
 
 /**
  * mTLS 认证引擎
@@ -505,6 +508,302 @@ function jsonSizeResponse(
 
 /** @deprecated */
 export class RateLimiter {}
+
+/**
+ * JWT 载荷接口
+ */
+export interface JwtPayload {
+  userId: string
+  role: Role
+  exp: number   // expiration timestamp (seconds since epoch)
+  iat?: number  // issued at
+}
+
+/**
+ * API Key 记录
+ */
+export interface ApiKeyRecord {
+  key: string          // 完整 API Key (仅创建时返回)
+  keyPrefix: string    // 前 8 位用于识别
+  userId: string
+  role: Role
+  createdAt: number
+  enabled: boolean
+}
+
+/**
+ * JWT Manager — HMAC-SHA256 签发/验证
+ *
+ * 使用 Node.js 内置 crypto 模块实现 HMAC-SHA256 签名。
+ * Token 格式: base64url(header).base64url(payload).base64url(signature)
+ * 符合 JWT 标准 (RFC 7519)。
+ */
+export class JwtManager {
+  private secret: Buffer
+  private readonly ISSUER = 'agentiX-graphvec'
+  private readonly ALGORITHM = 'HS256'
+
+  /**
+   * @param secret 签名密钥（至少 32 字节）
+   */
+  constructor(secret?: string | Buffer) {
+    if (secret) {
+      this.secret = typeof secret === 'string' ? Buffer.from(secret) : secret
+    } else {
+      // 默认生成 256-bit 密钥
+      this.secret = crypto.randomBytes(32)
+    }
+    if (this.secret.length < 16) {
+      throw new Error('JWT secret must be at least 16 bytes')
+    }
+  }
+
+  /**
+   * 签发 JWT token
+   *
+   * @param userId  用户标识
+   * @param role    用户角色
+   * @param expiresInSec 过期时间（秒），默认 3600 (1h)
+   * @returns 签名的 JWT token 字符串
+   */
+  signToken(userId: string, role: Role, expiresInSec: number = 3600): string {
+    const header = { alg: this.ALGORITHM, typ: 'JWT' }
+    const now = Math.floor(Date.now() / 1000)
+    const payload: JwtPayload = {
+      userId,
+      role,
+      exp: now + expiresInSec,
+      iat: now,
+    }
+
+    const headerB64 = this._base64urlEncode(Buffer.from(JSON.stringify(header)))
+    const payloadB64 = this._base64urlEncode(Buffer.from(JSON.stringify(payload)))
+    const signature = this._sign(`${headerB64}.${payloadB64}`)
+
+    return `${headerB64}.${payloadB64}.${signature}`
+  }
+
+  /**
+   * 验证并解码 JWT token
+   *
+   * @param token JWT token 字符串
+   * @returns 解码后的 JwtPayload
+   * @throws AuthError 如果 token 无效或已过期
+   */
+  verifyToken(token: string): JwtPayload {
+    const parts = token.split('.')
+    if (parts.length !== 3) {
+      throw new AuthError('Invalid JWT token format', 401)
+    }
+
+    const [headerB64, payloadB64, signatureB64] = parts
+
+    // 验证签名
+    const expectedSig = this._sign(`${headerB64}.${payloadB64}`)
+    const sigBuf = Buffer.from(signatureB64)
+    const expectedBuf = Buffer.from(expectedSig)
+    if (sigBuf.length !== expectedBuf.length ||
+        !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      throw new AuthError('Invalid JWT signature', 401)
+    }
+
+    // 解码 payload
+    let payload: JwtPayload
+    try {
+      const decoded = JSON.parse(this._base64urlDecode(payloadB64).toString('utf-8'))
+      payload = {
+        userId: decoded.userId,
+        role: decoded.role as Role,
+        exp: decoded.exp,
+        iat: decoded.iat,
+      }
+    } catch {
+      throw new AuthError('Invalid JWT payload', 401)
+    }
+
+    // 检查过期
+    const now = Math.floor(Date.now() / 1000)
+    if (payload.exp <= now) {
+      throw new AuthError('JWT token has expired', 401)
+    }
+
+    return payload
+  }
+
+  /**
+   * 从 HTTP Authorization header 提取并验证 bearer token
+   */
+  authenticateFromHeader(authHeader: string | undefined): JwtPayload {
+    if (!authHeader) {
+      throw new AuthError('Authorization header is required', 401)
+    }
+
+    const parts = authHeader.split(' ')
+    if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
+      throw new AuthError('Authorization header must use Bearer scheme', 401)
+    }
+
+    return this.verifyToken(parts[1])
+  }
+
+  // ── 内部方法 ──────────────────────────────
+
+  private _sign(data: string): string {
+    const hmac = crypto.createHmac('sha256', this.secret)
+    hmac.update(data)
+    return this._base64urlEncode(hmac.digest())
+  }
+
+  private _base64urlEncode(buf: Buffer): string {
+    return buf.toString('base64url')
+  }
+
+  private _base64urlDecode(str: string): Buffer {
+    return Buffer.from(str, 'base64url')
+  }
+}
+
+/**
+ * API Key 管理器
+ *
+ * 生成固定格式的 API Key:
+ *   agx_<random 32 bytes base64url>
+ * 并存储 key 的哈希用于验证。
+ *
+ * API Key 是不可逆的（只存储 SHA-256 哈希），
+ * 因此创建后只返回一次完整 key。
+ */
+export class ApiKeyManager {
+  private keys: Map<string, { userId: string; role: Role; createdAt: number; enabled: boolean }> = new Map()
+  private prefixIndex: Map<string, string> = new Map() // keyPrefix → keyHash
+
+  /**
+   * 生成新的 API Key
+   *
+   * @param userId 用户标识
+   * @param role   用户角色
+   * @returns ApiKeyRecord 包含完整 key（仅此一次）
+   */
+  generateApiKey(userId: string, role: Role): ApiKeyRecord {
+    const rawKey = crypto.randomBytes(32)
+    const apiKey = `agx_${rawKey.toString('base64url')}`
+    const keyHash = this._hashKey(apiKey)
+    const keyPrefix = apiKey.substring(0, 12) // "agx_" + 8 chars
+
+    this.keys.set(keyHash, { userId, role, createdAt: Date.now(), enabled: true })
+    this.prefixIndex.set(keyPrefix, keyHash)
+
+    return {
+      key: apiKey,
+      keyPrefix,
+      userId,
+      role,
+      createdAt: Date.now(),
+      enabled: true,
+    }
+  }
+
+  /**
+   * 验证 API Key
+   *
+   * @param apiKey 完整的 API Key
+   * @returns 如果有效返回 { userId, role }，否则 null
+   */
+  validateApiKey(apiKey: string): { userId: string; role: Role } | null {
+    if (!apiKey.startsWith('agx_')) {
+      return null
+    }
+
+    const keyHash = this._hashKey(apiKey)
+    const record = this.keys.get(keyHash)
+    if (!record || !record.enabled) {
+      return null
+    }
+
+    return { userId: record.userId, role: record.role }
+  }
+
+  /**
+   * 禁用 API Key（不可逆）
+   */
+  revokeApiKey(apiKey: string): boolean {
+    const keyHash = this._hashKey(apiKey)
+    const record = this.keys.get(keyHash)
+    if (!record) return false
+    record.enabled = false
+    return true
+  }
+
+  /**
+   * 按前缀禁用 API Key
+   */
+  revokeByPrefix(keyPrefix: string): boolean {
+    const keyHash = this.prefixIndex.get(keyPrefix)
+    if (!keyHash) return false
+    return this.revokeByHash(keyHash)
+  }
+
+  /**
+   * 按哈希禁用
+   */
+  revokeByHash(keyHash: string): boolean {
+    const record = this.keys.get(keyHash)
+    if (!record) return false
+    record.enabled = false
+    return true
+  }
+
+  /**
+   * 检查前缀是否存在
+   */
+  hasPrefix(keyPrefix: string): boolean {
+    return this.prefixIndex.has(keyPrefix)
+  }
+
+  /**
+   * 获取所有活跃 key（不含完整 key，返回安全信息）
+   */
+  listActiveKeys(): Array<{ keyPrefix: string; userId: string; role: Role; createdAt: number }> {
+    const result: Array<{ keyPrefix: string; userId: string; role: Role; createdAt: number }> = []
+    for (const [keyHash, record] of this.keys) {
+      if (record.enabled) {
+        // 查找对应的 prefix
+        let prefix = 'unknown'
+        for (const [p, h] of this.prefixIndex) {
+          if (h === keyHash) { prefix = p; break }
+        }
+        result.push({
+          keyPrefix: prefix,
+          userId: record.userId,
+          role: record.role,
+          createdAt: record.createdAt,
+        })
+      }
+    }
+    return result
+  }
+
+  /**
+   * 从 HTTP Authorization header 提取并验证 API Key
+   */
+  authenticateFromHeader(authHeader: string | undefined): { userId: string; role: Role } | null {
+    if (!authHeader) return null
+    const parts = authHeader.split(' ')
+    if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
+      // Bearer token — 尝试作为 API Key 验证
+      return this.validateApiKey(parts[1])
+    }
+    // 无 scheme 或自定义 header — 尝试直接作为 API Key
+    if (parts.length === 1 && parts[0].startsWith('agx_')) {
+      return this.validateApiKey(parts[0])
+    }
+    return null
+  }
+
+  private _hashKey(apiKey: string): string {
+    return crypto.createHash('sha256').update(apiKey).digest('hex')
+  }
+}
 
 /** @deprecated */
 export async function authenticateBasic(): Promise<string> {
