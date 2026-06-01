@@ -1,11 +1,18 @@
 /**
- * graphql-adapter.ts — GraphQL Schema 基础实现
+ * graphql-adapter.ts — GraphQL Schema 实现（支持 Query + Mutation）
  *
  * 纯手动解析的 GraphQL 适配层，不引入 graphql npm 包。
- * 暴露 3 个根字段：
+ * 暴露 Query 根字段：
  *   - nodes(label: String, limit: Int): [Node]
  *   - edges(type: String): [Edge]
  *   - query(cypher: String): JSON
+ *
+ * 暴露 Mutation 根字段：
+ *   - createNode(name: String!, type: Int, props: JSON): Node
+ *   - createEdge(src: Int!, dst: Int!, type: Int!, props: JSON): Edge
+ *   - updateNode(id: Int!, name: String, props: JSON): Node
+ *   - deleteNode(id: Int!): Boolean
+ *   - deleteEdge(src: Int!, dst: Int!, type: Int!): Boolean
  *
  * 接口设计为可对接任意后端引擎，通过 ResolverMap 注入。
  */
@@ -27,6 +34,22 @@ export interface ResolverMap {
   query: (args: { cypher: string }) => unknown | Promise<unknown>
 }
 
+// ── Mutation Resolver 类型 ────────────────────────────────
+
+export type NodeInput = { name: string; type?: number; props?: Record<string, unknown> }
+export type EdgeInput = { src: number; dst: number; type: number; props?: Record<string, unknown> }
+export type NodeUpdateInput = { id: number; name?: string; props?: Record<string, unknown> }
+export type DeleteNodeInput = { id: number }
+export type DeleteEdgeInput = { src: number; dst: number; type: number }
+
+export interface MutationResolvers {
+  createNode: (args: NodeInput) => NodeRecord | Promise<NodeRecord>
+  createEdge: (args: EdgeInput) => EdgeRecord | Promise<EdgeRecord>
+  updateNode: (args: NodeUpdateInput) => NodeRecord | Promise<NodeRecord>
+  deleteNode: (args: DeleteNodeInput) => boolean | Promise<boolean>
+  deleteEdge: (args: DeleteEdgeInput) => boolean | Promise<boolean>
+}
+
 /**
  * GraphQL 适配器
  *
@@ -38,20 +61,27 @@ export interface ResolverMap {
  */
 export class GraphQLAdapter {
   private resolvers: ResolverMap
+  private mutationResolvers: MutationResolvers | null
 
-  constructor(resolvers: ResolverMap) {
+  constructor(resolvers: ResolverMap, mutationResolvers?: MutationResolvers) {
     this.resolvers = resolvers
+    this.mutationResolvers = mutationResolvers ?? null
   }
 
   /**
-   * 执行 GraphQL 查询
+   * 执行 GraphQL 查询或 mutation
    *
    * 支持的查询格式：
    *   { nodes(label: "Person", limit: 10) { id name } }
    *   { edges(type: "RELATED") { src dst } }
    *   { query(cypher: "MATCH (n) RETURN n") }
    *
-   * 不支持嵌套查询、fragments、mutations、variables。
+   * 支持的 mutation 格式（需要 mutationResolvers）：
+   *   { createNode(name: "Alice", type: 1) { id name } }
+   *   { createEdge(src: 1, dst: 2, type: 10) { src dst type } }
+   *   { updateNode(id: 1, name: "Bob") { id name } }
+   *   { deleteNode(id: 1) }
+   *   { deleteEdge(src: 1, dst: 2, type: 10) }
    */
   async execute(query: string): Promise<Record<string, unknown>> {
     const trimmed = query.trim()
@@ -65,10 +95,10 @@ export class GraphQLAdapter {
   }
 
   /**
-   * 获取 Schema 定义字符串（SDL）
+   * 获取 Schema 定义字符串（SDL），包含 mutation 类型
    */
   getSchemaSDL(): string {
-    return `
+    let sdl = `
 type Query {
   nodes(label: String, limit: Int): [Node]
   edges(type: String): [Edge]
@@ -91,6 +121,20 @@ type Edge {
 
 scalar JSON
 `
+
+    if (this.mutationResolvers) {
+      sdl += `
+type Mutation {
+  createNode(name: String!, type: Int, props: JSON): Node
+  createEdge(src: Int!, dst: Int!, type: Int!, props: JSON): Edge
+  updateNode(id: Int!, name: String, props: JSON): Node
+  deleteNode(id: Int!): Boolean
+  deleteEdge(src: Int!, dst: Int!, type: Int!): Boolean
+}
+`
+    }
+
+    return sdl
   }
 
   // ── 解析器 ────────────────────────────────────────────
@@ -301,6 +345,7 @@ scalar JSON
   }
 
   private async _getResolver(fieldName: string): Promise<((args: Record<string, unknown>) => unknown) | null> {
+    // Query resolvers
     switch (fieldName) {
       case 'nodes':
         return (args: Record<string, unknown>) => this.resolvers.nodes({
@@ -315,8 +360,43 @@ scalar JSON
         return (args: Record<string, unknown>) => this.resolvers.query({
           cypher: args.cypher as string,
         })
-      default:
-        return null
     }
+
+    // Mutation resolvers
+    if (this.mutationResolvers) {
+      switch (fieldName) {
+        case 'createNode':
+          return (args: Record<string, unknown>) => this.mutationResolvers!.createNode({
+            name: args.name as string,
+            type: args.type as number | undefined,
+            props: args.props as Record<string, unknown> | undefined,
+          })
+        case 'createEdge':
+          return (args: Record<string, unknown>) => this.mutationResolvers!.createEdge({
+            src: args.src as number,
+            dst: args.dst as number,
+            type: args.type as number,
+            props: args.props as Record<string, unknown> | undefined,
+          })
+        case 'updateNode':
+          return (args: Record<string, unknown>) => this.mutationResolvers!.updateNode({
+            id: args.id as number,
+            name: args.name as string | undefined,
+            props: args.props as Record<string, unknown> | undefined,
+          })
+        case 'deleteNode':
+          return (args: Record<string, unknown>) => this.mutationResolvers!.deleteNode({
+            id: args.id as number,
+          })
+        case 'deleteEdge':
+          return (args: Record<string, unknown>) => this.mutationResolvers!.deleteEdge({
+            src: args.src as number,
+            dst: args.dst as number,
+            type: args.type as number,
+          })
+      }
+    }
+
+    return null
   }
 }
