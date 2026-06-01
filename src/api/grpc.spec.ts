@@ -185,4 +185,51 @@ describe('gRPC GraphVec Service', () => {
     expect(del).toBeDefined()
     expect(typeof del.success).toBe('boolean')
   })
+
+  // ── P1-A6: UpdateNode ──
+
+  it('should update node props via gRPC UpdateNode', async () => {
+    const added = await client.addNode(1, 'update-node', { color: 'red' })
+    const id = added.id
+
+    // Update props via UpdateNode RPC
+    const updated = await client.updateNode(id, { color: 'blue', size: '10' })
+    expect(updated).toBeDefined()
+    expect(updated.id).toBe(id)
+    expect(updated.name).toBe('update-node')
+
+    // Verify props were merged
+    const node = await client.getNode(id)
+    expect(node.props.color).toBe('blue')
+    expect(node.props.size).toBe('10')
+  })
+
+  it('should return error when updating non-existent node via gRPC', async () => {
+    await expect(client.updateNode(999999, { color: 'red' })).rejects.toThrow('not found')
+  })
+
+  // ── P1-A6: UpdateEdge ──
+
+  it('should update edge props via gRPC UpdateEdge', async () => {
+    const n1 = await client.addNode(1, 'edge-upd-src')
+    const n2 = await client.addNode(1, 'edge-upd-dst')
+
+    await client.addEdge(n1.id, n2.id, 5, { weight: '1.0' })
+
+    // Update edge props
+    const updated = await client.updateEdge(n1.id, n2.id, 5, { weight: '2.0', label: 'friend' })
+    expect(updated).toBeDefined()
+    expect(updated.src).toBe(n1.id)
+    expect(updated.dst).toBe(n2.id)
+    expect(updated.type).toBe(5)
+
+    // Verify props were merged
+    const edge = await client.getEdge(n1.id, n2.id, 5)
+    expect(edge.props.weight).toBe('2.0')
+    expect(edge.props.label).toBe('friend')
+  })
+
+  it('should return error when updating non-existent edge via gRPC', async () => {
+    await expect(client.updateEdge(1, 2, 99, { weight: '1.0' })).rejects.toThrow('not found')
+  })
 })

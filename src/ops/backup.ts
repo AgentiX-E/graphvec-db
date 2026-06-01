@@ -265,6 +265,7 @@ export class Backup {
 
   /**
    * 列出所有备份
+   * 统一返回 `.tar.gz` 格式的备份路径，排除了裸目录和其他无关文件。
    */
   listBackups(backupDir: string): string[] {
     try {
@@ -272,7 +273,8 @@ export class Backup {
         .filter(name => {
           if (!name.startsWith('graphvec-backup-')) return false
           const fullPath = path.join(backupDir, name)
-          return fs.statSync(fullPath).isDirectory() || name.endsWith('.tar.gz') || name.endsWith('.tgz')
+          // 只返回 .tar.gz 和 .tgz 文件，裸目录不再视为有效备份
+          return fs.statSync(fullPath).isFile() && (name.endsWith('.tar.gz') || name.endsWith('.tgz'))
         })
         .map(name => path.join(backupDir, name))
     } catch {

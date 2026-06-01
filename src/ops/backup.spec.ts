@@ -288,25 +288,38 @@ describe('Backup - Consistency', () => {
     fs.unlinkSync(fakeGzPath)
   })
 
-  it('should list backups and filter correctly', () => {
+  it('should list backups and filter correctly — only .tar.gz files', () => {
     cleanDir(BACKUP_DIR)
     fs.mkdirSync(BACKUP_DIR, { recursive: true })
 
-    // Create raw directory backup
+    // Create raw directory backup (should be excluded now)
     const dirBackup = path.join(BACKUP_DIR, 'graphvec-backup-2026-05-31T10-00-00-000Z')
     fs.mkdirSync(dirBackup, { recursive: true })
 
-    // Create compressed backup
+    // Create compressed backup (.tar.gz)
     const gzBackup = path.join(BACKUP_DIR, 'graphvec-backup-2026-05-31T11-00-00-000Z.tar.gz')
     fs.writeFileSync(gzBackup, '')
+
+    // Create compressed backup (.tgz)
+    const tgzBackup = path.join(BACKUP_DIR, 'graphvec-backup-2026-05-31T12-00-00-000Z.tgz')
+    fs.writeFileSync(tgzBackup, '')
 
     // Create unrelated file (should be filtered out)
     fs.writeFileSync(path.join(BACKUP_DIR, 'other-file.txt'), '')
 
     const backups = backupInst.listBackups(BACKUP_DIR)
-    expect(backups).toContain(dirBackup)
+    // 裸目录不再被视为有效备份
+    expect(backups).not.toContain(dirBackup)
+    // .tar.gz 文件仍被包含
     expect(backups).toContain(gzBackup)
+    // .tgz 文件也被包含
+    expect(backups).toContain(tgzBackup)
+    // 无关文件被过滤
     expect(backups).not.toContain(path.join(BACKUP_DIR, 'other-file.txt'))
+    // 验证 listBackups 只返回文件（所有返回值都应以 .tar.gz 或 .tgz 结尾）
+    for (const b of backups) {
+      expect(b.endsWith('.tar.gz') || b.endsWith('.tgz')).toBe(true)
+    }
 
     cleanDir(BACKUP_DIR)
   })

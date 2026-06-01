@@ -10,11 +10,13 @@ service GraphService {
   // Node operations
   rpc GetNode (GetNodeRequest) returns (Node);
   rpc AddNode (AddNodeRequest) returns (Node);
+  rpc UpdateNode (UpdateNodeRequest) returns (Node);
   rpc DeleteNode (DeleteNodeRequest) returns (DeleteNodeResponse);
 
   // Edge operations
   rpc GetEdge (GetEdgeRequest) returns (Edge);
   rpc AddEdge (AddEdgeRequest) returns (AddEdgeResponse);
+  rpc UpdateEdge (UpdateEdgeRequest) returns (Edge);
   rpc DeleteEdge (DeleteEdgeRequest) returns (DeleteEdgeResponse);
 
   // Query operations
@@ -68,6 +70,12 @@ message DeleteNodeResponse {
   bool success = 1;
 }
 
+// Update node
+message UpdateNodeRequest {
+  int64 id = 1;
+  map<string, string> props = 2;
+}
+
 // ──────────── 边请求/响应 ────────────
 
 message GetEdgeRequest {
@@ -96,6 +104,14 @@ message DeleteEdgeRequest {
 
 message DeleteEdgeResponse {
   bool success = 1;
+}
+
+// Update edge: src + dst + type_id uniquely identify the edge
+message UpdateEdgeRequest {
+  int64 src = 1;
+  int64 dst = 2;
+  int32 type_id = 3;
+  map<string, string> props = 4;
 }
 
 // ──────────── 查询 ────────────

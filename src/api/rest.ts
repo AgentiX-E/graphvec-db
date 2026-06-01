@@ -9,6 +9,7 @@ import { ShardManager } from '../shard/shard-manager'
 import { Authenticator, RBAC, bodySizeLimitMiddleware, BODY_SIZE_LIMIT } from '../security/auth'
 import { TLSConfig } from '../security/tls'
 import { Role, AuthResult, AuthError } from '../types'
+import { ErrorCode, inferErrorCode } from './error-codes'
 import type { OutboxReplicationManager } from '../core/outbox-replication'
 import type { DatabaseManager, DatabaseInstance } from '../core/database-manager'
 import { register } from 'prom-client'
@@ -84,7 +85,18 @@ export function jsonResponse(
   statusCode: number,
   data: unknown,
 ): void {
-  const body = JSON.stringify(data)
+  // 对于错误响应，自动附加 errorCode 字段
+  let bodyData = data
+  if (statusCode >= 400) {
+    const existing = data as Record<string, unknown>
+    if (typeof data === 'object' && data !== null && !existing.errorCode) {
+      bodyData = {
+        ...existing,
+        errorCode: existing.errorCode ?? inferErrorCode(statusCode),
+      }
+    }
+  }
+  const body = JSON.stringify(bodyData)
   res.writeHead(statusCode, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),

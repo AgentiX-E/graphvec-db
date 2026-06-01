@@ -139,6 +139,29 @@ export function createGrpcServer(
       }
     },
 
+    UpdateNode: async (call: any, callback: any) => {
+      try {
+        const { id, props } = call.request
+        const existing = engine.getNode(id)
+        if (!existing) {
+          callback({ code: grpc.status.NOT_FOUND, message: `Node ${id} not found` })
+          return
+        }
+        // Merge partial props into existing node and upsert
+        const mergedProps: Record<string, unknown> = {
+          ...(existing.props ?? {}),
+          ...propsFromStringMap(props),
+        }
+        await engine.upsertNode(existing.type, existing.name, {
+          props: mergedProps as NodeProperties,
+        })
+        const updated = engine.getNode(id)!
+        callback(null, nodeToProto(updated))
+      } catch (err: any) {
+        callback({ code: grpc.status.INTERNAL, message: err.message })
+      }
+    },
+
     // ── Edge operations ──
 
     GetEdge: (call: any, callback: any) => {
@@ -176,6 +199,29 @@ export function createGrpcServer(
         // We check edge existence after the delete to determine success.
         const stillExists = engine.getEdge(src, dst, typeId)
         callback(null, { success: !stillExists })
+      } catch (err: any) {
+        callback({ code: grpc.status.INTERNAL, message: err.message })
+      }
+    },
+
+    UpdateEdge: async (call: any, callback: any) => {
+      try {
+        const { src, dst, typeId, props } = call.request
+        const existing = engine.getEdge(src, dst, typeId)
+        if (!existing) {
+          callback({ code: grpc.status.NOT_FOUND, message: `Edge ${src}->${dst}:${typeId} not found` })
+          return
+        }
+        // Merge partial props into existing edge and upsert
+        const mergedProps: Record<string, unknown> = {
+          ...(existing.props ?? {}),
+          ...propsFromStringMap(props),
+        }
+        await engine.upsertEdge(src, dst, typeId, {
+          props: mergedProps as NodeProperties,
+        })
+        const updated = engine.getEdge(src, dst, typeId)!
+        callback(null, edgeToProto(updated))
       } catch (err: any) {
         callback({ code: grpc.status.INTERNAL, message: err.message })
       }

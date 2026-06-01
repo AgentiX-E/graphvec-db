@@ -679,4 +679,38 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
     expect(plan1.scanLabel).toBe(plan2.scanLabel)
     expect(plan1.returnColumns).toEqual(plan2.returnColumns)
   })
+
+  // ── P1-Q7: 默认 LIMIT ────────────────────────────────────
+  it('无显式 LIMIT 时 _executeQuery 应用 DEFAULT_LIMIT=1000', () => {
+    // 构造一个无 LIMIT 的 plan，并生成超过 1000 条候选数据
+    const plan: import('./query-engine').QueryPlan = {
+      scanLabel: 'Test',
+      steps: [],
+      returnColumns: ['name'],
+      filters: [],
+      orderBy: [],
+      limit: undefined,
+      aggregate: undefined,
+      skip: undefined,
+      with: undefined,
+      optionalMatches: [],
+      subQueries: [],
+      matchPatterns: [],
+    }
+
+    const { _executeQuery, DEFAULT_LIMIT } = require('./query-engine')
+
+    // 生成 1500 条候选节点
+    const manyNodes: Array<Record<string, unknown>> = []
+    for (let i = 0; i < 1500; i++) {
+      manyNodes.push({ id: i, name: `node-${i}` })
+    }
+
+    const result = _executeQuery(plan, manyNodes)
+    expect(result.length).toBe(DEFAULT_LIMIT)
+    expect(result.length).toBe(1000)
+
+    // 确认最后一条是第 999 项（0-based）
+    expect(result[result.length - 1].name).toBe('node-999')
+  })
 })

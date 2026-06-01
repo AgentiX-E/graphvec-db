@@ -1,12 +1,13 @@
 /**
  * Weakly Connected Components (WCC)
  *
- * Reuses graphology-components' connectedComponents function.
- * Builds an in-memory Graph instance, runs the algorithm, returns components.
+ * Uses BFS directly on the graph via getNeighbors, avoiding graphology
+ * Graph copy for memory efficiency at scale (100k+ nodes).
+ *
+ * Time Complexity: O(V + E)
+ * Space Complexity: O(V)
  */
 
-import Graph from 'graphology'
-import { connectedComponents } from 'graphology-components'
 import { NodeId } from '../types'
 
 export interface WccResult {
@@ -17,7 +18,7 @@ export interface WccResult {
 }
 
 /**
- * Compute weakly connected components.
+ * Compute weakly connected components using BFS traversal.
  *
  * @param nodeIds - All node IDs in the graph
  * @param getNeighbors - Function that returns neighbor node IDs for a given node
@@ -31,27 +32,32 @@ export function wcc(
     return { components: [], count: 0 }
   }
 
-  const graph = new Graph({ multi: false, type: 'mixed' })
+  const visited = new Set<NodeId>()
+  const components: NodeId[][] = []
 
-  // Add nodes
-  for (const id of nodeIds) {
-    graph.addNode(String(id))
-  }
+  for (const start of nodeIds) {
+    if (visited.has(start)) continue
 
-  // Add edges (undirected for WCC)
-  for (const id of nodeIds) {
-    const neighbors = getNeighbors(id)
-    for (const nid of neighbors) {
-      if (graph.hasNode(String(nid)) && !graph.hasEdge(String(id), String(nid))) {
-        graph.addUndirectedEdge(String(id), String(nid))
+    // BFS from start
+    const component: NodeId[] = []
+    const queue: NodeId[] = [start]
+    visited.add(start)
+    let idx = 0
+
+    while (idx < queue.length) {
+      const node = queue[idx++]
+      component.push(node)
+
+      for (const neighbor of getNeighbors(node)) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor)
+          queue.push(neighbor)
+        }
       }
     }
-  }
 
-  const rawComponents = connectedComponents(graph)
-  const components = rawComponents.map(comp =>
-    comp.map(s => Number(s) as NodeId),
-  )
+    components.push(component)
+  }
 
   return { components, count: components.length }
 }

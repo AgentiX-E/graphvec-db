@@ -1,13 +1,13 @@
 /**
  * Strongly Connected Components (SCC)
  *
- * Reuses graphology-components' stronglyConnectedComponents function.
- * Builds an in-memory Graph instance, runs the algorithm, returns components.
- * SCC considers edge direction, so only directed edges are added.
+ * Uses Tarjan's algorithm directly on the graph via getNeighbors, avoiding
+ * graphology Graph copy for memory efficiency at scale (100k+ nodes).
+ *
+ * Time Complexity: O(V + E)
+ * Space Complexity: O(V)
  */
 
-import Graph from 'graphology'
-import { stronglyConnectedComponents } from 'graphology-components'
 import { NodeId } from '../types'
 
 export interface SccResult {
@@ -18,9 +18,9 @@ export interface SccResult {
 }
 
 /**
- * Compute strongly connected components.
+ * Compute strongly connected components using Tarjan's algorithm.
  *
- * @param nodeIds - All node IDs in the graph
+ * @param nodeIds - All node IDs in the graph (order is preserved for DAG case)
  * @param getNeighbors - Function that returns neighbor node IDs for a given node (directed traversal)
  * @returns SccResult with components array and count
  */
@@ -32,27 +32,50 @@ export function scc(
     return { components: [], count: 0 }
   }
 
-  const graph = new Graph({ multi: false, type: 'directed' })
+  const index = new Map<NodeId, number>()
+  const lowlink = new Map<NodeId, number>()
+  const onStack = new Set<NodeId>()
+  const stack: NodeId[] = []
+  const components: NodeId[][] = []
 
-  // Add nodes
-  for (const id of nodeIds) {
-    graph.addNode(String(id))
-  }
+  let currentIndex = 0
 
-  // Add directed edges
-  for (const id of nodeIds) {
-    const neighbors = getNeighbors(id)
-    for (const nid of neighbors) {
-      if (graph.hasNode(String(nid)) && !graph.hasEdge(String(id), String(nid))) {
-        graph.addDirectedEdge(String(id), String(nid))
+  function strongConnect(v: NodeId): void {
+    index.set(v, currentIndex)
+    lowlink.set(v, currentIndex)
+    currentIndex++
+    stack.push(v)
+    onStack.add(v)
+
+    for (const neighbor of getNeighbors(v)) {
+      if (!index.has(neighbor)) {
+        // Successor has not yet been visited; recurse on it
+        strongConnect(neighbor)
+        lowlink.set(v, Math.min(lowlink.get(v)!, lowlink.get(neighbor)!))
+      } else if (onStack.has(neighbor)) {
+        // Successor is in stack and hence in the current SCC
+        lowlink.set(v, Math.min(lowlink.get(v)!, index.get(neighbor)!))
       }
+    }
+
+    // If v is a root node, pop the stack and generate an SCC
+    if (lowlink.get(v) === index.get(v)) {
+      const component: NodeId[] = []
+      let w: NodeId | undefined
+      do {
+        w = stack.pop()!
+        onStack.delete(w)
+        component.push(w)
+      } while (w !== v)
+      components.push(component)
     }
   }
 
-  const rawComponents = stronglyConnectedComponents(graph)
-  const components = rawComponents.map(comp =>
-    comp.map(s => Number(s) as NodeId),
-  )
+  for (const id of nodeIds) {
+    if (!index.has(id)) {
+      strongConnect(id)
+    }
+  }
 
   return { components, count: components.length }
 }

@@ -25,6 +25,9 @@ import { parser } from './cypher-lite-parser'
 import { LRUCache } from 'lru-cache'
 import { planCache as plannerPlanCache, makePlanCacheKey } from '../api/query-planner'
 
+/** 默认查询 LIMIT，当查询没有显式 LIMIT 子句时使用 */
+export const DEFAULT_LIMIT = 1000
+
 // ── AST 类型 ─────────────────────────────────────────────────
 
 export interface QueryAST {
@@ -2094,10 +2097,8 @@ export function _executeQuery(
         resultRows = _applyOrderByOnRows(resultRows, plan.orderBy)
       }
 
-      // Apply LIMIT
-      if (plan.limit !== undefined) {
-        resultRows = resultRows.slice(0, plan.limit)
-      }
+      // Apply LIMIT（若未显式指定则使用默认限制）
+      resultRows = resultRows.slice(0, plan.limit ?? DEFAULT_LIMIT)
 
       return resultRows
     }
@@ -2124,16 +2125,15 @@ export function _executeQuery(
       rows = _applyOrderByOnRows(rows, plan.orderBy)
     }
 
-    // Apply LIMIT
-    if (plan.limit !== undefined) {
-      rows = rows.slice(0, plan.limit)
-    }
+    // Apply LIMIT（若未显式指定则使用默认限制）
+    rows = rows.slice(0, plan.limit ?? DEFAULT_LIMIT)
 
     return rows
   }
 
   // No RETURN — return candidates as rows
-  return candidates.map(c => ({ ...c }))
+  const noReturnRows = candidates.map(c => ({ ...c }))
+  return noReturnRows.slice(0, plan.limit ?? DEFAULT_LIMIT)
 }
 
 /**

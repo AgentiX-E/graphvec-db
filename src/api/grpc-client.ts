@@ -21,9 +21,11 @@ const graphvecProto = grpc.loadPackageDefinition(packageDefinition) as any
 export interface GraphVecClient {
   getNode(id: number): Promise<any>
   addNode(typeId: number, name: string, props?: Record<string, string>): Promise<any>
+  updateNode(id: number, props: Record<string, string>): Promise<any>
   deleteNode(id: number, cascade?: boolean): Promise<{ success: boolean }>
   getEdge(src: number, dst: number, type: number): Promise<any>
   addEdge(src: number, dst: number, typeId: number, props?: Record<string, string>, weight?: number): Promise<{ success: boolean }>
+  updateEdge(src: number, dst: number, typeId: number, props: Record<string, string>): Promise<any>
   deleteEdge(src: number, dst: number, typeId: number): Promise<{ success: boolean }>
   query(query: string, limit?: number, skip?: number): Promise<{ results: any[]; count: number }>
   neighbors(nodeId: number, maxDepth?: number, edgeTypeFilter?: number[]): Promise<any>
@@ -58,9 +60,11 @@ export function createGrpcClient(address: string): GraphVecClient {
   const promisified: Record<string, any> = {
     GetNode: promisify<any>('GetNode'),
     AddNode: promisify<any>('AddNode'),
+    UpdateNode: promisify<any>('UpdateNode'),
     DeleteNode: promisify<{ success: boolean }>('DeleteNode'),
     GetEdge: promisify<any>('GetEdge'),
     AddEdge: promisify<{ success: boolean }>('AddEdge'),
+    UpdateEdge: promisify<any>('UpdateEdge'),
     DeleteEdge: promisify<{ success: boolean }>('DeleteEdge'),
     Query: promisify<{ results: any[]; count: number }>('Query'),
     Neighbors: promisify<any>('Neighbors'),
@@ -72,12 +76,16 @@ export function createGrpcClient(address: string): GraphVecClient {
     getNode: (id: number) => promisified.GetNode({ id }),
     addNode: (typeId: number, name: string, props?: Record<string, string>) =>
       promisified.AddNode({ typeId, name, props: props ?? {} }),
+    updateNode: (id: number, props: Record<string, string>) =>
+      promisified.UpdateNode({ id, props }),
     deleteNode: (id: number, cascade?: boolean) =>
       promisified.DeleteNode({ id, cascade: cascade ?? false }),
     getEdge: (src: number, dst: number, type: number) =>
       promisified.GetEdge({ src, dst, type }),
     addEdge: (src: number, dst: number, typeId: number, props?: Record<string, string>, weight?: number) =>
       promisified.AddEdge({ src, dst, typeId, props: props ?? {}, weight: weight ?? 0 }),
+    updateEdge: (src: number, dst: number, typeId: number, props: Record<string, string>) =>
+      promisified.UpdateEdge({ src, dst, typeId, props }),
     deleteEdge: (src: number, dst: number, typeId: number) =>
       promisified.DeleteEdge({ src, dst, typeId }),
     query: (queryStr: string, limit?: number, skip?: number) =>
