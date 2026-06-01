@@ -523,13 +523,14 @@ export class GraphAlgorithms {
       }
     }
 
-    // 第二阶段：触发跨 Range fan-out，使用返回结果扩展已发现节点集
+    // 第二阶段：触发跨 Range fan-out，等待远程结果注入
     const localNodes = [...visited]
     const shardRouter = this.config!.shardRouter!
-    // 发起 fan-out 异步调用，结果由存储层注入 engine.neighbors
-    shardRouter.fanOut('neighbors', { nodeIds: localNodes }).catch(() => {
-      // 异步 fan-out 失败不影响后续的 engine.neighbors 扫描
-    })
+    try {
+      await shardRouter.fanOut('neighbors', { nodeIds: localNodes })
+    } catch {
+      // fan-out 失败不影响本地结果扫描
+    }
 
     // 第三阶段：再次扫描所有已发现的节点，捕获 fan-out 注入的远程邻居
     const frontier = new Set(visited) // 已经发现的节点

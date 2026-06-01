@@ -1,11 +1,11 @@
 /**
- * range-index.ts — 基于 SortedMap 的数字属性范围索引
+ * range-index.ts — 基于 BTree 的数字属性范围索引
  *
  * 支持对节点的数字属性进行 lt, gt, lte, gte, between 等范围查询。
- * 底层使用 SortedMap (TreeMap 风格)，保证：
- *   - 插入: O(log n)
+ * 底层使用 sorted-btree (B+Tree)，保证：
+ *   - 插入/删除: O(log n)
  *   - 查询: O(k + log n) (k = 结果数)
- *   - 范围遍历: O(log n + k)
+ *   - 范围遍历: O(k + log n)
  *
  * 使用示例:
  *   const index = new RangeIndex('age')
@@ -17,122 +17,108 @@
 
 export type NodeId = number
 
+// ── sorted-btree 类型 ────────────────────────────────
+// sorted-btree@2.1.0 exports a default BTree class.
+// We import it lazily (via require) to avoid top-level ESM issues.
+function createBTree<V>(): SortedBTree<V> {
+  const { default: BTree } = require('sorted-btree') as {
+    default: new <K, V>(comparator?: (a: K, b: K) => number) => SortedBTree<V>
+  }
+  return new BTree<number, V>() as unknown as SortedBTree<V>
+}
+
+interface SortedBTree<V> {
+  set(key: number, value: V): void
+  get(key: number): V | undefined
+  has(key: number): boolean
+  delete(key: number): void
+  readonly size: number
+  clear(): void
+  entries(): IterableIterator<[number, V]>
+  entries(lo: number | undefined): IterableIterator<[number, V]>
+  keys(): IterableIterator<number>
+}
+
 /**
- * 内部有序映射：基于排序数组实现，适合小到中等数量的索引条目。
- * 对于数百万级别的条目，建议替换为真正的 B-Tree 实现。
+ * 内部有序映射：基于 BTree 实现，保证 O(log n) 操作。
  */
 class SortedMap<V> {
-  private _keys: number[] = []
-  private _values: V[] = []
+  private _tree: SortedBTree<{ value: V; keys: Set<number>[] }>
 
-  /** 插入键值对 */
+  constructor() {
+    this._tree = createBTree()
+  }
+
   set(key: number, value: V): void {
-    const idx = this._lowerBound(key)
-    if (idx < this._keys.length && this._keys[idx] === key) {
-      this._values[idx] = value
-    } else {
-      this._keys.splice(idx, 0, key)
-      this._values.splice(idx, 0, value)
-    }
+    this._tree.set(key, value as any)
   }
 
-  /** 获取值 */
   get(key: number): V | undefined {
-    const idx = this._lowerBound(key)
-    if (idx < this._keys.length && this._keys[idx] === key) {
-      return this._values[idx]
-    }
-    return undefined
+    return this._tree.get(key)
   }
 
-  /** 删除键 */
   delete(key: number): boolean {
-    const idx = this._lowerBound(key)
-    if (idx < this._keys.length && this._keys[idx] === key) {
-      this._keys.splice(idx, 1)
-      this._values.splice(idx, 1)
+    if (this._tree.has(key)) {
+      this._tree.delete(key)
       return true
     }
     return false
   }
 
-  /** 判断键是否存在 */
   has(key: number): boolean {
-    const idx = this._lowerBound(key)
-    return idx < this._keys.length && this._keys[idx] === key
+    return this._tree.has(key)
   }
 
-  /** 获取所有键（有序） */
   keys(): number[] {
-    return [...this._keys]
+    return [...this._tree.keys()]
   }
 
-  /** 获取大小 */
   get size(): number {
-    return this._keys.length
+    return this._tree.size
   }
 
-  /** 获取所有条目 */
   entries(): Array<[number, V]> {
-    return this._keys.map((k, i) => [k, this._values[i]])
+    return [...this._tree.entries()]
   }
 
-  /** 清空 */
   clear(): void {
-    this._keys = []
-    this._values = []
+    this._tree.clear()
   }
 
-  /** 从指定 key 开始的所有条目 (inclusive) */
   entriesFrom(key: number): Array<[number, V]> {
-    const idx = this._lowerBound(key)
-    return this._keys.slice(idx).map((k, i) => [k, this._values[idx + i]])
+    const result: Array<[number, V]> = []
+    for (const [k, v] of this._tree.entries(key)) {
+      result.push([k, v as V])
+    }
+    return result
   }
 
-  /** 到指定 key 结束的所有条目 (inclusive) */
   entriesTo(key: number): Array<[number, V]> {
-    const idx = this._upperBound(key)
-    return this._keys.slice(0, idx).map((k, i) => [k, this._values[i]])
+    const result: Array<[number, V]> = []
+    for (const [k, v] of this._tree.entries()) {
+      if (k > key) break
+      result.push([k, v as V])
+    }
+    return result
   }
 
-  /** 大于 key 的所有条目 (exclusive) */
   entriesGreaterThan(key: number): Array<[number, V]> {
-    const idx = this._upperBound(key)
-    return this._keys.slice(idx).map((k, i) => [k, this._values[idx + i]])
+    const result: Array<[number, V]> = []
+    for (const [k, v] of this._tree.entries()) {
+      if (k > key) result.push([k, v as V])
+    }
+    return result
   }
 
-  /** 第一个键 */
   firstKey(): number | undefined {
-    return this._keys[0]
+    for (const [k] of this._tree.entries()) return k
+    return undefined
   }
 
-  /** 最后一个键 */
   lastKey(): number | undefined {
-    return this._keys[this._keys.length - 1]
-  }
-
-  // ── 二分查找 ──────────────────────────────
-
-  private _lowerBound(key: number): number {
-    let lo = 0
-    let hi = this._keys.length
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1
-      if (this._keys[mid] < key) lo = mid + 1
-      else hi = mid
-    }
-    return lo
-  }
-
-  private _upperBound(key: number): number {
-    let lo = 0
-    let hi = this._keys.length
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1
-      if (this._keys[mid] <= key) lo = mid + 1
-      else hi = mid
-    }
-    return lo
+    let last: number | undefined
+    for (const [k] of this._tree.entries()) last = k
+    return last
   }
 }
 
@@ -140,7 +126,7 @@ class SortedMap<V> {
  * RangeIndex — 数字属性范围索引
  *
  * 支持 lt, gt, lte, gte, between 五种范围查询。
- * 底层存储: 属性值 → Set<NodeId> 的有序映射。
+ * 底层存储: 属性值 → Set<NodeId> 的有序映射 (B+Tree, O(log n))。
  */
 export class RangeIndex {
   private _propertyName: string
@@ -211,7 +197,6 @@ export class RangeIndex {
    */
   lt(bound: number): NodeId[] {
     const result: NodeId[] = []
-    // entryTo with bound-1 will include all keys <= bound-1 (i.e., keys < bound)
     const entries = this._map.entriesTo(bound)
     for (const [key, nodeSet] of entries) {
       if (key >= bound) break

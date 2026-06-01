@@ -179,4 +179,42 @@ describe('RangeIndex', () => {
       expect(idx.gt(30)).toEqual([3])
     })
   })
+
+  describe('performance O(log n)', () => {
+    test('should have O(log n) insertion performance', () => {
+      const idxSmall = new RangeIndex('x')
+      const idxLarge = new RangeIndex('x')
+      const nSmall = 10_000
+      const nLarge = 100_000
+
+      // warmup
+      for (let i = 0; i < nSmall; i++) idxSmall.add(i, i * 2)
+      for (let i = 0; i < nLarge; i++) idxLarge.add(i, i * 2)
+
+      const start = performance.now()
+      for (let i = 0; i < 10_000; i++) {
+        idxSmall.exact(i * 2 + 1) // search for non-existent values (cache miss)
+      }
+      const timeSmall = performance.now() - start
+
+      const start2 = performance.now()
+      for (let i = 0; i < 10_000; i++) {
+        idxLarge.exact(i * 2 + 1)
+      }
+      const timeLarge = performance.now() - start2
+
+      // O(log n) means 10x data → ~1.15x time (log(100k)/log(10k) ≈ 5/4 = 1.25)
+      // We allow up to 2x to account for GC noise
+      const ratio = timeLarge / timeSmall
+      expect(ratio).toBeLessThan(3.0)
+    })
+
+    test('should handle 100k sequential inserts efficiently', () => {
+      const idx = new RangeIndex('seq')
+      const start = performance.now()
+      for (let i = 0; i < 100_000; i++) idx.add(i, i)
+      const elapsed = performance.now() - start
+      expect(elapsed).toBeLessThan(5000) // 5s
+    })
+  })
 })

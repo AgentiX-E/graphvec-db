@@ -41,9 +41,9 @@ export class GraphQuery {
   /**
    * 是否启用查询优化器（QueryIR）。
    * 启用后，execute() 会通过 QueryIR (buildIRFromSpec → optimizeIR → executeIR) 执行。
-   * 默认禁用以保持向后兼容。
+   * 默认启用以利用查询优化能力。可通过 enableOptimizer(false) 禁用。
    */
-  private useOptimizer_: boolean = false
+  private useOptimizer_: boolean = true
 
   constructor(manager: ShardManager) {
     this.manager = manager
