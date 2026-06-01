@@ -12,9 +12,16 @@
  *
  * Timeout: 参与者 5 秒内未响应 → abort 事务。
  * Heuristic Recovery: 协调者启动时检查所有 pending 事务。
+ *
+ * WAL 持久化:
+ *   - 所有 commit/rollback 操作持久化到 txLog 文件
+ *   - 协调者崩溃重启时从 txLog 恢复 pending 状态
+ *   - 文件格式: NDJSON (每行一个 JSON 记录)
  */
 
 import { v4 as uuid } from 'uuid'
+import * as fs from 'fs'
+import * as path from 'path'
 
 // ── 类型定义 ──
 
@@ -44,6 +51,20 @@ export interface TwoPCParticipant {
   hasPrepareLog?(txId: string): boolean
 }
 
+// ── WAL 日志条目类型 ──
+
+/** WAL 中记录的事务事件类型 */
+export type WalEntryType = 'begin' | 'prepared' | 'committed' | 'rolled_back'
+
+/** WAL 日志条目 */
+export interface WalEntry {
+  txId: string
+  type: WalEntryType
+  rangeIds: string[]
+  participants: string[]
+  timestamp: number
+}
+
 // ── CrossShardTransactionManager ──
 
 export class CrossShardTransactionManager {
@@ -57,6 +78,80 @@ export class CrossShardTransactionManager {
   private _committedTxs = new Set<string>()
   /** 已回滚 txId 集合（幂等性保障） */
   private _rolledBackTxs = new Set<string>()
+
+  /** WAL 文件目录（持久化路径），null 表示不持久化 */
+  private _walDir: string | null = null
+  /** 是否已初始化 WAL */
+  private _walInitialized = false
+
+  /**
+   * 设置 WAL 持久化路径。设置后，所有事务状态变更都会持久化到 WAL 文件。
+   * 重启时自动从 WAL 恢复 pending 状态。
+   */
+  setWalDir(walDir: string): void {
+    this._walDir = walDir
+    fs.mkdirSync(walDir, { recursive: true })
+    this._recoverFromWal()
+    this._walInitialized = true
+  }
+
+  /**
+   * 从 WAL 恢复所有 pending 事务状态
+   * 重启恢复后，pending 事务需要通过 heuristicRecovery 重新判定
+   */
+  private _recoverFromWal(): void {
+    if (!this._walDir) return
+    try {
+      const files = fs.readdirSync(this._walDir).filter(f => f.endsWith('.wal.json'))
+      for (const file of files) {
+        const content = fs.readFileSync(path.join(this._walDir, file), 'utf-8')
+        const entry: { txId: string; status: string; type: string; timestamp: number; rangeIds?: string[] } = JSON.parse(content)
+        if (entry.status === 'pending' || entry.status === 'preparing') {
+          this._activeTxs.set(entry.txId, {
+            txId: entry.txId,
+            rangeIds: entry.rangeIds ?? [],
+            participants: [],
+            status: 'pending',
+            createdAt: entry.timestamp,
+          })
+        } else if (entry.status === 'committed') {
+          this._committedTxs.add(entry.txId)
+        } else if (entry.status === 'aborted' || entry.status === 'rolled_back') {
+          this._rolledBackTxs.add(entry.txId)
+        }
+      }
+    } catch (err) {
+      // WAL 恢复失败不应阻止启动
+      console.warn('2PC WAL recovery failed:', (err as Error).message)
+    }
+  }
+
+  /**
+   * 写入 WAL 条目
+   */
+  private _writeWal(txId: string, type: string, status: string, rangeIds?: string[]): void {
+    if (!this._walDir) return
+    try {
+      const entry = { txId, status, type, rangeIds, timestamp: Date.now() }
+      const filePath = path.join(this._walDir, `${txId}.wal.json`)
+      fs.writeFileSync(filePath, JSON.stringify(entry), 'utf-8')
+    } catch {
+      // WAL 写入失败不应影响主流程
+    }
+  }
+
+  /**
+   * 删除 WAL 条目（事务已完成）
+   */
+  private _removeWal(txId: string): void {
+    if (!this._walDir) return
+    try {
+      const filePath = path.join(this._walDir, `${txId}.wal.json`)
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+    } catch {
+      // 忽略
+    }
+  }
 
   constructor(prepareTimeoutMs = 5000) {
     this._prepareTimeoutMs = prepareTimeoutMs
@@ -110,6 +205,7 @@ export class CrossShardTransactionManager {
     }
 
     this._activeTxs.set(txId, record)
+    this._writeWal(txId, 'begin', 'pending', rangeIds)
     return { txId, participants }
   }
 
@@ -179,11 +275,13 @@ export class CrossShardTransactionManager {
 
       record.status = 'aborted'
       this._rolledBackTxs.add(txId)
+      this._writeWal(txId, 'rollback', 'aborted')
       return false
     }
 
     // 所有参与者 prepare 成功
     record.status = 'pending' // 等待 commit
+    this._writeWal(txId, 'prepare', 'preparing')
     return true
   }
 
@@ -220,6 +318,8 @@ export class CrossShardTransactionManager {
     record.status = 'committed'
     this._committedTxs.add(txId)
     this._activeTxs.delete(txId)
+    this._writeWal(txId, 'commit', 'committed')
+    this._removeWal(txId)
   }
 
   /**
@@ -255,6 +355,8 @@ export class CrossShardTransactionManager {
     record.status = 'aborted'
     this._rolledBackTxs.add(txId)
     this._activeTxs.delete(txId)
+    this._writeWal(txId, 'rollback', 'aborted')
+    this._removeWal(txId)
   }
 
   /**

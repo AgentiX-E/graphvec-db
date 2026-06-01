@@ -53,6 +53,14 @@ export interface StorageConfig {
   geoSpatial?: boolean
   geoLatField?: string
   geoLatField?: string
+
+  /**
+   * LMDB 静态加密密钥
+   * 如果设置，LMDB 数据库将使用此密钥进行静态加密（AES-256-GCM）。
+   * 密钥应为 256-bit (32 bytes) Buffer 或 hex 编码字符串。
+   * 只对 LMDB 后端生效。
+   */
+  encryptionKey?: string | Buffer
 }
 
 /**

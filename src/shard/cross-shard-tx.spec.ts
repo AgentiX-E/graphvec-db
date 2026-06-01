@@ -17,6 +17,7 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { CrossShardTransactionManager, TwoPCParticipant } from './cross-shard-tx'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs'
 
 // ── Mock Participant ──
 
@@ -471,5 +472,69 @@ describe('CrossShardTransactionManager', () => {
       async () => 'single ok',
     )
     expect(result).toBe('single ok')
+  })
+
+  // ── WAL 持久化测试 ──
+
+  test('WAL persistence: writes wal.json on begin and cleans up on commit', async () => {
+    const tmpDir = `/tmp/2pc-wal-test-${Date.now()}`
+    try {
+      manager.setWalDir(tmpDir)
+
+      const { txId } = manager.beginTransaction(['range-1'])
+      const walPath = `${tmpDir}/${txId}.wal.json`
+      expect(existsSync(walPath)).toBe(true)
+      const entry = JSON.parse(readFileSync(walPath, 'utf-8'))
+      expect(entry.status).toBe('pending')
+      expect(entry.txId).toBe(txId)
+
+      const ok = await manager.prepare(txId)
+      expect(ok).toBe(true)
+      await manager.commit(txId)
+
+      expect(existsSync(walPath)).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  test('WAL persistence: rollback cleans up wal.json', async () => {
+    const tmpDir = `/tmp/2pc-wal-test-${Date.now()}`
+    try {
+      manager.setWalDir(tmpDir)
+
+      const { txId } = manager.beginTransaction(['range-1'])
+      const walPath = `${tmpDir}/${txId}.wal.json`
+      expect(existsSync(walPath)).toBe(true)
+
+      await manager.rollback(txId)
+      expect(existsSync(walPath)).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  test('WAL recovery: pending transactions restored after setWalDir', async () => {
+    const tmpDir = `/tmp/2pc-wal-recovery-${Date.now()}`
+    try {
+      mkdirSync(tmpDir, { recursive: true })
+      const txId = 'test-crash-recovery'
+      writeFileSync(`${tmpDir}/${txId}.wal.json`, JSON.stringify({
+        txId,
+        status: 'pending',
+        type: 'begin',
+        rangeIds: ['range-1'],
+        timestamp: Date.now(),
+      }))
+
+      const m2 = new CrossShardTransactionManager()
+      m2.registerParticipant(p1)
+
+      m2.setWalDir(tmpDir)
+
+      expect(m2.activeTxCount).toBe(1)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 })

@@ -262,3 +262,43 @@ describe('Algorithm result signatures', () => {
     expect(components[0]).toEqual(['a', 'b'])
   })
 })
+
+// ─── Encryption Config ────────────────────────────────────
+
+describe('StorageConfig encryptionKey', () => {
+  it('encryptionKey is optional in StorageConfig', () => {
+    const config: StorageConfig = {
+      path: '/tmp/test',
+    }
+    expect(config.encryptionKey).toBeUndefined()
+  })
+
+  it('accepts string encryptionKey', () => {
+    const config: StorageConfig = {
+      path: '/tmp/test',
+      encryptionKey: '0123456789abcdef0123456789abcdef',
+    }
+    expect(config.encryptionKey).toBe('0123456789abcdef0123456789abcdef')
+  })
+
+  it('accepts Buffer encryptionKey', () => {
+    const key = Buffer.from('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', 'hex')
+    const config: StorageConfig = {
+      path: '/tmp/test',
+      encryptionKey: key,
+    }
+    expect(config.encryptionKey).toBe(key)
+    expect(Buffer.isBuffer(config.encryptionKey)).toBe(true)
+    expect((config.encryptionKey as Buffer).length).toBe(32)
+  })
+
+  it('config with encryptionKey is assignable to StorageConfig', () => {
+    const config: StorageConfig = {
+      path: '/tmp/encrypted',
+      encryptionKey: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6',
+    }
+    // Verify the type contract: the key should be present and testable
+    expect(config.encryptionKey).toBeDefined()
+    expect(typeof config.encryptionKey).toBe('string')
+  })
+})
