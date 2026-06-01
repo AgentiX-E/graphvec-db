@@ -2643,3 +2643,220 @@ function formatColumn(expr: PrimaryAST): string {
   if (expr.type === 'AGGREGATE') return String(expr.func ?? '')
   return String(expr)
 }
+
+// ============================================================
+// ParameterizedQuery — 安全参数化查询（预编译 + 缓存）
+//
+// 策略：将 $name 替换为 sentinel 大数字并一次解析。
+// 执行时：深拷贝缓存的 QueryPlan，检测 sentinel 值并替换。
+//
+// 核心优势：
+//   1. 同一模板只解析一次（预编译缓存）
+//   2. 参数在已解析的结构层面注入，无 Cypher 字符串拼接注入风险
+//   3. 参数类型安全：number/string/boolean/null 类型严格保持
+//   4. 支持 $name 命名参数
+// ============================================================
+
+/**
+ * Parameterized 查询的 LRU 缓存。
+ * 使用 QueryPlanCache（max 128），独立实例避免污染普通查询缓存。
+ */
+const parameterizedCache = new QueryPlanCache()
+
+/**
+ * ParameterizedQuery — 预编译 + 安全绑定的参数化查询。
+ *
+ * 编译阶段：将 $name 替换为 sentinel 大数（800000000+）并解析。
+ * 执行阶段：深拷贝缓存的 QueryPlan，检测 sentinel 值并替换为实际参数。
+ *
+ * 使用示例：
+ * ```ts
+ * const pq = new ParameterizedQuery("MATCH (n:Person) WHERE n.name = $name AND n.age > $age")
+ * const plan = pq.execute({ name: 'Alice', age: 25 })
+ * ```
+ */
+export class ParameterizedQuery {
+  /** 原始查询模板字符串 */
+  public readonly template: string
+
+  /** 参数名列表（按出现顺序） */
+  private paramNames: string[] = []
+
+  /** 参数名 → 唯一 sentinel 数字字符串 */
+  private paramSentinels: Map<string, string> = new Map()
+
+  /** 编译后的 QueryPlan */
+  private cachedPlan: QueryPlan | null = null
+
+  constructor(template: string) {
+    this.template = template
+
+    // Step 1: Extract parameter names from template
+    const paramRegex = /\$([a-zA-Z_]\w*)/g
+    const seen = new Set<string>()
+    let match: RegExpExecArray | null
+    while ((match = paramRegex.exec(template)) !== null) {
+      if (!seen.has(match[1])) {
+        seen.add(match[1])
+        this.paramNames.push(match[1])
+      }
+    }
+
+    if (this.paramNames.length === 0) {
+      // No parameters — parse directly
+      this.cachedPlan = parseQuery(template)
+      return
+    }
+
+    // Step 2: Replace $name with sentinel numbers that peggy can parse
+    // as NUMBER literals (valid in WHERE, LIMIT, SKIP, ORDER BY)
+    this.paramSentinels = new Map()
+    let templateWithSentinels = template
+    for (let i = 0; i < this.paramNames.length; i++) {
+      const name = this.paramNames[i]
+      const sentinel = 800000000 + i * 1000
+      const sentinelStr = String(sentinel)
+      this.paramSentinels.set(name, sentinelStr)
+      const re = new RegExp(`\\$${name}\\b`, 'g')
+      templateWithSentinels = templateWithSentinels.replace(re, sentinelStr)
+    }
+
+    // Step 3: Parse the modified template
+    try {
+      this.cachedPlan = parseQuery(templateWithSentinels)
+    } catch (err: any) {
+      throw new Error(
+        `ParameterizedQuery compile error for "${template}": ${err.message}`
+      )
+    }
+  }
+
+  /**
+   * 获取参数名列表。
+   */
+  getParamNames(): string[] {
+    return [...this.paramNames]
+  }
+
+  /**
+   * 检查是否包含指定参数。
+   */
+  hasParam(name: string): boolean {
+    return this.paramNames.includes(name)
+  }
+
+  /**
+   * 绑定参数并返回 QueryPlan。
+   *
+   * @param params - 参数对象，如 { name: 'Alice', age: 25 }
+   * @throws 如果缺少必填参数
+   */
+  execute(params: Record<string, unknown>): QueryPlan {
+    if (!this.cachedPlan) {
+      throw new Error('ParameterizedQuery not compiled.')
+    }
+
+    // Deep clone the cached plan
+    const plan = JSON.parse(JSON.stringify(this.cachedPlan)) as QueryPlan
+
+    if (this.paramNames.length === 0) {
+      return plan
+    }
+
+    // Validate all required params
+    for (const name of this.paramNames) {
+      if (!(name in params)) {
+        throw new Error(
+          `Missing parameter: $${name} is required but not provided in params`
+        )
+      }
+    }
+
+    // Inject values into filters — detect sentinel numbers
+    for (let i = 0; i < plan.filters.length; i++) {
+      const f = plan.filters[i]
+      if (typeof f.value === 'number') {
+        const val = f.value
+        for (const [name, sentinelStr] of this.paramSentinels) {
+          if (val.toString() === sentinelStr && name in params) {
+            plan.filters[i] = { ...f, value: params[name] }
+          }
+        }
+      }
+    }
+
+    // Inject into plan-level fields (limit, skip)
+    for (const [name, sentinelStr] of this.paramSentinels) {
+      if (name in params) {
+        const sentinelNum = parseInt(sentinelStr, 10)
+        if (plan.limit !== undefined && plan.limit !== null && plan.limit === sentinelNum) {
+          plan.limit = params[name] as number
+        }
+        if (plan.skip !== undefined && plan.skip !== null && plan.skip === sentinelNum) {
+          plan.skip = params[name] as number
+        }
+      }
+    }
+
+    return plan
+  }
+
+  /**
+   * 静态工厂。
+   */
+  static compile(query: string): ParameterizedQuery {
+    return new ParameterizedQuery(query)
+  }
+}
+
+/**
+ * 执行参数化 Cypher-lite 查询。
+ *
+ * 对同一模板的多次调用只解析一次，后续从缓存获取。
+ * 参数安全注入（无字符串拼接）。
+ *
+ * @param template - 查询模板，如 "MATCH (n:Person) WHERE n.name = $name"
+ * @param params - 参数对象，如 { name: 'Alice' }
+ * @returns QueryPlan（参数已注入）
+ *
+ * @example
+ * ```ts
+ * const plan = cypher("MATCH (n) WHERE n.id = $id", { id: 5 })
+ * const plan = cypher("MATCH (n:Person) WHERE n.name = $name AND n.age > $age", {
+ *   name: 'Alice',
+ *   age: 25
+ * })
+ * ```
+ */
+export function cypher(template: string, params?: Record<string, unknown>): QueryPlan {
+  const hasPlaceholders = /\$[a-zA-Z_]\w*/.test(template)
+
+  // No parameters and no placeholders — parse directly
+  if (!hasPlaceholders) {
+    return parseQuery(template)
+  }
+
+  // Check cache for pre-compiled ParameterizedQuery
+  const cacheKey = template
+  const cached = parameterizedCache.get(cacheKey)
+
+  if (cached) {
+    return cached.execute(params ?? {})
+  }
+
+  // First time: compile and cache
+  const pq = new ParameterizedQuery(template)
+  parameterizedCache.set(cacheKey, pq)
+
+  // Execute with params
+  return pq.execute(params ?? {})
+}
+
+/**
+ * 预编译并缓存参数化查询模板，返回可复用的 ParameterizedQuery 实例。
+ */
+export function compileCypher(template: string): ParameterizedQuery {
+  const pq = new ParameterizedQuery(template)
+  parameterizedCache.set(template, pq)
+  return pq
+}
