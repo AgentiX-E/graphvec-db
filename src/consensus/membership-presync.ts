@@ -21,6 +21,8 @@ import { MembershipTransport, MembershipMessage } from './app-membership-manager
 export interface DataSource {
   /** 导出当前状态快照 */
   exportSnapshot(): Buffer | Uint8Array
+  /** 导入状态快照（接收端使用） */
+  importSnapshot(data: Buffer | Uint8Array): void
   /** 获取已提交的日志条目（fromIndex 开始） */
   getCommittedEntries(fromIndex: number, maxCount?: number): Array<{ index: number; term: number; data: Uint8Array }>
   /** 获取当前已提交的最新索引 */
@@ -276,7 +278,7 @@ export class PreSyncManager {
     if (msg.snapshot && msg.snapshot.byteLength > 0) {
       try {
         // 接收端通过 dataSource 导入快照
-        this.config.dataSource.exportSnapshot() // dummy: 实际应用
+        this.config.dataSource.importSnapshot(msg.snapshot)
         this.logger.info(`[PreSync] Received snapshot (${msg.snapshot.byteLength} bytes) from ${from}`)
       } catch (err: any) {
         this.logger.warn(`[PreSync] Failed to process snapshot: ${err.message}`)

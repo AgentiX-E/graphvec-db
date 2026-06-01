@@ -62,6 +62,7 @@ class MockPresyncTransport implements MembershipTransport {
 function createMockDataSource(isLeader: boolean = true): DataSource {
   return {
     exportSnapshot: vi.fn().mockReturnValue(Buffer.from('mock-snapshot-data')),
+    importSnapshot: vi.fn(),
     getCommittedEntries: vi.fn().mockReturnValue([
       { index: 1, term: 1, data: Buffer.from('entry-1') },
       { index: 2, term: 1, data: Buffer.from('entry-2') },
@@ -356,5 +357,54 @@ describe('PreSyncManager', () => {
     expect(multiManager.isSyncing('peer-b')).toBe(false)
 
     multiManager.stop()
+  })
+
+  test('handleSnapshot calls dataSource.importSnapshot', async () => {
+    const ds = createMockDataSource(true)
+    const transport = new MockPresyncTransport([{ nodeId: 'leader', addr: 'addr-leader' }])
+    const manager = new PreSyncManager({
+      nodeId: 'leader',
+      transport,
+      dataSource: ds,
+      onResult: vi.fn(),
+      timeoutMs: 5000,
+    })
+    manager.start()
+
+    // Start sync to establish seq
+    const syncPromise = manager.startSync('peer-a').catch(() => {})
+
+    // Get the seq from start message
+    const sentMessages = transport.getSentMessages()
+    const startMsg = sentMessages.find(m => m.msg.type === 'pre-sync-start')
+    expect(startMsg).toBeDefined()
+    const seq = startMsg!.msg.seq
+
+    // The leader sends snapshot + log then waits for ready.
+    // Leader = this node, so handleSnapshot is called on the leader.
+    // We need to check that when the leader receives a snapshot message
+    // (which happens when it acts as JOINER), importSnapshot is called.
+
+    // Simulate receiving a snapshot as a joiner (follower side)
+    const snapshotData = Buffer.from('test-snapshot-data')
+    transport.inject('peer-a', {
+      type: 'pre-sync-snapshot',
+      seq,
+      from: 'peer-a',
+      snapshot: snapshotData,
+      chunkIndex: 0,
+      totalChunks: 1,
+    })
+
+    // Since this node (leader) receives snapshot externally,
+    // and the leader is also the joiner for this sync (host listens to itself),
+    // importSnapshot should be called with the correct data.
+    expect(ds.importSnapshot).toHaveBeenCalledTimes(1)
+    expect(ds.importSnapshot).toHaveBeenCalledWith(snapshotData)
+
+    // Cleanup
+    transport.inject('peer-a', { type: 'pre-sync-abort', seq, from: 'peer-a' })
+    await syncPromise
+    manager.stop()
   })
 })
