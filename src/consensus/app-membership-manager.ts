@@ -17,6 +17,7 @@
  */
 
 import { Logger } from '../ops/logger'
+import { MembershipRouteTable } from './membership-route-table'
 
 /** 成员变更消息类型 */
 export type MembershipMessageType = 'proposal' | 'ack' | 'commit' | 'abort'
@@ -65,10 +66,14 @@ export interface MembershipManagerConfig {
   nodeId: string
   /** 传输层接口 */
   transport: MembershipTransport
+  /** 路由表（可选） */
+  routeTable?: MembershipRouteTable
   /** 成员变更回调 */
   onMembershipChange: (members: string[]) => void
   /** 变更提案的 ACK 超时时间（ms），默认 5000 */
   ackTimeoutMs?: number
+  /** Leader 存活检查回调（可选），返回 true 表示 leader 存活 */
+  checkLeaderAlive?: () => Promise<boolean>
 }
 
 /** 待处理的提案 */
@@ -181,7 +186,15 @@ export class AppMembershipManager {
       this.logger.info(`[Membership] Peer ${peerId} not in cluster, skipping`)
       return Promise.resolve() // 幂等
     }
-    // 验证：不能有并发的提案
+    // 验证：remove 时安全保护
+    if (type === 'remove') {
+      // 禁止在只有 3 个节点时移除（防止破坏 quorum）
+      if (this._members.length <= 3) {
+        throw new Error(`Cannot remove peer: cluster size ${this._members.length} <= 3, removing would reduce fault tolerance`)
+      }
+    }
+
+    // 检查并发提案（必须在 Leader 存活检查之前，防止重复提案）
     if (this._pending) {
       throw new Error(`Concurrent membership change in progress (seq=${this._pending.seq})`)
     }
@@ -189,6 +202,17 @@ export class AppMembershipManager {
     const seq = this._nextSeq++
     const configHash = this._computeConfigHash()
     const ackTimeout = this.config.ackTimeoutMs!
+
+    // Leader 存活检查（在设置 _pending 之前完成，避免 ACK 竞态）
+    if (this.config.checkLeaderAlive) {
+      const isLeaderAlive = await Promise.race([
+        this.config.checkLeaderAlive(),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000)),
+      ])
+      if (!isLeaderAlive) {
+        throw new Error(`Cannot change membership during leader election or partition`)
+      }
+    }
 
     // Phase 1: 广播提案
     const proposal: MembershipMessage = {
@@ -202,10 +226,8 @@ export class AppMembershipManager {
 
     this.logger.info(`[Membership] Phase 1: Broadcasting proposal seq=${seq}, ${type} ${peerId}`)
 
-    // Phase 2: 在 broadcast 前创建 Promise，
-    // 确保 resolve/reject 在 ACK 回传时已就绪
+    // Phase 2: 先设置 _pending，再广播（确保 ACK 到达时 _pending 已就绪）
     return new Promise<void>((resolve, reject) => {
-      // 在 broadcast 前设置 _pending（广播可能触发其他节点的 ACK 回传）
       this._pending = {
         seq,
         changeType: type,
@@ -398,7 +420,28 @@ export class AppMembershipManager {
 
     this.logger.info(`[Membership] Phase 3: Broadcasting commit seq=${pending.seq}, new members (${newMembers.length}): ${newMembers.join(', ')}`)
 
+    // 更新路由表
+    if (this.config.routeTable) {
+      // add：为新节点注册路由（地址从 transport 获取）
+      if (pending.changeType === 'add') {
+        const peers = this.config.transport.getPeers()
+        const peerInfo = peers.find(p => p.nodeId === pending.targetPeerId)
+        if (peerInfo) {
+          this.config.routeTable.setRoute(peerInfo.nodeId, peerInfo.addr)
+          this.logger.info(`[Membership] RouteTable updated: ${peerInfo.nodeId} → ${peerInfo.addr}`)
+        }
+      } else {
+        // remove：清理路由
+        this.config.routeTable.removeRoute(pending.targetPeerId)
+        this.logger.info(`[Membership] RouteTable updated: removed ${pending.targetPeerId}`)
+      }
+    }
+
     this.config.transport.broadcast(commitMsg).then(() => {
+      // commit 后：路由表标记新节点健康
+      if (this.config.routeTable && pending.changeType === 'add') {
+        this.config.routeTable.setHealth(pending.targetPeerId, true)
+      }
       this._pending = null
       resolve()
     }).catch((err: Error) => {
@@ -443,6 +486,33 @@ export class AppMembershipManager {
 
     this.logger.info(`[Membership] Applying commit seq=${msg.seq}, members: ${sorted.join(', ')}`)
     this._applyMembershipChange(sorted)
+
+    // 同步路由表：清理不在成员列表中的路由
+    if (this.config.routeTable) {
+      const currentPeers = this.config.transport.getPeers()
+      const currentIds = new Set(currentPeers.map(p => p.nodeId))
+      const memberSet = new Set(sorted)
+
+      // 清理已移除的路由
+      for (const [nodeId] of this.config.routeTable.snapshot()) {
+        if (!memberSet.has(nodeId)) {
+          this.config.routeTable.removeRoute(nodeId)
+          this.logger.info(`[Membership] RouteTable cleanup: removed stale route for ${nodeId}`)
+        }
+      }
+
+      // 添加新成员路由（从 transport 获取地址）
+      for (const member of sorted) {
+        if (!currentIds.has(member)) {
+          // 新成员已在 transport peers 中，但因为 handleCommit 来自广播
+          // 所以地址应该在 transport.getPeers() 中
+          const peerInfo = currentPeers.find(p => p.nodeId === member)
+          if (peerInfo) {
+            this.config.routeTable.setRoute(peerInfo.nodeId, peerInfo.addr)
+          }
+        }
+      }
+    }
 
     // 更新传输层 peer 列表（子类/适配器可能需要）
     // EventBus 会通过 onMembershipChange 回调接收新成员列表
