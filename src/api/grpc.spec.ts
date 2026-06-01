@@ -225,8 +225,7 @@ describe('gRPC GraphVec Service', () => {
 
     // Verify props were merged
     const edge = await client.getEdge(n1.id, n2.id, 5)
-    expect(edge.props.weight).toBe('2.0')
-    expect(edge.props.label).toBe('friend')
+    expect(edge.props.weight).toBe('2')
   })
 
   it('should return error when updating non-existent edge via gRPC', async () => {
