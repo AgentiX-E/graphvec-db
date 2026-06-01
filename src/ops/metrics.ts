@@ -1,24 +1,39 @@
-import { MetricsSnapshot } from '../types'
-
 /**
- * Metrics — Prometheus 指标收集
+ * Metrics — 指标收集器
  *
- * 使用 @opentelemetry/api 暴露指标
- * 记录：op/s、latency p50/p99、Raft commit latency、shard count
+ * 统一指标收集接口，底层委托给 OTel MetricsCollector。
+ * 兼容旧代码的 Metrics 使用方式，同时将指标路由到 OpenTelemetry。
+ *
+ * 所有操作在 Telemetry 未启用时是空操作。
+ * 同时维护本地快照以支持立即获取 snapshot()。
  */
+
+import { MetricsSnapshot } from '../types'
+import { MetricsCollector } from './otel-metrics'
+
 export class Metrics {
   private counters: Map<string, number> = new Map()
   private latencies: Map<string, number[]> = new Map()
   private startTime = Date.now()
+  private otelCollector: MetricsCollector
 
-  /** 增加计数器 */
-  incrementCounter(name: string, delta: number = 1): void {
-    const current = this.counters.get(name) || 0
-    this.counters.set(name, current + delta)
+  constructor() {
+    this.otelCollector = MetricsCollector.getInstance()
   }
 
-  /** 记录延迟样本 */
+  /** 增加计数器（同时更新 OTel） */
+  incrementCounter(name: string, delta: number = 1): void {
+    // 更新本地计数器
+    const current = this.counters.get(name) || 0
+    this.counters.set(name, current + delta)
+
+    // 委托给 OTel
+    this.otelCollector.incrementCounter(name, delta)
+  }
+
+  /** 记录延迟样本（同时记录 OTel 直方图） */
   recordLatency(name: string, latencyMs: number): void {
+    // 更新本地样本
     if (!this.latencies.has(name)) {
       this.latencies.set(name, [])
     }
@@ -28,6 +43,9 @@ export class Metrics {
     if (samples.length > 1000) {
       samples.shift()
     }
+
+    // 委托给 OTel
+    this.otelCollector.recordHistogram(name, latencyMs)
   }
 
   /** 获取当前快照 */

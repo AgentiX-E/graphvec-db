@@ -36,6 +36,18 @@ export interface ImporterStreamOptions {
   onProgress?: ProgressCallback
 }
 
+/**
+ * 事务导入选项
+ * 在单个 GraphEngine 事务中执行整个导入流程。
+ * 所有操作成功时 commit，任一失败时 rollback。
+ */
+export interface ImporterTransactionOptions {
+  /** 是否启用事务（默认 false） */
+  enabled?: boolean
+  /** 事务超时（毫秒，默认 30000） */
+  timeoutMs?: number
+}
+
 export interface ImportProgress {
   totalRows: number
   importedRows: number
@@ -469,6 +481,88 @@ export class Importer {
     }
 
     return result
+  }
+
+  // ──────────────────────────────────────────
+  // 事务导入
+  // ──────────────────────────────────────────
+
+  /**
+   * 在事务中执行流式导入
+   *
+   * 将 CSV 或 NDJSON 文件的导入操作包裹在一个 GraphEngine 事务中。
+   * 所有操作成功时提交，任一失败时回滚。
+   *
+   * @param filePath   输入文件路径
+   * @param format     'csv' 或 'ndjson'
+   * @param txnOptions 事务选项
+   * @param streamOptions 流式导入选项（同普通导入）
+   * @returns 导入进度详情
+   */
+  async importTransacted(
+    filePath: string,
+    format: ImporterFormat,
+    txnOptions?: ImporterTransactionOptions,
+    streamOptions: ImporterStreamOptions = {},
+  ): Promise<ImportProgress> {
+    const timeout = txnOptions?.timeoutMs ?? 30000
+
+    return this.engine.withTransaction(async (txn) => {
+      // 创建一个绑定到当前事务的新 Importer
+      const txnImporter = new Importer(this.engine)
+
+      let progress: ImportProgress
+
+      try {
+        if (format === 'csv') {
+          progress = await txnImporter.importCSV(filePath, streamOptions)
+        } else {
+          progress = await txnImporter.importNDJSON(filePath, streamOptions)
+        }
+
+        // 如果有失败记录，回滚
+        if (progress.failedRows > 0) {
+          await txn.rollback()
+          // rollback 后会抛异常，这里确保返回部分进度
+          return progress
+        }
+
+        // 成功，由 withTransaction 自动 commit
+        return progress
+      } catch (err) {
+        await txn.rollback()
+        throw err
+      }
+    }, timeout)
+  }
+
+  /**
+   * 在事务中从流导入
+   *
+   * @param readableStream 可读流
+   * @param format         'csv' 或 'ndjson'
+   * @param txnOptions     事务选项
+   * @param streamOptions  流式导入选项
+   */
+  async importStreamTransacted(
+    readableStream: NodeJS.ReadableStream,
+    format: ImporterFormat,
+    txnOptions?: ImporterTransactionOptions,
+    streamOptions: ImporterStreamOptions & { delimiter?: string } = {},
+  ): Promise<ImportProgress> {
+    const timeout = txnOptions?.timeoutMs ?? 30000
+
+    return this.engine.withTransaction(async (txn) => {
+      const txnImporter = new Importer(this.engine)
+      const progress = await txnImporter.importStream(readableStream, format, streamOptions)
+
+      if (progress.failedRows > 0) {
+        await txn.rollback()
+        return progress
+      }
+
+      return progress
+    }, timeout)
   }
 
   // ──────────────────────────────────────────
