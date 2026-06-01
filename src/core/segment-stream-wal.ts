@@ -89,7 +89,7 @@ export class SegmentStreamWalAppendStream {
   ) {
     this._fd = fd
     this._fsyncStrategy = options?.fsyncStrategy ?? 'every-n'
-    this._fsyncEveryN = options?.fsyncEveryN ?? 10
+    this._fsyncEveryN = options?.fsyncEveryN ?? 100
   }
 
   /**

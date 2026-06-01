@@ -3,7 +3,7 @@
 // ============================================================
 
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import { SimpleTxnManager, type WriteOp } from './simple-txn-manager'
+import { SimpleTxnManager, WriteConflictError, type WriteOp } from './simple-txn-manager'
 import { GraphEngine } from './graph-engine'
 import type { NodeRecord } from '../types'
 import * as path from 'node:path'
@@ -453,5 +453,122 @@ describe('SimpleTxnManager — pendingOps and getTxn', () => {
     expect(active).toContain(a)
     expect(active).toContain(b)
     expect(active.length).toBe(2)
+  })
+})
+
+describe('SimpleTxnManager — SSI conflict detection', () => {
+  let env: { engine: GraphEngine; dir: string }
+
+  beforeEach(() => {
+    env = createEngine()
+  })
+
+  afterEach(() => {
+    try { env.engine.close() } catch { /* ok */ }
+    cleanup(env.dir)
+  })
+
+  test('concurrent writes to same node throw WriteConflictError', async () => {
+    const mgr = env.engine.simpleTxnMgr
+    const txA = mgr.begin('A')
+    const txB = mgr.begin('B')
+
+    // Both transactions modify the same node (same name → same node key)
+    await env.engine.upsertNode(1, 'conflict-node', { _txId: txA })
+    await env.engine.upsertNode(1, 'conflict-node', { _txId: txB })
+
+    // Commit A first (should succeed)
+    await mgr.commit(txA, env.engine)
+
+    // Commit B (should fail with WriteConflictError)
+    await expect(mgr.commit(txB, env.engine)).rejects.toThrow(WriteConflictError)
+  })
+
+  test('concurrent writes to same edge throw WriteConflictError', async () => {
+    // First, create the nodes
+    const src = await env.engine.upsertNode(1, 'src-node')
+    const dst = await env.engine.upsertNode(1, 'dst-node')
+
+    const mgr = env.engine.simpleTxnMgr
+    const txA = mgr.begin('A')
+    const txB = mgr.begin('B')
+
+    // Both transactions modify the same edge
+    await env.engine.upsertEdge(src, dst, 10, { _txId: txA })
+    await env.engine.upsertEdge(src, dst, 10, { _txId: txB })
+
+    // Commit A first
+    await mgr.commit(txA, env.engine)
+
+    // Commit B should fail with WriteConflictError
+    await expect(mgr.commit(txB, env.engine)).rejects.toThrow(WriteConflictError)
+  })
+
+  test('concurrent writes to different nodes do not conflict', async () => {
+    const mgr = env.engine.simpleTxnMgr
+    const txA = mgr.begin('A')
+    const txB = mgr.begin('B')
+
+    await env.engine.upsertNode(1, 'node-a', { _txId: txA })
+    await env.engine.upsertNode(2, 'node-b', { _txId: txB })
+
+    // Both commits should succeed
+    await expect(mgr.commit(txA, env.engine)).resolves.toBe(1)
+    await expect(mgr.commit(txB, env.engine)).resolves.toBe(1)
+  })
+
+  test('delete and upsert same node causes conflict', async () => {
+    const nodeId = await env.engine.upsertNode(1, 'target-node')
+
+    const mgr = env.engine.simpleTxnMgr
+    const txA = mgr.begin('A')
+    const txB = mgr.begin('B')
+
+    // A deletes the node, B also deletes the same node (by node ID)
+    await env.engine.deleteNode(nodeId, false, false, { _txId: txA })
+    await env.engine.deleteNode(nodeId, false, false, { _txId: txB })
+
+    // Commit A first
+    await mgr.commit(txA, env.engine)
+
+    // Commit B should fail (conflict on the same node key)
+    await expect(mgr.commit(txB, env.engine)).rejects.toThrow(WriteConflictError)
+  })
+
+  test('SSI can be disabled via options', async () => {
+    const mgr = new SimpleTxnManager({ enableSSI: false })
+    const txA = mgr.begin('A')
+    const txB = mgr.begin('B')
+
+    // Both modify same node
+    mgr.addOp(txA, { type: 'upsertNode', args: [1, 'same-node'] })
+    mgr.addOp(txB, { type: 'upsertNode', args: [1, 'same-node'] })
+
+    // Both should commit without conflict
+    await expect(mgr.commit(txA, env.engine)).resolves.toBe(1)
+    await expect(mgr.commit(txB, env.engine)).resolves.toBe(1)
+  })
+
+  test('WriteConflictError has correct metadata', async () => {
+    const nodeId = await env.engine.upsertNode(1, 'meta-test')
+
+    const mgr = env.engine.simpleTxnMgr
+    const txA = mgr.begin('A')
+    const txB = mgr.begin('B')
+
+    await env.engine.deleteNode(nodeId, false, false, { _txId: txA })
+    await env.engine.deleteNode(nodeId, false, false, { _txId: txB })
+
+    // A commits first
+    await mgr.commit(txA, env.engine)
+
+    // B commits second — should throw WriteConflictError
+    try {
+      await mgr.commit(txB, env.engine)
+      expect.unreachable('Should have thrown')
+    } catch (err: any) {
+      expect(err.name || err.constructor?.name).toBe('WriteConflictError')
+      expect(String(err.conflictedKey || err.message)).toContain(String(nodeId))
+    }
   })
 })

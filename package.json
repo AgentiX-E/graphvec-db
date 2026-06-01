@@ -66,6 +66,7 @@
     "@opentelemetry/sdk-trace-node": "^2.7.1",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "archiver": "^8.0.0",
+    "check-disk-space": "^3.4.0",
     "chokidar": "^5.0.0",
     "consistent-hashing": "^0.3.0",
     "csv-parse": "^6.2.1",

@@ -251,6 +251,10 @@ export class GraphEngine {
   /** OptimizerBridge — 优化器桥接层（可选） */
   private _bridge: OptimizerBridge | null = null
 
+  // ── Degree Cache ──
+  private _inDegreeCounts: Map<NodeId, number> = new Map()
+  private _outDegreeCounts: Map<NodeId, number> = new Map()
+
   // ── 写冻结（备份一致性） ─────────────────
 
   /**
@@ -578,8 +582,17 @@ export class GraphEngine {
 
     let degree = 0
     try {
-      const d = this.storage.degrees(id)
-      degree = d.inDegree + d.outDegree
+      const inDeg = this._inDegreeCounts.get(id) ?? 0
+      const outDeg = this._outDegreeCounts.get(id) ?? 0
+      if (inDeg > 0 || outDeg > 0) {
+        degree = inDeg + outDeg
+      } else {
+        // Fallback to storage for unknown nodes
+        const d = this.storage.degrees(id)
+        degree = d.inDegree + d.outDegree
+        this._inDegreeCounts.set(id, d.inDegree)
+        this._outDegreeCounts.set(id, d.outDegree)
+      }
     } catch {
       // storage 可能在某些状态下不支持 degrees() 调用
     }
@@ -745,6 +758,9 @@ export class GraphEngine {
     if (!this._edgeKeys.has(ek)) {
       this._edgeKeys.add(ek)
       this._edgeCount++
+      // Update degree cache for new edge
+      this._outDegreeCounts.set(src, (this._outDegreeCounts.get(src) ?? 0) + 1)
+      this._inDegreeCounts.set(dst, (this._inDegreeCounts.get(dst) ?? 0) + 1)
     }
     this.onRecordChange?.(`edge:${src}->${dst}`, { typeId, src, dst, ...(opts?.props ?? {}) })
 
@@ -834,6 +850,9 @@ export class GraphEngine {
     this._edgeCache.delete(`${src}:${dst}:${typeId}`)
     if (result) {
       this._edgeCount = Math.max(0, this._edgeCount - 1)
+      // Update degree cache
+      this._outDegreeCounts.set(src, Math.max(0, (this._outDegreeCounts.get(src) ?? 0) - 1))
+      this._inDegreeCounts.set(dst, Math.max(0, (this._inDegreeCounts.get(dst) ?? 0) - 1))
     }
     this.onRecordChange?.(`edge:${src}->${dst}:${typeId}`, { _deleted: true, src, dst, typeId })
 

@@ -105,3 +105,84 @@ describe('QuerySlowLog', () => {
     expect(qsl.count).toBeLessThanOrEqual(5)
   })
 })
+
+describe('QuerySlowLog - persistent file', () => {
+  const TEST_LOG = './test-data/slow-queries-test.log'
+  let fs: any
+
+  beforeAll(() => {
+    fs = require('fs')
+    try { fs.mkdirSync('./test-data', { recursive: true }) } catch {}
+    try { fs.unlinkSync(TEST_LOG) } catch {}
+  })
+
+  afterAll(() => {
+    try { fs.unlinkSync(TEST_LOG) } catch {}
+  })
+
+  test('should write slow query log to file', async () => {
+    const qsl = new QuerySlowLog(10, 100, TEST_LOG)
+    // Enable file output
+    process.env.SLOW_LOG_FILE = '1'
+
+    await qsl.track('file-op', async () => {
+      await new Promise(r => setTimeout(r, 50))
+      return 'ok'
+    })
+
+    // Wait for write
+    await new Promise(r => setTimeout(r, 200))
+
+    const content = fs.readFileSync(TEST_LOG, 'utf-8')
+    expect(content).toContain('file-op')
+    expect(content).toContain('duration')
+
+    qsl.close()
+    delete process.env.SLOW_LOG_FILE
+  })
+
+  test('should recover logs from file on restart', async () => {
+    // First instance: write a log entry
+    const qsl1 = new QuerySlowLog(10, 100, TEST_LOG)
+    process.env.SLOW_LOG_FILE = '1'
+    await qsl1.track('recover-op', async () => {
+      await new Promise(r => setTimeout(r, 50))
+      return 'ok'
+    })
+    await new Promise(r => setTimeout(r, 200))
+    qsl1.close()
+    delete process.env.SLOW_LOG_FILE
+
+    // Second instance: should recover from file
+    const qsl2 = new QuerySlowLog(10, 1000, TEST_LOG)
+    const queries = qsl2.getSlowQueries()
+    expect(queries.length).toBeGreaterThanOrEqual(1)
+    const recovered = queries.find(q => q.op === 'recover-op')
+    expect(recovered).toBeDefined()
+    expect(recovered!.duration).toBeGreaterThanOrEqual(10)
+    qsl2.close()
+  })
+
+  test('should not lose logs after clear + new instance', async () => {
+    const qsl = new QuerySlowLog(10, 100, TEST_LOG)
+    process.env.SLOW_LOG_FILE = '1'
+    await qsl.track('persist-op', async () => {
+      await new Promise(r => setTimeout(r, 50))
+      return 'ok'
+    })
+    await new Promise(r => setTimeout(r, 200))
+
+    // Clear in-memory logs
+    qsl.clear()
+    expect(qsl.count).toBe(0)
+    qsl.close()
+    delete process.env.SLOW_LOG_FILE
+
+    // New instance should still have the file-persisted entry
+    const qsl2 = new QuerySlowLog(10, 1000, TEST_LOG)
+    const queries = qsl2.getSlowQueries()
+    const found = queries.find(q => q.op === 'persist-op')
+    expect(found).toBeDefined()
+    qsl2.close()
+  })
+})

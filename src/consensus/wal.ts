@@ -58,6 +58,13 @@ export class WAL {
   private _opened = false
   /** CRC 校验错误计数 */
   private _crcErrors: number = 0
+  // ── Group Commit（B-03） ──
+  /** 待提交的批量写入 */
+  private _pendingBatch: Array<{ term: number; data: Uint8Array; resolve: (entry: LogEntry) => void }> = []
+  /** 是否已有 flush 定时器 */
+  private _batchTimer: ReturnType<typeof setTimeout> | null = null
+  /** 是否启用 Group Commit（默认启用） */
+  private _groupCommitEnabled = true
 
   constructor(path: string) {
     this.walPath = path
@@ -122,6 +129,22 @@ export class WAL {
       throw new Error('WAL not opened')
     }
 
+    if (this._groupCommitEnabled) {
+      // Group Commit 路径：加入 pending 批次，由定时器批量落盘
+      return new Promise<LogEntry>((resolve) => {
+        this._pendingBatch.push({ term, data, resolve })
+        this._scheduleBatchFlush()
+      })
+    }
+
+    // 常规路径：立即写入
+    return this._appendImmediate(term, data)
+  }
+
+  /**
+   * 立即写入一个条目（不经过 batch）
+   */
+  private _appendImmediate(term: number, data: Uint8Array): LogEntry {
     const index = ++this.lastIndex
     this.lastTerm = term
 
@@ -151,6 +174,83 @@ export class WAL {
 
     this.entries.push(entry)
     return entry
+  }
+
+  /** 启用或禁用 Group Commit */
+  setGroupCommit(enabled: boolean): void {
+    this._groupCommitEnabled = enabled
+    if (!enabled) {
+      this._flushBatchSync()
+    }
+  }
+
+  /**
+   * 调度批量 flush
+   * 使用 setTimeout(1ms) 等待同一事件循环中的多个 append 聚合
+   */
+  private _scheduleBatchFlush(): void {
+    if (this._batchTimer !== null) return
+    this._batchTimer = setTimeout(() => {
+      this._batchTimer = null
+      this._flushBatchSync()
+    }, 1)
+    this._batchTimer.unref()
+  }
+
+  /**
+   * 同步批量落盘：将 _pendingBatch 中的条目一次写入并 fsync
+   */
+  private _flushBatchSync(): void {
+    if (this._pendingBatch.length === 0) return
+
+    const batch = this._pendingBatch.splice(0)
+    const resolvedEntries: LogEntry[] = []
+
+    // 计算所有条目
+    for (const item of batch) {
+      const index = ++this.lastIndex
+      this.lastTerm = item.term
+      const entry: LogEntry = { index, term: item.term, data: item.data }
+      resolvedEntries.push(entry)
+    }
+
+    // 一次编码并写入所有条目
+    const buffers: Buffer[] = []
+    for (const entry of resolvedEntries) {
+      const crcInput = new Uint8Array(HEADER_SIZE + entry.data.length)
+      new DataView(crcInput.buffer).setUint32(0, entry.index, false)
+      new DataView(crcInput.buffer).setUint32(4, entry.term, false)
+      new DataView(crcInput.buffer).setUint32(8, entry.data.length, false)
+      crcInput.set(entry.data, HEADER_SIZE)
+      const checksum = crc32(crcInput)
+
+      const header = Buffer.alloc(HEADER_SIZE)
+      header.writeUInt32BE(entry.index, 0)
+      header.writeUInt32BE(entry.term, 4)
+      header.writeUInt32BE(entry.data.length, 8)
+
+      const crcBuf = Buffer.alloc(CRC_SIZE)
+      crcBuf.writeUInt32BE(checksum, 0)
+
+      buffers.push(header, Buffer.from(entry.data), crcBuf)
+    }
+
+    // 一次系统调用写入所有条目
+    const fullBuf = Buffer.concat(buffers)
+    fs.writeSync(this.fd, fullBuf, 0, fullBuf.length, null)
+
+    // 一次 fsync（核心优化点）
+    fs.fsyncSync(this.fd)
+
+    // 更新内存状态
+    for (const entry of resolvedEntries) {
+      this.entries.push(entry)
+    }
+
+    // 解析所有 promise
+    for (let i = 0; i < resolvedEntries.length; i++) {
+      try { batch[i].resolve(resolvedEntries[i]) } catch {}
+    }
   }
 
   /**

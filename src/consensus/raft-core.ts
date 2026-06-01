@@ -17,6 +17,7 @@
 import {
   Transport, AppendEntriesRequest, AppendEntriesResponse,
   RequestVoteRequest, RequestVoteResponse, MockTransport, RaftMessage,
+  InstallSnapshotRequest, InstallSnapshotResponse,
 } from './transport'
 import { WAL, LogEntry } from './wal'
 import { Logger } from '../ops/logger'
@@ -86,6 +87,7 @@ export class RaftCore {
   // ─── PreVote 状态 ───
   private _preVoteGranted: string[] = []  // 记录 PreVote 已同意的 peers
   private _inPreVote = false              // 是否在 PreVote 过程中
+  private _preVoteTimerId: number | null = null // PreVote 超时定时器
 
   // ─── CheckQuorum 状态 ───
   private _connectedPeers: Set<string> = new Set()
@@ -99,6 +101,18 @@ export class RaftCore {
   // ─── OTel 可观测性 ───
   private telemetry: Telemetry
   private metrics: MetricsCollector
+
+  // ─── Leader 专用状态 ───
+  private _nextIndex: Map<string, number> = new Map()
+  private _matchIndex: Map<string, number> = new Map()
+  /** Pipeline: 每个 follower 的 in-flight 追踪（未确认的 AppendEntries） */
+  private _inFlight: Map<string, number> = new Map()
+  /** Pipeline: 每个 follower 的待发送队列 */
+  private _pendingQueue: Map<string, Array<{ entries: LogEntry[]; maxBatchSize: number }>> = new Map()
+  /** Pipeline：批量配置 */
+  static readonly MAX_BATCH_SIZE = 64
+  /** Pipeline 是否激活（存在 3+ follower 时启用） */
+  private _isPipelineActive = false
 
   constructor(
     config: RaftCoreConfig,
@@ -367,7 +381,7 @@ export class RaftCore {
       }
       case 'PreVote': {
         const req = msg.data as RequestVoteRequest
-        const resp = this._handlePreVote(from, req)
+        const resp = this.handlePreVoteRequest(from, req)
         this._sendResponse(from, {
           type: 'PreVoteResponse',
           term: resp.term,
@@ -386,6 +400,22 @@ export class RaftCore {
       case 'PreVoteResponse':
         this._handlePreVoteResponse(from, msg.data as RequestVoteResponse)
         break
+      case 'InstallSnapshot': {
+        const req = msg.data as InstallSnapshotRequest
+        const resp = await this.handleInstallSnapshot(req)
+        this._sendResponse(from, {
+          type: 'InstallSnapshotResponse',
+          term: resp.term,
+          from: this.config.nodeId,
+          to: from,
+          data: resp,
+        })
+        break
+      }
+      case 'InstallSnapshotResponse': {
+        // Leader 侧处理 follower 的快照安装确认
+        break
+      }
     }
   }
 
@@ -575,8 +605,9 @@ export class RaftCore {
    * 处理 PreVote 请求
    * PreVote 使用 RequestVoteRequest 结构，但 term 是 candidate 的 nextTerm
    * PreVote 不会修改 votedFor 或触发 stepDown
+   * 关键：PreVote 阶段 candidate 不递增 term
    */
-  private _handlePreVote(
+  public handlePreVoteRequest(
     from: string,
     req: RequestVoteRequest,
   ): RequestVoteResponse {
@@ -683,6 +714,22 @@ export class RaftCore {
     this._inPreVote = true
     this._preVoteGranted = []
 
+    // 设置 PreVote 超时定时器
+    if (this._preVoteTimerId !== null) {
+      this.timerProvider.clearTimeout(this._preVoteTimerId)
+    }
+    this._preVoteTimerId = this.timerProvider.setTimeout(() => {
+      if (this._inPreVote && this._role === 'candidate') {
+        this.logger.info('Pre-vote timed out, stepping back to follower without triggering election')
+        this._inPreVote = false
+        this._preVoteGranted = []
+        this._preVoteTimerId = null
+        this._role = 'follower'
+        this._votedFor = null
+        this._resetElectionTimeout()
+      }
+    }, this.config.electionTimeoutMs! * 2) // 2x election timeout
+
     const totalNodes = this.config.peers.length + 1
     const majority = Math.floor(totalNodes / 2) + 1
 
@@ -702,19 +749,31 @@ export class RaftCore {
 
     this.logger.info(`Pre-vote result: ${preVotes}/${majority}`)
 
+    // 仅在仍处于 PreVote 状态时处理结果
+    if (!this._inPreVote) return
+
     if (preVotes >= majority) {
       // PreVote 通过，正式发起选举
+      this._clearPreVoteTimer()
       this._inPreVote = false
       this._preVoteGranted = []
       await this._doRealElection()
     } else {
       // PreVote 未通过，退回 follower 状态
       this.logger.info('Pre-vote failed, stepping back to follower')
+      this._clearPreVoteTimer()
       this._inPreVote = false
       this._preVoteGranted = []
       this._role = 'follower'
       this._votedFor = null
       this._resetElectionTimeout()
+    }
+  }
+
+  private _clearPreVoteTimer(): void {
+    if (this._preVoteTimerId !== null) {
+      this.timerProvider.clearTimeout(this._preVoteTimerId)
+      this._preVoteTimerId = null
     }
   }
 
@@ -909,6 +968,7 @@ export class RaftCore {
   }
 
   private _clearTimers(): void {
+    this._clearPreVoteTimer()
     if (this._electionTimerId !== null) {
       this.timerProvider.clearTimeout(this._electionTimerId)
       this._electionTimerId = null
