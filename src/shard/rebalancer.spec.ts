@@ -529,3 +529,336 @@ describe('SH05: Hot-spot detection', () => {
     expect(reb.getOperationCount('range-reset')).toBe(1)
   })
 })
+
+// ══════════════════════════════════════════
+// SH01: Reshard 数据迁移（单元测试，使用 mock RangeInstance）
+// ══════════════════════════════════════════
+describe('SH01: Reshard 数据迁移', () => {
+
+  test('SH01: migrateRangeComplete 正确设置 draining → flush → migrate 流程', async () => {
+    // 创建 mock RangeInstance
+    const mockSourceRange = {
+      setDraining: vi.fn(),
+      isDraining: vi.fn().mockReturnValue(false),
+      read: vi.fn().mockResolvedValue(null),
+      write: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }
+    const mockTargetRange = {
+      setDraining: vi.fn(),
+      isDraining: vi.fn().mockReturnValue(false),
+      read: vi.fn().mockResolvedValue(null),
+      write: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }
+
+    // Mock manager
+    const mockManager = {
+      getRange: vi.fn((rangeId: string) => {
+        if (rangeId === 'source-range-ok') return mockSourceRange as unknown as RangeInstance
+        if (rangeId === 'target-range-ok') return mockTargetRange as unknown as RangeInstance
+        throw new Error(`Range not found: ${rangeId}`)
+      }),
+      getAllRanges: vi.fn().mockReturnValue(new Map()),
+      removeRange: vi.fn(),
+    }
+
+    const reb = new Rebalancer(mockManager as unknown as ShardManager)
+
+    // Spy on internal _doRebalanceNodes to verify it was called
+    const doRebalanceSpy = vi.spyOn(reb as any, '_doRebalanceNodes').mockResolvedValue(undefined)
+    // Spy on _flushOps
+    const flushSpy = vi.spyOn(reb as any, '_flushOps').mockResolvedValue(undefined)
+    // Spy on computeChecksums
+    const computeChecksumsSpy = vi.spyOn(reb, 'computeChecksums').mockResolvedValue([])
+
+    await reb.migrateRangeComplete('source-range-ok', 'target-range-ok', [1, 2, 3])
+
+    // Verify fence: draining was set on source
+    expect(mockSourceRange.setDraining).toHaveBeenCalledWith(true)
+
+    // Verify flush was called
+    expect(flushSpy).toHaveBeenCalledWith('source-range-ok')
+
+    // Verify migrate was called with correct params
+    expect(doRebalanceSpy).toHaveBeenCalledWith('source-range-ok', 'target-range-ok', [1, 2, 3])
+
+    // Verify checksum was computed
+    expect(computeChecksumsSpy).toHaveBeenCalled()
+
+    // Verify cleanup: draining was released, source range was stopped and removed
+    expect(mockSourceRange.setDraining).toHaveBeenCalledWith(false)
+    expect(mockSourceRange.stop).toHaveBeenCalled()
+    expect(mockManager.removeRange).toHaveBeenCalledWith('source-range-ok')
+
+    // Verify migration entry in history has status 'completed'
+    const history = reb.getMigrationHistory()
+    const entry = history.find(m => m.sourceRangeId === 'source-range-ok')
+    expect(entry).toBeDefined()
+    expect(entry!.status).toBe('completed')
+
+    doRebalanceSpy.mockRestore()
+    flushSpy.mockRestore()
+    computeChecksumsSpy.mockRestore()
+  })
+
+  test('SH01: migrateRangeComplete 错误时 status 标记为 failed 并保留 error', async () => {
+    const mockSourceRange = {
+      setDraining: vi.fn(),
+      isDraining: vi.fn().mockReturnValue(false),
+      read: vi.fn().mockResolvedValue(null),
+      write: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }
+    const mockTargetRange = {
+      setDraining: vi.fn(),
+      isDraining: vi.fn().mockReturnValue(false),
+      read: vi.fn().mockResolvedValue(null),
+      write: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const mockManager = {
+      getRange: vi.fn((rangeId: string) => {
+        if (rangeId === 'source-range-err') return mockSourceRange as unknown as RangeInstance
+        if (rangeId === 'target-range-err') return mockTargetRange as unknown as RangeInstance
+        throw new Error(`Range not found: ${rangeId}`)
+      }),
+      getAllRanges: vi.fn().mockReturnValue(new Map()),
+      removeRange: vi.fn(),
+    }
+
+    const reb = new Rebalancer(mockManager as unknown as ShardManager)
+    const testError = new Error('Migration failed: disk full')
+
+    // Make _doRebalanceNodes throw
+    const doRebalanceSpy = vi.spyOn(reb as any, '_doRebalanceNodes').mockRejectedValue(testError)
+    vi.spyOn(reb as any, '_flushOps').mockResolvedValue(undefined)
+
+    await expect(
+      reb.migrateRangeComplete('source-range-err', 'target-range-err', [1, 2, 3])
+    ).rejects.toThrow('Migration failed: disk full')
+
+    // Verify migration entry has status 'failed' with error
+    const history = reb.getMigrationHistory()
+    const entry = history.find(m => m.sourceRangeId === 'source-range-err')
+    expect(entry).toBeDefined()
+    expect(entry!.status).toBe('failed')
+    expect(entry!.error).toBe('Migration failed: disk full')
+
+    doRebalanceSpy.mockRestore()
+  })
+
+  test('SH01: fence 步骤中 draining 标志被设置', async () => {
+    const drainingValues: boolean[] = []
+
+    const mockSourceRange = {
+      setDraining: vi.fn((val: boolean) => {
+        drainingValues.push(val)
+      }),
+      isDraining: vi.fn(() => drainingValues.length > 0 && drainingValues[drainingValues.length - 1]),
+      read: vi.fn().mockResolvedValue(null),
+      write: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }
+    const mockTargetRange = {
+      setDraining: vi.fn(),
+      isDraining: vi.fn().mockReturnValue(false),
+      read: vi.fn().mockResolvedValue(null),
+      write: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const mockManager = {
+      getRange: vi.fn((rangeId: string) => {
+        if (rangeId === 'source-range-fence') return mockSourceRange as unknown as RangeInstance
+        if (rangeId === 'target-range-fence') return mockTargetRange as unknown as RangeInstance
+        throw new Error(`Range not found: ${rangeId}`)
+      }),
+      getAllRanges: vi.fn().mockReturnValue(new Map()),
+      removeRange: vi.fn(),
+    }
+
+    const reb = new Rebalancer(mockManager as unknown as ShardManager)
+    vi.spyOn(reb as any, '_doRebalanceNodes').mockResolvedValue(undefined)
+    vi.spyOn(reb as any, '_flushOps').mockResolvedValue(undefined)
+    vi.spyOn(reb, 'computeChecksums').mockResolvedValue([])
+
+    // Sanity check: draining is false before migration
+    expect(mockSourceRange.isDraining()).toBe(false)
+
+    await reb.migrateRangeComplete('source-range-fence', 'target-range-fence', [1, 2, 3])
+
+    // Verify setDraining was called at least twice (true for fence, false for cleanup)
+    expect(mockSourceRange.setDraining).toHaveBeenCalledTimes(2)
+    // First call should be with true (fence step)
+    expect(drainingValues[0]).toBe(true)
+    // Last call should be with false (cleanup step)
+    expect(drainingValues[drainingValues.length - 1]).toBe(false)
+  })
+})
+
+// ══════════════════════════════════════════
+// SH03: Rebalancer 一致性校验（单元测试，使用 mock RangeInstance）
+// ══════════════════════════════════════════
+describe('SH03: Rebalancer 一致性校验', () => {
+
+  test('SH03: 空 Range 的 nodeChecksum 为 0', async () => {
+    // Mock engine that returns empty results
+    const mockEngine = {
+      findNodesByType: vi.fn().mockReturnValue([]),
+      stats: vi.fn().mockReturnValue({ nodeCount: 0, edgeCount: 0 }),
+    }
+
+    const mockRange = {
+      read: vi.fn((fn: (engine: any) => any) => Promise.resolve(fn(mockEngine))),
+    }
+
+    const mockManager = {
+      getAllRanges: vi.fn().mockReturnValue(
+        new Map([['empty-range', mockRange as unknown as RangeInstance]])
+      ),
+      getRange: vi.fn().mockReturnValue(mockRange as unknown as RangeInstance),
+    }
+
+    const reb = new Rebalancer(mockManager as unknown as ShardManager)
+    const checksums = await reb.computeChecksums()
+
+    expect(checksums).toHaveLength(1)
+    expect(checksums[0].rangeId).toBe('empty-range')
+    expect(checksums[0].nodeChecksum).toBe('0')
+    expect(checksums[0].totalEdges).toBe(0)
+    expect(checksums[0].collectedAt).toBeGreaterThan(0)
+  })
+
+  test('SH03: 有数据的 Range 的 nodeChecksum 为 digest 字符串', async () => {
+    // Mock engine with nodes
+    const mockEngine = {
+      findNodesByType: vi.fn((typeId: number) => {
+        if (typeId === 0) return [100, 200, 300]
+        return []
+      }),
+      stats: vi.fn().mockReturnValue({ nodeCount: 3, edgeCount: 5 }),
+    }
+
+    const mockRange = {
+      read: vi.fn((fn: (engine: any) => any) => Promise.resolve(fn(mockEngine))),
+    }
+
+    const mockManager = {
+      getAllRanges: vi.fn().mockReturnValue(
+        new Map([['data-range', mockRange as unknown as RangeInstance]])
+      ),
+      getRange: vi.fn().mockReturnValue(mockRange as unknown as RangeInstance),
+    }
+
+    const reb = new Rebalancer(mockManager as unknown as ShardManager)
+    const checksums = await reb.computeChecksums()
+
+    expect(checksums).toHaveLength(1)
+    expect(checksums[0].rangeId).toBe('data-range')
+    // nodeChecksum should be a non-zero digest (base36 string of hash)
+    expect(checksums[0].nodeChecksum).not.toBe('0')
+    expect(typeof checksums[0].nodeChecksum).toBe('string')
+    expect(checksums[0].nodeChecksum.length).toBeGreaterThan(0)
+    expect(checksums[0].totalEdges).toBe(5)
+    expect(checksums[0].collectedAt).toBeGreaterThan(0)
+  })
+
+  test('SH03: 两个相同的 Range 的 checksum 一致', async () => {
+    const mockEngineA = {
+      findNodesByType: vi.fn((typeId: number) => {
+        if (typeId === 1) return [10, 20, 30]
+        return []
+      }),
+      stats: vi.fn().mockReturnValue({ nodeCount: 3, edgeCount: 2 }),
+    }
+
+    const mockEngineB = {
+      findNodesByType: vi.fn((typeId: number) => {
+        if (typeId === 1) return [10, 20, 30]
+        return []
+      }),
+      stats: vi.fn().mockReturnValue({ nodeCount: 3, edgeCount: 2 }),
+    }
+
+    const mockRangeA = {
+      read: vi.fn((fn: (engine: any) => any) => Promise.resolve(fn(mockEngineA))),
+    }
+    const mockRangeB = {
+      read: vi.fn((fn: (engine: any) => any) => Promise.resolve(fn(mockEngineB))),
+    }
+
+    const mockManager = {
+      getAllRanges: vi.fn().mockReturnValue(
+        new Map([
+          ['range-a', mockRangeA as unknown as RangeInstance],
+          ['range-b', mockRangeB as unknown as RangeInstance],
+        ])
+      ),
+      getRange: vi.fn((rangeId: string) => {
+        if (rangeId === 'range-a') return mockRangeA as unknown as RangeInstance
+        if (rangeId === 'range-b') return mockRangeB as unknown as RangeInstance
+        throw new Error(`Range not found: ${rangeId}`)
+      }),
+    }
+
+    const reb = new Rebalancer(mockManager as unknown as ShardManager)
+    const checksums = await reb.computeChecksums()
+
+    expect(checksums).toHaveLength(2)
+    const csA = checksums.find(c => c.rangeId === 'range-a')
+    const csB = checksums.find(c => c.rangeId === 'range-b')
+    expect(csA).toBeDefined()
+    expect(csB).toBeDefined()
+    expect(csA!.nodeChecksum).toBe(csB!.nodeChecksum)
+    expect(csA!.totalEdges).toBe(csB!.totalEdges)
+  })
+
+  test('SH03: computeChecksums 返回所有 Range 的 checksum 数组', async () => {
+    const makeMockEngine = (typeIdOffset: number) => ({
+      findNodesByType: vi.fn((typeId: number) => {
+        if (typeId === 0) return [typeIdOffset + 1, typeIdOffset + 2]
+        return []
+      }),
+      stats: vi.fn().mockReturnValue({ nodeCount: 2, edgeCount: 1 }),
+    })
+
+    const mockRanges = new Map([
+      ['range-1', { read: vi.fn((fn: any) => Promise.resolve(fn(makeMockEngine(100)))) }],
+      ['range-2', { read: vi.fn((fn: any) => Promise.resolve(fn(makeMockEngine(200)))) }],
+      ['range-3', { read: vi.fn((fn: any) => Promise.resolve(fn(makeMockEngine(300)))) }],
+    ] as unknown as [string, RangeInstance][])
+
+    const mockManager = {
+      getAllRanges: vi.fn().mockReturnValue(mockRanges),
+      getRange: vi.fn((rangeId: string) => mockRanges.get(rangeId) as RangeInstance),
+    }
+
+    const reb = new Rebalancer(mockManager as unknown as ShardManager)
+    const checksums = await reb.computeChecksums()
+
+    expect(checksums).toHaveLength(3)
+    const rangeIds = checksums.map(c => c.rangeId).sort()
+    expect(rangeIds).toEqual(['range-1', 'range-2', 'range-3'])
+
+    // Each checkusm should have all required fields
+    for (const cs of checksums) {
+      expect(cs).toHaveProperty('rangeId')
+      expect(cs).toHaveProperty('nodeChecksum')
+      expect(cs).toHaveProperty('totalEdges')
+      expect(cs).toHaveProperty('collectedAt')
+      expect(typeof cs.nodeChecksum).toBe('string')
+      expect(cs.nodeChecksum).not.toBe('0') // each has data
+      expect(cs.totalEdges).toBe(1)
+      expect(cs.collectedAt).toBeGreaterThan(0)
+    }
+
+    // Range 3 has different data so its checksum should differ
+    const cs1 = checksums.find(c => c.rangeId === 'range-1')!
+    const cs2 = checksums.find(c => c.rangeId === 'range-2')!
+    const cs3 = checksums.find(c => c.rangeId === 'range-3')!
+    expect(cs1.nodeChecksum).not.toBe(cs3.nodeChecksum)
+    expect(cs2.nodeChecksum).not.toBe(cs3.nodeChecksum)
+  })
+})
