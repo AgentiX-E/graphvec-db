@@ -248,7 +248,7 @@ class PeerLogCatchUp {
 | 🥇 | Remove 安全检查（quorum 保护 + 非 leader 移除保护） | 2h | ✅ 已完成 |
 | 🥇 | RouteTable 网络层自动更新 | 3h | ✅ 已完成 (19 tests) |
 | 🥇 | 新节点数据预同步 + catch-up | 4h | ✅ 已完成 (11 tests) |
-| 🥈 | 三阶段 commit 增强（commit 前 syncCheck） | 2h | ⬜ 待开发 |
+| 🥈 | 三阶段 commit 增强（commit 前 syncCheck） | 2h | ✅ 已完成 (5 tests) |
 | 🥈 | stress 测试 + 分区测试 | 4h | ⬜ 待开发 |
 | 🥈 | 端到端集成测试（3 节点 ±1） | 3h | ⬜ 待开发 |
 
@@ -285,7 +285,7 @@ class PeerLogCatchUp {
 
 ### Phase 3（当前已完成）
 1. ✅ **新节点数据预同步** — `PreSyncManager` Leader→新节点 snapshot+log 同步（11 tests）
-2. ⬜ 三阶段 commit 增强（2h）
+2. ✅ **三阶段 commit 增强** — syncCheck 提案通过后一致性检查 + preSyncCheck 提案前数据对齐确认（5 tests）
 3. ⬜ stress 测试 + 分区测试（4h）
 4. ⬜ 端到端集成测试——3节点 ±1（3h）
 
