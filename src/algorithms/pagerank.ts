@@ -5,7 +5,11 @@
  * 纯函数，不依赖 GraphEngine 实例。
  *
  * 时间复杂度: O(I * (V + E))，I 为迭代次数
- * 空间复杂度: O(V)
+ * 空间复杂度: O(V + E)
+ *
+ * 优化说明：
+ * 构建反向邻接表（入边索引）避免 O(V²) 的全节点扫描，
+ * 将每次迭代从 O(V²) 优化为 O(V + E)。
  */
 
 import { NodeId } from '../types'
@@ -14,6 +18,34 @@ export interface PageRankOptions {
   dampingFactor?: number
   maxIterations?: number
   convergenceThreshold?: number
+}
+
+/**
+ * 构建反向邻接表（入边索引）。
+ * 返回 Map<targetNode, sourceNodes[]>，
+ * 即每个节点的所有入边来源。
+ */
+function buildIncomingMap(
+  allNodes: NodeId[],
+  neighbors: Map<NodeId, NodeId[]>,
+  outDegree: Map<NodeId, number>,
+): Map<NodeId, NodeId[]> {
+  const incoming = new Map<NodeId, NodeId[]>()
+  for (const node of allNodes) {
+    incoming.set(node, [])
+  }
+  for (const src of allNodes) {
+    const deg = outDegree.get(src)!
+    if (deg === 0) continue
+    const nb = neighbors.get(src)!
+    for (const dst of nb) {
+      const list = incoming.get(dst)
+      if (list) {
+        list.push(src)
+      }
+    }
+  }
+  return incoming
 }
 
 export function pagerank(
@@ -41,6 +73,9 @@ export function pagerank(
     outDegree.set(node, nb.length)
   }
 
+  // 构建反向邻接表（入边索引），避免 O(V²) 的全节点扫描
+  const incoming = buildIncomingMap(allNodes, neighbors, outDegree)
+
   // 处理 dangling nodes（出度为 0 的节点）
   // 每次迭代中其 rank 均匀分配给所有节点
 
@@ -61,17 +96,10 @@ export function pagerank(
 
     for (const node of allNodes) {
       let incomingSum = 0
-      // 收集所有指向 node 的邻居
-      // PageRank 的标准实现倾向于遍历所有边；这里采用"对每个节点遍历所有节点检查入边"的简化
-      // 但效率低。更好的方式：对每个节点检查它的出边，贡献给目标节点。
-      // 我们需要反向索引，但为了保持纯函数接口，这里用 O(V^2) 的简单实现。
-      // 实际使用时 GraphEngine 包装方法会提供更高效的邻接查询。
-      for (const src of allNodes) {
-        const nb = neighbors.get(src)!
-        const deg = outDegree.get(src)!
-        if (deg > 0 && nb.includes(node)) {
-          incomingSum += rank.get(src)! / deg
-        }
+      // 使用预构建的入边索引，O(degree) 而非 O(V)
+      const srcList = incoming.get(node) ?? []
+      for (const src of srcList) {
+        incomingSum += rank.get(src)! / outDegree.get(src)!
       }
 
       newRank.set(node, teleport + dampingFactor * incomingSum + danglingContribution)

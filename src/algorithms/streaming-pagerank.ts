@@ -5,6 +5,10 @@
  * 结果应与全内存 PageRank 高度一致（< 0.1% 偏差）。
  *
  * 适用于 10M+ 节点图上避免 OOM。
+ *
+ * 优化说明：
+ * 预先从 CSR 格式构建反向索引（in-edges），
+ * 将每次迭代从 O(V²) 优化为 O(V + E)。
  */
 
 import { NodeId } from '../types'
@@ -21,6 +25,31 @@ export interface StreamingPageRankOptions {
   batchSize?: number
   /** 进度回调 */
   onProgress?: (progress: { iteration: number; totalIterations: number; batchIndex: number; totalBatches: number }) => void
+}
+
+/**
+ * 从 GraphProjection 的 CSR 数据构建反向边索引。
+ * 返回数组 inEdges[i] = [j, k, ...] 其中 j,k 是 CSR 索引，满足 edges[offset_j..offset_{j+1}] 包含 i。
+ * 这避免了每次迭代遍历所有节点去查邻居。
+ */
+function buildInEdges(projection: GraphProjection): number[][] {
+  const n = projection.nodeCount
+  const inEdges: number[][] = new Array(n)
+  for (let i = 0; i < n; i++) {
+    inEdges[i] = []
+  }
+
+  // 遍历 CSR 边数组，将每条边的目标节点记录来源
+  for (let srcIdx = 0; srcIdx < n; srcIdx++) {
+    const start = projection.nodeOffsets[srcIdx]
+    const end = projection.nodeOffsets[srcIdx + 1]
+    for (let ei = start; ei < end; ei++) {
+      const dstIdx = projection.edges[ei]
+      inEdges[dstIdx].push(srcIdx)
+    }
+  }
+
+  return inEdges
 }
 
 /**
@@ -58,6 +87,9 @@ export class StreamingPageRank {
       outDegree[i] = projection.neighbors(nid).length
     }
 
+    // 预先构建反向边索引（CSR 索引级别），避免内层 O(V) 扫描
+    const inEdges = buildInEdges(projection)
+
     const teleport = (1 - damping) / n
 
     // 主迭代循环
@@ -80,21 +112,12 @@ export class StreamingPageRank {
         const batchEnd = Math.min(batchStart + batchSize, n)
 
         for (let i = batchStart; i < batchEnd; i++) {
-          const nid = projection.projectionNodeIds[i]
-          const nb = projection.neighbors(nid)
-
           let incomingSum = 0
-          // 对于每个节点，找到所有入边：遍历所有节点并检查其出边是否指向 i
-          // 为了效率，我们用索引扫描
-          for (let j = 0; j < n; j++) {
-            if (outDegree[j] > 0) {
-              const srcNid = projection.projectionNodeIds[j]
-              // 检查 srcNid 的邻居是否包含 nid
-              const srcNeighbors = projection.neighbors(srcNid)
-              if (srcNeighbors.includes(nid)) {
-                incomingSum += rank[j] / outDegree[j]
-              }
-            }
+          // 使用预构建的反向边索引，O(indegree) 而非 O(V)
+          const srcIndices = inEdges[i]
+          for (let si = 0; si < srcIndices.length; si++) {
+            const srcIdx = srcIndices[si]
+            incomingSum += rank[srcIdx] / outDegree[srcIdx]
           }
 
           newRank[i] = teleport + damping * incomingSum + danglingContribution

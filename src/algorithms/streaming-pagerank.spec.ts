@@ -245,4 +245,41 @@ describe('StreamingPageRank', () => {
     const result = await StreamingPageRank.compute(projection)
     expect(result.size).toBe(projection.nodeCount)
   })
+
+  it('should be fast on 10k chain graph (O(V+E) not O(V²))', async () => {
+    // Build a 10k chain graph engine
+    const dir = join(baseDir, '10k_chain_perf')
+    const eng = createEngine(dir)
+    for (let i = 1; i <= 10000; i++) {
+      await eng.upsertNode(1, `node${i}`)
+    }
+    for (let i = 1; i < 10000; i++) {
+      await eng.upsertEdge(i, i + 1, 10)
+    }
+
+    const projection = await GraphProjection.create(eng)
+    expect(projection.nodeCount).toBe(10000)
+    expect(projection.edgeCount).toBe(9999)
+
+    const start = Date.now()
+    const result = await StreamingPageRank.compute(projection, {
+      damping: 0.85,
+      iterations: 20,
+      tolerance: 1e-6,
+    })
+    const elapsed = Date.now() - start
+
+    // Allow generous limit for CI variance
+    expect(elapsed).toBeLessThan(5000)
+
+    // Sum should be ≈ 1.0
+    let sum = 0
+    for (const [, score] of result) {
+      sum += score
+    }
+    expect(sum).toBeCloseTo(1.0, 2)
+
+    expect(result.size).toBe(10000)
+    eng.close()
+  })
 })

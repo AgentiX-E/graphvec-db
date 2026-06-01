@@ -39,9 +39,10 @@ export function betweennessCentrality(
     sigma.set(s, 1)
     dist.set(s, 0)
     const queue: number[] = [s]
+    let queueIdx = 0
 
-    while (queue.length > 0) {
-      const v = queue.shift()!
+    while (queueIdx < queue.length) {
+      const v = queue[queueIdx++]
       stack.push(v)
       for (const w of adjList.get(v) || []) {
         if (!vertexSet.has(w)) continue

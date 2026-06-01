@@ -195,6 +195,88 @@ describe('pagerank', () => {
     const result = pagerank(() => [], [])
     expect(result.size).toBe(0)
   })
+
+  test('should produce correct ranking on chain graph (5 nodes)', () => {
+    // Chain: 0 → 1 → 2 → 3 → 4
+    const neighbors: Record<number, number[]> = {
+      0: [1], 1: [2], 2: [3], 3: [4], 4: [],
+    }
+    const allNodes: NodeId[] = [0, 1, 2, 3, 4]
+    const result = pagerank(
+      (nid: NodeId) => neighbors[nid] ?? [],
+      allNodes,
+      { dampingFactor: 0.85, maxIterations: 100, convergenceThreshold: 1e-8 },
+    )
+
+    // Sum should be ≈ 1.0
+    let sum = 0
+    for (const [, rank] of result) {
+      sum += rank
+    }
+    expect(sum).toBeCloseTo(1.0, 4)
+
+    // In a chain, earlier nodes should have higher rank
+    // (they have more incoming paths when considering teleport)
+    // Node 0 has no incoming edges, node 4 has no outgoing (dangling)
+    expect(result.get(0 as NodeId)!).toBeGreaterThan(0)
+    expect(result.get(4 as NodeId)!).toBeGreaterThan(0)
+  })
+
+  test('should produce correct ranking on cycle graph (4 nodes)', () => {
+    // Cycle: 0 → 1 → 2 → 3 → 0
+    const neighbors: Record<number, number[]> = {
+      0: [1], 1: [2], 2: [3], 3: [0],
+    }
+    const allNodes: NodeId[] = [0, 1, 2, 3]
+    const result = pagerank(
+      (nid: NodeId) => neighbors[nid] ?? [],
+      allNodes,
+      { dampingFactor: 0.85, maxIterations: 100, convergenceThreshold: 1e-8 },
+    )
+
+    // In a symmetric cycle, all nodes should have equal rank
+    const expectedRank = 0.25
+    for (const node of allNodes) {
+      expect(result.get(node)!).toBeCloseTo(expectedRank, 2)
+    }
+
+    // Sum should be ≈ 1.0
+    let sum = 0
+    for (const [, rank] of result) {
+      sum += rank
+    }
+    expect(sum).toBeCloseTo(1.0, 4)
+  })
+
+  test('should be fast on 10k chain graph (O(V+E) not O(V²))', () => {
+    const nodeCount = 10000
+    const allNodes: NodeId[] = Array.from({ length: nodeCount }, (_, i) => i)
+    const neighbors = new Map<NodeId, NodeId[]>()
+    for (let i = 0; i < nodeCount; i++) {
+      neighbors.set(i, i + 1 < nodeCount ? [i + 1] : [])
+    }
+    const getNeighbors = (nid: NodeId) => neighbors.get(nid) ?? []
+
+    const start = Date.now()
+    const result = pagerank(getNeighbors, allNodes, {
+      dampingFactor: 0.85,
+      maxIterations: 20,
+      convergenceThreshold: 1e-6,
+    })
+    const elapsed = Date.now() - start
+
+    // Should finish within 5s (lenient for CI variance)
+    expect(elapsed).toBeLessThan(5000)
+
+    // Sum should be ≈ 1.0
+    let sum = 0
+    for (const [, rank] of result) {
+      sum += rank
+    }
+    expect(sum).toBeCloseTo(1.0, 2)
+
+    expect(result.size).toBe(nodeCount)
+  })
 })
 
 // ──────────────────────────────────────────

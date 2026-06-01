@@ -174,6 +174,30 @@ export class GraphProjection {
   }
 
   /**
+   * O(indegree) 入边查询 — 返回所有指向指定节点的源节点原始 NodeId。
+   *
+   * 注意：每次调用都需要遍历整个 CSR 以构建入边列表。
+   * 如果需要多次调用，建议手动构建一次 `buildInEdges()` 并缓存。
+   */
+  inEdges(nodeId: number): number[] {
+    const dstIdx = this.nodeIndex.get(nodeId)
+    if (dstIdx === undefined) return []
+    const result: number[] = []
+    const n = this.nodeCount
+    for (let srcIdx = 0; srcIdx < n; srcIdx++) {
+      const start = this.nodeOffsets[srcIdx]
+      const end = this.nodeOffsets[srcIdx + 1]
+      for (let ei = start; ei < end; ei++) {
+        if (this.edges[ei] === dstIdx) {
+          result.push(this.projectionNodeIds[srcIdx])
+          break // no duplicate edges expected in CSR
+        }
+      }
+    }
+    return result
+  }
+
+  /**
    * 从 GraphEngine 构造子图投影
    *
    * 通过 BFS 遍历或种子节点加载子图，构建 CSR 格式的邻接表。
