@@ -246,13 +246,13 @@ class PeerLogCatchUp {
 |:------:|:-----|:------:|
 | 🥇 | Leader 存活检查 + 提案锁定防御 | 2h | ✅ 已完成 |
 | 🥇 | Remove 安全检查（quorum 保护 + 非 leader 移除保护） | 2h | ✅ 已完成 |
-| 🥇 | 新节点数据预同步 + catch-up | 4h | ⬜ 待开发 |
-| 🥇 | RouteTable 网络层自动更新 | 3h | ⬜ 待开发 |
+| 🥇 | RouteTable 网络层自动更新 | 3h | ✅ 已完成 (19 tests) |
+| 🥇 | 新节点数据预同步 + catch-up | 4h | ✅ 已完成 (11 tests) |
 | 🥈 | 三阶段 commit 增强（commit 前 syncCheck） | 2h | ⬜ 待开发 |
 | 🥈 | stress 测试 + 分区测试 | 4h | ⬜ 待开发 |
 | 🥈 | 端到端集成测试（3 节点 ±1） | 3h | ⬜ 待开发 |
 
-**总估算**: 约 3 天（净开发），含测试 2 天。
+**总估算**: 约 2 天（净开发），含测试 1.5 天。
 
 ## 7. 代码层面已实现的防御措施
 
@@ -273,16 +273,22 @@ class PeerLogCatchUp {
 
 ## 8. 下一步执行计划
 
-### Phase 1（当前已就绪）
+### Phase 2（当前已完成）
 1. Raft 成员变更极致分析文档 ✅
 2. AppMembershipManager 代码分析完成 ✅
 3. V2 报告状态已更新 ✅
+4. ✅ **Leader 存活检查** — `checkLeaderAlive` 回调
+5. ✅ **提案锁定防御** — `_pending` 互斥
+6. ✅ **Remove 安全保护** — 禁止 <3 节点移除
+7. ✅ **RouteTable 自动更新** — `MembershipRouteTable` add/remove/commit 同步
+8. ✅ **19 个新测试** — membership-route-table(7) + app-membership-manager(12)
 
-### Phase 2（下次开发会话）
-1. RouteTable 网络层自动更新（3h）
-2. 新节点数据预同步（4h）
-3. 三阶段 commit 增强（2h）
+### Phase 3（当前已完成）
+1. ✅ **新节点数据预同步** — `PreSyncManager` Leader→新节点 snapshot+log 同步（11 tests）
+2. ⬜ 三阶段 commit 增强（2h）
+3. ⬜ stress 测试 + 分区测试（4h）
+4. ⬜ 端到端集成测试——3节点 ±1（3h）
 
-### Phase 3（验证）
+### Phase 4（验证）
 1. stress 测试 + 分区测试（4h）
 2. 端到端集成测试——3节点 ±1（3h）
