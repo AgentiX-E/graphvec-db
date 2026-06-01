@@ -207,6 +207,9 @@ export class GraphEngine {
   private _eventStream: EventStream | null = null
   /** Multi-Leader 同步复制层（可选） */
   private _mlReplication: MultiLeaderReplication | null = null
+  /** 备份写冻结 */
+  private _writesFrozen = false
+  private _frozenWrites: Array<{ resolve: () => void }> = []
   private logger: Logger
 
   // ── LRU Cache for neighbors ──
@@ -241,6 +244,32 @@ export class GraphEngine {
 
   /** OptimizerBridge — 优化器桥接层（可选） */
   private _bridge: OptimizerBridge | null = null
+
+  // ── 写冻结（备份一致性） ─────────────────
+
+  /**
+   * 暂停所有写入操作（用于一致性备份）。
+   * 返回一个函数，调用后恢复写入。
+   * 当前正在执行的写入不受影响，新写入会排队等待。
+   */
+  async pauseWrites(): Promise<() => void> {
+    this._writesFrozen = true
+    // 等待所有正在执行的写入完成
+    await Promise.resolve()
+    return () => this.resumeWrites()
+  }
+
+  private resumeWrites(): void {
+    this._writesFrozen = false
+    const pending = this._frozenWrites.splice(0)
+    for (const p of pending) p.resolve()
+  }
+
+  private _ensureNotFrozen(): void {
+    if (this._writesFrozen) {
+      throw new Error('Writes are frozen for backup. Retry after backup completes.')
+    }
+  }
 
   // ── 递归保护（Item 1: upsertNode递归死循环） ──
   /** 最大递归深度 */
@@ -418,6 +447,7 @@ export class GraphEngine {
    */
   async upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): Promise<NodeId> {
     this._ensureOpen()
+    this._ensureNotFrozen()
 
     if (this._schema) {
       const result = validateNodeType(typeId, opts?.props ?? {}, this._schema)
@@ -527,6 +557,7 @@ export class GraphEngine {
    */
   async deleteNode(id: NodeId, skipReplication = false, cascade = false): Promise<boolean> {
     this._ensureOpen()
+    this._ensureNotFrozen()
     const node = this.storage.getNode(id, true)
     if (!node) return false
 
@@ -616,6 +647,7 @@ export class GraphEngine {
    */
   async upsertEdge(src: NodeId, dst: NodeId, typeId: number, opts?: UpsertEdgeOptions): Promise<void> {
     this._ensureOpen()
+    this._ensureNotFrozen()
 
     if (this._schema) {
       const result = validateEdgeType(typeId, opts?.props ?? {}, this._schema)
@@ -706,6 +738,7 @@ export class GraphEngine {
    */
   async deleteEdge(src: NodeId, dst: NodeId, typeId: number, skipReplication = false): Promise<boolean> {
     this._ensureOpen()
+    this._ensureNotFrozen()
     const result = this.storage.deleteEdge(src, dst, typeId)
     // 清除边缓存（Gap 12）
     this._edgeCache.delete(`${src}:${dst}:${typeId}`)

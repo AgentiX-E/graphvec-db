@@ -54,8 +54,12 @@ export class Backup {
     }
     this.inProgress = true
     this.snapshotId++
+    let unpauseWrites: (() => void) | null = null
     try {
-      // 1. 在复制前记录 HLC 时间戳（建立一致性快照参考点）
+      // 1. 暂停写入，确保备份一致性
+      unpauseWrites = await this.engine.pauseWrites()
+
+      // 2. 记录 HLC 时间戳（建立一致性快照参考点）
       const ts = this.clock.nowWithWallTime()
 
       // 微任务让出点：允许其他调用检查 inProgress
@@ -152,6 +156,7 @@ export class Backup {
       }
     } finally {
       this.inProgress = false
+      if (unpauseWrites) unpauseWrites()
     }
   }
 
