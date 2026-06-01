@@ -3,9 +3,12 @@
  *
  * 二进制格式的 WAL，用于 Raft 日志的持久化存储。
  * 每个条目格式：
- *   [4 bytes: index][4 bytes: term][4 bytes: data length][data bytes]
+ *   [4 bytes: index][4 bytes: term][4 bytes: data length][data bytes][4 bytes: CRC32]
  *
  * 所有整数字段采用 Big-Endian 编码。
+ *
+ * 安全保证：
+ * - CRC32 校验：写入时计算 CRC 附加到 entry，读取时验证 CRC
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -17,6 +20,33 @@ export interface LogEntry {
   data: Uint8Array
 }
 
+/**
+ * CRC32 校验函数（使用内置 zlib.crc32，兼容 Node.js 标准库）
+ * 不使用 npm crc 包，确保零依赖。
+ */
+function crc32(data: Uint8Array): number {
+  // 使用 Node.js 内置的 Buffer 方式实现 CRC32
+  let crc = 0xFFFFFFFF
+  for (let i = 0; i < data.length; i++) {
+    crc ^= data[i]
+    for (let j = 0; j < 8; j++) {
+      if (crc & 1) {
+        crc = (crc >>> 1) ^ 0xEDB88320
+      } else {
+        crc = crc >>> 1
+      }
+    }
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0
+}
+
+/** 条目头部大小: index(4) + term(4) + dataLen(4) = 12 */
+const HEADER_SIZE = 12
+/** CRC 尾部大小: 4 */
+const CRC_SIZE = 4
+/** 每条条目的固定开销 */
+const PER_ENTRY_OVERHEAD = HEADER_SIZE + CRC_SIZE
+
 export class WAL {
   private fd: number = -1
   private walPath: string
@@ -26,6 +56,8 @@ export class WAL {
   private lastTerm: number = 0
   private logger: Logger
   private _opened = false
+  /** CRC 校验错误计数 */
+  private _crcErrors: number = 0
 
   constructor(path: string) {
     this.walPath = path
@@ -35,6 +67,11 @@ export class WAL {
 
   get isOpen(): boolean {
     return this._opened
+  }
+
+  /** CRC 校验错误数 */
+  get crcErrors(): number {
+    return this._crcErrors
   }
 
   /**
@@ -76,7 +113,9 @@ export class WAL {
 
   /**
    * 追加一个日志条目到 WAL
-   * 格式：[4 bytes: index][4 bytes: term][4 bytes: data length][data bytes]
+   * 格式：[4 bytes: index][4 bytes: term][4 bytes: data length][data bytes][4 bytes: CRC32]
+   *
+   * CRC32 校验和覆盖 index, term, data 三个字段。
    */
   async append(term: number, data: Uint8Array): Promise<LogEntry> {
     if (!this._opened) {
@@ -88,12 +127,23 @@ export class WAL {
 
     const entry: LogEntry = { index, term, data }
 
-    const header = Buffer.alloc(12)
+    // 计算 CRC32（覆盖 index, term, data）
+    const crcInput = new Uint8Array(HEADER_SIZE + data.length)
+    new DataView(crcInput.buffer).setUint32(0, index, false) // Big-Endian
+    new DataView(crcInput.buffer).setUint32(4, term, false)  // Big-Endian
+    new DataView(crcInput.buffer).setUint32(8, data.length, false)
+    crcInput.set(data, HEADER_SIZE)
+    const checksum = crc32(crcInput)
+
+    const header = Buffer.alloc(HEADER_SIZE)
     header.writeUInt32BE(index, 0)
     header.writeUInt32BE(term, 4)
     header.writeUInt32BE(data.length, 8)
 
-    const buf = Buffer.concat([header, Buffer.from(data)])
+    const crcBuf = Buffer.alloc(CRC_SIZE)
+    crcBuf.writeUInt32BE(checksum, 0)
+
+    const buf = Buffer.concat([header, Buffer.from(data), crcBuf])
     fs.writeSync(this.fd, buf, 0, buf.length, null)
 
     // fsync：确保日志落盘后再返回
@@ -111,7 +161,7 @@ export class WAL {
     if (!this._opened) return
     if (lastIndex >= this.entries.length) return
 
-    // 保留从 lastIndex+1 到末尾的条目
+    // 保留从 lastIndex+1 到末尾的条目（基于数组索引，非 entry index）
     const keepEntries = this.entries.slice(lastIndex + 1)
     const buf = this._encodeEntries(keepEntries)
 
@@ -279,25 +329,45 @@ export class WAL {
 
   // ─── 内部方法 ──────────────────────────────────────────────
 
-  /** 解析二进制 buffer 中的日志条目 */
+  /** 解析二进制 buffer 中的日志条目（含 CRC 校验） */
   private _parseBuffer(buf: Buffer): void {
     this.entries = []
     let offset = 0
 
-    while (offset + 12 <= buf.length) {
+    while (offset + HEADER_SIZE <= buf.length) {
       const index = buf.readUInt32BE(offset)
       const term = buf.readUInt32BE(offset + 4)
       const dataLen = buf.readUInt32BE(offset + 8)
-      offset += 12
+      offset += HEADER_SIZE
 
-      if (offset + dataLen > buf.length) {
-        // 不完整条目，忽略
+      if (offset + dataLen + CRC_SIZE > buf.length) {
         this.logger.warn(`Incomplete entry at index ${index}, truncating`)
         break
       }
 
       const data = new Uint8Array(buf.subarray(offset, offset + dataLen))
       offset += dataLen
+
+      // 读取 CRC32 校验和
+      const storedCrc = buf.readUInt32BE(offset)
+      offset += CRC_SIZE
+
+      // 验证 CRC32
+      const crcInput = new Uint8Array(HEADER_SIZE + dataLen)
+      new DataView(crcInput.buffer).setUint32(0, index, false)
+      new DataView(crcInput.buffer).setUint32(4, term, false)
+      new DataView(crcInput.buffer).setUint32(8, dataLen, false)
+      crcInput.set(data, HEADER_SIZE)
+      const computedCrc = crc32(crcInput)
+
+      if (storedCrc !== computedCrc) {
+        this._crcErrors++
+        this.logger.error(
+          `CRC mismatch at entry index ${index}: stored=${storedCrc}, computed=${computedCrc}`,
+        )
+        // CRC 错误：跳过该条目继续读取后续条目（不中断）
+        continue
+      }
 
       this.entries.push({ index, term, data })
     }
@@ -308,15 +378,27 @@ export class WAL {
     }
   }
 
-  /** 将条目列表编码为二进制 buffer */
+  /** 将条目列表编码为二进制 buffer（含 CRC32） */
   private _encodeEntries(entries: LogEntry[]): Buffer {
     const buffers: Buffer[] = []
     for (const entry of entries) {
-      const header = Buffer.alloc(12)
+      const header = Buffer.alloc(HEADER_SIZE)
       header.writeUInt32BE(entry.index, 0)
       header.writeUInt32BE(entry.term, 4)
       header.writeUInt32BE(entry.data.length, 8)
-      buffers.push(header, Buffer.from(entry.data))
+
+      // 计算 CRC32
+      const crcInput = new Uint8Array(HEADER_SIZE + entry.data.length)
+      new DataView(crcInput.buffer).setUint32(0, entry.index, false)
+      new DataView(crcInput.buffer).setUint32(4, entry.term, false)
+      new DataView(crcInput.buffer).setUint32(8, entry.data.length, false)
+      crcInput.set(entry.data, HEADER_SIZE)
+      const checksum = crc32(crcInput)
+
+      const crcBuf = Buffer.alloc(CRC_SIZE)
+      crcBuf.writeUInt32BE(checksum, 0)
+
+      buffers.push(header, Buffer.from(entry.data), crcBuf)
     }
     return Buffer.concat(buffers)
   }

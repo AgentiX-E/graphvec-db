@@ -5,8 +5,13 @@
  * - match 结构为 { term: [fieldName] }
  * - fuzzy 搜索默认为模糊 + prefix
  * - 拼写校正：MiniSearch 默认未提供，无需测试
+ *
+ * 新增:
+ * - AnalyzerChain 测试
+ * - SynonymMap 测试
+ * - 同义词搜索测试
  */
-import { FullTextIndex } from './fulltext'
+import { FullTextIndex, AnalyzerChain, SynonymMap, Analyzers } from './fulltext'
 
 describe('FullTextIndex', () => {
   describe('基础搜索', () => {
@@ -119,7 +124,7 @@ describe('FullTextIndex', () => {
 
   describe('CJK 分词支持 (Item 19)', () => {
     test('TC-19.1: 中文搜索 — 索引"我喜欢编程"并搜索"编程"应匹配', () => {
-      const idx = new FullTextIndex()
+      const idx = new FullTextIndex({ analyzer: 'cjk' })
       idx.addDocument('doc1', { name: '我喜欢编程' })
       const results = idx.search('编程')
       expect(results).toHaveLength(1)
@@ -127,7 +132,7 @@ describe('FullTextIndex', () => {
     })
 
     test('TC-19.2: 日语搜索 — 索引"私はコードが好きです"并搜索"コード"应匹配', () => {
-      const idx = new FullTextIndex()
+      const idx = new FullTextIndex({ analyzer: 'cjk' })
       idx.addDocument('doc1', { name: '私はコードが好きです' })
       const results = idx.search('コード')
       expect(results).toHaveLength(1)
@@ -135,7 +140,7 @@ describe('FullTextIndex', () => {
     })
 
     test('TC-19.3: 混合中英文 — 索引"Python编程guide"并搜索"编程guide"应匹配', () => {
-      const idx = new FullTextIndex()
+      const idx = new FullTextIndex({ analyzer: 'cjk' })
       idx.addDocument('doc1', { name: 'Python编程guide' })
       const results = idx.search('编程guide')
       expect(results).toHaveLength(1)
@@ -143,7 +148,7 @@ describe('FullTextIndex', () => {
     })
 
     test('TC-19.4: 无CJK文本 — 纯英文搜索不受影响', () => {
-      const idx = new FullTextIndex()
+      const idx = new FullTextIndex({ analyzer: 'cjk' })
       idx.addDocument('doc1', { name: 'hello world' })
       idx.addDocument('doc2', { name: 'foo bar' })
       const results = idx.search('hello')
@@ -152,7 +157,7 @@ describe('FullTextIndex', () => {
     })
 
     test('TC-19.5: 分词边界 — "南京市长江大桥"的正确保留', () => {
-      const idx = new FullTextIndex()
+      const idx = new FullTextIndex({ analyzer: 'cjk' })
       idx.addDocument('doc1', { name: '南京市长江大桥' })
       // 搜索完整短语
       const fullResults = idx.search('南京市')
@@ -181,6 +186,156 @@ describe('FullTextIndex', () => {
       expect(idx.count()).toBe(2)
       idx.removeDocument('doc2')
       expect(idx.count()).toBe(1)
+    })
+  })
+
+  // ── P1-Q20: Analyzer 链 ──────────────────────
+
+  describe('AnalyzerChain (P1-Q20)', () => {
+    test('should create chain and use analyzers', () => {
+      const chain = new AnalyzerChain()
+      chain.useAnalyzer('simple')
+      const tokens = chain.analyze('Hello World!')
+      expect(tokens).toContain('hello')
+      expect(tokens).toContain('world')
+    })
+
+    test('should reject unknown analyzer name', () => {
+      const chain = new AnalyzerChain()
+      expect(() => chain.useAnalyzer('nonexistent')).toThrow(/unknown analyzer/i)
+    })
+
+    test('should chain multiple analyzers', () => {
+      const chain = new AnalyzerChain()
+      chain.useAnalyzer('simple')
+      chain.useAnalyzer('cjk')
+      const tokens = chain.analyze('Hello World')
+      expect(tokens.length).toBeGreaterThan(0)
+    })
+
+    test('should clear chain', () => {
+      const chain = new AnalyzerChain()
+      chain.useAnalyzer('simple')
+      chain.clear()
+      expect(chain.length).toBe(0)
+    })
+
+    test('should handle empty text', () => {
+      const chain = new AnalyzerChain()
+      chain.useAnalyzer('simple')
+      expect(chain.analyze('')).toEqual([])
+      expect(chain.analyze('   ')).toEqual([])
+    })
+  })
+
+  describe('FullTextIndex.useAnalyzer()', () => {
+    test('should add analyzer to index', () => {
+      const idx = new FullTextIndex()
+      idx.useAnalyzer('whitespace')
+      const tokens = idx.analyze('hello world')
+      expect(tokens).toContain('hello')
+      expect(tokens).toContain('world')
+    })
+
+    test('getAnalyzerChain should return the chain', () => {
+      const idx = new FullTextIndex()
+      const chain = idx.getAnalyzerChain()
+      expect(chain).toBeInstanceOf(AnalyzerChain)
+    })
+  })
+
+  // ── Item 15: 同义词支持 ─────────────────────
+
+  describe('SynonymMap (Item 15)', () => {
+    test('should set and get synonyms (bidirectional)', () => {
+      const map = new SynonymMap()
+      map.setSynonyms({ '电脑': ['计算机', '微机'] })
+
+      const synsForComputer = map.getSynonyms('电脑')
+      expect(synsForComputer).toContain('电脑')
+      expect(synsForComputer).toContain('计算机')
+      expect(synsForComputer).toContain('微机')
+    })
+
+    test('should get synonyms in both directions', () => {
+      const map = new SynonymMap()
+      map.setSynonyms({ '电脑': ['计算机'] })
+
+      const synsForComputer = map.getSynonyms('计算机')
+      expect(synsForComputer).toContain('电脑')
+      expect(synsForComputer).toContain('计算机')
+    })
+
+    test('expandQuery should include synonym terms', () => {
+      const map = new SynonymMap()
+      map.setSynonyms({ 'big': ['large', 'huge'] })
+
+      const expanded = map.expandQuery('big house')
+      expect(expanded).toContain('big')
+      expect(expanded).toContain('large')
+      expect(expanded).toContain('huge')
+      expect(expanded).toContain('house')
+    })
+
+    test('should return only original term when no synonyms exist', () => {
+      const map = new SynonymMap()
+      const syns = map.getSynonyms('unknownword')
+      expect(syns).toEqual(['unknownword'])
+    })
+
+    test('should handle case insensitivity', () => {
+      const map = new SynonymMap()
+      map.setSynonyms({ 'Computer': ['PC'] })
+      const syns = map.getSynonyms('computer')
+      expect(syns).toContain('computer')
+      expect(syns).toContain('pc')
+    })
+
+    test('clear should remove all synonyms', () => {
+      const map = new SynonymMap()
+      map.setSynonyms({ 'a': ['b'] })
+      expect(map.size).toBe(1)
+      map.clear()
+      expect(map.size).toBe(0)
+    })
+
+    test('setSynonymsFromMap should work from Map object', () => {
+      const map = new SynonymMap()
+      const src = new Map<string, string[]>()
+      src.set('happy', ['glad', 'joyful'])
+      src.set('sad', ['unhappy'])
+      map.setSynonymsFromMap(src)
+
+      const syns = map.getSynonyms('happy')
+      expect(syns).toContain('glad')
+      expect(syns).toContain('joyful')
+
+      expect(map.getSynonyms('sad')).toContain('unhappy')
+    })
+  })
+
+  describe('FullTextIndex.setSynonyms() — 同义词搜索', () => {
+    test('should expand query with synonyms during search', () => {
+      const idx = new FullTextIndex()
+      idx.addDocument('doc1', { name: 'computer' })
+      idx.addDocument('doc2', { name: 'machine' })
+      idx.setSynonyms({ 'pc': ['computer'] })
+      // When searching for 'pc', synonym expansion adds 'computer'
+      const results = idx.search('pc')
+      expect(results.some(r => r.docId === 'doc1')).toBe(true)
+    })
+
+    test('should not break normal search when no synonyms are set', () => {
+      const idx = new FullTextIndex()
+      idx.addDocument('doc1', { name: 'hello world' })
+      const results = idx.search('hello')
+      expect(results).toHaveLength(1)
+    })
+
+    test('getSynonymMap should return the SynonymMap', () => {
+      const idx = new FullTextIndex()
+      const map = idx.getSynonymMap()
+      expect(map).toBeInstanceOf(SynonymMap)
     })
   })
 })

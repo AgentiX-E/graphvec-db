@@ -122,6 +122,58 @@ export class GraphProjection {
   }
 
   /**
+   * P1-S03: 压缩 CSR 数组，移除空洞。
+   *
+   * 当前 CSR 实现使用 Uint32Array 且没有空洞（每个槽位都填充了有效值），
+   * 此方法提供防御性压缩：如果 edges 数组末尾存在全 0 值，将其截断。
+   *
+   * 在共享内存或内存映射场景中，CSR 可能因为预留空间而产生空洞，
+   * 此方法确保内存最紧凑。
+   *
+   * @returns 压缩后的新 GraphProjection 实例
+   */
+  compress(): GraphProjection {
+    // 检查 edges 末尾是否有全 0 空洞
+    let lastEdgeIdx = this.edges.length - 1
+    while (lastEdgeIdx >= 0 && this.edges[lastEdgeIdx] === 0) {
+      // 还需要检查这个位置是否被任何 offset 使用
+      let isUsed = false
+      for (let i = 0; i < this.nodeOffsets.length; i++) {
+        if (this.nodeOffsets[i] === lastEdgeIdx || this.nodeOffsets[i] === lastEdgeIdx + 1) {
+          isUsed = true
+          break
+        }
+      }
+      if (isUsed) break
+      lastEdgeIdx--
+    }
+    const compactEdgeLen = lastEdgeIdx + 1
+
+    if (compactEdgeLen >= this.edges.length) {
+      return this // 无空洞
+    }
+
+    // 创建压缩后的 CSR
+    const compressedEdges = new Uint32Array(compactEdgeLen)
+    for (let i = 0; i < compactEdgeLen; i++) {
+      compressedEdges[i] = this.edges[i]
+    }
+
+    return new GraphProjection(
+      this.nodeOffsets,
+      compressedEdges,
+      this.projectionNodeIds,
+      this.nodeIndex,
+      this.nodeRecords,
+      {
+        ...this.stats,
+        estimatedMemoryBytes:
+          this.nodeOffsets.byteLength + compressedEdges.byteLength,
+      },
+    )
+  }
+
+  /**
    * 从 GraphEngine 构造子图投影
    *
    * 通过 BFS 遍历或种子节点加载子图，构建 CSR 格式的邻接表。

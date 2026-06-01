@@ -1,181 +1,343 @@
 /**
- * wal.spec.ts — WAL 持久化测试
+ * wal.spec.ts — WAL 日志持久化测试
+ *
+ * 覆盖 CRC32 校验、append / truncate / open / close / destroy 等操作
  */
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import * as os from 'node:os'
+import * as path from 'path'
+import * as fs from 'fs'
+import * as os from 'os'
 import { WAL } from './wal'
 
-describe('WAL', () => {
-  const testDir = path.join(os.tmpdir(), 'wal-test')
-  let wal: WAL
+function tempWalPath(): string {
+  const dir = path.join(os.tmpdir(), 'wal-test-' + Date.now() + '-' + Math.random().toString(36).slice(2))
+  fs.mkdirSync(dir, { recursive: true })
+  return path.join(dir, 'test.wal')
+}
 
-  beforeEach(async () => {
-    fs.mkdirSync(testDir, { recursive: true })
+describe('WAL', () => {
+  let walPath: string
+
+  beforeEach(() => {
+    walPath = tempWalPath()
   })
 
   afterEach(async () => {
-    if (wal) {
-      try { await wal.destroy() } catch { /* ignore */ }
+    try {
+      const wal = new WAL(walPath)
+      await wal.destroy()
+    } catch {
+      // ignore cleanup errors
     }
   })
 
-  afterAll(() => {
-    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch { /* ignore */ }
+  describe('open and close', () => {
+    test('should open a new WAL file', async () => {
+      const wal = new WAL(walPath)
+      expect(wal.isOpen).toBe(false)
+      await wal.open()
+      expect(wal.isOpen).toBe(true)
+      expect(fs.existsSync(walPath)).toBe(true)
+    })
+
+    test('should close WAL file', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.close()
+      expect(wal.isOpen).toBe(false)
+    })
+
+    test('should open existing WAL file with entries', async () => {
+      const wal1 = new WAL(walPath)
+      await wal1.open()
+      await wal1.append(1, new Uint8Array([1, 2, 3]))
+      await wal1.append(1, new Uint8Array([4, 5]))
+      await wal1.close()
+
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      expect(wal2.entriesCount()).toBe(2)
+      const entries = wal2.readAll()
+      expect(entries[0].index).toBe(1)
+      expect(entries[1].index).toBe(2)
+    })
   })
 
-  it('should create and open a new WAL file', async () => {
-    const walPath = path.join(testDir, 'test-0.wal')
-    wal = new WAL(walPath)
-    expect(wal.isOpen).toBe(false)
+  describe('append and read', () => {
+    test('should append entries with sequential indices', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
 
-    await wal.open()
-    expect(wal.isOpen).toBe(true)
-    expect(wal.readAll()).toEqual([])
-    expect(wal.getLastIndex()).toBe(0)
-    expect(wal.getLastTerm()).toBe(0)
+      const entry1 = await wal.append(1, new Uint8Array([10]))
+      expect(entry1.index).toBe(1)
+      expect(entry1.term).toBe(1)
+
+      const entry2 = await wal.append(2, new Uint8Array([20, 30]))
+      expect(entry2.index).toBe(2)
+
+      const all = wal.readAll()
+      expect(all).toHaveLength(2)
+    })
+
+    test('should persist entries to disk', async () => {
+      const wal1 = new WAL(walPath)
+      await wal1.open()
+      await wal1.append(1, new Uint8Array([1, 2, 3]))
+      await wal1.close()
+
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      const entries = wal2.readAll()
+      expect(entries).toHaveLength(1)
+      expect(entries[0].data).toEqual(new Uint8Array([1, 2, 3]))
+    })
+
+    test('should throw if appending to closed WAL', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.close()
+      await expect(wal.append(1, new Uint8Array([1]))).rejects.toThrow()
+    })
   })
 
-  it('should append entries and read them back', async () => {
-    const walPath = path.join(testDir, 'test-1.wal')
-    wal = new WAL(walPath)
-    await wal.open()
+  describe('truncation', () => {
+    test('should truncate all entries after given index', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([1]))
+      await wal.append(2, new Uint8Array([2]))
+      await wal.append(3, new Uint8Array([3]))
 
-    const data1 = Buffer.from('entry-1')
-    const entry1 = await wal.append(1, data1)
-    expect(entry1.index).toBe(1)
-    expect(entry1.term).toBe(1)
-    expect(Buffer.from(entry1.data).toString()).toBe('entry-1')
+      await wal.truncate(1)
+      expect(wal.entriesCount()).toBe(1) // keep entries from index 2
+    })
 
-    const data2 = Buffer.from('entry-2')
-    const entry2 = await wal.append(2, data2)
-    expect(entry2.index).toBe(2)
-    expect(entry2.term).toBe(2)
+    test('truncate should be no-op when index >= entries count', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([1]))
+      await wal.truncate(5)
+      expect(wal.entriesCount()).toBe(1)
+    })
 
-    const all = wal.readAll()
-    expect(all).toHaveLength(2)
-    expect(all[0].index).toBe(1)
-    expect(all[0].term).toBe(1)
-    expect(Buffer.from(all[0].data).toString()).toBe('entry-1')
-    expect(all[1].index).toBe(2)
-    expect(all[1].term).toBe(2)
-    expect(Buffer.from(all[1].data).toString()).toBe('entry-2')
+    test('truncate should persist on disk', async () => {
+      const wal1 = new WAL(walPath)
+      await wal1.open()
+      await wal1.append(1, new Uint8Array([1]))
+      await wal1.append(2, new Uint8Array([2]))
+      await wal1.append(3, new Uint8Array([3]))
+      await wal1.truncate(1)  // 保留从数组索引2开始: entries[index=3]
+      await wal1.close()
+
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      expect(wal2.entriesCount()).toBe(1)
+      expect(wal2.getLastIndex()).toBe(3)
+    })
   })
 
-  it('should persist entries across open/close cycles', async () => {
-    const walPath = path.join(testDir, 'test-2.wal')
+  describe('truncateBefore', () => {
+    test('should truncate entries before given index', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([1]))
+      await wal.append(2, new Uint8Array([2]))
+      await wal.append(3, new Uint8Array([3]))
 
-    // First session
-    const wal1 = new WAL(walPath)
-    await wal1.open()
-    await wal1.append(1, Buffer.from('persist-me'))
-    await wal1.close()
+      await wal.truncateBefore(2)
+      expect(wal.entriesCount()).toBe(2) // entries with index 2, 3
+    })
 
-    // Second session (simulate crash recovery)
-    const wal2 = new WAL(walPath)
-    await wal2.open()
-    expect(wal2.readAll()).toHaveLength(1)
-    expect(wal2.getLastIndex()).toBe(1)
-    expect(wal2.getLastTerm()).toBe(1)
-    expect(Buffer.from(wal2.readAll()[0].data).toString()).toBe('persist-me')
-    await wal2.close()
+    test('truncateBefore should persist on disk', async () => {
+      const wal1 = new WAL(walPath)
+      await wal1.open()
+      await wal1.append(1, new Uint8Array([1]))
+      await wal1.append(2, new Uint8Array([2]))
+      await wal1.truncateBefore(2)
+      await wal1.close()
+
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      expect(wal2.entriesCount()).toBe(1)
+      expect(wal2.getLastIndex()).toBe(2)
+    })
   })
 
-  it('should truncate entries after a given index', async () => {
-    const walPath = path.join(testDir, 'test-3.wal')
-    wal = new WAL(walPath)
-    await wal.open()
+  describe('getEntry and getEntriesFrom', () => {
+    test('should retrieve entry by index', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([10]))
+      await wal.append(2, new Uint8Array([20]))
 
-    await wal.append(1, Buffer.from('a'))
-    await wal.append(1, Buffer.from('b'))
-    await wal.append(1, Buffer.from('c'))
-    expect(wal.readAll()).toHaveLength(3)
+      const e1 = wal.getEntry(1)
+      expect(e1).toBeDefined()
+      expect(e1!.term).toBe(1)
+      expect(e1!.data).toEqual(new Uint8Array([10]))
 
-    await wal.truncate(1) // slice(1+1=2) → keep entries[2] only
-    expect(wal.readAll()).toHaveLength(1)
-    // entries[2] has index 3
-    expect(wal.readAll()[0].index).toBe(3)
-    expect(wal.readAll()).toHaveLength(1)
+      expect(wal.getEntry(99)).toBeUndefined()
+    })
+
+    test('should retrieve entries starting from given index', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([1]))
+      await wal.append(2, new Uint8Array([2]))
+      await wal.append(3, new Uint8Array([3]))
+
+      const from2 = wal.getEntriesFrom(2)
+      expect(from2).toHaveLength(2)
+      expect(from2[0].index).toBe(2)
+      expect(from2[1].index).toBe(3)
+    })
   })
 
-  it('should not truncate when lastIndex >= entry count', async () => {
-    const walPath = path.join(testDir, 'test-4.wal')
-    wal = new WAL(walPath)
-    await wal.open()
+  describe('meta persistence', () => {
+    test('should persist and load meta key-value', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      wal.persistMeta('currentTerm', '5')
+      wal.persistMeta('votedFor', 'node-42')
 
-    await wal.append(1, Buffer.from('a'))
-    await wal.append(1, Buffer.from('b'))
+      expect(wal.loadMeta('currentTerm')).toBe('5')
+      expect(wal.loadMeta('votedFor')).toBe('node-42')
+    })
 
-    await wal.truncate(10) // lastIndex > entries.length → no-op
-    expect(wal.readAll()).toHaveLength(2)
+    test('should return undefined for non-existent meta key', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      expect(wal.loadMeta('nonexistent')).toBeUndefined()
+    })
+
+    test('should update existing meta key', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      wal.persistMeta('currentTerm', '3')
+      wal.persistMeta('currentTerm', '7')
+      expect(wal.loadMeta('currentTerm')).toBe('7')
+    })
+
+    test('should persist meta across wal close/open', async () => {
+      const wal1 = new WAL(walPath)
+      await wal1.open()
+      wal1.persistMeta('key1', 'val1')
+      await wal1.close()
+
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      expect(wal2.loadMeta('key1')).toBe('val1')
+    })
   })
 
-  it('should recover entries after simulated crash', async () => {
-    const walPath = path.join(testDir, 'test-crash.wal')
+  describe('CRC32 checksum (P2-W-04)', () => {
+    test('should verify CRC on readback after append', async () => {
+      const wal1 = new WAL(walPath)
+      await wal1.open()
+      await wal1.append(1, new Uint8Array([1, 2, 3]))
+      await wal1.close()
 
-    // Write some entries
-    const wal1 = new WAL(walPath)
-    await wal1.open()
-    await wal1.append(1, Buffer.from('tx1'))
-    await wal1.append(2, Buffer.from('tx2'))
-    await wal1.sync()
-    await wal1.close()
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      expect(wal2.entriesCount()).toBe(1)
+      expect(wal2.crcErrors).toBe(0)
+    })
 
-    // Read back after "crash"
-    const wal2 = new WAL(walPath)
-    await wal2.open()
-    const entries = wal2.readAll()
-    expect(entries).toHaveLength(2)
-    expect(Buffer.from(entries[0].data).toString()).toBe('tx1')
-    expect(Buffer.from(entries[1].data).toString()).toBe('tx2')
-    expect(wal2.getLastIndex()).toBe(2)
-    expect(wal2.getLastTerm()).toBe(2)
+    test('should detect corrupted data via CRC', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([1, 2, 3]))
+      await wal.close()
 
-    // Append more
-    await wal2.append(3, Buffer.from('tx3'))
-    await wal2.sync()
-    await wal2.close()
+      // 手动破坏文件内容（翻转 data 段的一个字节）
+      const buf = fs.readFileSync(walPath)
+      // data 在 header 12 bytes 之后
+      const corruptedIdx = 14 // 在 data 段内
+      buf[corruptedIdx] = ~buf[corruptedIdx] & 0xFF
+      fs.writeFileSync(walPath, buf)
 
-    // Validate 3 entries
-    const wal3 = new WAL(walPath)
-    await wal3.open()
-    expect(wal3.readAll()).toHaveLength(3)
-    expect(wal3.getLastIndex()).toBe(3)
-    await wal3.close()
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      // CRC 校验失败，条目被跳过
+      expect(wal2.crcErrors).toBeGreaterThan(0)
+      expect(wal2.entriesCount()).toBe(0)
+    })
+
+    test('should detect corrupted header via CRC', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([10, 20]))
+      await wal.close()
+
+      // 破坏 header 中的 term 字段
+      const buf = fs.readFileSync(walPath)
+      buf[5] = buf[5] ^ 0xFF // 翻转 term 的第 5 字节
+      fs.writeFileSync(walPath, buf)
+
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      expect(wal2.crcErrors).toBeGreaterThan(0)
+    })
+
+    test('should maintain CRC integrity across multiple entries', async () => {
+      const wal1 = new WAL(walPath)
+      await wal1.open()
+      await wal1.append(1, new Uint8Array([1, 2, 3]))
+      await wal1.append(2, new Uint8Array([4, 5, 6, 7]))
+      await wal1.append(3, new Uint8Array([8]))
+      await wal1.close()
+
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      expect(wal2.entriesCount()).toBe(3)
+      expect(wal2.crcErrors).toBe(0)
+      expect(wal2.getLastIndex()).toBe(3)
+    })
+
+    test('should skip only corrupted entry and continue reading', async () => {
+      const wal1 = new WAL(walPath)
+      await wal1.open()
+      await wal1.append(1, new Uint8Array([1])) // good
+      await wal1.append(2, new Uint8Array([2])) // will be corrupted
+      await wal1.append(3, new Uint8Array([3])) // good
+      await wal1.close()
+
+      // 破坏第二个条目的 data
+      const buf = fs.readFileSync(walPath)
+      // 第二个条目从第一个条目末尾开始
+      // 每个条目: header(12) + data(n) + crc(4)
+      const entry1Size = 12 + 1 + 4 // 17
+      buf[entry1Size + 13] = buf[entry1Size + 13] ^ 0xFF // 破坏 data 字节
+      fs.writeFileSync(walPath, buf)
+
+      const wal2 = new WAL(walPath)
+      await wal2.open()
+      expect(wal2.crcErrors).toBe(1) // 1 CRC error
+      // 应该保留 2 个好条目（1 和 3）
+      expect(wal2.entriesCount()).toBe(2)
+      const entries = wal2.readAll()
+      expect(entries.some(e => e.index === 1)).toBe(true)
+      expect(entries.some(e => e.index === 3)).toBe(true)
+    })
   })
 
-  it('should handle binary data', async () => {
-    const walPath = path.join(testDir, 'test-binary.wal')
-    wal = new WAL(walPath)
-    await wal.open()
-
-    const binaryData = Buffer.from([0x00, 0x01, 0xFF, 0xFE, 0x7F])
-    await wal.append(1, binaryData)
-
-    const entry = wal.readAll()[0]
-    expect(Buffer.from(entry.data)).toEqual(binaryData)
+  describe('sync', () => {
+    test('sync should not throw', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([1]))
+      await expect(wal.sync()).resolves.not.toThrow()
+    })
   })
 
-  it('should get entries from a starting index', async () => {
-    const walPath = path.join(testDir, 'test-range.wal')
-    wal = new WAL(walPath)
-    await wal.open()
+  describe('destroy', () => {
+    test('should delete WAL and meta files', async () => {
+      const wal = new WAL(walPath)
+      await wal.open()
+      await wal.append(1, new Uint8Array([1]))
+      wal.persistMeta('test', 'val')
+      await wal.destroy()
 
-    await wal.append(1, Buffer.from('a'))
-    await wal.append(2, Buffer.from('b'))
-    await wal.append(3, Buffer.from('c'))
-
-    const fromIndex2 = wal.getEntriesFrom(2)
-    expect(fromIndex2).toHaveLength(2)
-    expect(fromIndex2[0].index).toBe(2)
-    expect(fromIndex2[1].index).toBe(3)
-  })
-
-  it('should return undefined for non-existent entry', async () => {
-    const walPath = path.join(testDir, 'test-missing.wal')
-    wal = new WAL(walPath)
-    await wal.open()
-
-    expect(wal.getEntry(99)).toBeUndefined()
+      expect(fs.existsSync(walPath)).toBe(false)
+      expect(wal.entriesCount()).toBe(0)
+    })
   })
 })

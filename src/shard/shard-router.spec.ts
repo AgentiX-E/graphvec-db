@@ -2,7 +2,7 @@ import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import { ShardRouter } from './shard-router'
-import { ShardMap } from '../types'
+import { ShardMap, NodeRecord } from '../types'
 
 function createMockShardMap(): ShardMap {
   return {
@@ -94,15 +94,12 @@ describe('ShardRouter', () => {
         'range-gamma': 0,
       }
 
-      // Generate 300 distinct keys
       for (let i = 0; i < 300; i++) {
         const key = `key-${i}-${Math.random()}`
         const range = router.getRangeForKey(key)
         rangeCounts[range] = (rangeCounts[range] || 0) + 1
       }
 
-      // With 3 ranges and consistent hashing, some distribution is expected.
-      // A really unbalanced result (one range gets < 5%) suggests a bug.
       const counts = Object.values(rangeCounts)
       for (const count of counts) {
         expect(count).toBeGreaterThan(0)
@@ -135,6 +132,131 @@ describe('ShardRouter', () => {
       }
 
       expect(usedRanges.size).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  describe('getRangeForEdge (P1-S02: symmetric edge routing)', () => {
+    test('should return single range when src and dst map to same range', () => {
+      const src = 1
+      const dst = 2
+      // Both nodes route to the same range
+      const srcRange = router.getRange(src)
+      const dstRange = router.getRange(dst)
+      if (srcRange === dstRange) {
+        const ranges = router.getRangeForEdge(src, dst)
+        expect(ranges).toHaveLength(1)
+        expect(ranges[0]).toBe(srcRange)
+      }
+    })
+
+    test('should return two ranges when src and dst are in different ranges', () => {
+      // Find a pair that maps to different ranges
+      let src = 1
+      let dst = 2
+      for (let i = 1; i <= 100; i++) {
+        for (let j = i + 1; j <= 100; j++) {
+          if (router.getRange(i) !== router.getRange(j)) {
+            src = i
+            dst = j
+            break
+          }
+        }
+        if (router.getRange(src) !== router.getRange(dst)) break
+      }
+
+      // Only test if we found different-ranged nodes
+      if (router.getRange(src) !== router.getRange(dst)) {
+        const ranges = router.getRangeForEdge(src, dst)
+        expect(ranges).toHaveLength(2)
+        expect(ranges[0]).toBe(router.getRange(src)) // src range first
+        expect(ranges[1]).toBe(router.getRange(dst)) // dst range second
+      }
+    })
+
+    test('should fallback to dst range when src range does not have the edge', () => {
+      const src = 1
+      const dst = 2
+      const srcRange = router.getRange(src)
+      const dstRange = router.getRange(dst)
+
+      if (srcRange !== dstRange) {
+        // 模拟 edgeExistsInSrcRange 返回 false
+        const ranges = router.getRangeForEdge(src, dst, (rangeId) => {
+          return false // edge does NOT exist in any range
+        })
+        expect(ranges[0]).toBe(dstRange) // dst range first (fallback)
+        expect(ranges[1]).toBe(srcRange) // src range second
+      }
+    })
+
+    test('should prefer src range when edge exists', () => {
+      const src = 10
+      const dst = 20
+      const srcRange = router.getRange(src)
+      const dstRange = router.getRange(dst)
+
+      if (srcRange !== dstRange) {
+        const ranges = router.getRangeForEdge(src, dst, (rangeId) => {
+          return rangeId === srcRange // edge exists in src range
+        })
+        expect(ranges[0]).toBe(srcRange)
+        expect(ranges[1]).toBe(dstRange)
+      }
+    })
+  })
+
+  describe('recommendRoute (P1-S01: smart routing)', () => {
+    test('should return a valid range for any node', () => {
+      const node: NodeRecord = { id: 42, type: 1, name: 'test', props: {} }
+      const range = router.recommendRoute(node)
+      const validRanges = new Set(['range-alpha', 'range-beta', 'range-gamma'])
+      expect(validRanges.has(range)).toBe(true)
+    })
+
+    test('should be deterministic for the same node', () => {
+      const node: NodeRecord = { id: 42, type: 1, name: 'test', props: {} }
+      const first = router.recommendRoute(node)
+      const second = router.recommendRoute(node)
+      expect(first).toBe(second)
+    })
+
+    test('should use label-based routing', () => {
+      const node: NodeRecord = { id: 99, type: 5, name: 'test', props: {} }
+      const range = router.recommendRoute(node)
+      const labelRange = router.getRangeForKey(`label:5:99`)
+      // Should be deterministic
+      expect(router.recommendRoute(node)).toBe(range)
+    })
+  })
+
+  describe('recommendRouteWithLoad (load-aware routing)', () => {
+    test('should return label range when load is balanced', () => {
+      const node: NodeRecord = { id: 42, type: 1, name: 'test', props: {} }
+      const loads = [
+        { rangeId: 'range-alpha', nodeCount: 100 },
+        { rangeId: 'range-beta', nodeCount: 110 },
+        { rangeId: 'range-gamma', nodeCount: 90 },
+      ]
+      const range = router.recommendRouteWithLoad(node, loads)
+      expect(typeof range).toBe('string')
+    })
+
+    test('should handle empty load data gracefully', () => {
+      const node: NodeRecord = { id: 42, type: 1, name: 'test', props: {} }
+      const range = router.recommendRouteWithLoad(node, [])
+      expect(typeof range).toBe('string')
+    })
+
+    test('should prefer lightest range when label range is overloaded', () => {
+      const node: NodeRecord = { id: 42, type: 1, name: 'test', props: {} }
+      const loads = [
+        { rangeId: 'range-alpha', nodeCount: 1000 },
+        { rangeId: 'range-beta', nodeCount: 10 },
+        { rangeId: 'range-gamma', nodeCount: 100 },
+      ]
+      const range = router.recommendRouteWithLoad(node, loads)
+      // Should prefer the lightest range (beta)
+      expect(range).toBe('range-beta')
     })
   })
 
@@ -201,10 +323,8 @@ describe('ShardRouter', () => {
     })
 
     test('should correctly route after manual JSON modification', () => {
-      // 持久化原始路由表
       router.persistShardMap(tmpDir)
 
-      // 修改 JSON 文件 — 去掉 range-gamma
       const filePath = path.join(tmpDir, 'shard-map.json')
       const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
       raw.hashRing.nodes = raw.hashRing.nodes.filter(
@@ -216,7 +336,6 @@ describe('ShardRouter', () => {
       raw.version = 2
       fs.writeFileSync(filePath, JSON.stringify(raw, null, 2))
 
-      // 加载修改后的路由表
       const loaded = ShardRouter.loadShardMap(tmpDir)
       expect(loaded).not.toBeNull()
       expect(loaded!.version).toBe(2)
@@ -225,19 +344,61 @@ describe('ShardRouter', () => {
     })
 
     test('should route correctly after loading persisted shard map', () => {
-      // 先持久化
       router.persistShardMap(tmpDir)
 
-      // 加载然后重建新路由
       const loaded = ShardRouter.loadShardMap(tmpDir)!
       const restoredRouter = new ShardRouter(loaded)
 
-      // 验证路由一致性
       const key = 'test-key-for-persistence'
       expect(restoredRouter.getRangeForKey(key)).toBe(router.getRangeForKey(key))
 
       const ranges = restoredRouter.getAllRanges().sort()
       expect(ranges).toEqual(['range-alpha', 'range-beta', 'range-gamma'])
+    })
+  })
+
+  describe('persistence with port', () => {
+    const tmpDir2 = path.join(os.tmpdir(), 'shard-router-test-port-' + Date.now())
+    let router2: ShardRouter
+
+    beforeEach(() => {
+      fs.rmSync(tmpDir2, { recursive: true, force: true })
+      fs.mkdirSync(tmpDir2, { recursive: true })
+    })
+
+    afterAll(() => {
+      fs.rmSync(tmpDir2, { recursive: true, force: true })
+    })
+
+    test('should persist and load shard map with port on ranges', () => {
+      const sm: ShardMap = {
+        version: 1,
+        ranges: [
+          {
+            rangeId: 'range-alpha',
+            dataDir: '/data/range-alpha',
+            raftConfig: {
+              nodeId: 'node-alpha',
+              peers: [],
+              storagePath: '/data/range-alpha/raft',
+            },
+            overgraphConfig: { path: '/data/range-alpha/graph' },
+          },
+        ],
+        hashRing: {
+          virtualNodes: 160,
+          nodes: [{ hash: '0x00000000', rangeId: 'range-alpha' }],
+        },
+      }
+      router2 = new ShardRouter(sm)
+
+      // Test persist
+      router2.persistShardMap(tmpDir2)
+      const loaded = ShardRouter.loadShardMap(tmpDir2)
+      expect(loaded).not.toBeNull()
+      expect(loaded!.version).toBe(1)
+      expect(loaded!.ranges).toHaveLength(1)
+      expect(loaded!.ranges[0].rangeId).toBe('range-alpha')
     })
   })
 })

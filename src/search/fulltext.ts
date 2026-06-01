@@ -15,6 +15,10 @@
  * - 文档数达到 10K（可配置）时生成快照并清理 WAL
  *
  * 接口兼容旧 FullTextIndex，100% 替换现有代码。
+ *
+ * 增强:
+ * - P1-Q20: 可配置的 analyzer 函数链，支持 useAnalyzer(name) 接口
+ * - Item 15: 同义词支持（SynonymMap），搜索时自动扩展同义词
  */
 import MiniSearch from 'minisearch'
 import * as fs from 'fs'
@@ -44,6 +48,192 @@ export interface FullTextOptions {
   snapshotThreshold?: number  // 触发快照的文档数阈值，默认 10000
 }
 
+// ── Analyzer 链 ──────────────────────────────────────────
+
+/**
+ * AnalyzerFn — 文本分析函数类型
+ * 输入原始文本，输出 token 列表
+ */
+export type AnalyzerFn = (text: string) => string[]
+
+/**
+ * 预定义 analyzer 实现
+ */
+export const Analyzers: Record<string, AnalyzerFn> = {
+  /** simple: 小写 + 按非字母数字字符分割 */
+  simple: (text: string): string[] => {
+    return text.toLowerCase().split(/[^a-zA-Z0-9]+/).filter(Boolean)
+  },
+
+  /** standard: 同 simple，但保留更多格式 */
+  standard: (text: string): string[] => {
+    return text.toLowerCase().split(/[\s,.;:!?"'()]+/).filter(Boolean)
+  },
+
+  /** cjk: 中英文混合分词 */
+  cjk: (text: string): string[] => {
+    const tokens: string[] = []
+    const segments = text.split(/([\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+)/).filter(Boolean)
+    for (const seg of segments) {
+      if (/^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+$/.test(seg)) {
+        _cjkBigrams(seg, tokens)
+      } else {
+        tokens.push(...seg.toLowerCase().split(/[^a-zA-Z0-9]+/).filter(Boolean))
+      }
+    }
+    return tokens
+  },
+
+  /** whitespace: 仅按空白字符分割 */
+  whitespace: (text: string): string[] => {
+    return text.split(/\s+/).filter(Boolean)
+  },
+}
+
+/**
+ * AnalyzerChain — 可组合的 analyzer 函数链
+ * 按顺序应用多个分析步骤
+ */
+export class AnalyzerChain {
+  private fns: AnalyzerFn[] = []
+
+  constructor(fns?: AnalyzerFn[]) {
+    if (fns) this.fns = [...fns]
+  }
+
+  /** 添加分析步骤 */
+  use(fn: AnalyzerFn): AnalyzerChain {
+    this.fns.push(fn)
+    return this
+  }
+
+  /** 使用命名 analyzer */
+  useAnalyzer(name: string): AnalyzerChain {
+    const fn = Analyzers[name]
+    if (!fn) {
+      throw new Error(`Unknown analyzer: "${name}". Available: ${Object.keys(Analyzers).join(', ')}`)
+    }
+    this.fns.push(fn)
+    return this
+  }
+
+  /** 执行分析链 */
+  analyze(text: string): string[] {
+    let tokens = [text]
+    for (const fn of this.fns) {
+      tokens = tokens.flatMap(t => fn(t))
+    }
+    return [...new Set(tokens)] // 去重
+  }
+
+  /** 清空分析链 */
+  clear(): void {
+    this.fns = []
+  }
+
+  /** 获取当前分析器数量 */
+  get length(): number {
+    return this.fns.length
+  }
+}
+
+// ── 同义词支持 ───────────────────────────────────────────
+
+/**
+ * SynonymMap — 同义词映射
+ *
+ * 用于搜索时自动扩展同义词，提高召回率。
+ * 支持双向同义词（如 电脑↔计算机）和单向同义词（如 AT&T → AT T）
+ */
+export class SynonymMap {
+  private _map: Map<string, string[]> = new Map()
+  private _reverseMap: Map<string, string[]> = new Map()
+
+  /**
+   * 设置同义词。
+   * 同义词是双向的：如果 "电脑" → ["计算机", "微机"]，
+   * 那么搜索 "计算机" 也会匹配 "电脑"。
+   */
+  setSynonyms(synonyms: Record<string, string[]>): void {
+    for (const [term, syns] of Object.entries(synonyms)) {
+      const normalizedTerm = term.toLowerCase()
+      const normalizedSyns = syns.map(s => s.toLowerCase())
+
+      this._map.set(normalizedTerm, normalizedSyns)
+
+      // 建立反向映射
+      for (const syn of normalizedSyns) {
+        if (!this._reverseMap.has(syn)) {
+          this._reverseMap.set(syn, [])
+        }
+        this._reverseMap.get(syn)!.push(normalizedTerm)
+      }
+    }
+  }
+
+  /**
+   * 从 Map 对象设置同义词
+   */
+  setSynonymsFromMap(map: Map<string, string[]>): void {
+    for (const [term, syns] of map) {
+      this.setSynonyms({ [term]: syns })
+    }
+  }
+
+  /**
+   * 获取指定词的所有同义词（包含自身）
+   */
+  getSynonyms(term: string): string[] {
+    const normalized = term.toLowerCase()
+    const result = new Set<string>()
+    result.add(normalized)
+
+    // 前向同义词
+    const forward = this._map.get(normalized)
+    if (forward) {
+      for (const s of forward) result.add(s)
+    }
+
+    // 反向同义词
+    const reverse = this._reverseMap.get(normalized)
+    if (reverse) {
+      for (const s of reverse) result.add(s)
+    }
+
+    return [...result]
+  }
+
+  /**
+   * 扩展查询词为同义词列表（每个查询词展开为 OR 同义词组）
+   */
+  expandQuery(query: string): string[] {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+    const expanded: string[] = []
+
+    for (const term of terms) {
+      const syns = this.getSynonyms(term)
+      expanded.push(...syns)
+    }
+
+    return [...new Set(expanded)]
+  }
+
+  /**
+   * 获取所有注册的同义词词条数
+   */
+  get size(): number {
+    return this._map.size
+  }
+
+  /**
+   * 清空同义词映射
+   */
+  clear(): void {
+    this._map.clear()
+    this._reverseMap.clear()
+  }
+}
+
 // ── WAL 条目类型 ──
 interface WalAddEntry {
   op: 'add'
@@ -69,6 +259,12 @@ export class FullTextIndex {
   private options: Required<FullTextOptions>
   private _store: Map<string, Record<string, string>> = new Map()
 
+  // ── Analyzer 链 ──
+  private _analyzerChain: AnalyzerChain
+
+  // ── 同义词 ──
+  private _synonymMap: SynonymMap = new SynonymMap()
+
   // ── WAL 持久化相关 ──
   private _baseDir: string | null = null
   private _walPath: string | null = null
@@ -89,19 +285,36 @@ export class FullTextIndex {
 
     const fields = Object.keys(this.options.fieldWeights)
 
+    // 根据 options.analyzer 选择 tokenize 策略
+    let tokenizeFn: (text: string) => string[]
+    const analyzerOpt = this.options.analyzer
+
+    if (analyzerOpt === 'simple') {
+      tokenizeFn = (text: string) => text.toLowerCase().split(/[^a-zA-Z0-9]+/).filter(Boolean)
+    } else if (analyzerOpt === 'standard') {
+      tokenizeFn = (text: string) => text.toLowerCase().split(/[\s,.;:!?"'()]+/).filter(Boolean)
+    } else {
+      // cjk default
+      tokenizeFn = (text: string) => FullTextIndex._cjkTokenize(text)
+    }
+
     this.ms = new MiniSearch({
       fields,
       storeFields: fields,
-      tokenize: (text: string) => FullTextIndex._cjkTokenize(text),
+      tokenize: tokenizeFn,
       processTerm: (term: string) => {
-        // For CJK characters, don't lower-case or stem — they're case-insensitive by nature
-        // For ASCII, apply standard lowercasing
         if (/^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+$/.test(term)) {
           return term
         }
         return term.toLowerCase()
       },
     })
+
+    // 初始化 analyzer 链
+    this._analyzerChain = new AnalyzerChain()
+    if (analyzerOpt) {
+      this._analyzerChain.useAnalyzer(analyzerOpt)
+    }
 
     this._snapshotThreshold = options?.snapshotThreshold ?? 10000
 
@@ -112,6 +325,63 @@ export class FullTextIndex {
       this._snapshotPath = path.join(options.baseDir, FullTextIndex.SNAPSHOT_FILENAME)
       this._recoverFromWAL()
     }
+  }
+
+  // ──────────────────────────────────────────────
+  //  Analyzer Chain API (P1-Q20)
+  // ──────────────────────────────────────────────
+
+  /**
+   * 使用指定的 analyzer 进行分析（返回 token 列表）
+   */
+  useAnalyzer(name: string): void {
+    this._analyzerChain.useAnalyzer(name)
+  }
+
+  /**
+   * 使用自定义 analyzer 函数
+   */
+  useAnalyzerFn(fn: AnalyzerFn): void {
+    this._analyzerChain.use(fn)
+  }
+
+  /**
+   * 获取 analyzer 链实例（用于自定义组合）
+   */
+  getAnalyzerChain(): AnalyzerChain {
+    return this._analyzerChain
+  }
+
+  /**
+   * 分析文本并返回 token（仅 analyzer 链，不含索引）
+   */
+  analyze(text: string): string[] {
+    return this._analyzerChain.analyze(text)
+  }
+
+  // ──────────────────────────────────────────────
+  //  Synonym Map API (Item 15)
+  // ──────────────────────────────────────────────
+
+  /**
+   * 设置同义词映射
+   */
+  setSynonyms(synonyms: Record<string, string[]>): void {
+    this._synonymMap.setSynonyms(synonyms)
+  }
+
+  /**
+   * 从 Map 设置同义词
+   */
+  setSynonymsFromMap(map: Map<string, string[]>): void {
+    this._synonymMap.setSynonymsFromMap(map)
+  }
+
+  /**
+   * 获取同义词映射实例
+   */
+  getSynonymMap(): SynonymMap {
+    return this._synonymMap
   }
 
   // ──────────────────────────────────────────────
@@ -162,7 +432,6 @@ export class FullTextIndex {
       try {
         this._loadSnapshot()
       } catch (e) {
-        // 快照损坏，忽略，从 WAL 恢复
         console.warn('[FullTextIndex] snapshot corrupted, falling back to WAL replay:', e)
       }
     }
@@ -206,7 +475,6 @@ export class FullTextIndex {
       try {
         this.ms.add({ id, ...docFields })
       } catch {
-        // 重复 id 时先删后加
         this.ms.remove({ id } as any)
         this.ms.add({ id, ...docFields })
       }
@@ -460,6 +728,15 @@ export class FullTextIndex {
   search(query: string, options?: SearchOptions): SearchResult[] {
     if (!query.trim()) return []
 
+    // 扩展同义词
+    let expandedQuery = query
+    if (this._synonymMap.size > 0) {
+      const expandedTerms = this._synonymMap.expandQuery(query)
+      if (expandedTerms.length > 0) {
+        expandedQuery = expandedTerms.join(' ')
+      }
+    }
+
     const searchOpts: Record<string, unknown> = {
       prefix: options?.fuzzy !== false,
       fuzzy: options?.fuzzy ?? true,
@@ -469,7 +746,7 @@ export class FullTextIndex {
         Object.entries(options.weights).map(([f, w]) => [f, w])
       )
     }
-    const raw = this.ms.search(query, searchOpts)
+    const raw = this.ms.search(expandedQuery, searchOpts)
 
     let results = raw.map(r => ({
       docId: r.id as string,
@@ -483,7 +760,7 @@ export class FullTextIndex {
 
     // and 模式
     if (options?.mode === 'and') {
-      const queryTerms = this._tokenize(query)
+      const queryTerms = this._tokenize(expandedQuery)
       results = results.filter(r => {
         const hits = new Set(
           Object.values(r.matches ?? {}).flat()
@@ -696,3 +973,16 @@ export class FullTextIndex {
 }
 
 export { MiniSearch }
+
+/**
+ * 生成重叠字符二元组
+ */
+function _cjkBigrams(text: string, out: string[]): void {
+  if (text.length >= 2) {
+    for (let i = 0; i < text.length - 1; i++) {
+      out.push(text.substring(i, i + 2))
+    }
+  } else if (text.length === 1) {
+    out.push(text)
+  }
+}
