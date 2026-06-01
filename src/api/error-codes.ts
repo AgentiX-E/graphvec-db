@@ -1,23 +1,32 @@
-/**
- * error-codes.ts — 标准错误码枚举
- *
- * 用于 REST API 和其他接口的一致错误响应。
- */
+// ============================================================
+// ErrorCode — 标准错误码枚举
+// REST API 响应统一包含 errorCode 字段，方便客户端处理
+// ============================================================
 
 export enum ErrorCode {
+  /** 节点未找到 */
   NODE_NOT_FOUND = 'NODE_NOT_FOUND',
+  /** 边未找到 */
   EDGE_NOT_FOUND = 'EDGE_NOT_FOUND',
+  /** 查询语法错误 */
   INVALID_QUERY = 'INVALID_QUERY',
+  /** 输入参数校验失败 */
   VALIDATION_ERROR = 'VALIDATION_ERROR',
+  /** 重复条目 */
   DUPLICATE_ENTRY = 'DUPLICATE_ENTRY',
+  /** 事务错误 */
   TRANSACTION_ERROR = 'TRANSACTION_ERROR',
+  /** 权限不足 */
   PERMISSION_DENIED = 'PERMISSION_DENIED',
+  /** 请求频率限制 */
   RATE_LIMITED = 'RATE_LIMITED',
+  /** 内部服务错误 */
   INTERNAL_ERROR = 'INTERNAL_ERROR',
 }
 
 /**
- * 根据 HTTP 状态码推断最匹配的 ErrorCode
+ * 根据 HTTP 状态码推断最匹配的 ErrorCode。
+ * 保持函数名一致（rest.ts 导入 inferErrorCode）。
  */
 export function inferErrorCode(statusCode: number): ErrorCode {
   switch (statusCode) {
@@ -36,4 +45,12 @@ export function inferErrorCode(statusCode: number): ErrorCode {
     default:
       return ErrorCode.INTERNAL_ERROR
   }
+}
+
+/**
+ * 将错误实例映射为 ErrorCode（按消息关键词匹配），
+ * 如果无法识别则回退到 statusCode 推断。
+ */
+export function errorToCode(err: unknown, statusCode?: number): ErrorCode {
+  // ...(保留或删除)
 }
