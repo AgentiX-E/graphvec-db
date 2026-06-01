@@ -47,6 +47,8 @@ export interface UpsertNodeOptions {
   skipReplication?: boolean
   /** MVCC 版本号（内部使用，由事务系统传入） */
   _mvccVersion?: number
+  /** 简单事务 ID（内部使用，由 SimpleTxnManager 传入） */
+  _txId?: string
 }
 
 export interface UpsertEdgeOptions {
@@ -55,6 +57,8 @@ export interface UpsertEdgeOptions {
   weight?: number
   /** 如果为 true，跳过 Multi-Leader 复制广播 */
   skipReplication?: boolean
+  /** 简单事务 ID（内部使用，由 SimpleTxnManager 传入） */
+  _txId?: string
 }
 
 export interface NodeRecord {
@@ -223,6 +227,8 @@ export interface OverGraphConfig {
   storageCompression?: boolean
   /** 查询超时毫秒数（默认 30000，0 表示不超时） */
   queryTimeoutMs?: number
+  /** 是否持久化内存索引（LabelEngine + FullTextIndex），默认 true */
+  persistIndexes?: boolean
 }
 
 export interface ShardMap {

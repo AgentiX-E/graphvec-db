@@ -34,7 +34,9 @@ import { RLSContext, RowLevelSecurity } from '../security/rls'
 import { QueryPlanner, QuerySpec, buildIRFromSpec, optimizeIR } from '../api/query-planner'
 import { OptimizerBridge } from '../query/planner-bridge'
 import { Logger } from '../ops/logger'
+import * as path from 'path'
 import { Transaction, TransactionManager } from './transaction'
+import { SimpleTxnManager } from './simple-txn-manager'
 
 /** Event for EventStream emit */
 interface StreamEvent { type: string; data: Record<string, unknown> }
@@ -212,6 +214,10 @@ export class GraphEngine {
   private _frozenWrites: Array<{ resolve: () => void }> = []
   private logger: Logger
 
+  // ── 索引持久化 ──
+  private _persistIndexes: boolean
+  private _indexesDir: string
+
   // ── LRU Cache for neighbors ──
   private _neighborCache: LRUCache<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }>
   private _cacheEnabled = false
@@ -315,6 +321,8 @@ export class GraphEngine {
     this._edgeCache = new LRUCache<string, EdgeRecord>(this._edgeCacheSize, 60)
     this.logger = new Logger('GraphEngine')
     this.queryTimeoutMs = config.queryTimeoutMs ?? 30000
+    this._persistIndexes = config.persistIndexes ?? true
+    this._indexesDir = path.join(config.path, 'indexes')
 
     // 注册 EventStream 远程数据处理（见 open() 方法）
     // 由 open() 调用 registerApplyHandler，避免构造函数重复注册
@@ -362,6 +370,22 @@ export class GraphEngine {
       compress: this.config.storageCompression,
       compressionStrategy: this.config.storageCompression ? 'msgpack' : 'none',
     })
+
+    // 恢复持久化内存索引
+    if (this._persistIndexes) {
+      try {
+        this._labelIndex.load(this._indexesDir)
+      } catch (e) {
+        this.logger.warn('LabelIndex load failed, starting empty:', e)
+      }
+      if (this._fulltext) {
+        try {
+          this._fulltext.load(this._indexesDir)
+        } catch (e) {
+          this.logger.warn('FullTextIndex load failed, starting empty:', e)
+        }
+      }
+    }
 
     // 注册远程事件应用回调 — 收到集群内其他节点的变更事件时持久化到本地
     if (this._eventStream) {
@@ -428,8 +452,32 @@ export class GraphEngine {
   /** 关闭数据库 */
   close(): void {
     if (!this._isOpen) return
+
+    // 持久化内存索引
+    this.saveIndexes()
+
     this.storage.close()
     this._isOpen = false
+  }
+
+  /**
+   * 手动保存内存索引到磁盘（用于备份等场景的同步点）。
+   * 不要求引擎处于 open 状态即可调用。
+   */
+  saveIndexes(): void {
+    if (!this._persistIndexes) return
+    try {
+      this._labelIndex.save(this._indexesDir)
+    } catch (e) {
+      this.logger.warn('LabelIndex save failed:', e)
+    }
+    if (this._fulltext) {
+      try {
+        this._fulltext.save(this._indexesDir)
+      } catch (e) {
+        this.logger.warn('FullTextIndex save failed:', e)
+      }
+    }
   }
 
   // ──────────────────────────────────────────
@@ -448,6 +496,16 @@ export class GraphEngine {
   async upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): Promise<NodeId> {
     this._ensureOpen()
     this._ensureNotFrozen()
+
+    // 简单事务缓冲：如果提供了 _txId，将操作缓冲到 SimpleTxnManager 中
+    if (opts?._txId) {
+      this.simpleTxnMgr.addOp(opts._txId, {
+        type: 'upsertNode',
+        args: [typeId, name, { ...opts, _txId: undefined }],
+      })
+      // 返回一个占位 ID（真正的 ID 在 commit 时由 storage 返回）
+      return -1
+    }
 
     if (this._schema) {
       const result = validateNodeType(typeId, opts?.props ?? {}, this._schema)
@@ -552,12 +610,23 @@ export class GraphEngine {
    * @param cascade - 是否级联删除关联边（默认 false）
    *   cascade=true 时，先删除该节点的所有出边，然后删除节点本身。
    *   注意：当前实现仅删除出边（src === id 的边），入边（dst === id 的边）不受影响。
+   * @param opts - 可选参数（如 _txId 事务 ID）
    * @returns true 如果节点存在且被删除，false 如果节点不存在
    * @throws {Error} 如果 GraphEngine 未 open()
    */
-  async deleteNode(id: NodeId, skipReplication = false, cascade = false): Promise<boolean> {
+  async deleteNode(id: NodeId, skipReplication = false, cascade = false, opts?: { _txId?: string }): Promise<boolean> {
     this._ensureOpen()
     this._ensureNotFrozen()
+
+    // 简单事务缓冲：如果提供了 _txId，将操作缓冲到 SimpleTxnManager 中
+    if (opts?._txId) {
+      this.simpleTxnMgr.addOp(opts._txId, {
+        type: 'deleteNode',
+        args: [id, skipReplication, cascade],
+      })
+      return true
+    }
+
     const node = this.storage.getNode(id, true)
     if (!node) return false
 
@@ -649,6 +718,15 @@ export class GraphEngine {
     this._ensureOpen()
     this._ensureNotFrozen()
 
+    // 简单事务缓冲：如果提供了 _txId，将操作缓冲到 SimpleTxnManager 中
+    if (opts?._txId) {
+      this.simpleTxnMgr.addOp(opts._txId, {
+        type: 'upsertEdge',
+        args: [src, dst, typeId, { ...opts, _txId: undefined }],
+      })
+      return
+    }
+
     if (this._schema) {
       const result = validateEdgeType(typeId, opts?.props ?? {}, this._schema)
       if (!result.valid) {
@@ -733,12 +811,24 @@ export class GraphEngine {
    * @param src - 源节点 ID
    * @param dst - 目标节点 ID
    * @param typeId - 边类型 ID
+   * @param skipReplication - 是否跳过 Multi-Leader 同步复制（默认 false）
+   * @param opts - 可选参数（如 _txId 事务 ID）
    * @returns true 如果边存在且被删除
    * @throws {Error} 如果 GraphEngine 未 open()
    */
-  async deleteEdge(src: NodeId, dst: NodeId, typeId: number, skipReplication = false): Promise<boolean> {
+  async deleteEdge(src: NodeId, dst: NodeId, typeId: number, skipReplication = false, opts?: { _txId?: string }): Promise<boolean> {
     this._ensureOpen()
     this._ensureNotFrozen()
+
+    // 简单事务缓冲：如果提供了 _txId，将操作缓冲到 SimpleTxnManager 中
+    if (opts?._txId) {
+      this.simpleTxnMgr.addOp(opts._txId, {
+        type: 'deleteEdge',
+        args: [src, dst, typeId, skipReplication],
+      })
+      return true
+    }
+
     const result = this.storage.deleteEdge(src, dst, typeId)
     // 清除边缓存（Gap 12）
     this._edgeCache.delete(`${src}:${dst}:${typeId}`)
@@ -2733,6 +2823,12 @@ export class GraphEngine {
   // ── Transaction API (Round 6: MVCC 增强) ──
 
   private _defaultTxnManager = new TransactionManager()
+
+  /**
+   * SimpleTxnManager — 轻量级写入缓冲事务管理器
+   * 与 MVCC Transaction 系统独立，用于 REST API 的 begin/commit/rollback 流程
+   */
+  readonly simpleTxnMgr: SimpleTxnManager = new SimpleTxnManager()
 
   beginTransaction(txnManager?: TransactionManager): Transaction {
     const mgr = txnManager ?? this._defaultTxnManager

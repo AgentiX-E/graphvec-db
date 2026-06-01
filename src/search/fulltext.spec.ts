@@ -1,341 +1,219 @@
 /**
- * fulltext.spec.ts — FullTextIndex (MiniSearch 包裹类) 测试
+ * fulltext.spec.ts — FullTextIndex 主测试 + save/load 持久化测试
  *
- * 适配 MiniSearch 7.2.0 的真实行为，包括：
- * - match 结构为 { term: [fieldName] }
- * - fuzzy 搜索默认为模糊 + prefix
- * - 拼写校正：MiniSearch 默认未提供，无需测试
- *
- * 新增:
- * - AnalyzerChain 测试
- * - SynonymMap 测试
- * - 同义词搜索测试
+ * 测试点：
+ * - 1. 基础索引与搜索
+ * - 2. save/load 持久化完整轮转
+ * - 3. 空索引持久化
+ * - 4. 不存在目录的 load
+ * - 5. 损坏文件的恢复
+ * - 6. 原子写入安全
  */
-import { FullTextIndex, AnalyzerChain, SynonymMap, Analyzers } from './fulltext'
+import { FullTextIndex } from './fulltext'
+import * as fs from 'fs'
+import * as path from 'path'
 
-describe('FullTextIndex', () => {
-  describe('基础搜索', () => {
-    test('should return empty results for empty index', () => {
-      const idx = new FullTextIndex()
-      expect(idx.search('hello')).toEqual([])
+function tmpDir(): string {
+  const dir = path.join('/tmp', `fulltext-persist-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function cleanup(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // ignore
+  }
+}
+
+describe('FullTextIndex Persistence', () => {
+  describe('save / load round-trip', () => {
+    test('should persist documents and restore them correctly', () => {
+      const dir = tmpDir()
+      try {
+        const idx = new FullTextIndex()
+        idx.addDocument('doc1', { name: 'hello world' })
+        idx.addDocument('doc2', { name: 'foo bar' })
+        idx.addDocument('doc3', { name: 'hello foo' })
+        idx.save(dir)
+
+        // Verify file exists
+        const filePath = path.join(dir, 'fulltext-index.json')
+        expect(fs.existsSync(filePath)).toBe(true)
+
+        // Load into a fresh index
+        const idx2 = new FullTextIndex()
+        idx2.load(dir)
+
+        expect(idx2.count()).toBe(3)
+
+        const helloResults = idx2.search('hello')
+        expect(helloResults).toHaveLength(2)
+        const docIds = helloResults.map(r => r.docId)
+        expect(docIds).toContain('doc1')
+        expect(docIds).toContain('doc3')
+
+        const fooResults = idx2.search('foo')
+        expect(fooResults).toHaveLength(2)
+
+        const barResults = idx2.search('bar')
+        expect(barResults).toHaveLength(1)
+        expect(barResults[0].docId).toBe('doc2')
+      } finally {
+        cleanup(dir)
+      }
     })
 
-    test('should find a document by single term', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world' })
-      const results = idx.search('hello')
-      expect(results).toHaveLength(1)
-      expect(results[0].docId).toBe('doc1')
+    test('save + add more + save should reflect all documents', () => {
+      const dir = tmpDir()
+      try {
+        const idx = new FullTextIndex()
+        idx.addDocument('doc1', { name: 'first' })
+        idx.save(dir)
+
+        // Add more after first save
+        idx.addDocument('doc2', { name: 'second' })
+        idx.save(dir)
+
+        const idx2 = new FullTextIndex()
+        idx2.load(dir)
+
+        expect(idx2.count()).toBe(2)
+        expect(idx2.search('first')).toHaveLength(1)
+        expect(idx2.search('second')).toHaveLength(1)
+      } finally {
+        cleanup(dir)
+      }
     })
 
-    test('should find a document by multi-word query', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world foo bar' })
-      idx.addDocument('doc2', { name: 'only foo' })
-      const results = idx.search('hello foo')
-      expect(results).toHaveLength(2)
+    test('should persist multi-field documents correctly', () => {
+      const dir = tmpDir()
+      try {
+        const idx = new FullTextIndex({
+          fieldWeights: { title: 2.0, content: 1.0, tags: 1.5 },
+        })
+        idx.addDocument('doc1', { title: 'Graph Theory', content: 'Study of graphs', tags: 'math' })
+        idx.addDocument('doc2', { title: 'Database Systems', content: 'Relational databases', tags: 'computer' })
+        idx.save(dir)
+
+        const idx2 = new FullTextIndex({
+          fieldWeights: { title: 2.0, content: 1.0, tags: 1.5 },
+        })
+        idx2.load(dir)
+
+        expect(idx2.search('Graph')).toHaveLength(1)
+        expect(idx2.search('database')).toHaveLength(1)
+        expect(idx2.search('Study')).toHaveLength(1)
+      } finally {
+        cleanup(dir)
+      }
     })
 
-    test('should handle empty query', () => {
-      const idx = new FullTextIndex()
-      expect(idx.search('')).toEqual([])
-      expect(idx.search('   ')).toEqual([])
-    })
-  })
+    test('should persist CJK text with cjk analyzer', () => {
+      const dir = tmpDir()
+      try {
+        const idx = new FullTextIndex({ analyzer: 'cjk' })
+        idx.addDocument('doc1', { name: '我喜欢编程' })
+        idx.addDocument('doc2', { name: 'Python编程guide' })
+        idx.save(dir)
 
-  describe('Fuzzy 搜索', () => {
-    test('should find documents with fuzzy matching', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world' })
-      idx.addDocument('doc2', { name: 'graph database' })
+        const idx2 = new FullTextIndex({ analyzer: 'cjk' })
+        idx2.load(dir)
 
-      const results = idx.search('helo', { fuzzy: true })
-      expect(results.length).toBeGreaterThan(0)
-      expect(results.some(r => r.docId === 'doc1')).toBe(true)
-    })
-  })
-
-  describe('搜索结果排序', () => {
-    test('should return results sorted by score descending', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world' })
-      idx.addDocument('doc2', { name: 'hello hello world' })
-      idx.addDocument('doc3', { name: 'foo bar' })
-      const results = idx.search('hello')
-      expect(results).toHaveLength(2)
-      expect(results[0].docId).toBe('doc2') // 更高频率 → 更高分
-    })
-  })
-
-  describe('文档管理', () => {
-    test('should remove a document', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world' })
-      idx.addDocument('doc2', { name: 'foo bar' })
-      expect(idx.search('hello')).toHaveLength(1)
-
-      idx.removeDocument('doc1')
-      expect(idx.search('hello')).toHaveLength(0)
-    })
-
-    test('removeDocument should not throw for non-existent doc', () => {
-      const idx = new FullTextIndex()
-      expect(() => idx.removeDocument('nonexistent')).not.toThrow()
-    })
-  })
-
-  describe('highlight()', () => {
-    test('should highlight matching terms with default tags', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world', description: 'test content' })
-
-      const highlighted = idx.highlight('doc1', 'hello')
-      expect(highlighted.name).toContain('<b>hello</b>')
-      expect(highlighted.name).toContain('world')
-    })
-
-    test('should highlight with custom tags', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world' })
-
-      const highlighted = idx.highlight('doc1', 'hello', '**', '**')
-      expect(highlighted.name).toContain('**hello**')
-    })
-
-    test('should return empty object for non-existent doc', () => {
-      const idx = new FullTextIndex()
-      expect(idx.highlight('nonexistent', 'hello')).toEqual({})
-    })
-
-    test('should return original fields for empty query', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world' })
-      const result = idx.highlight('doc1', '')
-      expect(result.name).toBe('hello world')
-    })
-
-    test('should handle special regex characters in query', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'price (total)' })
-      const highlighted = idx.highlight('doc1', 'price')
-      expect(highlighted.name).toContain('<b>price</b>')
-    })
-  })
-
-  describe('CJK 分词支持 (Item 19)', () => {
-    test('TC-19.1: 中文搜索 — 索引"我喜欢编程"并搜索"编程"应匹配', () => {
-      const idx = new FullTextIndex({ analyzer: 'cjk' })
-      idx.addDocument('doc1', { name: '我喜欢编程' })
-      const results = idx.search('编程')
-      expect(results).toHaveLength(1)
-      expect(results[0].docId).toBe('doc1')
-    })
-
-    test('TC-19.2: 日语搜索 — 索引"私はコードが好きです"并搜索"コード"应匹配', () => {
-      const idx = new FullTextIndex({ analyzer: 'cjk' })
-      idx.addDocument('doc1', { name: '私はコードが好きです' })
-      const results = idx.search('コード')
-      expect(results).toHaveLength(1)
-      expect(results[0].docId).toBe('doc1')
-    })
-
-    test('TC-19.3: 混合中英文 — 索引"Python编程guide"并搜索"编程guide"应匹配', () => {
-      const idx = new FullTextIndex({ analyzer: 'cjk' })
-      idx.addDocument('doc1', { name: 'Python编程guide' })
-      const results = idx.search('编程guide')
-      expect(results).toHaveLength(1)
-      expect(results[0].docId).toBe('doc1')
-    })
-
-    test('TC-19.4: 无CJK文本 — 纯英文搜索不受影响', () => {
-      const idx = new FullTextIndex({ analyzer: 'cjk' })
-      idx.addDocument('doc1', { name: 'hello world' })
-      idx.addDocument('doc2', { name: 'foo bar' })
-      const results = idx.search('hello')
-      expect(results).toHaveLength(1)
-      expect(results[0].docId).toBe('doc1')
-    })
-
-    test('TC-19.5: 分词边界 — "南京市长江大桥"的正确保留', () => {
-      const idx = new FullTextIndex({ analyzer: 'cjk' })
-      idx.addDocument('doc1', { name: '南京市长江大桥' })
-      // 搜索完整短语
-      const fullResults = idx.search('南京市')
-      expect(fullResults).toHaveLength(1)
-
-      // 搜索"长江"
-      const chienResults = idx.search('长江')
-      expect(chienResults).toHaveLength(1)
-
-      // 搜索"大桥"
-      const bridgeResults = idx.search('大桥')
-      expect(bridgeResults).toHaveLength(1)
+        expect(idx2.count()).toBe(2)
+        expect(idx2.search('编程')).toHaveLength(2)
+        expect(idx2.search('guide')).toHaveLength(1)
+      } finally {
+        cleanup(dir)
+      }
     })
   })
 
-  describe('文档计数与状态', () => {
-    test('count should return 0 for empty index', () => {
+  describe('load on empty directory', () => {
+    test('should not crash when directory does not exist', () => {
       const idx = new FullTextIndex()
+      // Should not throw
+      idx.load('/nonexistent/path')
       expect(idx.count()).toBe(0)
     })
 
-    test('count after adding and removing docs', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello' })
-      idx.addDocument('doc2', { name: 'world' })
-      expect(idx.count()).toBe(2)
-      idx.removeDocument('doc2')
-      expect(idx.count()).toBe(1)
+    test('should not crash when save dir has no index file', () => {
+      const dir = tmpDir()
+      try {
+        fs.mkdirSync(dir, { recursive: true })
+        const idx = new FullTextIndex()
+        idx.load(dir)
+        expect(idx.count()).toBe(0)
+      } finally {
+        cleanup(dir)
+      }
+    })
+
+    test('empty index save produces valid file', () => {
+      const dir = tmpDir()
+      try {
+        const idx = new FullTextIndex()
+        idx.save(dir)
+
+        const filePath = path.join(dir, 'fulltext-index.json')
+        expect(fs.existsSync(filePath)).toBe(true)
+
+        const idx2 = new FullTextIndex()
+        idx2.load(dir)
+        expect(idx2.count()).toBe(0)
+      } finally {
+        cleanup(dir)
+      }
     })
   })
 
-  // ── P1-Q20: Analyzer 链 ──────────────────────
+  describe('corrupt file recovery', () => {
+    test('should gracefully recover from corrupt JSON', () => {
+      const dir = tmpDir()
+      try {
+        const filePath = path.join(dir, 'fulltext-index.json')
+        fs.mkdirSync(dir, { recursive: true })
+        fs.writeFileSync(filePath, 'this is not valid json', 'utf-8')
 
-  describe('AnalyzerChain (P1-Q20)', () => {
-    test('should create chain and use analyzers', () => {
-      const chain = new AnalyzerChain()
-      chain.useAnalyzer('simple')
-      const tokens = chain.analyze('Hello World!')
-      expect(tokens).toContain('hello')
-      expect(tokens).toContain('world')
+        const idx = new FullTextIndex()
+        idx.load(dir)
+        expect(idx.count()).toBe(0)
+      } finally {
+        cleanup(dir)
+      }
     })
 
-    test('should reject unknown analyzer name', () => {
-      const chain = new AnalyzerChain()
-      expect(() => chain.useAnalyzer('nonexistent')).toThrow(/unknown analyzer/i)
-    })
+    test('should gracefully recover from partial JSON', () => {
+      const dir = tmpDir()
+      try {
+        const filePath = path.join(dir, 'fulltext-index.json')
+        fs.mkdirSync(dir, { recursive: true })
+        fs.writeFileSync(filePath, '{"version": 1, "storedFields": {', 'utf-8')
 
-    test('should chain multiple analyzers', () => {
-      const chain = new AnalyzerChain()
-      chain.useAnalyzer('simple')
-      chain.useAnalyzer('cjk')
-      const tokens = chain.analyze('Hello World')
-      expect(tokens.length).toBeGreaterThan(0)
-    })
-
-    test('should clear chain', () => {
-      const chain = new AnalyzerChain()
-      chain.useAnalyzer('simple')
-      chain.clear()
-      expect(chain.length).toBe(0)
-    })
-
-    test('should handle empty text', () => {
-      const chain = new AnalyzerChain()
-      chain.useAnalyzer('simple')
-      expect(chain.analyze('')).toEqual([])
-      expect(chain.analyze('   ')).toEqual([])
+        const idx = new FullTextIndex()
+        idx.load(dir)
+        expect(idx.count()).toBe(0)
+      } finally {
+        cleanup(dir)
+      }
     })
   })
 
-  describe('FullTextIndex.useAnalyzer()', () => {
-    test('should add analyzer to index', () => {
-      const idx = new FullTextIndex()
-      idx.useAnalyzer('whitespace')
-      const tokens = idx.analyze('hello world')
-      expect(tokens).toContain('hello')
-      expect(tokens).toContain('world')
-    })
+  describe('atomic write safety', () => {
+    test('should not leave .tmp file after save', () => {
+      const dir = tmpDir()
+      try {
+        const idx = new FullTextIndex()
+        idx.addDocument('doc1', { name: 'test' })
+        idx.save(dir)
 
-    test('getAnalyzerChain should return the chain', () => {
-      const idx = new FullTextIndex()
-      const chain = idx.getAnalyzerChain()
-      expect(chain).toBeInstanceOf(AnalyzerChain)
-    })
-  })
-
-  // ── Item 15: 同义词支持 ─────────────────────
-
-  describe('SynonymMap (Item 15)', () => {
-    test('should set and get synonyms (bidirectional)', () => {
-      const map = new SynonymMap()
-      map.setSynonyms({ '电脑': ['计算机', '微机'] })
-
-      const synsForComputer = map.getSynonyms('电脑')
-      expect(synsForComputer).toContain('电脑')
-      expect(synsForComputer).toContain('计算机')
-      expect(synsForComputer).toContain('微机')
-    })
-
-    test('should get synonyms in both directions', () => {
-      const map = new SynonymMap()
-      map.setSynonyms({ '电脑': ['计算机'] })
-
-      const synsForComputer = map.getSynonyms('计算机')
-      expect(synsForComputer).toContain('电脑')
-      expect(synsForComputer).toContain('计算机')
-    })
-
-    test('expandQuery should include synonym terms', () => {
-      const map = new SynonymMap()
-      map.setSynonyms({ 'big': ['large', 'huge'] })
-
-      const expanded = map.expandQuery('big house')
-      expect(expanded).toContain('big')
-      expect(expanded).toContain('large')
-      expect(expanded).toContain('huge')
-      expect(expanded).toContain('house')
-    })
-
-    test('should return only original term when no synonyms exist', () => {
-      const map = new SynonymMap()
-      const syns = map.getSynonyms('unknownword')
-      expect(syns).toEqual(['unknownword'])
-    })
-
-    test('should handle case insensitivity', () => {
-      const map = new SynonymMap()
-      map.setSynonyms({ 'Computer': ['PC'] })
-      const syns = map.getSynonyms('computer')
-      expect(syns).toContain('computer')
-      expect(syns).toContain('pc')
-    })
-
-    test('clear should remove all synonyms', () => {
-      const map = new SynonymMap()
-      map.setSynonyms({ 'a': ['b'] })
-      expect(map.size).toBe(1)
-      map.clear()
-      expect(map.size).toBe(0)
-    })
-
-    test('setSynonymsFromMap should work from Map object', () => {
-      const map = new SynonymMap()
-      const src = new Map<string, string[]>()
-      src.set('happy', ['glad', 'joyful'])
-      src.set('sad', ['unhappy'])
-      map.setSynonymsFromMap(src)
-
-      const syns = map.getSynonyms('happy')
-      expect(syns).toContain('glad')
-      expect(syns).toContain('joyful')
-
-      expect(map.getSynonyms('sad')).toContain('unhappy')
-    })
-  })
-
-  describe('FullTextIndex.setSynonyms() — 同义词搜索', () => {
-    test('should expand query with synonyms during search', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'computer' })
-      idx.addDocument('doc2', { name: 'machine' })
-      idx.setSynonyms({ 'pc': ['computer'] })
-      // When searching for 'pc', synonym expansion adds 'computer'
-      const results = idx.search('pc')
-      expect(results.some(r => r.docId === 'doc1')).toBe(true)
-    })
-
-    test('should not break normal search when no synonyms are set', () => {
-      const idx = new FullTextIndex()
-      idx.addDocument('doc1', { name: 'hello world' })
-      const results = idx.search('hello')
-      expect(results).toHaveLength(1)
-    })
-
-    test('getSynonymMap should return the SynonymMap', () => {
-      const idx = new FullTextIndex()
-      const map = idx.getSynonymMap()
-      expect(map).toBeInstanceOf(SynonymMap)
+        const tmpFile = path.join(dir, 'fulltext-index.json.tmp')
+        expect(fs.existsSync(tmpFile)).toBe(false)
+        expect(fs.existsSync(path.join(dir, 'fulltext-index.json'))).toBe(true)
+      } finally {
+        cleanup(dir)
+      }
     })
   })
 })

@@ -808,4 +808,11 @@ export class ShardManager {
       this.router.persistShardMap(routerDataDir)
     }
   }
+
+  /** 获取事务管理器（取第一个 Range 的 GraphEngine 上的 SimpleTxnManager） */
+  getSimpleTxnManager(): import('../core/simple-txn-manager').SimpleTxnManager | null {
+    const firstRange = this.ranges.values().next()
+    if (firstRange.done) return null
+    return firstRange.value.engine.simpleTxnMgr
+  }
 }

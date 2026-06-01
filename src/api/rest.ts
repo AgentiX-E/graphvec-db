@@ -1222,6 +1222,77 @@ export function createRestApiServer(
       },
     )
 
+    // ── 简单事务（写入缓冲）路由 ──────────────
+
+    // POST /api/v1/:db/tx/begin — 开始事务
+    addMultiDbRoute('POST', '/api/v1/:db/tx/begin', true, 'write',
+      async (sm, _req, res) => {
+        const txnMgr = sm.getSimpleTxnManager()
+        if (!txnMgr) {
+          jsonResponse(res, 503, { error: 'No engine available for transaction' })
+          return
+        }
+        const txId = txnMgr.begin('rest')
+        jsonResponse(res, 200, { txId })
+      },
+    )
+
+    // POST /api/v1/:db/tx/:txId/commit — 提交事务
+    addMultiDbRoute('POST', '/api/v1/:db/tx/:txId/commit', true, 'write',
+      async (sm, _req, res, _parsed, params) => {
+        const txId = params.txId
+        const txnMgr = sm.getSimpleTxnManager()
+        if (!txnMgr) {
+          jsonResponse(res, 503, { error: 'No engine available for transaction' })
+          return
+        }
+        try {
+          const count = await txnMgr.commit(txId, sm)
+          jsonResponse(res, 200, { committed: count })
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Commit failed'
+          jsonResponse(res, 404, { error: msg })
+        }
+      },
+    )
+
+    // POST /api/v1/:db/tx/:txId/rollback — 回滚事务
+    addMultiDbRoute('POST', '/api/v1/:db/tx/:txId/rollback', true, 'write',
+      async (sm, _req, res, _parsed, params) => {
+        const txId = params.txId
+        const txnMgr = sm.getSimpleTxnManager()
+        if (!txnMgr) {
+          jsonResponse(res, 503, { error: 'No engine available for transaction' })
+          return
+        }
+        try {
+          const count = txnMgr.rollback(txId)
+          jsonResponse(res, 200, { discarded: count })
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Rollback failed'
+          jsonResponse(res, 404, { error: msg })
+        }
+      },
+    )
+
+    // GET /api/v1/:db/tx/:txId — 查询事务状态
+    addMultiDbRoute('GET', '/api/v1/:db/tx/:txId', true, 'read',
+      async (sm, _req, res, _parsed, params) => {
+        const txId = params.txId
+        const txnMgr = sm.getSimpleTxnManager()
+        if (!txnMgr) {
+          jsonResponse(res, 503, { error: 'No engine available for transaction' })
+          return
+        }
+        const txn = txnMgr.getTxn(txId)
+        if (!txn) {
+          jsonResponse(res, 404, { error: `Transaction '${txId}' not found` })
+          return
+        }
+        jsonResponse(res, 200, txn)
+      },
+    )
+
     // ── Ops 管理路由 ──────────────────────────
 
     // GET /api/v1/databases — 列出所有数据库

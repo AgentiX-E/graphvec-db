@@ -9,6 +9,8 @@
 // ============================================================
 
 import { NodeId } from '../types'
+import * as fs from 'fs'
+import * as path from 'path'
 
 export interface LabelStats {
   types: number
@@ -68,5 +70,64 @@ export class LabelEngine {
   /** 重置到初始状态（同 clear） */
   reset(): void {
     this.clear()
+  }
+
+  /** 暴露内部 index 的引用，用于测试 */
+  getRawIndex(): Map<number, Set<NodeId>> {
+    return this.index
+  }
+
+  // ──────────────────────────────────────────────
+  //  持久化
+  // ──────────────────────────────────────────────
+
+  private static readonly LABEL_INDEX_FILENAME = 'label-index.json'
+  private static readonly LABEL_INDEX_VERSION = 1
+
+  /**
+   * 将标签索引序列化保存到指定目录。
+   * 使用原子写入：先写入 .tmp 文件，然后 renameSync 到目标文件。
+   */
+  save(saveDir: string): void {
+    const data: { version: number; labels: Record<string, number[]> } = {
+      version: LabelEngine.LABEL_INDEX_VERSION,
+      labels: {},
+    }
+    for (const [typeId, nodeIds] of this.index.entries()) {
+      data.labels[String(typeId)] = Array.from(nodeIds)
+    }
+    const filePath = path.join(saveDir, LabelEngine.LABEL_INDEX_FILENAME)
+    const tmpPath = filePath + '.tmp'
+    fs.mkdirSync(saveDir, { recursive: true })
+    fs.writeFileSync(tmpPath, JSON.stringify(data), 'utf-8')
+    fs.renameSync(tmpPath, filePath)
+  }
+
+  /**
+   * 从指定目录加载标签索引。
+   * 如果文件不存在或格式损坏，静默失败（索引保持为空状态）。
+   */
+  load(saveDir: string): void {
+    const filePath = path.join(saveDir, LabelEngine.LABEL_INDEX_FILENAME)
+    if (!fs.existsSync(filePath)) return
+
+    let data: { version: number; labels: Record<string, number[]> }
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8')
+      data = JSON.parse(raw)
+    } catch {
+      // 文件损坏 → 从空索引开始
+      return
+    }
+
+    if (!data || typeof data.version !== 'number' || !data.labels) return
+
+    this.index.clear()
+    for (const [typeStr, nodeIds] of Object.entries(data.labels)) {
+      const typeId = Number(typeStr)
+      if (Array.isArray(nodeIds) && nodeIds.length > 0) {
+        this.index.set(typeId, new Set(nodeIds))
+      }
+    }
   }
 }

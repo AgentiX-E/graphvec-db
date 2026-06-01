@@ -77,7 +77,9 @@ export class Backup {
         fs.mkdirSync(destPath, { recursive: true })
 
         // 2. 在复制前刷新所有待处理数据，确保文件系统一致性
-        // 2a. 尝试同步 GraphEngine 内部缓存（如果实现了 sync/flush 方法）
+        // 2a. 先持久化内存索引到磁盘（确保索引数据被备份）
+        this.engine.saveIndexes()
+        // 2b. 尝试同步 GraphEngine 内部缓存（如果实现了 sync/flush 方法）
         const engineAny = this.engine as any
         if (typeof engineAny.sync === 'function') {
           engineAny.sync()

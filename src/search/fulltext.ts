@@ -803,6 +803,80 @@ export class FullTextIndex {
     this._store.clear()
   }
 
+  // ──────────────────────────────────────────────
+  //  持久化 (sync save/load for GraphEngine integration)
+  // ──────────────────────────────────────────────
+
+  private static readonly PERSIST_FILENAME = 'fulltext-index.json'
+
+  /**
+   * 将 FullText 索引保存到指定目录。
+   * 序列化 MiniSearch 索引和内部 store。
+   * 使用原子写入模式。
+   */
+  save(saveDir: string): void {
+    const data = {
+      version: 1,
+      storedFields: this._serializeStore(),
+    }
+    const filePath = path.join(saveDir, FullTextIndex.PERSIST_FILENAME)
+    const tmpPath = filePath + '.tmp'
+    fs.mkdirSync(saveDir, { recursive: true })
+    fs.writeFileSync(tmpPath, JSON.stringify(data), 'utf-8')
+    fs.renameSync(tmpPath, filePath)
+  }
+
+  /**
+   * 从指定目录加载 FullText 索引。
+   * 如果文件不存在或格式损坏，静默失败（索引保持为空状态）。
+   *
+   * MiniSearch 没有 fromJSON() 静态方法，因此先清空当前 MiniSearch 索引，
+   * 然后从序列化的 storedFields 重建文档。
+   */
+  load(saveDir: string): void {
+    const filePath = path.join(saveDir, FullTextIndex.PERSIST_FILENAME)
+    if (!fs.existsSync(filePath)) return
+
+    let data: { version: number; storedFields: Record<string, Record<string, string>> }
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8')
+      data = JSON.parse(raw)
+    } catch {
+      return
+    }
+
+    if (!data || typeof data.version !== 'number') return
+
+    // Restore store
+    this._store.clear()
+    if (data.storedFields) {
+      for (const [id, fields] of Object.entries(data.storedFields)) {
+        this._store.set(id, { ...fields })
+      }
+    }
+
+    // Rebuild MiniSearch index from store
+    this.ms.removeAll()
+    for (const [id, fields] of this._store.entries()) {
+      try {
+        this.ms.add({ id, ...fields })
+      } catch {
+        // skip individual doc failure
+      }
+    }
+  }
+
+  /**
+   * 序列化 store 到普通对象
+   */
+  private _serializeStore(): Record<string, Record<string, string>> {
+    const result: Record<string, Record<string, string>> = {}
+    for (const [id, fields] of this._store.entries()) {
+      result[id] = { ...fields }
+    }
+    return result
+  }
+
   highlight(docId: string, query: string, before: string = '<b>', after: string = '</b>'): Record<string, string> {
     if (!query.trim()) {
       return this._getFieldsFromSearch(docId)
