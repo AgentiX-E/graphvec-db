@@ -13,6 +13,8 @@ import type { OutboxReplicationManager } from '../core/outbox-replication'
 import type { DatabaseManager, DatabaseInstance } from '../core/database-manager'
 import { register } from 'prom-client'
 import { executeIR, QuerySpec, buildIRFromSpec, optimizeIR } from './query-planner'
+import { GraphQLSubscription } from './graphql-subscription'
+import type { EventBus } from '../core/event-bus'
 
 // ──────────────────────────────────────────
 // 类型定义
@@ -46,6 +48,8 @@ export interface RestApiConfig {
   replicationManager?: OutboxReplicationManager
   /** 多数据库管理器（可选），提供后自动启用 /api/v1/:db/... 路由 */
   databaseManager?: DatabaseManager
+  /** EventBus 实例（可选），提供后启用 GraphQL Subscription SSE 端点 */
+  eventBus?: EventBus
 }
 
 export interface RestApiServer {
@@ -102,6 +106,39 @@ interface Route {
   handler: RouteHandler
   requireAuth?: boolean
   requiredPermission?: string
+}
+
+// ── GraphQL Subscription via SSE ────────
+
+/**
+ * 处理 GraphQL Subscription SSE 请求
+ *
+ * 端点: GET /api/v1/graphql/subscribe?events=node:created,node:deleted
+ *
+ * 配置要求:
+ * - config.eventBus 必须提供 EventBus 实例
+ */
+function handleGraphQLSubscription(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  config: RestApiConfig,
+): void {
+  const bus = config.eventBus
+  if (!bus) {
+    jsonResponse(res, 404, { error: 'EventBus not available' })
+    return
+  }
+
+  const parsed = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+  const events = parsed.searchParams.get('events') ?? undefined
+
+  const sub = new GraphQLSubscription(bus)
+  const cleanup = sub.subscribe(res, { events })
+
+  // 客户端断开时清理
+  req.on('close', () => {
+    cleanup()
+  })
 }
 
 // ──────────────────────────────────────────
@@ -1386,6 +1423,12 @@ export function createRestApiServer(
       // 匹配路由（支持路径参数）
       const method = req.method?.toUpperCase() ?? 'GET'
       const path = parsed.pathname
+
+      // GraphQL Subscription via SSE
+      if (method === 'GET' && path === '/api/v1/graphql/subscribe') {
+        return handleGraphQLSubscription(req, res, config)
+      }
+
       let matched: Route | null = null
       let matchedParams: Record<string, string> = {}
       for (const route of routes) {
