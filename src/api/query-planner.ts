@@ -7,6 +7,7 @@ import { ShardManager } from '../shard/shard-manager'
 import { NodeRecord, EdgeRecord } from '../types'
 import { StatsCollector, StatsSnapshot } from './stats-collector'
 import { LRUCache } from 'lru-cache'
+import { Logger } from '../ops/logger'
 
 // ──────────────────────────────────────────
 // Query Plan Cache
@@ -45,6 +46,32 @@ export function makePlanCacheKey(query: string): string {
  * Used by both QueryPlanner and QueryEngine to avoid rebuilding plans.
  */
 export const planCache = new LRUCache<string, { plan: PlanNode; statsTime?: number }>({ max: 1000 })
+
+/**
+ * Module-level logger for plan cache monitoring.
+ */
+const planCacheLogger = new Logger('PlanCache')
+
+/**
+ * 返回 planCache 当前条目数。
+ */
+export function planCacheSize(): number {
+  return planCache.size
+}
+
+/**
+ * 返回 planCache 的统计信息：条目数、最大容量、利用率。
+ * 当 utilization > 0.9 时自动发出 warn 告警。
+ */
+export function planCacheStats(): { entryCount: number; maxSize: number; utilization: number } {
+  const entryCount = planCache.size
+  const maxSize = planCache.max
+  const utilization = entryCount / maxSize
+  if (utilization > 0.9) {
+    planCacheLogger.warn(`PlanCache utilization > 90%: ${entryCount}/${maxSize}`)
+  }
+  return { entryCount, maxSize, utilization }
+}
 
 // ──────────────────────────────────────────
 // Plan 节点类型

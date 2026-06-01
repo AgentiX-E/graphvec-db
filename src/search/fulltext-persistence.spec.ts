@@ -325,6 +325,102 @@ describe('FullTextIndex WAL Persistence', () => {
     })
   })
 
+  describe('P-9: WAL .old 清理（P2-S10）', () => {
+    test('should keep old WAL files after rotation (up to maxOldWals)', () => {
+      const dir = tmpDir()
+      try {
+        const idx = new FullTextIndex({ baseDir: dir })
+        // 手动触发 WAL 轮转：写入足够数据使其超过 1MB
+        const largeContent = 'X'.repeat(500)
+        // 每条记录约 530 字节，需要 ~2000 条触发轮转
+        const docsPerRotation = 2500
+        // 第一次轮转
+        for (let i = 0; i < docsPerRotation; i++) {
+          idx.addDocument(`doc${i}`, {
+            name: `document number ${i} ${largeContent}`,
+          })
+        }
+        // 此时应有 wal + wal.0.old
+        const walBase = path.join(dir, 'fulltext-index.wal')
+        expect(fs.existsSync(walBase)).toBe(true)
+        expect(fs.existsSync(walBase + '.0.old')).toBe(true)
+        // 不应该有 wal.1.old（只有一次轮转）
+        expect(fs.existsSync(walBase + '.1.old')).toBe(false)
+
+        // 第二次轮转
+        for (let i = docsPerRotation; i < docsPerRotation * 2; i++) {
+          idx.addDocument(`doc${i}`, {
+            name: `document number ${i} ${largeContent}`,
+          })
+        }
+        // 此时应有 wal + wal.0.old + wal.1.old
+        expect(fs.existsSync(walBase + '.0.old')).toBe(true)
+        expect(fs.existsSync(walBase + '.1.old')).toBe(true)
+
+        idx.close()
+
+        // 重启后所有文档应可恢复
+        const idx2 = new FullTextIndex({ baseDir: dir })
+        expect(idx2.count()).toBe(docsPerRotation * 2)
+        const results = idx2.search('document')
+        expect(results.length).toBeGreaterThan(0)
+        idx2.close()
+      } finally {
+        cleanup(dir)
+      }
+    })
+
+    test('should delete old WAL files exceeding maxOldWals', () => {
+      const dir = tmpDir()
+      try {
+        const idx = new FullTextIndex({ baseDir: dir })
+        const largeContent = 'Y'.repeat(500)
+        const docsPerRotation = 2500
+
+        // 多次轮转，产生超过 maxOldWals (3) 的旧文件
+        const numRotations = 5
+        for (let r = 0; r < numRotations; r++) {
+          const start = r * docsPerRotation
+          for (let i = start; i < start + docsPerRotation; i++) {
+            idx.addDocument(`doc${i}`, {
+              name: `document number ${i} ${largeContent}`,
+            })
+          }
+        }
+
+        const walBase = path.join(dir, 'fulltext-index.wal')
+
+        // 检查 .old 文件列表 — maxOldWals=3，所以最多保留 wal.0.old 和 wal.1.old
+        // （+ 当前 wal，共 3 个文件）
+        const files = fs.readdirSync(dir)
+        const oldFiles = files.filter(f => f.startsWith('fulltext-index.wal.') && f.endsWith('.old'))
+        // _maxOldWals=3, 最多保留 3 个 .old 文件（.0, .1, .2）
+        expect(oldFiles.length).toBeLessThanOrEqual(3)
+
+        // 不应该有 wal.3.old 及更高序号
+        for (const f of oldFiles) {
+          const match = f.match(/fulltext-index\.wal\.(\d+)\.old$/)
+          if (match) {
+            const seq = parseInt(match[1], 10)
+            expect(seq).toBeLessThanOrEqual(2) // 最大序号为 maxOldWals-1 = 2
+          }
+        }
+
+        idx.close()
+
+        // 重启后所有文档应可恢复
+        const idx2 = new FullTextIndex({ baseDir: dir })
+        const expectedDocs = numRotations * docsPerRotation
+        expect(idx2.count()).toBe(expectedDocs)
+        const results = idx2.search('document')
+        expect(results.length).toBeGreaterThan(0)
+        idx2.close()
+      } finally {
+        cleanup(dir)
+      }
+    })
+  })
+
   describe('P-7: 多字段文本的序列化与恢复', () => {
     test('docs with multiple searchable fields should restore correctly', () => {
       const dir = tmpDir()

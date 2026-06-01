@@ -5,6 +5,7 @@
 import * as https from 'https'
 import * as http from 'http'
 import * as fs from 'fs'
+import * as crypto from 'crypto'
 import { ShardManager } from '../shard/shard-manager'
 import { Authenticator, RBAC, bodySizeLimitMiddleware, BODY_SIZE_LIMIT } from '../security/auth'
 import { TLSConfig } from '../security/tls'
@@ -1483,6 +1484,13 @@ export function createRestApiServer(
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('X-Frame-Options', 'DENY')
       res.setHeader('X-XSS-Protection', '1; mode=block')
+
+      // ── 请求追踪 ID ──────────────────────────
+      // 从 X-Request-Id header 读取（客户端提供），否则自动生成
+      const requestId: string = (typeof req.headers['x-request-id'] === 'string')
+        ? req.headers['x-request-id']
+        : crypto.randomUUID()
+      res.setHeader('X-Request-Id', requestId)
 
       // Body size limit — 使用 auth.ts 中完整的 bodySizeLimitMiddleware
       if (config.bodySizeLimit !== undefined && config.bodySizeLimit >= 0) {

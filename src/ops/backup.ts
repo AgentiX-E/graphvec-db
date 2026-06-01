@@ -499,10 +499,18 @@ const ARCHIVE_PREFIX = 'wal-archive-'
 
 /**
  * 从备份目录路径解析时间戳。
- * 格式: graphvec-backup-2026-05-23T22-30-00-000Z
- * 支持 .tar.gz / .tgz 后缀
+ *
+ * 支持的格式：
+ *  1. `graphvec-backup-2026-06-01T10-30-00-000Z` — 当前格式
+ *     （`new Date().toISOString().replace(/[:.]/g, '-')` 生成）
+ *  2. `graphvec-backup-20260601T103000Z` — 备选格式（ISO 8601 基本格式）
+ *
+ * 支持 .tar.gz / .tgz 压缩扩展名或无扩展名的裸目录。
+ *
+ * @param backupPath 备份路径（文件名或完整路径）
+ * @returns 时间戳（毫秒），无法解析时返回 null
  */
-function parseBackupTimestamp(backupPath: string): number | null {
+export function parseBackupTimestamp(backupPath: string): number | null {
   let baseName = path.basename(backupPath)
   // 去除压缩扩展名
   if (baseName.endsWith('.tar.gz')) {
@@ -510,21 +518,28 @@ function parseBackupTimestamp(backupPath: string): number | null {
   } else if (baseName.endsWith('.tgz')) {
     baseName = baseName.slice(0, -4)
   }
-  const match = baseName.match(/^graphvec-backup-(.+)$/)
-  if (!match) return null
-  try {
-    // 将文件名中的 - 恢复为日期分隔符
-    const isoStr = match[1].replace(/-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3.$4$5')
-    // 处理完全替换: T 前面的 - 是日期分隔符
-    const isoFull = match[1]
-      .replace(/(\d{4})-(\d{2})-(\d{2})/, '$1-$2-$3')
-      .replace(/-(\d{2})-(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3.$4Z')
-      .replace(/Z$/, '+08:00')
-    const d = new Date(isoFull)
+
+  const PREFIX = 'graphvec-backup-'
+  if (!baseName.startsWith(PREFIX)) return null
+  const tsStr = baseName.slice(PREFIX.length)
+  if (!tsStr) return null
+
+  // 格式 2: ISO 8601 基本格式 YYYYMMDDTHHmmssZ
+  const mBasic = tsStr.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/)
+  if (mBasic) {
+    const d = new Date(Date.UTC(+mBasic[1], +mBasic[2] - 1, +mBasic[3], +mBasic[4], +mBasic[5], +mBasic[6]))
     return isNaN(d.getTime()) ? null : d.getTime()
-  } catch {
-    return null
   }
+
+  // 格式 1: 将 YYYY-MM-DDTHH-mm-ss-SSSZ 还原为 ISO 8601
+  const mFmt = tsStr.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/)
+  if (mFmt) {
+    const iso = `${mFmt[1]}T${mFmt[2]}:${mFmt[3]}:${mFmt[4]}.${mFmt[5]}Z`
+    const d = new Date(iso)
+    return isNaN(d.getTime()) ? null : d.getTime()
+  }
+
+  return null
 }
 
 /**

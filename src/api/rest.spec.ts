@@ -792,6 +792,73 @@ describe('RestApiServer', () => {
   })
 
   // ──────────────────────────────────────────
+  // 请求追踪 ID (P2-A8)
+  // ──────────────────────────────────────────
+
+  describe('请求追踪 ID (X-Request-Id)', () => {
+    test('不传 X-Request-Id 应自动生成并返回', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/status')
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['x-request-id']).toBeDefined()
+      expect(typeof res.headers['x-request-id']).toBe('string')
+      // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx where y is 8,9,a,b
+      expect(res.headers['x-request-id']).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      )
+    })
+
+    test('传入 X-Request-Id 应返回相同的 ID', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const customId = 'my-custom-request-id-12345'
+      const res = await makeRequest(server, 'GET', '/api/status', undefined, adminAgent, {
+        'X-Request-Id': customId,
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['x-request-id']).toBe(customId)
+    })
+
+    test('每个请求的自动生成 ID 应不同', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const r1 = await makeRequest(server, 'GET', '/api/status')
+      const r2 = await makeRequest(server, 'GET', '/api/status')
+      const r3 = await makeRequest(server, 'GET', '/api/status')
+
+      const ids = [r1.headers['x-request-id'], r2.headers['x-request-id'], r3.headers['x-request-id']]
+      expect(new Set(ids).size).toBe(3) // 所有 ID 都不同
+    })
+
+    test('POST 请求也应包含 X-Request-Id', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'POST', '/api/graph/nodes', { typeId: 1, name: 'reqid-test' })
+      expect(res.statusCode).toBe(200)
+      expect(res.headers['x-request-id']).toBeDefined()
+    })
+
+    test('错误响应也应包含 X-Request-Id', async () => {
+      const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
+      server = createRestApiServer(mockShardManager as any, config)
+      await server.start()
+
+      const res = await makeRequest(server, 'GET', '/api/nonexistent')
+      expect(res.statusCode).toBe(404)
+      expect(res.headers['x-request-id']).toBeDefined()
+    })
+  })
+
+  // ──────────────────────────────────────────
   // 边 CRUD 端点测试
   // ──────────────────────────────────────────
 

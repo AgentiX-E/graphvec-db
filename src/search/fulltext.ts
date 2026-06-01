@@ -272,6 +272,7 @@ export class FullTextIndex {
   private _walFd: number | null = null
   private _walSize = 0
   private _snapshotThreshold: number
+  private _maxOldWals: number = 3
   private static readonly MAX_WAL_BYTES = 1 * 1024 * 1024  // 1MB
   private static readonly WAL_FILENAME = 'fulltext-index.wal'
   private static readonly SNAPSHOT_FILENAME = 'fulltext-index.snapshot.json'
@@ -436,13 +437,34 @@ export class FullTextIndex {
       }
     }
 
-    // 2) 回放 WAL（优先回放 .old 文件，再回放当前 .wal）
-    const rotatedPath = this._walPath ? this._walPath + '.old' : null
-    if (rotatedPath && fs.existsSync(rotatedPath)) {
+    // 2) 回放所有旧 WAL 文件（按序号升序回放，确保顺序正确）
+    if (this._walPath) {
+      const walDir = path.dirname(this._walPath)
+      const walBase = path.basename(this._walPath) // fulltext-index.wal
+      const oldWalFiles: number[] = []
+
       try {
-        this._replayWalFile(rotatedPath)
-      } catch (e) {
-        console.warn('[FullTextIndex] rotated WAL replay failed:', e)
+        const files = fs.readdirSync(walDir)
+        for (const f of files) {
+          // 匹配 fulltext-index.wal.N.old
+          const match = f.match(new RegExp(`^${escapeRegex(walBase)}\\.(\\d+)\\.old$`))
+          if (match) {
+            oldWalFiles.push(parseInt(match[1], 10))
+          }
+        }
+      } catch {
+        // directory not readable, ignore
+      }
+
+      // 按序号升序回放
+      oldWalFiles.sort((a, b) => a - b)
+      for (const seq of oldWalFiles) {
+        const p = path.join(walDir, `${walBase}.${seq}.old`)
+        try {
+          this._replayWalFile(p)
+        } catch (e) {
+          console.warn(`[FullTextIndex] old WAL replay failed (${seq}):`, e)
+        }
       }
     }
     if (this._walPath && fs.existsSync(this._walPath)) {
@@ -624,20 +646,58 @@ export class FullTextIndex {
   }
 
   /**
-   * 轮转 WAL：将当前 WAL 重命名为 .old 后缀，重新创建新 WAL
+   * 轮转 WAL：使用序号命名 wal.N.old，保留最多 _maxOldWals 个旧文件。
+   * 步骤：
+   * 1. 将所有现有旧文件序号 +1（0→1, 1→2, ...）
+   * 2. 将当前 wal 重命名为 wal.0.old
+   * 3. 删除序号 >= _maxOldWals 的旧文件
    */
   private _rotateWal(): void {
     if (!this._walPath) return
 
     this._closeWalFd()
 
-    const rotatedPath = this._walPath + '.old'
+    const walDir = path.dirname(this._walPath)
+    const walBase = path.basename(this._walPath)
+
     try {
-      // 如果 .old 已存在，先删除
-      if (fs.existsSync(rotatedPath)) {
-        fs.unlinkSync(rotatedPath)
+      // 1) 收集当前所有旧文件，从大到小 rename，避免覆盖
+      const oldFiles: Array<{ seq: number; fullPath: string }> = []
+      const files = fs.readdirSync(walDir)
+      for (const f of files) {
+        const match = f.match(new RegExp(`^${escapeRegex(walBase)}\\.(\\d+)\\.old$`))
+        if (match) {
+          oldFiles.push({ seq: parseInt(match[1], 10), fullPath: path.join(walDir, f) })
+        }
       }
-      fs.renameSync(this._walPath, rotatedPath)
+      oldFiles.sort((a, b) => b.seq - a.seq) // 从大到小，避免覆盖
+      for (const ofile of oldFiles) {
+        const newPath = path.join(walDir, `${walBase}.${ofile.seq + 1}.old`)
+        try {
+          fs.renameSync(ofile.fullPath, newPath)
+        } catch {
+          // ignore
+        }
+      }
+
+      // 2) 将当前 wal 重命名为 wal.0.old
+      fs.renameSync(this._walPath, path.join(walDir, `${walBase}.0.old`))
+
+      // 3) 删除序号 >= _maxOldWals 的旧文件
+      const afterFiles = fs.readdirSync(walDir)
+      for (const f of afterFiles) {
+        const match = f.match(new RegExp(`^${escapeRegex(walBase)}\\.(\\d+)\\.old$`))
+        if (match) {
+          const seq = parseInt(match[1], 10)
+          if (seq >= this._maxOldWals) {
+            try {
+              fs.unlinkSync(path.join(walDir, f))
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
     } catch (e) {
       console.warn('[FullTextIndex] WAL rotation failed:', e)
     }
@@ -1059,4 +1119,11 @@ function _cjkBigrams(text: string, out: string[]): void {
   } else if (text.length === 1) {
     out.push(text)
   }
+}
+
+/**
+ * 转义正则表达式中的特殊字符
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

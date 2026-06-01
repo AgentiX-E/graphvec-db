@@ -5,6 +5,7 @@
 import * as grpc from '@grpc/grpc-js'
 import * as protoLoader from '@grpc/proto-loader'
 import * as path from 'path'
+import * as crypto from 'crypto'
 import { GraphEngine } from '../core/graph-engine'
 import { NodeRecord, EdgeRecord, NodeProperties } from '../types'
 
@@ -89,6 +90,20 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
 
 const graphvecProto = grpc.loadPackageDefinition(packageDefinition) as any
 
+/**
+ * 从 gRPC metadata 中提取 X-Request-Id，如果不存在则自动生成
+ */
+function getRequestId(call: any): string {
+  const metadata = call.metadata
+  if (metadata && metadata.get) {
+    const values = metadata.get('x-request-id')
+    if (values && values.length > 0) {
+      return String(values[0])
+    }
+  }
+  return crypto.randomUUID()
+}
+
 export function createGrpcServer(
   engine: GraphEngine,
   config: GrpcServerConfig,
@@ -102,6 +117,7 @@ export function createGrpcServer(
     // ── Node operations ──
 
     GetNode: (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const id = call.request.id
         const node = engine.getNode(id)
@@ -116,6 +132,7 @@ export function createGrpcServer(
     },
 
     AddNode: async (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { typeId, name, props } = call.request
         const id = await engine.upsertNode(typeId, name, {
@@ -129,6 +146,7 @@ export function createGrpcServer(
     },
 
     DeleteNode: async (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { id } = call.request
         const cascade = !!call.request.cascade
@@ -140,6 +158,7 @@ export function createGrpcServer(
     },
 
     UpdateNode: async (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { id, props } = call.request
         const existing = engine.getNode(id)
@@ -165,6 +184,7 @@ export function createGrpcServer(
     // ── Edge operations ──
 
     GetEdge: (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { src, dst, type } = call.request
         const edge = engine.getEdge(src, dst, type)
@@ -179,6 +199,7 @@ export function createGrpcServer(
     },
 
     AddEdge: async (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { src, dst, typeId, props, weight } = call.request
         await engine.upsertEdge(src, dst, typeId, {
@@ -192,6 +213,7 @@ export function createGrpcServer(
     },
 
     DeleteEdge: async (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { src, dst, typeId } = call.request
         await engine.deleteEdge(src, dst, typeId)
@@ -205,6 +227,7 @@ export function createGrpcServer(
     },
 
     UpdateEdge: async (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { src, dst, typeId, props } = call.request
         const existing = engine.getEdge(src, dst, typeId)
@@ -230,6 +253,7 @@ export function createGrpcServer(
     // ── Query operations ──
 
     Query: (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { query, limit, skip } = call.request
         const results = engine.query(query)
@@ -252,6 +276,7 @@ export function createGrpcServer(
     },
 
     Neighbors: (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { nodeId, maxDepth, edgeTypeFilter } = call.request
         const result = engine.neighbors(nodeId, {
@@ -274,6 +299,7 @@ export function createGrpcServer(
     // ── Batch operations ──
 
     BatchNeighbors: (call: any, callback: any) => {
+      const requestId = getRequestId(call)
       try {
         const { ids, maxDepth, edgeTypeFilter } = call.request
         const result = engine.batchNeighbors(ids, {
@@ -301,6 +327,7 @@ export function createGrpcServer(
     // ── Health check ──
 
     Health: (_call: any, callback: any) => {
+      const requestId = getRequestId(_call)
       try {
         const stats = engine.stats()
         callback(null, {

@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as zlib from 'zlib'
 import { GraphEngine } from '../core/graph-engine'
-import { Backup } from './backup'
+import { Backup, parseBackupTimestamp } from './backup'
 import { testEngineConfig } from '../../test/fixtures/test-graph'
 import { createRequire } from 'module'
 
@@ -348,6 +348,48 @@ describe('Backup - Consistency', () => {
     expect(result).toBe(false)
 
     cleanDir(backupDir)
+  })
+})
+
+describe('parseBackupTimestamp', () => {
+  it('should parse current backup filename format (YYYY-MM-DDTHH-mm-ss-SSSZ)', () => {
+    // 当前格式: new Date().toISOString().replace(/[:.]/g, '-')
+    const ts = parseBackupTimestamp(
+      '/some/path/graphvec-backup-2026-06-01T10-30-00-000Z.tar.gz'
+    )
+    expect(ts).not.toBeNull()
+    // 验证对应的是 2026-06-01T10:30:00.000Z
+    expect(ts).toBe(new Date('2026-06-01T10:30:00.000Z').getTime())
+  })
+
+  it('should parse backup filename with .tgz extension', () => {
+    const ts = parseBackupTimestamp(
+      '/backups/graphvec-backup-2025-12-25T00-00-00-000Z.tgz'
+    )
+    expect(ts).not.toBeNull()
+    expect(ts).toBe(new Date('2025-12-25T00:00:00.000Z').getTime())
+  })
+
+  it('should parse backup filename without compression extension (bare dir)', () => {
+    const ts = parseBackupTimestamp(
+      'graphvec-backup-2026-01-15T08-15-30-500Z'
+    )
+    expect(ts).not.toBeNull()
+    expect(ts).toBe(new Date('2026-01-15T08:15:30.500Z').getTime())
+  })
+
+  it('should parse alternate ISO 8601 basic format (YYYYMMDDTHHmmssZ)', () => {
+    const ts = parseBackupTimestamp(
+      'graphvec-backup-20260601T103000Z.tar.gz'
+    )
+    expect(ts).not.toBeNull()
+    expect(ts).toBe(new Date('2026-06-01T10:30:00.000Z').getTime())
+  })
+
+  it('should return null for unrecognized filenames', () => {
+    expect(parseBackupTimestamp('random-file.txt')).toBeNull()
+    expect(parseBackupTimestamp('graphvec-backup-invalid')).toBeNull()
+    expect(parseBackupTimestamp('')).toBeNull()
   })
 })
 
