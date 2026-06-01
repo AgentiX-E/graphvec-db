@@ -74,6 +74,18 @@ export interface MembershipManagerConfig {
   ackTimeoutMs?: number
   /** Leader 存活检查回调（可选），返回 true 表示 leader 存活 */
   checkLeaderAlive?: () => Promise<boolean>
+  /**
+   * Commit 前一致性检查（可选）
+   * 在 Phase 2（ACK 收集完成）后、Phase 3（广播 commit）前执行。
+   * 返回 false → 取消变更，回滚 pending。
+   */
+  syncCheck?: () => Promise<boolean>
+  /**
+   * PreSync 确认回调（可选）
+   * 在 Phase 1（广播 proposal）前调用。
+   * 用于验证新节点数据预同步已完成。
+   */
+  preSyncCheck?: (peerId: string) => Promise<boolean>
 }
 
 /** 待处理的提案 */
@@ -214,6 +226,18 @@ export class AppMembershipManager {
       }
     }
 
+    // PreSync 检查（add 操作时验证新节点数据已对齐）
+    if (this.config.preSyncCheck && type === 'add') {
+      const syncReady = await Promise.race([
+        this.config.preSyncCheck(peerId),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
+      ])
+      if (!syncReady) {
+        throw new Error(`PreSync not complete for ${peerId}, cannot add yet`)
+      }
+      this.logger.info(`[Membership] PreSync confirmed for ${peerId}`)
+    }
+
     // Phase 1: 广播提案
     const proposal: MembershipMessage = {
       type: 'proposal',
@@ -261,7 +285,7 @@ export class AppMembershipManager {
 
       this._pending.ackTimer = timer
 
-      // 异步广播 proposal（不阻塞 Promise 构造）
+        // 异步广播 proposal（不阻塞 Promise 构造）
       this.config.transport.broadcast(proposal).then(() => {
         // 广播完成后检查是否已满足（self ACK + 收到的 ACK）
         this._checkProposalCompletion(resolve, reject)
@@ -363,10 +387,10 @@ export class AppMembershipManager {
   }
 
   /** 检查提案是否完成 */
-  private _checkProposalCompletion(
+  private async _checkProposalCompletion(
     resolve: (value: void) => void,
     reject: (err: Error) => void
-  ): void {
+  ): Promise<void> {
     if (!this._pending) return
 
     const pending = this._pending
@@ -385,13 +409,38 @@ export class AppMembershipManager {
         pending.ackTimer = null
       }
 
-      // Phase 3: 广播 commit
+      // Phase 3: Commit 前一致性检查
+      if (this.config.syncCheck) {
+        try {
+          const checkOk = await Promise.race([
+            this.config.syncCheck(),
+            new Promise<boolean>((_, reject) =>
+              setTimeout(() => reject(new Error('syncCheck timeout')), 5000)
+            ),
+          ] as const).catch(() => false)
+
+          if (!checkOk) {
+            this.logger.warn(`[Membership] syncCheck failed for seq=${pending.seq}, aborting`)
+            this._pending = null
+            reject(new Error(`Membership change rejected by syncCheck: seq=${pending.seq}`))
+            return
+          }
+
+          this.logger.debug(`[Membership] syncCheck passed for seq=${pending.seq}`)
+        } catch (err: any) {
+          this.logger.error(`[Membership] syncCheck error for seq=${pending.seq}: ${err.message}`)
+          this._pending = null
+          reject(new Error(`Membership change rejected: syncCheck error: ${err.message}`))
+          return
+        }
+      }
+
+      // Phase 4: 广播 commit
       this._commitChange(pending, resolve, reject)
     }
-    // 否则继续等待（_handleAck 会再次调用此方法）
+    // 否则继续等待（ACK 尚未满足 quorum，_handleAck 会再次调用此方法）
   }
 
-  /** 提交变更（Phase 3） */
   private _commitChange(
     pending: PendingProposal,
     resolve: (value: void) => void,

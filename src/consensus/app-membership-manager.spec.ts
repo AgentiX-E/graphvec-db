@@ -303,3 +303,126 @@ describe('AppMembershipManager — basic', () => {
     expect(mm.getMembers()).toContain('node-3')
   })
 })
+
+// ── syncCheck ──
+
+describe('AppMembershipManager — syncCheck', () => {
+  test('should reject change when syncCheck returns false', async () => {
+    const transport = new MockMembershipTransport([
+      { nodeId: 'node-2', addr: 'tcp://n2:7001' },
+    ])
+
+    const mm = new AppMembershipManager({
+      nodeId: 'node-1',
+      transport,
+      onMembershipChange: () => {},
+      ackTimeoutMs: 10000,
+      syncCheck: async () => false,
+    })
+    mm.start()
+
+    const promise = mm.proposeChange('add', 'node-3')
+
+    // 注入 ACK 满足 quorum（self + node-2 = 2/2）
+    setTimeout(() => {
+      transport.inject('node-2', { type: 'ack', seq: 0 })
+    }, 10)
+
+    await expect(promise).rejects.toThrow(/rejected by syncCheck/)
+
+    // _pending 应该已清理
+    expect(mm.getMembers()).not.toContain('node-3')
+  })
+
+  test('should allow change when syncCheck returns true', async () => {
+    const transport = new MockMembershipTransport([
+      { nodeId: 'node-2', addr: 'tcp://n2:7001' },
+    ])
+
+    const mm = new AppMembershipManager({
+      nodeId: 'node-1',
+      transport,
+      onMembershipChange: () => {},
+      ackTimeoutMs: 10000,
+      syncCheck: async () => true,
+    })
+    mm.start()
+
+    const promise = mm.proposeChange('add', 'node-3')
+
+    setTimeout(() => {
+      transport.inject('node-2', { type: 'ack', seq: 0 })
+    }, 10)
+
+    await promise
+    expect(mm.getMembers()).toContain('node-3')
+  })
+
+  test('should reject change on syncCheck timeout', async () => {
+    const transport = new MockMembershipTransport([
+      { nodeId: 'node-2', addr: 'tcp://n2:7001' },
+    ])
+
+    const mm = new AppMembershipManager({
+      nodeId: 'node-1',
+      transport,
+      onMembershipChange: () => {},
+      ackTimeoutMs: 10000,
+      syncCheck: async () => new Promise<boolean>(() => {}), // never resolve
+    })
+    mm.start()
+
+    const promise = mm.proposeChange('add', 'node-3')
+
+    setTimeout(() => {
+      transport.inject('node-2', { type: 'ack', seq: 0 })
+    }, 10)
+
+    await expect(promise).rejects.toThrow(/rejected by syncCheck|rejected|timeout/)
+  })
+})
+
+// ── preSyncCheck ──
+
+describe('AppMembershipManager — preSyncCheck', () => {
+  test('should reject add when preSyncCheck returns false', async () => {
+    const transport = new MockMembershipTransport([
+      { nodeId: 'node-2', addr: 'tcp://n2:7001' },
+    ])
+
+    const mm = new AppMembershipManager({
+      nodeId: 'node-1',
+      transport,
+      onMembershipChange: () => {},
+      preSyncCheck: async () => false,
+    })
+    mm.start()
+
+    await expect(mm.proposeChange('add', 'node-3')).rejects.toThrow(/PreSync not complete/)
+    expect(mm.getMembers()).not.toContain('node-3')
+  })
+
+  test('should allow add when preSyncCheck returns true', async () => {
+    const transport = new MockMembershipTransport([
+      { nodeId: 'node-2', addr: 'tcp://n2:7001' },
+    ])
+
+    const mm = new AppMembershipManager({
+      nodeId: 'node-1',
+      transport,
+      onMembershipChange: () => {},
+      ackTimeoutMs: 10000,
+      preSyncCheck: async () => true,
+    })
+    mm.start()
+
+    const promise = mm.proposeChange('add', 'node-3')
+
+    setTimeout(() => {
+      transport.inject('node-2', { type: 'ack', seq: 0 })
+    }, 10)
+
+    await promise
+    expect(mm.getMembers()).toContain('node-3')
+  })
+})
