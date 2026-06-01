@@ -422,7 +422,7 @@ describe('SegmentStreamWalAppendStream — fsync 策略与公开方法', () => {
     const fd = fs.openSync(tmpPath, 'w')
     const stream = new SegmentStreamWalAppendStream(fd)
     expect((stream as any)._fsyncStrategy).toBe('every-n')
-    expect((stream as any)._fsyncEveryN).toBe(10)
+    expect((stream as any)._fsyncEveryN).toBe(100)
     fs.closeSync(fd)
   })
 
