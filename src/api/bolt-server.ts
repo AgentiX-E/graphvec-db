@@ -294,33 +294,36 @@ class PackStreamWriter {
 
   /** Write a Bolt SUCCESS message */
   writeSuccess(meta: Record<string, unknown>): Buffer {
-    this.writeStructHeader(1)
-    this._buf[this._offset - 1] = SIG.SUCCESS
+    this.reserve(2)
+    this._buf[this._offset++] = 0xb1 // struct(1)
+    this._buf[this._offset++] = SIG.SUCCESS
     this.writeValue(meta)
     return this.finalize()
   }
 
   /** Write a Bolt FAILURE message */
   writeFailure(code: string, message: string): Buffer {
-    this.writeStructHeader(1)
-    this._buf[this._offset - 1] = SIG.FAILURE
+    this.reserve(2)
+    this._buf[this._offset++] = 0xb1 // struct(1)
+    this._buf[this._offset++] = SIG.FAILURE
     this.writeValue({ code, message })
     return this.finalize()
   }
 
   /** Write a Bolt RECORD message */
   writeRecord(fields: unknown[]): Buffer {
-    this.writeStructHeader(1)
-    this._buf[this._offset - 1] = SIG.RECORD
+    this.reserve(2)
+    this._buf[this._offset++] = 0xb1 // struct(1)
+    this._buf[this._offset++] = SIG.RECORD
     this.writeValue(fields)
     return this.finalize()
   }
 
   /** Write a Bolt IGNORED message */
   writeIgnored(): Buffer {
-    this.writeStructHeader(1)
-    this._buf[this._offset - 1] = SIG.IGNORED
-    this.writeValue(null as unknown as Record<string, unknown>)
+    this.reserve(2)
+    this._buf[this._offset++] = 0xb0 // struct(0)
+    this._buf[this._offset++] = SIG.IGNORED
     return this.finalize()
   }
 
@@ -556,20 +559,20 @@ export class BoltServer {
         this.handleRun(socket, session, payload)
         break
       case SIG.PULL_ALL:
-        this.handlePullAll(socket, session)
+        this.handlePullAll(socket, session, payload)
         break
       case SIG.RESET:
-        this.handleReset(socket, session)
+        this.handleReset(socket, session, payload)
         break
       case SIG.GOODBYE:
-        this.handleGoodbye(socket, session)
+        this.handleGoodbye(socket, session, payload)
         break
       case SIG.BEGIN:
-        this.handleBegin(socket, session)
+        this.handleBegin(socket, session, payload)
         break
       case SIG.COMMIT:
       case SIG.ROLLBACK:
-        this.handleCommitRollback(socket, session)
+        this.handleCommitRollback(socket, session, payload)
         break
       default:
         // Unknown message → IGNORED
@@ -615,16 +618,16 @@ export class BoltServer {
     try {
       // Decode RUN message: payload contains 3 fields [cypher: String, params: Map, extra: Map]
       // struct tag and sig already stripped by handleMessage, so payload starts with field1
-      const fields: unknown[] = []
+      const runFields: unknown[] = []
       let offset = 0
       for (let i = 0; i < 3 && offset < payload.length; i++) {
         const decoded = this.decodeValue(payload, offset)
         if (!decoded) break
-        fields.push(decoded.value)
+        runFields.push(decoded.value)
         offset += decoded.bytesRead
       }
 
-      if (fields.length < 2) {
+      if (runFields.length < 2) {
         socket.write(new PackStreamWriter().writeFailure(
           'Neo.ClientError.Request.Invalid',
           'Invalid RUN message',
@@ -632,8 +635,8 @@ export class BoltServer {
         return
       }
 
-      const cypher = String(fields[0])
-      const params = (fields[1] as Record<string, unknown>) ?? {}
+      const cypher = String(runFields[0])
+      const params = (runFields[1] as Record<string, unknown>) ?? {}
 
       // Store pending query context
       session.pendingQuery = cypher
@@ -641,13 +644,13 @@ export class BoltServer {
 
       // Parse and prepare query — return field metadata
       const result = this.executeQuery(cypher, params)
-      const fields = result.fields ?? []
+      const queryFields = result.fields ?? []
 
       // Build success metadata
       const writer = new PackStreamWriter()
       const qid = -1
       socket.write(writer.writeSuccess({
-        fields,
+        queryFields,
         t_first: 1,
         qid,
       }))
@@ -660,7 +663,7 @@ export class BoltServer {
     }
   }
 
-  private handlePullAll(socket: net.Socket, session: BoltSession): void {
+  private handlePullAll(socket: net.Socket, session: BoltSession, _payload?: Buffer): void {
     if (!session.authenticated || !session.pendingQuery) {
       socket.write(new PackStreamWriter().writeFailure(
         'Neo.ClientError.Request.Invalid',
@@ -713,24 +716,24 @@ export class BoltServer {
     }
   }
 
-  private handleReset(socket: net.Socket, session: BoltSession): void {
+  private handleReset(socket: net.Socket, session: BoltSession, _payload?: Buffer): void {
     session.pendingQuery = null
     session.pendingParams = null
     const writer = new PackStreamWriter()
     socket.write(writer.writeSuccess({}))
   }
 
-  private handleGoodbye(socket: net.Socket, _session: BoltSession): void {
+  private handleGoodbye(socket: net.Socket, _session: BoltSession, _payload?: Buffer): void {
     socket.end()
   }
 
-  private handleBegin(_socket: net.Socket, _session: BoltSession): void {
+  private handleBegin(_socket: net.Socket, _session: BoltSession, _payload?: Buffer): void {
     // Simple mode — BEGIN is a no-op
     const writer = new PackStreamWriter()
     _socket.write(writer.writeSuccess({}))
   }
 
-  private handleCommitRollback(_socket: net.Socket, _session: BoltSession): void {
+  private handleCommitRollback(_socket: net.Socket, _session: BoltSession, _payload?: Buffer): void {
     // Simple mode — COMMIT/ROLLBACK are no-ops
     const writer = new PackStreamWriter()
     _socket.write(writer.writeSuccess({}))

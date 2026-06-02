@@ -5,7 +5,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { BoltServer, CypherQueryResult, CypherQueryExecutor, createBoltServer } from './bolt-server'
 import * as net from 'net'
-import * as crypto from 'crypto'
 
 // ──────────────────────────────────────────
 // Helpers
@@ -13,125 +12,107 @@ import * as crypto from 'crypto'
 
 /** Mock query engine executor for testing */
 function createMockExecutor(): CypherQueryExecutor {
-  const store: Array<{ cypher: string; params: Record<string, unknown> }> = []
-  const executor: CypherQueryExecutor = (cypher: string, params: Record<string, unknown>) => {
-    store.push({ cypher, params })
-
-    if (cypher.includes('RETURN 1 AS num')) {
-      return { fields: ['num'], records: [[1]] }
-    }
+  const executor: CypherQueryExecutor = (cypher: string) => {
     if (cypher.includes('InvalidQuery')) {
       throw new Error('Syntax error')
     }
     if (cypher.includes('MATCH')) {
       return { fields: ['n.id', 'n.name'], records: [[1, 'Alice'], [2, 'Bob']] }
     }
-    return { fields: [], records: [] }
+    return { fields: ['num'], records: [[1]] }
   }
-  ;(executor as any)._callHistory = store
   return executor
 }
 
-/** Connect to the Bolt server and perform handshake */
-async function boltConnect(port: number): Promise<net.Socket> {
+/** Perform Bolt handshake and return connected socket */
+function boltConnect(port: number): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const socket = new net.Socket()
-    const timeout = setTimeout(() => reject(new Error('Connect timeout')), 3000)
+    const timeout = setTimeout(() => reject(new Error('Connect timeout')), 5000)
 
     socket.connect(port, '127.0.0.1', () => {
-      clearTimeout(timeout)
-      // Send Bolt magic + version negotiation
+      // Send magic + version negotiation
       const magic = Buffer.from([0x60, 0x60, 0xb0, 0x17])
       const versions = Buffer.alloc(16, 0)
-      versions.writeUInt32BE(0x00040004, 0) // v4.4
-      versions.writeUInt32BE(0x00030000, 4) // v3.0 fallback
-      versions.writeUInt32BE(0x00020000, 8) // v2.0 fallback
+      versions.writeUInt32BE(0x00040004, 0)
       socket.write(Buffer.concat([magic, versions]))
 
-      // Read version response
-      socket.once('data', (data) => {
+      // Wait for version response (4 bytes)
+      const onData = (data: Buffer) => {
         if (data.length >= 4) {
+          clearTimeout(timeout)
+          socket.removeListener('data', onData)
           resolve(socket)
-        } else {
-          reject(new Error('Invalid handshake response'))
         }
-      })
+      }
+      socket.on('data', onData)
     })
 
-    socket.on('error', (err) => {
-      clearTimeout(timeout)
-      reject(err)
-    })
+    socket.on('error', (err) => { clearTimeout(timeout); reject(err) })
   })
 }
 
-/** Send a Bolt message with proper struct framing
- *  Bolt struct wire format: [struct_tag:1][sig:1][fields...]
- *  struct_tag = 0xb0 | field_count
- *  For single-field messages (HELLO, RESET, GOODBYE, BEGIN): 0xb1 + sig + field
- *  For 3-field RUN: 0xb3 + sig + field1 + field2 + field3
- *  For 0-field PULL_ALL: 0xb0 + sig (or just sig)
+/**
+ * Build a fully framed Bolt message with struct wrapping.
+ * Wire format: [struct_tag:1][sig:1][field_data...]
  */
-function sendBoltMessage(
-  socket: net.Socket,
-  sig: number,
-  fieldCount: number,
-  fieldData?: Buffer,
-): void {
+function boltFramed(sig: number, fieldCount: number, fieldData?: Buffer): Buffer {
   const header = Buffer.alloc(2)
-  header[0] = 0xb0 | fieldCount // struct tag
-  header[1] = sig // message signature (e.g., 0x01 for HELLO)
-
-  const msg = fieldData
-    ? Buffer.concat([header, fieldData])
-    : header
-
-  // Chunk framing
-  const chunk = Buffer.alloc(2 + msg.length + 2)
-  chunk.writeUInt16BE(msg.length, 0)
-  msg.copy(chunk, 2)
-  chunk[chunk.length - 2] = 0x00
-  chunk[chunk.length - 1] = 0x00
-
-  socket.write(chunk)
+  header[0] = 0xb0 | fieldCount
+  header[1] = sig
+  const payload = fieldData ? Buffer.concat([header, fieldData]) : header
+  const msg = Buffer.alloc(2 + payload.length + 2)
+  msg.writeUInt16BE(payload.length, 0)
+  payload.copy(msg, 2)
+  msg[msg.length - 2] = 0x00
+  msg[msg.length - 1] = 0x00
+  return msg
 }
 
-/** Read all response data from socket */
-function readResponse(socket: net.Socket): Promise<Buffer[]> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = []
-    const onData = (data: Buffer) => {
-      chunks.push(data)
-    }
-    socket.on('data', onData)
+/** Send a framed Bolt message to socket */
+function boltSend(socket: net.Socket, sig: number, fieldCount: number, fieldData?: Buffer): void {
+  socket.write(boltFramed(sig, fieldCount, fieldData))
+}
 
-    setTimeout(() => {
-      socket.removeListener('data', onData)
-      resolve(chunks)
-    }, 500)
+/** Build 3 fields body for a RUN message: [cypher: String8, params: Map0, extra: Map0] */
+function boltRunBody(cypher: string): Buffer {
+  const cypherBuf = Buffer.from(cypher, 'utf8')
+  return Buffer.concat([
+    Buffer.from([0xd0, cypherBuf.length]),
+    cypherBuf,
+    Buffer.from([0xa0]), // empty params map
+    Buffer.from([0xa0]), // empty extra map
+  ])
+}
+
+/** Collect response chunks for a given duration */
+function collectResponses(socket: net.Socket, durationMs = 500): Promise<Buffer[]> {
+  return new Promise((resolve) => {
+    const responses: Buffer[] = []
+    const handler = (data: Buffer) => responses.push(data)
+    socket.on('data', handler)
+    const timer = setTimeout(() => {
+      socket.removeListener('data', handler)
+      resolve(responses)
+    }, durationMs)
+    socket.once('close', () => { clearTimeout(timer); resolve(responses) })
   })
 }
 
-/** Encode a Cypher string + params as PackStream for RUN message */
-function encodeRunMessage(query: string, params: Record<string, unknown> = {}): Buffer {
-  // Simple PackStream encoding for [cypher: String, params: Map, extra: Map]
-  const parts: Buffer[] = []
-
-  // Encode query string as int8-size string (marker 0xd0 + len + data)
-  const queryBuf = Buffer.from(query, 'utf8')
-  const queryHeader = Buffer.alloc(2)
-  queryHeader[0] = 0xd0 // String8 marker
-  queryHeader[1] = queryBuf.length
-  parts.push(queryHeader, queryBuf)
-
-  // Encode empty map (0xa0 = map size 0) for params
-  const emptyMap = Buffer.from([0xa0])
-  parts.push(emptyMap)
-
-  // Encode empty map (0xa0) for extra
-  parts.push(Buffer.from([0xa0]))
-
-  return Buffer.concat(parts)
+/** Extract response signatures (0x70=SUCCESS, 0x7f=FAILURE, 0x71=RECORD) from framed Bolt responses */
+function extractSignatures(responses: Buffer[]): number[] {
+  const sigs: number[] = []
+  for (const resp of responses) {
+    let offset = 0
+    while (offset + 2 <= resp.length) {
+      const chunkLen = resp.readUInt16BE(offset)
+      if (chunkLen === 0) { offset += 2; continue }
+      if (offset + 2 + chunkLen > resp.length) break
+      sigs.push(resp[offset + 2 + 1]) // second byte of data = sig/marker
+      offset += 2 + chunkLen + 2
+    }
+  }
+  return sigs
 }
 
 // ──────────────────────────────────────────
@@ -140,19 +121,23 @@ function encodeRunMessage(query: string, params: Record<string, unknown> = {}): 
 
 describe('BoltServer — Protocol Compliance', () => {
   let server: BoltServer | null = null
-  let port = 0
   let executor: CypherQueryExecutor
+  let globalResponses: Buffer[] = []
+  let globalSocket: net.Socket | null = null
 
-  beforeEach(async () => {
-    executor = createMockExecutor()
-    port = 0 // auto-assign port
-  })
+  /** Attach a global data listener */
+  function attachCollector(socket: net.Socket): void {
+    globalSocket = socket
+    globalResponses = []
+    socket.on('data', (data: Buffer) => globalResponses.push(data))
+  }
+
+  beforeEach(() => { executor = createMockExecutor() })
 
   afterEach(async () => {
-    if (server) {
-      await server.stop()
-      server = null
-    }
+    if (globalSocket) { globalSocket.removeAllListeners('data'); globalSocket = null }
+    globalResponses = []
+    if (server) { await server.stop().catch(() => {}); server = null }
   })
 
   test('GAP-09-1: start server on random port', async () => {
@@ -162,7 +147,7 @@ describe('BoltServer — Protocol Compliance', () => {
     expect(server.getConnections()).toBe(0)
   })
 
-  test('GAP-09-2: start/stop server', async () => {
+  test('GAP-09-2: start/stop server via factory', async () => {
     const inst = createBoltServer(executor, { port: 0, host: '127.0.0.1' })
     await inst.start()
     expect(inst.getPort()).toBeGreaterThan(0)
@@ -173,36 +158,19 @@ describe('BoltServer — Protocol Compliance', () => {
     server = new BoltServer(executor, { port: 0, host: '127.0.0.1' })
     await server.start()
     const socket = await boltConnect(server.getPort())
-    expect(socket).toBeDefined()
     expect(socket.writable).toBe(true)
     socket.destroy()
   })
 
-  test('GAP-09-4: HELLO → SUCCESS response', async () => {
+  test('GAP-09-4: HELLO -> SUCCESS response', async () => {
     server = new BoltServer(executor, { port: 0, host: '127.0.0.1' })
     await server.start()
     const socket = await boltConnect(server.getPort())
-
-    // Send HELLO message
-    // HELLO struct has 1 field: metadata map
-    // HELLO message: struct(1) + sig(0x01) + empty_map(0xa0)
-    sendBoltMessage(socket, 0x01, 1, Buffer.from([0xa0]))
-
-    const responses = await readResponse(socket)
-    expect(responses.length).toBeGreaterThan(0)
-
-    // Check that response starts with SUCCESS marker (0x70)
-    let foundSuccess = false
-    for (const resp of responses) {
-      if (resp.length >= 2) {
-        const chunkLen = resp.readUInt16BE(0)
-        if (chunkLen > 0 && resp[2] === 0x70) {
-          foundSuccess = true
-          break
-        }
-      }
-    }
-    expect(foundSuccess).toBe(true)
+    attachCollector(socket)
+    boltSend(socket, 0x01, 1, Buffer.from([0xa0])) // HELLO with empty map
+    await new Promise(r => setTimeout(r, 300))
+    const sigs = extractSignatures(globalResponses)
+    expect(sigs).toContain(0x70) // SUCCESS
     socket.destroy()
   })
 
@@ -210,22 +178,16 @@ describe('BoltServer — Protocol Compliance', () => {
     server = new BoltServer(executor, { port: 0, host: '127.0.0.1' })
     await server.start()
     const socket = await boltConnect(server.getPort())
-
-    // HELLO
-    sendBoltMessage(socket, 0x01, 1, Buffer.from([0xa0]))
+    attachCollector(socket)
+    boltSend(socket, 0x01, 1, Buffer.from([0xa0])) // HELLO
     await new Promise(r => setTimeout(r, 100))
-
-    // RUN: execute a query — struct(3) + sig(0x10) + [cypher, empty_map, empty_map]
-    const runPayload = encodeRunMessage('RETURN 1 AS num')
-    sendBoltMessage(socket, 0x10, 3, runPayload)
+    boltSend(socket, 0x10, 3, boltRunBody('RETURN 1 AS num')) // RUN
     await new Promise(r => setTimeout(r, 100))
-
-    // PULL_ALL: struct(1) + sig(0x3f) + empty_map
-    sendBoltMessage(socket, 0x3f, 1, Buffer.from([0xa0]))
-    await new Promise(r => setTimeout(r, 200))
-
-    const responses = await readResponse(socket)
-    expect(responses.length).toBeGreaterThan(0)
+    boltSend(socket, 0x3f, 1, Buffer.from([0xa0])) // PULL_ALL
+    await new Promise(r => setTimeout(r, 600))
+    const sigs = extractSignatures(globalResponses)
+    expect(sigs.filter(s => s === 0x70).length).toBeGreaterThanOrEqual(2) // success from HELLO+RUN
+    expect(sigs).toContain(0x71) // RECORD
     socket.destroy()
   })
 
@@ -233,17 +195,13 @@ describe('BoltServer — Protocol Compliance', () => {
     server = new BoltServer(executor, { port: 0, host: '127.0.0.1' })
     await server.start()
     const socket = await boltConnect(server.getPort())
-
-    // HELLO
-    sendBoltMessage(socket, 0x01, 1, Buffer.from([0xa0]))
-    await new Promise(r => setTimeout(r, 50))
-
-    // RESET: struct(0) + sig(0x0f) — no fields
-    sendBoltMessage(socket, 0x0f, 0)
+    attachCollector(socket)
+    boltSend(socket, 0x01, 1, Buffer.from([0xa0]))
     await new Promise(r => setTimeout(r, 100))
-
-    const responses = await readResponse(socket)
-    expect(responses.length).toBeGreaterThan(0)
+    boltSend(socket, 0x0f, 0) // RESET — no fields
+    await new Promise(r => setTimeout(r, 400))
+    const sigs = extractSignatures(globalResponses)
+    expect(sigs).toContain(0x70) // SUCCESS from RESET
     socket.destroy()
   })
 
@@ -251,15 +209,11 @@ describe('BoltServer — Protocol Compliance', () => {
     server = new BoltServer(executor, { port: 0, host: '127.0.0.1' })
     await server.start()
     const socket = await boltConnect(server.getPort())
-
-    // HELLO
-    sendBoltMessage(socket, 0x01, 1, Buffer.from([0xa0]))
     await new Promise(r => setTimeout(r, 50))
-
-    // GOODBYE: struct(0) + sig(0x02) — no fields
-    sendBoltMessage(socket, 0x02, 0)
+    boltSend(socket, 0x01, 1, Buffer.from([0xa0]))
     await new Promise(r => setTimeout(r, 100))
-
+    boltSend(socket, 0x02, 0) // GOODBYE — no fields
+    await new Promise(r => setTimeout(r, 300))
     expect(socket.destroyed || !socket.writable).toBe(true)
   })
 
@@ -267,12 +221,11 @@ describe('BoltServer — Protocol Compliance', () => {
     server = new BoltServer(executor, { port: 0, host: '127.0.0.1' })
     await server.start()
     expect(server.getConnections()).toBe(0)
-
     const socket = await boltConnect(server.getPort())
+    await new Promise(r => setTimeout(r, 50))
     expect(server.getConnections()).toBe(1)
-
     socket.destroy()
-    await new Promise(r => setTimeout(r, 100))
+    await new Promise(r => setTimeout(r, 200))
     expect(server.getConnections()).toBe(0)
   })
 
@@ -280,32 +233,17 @@ describe('BoltServer — Protocol Compliance', () => {
     server = new BoltServer(executor, { port: 0, host: '127.0.0.1' })
     await server.start()
     const socket = await boltConnect(server.getPort())
-
-    // HELLO
-    sendBoltMessage(socket, 0x01, 1, Buffer.from([0xa0]))
-    await new Promise(r => setTimeout(r, 50))
-
-    // RUN with invalid query
-    const runPayload = encodeRunMessage('InvalidQuery')
-    sendBoltMessage(socket, 0x10, 3, runPayload)
+    attachCollector(socket)
+    boltSend(socket, 0x01, 1, Buffer.from([0xa0])) // HELLO
     await new Promise(r => setTimeout(r, 100))
-
-    const responses = await readResponse(socket)
-    let foundFailure = false
-    for (const resp of responses) {
-      if (resp.length >= 2) {
-        const chunkLen = resp.readUInt16BE(0)
-        if (chunkLen > 0 && resp[2] === 0x7f) {
-          foundFailure = true
-          break
-        }
-      }
-    }
-    expect(foundFailure).toBe(true)
+    boltSend(socket, 0x10, 3, boltRunBody('InvalidQuery')) // RUN with invalid query
+    await new Promise(r => setTimeout(r, 400))
+    const sigs = extractSignatures(globalResponses)
+    expect(sigs).toContain(0x7f) // FAILURE
     socket.destroy()
   })
 
-  test('GAP-09-10: createBoltServer factory createsInstance', async () => {
+  test('GAP-09-10: createBoltServer factory creates instance', async () => {
     const inst = createBoltServer(executor, { port: 0, host: '127.0.0.1' })
     await inst.start()
     expect(inst.getPort()).toBeGreaterThan(0)
@@ -314,9 +252,6 @@ describe('BoltServer — Protocol Compliance', () => {
   })
 
   test('GAP-09-11: executeQuery with MATCH returns records', async () => {
-    server = new BoltServer(executor, { port: 0, host: '127.0.0.1' })
-    await server.start()
-
     const result = executor('MATCH (n) RETURN n.id, n.name', {})
     expect(result.fields).toEqual(['n.id', 'n.name'])
     expect(result.records).toHaveLength(2)
@@ -329,16 +264,12 @@ describe('BoltServer — Runtime Edge Cases', () => {
   let server: BoltServer | null = null
 
   afterEach(async () => {
-    if (server) {
-      await server.stop()
-      server = null
-    }
+    if (server) { await server.stop().catch(() => {}); server = null }
   })
 
   test('GAP-09-12: stop with no active server is safe', async () => {
     server = new BoltServer(() => ({ fields: [], records: [] }), { port: 0 })
     await server.stop()
-    // Should not throw
     expect(true).toBe(true)
   })
 
