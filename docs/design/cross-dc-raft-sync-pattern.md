@@ -684,5 +684,24 @@ Housekeeping:
 
 ---
 
+## 14. V10 新方向展望（⬜ 计划中）
+
+> 根据 V10 深度调研（`temp/v10-gap-research.md`），以下 8 个新方向将与本架构协同进化。
+
+| 方向 | GAP | 优先级 | 与本架构关联 |
+|------|:---:|:------:|-------------|
+| OpenAPI/Swagger 文档 | GAP-43 | P3 | REST 路由自动生成 OpenAPI 规范 |
+| 健康检查增强 | GAP-44 | P3 | 新增健康检查集成当前跨 DC 拓扑检测 |
+| 查询超时/取消 | GAP-45 | **P2** | 查询引擎注入 AbortSignal，跨 DC 长查询超时管理 |
+| 审计日志导出 | GAP-46 | P3 | 审计日志结构化导出，支持跨 DC 操作追踪 |
+| 自定义聚合函数 | GAP-47 | P3 | 聚合函数注册机制，图查询增强 |
+| 多语言 SDK | GAP-48 | P3 | Python/Go/Java SDK，统一 OpenAPI 规范驱动 |
+| 压缩传输 | GAP-49 | P3 | REST/gRPC 压缩，跨 DC 网络带宽优化 |
+| 配置热加载 | GAP-50 | P3 | ConfigWatcher 统一热加载，适配跨 DC 配置管理 |
+
+**详细设计**参见 `docs/design/execution-plan.md` Phase 10。
+
+---
+
 *本文档从 OverGraph 的实现中提取泛化而成，不依赖任何特定编程语言或库。*
 *所有接口规范和配置推荐均为通用建议，可根据实际情况调整。*

@@ -429,3 +429,24 @@ const zmq = require('zeromq')
 | 🟡 P2 | `_emitLocal` 在远程应用时被跳过 (§9.4) | 本地回调丢失 | 0.5d |
 | 🟢 P3 | zmq `require` 而非 ESM `import` (§9.5) | 妨碍 ESM 迁移 | 0.5d |
 
+---
+
+## 10. V10 新方向展望（⬜ 计划中）
+
+> 根据 V10 深度调研（`temp/v10-gap-research.md`）汇总 8 个新方向，覆盖 API 完善、查询体验、运维可观测性三大板块。
+
+| 方向 | GAP | 优先级 | 状态 | 概览 |
+|------|:---:|:------:|:----:|------|
+| OpenAPI/Swagger 文档 | GAP-43 | P3 | ⬜ 计划中 | Route 定义与 OpenAPI 元数据绑定，`openapi-bridge.ts` 自动聚合 |
+| 健康检查增强 | GAP-44 | P3 | ⬜ 计划中 | K8s 风格 liveness/readiness 探针，组件级状态报告 |
+| 查询超时/取消 | GAP-45 | **P2** | ⬜ 计划中 | QueryTimeoutManager 集成层，AbortSignal 引擎注入 |
+| 审计日志导出 | GAP-46 | P3 | ⬜ 计划中 | AuditLogExporter 结构化导出 + 定时归档 |
+| 自定义聚合函数 | GAP-47 | P3 | ⬜ 计划中 | AggregationRegistry 用户注册聚合函数（类似 ProcedureRegistry） |
+| 多语言 SDK | GAP-48 | P3 | ⬜ 计划中 | Python/Go SDK 生产级增强 + Java SDK 骨架 |
+| 压缩传输 | GAP-49 | P3 | ⬜ 计划中 | CompressionMiddleware gzip/brotli + gRPC 压缩 |
+| 配置热加载 | GAP-50 | P3 | ⬜ 计划中 | ConfigWatcher 通用热加载（复用 chokidar） |
+
+**详细设计**参见 `docs/design/execution-plan.md` 的 Phase 10 章节。
+
+> 推荐执行顺序：GAP-45 → GAP-44 → GAP-47 → GAP-43 → GAP-50 → GAP-49 → GAP-46 → GAP-48
+

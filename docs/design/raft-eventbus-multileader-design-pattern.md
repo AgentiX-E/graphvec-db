@@ -528,6 +528,25 @@ DC interlink: EventBus P2P + Outbox 异步复制
 
 ---
 
+## 13. V10 新方向展望（⬜ 计划中）
+
+> 根据 V10 深度调研（`temp/v10-gap-research.md`），以下 8 个方向将在本设计模式框架下逐步实现。
+
+| 方向 | GAP | 优先级 | 与本架构关联 |
+|------|:---:|:------:|-------------|
+| OpenAPI/Swagger 文档 | GAP-43 | P3 | Route 元数据绑定，自动生成 OpenAPI 规范 |
+| 健康检查增强 | GAP-44 | P3 | 健康检查涵盖 Raft/EventBus/Outbox 组件状态 |
+| 查询超时/取消 | GAP-45 | **P2** | QueryTimeoutManager 集成查询管道，AbortSignal 中断 |
+| 审计日志导出 | GAP-46 | P3 | AuditLogExporter 结构化导出 + 定时归档 |
+| 自定义聚合函数 | GAP-47 | P3 | AggregationRegistry 扩展点（类似 ProcedureRegistry） |
+| 多语言 SDK | GAP-48 | P3 | Python/Go/Java SDK，OpenAPI 规范驱动生成 |
+| 压缩传输 | GAP-49 | P3 | REST/gRPC 压缩，减少网络带宽消耗 |
+| 配置热加载 | GAP-50 | P3 | ConfigWatcher 基于 chokidar，热加载配置变更 |
+
+**详细设计**参见 `docs/design/execution-plan.md` Phase 10。
+
+---
+
 *本文档基于 OverGraph 代码库 (agentiX-graphvec) 中的实际实现泛化而来。
 核心代码文件: `event-bus.ts`, `event-stream.ts`, `outbox-replication.ts`,
 `multi-leader-replication.ts`, `range-instance.ts`, `shard-manager.ts`,

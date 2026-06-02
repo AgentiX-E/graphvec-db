@@ -942,3 +942,120 @@ V9 聚焦**生态扩展&运营体验**，涵盖算法深度、可视化、安全
 | Phase 9A | 图算法扩充 / 批量导入导出 | P2→P3 | 5~7d | **2** | ✅ 已实现 |
 | Phase 9B | 仪表盘 / RBAC / 图分割 / 告警 / 可视化输出 | P3 | 12~17d | **5** | ✅ 已实现 |
 | **V9 合计** | — | P2~P3 | **17~24d** | **7** | ✅ **已实现** (`c6e5a0ef` 2026-06-02) |
+
+---
+
+### Phase 10: V10 新方向（⬜ **计划中**）
+
+**目标**: 基于 V10 深度调研结论（`temp/v10-gap-research.md`），实现 8 项新方向，覆盖 API 完善、查询体验、运维可观测性三大板块。
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v10-gap-research.md`  
+> 状态: ⬜ **计划中** · 0/8 GAPs 实现
+
+#### Phase 10A: P2 优先（查询超时/取消 · 预估: 2~3d）
+
+**目标**: 增强已有 `withQueryTimeout()` 为完整 `QueryTimeoutManager`，集成到查询管道。
+
+##### Task 10A.1 — 查询超时/取消（GAP-45, P2, 2~3d）
+**目标**: 构建 `QueryTimeoutManager` 集成层，连接 AbortController 与查询引擎/REST/gRPC
+- [ ] 新建 `src/query/query-timeout-manager.ts` — `QueryTimeoutManager` 类
+- [ ] `runWithTimeout(query, fn)` 创建带超时的查询上下文
+- [ ] `extractTimeoutFromRequest(req)` 从头部 `X-Query-Timeout` 提取自定义超时
+- [ ] `middleware()` REST 中间件封装
+- [ ] 修改 `query-engine.ts:670+` 执行路径，注入 AbortSignal 到图引擎层
+- [ ] 超时后返回 `408 Request Timeout` 并释放资源
+- [ ] `AsyncLocalStorage` 可选上下文传播（默认关闭）
+- [ ] 默认 30s，最大 300s
+- **依赖**: 无（复用已有 `withQueryTimeout()` + AbortController）
+- **影响**: `src/query/query-timeout-manager.ts`, `src/query/query-engine.ts`, `src/api/rest.ts`, `src/api/grpc-server.ts`
+
+**验收**: REST/gRPC 超时返回 408；`X-Query-Timeout` 头部覆盖；AbortSignal 中断引擎处理；向后兼容已有 `withQueryTimeout()`
+
+#### Phase 10B: P3 七项（API 完善 + 运维增强 · 预估: 20~28d）
+
+**目标**: 补齐 OpenAPI 文档自动化、健康检查增强、聚合函数注册、审计日志导出、多语言 SDK、压缩传输、配置热加载。
+
+##### Task 10B.1 — OpenAPI/Swagger 文档（GAP-43, P3, 1~2d）
+**目标**: 将手动更新的 `openapi-docs.ts` 与 Route 定义绑定，路由变更时自动同步 OpenAPI 文档
+- [ ] 在 `Route` 接口中增加 `openapi?: OpenAPIOperation` 元数据字段
+- [ ] 新建 `src/api/openapi-bridge.ts` — `collectOpenAPIDocs(routes)` 聚合器
+- [ ] `buildRestApiServer()` 启动时自动收集所有 route 的 OpenAPI 元数据
+- [ ] `GET /api/openapi.json` 返回完整 OpenAPI 3.0.3 规范
+- [ ] `GET /api/docs` Swagger UI 渲染
+- [ ] 扩展已有测试（`openapi-docs.spec.ts` 覆盖桥接逻辑）
+- **依赖**: 无（复用已有 `openapi-docs.ts` / `generateOpenAPIDocument()`）
+- **影响**: `src/api/openapi-bridge.ts`, `src/api/rest.ts`
+
+##### Task 10B.2 — 健康检查增强（GAP-44, P3, 2~3d）
+**目标**: 实现 Kubernetes 风格 liveness/readiness 探针，组件级健康状况报告
+- [ ] 新建 `src/api/health-check.ts` — `HealthChecker` + `HealthComponent` 接口
+- [ ] `GET /api/health/live` — 进程存活探针（200/503）
+- [ ] `GET /api/health/ready` — 组件就绪探针，包含 Storage/Consensus/Outbox/Index 状态
+- [ ] 组件状态分级：`healthy` / `degraded` / `unhealthy`
+- [ ] 每个组件报告延迟（`latency`，毫秒）
+- [ ] 健康检查端点不认证（`requireAuth: false`）
+- **依赖**: 无（零新增依赖）
+- **影响**: `src/api/health-check.ts`, `src/api/rest.ts`
+
+##### Task 10B.3 — 自定义聚合函数（GAP-47, P3, 1~2d）
+**目标**: 参照 `ProcedureRegistry` 模式构建 `AggregationRegistry`，支持运行时注册自定义聚合
+- [ ] 新建 `src/query/aggregation-registry.ts` — `AggregationRegistry` + `AggregationState` 接口
+- [ ] 保留内置 count/sum/avg/max/min（从 query-engine.ts 提取到 registry）
+- [ ] `register(factory)` 用户注册入口（如 stddev, collect, percentile）
+- [ ] `isAggregate(expr)` 判断查询表达式是否为聚合
+- [ ] 修改 `query-engine.ts:826-856` 正则匹配 → registry 查询
+- [ ] GROUP BY + AS 别名兼容
+- **依赖**: 无（复用现有累加器模式，类似 ProcedureRegistry）
+- **影响**: `src/query/aggregation-registry.ts`, `src/query/query-engine.ts`
+
+##### Task 10B.4 — 审计日志导出（GAP-46, P3, 2~3d）
+**目标**: 基于已有 `AuditLogger` 和 `RemoteAuditSink`，构建 `AuditLogExporter` 结构化导出模块
+- [ ] 新建 `src/security/audit-exporter.ts` — `AuditLogExporter` 类
+- [ ] 支持导出 JSON Lines（`.jsonl`）和 JSON Array（`.json`）格式
+- [ ] 支持按时间范围、操作类型、用户过滤导出
+- [ ] `scheduleExport(cronPattern, format, targetDir)` 定时导出（setInterval）
+- [ ] `setRetentionPolicy(maxAgeDays, maxSizeBytes)` 归档轮转策略
+- [ ] 大文件导出不阻塞主线程（stream/batch 模式）
+- **依赖**: 无（复用已有 `AuditLogger.entries` + NDJSON 文件）
+- **影响**: `src/security/audit-exporter.ts`
+
+##### Task 10B.5 — 多语言 SDK（GAP-48, P3, 5~7d）
+**目标**: 增强已有 Python/Go SDK 骨架为生产级 SDK，新增 Java SDK
+- [ ] Python SDK 升级：httpx 替代 urllib.request，支持同步+异步、连接池、指数退避重试
+- [ ] Go SDK 升级：标准错误模式、认证流程、批量操作
+- [ ] Java SDK 骨架：OkHttp 客户端、CRUD + 图查询 + 健康检查
+- [ ] 三个 SDK 均支持自动从 OpenAPI 规范生成（规范驱动）
+- [ ] SDK 独立包（PyPI / Go module / Maven）
+- **依赖**: OpenAPI 规范稳定（Task 10B.1）
+- **影响**: `sdk/python/agentix_client/`, `sdk/go/`, `sdk/java/`, `src/api/sdk-generator.ts`
+
+##### Task 10B.6 — 压缩传输（GAP-49, P3, 3~4d）
+**目标**: 为 REST API 实现 `CompressionMiddleware`，gRPC 启用压缩
+- [ ] 新建 `src/api/compression-middleware.ts` — `CompressionMiddleware`
+- [ ] 接受编码协商（Accept-Encoding → Content-Encoding: gzip/brotli）
+- [ ] 阈值可配置（默认 >= 1024 bytes 才压缩）
+- [ ] 仅压缩 `application/json` 响应（不压缩 binary/protobuf）
+- [ ] gRPC 通道启用 `grpc.default_compression_algorithm`
+- [ ] 压缩级别可配置（fast / balanced / max）
+- **依赖**: 无（Node.js 内置 `zlib`）
+- **影响**: `src/api/compression-middleware.ts`, `src/api/rest.ts`, `src/api/grpc-server.ts`
+
+##### Task 10B.7 — 配置热加载（GAP-50, P3, 3~4d）
+**目标**: 复用 chokidar 实践，构建通用 `ConfigWatcher`，支持配置文件变更热生效
+- [ ] 新建 `src/core/config-watcher.ts` — `ConfigWatcher` 类
+- [ ] `watcher.on('key', handler)` 按配置项注册回调
+- [ ] `watcher.onAny(handler)` 全局变更监听
+- [ ] 集成 `GraphConfig`：overgraph.compactAfterNFlushes 等运行时生效
+- [ ] 与已有 `TLSConfig` + `Authenticator` 热加载机制并存
+- [ ] 无效 JSON 文件不触发加载
+- **依赖**: `chokidar`（已有）
+- **影响**: `src/core/config-watcher.ts`, `src/core/graph-config.ts`
+
+#### V10 估算汇总
+
+| Phase | 包含方向 | 优先级范围 | 总估值工时 | 方向数 | 状态 |
+|:-----:|----------|:----------:|:----------:|:-----:|:----:|
+| Phase 10A | 查询超时/取消 | P2 | 2~3d | **1** | ⬜ 计划中 |
+| Phase 10B | OpenAPI / 健康检查 / 聚合函数 / 审计日志 / 多语言 SDK / 压缩传输 / 配置热加载 | P3 | 20~28d | **7** | ⬜ 计划中 |
+| **V10 合计** | — | P2~P3 | **22~31d** | **8** | ⬜ **计划中** · 0/8 GAPs 实现 |

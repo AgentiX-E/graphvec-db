@@ -204,4 +204,23 @@ DC-A → DC-B: Outbox 异步复制（60s 退避）
 
 ---
 
+## 附录: V10 新方向展望（⬜ 计划中）
+
+> 根据 V10 深度调研（`temp/v10-gap-research.md`），以下 8 个方向为项目的下一步重点。
+
+| 方向 | GAP | 优先级 | 状态 | 概要 |
+|------|:---:|:------:|:----:|------|
+| OpenAPI/Swagger 文档 | GAP-43 | P3 | ⬜ 计划中 | Route 绑定 OpenAPI 元数据，自动聚合文档 |
+| 健康检查增强 | GAP-44 | P3 | ⬜ 计划中 | K8s 风格探针 + 组件级状态报告（含 Raft/EventBus） |
+| 查询超时/取消 | GAP-45 | **P2** | ⬜ 计划中 | QueryTimeoutManager 集成查询管道 |
+| 审计日志导出 | GAP-46 | P3 | ⬜ 计划中 | AuditLogExporter 结构化导出 + 归档轮转 |
+| 自定义聚合函数 | GAP-47 | P3 | ⬜ 计划中 | AggregationRegistry 扩展点 |
+| 多语言 SDK | GAP-48 | P3 | ⬜ 计划中 | Python/Go SDK 增强 + Java SDK 骨架 |
+| 压缩传输 | GAP-49 | P3 | ⬜ 计划中 | REST gzip/brotli + gRPC 压缩 |
+| 配置热加载 | GAP-50 | P3 | ⬜ 计划中 | ConfigWatcher 通用热加载（chokidar） |
+
+**详细设计**参见 `docs/design/execution-plan.md` Phase 10。
+
+---
+
 *本文档与 `docs/design/cross-dc-raft-sync-pattern.md`（通用设计模式）、`docs/design/code-optimization-report.md`（代码优化建议）、`docs/design/execution-plan.md`（可执行优化计划）配套。*
