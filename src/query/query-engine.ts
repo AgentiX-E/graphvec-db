@@ -249,6 +249,8 @@ export interface QueryPlan {
   }>
   /** CALL 子查询 */
   callQuery?: QueryPlan
+  /** FOREACH 子句：列表迭代执行子查询 */
+  forEach?: ForEachClause
   // DML fields
   /** CREATE 节点 */
   createNodes?: Array<{
@@ -525,6 +527,38 @@ export function _preprocessQuery(query: string): {
   cleanQuery = query
   const result: _QueryExtracts = { optionalMatches: [], withClause: null }
 
+  // ── Step 0: 提取 FOREACH ──
+  // FOREACH ( var IN list | operation )
+  // 提取后从 query 中移除，在 postProcess 中重建
+  // 使用手动括号匹配提取完整的 FOREACH 子句
+  let foreachIdx = cleanQuery.search(/FOREACH\s*\(/i)
+  if (foreachIdx !== -1) {
+    const beforeFOREACH = cleanQuery.slice(0, foreachIdx)
+    let startParen = cleanQuery.indexOf('(', foreachIdx)
+    let depth = 0
+    let endIdx = -1
+    for (let i = startParen; i < cleanQuery.length; i++) {
+      if (cleanQuery[i] === '(') depth++
+      else if (cleanQuery[i] === ')') {
+        depth--
+        if (depth === 0) { endIdx = i + 1; break }
+      }
+    }
+    if (endIdx !== -1) {
+      const foreachClause = cleanQuery.slice(foreachIdx, endIdx)
+      // 提取内部内容: FOREACH( var IN listExpr | operation )
+      const innerMatch = foreachClause.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*([\s\S]+?)\s*\)/i)
+      if (innerMatch) {
+        result.foreachExtract = {
+          variable: innerMatch[1],
+          listExpr: innerMatch[2].trim(),
+          operation: innerMatch[3].trim(),
+        }
+      }
+      cleanQuery = (beforeFOREACH + cleanQuery.slice(endIdx)).trim()
+    }
+  }
+
   // ── Step 1: handle OPTIONAL MATCH by stripping the "OPTIONAL " prefix ──
   // After peggy parses "MATCH ...", we can detect which MATCH was OPTIONAL by
   // checking if the original query had "OPTIONAL MATCH" before it.
@@ -535,6 +569,11 @@ export function _preprocessQuery(query: string): {
   // where __OPT_N__ is a unique identifier. We store the original pattern text for later reconstruction.
   
   let modifiedQuery = query
+
+  // 如果 Step 0 提取了 FOREACH，应用删除到 modifiedQuery
+  if (cleanQuery !== query) {
+    modifiedQuery = cleanQuery
+  }
   const optPatterns: string[] = []
   let optCounter = 0
 
@@ -647,9 +686,12 @@ export function _preprocessQuery(query: string): {
 
   // Step 4: If after extraction there's no MATCH at all, add a dummy one
   // This handles cases like "OPTIONAL MATCH (n) RETURN n" where all MATCH
-  // clauses were OPTIONAL.
+  // clauses were OPTIONAL, and "FOREACH (x IN [1] | CREATE (n)) RETURN n".
   if (optPatterns.length > 0 && !/MATCH\b/i.test(modifiedQuery) && /\bRETURN\b/i.test(modifiedQuery)) {
     modifiedQuery = `MATCH (__opt_anchor__) ${modifiedQuery.trim()}`
+  }
+  if (result.foreachExtract && !/MATCH\b/i.test(modifiedQuery) && /\bRETURN\b/i.test(modifiedQuery)) {
+    modifiedQuery = `MATCH (__foreach_anchor__) ${modifiedQuery.trim()}`
   }
 
   // The modified query now has no OPTIONAL MATCH or WITH — should be parseable
@@ -662,6 +704,7 @@ export function _preprocessQuery(query: string): {
       havingRaw,
       orderByAggReplacements:
         orderByAggReplacements.length > 0 ? orderByAggReplacements : undefined,
+      foreachExtract: result.foreachExtract,
     },
   }
 }
@@ -710,6 +753,12 @@ export interface _QueryExtracts {
   withClause: null
   havingRaw?: string
   orderByAggReplacements?: Array<{ placeholder: string; original: string }>
+  /** FOREACH 提取 */
+  foreachExtract?: {
+    variable: string
+    listExpr: string
+    operation: string
+  }
 }
 
 /**
@@ -933,7 +982,34 @@ export function parseQuery(query: string): QueryPlan {
   // Step 3: Post-process to re-attach OPTIONAL MATCH and WITH
   _postProcessAST(ast, extracts)
 
-  return planFromAST(ast)
+  const plan = planFromAST(ast)
+
+  // Step 4: Attach FOREACH if extracted
+  if (extracts.foreachExtract) {
+    plan.forEach = {
+      variable: extracts.foreachExtract.variable,
+      list: [],
+      isVarRef: true, // 默认视为变量引用
+      operation: { type: 'CREATE' }, // 默认类型，实际由 parser 确定
+    }
+    // 解析 listExpr：是字面量数组（[1,2,3]）还是变量名
+    const listExpr = extracts.foreachExtract.listExpr.trim()
+    if (listExpr.startsWith('[') && listExpr.endsWith(']')) {
+      plan.forEach.isVarRef = false
+      try {
+        plan.forEach.list = JSON.parse(listExpr.replace(/'/g, '"'))
+      } catch {
+        plan.forEach.list = []
+      }
+    }
+    // 解析 operation 类型
+    const opText = extracts.foreachExtract.operation.trim()
+    if (/^CREATE\b/i.test(opText)) plan.forEach.operation.type = 'CREATE'
+    else if (/^SET\b/i.test(opText)) plan.forEach.operation.type = 'SET'
+    else if (/^DELETE\b/i.test(opText)) plan.forEach.operation.type = 'DELETE'
+  }
+
+  return plan
 }
 
 function _mapHavingOperator(op: string): HavingClause['operator'] {
@@ -3037,6 +3113,27 @@ export interface HavingClause {
   property: string
   operator: 'GT' | 'GTE' | 'LT' | 'LTE' | 'EQ' | 'NEQ'
   value: number
+}
+
+/**
+ * FOREACH 子句：对列表中每个元素执行一个操作（CREATE/SET/DELETE）
+ * FOREACH ( var IN list | operation )
+ */
+export interface ForEachClause {
+  /** 循环变量名 */
+  variable: string
+  /** 列表表达式（字面量数组或变量名） */
+  list: unknown[]
+  /** 是否为变量引用（而非字面量） */
+  isVarRef: boolean
+  /** 每次迭代执行的操作 */
+  operation: {
+    type: 'CREATE' | 'SET' | 'DELETE'
+    targets?: string[]
+    createNodes?: QueryPlan['createNodes']
+    createEdges?: QueryPlan['createEdges']
+    setClauses?: QueryPlan['setClauses']
+  }
 }
 
 /**
