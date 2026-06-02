@@ -492,21 +492,22 @@ LDBC SNB 基准测试 ─── 不依赖代码变更
 
 > 调研日期: 2026-06-02  
 > 来源: `temp/v8-gap-research.md`  
-> 状态: **⬜ 计划中** · 尚未实施
+> 状态: ✅ **已实现** · 8/8 GAPs 关闭  
+> 实现 HEAD: `637716a6`
 
 ### 9.1 V8 新方向总览
 
 | # | 方向 | 优先级 | 类别 | 状态 | 估算工时 | 现有基础 |
 |:-:|------|:------:|:----:|:----:|:--------:|----------|
-| V8-01 | 全文搜索持久化完善 | **P2** | 存储 | ⬜ 计划中 | 2~3d | MiniSearch + WAL 已实现，缺定时自动快照 |
-| V8-02 | 属性图 Schema 校验 | **P2** | 功能 | ⬜ 计划中 | 3~4d | schema-validator.ts 已有纯函数，缺 SchemaValidator 类 |
-| V8-03 | 多数据中心部署 | **P2** | 分布式 | ⬜ 计划中 | 5~7d | MultiLeaderConfig 已有 TopologyType，缺 region 拓扑 |
-| V8-04 | 增量备份/恢复 | **P2** | 运维 | ⬜ 计划中 | 4~5d | backup-wal.ts 能读 LSN，缺增量备份逻辑 |
-| V8-05 | 查询分析器 + EXPLAIN | **P3** | 查询 | ⬜ 计划中 | 2~3d | QueryPlan 类型完整，缺 EXPLAIN 输出格式 |
-| V8-06 | Prometheus 指标集成 | **P3** | 运维 | ⬜ 计划中 | 2~3d | OTel + prom-client 双轨，缺 Prometheus 桥接 |
-| V8-07 | WebSocket 流式查询 | **P3** | API | ⬜ 计划中 | 4~5d | ws 已装，Gremlin WS 已有，缺 Cypher 流式端点 |
-| V8-08 | Cypher 事务函数 | **P3** | 查询 | ⬜ 计划中 | 2~3d | ProcedureRegistry 已实现，缺 periodic.commit 批处理 |
-| | **合计** | — | — | — | **24~33d** | — |
+| V8-01 | 全文搜索持久化完善 | **P2** | 存储 | ✅ 已实现 | 2~3d | `periodicSnapshot()` 定时器 + 写计数双触发 |
+| V8-02 | 属性图 Schema 校验 | **P2** | 功能 | ✅ 已实现 | 3~4d | `SchemaValidator` 类 + GraphEngine 集成，唯一性约束 |
+| V8-03 | 多数据中心部署 | **P2** | 分布式 | ✅ 已实现 | 5~7d | `MultiRegionTopology` + locality-aware read + DC-group 复制 |
+| V8-04 | 增量备份/恢复 | **P2** | 运维 | ✅ 已实现 | 4~5d | `IncrementalBackupManager` + PITR |
+| V8-05 | 查询分析器 + EXPLAIN | **P3** | 查询 | ✅ 已实现 | 2~3d | `ExplainFormatter` 文本/JSON/ANALYZE 三种输出 |
+| V8-06 | Prometheus 指标集成 | **P3** | 运维 | ✅ 已实现 | 2~3d | `PrometheusMetricsExporter` 桥接 + 配置式启用 |
+| V8-07 | WebSocket 流式查询 | **P3** | API | ✅ 已实现 | 4~5d | `WsStreamQuery` JSON 帧 + 背压 + 可取消 |
+| V8-08 | Cypher 事务函数 | **P3** | 查询 | ✅ 已实现 | 2~3d | `CALL periodic.commit()` ProcedureRegistry 注册 |
+| | **合计** | — | — | **✅ 8/8** | **24~33d** | HEAD: `637716a6` |
 
 ### 9.2 各方向简述
 
@@ -545,22 +546,22 @@ LDBC SNB 基准测试 ─── 不依赖代码变更
 ### 9.3 推荐执行顺序
 
 ```
-Phase 8A (P2 四项 — 存储+分布式基础, 14~19d) — ⬜ 计划中
+Phase 8A (P2 四项 — 存储+分布式基础, 14~19d) — ✅ 已实现
   ├── V8-01 全文搜索持久化完善 (2~3d) — 独立，定时器新增
   ├── V8-02 属性图 Schema 校验 (3~4d) — 依赖现有 schema-validator 函数
   ├── V8-04 增量备份/恢复 (4~5d) — 依赖 WAL segment + Backup 类
   └── V8-03 多数据中心部署 (5~7d) — 可独立实现
 
-Phase 8B (P3 四项 — 查询+运维生态, 10~14d) — ⬜ 计划中
+Phase 8B (P3 四项 — 查询+运维生态, 10~14d) — ✅ 已实现
   ├── V8-05 查询分析器 + EXPLAIN (2~3d) — 纯新增
   ├── V8-06 Prometheus 指标集成 (2~3d) — 桥接模式
   ├── V8-07 WebSocket 流式查询 (4~5d) — 需要背压设计
   └── V8-08 Cypher 事务函数 (2~3d) — 注册到现有 ProcedureRegistry
 ```
 
-### 9.4 V8 竞品对比（预计扩展后）
+### 9.4 V8 竞品对比（已实现 ✅）
 
-| 维度 | AgentiX (V8 预计) | Neo4j | Dgraph | ArangoDB |
+| 维度 | AgentiX (V8 已实现) | Neo4j | Dgraph | ArangoDB |
 |------|:---:|:---:|:---:|:---:|
 | 全文搜索持久化 | ✅ **定时自动快照+WAL** | 内置 | 无 | 内置 |
 | Schema 校验引擎集成 | ✅ **类封装+自动校验** | 原生约束 | 不适用 | Schema |
@@ -571,3 +572,21 @@ Phase 8B (P3 四项 — 查询+运维生态, 10~14d) — ⬜ 计划中
 | 流式查询 | ✅ **WS JSON 帧+背压** | Bolt | 无 | 无 |
 | 批处理事务 | ✅ **periodic.commit** | APOC | 无 | Foxx |
 | 可嵌入性 | ✅ 纯 JS | ❌ JVM | ❌ Go | ❌ C++ |
+
+### 9.5 V8 实现摘要
+
+**8/8 V8 GAPs 全部关闭 ✅**，截至 2026-06-02：
+
+| GAP | 方向 | commit | 测试文件 | 测试数 |
+|:---:|------|:------:|----------|:------:|
+| GAP-28 | 全文搜索持久化完善 | `b11dd8ed` | `src/search/fulltext-persistence.spec.ts` | ✓ |
+| GAP-29 | 属性图 Schema 校验 | `b11dd8ed` | `src/schema/schema-validator.spec.ts` | ✓ |
+| GAP-30 | 查询分析器 + EXPLAIN | `b11dd8ed` | `src/query/explain.spec.ts` | 314 |
+| GAP-31 | Prometheus 指标集成 | `b11dd8ed` | `src/ops/prometheus-exporter.spec.ts` | 309 |
+| GAP-32 | 多数据中心部署 | `637716a6` | `src/consensus/multi-region.spec.ts` | ✓ |
+| GAP-33 | 增量备份/恢复 | `637716a6` | `src/ops/backup-manager.spec.ts` | 205 |
+| GAP-34 | WebSocket 流式查询 | `637716a6` | `src/api/ws-query.spec.ts` | 278 |
+| GAP-35 | Cypher 事务函数 | `637716a6` | `src/query/periodic-commit.spec.ts` | 131 |
+
+> 实现 commits: 2（`b11dd8ed`, `637716a6`），新增代码约 2,851 行，新增测试文件 6 个
+> 总体闭包: **35/35 GAPs ✅**（V4: 13 + V6: 5 + V7: 8 + V8: 8）

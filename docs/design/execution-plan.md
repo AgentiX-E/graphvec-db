@@ -720,24 +720,24 @@ Phase 2:
 
 ---
 
-### Phase 8: V8 新方向（⬜ **计划中**）
+### Phase 8: V8 新方向（✅ **已完成**）
 
 **目标**: 基于 V8 深度调研结论（`temp/v8-gap-research.md`），实现 8 项新方向，覆盖持久化完善、分布式拓扑、查询运维三大板块。
 
 > 调研日期: 2026-06-02  
 > 来源: `temp/v8-gap-research.md`  
-> 状态: **⬜ 计划中** · 尚未实施
+> 状态: ✅ **已实现** · 8/8 GAPs 关闭
 
-#### Phase 8A: P2 四项（存储+分布式基础，预估: 14~19d）
+#### Phase 8A: P2 四项（存储+分布式基础，预估: 14~19d）✅ **已完成**
 
 **目标**: 优先实现全文搜索持久化完善、Schema 校验引擎集成、多 DC 部署、增量备份恢复。这些方向修复现有实现的半成品状态。
 
 | 任务 | 方向 | 优先级 | 估值工时 | 依赖包 | 状态 |
 |------|------|:------:|:--------:|--------|:----:|
-| **Task 8A.1** | 全文搜索持久化完善 — 定时自动快照 + 写计数触发 | **P2** | 2~3d | 无（复用 WALWriter） | ⬜ 计划中 |
-| **Task 8A.2** | 属性图 Schema 校验 — SchemaValidator类 + 引擎集成 | **P2** | 3~4d | 无（复用 schema-validator） | ⬜ 计划中 |
-| **Task 8A.3** | 多数据中心部署 — MultiRegionTopology + locality-aware | **P2** | 5~7d | `s2-geometry`（已有） | ⬜ 计划中 |
-| **Task 8A.4** | 增量备份/恢复 — IncrementalBackupManager + PITR | **P2** | 4~5d | 无（复用 fs/archiver） | ⬜ 计划中 |
+| **Task 8A.1** | 全文搜索持久化完善 — 定时自动快照 + 写计数触发 | **P2** | 2~3d | 无（复用 WALWriter） | ✅ 已完成 |
+| **Task 8A.2** | 属性图 Schema 校验 — SchemaValidator类 + 引擎集成 | **P2** | 3~4d | 无（复用 schema-validator） | ✅ 已完成 |
+| **Task 8A.3** | 多数据中心部署 — MultiRegionTopology + locality-aware | **P2** | 5~7d | `s2-geometry`（已有） | ✅ 已完成 |
+| **Task 8A.4** | 增量备份/恢复 — IncrementalBackupManager + PITR | **P2** | 4~5d | 无（复用 fs/archiver） | ✅ 已完成 |
 
 8A 中 Task 8A.1 和 8A.2 互不依赖可并行；8A.3 依赖 8A.1 完成（均涉及全搜索层）；8A.4 独立。
 
@@ -790,16 +790,16 @@ Phase 2:
 
 **验收**: 增量备份只复制变更 segment；时间点恢复正确；过期自动清理
 
-#### Phase 8B: P3 四项（查询+运维生态，预估: 10~14d）
+#### Phase 8B: P3 四项（查询+运维生态，预估: 10~14d）✅ **已完成**
 
 **目标**: 实现 EXPLAIN、Prometheus 统一桥接、流式查询、事务函数，补齐查询生态和运维基础设施。
 
 | 任务 | 方向 | 优先级 | 估值工时 | 依赖包 | 状态 |
 |------|------|:------:|:--------:|--------|:----:|
-| **Task 8B.1** | 查询分析器 + EXPLAIN — ExplainFormatter | **P3** | 2~3d | 无 | ⬜ 计划中 |
-| **Task 8B.2** | Prometheus 指标集成 — PrometheusMetricsExporter | **P3** | 2~3d | `prom-client`（已有） | ⬜ 计划中 |
-| **Task 8B.3** | WebSocket 流式查询 — WsStreamQuery | **P3** | 4~5d | `ws`（已有） | ⬜ 计划中 |
-| **Task 8B.4** | Cypher 事务函数 — periodic.commit | **P3** | 2~3d | 无 | ⬜ 计划中 |
+| **Task 8B.1** | 查询分析器 + EXPLAIN — ExplainFormatter | **P3** | 2~3d | 无 | ✅ 已完成 |
+| **Task 8B.2** | Prometheus 指标集成 — PrometheusMetricsExporter | **P3** | 2~3d | `prom-client`（已有） | ✅ 已完成 |
+| **Task 8B.3** | WebSocket 流式查询 — WsStreamQuery | **P3** | 4~5d | `ws`（已有） | ✅ 已完成 |
+| **Task 8B.4** | Cypher 事务函数 — periodic.commit | **P3** | 2~3d | 无 | ✅ 已完成 |
 
 8B 中所有任务互不依赖，可完全并行推进。与 8A 也无依赖关系。
 
@@ -853,6 +853,6 @@ Phase 2:
 
 | Phase | 包含方向 | 优先级范围 | 总估值工时 | 方向数 | 状态 |
 |:-----:|----------|:----------:|:----------:|:-----:|:----:|
-| Phase 8A | 全文搜索持久化 / Schema 校验 / 多 DC / 增量备份 | P2 | 14~19d | **4** | ⬜ 计划中 |
-| Phase 8B | EXPLAIN / Prometheus / 流式查询 / 事务函数 | P3 | 10~14d | **4** | ⬜ 计划中 |
-| **V8 合计** | — | P2~P3 | **24~33d** | **8** | ⬜ **计划中** |
+| Phase 8A | 全文搜索持久化 / Schema 校验 / 多 DC / 增量备份 | P2 | 14~19d | **4** | ✅ 已完成 |
+| Phase 8B | EXPLAIN / Prometheus / 流式查询 / 事务函数 | P3 | 10~14d | **4** | ✅ 已完成 |
+| **V8 合计** | — | P2~P3 | **24~33d** | **8** | ✅ **已实现** |

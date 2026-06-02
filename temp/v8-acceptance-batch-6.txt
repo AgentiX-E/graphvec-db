@@ -1,0 +1,10 @@
+Batch 6: 更多回归
+Result: PASS
+- ops/cert-monitor.spec.ts: 17 tests passed
+- core/multi-backend.spec.ts: 57 tests passed
+- core/columnar-index.spec.ts: 25 tests passed
+- core/hnsw-index.spec.ts: 18 tests passed
+- algorithms/gnn-engine.spec.ts: 16 tests passed
+- models/document-store.spec.ts: 39 tests passed
+Total: 172 passed, 0 failed
+Duration: 7.03s

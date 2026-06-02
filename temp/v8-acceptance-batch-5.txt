@@ -1,0 +1,10 @@
+Batch 5: V6+V7 关键回归
+Result: PASS
+- core/query-cache.spec.ts: 18 tests passed
+- core/batch-delete.spec.ts: 13 tests passed
+- api/graphql-subscription.spec.ts: 12 tests passed
+- api/grpc-pool.spec.ts: 14 tests passed
+- api/fluent-traverse.spec.ts: 15 tests passed
+- query/var-length-path.spec.ts: 13 tests passed
+Total: 85 passed, 0 failed
+Duration: 3.32s

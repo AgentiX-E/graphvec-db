@@ -1,6 +1,6 @@
 # AgentiX GraphVec 进度追踪 v1.0
 
-> 最新更新时间：2026-05-30（Round 9）
+> 最新更新时间：2026-06-02（V8 闭包）
 
 ## 整体进度
 - 已完成: 39 个功能
@@ -339,27 +339,28 @@
 
 ---
 
-## V8 差距分析 — 阶段总览（⬜ 计划中）
+## V8 差距分析 — 阶段总览（✅ **已实现** · 8/8 GAPs 关闭）
 
-> 调研日期: 2026-06-02 | 来源: `temp/v8-gap-research.md` | 状态: **⬜ 计划中** · 尚未实施
+> 调研日期: 2026-06-02 | 来源: `temp/v8-gap-research.md` | 状态: ✅ **已实现** · 8/8 GAPs 关闭  
+> 完成日期: 2026-06-02 | HEAD: `637716a6`
 
 ### V8 阶段总览
 
-| V8 Phase | 优先级 | 包含方向 | 方向数 | 总估值工时 | 状态 | 备注 |
-|:--------:|:------:|----------|:-----:|:----------:|:----:|:----:|
-| Phase 8A | **P2** | 全文搜索持久化 / Schema 校验 / 多 DC / 增量备份 | 4 | 14~19d | ⬜ 计划中 | 存储+分布式基础 |
-| Phase 8B | **P3** | EXPLAIN / Prometheus / 流式查询 / 事务函数 | 4 | 10~14d | ⬜ 计划中 | 查询+运维生态 |
-| | **合计** | — | **8** | **24~33d** | ⬜ **计划中** | — |
+| V8 Phase | 优先级 | 包含方向 | 方向数 | 总估值工时 | 状态 | 完成日期 | Commit |
+|:--------:|:------:|----------|:-----:|:----------:|:----:|:--------:|:------:|
+| Phase 8A | **P2** | 全文搜索持久化 / Schema 校验 / 多 DC / 增量备份 | 4 | 14~19d | ✅ 已完成 | 2026-06-02 | `637716a6` |
+| Phase 8B | **P3** | EXPLAIN / Prometheus / 流式查询 / 事务函数 | 4 | 10~14d | ✅ 已完成 | 2026-06-02 | `637716a6` |
+| | **合计** | — | **8** | **24~33d** | ✅ **已实现** | 2026-06-02 | `637716a6` |
 
 ### V8 方向明细矩阵
 
 | # | 方向 | 优先级 | 状态 | 估值工时 | 依赖包 | 备注 |
 |:-:|------|:------:|:----:|:--------:|--------|:----|
-| V8-01 | 全文搜索持久化完善 | **P2** | ⬜ 计划中 | 2~3d | 无（复用 WALWriter） | MiniSearch + WAL 已实现，缺定时自动快照 |
-| V8-02 | 属性图 Schema 校验 | **P2** | ⬜ 计划中 | 3~4d | 无（复用 schema-validator） | 纯函数已实现，缺 SchemaValidator 类 |
-| V8-03 | 多数据中心部署 | **P2** | ⬜ 计划中 | 5~7d | `s2-geometry`（已有） | MultiLeaderConfig 已有 TopologyType |
-| V8-04 | 增量备份/恢复 | **P2** | ⬜ 计划中 | 4~5d | 无（复用 fs/archiver） | backup-wal.ts 能读 LSN，缺增量逻辑 |
-| V8-05 | 查询分析器 + EXPLAIN | **P3** | ⬜ 计划中 | 2~3d | 无 | QueryPlan 完整，缺 EXPLAIN 输出格式 |
-| V8-06 | Prometheus 指标集成 | **P3** | ⬜ 计划中 | 2~3d | `prom-client`（已有） | OTel + prom-client 双轨，缺桥接 |
-| V8-07 | WebSocket 流式查询 | **P3** | ⬜ 计划中 | 4~5d | `ws`（已有） | Gremlin WS 已有，缺 Cypher 流式端点 |
-| V8-08 | Cypher 事务函数 | **P3** | ⬜ 计划中 | 2~3d | 无 | ProcedureRegistry 已有，缺 periodic.commit |
+| V8-01 | 全文搜索持久化完善 | **P2** | ✅ 已实现 | 2~3d | 无（复用 WALWriter） | `periodicSnapshot()` 定时器 + 写计数双触发 |
+| V8-02 | 属性图 Schema 校验 | **P2** | ✅ 已实现 | 3~4d | 无（复用 schema-validator） | `SchemaValidator` 类 + GraphEngine 集成 |
+| V8-03 | 多数据中心部署 | **P2** | ✅ 已实现 | 5~7d | `s2-geometry`（已有） | `MultiRegionTopology` + locality-aware read |
+| V8-04 | 增量备份/恢复 | **P2** | ✅ 已实现 | 4~5d | 无（复用 fs/archiver） | `IncrementalBackupManager` + PITR |
+| V8-05 | 查询分析器 + EXPLAIN | **P3** | ✅ 已实现 | 2~3d | 无 | `ExplainFormatter` 三种格式输出 |
+| V8-06 | Prometheus 指标集成 | **P3** | ✅ 已实现 | 2~3d | `prom-client`（已有） | `PrometheusMetricsExporter` 桥接 |
+| V8-07 | WebSocket 流式查询 | **P3** | ✅ 已实现 | 4~5d | `ws`（已有） | `WsStreamQuery` JSON 帧 + 背压 |
+| V8-08 | Cypher 事务函数 | **P3** | ✅ 已实现 | 2~3d | 无 | `CALL periodic.commit()` 注册到 ProcedureRegistry |

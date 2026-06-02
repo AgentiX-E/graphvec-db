@@ -1109,7 +1109,8 @@ SQL 语句 → alasql.parse(sql) → AST → translator.toCypher() → Cypher AS
 
 > 调研日期: 2026-06-02  
 > 来源: `temp/v8-gap-research.md`  
-> 状态: **⬜ 计划中** · 尚未实施
+> 状态: ✅ **已实现** · 8/8 GAPs 关闭  
+> 实现 HEAD: `637716a6`
 
 ### §13.1 全文搜索持久化完善（P2）
 
@@ -1155,7 +1156,7 @@ class FullTextIndex {
 
 **受影响的文件**: `src/search/fulltext.ts`
 
-**状态**: ⬜ 计划中
+**状态**: ✅ 已实现
 
 ---
 
@@ -1221,7 +1222,7 @@ class GraphEngine {
 - `src/core/graph-engine.ts` — 集成校验钩子
 - `src/schema/schema-types.ts` — 确认接口兼容
 
-**状态**: ⬜ 计划中
+**状态**: ✅ 已实现
 
 ---
 
@@ -1275,7 +1276,7 @@ interface MultiRegionConfig {
 - `src/core/multi-region-topology.ts`（新建）
 - `src/core/multi-leader-replication.ts` — 集成拓扑判断
 
-**状态**: ⬜ 计划中
+**状态**: ✅ 已实现
 
 ---
 
@@ -1329,7 +1330,7 @@ class IncrementalBackupManager {
 - `src/ops/backup-types.ts` — 扩展 `BackupResult`
 - `src/ops/backup.ts` — 与全量备份共享基类
 
-**状态**: ⬜ 计划中
+**状态**: ✅ 已实现
 
 ---
 
@@ -1378,7 +1379,7 @@ Scan on label Person  (estimated rows=5000, cost=125.00)
 - `src/query/query-engine.ts` — 集成 EXPLAIN 前缀检测
 - `src/query/query-planner.ts` — 代价估算增强
 
-**状态**: ⬜ 计划中
+**状态**: ✅ 已实现
 
 ---
 
@@ -1436,7 +1437,7 @@ interface PrometheusConfig {
 - `src/api/rest.ts` — 集成 `/metrics` 端点
 - `src/ops/metrics.ts` — 确认兼容
 
-**状态**: ⬜ 计划中
+**状态**: ✅ 已实现
 
 ---
 
@@ -1504,7 +1505,7 @@ private _writeRecord(ws: WebSocket, record: object): boolean {
 - `src/query/query-engine.ts` — 支持逐条 yield
 - `src/api/rest.ts` — 可选集成
 
-**状态**: ⬜ 计划中
+**状态**: ✅ 已实现
 
 ---
 
@@ -1561,4 +1562,4 @@ CALL periodic.commit(
 - `src/query/procedures/periodic-commit.ts`（新建）
 - `src/query/procedure-registry.ts` — 确认接口兼容
 
-**状态**: ⬜ 计划中
+**状态**: ✅ 已实现
