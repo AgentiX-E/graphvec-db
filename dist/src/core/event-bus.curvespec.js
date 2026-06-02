@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * event-bus.curvespec.ts — EventBus CURVE 加密集成测试
@@ -12,6 +45,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * 需手动运行：npx jest --testPathPattern='curvespec' --no-coverage
  */
 const event_bus_1 = require("./event-bus");
+const zmq = __importStar(require("zeromq"));
 // 每次测试用不同的端口防止冲突
 let portCounter = 10000;
 function nextPorts() {
@@ -20,28 +54,25 @@ function nextPorts() {
     return { pub: p, sub: p + 1 };
 }
 describe('EventBus CURVE 跨节点通信', () => {
-    jest.setTimeout(30000);
+    vi.setTimeout(30000);
     it('两个节点通过 CURVE 加密双向 PUB/SUB 通信', async () => {
         const { pub: pubPortA, sub: subPortA } = nextPorts();
         const { pub: pubPortB, sub: subPortB } = nextPorts();
         // 生成 CURVE 密钥对
-        const zmq = require('zeromq');
         const keyA = zmq.curveKeyPair();
         const keyB = zmq.curveKeyPair();
         // 节点 A: PUB 端是 A（serverKey = keyA.secretKey），SUB 端是 B 的 client
         const curveA = {
-            mode: 'explicit',
             server: true,
-            publicKey: keyA.publicKey,
-            secretKey: keyA.secretKey,
-            peerKeys: { 'tcp://127.0.0.1:5556': keyB.publicKey },
+            publicKeyDir: '/tmp/curve-test-a',
+            port: pubPortA,
+            nodeId: 'node-A',
         };
         const curveB = {
-            mode: 'explicit',
             server: true,
-            publicKey: keyB.publicKey,
-            secretKey: keyB.secretKey,
-            peerKeys: { 'tcp://127.0.0.1:5555': keyA.publicKey },
+            publicKeyDir: '/tmp/curve-test-b',
+            port: pubPortB,
+            nodeId: 'node-B',
         };
         const busA = new event_bus_1.EventBus({
             nodeId: 'node-A',
@@ -89,16 +120,15 @@ describe('EventBus CURVE 跨节点通信', () => {
     });
     it('CURVE 密钥验证失败时连接被拒绝', async () => {
         const { pub: pubPortA, sub: subPortA } = nextPorts();
-        const zmq = require('zeromq');
         const keyA = zmq.curveKeyPair();
         const keyB = zmq.curveKeyPair();
         const wrongKey = zmq.curveKeyPair(); // 不匹配的第三组密钥
         // B 用错误的公钥连接 A → 应失败
         const curveA = {
-            mode: 'explicit',
             server: true,
-            publicKey: keyA.publicKey,
-            secretKey: keyA.secretKey,
+            publicKeyDir: '/tmp/curve-test-wrong',
+            port: pubPortA,
+            nodeId: 'node-A',
         };
         const busA = new event_bus_1.EventBus({
             nodeId: 'node-A',
@@ -106,13 +136,12 @@ describe('EventBus CURVE 跨节点通信', () => {
             subscribeAddresses: [],
             security: { curve: curveA },
         });
-        // 使用错误的 key 连接应该正常启动但 SUB 收不到消息
+        // 使用不同的 publicKeyDir（不同密钥对）的连接应该正常启动但SUB收不到消息
         const curveWrongSub = {
-            mode: 'explicit',
             server: false,
-            publicKey: keyB.publicKey,
-            secretKey: keyB.secretKey,
-            peerKeys: { 'tcp://127.0.0.1:5555': wrongKey.publicKey },
+            publicKeyDir: '/tmp/curve-test-wrong-sub',
+            port: pubPortA + 1,
+            nodeId: 'node-B',
         };
         let errorThrown = false;
         try {

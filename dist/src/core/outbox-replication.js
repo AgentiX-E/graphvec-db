@@ -42,7 +42,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.OutboxReplicationManager = exports.PerPeerWorker = exports.Outbox = void 0;
+exports.OutboxReplicationManager = exports.PerPeerWorker = exports.OutboxV2 = exports.Outbox = void 0;
 const lmdb_1 = require("lmdb");
 const fs = __importStar(require("node:fs"));
 const path = __importStar(require("node:path"));
@@ -154,6 +154,11 @@ class OutboxIndex {
                 const outboxEntry = mainDb.get(seq);
                 if (outboxEntry && outboxEntry.delivered && outboxEntry.deliveredAt < cutoffMs) {
                     this.db.removeSync(key);
+                    // 同时清理 acked 标记（保持 indexDb 整洁）
+                    try {
+                        this.db.removeSync(`acked:${seq}`);
+                    }
+                    catch { }
                     count++;
                 }
             });
@@ -210,6 +215,38 @@ class Outbox {
             }
         }
     }
+    /**
+     * 标记 ACK 已到达（多进程场景：主进程直接写入 LMDB mmap，Worker 立即可见）。
+     * 单进程场景 ACK 直接回调到 PerPeerWorker 的 ackTracker，不需要此方法。
+     * 但统一接口保证迁移到多进程时零代码改动。
+     */
+    markAcked(seq) {
+        const entry = this.db.get(seq);
+        if (!entry)
+            return;
+        if (!entry.delivered) {
+            // ACK 到达但尚未标记 delivered —— 少见但合法
+            entry.delivered = true;
+            entry.deliveredAt = Date.now();
+            this.db.putSync(seq, entry);
+            this.index.markDelivered(entry.targetNodeId, seq);
+        }
+        // 在索引中标记 ack 状态（用于多进程 mmap 共享）
+        this.indexDb.putSync(`acked:${seq}`, 1);
+    }
+    /**
+     * 查询指定 seq 的 ACK 是否已到达（多进程场景：Worker 子进程通过 LMDB mmap 读到主进程写入的 ACK）。
+     * O(1) 查询——前缀键定位。
+     */
+    isAcked(seq) {
+        try {
+            const val = this.indexDb.get(`acked:${seq}`);
+            return val === 1;
+        }
+        catch {
+            return false;
+        }
+    }
     // 罕见：用于重发 / 回退
     markPending(seq) {
         const entry = this.db.get(seq);
@@ -247,7 +284,10 @@ class Outbox {
         this.db.getRange({ start: 1 }).forEach((entry) => {
             const e = entry.value;
             if (e.delivered && e.deliveredAt < cutoffMs) {
+                // 清理 mainDb 中的条目
                 this.db.removeSync(entry.key);
+                // 清理 indexDb 中的 acked 标记
+                this.indexDb.removeSync(`acked:${entry.key}`);
                 count++;
             }
         });
@@ -294,6 +334,306 @@ class Outbox {
 }
 exports.Outbox = Outbox;
 // ---------------------------------------------------------------------------
+// OutboxV2 — Per-Peer LMDB 分库
+//
+// 每个 peer 拥有独立的 LMDB 环境，WorkerPool 多进程时零锁竞争。
+//
+// 存储结构：
+//   data/outbox-v2/
+//     peer-1.lmdb/       # peer-1 的出站消息 + 序列 + 索引
+//     peer-2.lmdb/       # peer-2 的出站消息 + 序列 + 索引
+//     ...
+//     _seq-counter.lmdb/ # 全局唯一序列计数器
+//
+// 每个 peer LMDB 内部使用 prefix-key：
+//   msg:${seq}      → OutboxEntry
+//   seq             → lastSeq（全局唯一序列）
+//   pending         → 当前 pending 列表（"," 分隔的 seq）
+//   delivered       → 已发送列表（"," 分隔的 seq）
+//   acked:${seq}    → 1（ACK 状态）
+// ---------------------------------------------------------------------------
+class OutboxV2 {
+    basePath;
+    /** peerId → LMDB 环境 */
+    peerDbs = new Map();
+    /** 全局序列计数器 DB */
+    seqCounterDb;
+    /** 已打开的 LMDB 路径集合，共 close */
+    allDbs = [];
+    constructor(dbPath) {
+        this.basePath = dbPath;
+        fs.mkdirSync(dbPath, { recursive: true });
+        const seqCounterPath = path.join(dbPath, '_seq-counter.lmdb');
+        this.seqCounterDb = (0, lmdb_1.open)({ path: seqCounterPath, compression: true });
+        this.allDbs.push(this.seqCounterDb);
+    }
+    close() {
+        for (const peerDb of this.peerDbs.values()) {
+            try {
+                peerDb.close();
+            }
+            catch { /* best-effort */ }
+        }
+        this.peerDbs.clear();
+        for (const db of this.allDbs) {
+            try {
+                db.close();
+            }
+            catch { /* best-effort */ }
+        }
+        this.allDbs = [];
+    }
+    /** 获取或创建 peer 对应的 LMDB 环境 */
+    _getOrOpenPeerDb(peerId) {
+        let db = this.peerDbs.get(peerId);
+        if (db)
+            return db;
+        const peerDbPath = this.getPeerDbPath(peerId);
+        db = (0, lmdb_1.open)({
+            path: peerDbPath,
+            compression: true,
+            mapSize: 64 * 1024 * 1024, // 64MB per peer
+        });
+        this.peerDbs.set(peerId, db);
+        this.allDbs.push(db);
+        return db;
+    }
+    /** 返回 peer LMDB 目录路径 */
+    getPeerDbPath(peerId) {
+        return path.join(this.basePath, `${peerId}.lmdb`);
+    }
+    /**
+     * 通过 seq 找到 peer LMDB → 用于 markDelivered/markAcked 等操作。
+     * 遍历所有 peer LMDB 查找（peer 数量有限，O(P) 可接受）。
+     * 如果频繁调用可加 peer→seq 缓存，但当前场景不需要。
+     */
+    _findPeerDbBySeq(seq) {
+        for (const [peerId, db] of this.peerDbs) {
+            try {
+                const entry = db.get(`msg:${seq}`);
+                if (entry)
+                    return db;
+            }
+            catch {
+                // try next
+            }
+        }
+        // 未缓存 peer DB，遍历文件系统
+        if (!fs.existsSync(this.basePath))
+            return null;
+        const entries = [];
+        try {
+            const dirs = fs.readdirSync(this.basePath);
+            for (const d of dirs) {
+                if (!d.endsWith('.lmdb') || d === '_seq-counter.lmdb')
+                    continue;
+                const peerId = d.slice(0, -5); // remove '.lmdb'
+                const db = this._getOrOpenPeerDb(peerId);
+                try {
+                    const entry = db.get(`msg:${seq}`);
+                    if (entry)
+                        return db;
+                }
+                catch {
+                    // try next
+                }
+            }
+        }
+        catch { /* ignore dir read errors */ }
+        return null;
+    }
+    /** 生成全局唯一递增 seq */
+    _nextSeq() {
+        // 使用 seqCounterDb 确保原子递增
+        let seq;
+        try {
+            // LMDB 事务保证 append 的原子性
+            this.seqCounterDb.transactionSync(() => {
+                const current = this.seqCounterDb.get('seq') ?? 0;
+                seq = current + 1;
+                this.seqCounterDb.putSync('seq', seq);
+            });
+        }
+        catch (err) {
+            // 如果事务失败（罕见），回退到 Date.now() 方案
+            seq = Date.now();
+        }
+        return seq;
+    }
+    add(entry) {
+        const seq = this._nextSeq();
+        const full = { ...entry, seq };
+        const peerDb = this._getOrOpenPeerDb(entry.targetNodeId);
+        peerDb.putSync(`msg:${seq}`, full);
+        // 更新 pending 列表
+        const pendingStr = peerDb.get('pending') ?? '';
+        const pendingSeqs = pendingStr ? pendingStr.split(',').map(Number) : [];
+        pendingSeqs.push(seq);
+        peerDb.putSync('pending', pendingSeqs.join(','));
+        return seq;
+    }
+    markDeliveredBatch(seqs) {
+        const now = Date.now();
+        // 按 peer 分组 seqs 以批量操作
+        const seqByPeer = new Map();
+        for (const seq of seqs) {
+            const db = this._findPeerDbBySeq(seq);
+            if (!db)
+                continue;
+            // 找到该 db 所属 peer
+            let peerId = null;
+            for (const [pid, pdb] of this.peerDbs) {
+                if (pdb === db) {
+                    peerId = pid;
+                    break;
+                }
+            }
+            if (!peerId)
+                continue;
+            let list = seqByPeer.get(peerId);
+            if (!list) {
+                list = [];
+                seqByPeer.set(peerId, list);
+            }
+            list.push(seq);
+        }
+        for (const [peerId, peerSeqs] of seqByPeer) {
+            const peerDb = this._getOrOpenPeerDb(peerId);
+            for (const seq of peerSeqs) {
+                const entry = peerDb.get(`msg:${seq}`);
+                if (entry && !entry.delivered) {
+                    entry.delivered = true;
+                    entry.deliveredAt = now;
+                    peerDb.putSync(`msg:${seq}`, entry);
+                }
+            }
+            // 从 pending 列表移除这些 seq
+            const pendingStr = peerDb.get('pending') ?? '';
+            const pendingSeqs = pendingStr ? pendingStr.split(',').map(Number) : [];
+            const deliveredSet = new Set(peerSeqs);
+            const remaining = pendingSeqs.filter(s => !deliveredSet.has(s));
+            peerDb.putSync('pending', remaining.join(','));
+            // 加入 delivered 列表
+            const deliveredStr = peerDb.get('delivered') ?? '';
+            const deliveredSeqs = deliveredStr ? deliveredStr.split(',').map(Number) : [];
+            deliveredSeqs.push(...peerSeqs);
+            peerDb.putSync('delivered', deliveredSeqs.join(','));
+        }
+    }
+    fetchPendingByPeer(peerId) {
+        const peerDb = this._getOrOpenPeerDb(peerId);
+        const pendingStr = peerDb.get('pending') ?? '';
+        if (!pendingStr)
+            return [];
+        const seqs = pendingStr.split(',').map(Number);
+        return seqs
+            .map(seq => peerDb.get(`msg:${seq}`))
+            .filter((e) => e !== undefined && !e.delivered);
+    }
+    fetchOldestPending(peerId) {
+        const entries = this.fetchPendingByPeer(peerId);
+        return entries.length > 0 ? entries[0] : null;
+    }
+    getPendingCountForPeer(peerId) {
+        const peerDb = this._getOrOpenPeerDb(peerId);
+        const pendingStr = peerDb.get('pending') ?? '';
+        return pendingStr ? pendingStr.split(',').length : 0;
+    }
+    markAcked(seq) {
+        const db = this._findPeerDbBySeq(seq);
+        if (!db)
+            return;
+        db.putSync(`acked:${seq}`, 1);
+        // 同时从 delivered 移除
+        let peerId = null;
+        for (const [pid, pdb] of this.peerDbs) {
+            if (pdb === db) {
+                peerId = pid;
+                break;
+            }
+        }
+        if (!peerId)
+            return;
+        const deliveredStr = db.get('delivered') ?? '';
+        const deliveredSeqs = deliveredStr ? deliveredStr.split(',').map(Number) : [];
+        const remaining = deliveredSeqs.filter(s => s !== seq);
+        db.putSync('delivered', remaining.join(','));
+    }
+    isAcked(seq) {
+        const db = this._findPeerDbBySeq(seq);
+        if (!db)
+            return false;
+        try {
+            const val = db.get(`acked:${seq}`);
+            return val === 1;
+        }
+        catch {
+            return false;
+        }
+    }
+    markPending(seq) {
+        const db = this._findPeerDbBySeq(seq);
+        if (!db)
+            return;
+        const entry = db.get(`msg:${seq}`);
+        if (!entry)
+            return;
+        entry.delivered = false;
+        entry.deliveredAt = 0;
+        db.putSync(`msg:${seq}`, entry);
+        // 重新加入 pending
+        const pendingStr = db.get('pending') ?? '';
+        const pendingSeqs = pendingStr ? pendingStr.split(',').map(Number) : [];
+        if (!pendingSeqs.includes(seq)) {
+            pendingSeqs.push(seq);
+            db.putSync('pending', pendingSeqs.join(','));
+        }
+        // 从 delivered 移除
+        const deliveredStr = db.get('delivered') ?? '';
+        const deliveredSeqs = deliveredStr ? deliveredStr.split(',').map(Number) : [];
+        const remaining = deliveredSeqs.filter(s => s !== seq);
+        db.putSync('delivered', remaining.join(','));
+    }
+    cleanDeliveredBefore(cutoffMs) {
+        let count = 0;
+        for (const [peerId, peerDb] of this.peerDbs) {
+            const deliveredStr = peerDb.get('delivered') ?? '';
+            if (!deliveredStr)
+                continue;
+            const deliveredSeqs = deliveredStr.split(',').map(Number);
+            const remaining = [];
+            const now = Date.now();
+            for (const seq of deliveredSeqs) {
+                const entry = peerDb.get(`msg:${seq}`);
+                if (entry && entry.delivered && entry.deliveredAt < cutoffMs) {
+                    // 清理 msg + acked
+                    peerDb.removeSync(`msg:${seq}`);
+                    try {
+                        peerDb.removeSync(`acked:${seq}`);
+                    }
+                    catch { /* */ }
+                    count++;
+                }
+                else {
+                    remaining.push(seq);
+                }
+            }
+            peerDb.putSync('delivered', remaining.join(','));
+        }
+        return count;
+    }
+    getPendingCount() {
+        let count = 0;
+        for (const [, peerDb] of this.peerDbs) {
+            const pendingStr = peerDb.get('pending') ?? '';
+            if (pendingStr)
+                count += pendingStr.split(',').length;
+        }
+        return count;
+    }
+}
+exports.OutboxV2 = OutboxV2;
+// ---------------------------------------------------------------------------
 // PerPeerWorker — 每个 peer 独立的 Worker
 // ---------------------------------------------------------------------------
 class PerPeerWorker {
@@ -311,12 +651,39 @@ class PerPeerWorker {
     lastSendMs = 0;
     /** 当前退避状态 */
     inBackoff = false;
+    /**
+     * 序列化缓存：msgId → Buffer（预序列化的 TransportMessage）。
+     * 在 Phase 2 加载 pending 时构建，Phase 5 发送后清除。
+     * 避免每条消息在每个 peer 上分别 JSON.parse → 重构 → JSON.stringify 的重复开销。
+     */
+    serializedCache = new Map();
+    /** 记录每次成功发送的时间戳（按 peerId） */
+    lastSuccessfulSend = new Map();
+    /** 最近一次失败的时间戳 */
+    lastFailedMs = 0;
+    /** R9: 分区冻结 — 不在 majority 时暂停发送 */
+    _frozen = false;
     log;
     constructor(peerId, config, outbox) {
         this.peerId = peerId;
         this.config = config;
         this.outbox = outbox;
         this.log = config.logger ?? new logger_1.Logger(`ppw-${peerId}`);
+    }
+    /**
+     * 检查指定 peer 的 DEALER 连接是否已就绪。
+     *
+     * 策略：
+     * - 如果该 peer 在最近 30s 内有成功发送 → 跳过探针，直接认为就绪
+     * - 否则检查 .pub 文件是否存在 → 存在即视为就绪
+     */
+    isPeerReady(probePeerId) {
+        const recentSuccess = this.lastSuccessfulSend.get(probePeerId);
+        if (recentSuccess !== undefined && (Date.now() - recentSuccess) < 30_000) {
+            return true;
+        }
+        const pubKey = this._readPeerPubKey();
+        return pubKey !== null;
     }
     /** 热加载 getter */
     get _tickMs() { return this.config.tickMs; }
@@ -354,15 +721,28 @@ class PerPeerWorker {
         this.inBackoff = false;
         this.lastSendMs = 0;
     }
-    /** 外部通知收到该 peer 的 ACK */
-    notifyAcked(msgId) {
-        this.ackTracker.delete(msgId);
-        if (this.ackTracker.size === 0) {
-            // 所有待 ACK 都收到 → 退出退避
-            this.inBackoff = false;
-            this.lastSendMs = 0;
+    /** R9: 设置 frozen 状态 — 不在 majority 时暂停发送 */
+    setFrozen(frozen) {
+        if (this._frozen === frozen)
+            return;
+        this._frozen = frozen;
+        if (frozen) {
+            this.log.info(`[${this.peerId}] Outbox frozen (not in majority), deferring all sends`);
+        }
+        else {
+            this.log.info(`[${this.peerId}] Outbox unfrozen (back in majority), resuming sends`);
         }
     }
+    /**
+     * 外部通知收到该 peer 的 ACK（同进程/单进程场景）。
+      this.ackTracker.delete(msgId)
+      if (this.ackTracker.size === 0) {
+        // 所有待 ACK 都收到 → 退出退避
+        this.inBackoff = false
+        this.lastSendMs = 0
+      }
+    }
+  
     /** 推送一条哨兵消息触发重试（deliveryCheck 使用） */
     pushSentinel() {
         // 如果 tracker 非空且无 pending 消息，说明消息可能丢了
@@ -374,13 +754,47 @@ class PerPeerWorker {
     getPendingCount() {
         return this.criticalQueue.length + this.normalQueue.length;
     }
+    /** Worker 是否正在运行 */
+    get isRunning() {
+        return this.running;
+    }
     async _tick() {
-        // ── Phase 0: 检查 ACK 超时 ──
+        // R9: 分区冻结 — 不在 majority 时暂停所有出站发送
+        if (this._frozen) {
+            // 仍然处理 ACK 超时检查（确保 ackTracker 不会越积越多），
+            // 但不发送任何消息
+            if (this.ackTracker.size > 0) {
+                const now = Date.now();
+                for (const [msgId, sentAt] of this.ackTracker) {
+                    if (now - sentAt > this._ackTimeoutMs) {
+                        const loaded = this.outbox.fetchPendingByPeer(this.peerId);
+                        const found = loaded.find(e => e.msgId === msgId);
+                        if (found && this.outbox.isAcked(found.seq)) {
+                            this.log.info(`ack for ${msgId} found via LMDB mmap, clearing tracker`);
+                            this.ackTracker.delete(msgId);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        // ── Phase 0: 检查 ACK 超时 + LMDB mmap ACK 穿透 ──
         if (!this.running)
             return;
         const now = Date.now();
         for (const [msgId, sentAt] of this.ackTracker) {
             if (now - sentAt > this._ackTimeoutMs) {
+                // 先尝试通过 LMDB mmap 检查 ACK（多进程场景：主进程已写入 ACK 状态）
+                // 在 PerPeerWorker 中可以查到 ackTracker 中没有但 LMDB markAcked 已写入的记录。
+                // 这对单进程透明——不产生任何性能影响。
+                const loaded = this.outbox.fetchPendingByPeer(this.peerId);
+                const found = loaded.find(e => e.msgId === msgId);
+                if (found && this.outbox.isAcked(found.seq)) {
+                    // ACK 已通过 LMDB mmap 到达——删除 ackTracker 条目即可
+                    this.log.info(`ack for ${msgId} found via LMDB mmap, clearing tracker`);
+                    this.ackTracker.delete(msgId);
+                    continue;
+                }
                 this.log.info(`ack timeout for ${msgId}, reverting to pending`);
                 this.ackTracker.delete(msgId);
                 this.inBackoff = false;
@@ -402,8 +816,8 @@ class PerPeerWorker {
             try {
                 const pubKey = this._readPeerPubKey();
                 if (!pubKey) {
-                    this.log.info(`.pub gone — permanent stop`);
-                    this.running = false;
+                    // .pub 尚未出现，跳过退避恢复
+                    this.lastSendMs = now;
                     return;
                 }
                 await this.config.recoverDealerFn();
@@ -423,14 +837,47 @@ class PerPeerWorker {
             const entries = this.outbox.fetchPendingByPeer(this.peerId);
             this.normalQueue = entries.map(e => ({ entry: e, retryCount: 0, insertedAt: now }));
             this.normalQueue.sort((a, b) => a.entry.seq - b.entry.seq);
+            // Phase 2a: 预序列化——构建 TransportMessage Buffer，缓存后 batchSendFn 直接复用
+            for (const item of this.normalQueue) {
+                if (this.serializedCache.has(item.entry.msgId))
+                    continue;
+                try {
+                    const parsed = JSON.parse(item.entry.payload);
+                    const streamMsg = {
+                        msgId: item.entry.msgId,
+                        seq: 0,
+                        nodeId: this.config.peerId,
+                        timestamp: now,
+                        type: parsed.type ?? 'unknown',
+                        data: parsed,
+                    };
+                    const transport = {
+                        msgId: item.entry.msgId,
+                        type: 'data',
+                        srcNodeId: this.config.peerId,
+                        data: { __es_msg: streamMsg },
+                    };
+                    this.serializedCache.set(item.entry.msgId, Buffer.from(JSON.stringify(transport)));
+                }
+                catch {
+                    // payload 解析失败，不缓存，退回到 sendFn 中实时解析
+                }
+            }
+        }
+        // ── Phase 2b: 检查 DEALER 连接就绪状态（ZMQ readiness probe）──
+        if (!this.running)
+            return;
+        if (!this.isPeerReady(this.peerId)) {
+            this.log.info(`peer ${this.peerId} not ready (connection probe failed), deferring`);
+            return;
         }
         // ── Phase 3: 检查 peer 是否在线 ──
         if (!this.running)
             return;
         const pubKey = this._readPeerPubKey();
         if (!pubKey) {
-            this.log.info(`.pub gone — permanent stop`);
-            this.running = false;
+            // .pub 文件尚未出现（顺序启动场景），跳过本次 tick，等下一次
+            this.log.info(`.pub not yet available for ${this.peerId}, deferring`);
             return;
         }
         // ── Phase 4: 收集 batch ──
@@ -446,15 +893,42 @@ class PerPeerWorker {
         // ── Phase 5: 发送 batch ──
         const entriesToDeliver = [];
         const sendItems = [];
+        const serializedItems = [];
+        let allSerialized = true;
         for (const item of batch) {
             entriesToDeliver.push(item.entry.seq);
-            sendItems.push({
-                msgId: item.entry.msgId,
-                payload: Buffer.from(item.entry.payload),
-            });
+            const cached = this.serializedCache.get(item.entry.msgId);
+            if (cached) {
+                serializedItems.push({ msgId: item.entry.msgId, buffer: cached });
+            }
+            else {
+                allSerialized = false;
+                sendItems.push({
+                    msgId: item.entry.msgId,
+                    payload: Buffer.from(item.entry.payload),
+                });
+            }
         }
         try {
-            if (this.config.batchSendFn && sendItems.length > 1) {
+            if (allSerialized && serializedItems.length > 0) {
+                // 缓存命中：直接发送预序列化的 Buffer
+                // 1 条时走 sendFn（兼容 sendFn 签名），>1 条时走 batchSendSerializedFn
+                if (serializedItems.length === 1) {
+                    const si = serializedItems[0];
+                    const msg = JSON.parse(si.buffer.toString('utf-8'));
+                    await this.config.sendFn(si.msgId, Buffer.from(JSON.stringify(msg)));
+                }
+                else if (this.config.batchSendSerializedFn) {
+                    await this.config.batchSendSerializedFn(serializedItems);
+                }
+                else {
+                    for (const si of serializedItems) {
+                        const msg = JSON.parse(si.buffer.toString('utf-8'));
+                        await this.config.sendFn(si.msgId, Buffer.from(JSON.stringify(msg)));
+                    }
+                }
+            }
+            else if (this.config.batchSendFn && sendItems.length > 1) {
                 // 批量发送（单次 ZMQ send，multi-part 消息）
                 await this.config.batchSendFn(sendItems);
             }
@@ -464,7 +938,12 @@ class PerPeerWorker {
                     await this.config.sendFn(si.msgId, si.payload);
                 }
             }
+            // 清理缓存：已发送的消息从缓存中移除
+            for (const item of batch) {
+                this.serializedCache.delete(item.entry.msgId);
+            }
             // 成功：标记 delivered + 加入 ack 追踪
+            this.lastSuccessfulSend.set(this.peerId, Date.now());
             this.outbox.markDeliveredBatch(entriesToDeliver);
             for (const item of batch) {
                 this.ackTracker.set(item.entry.msgId, Date.now());
@@ -472,6 +951,9 @@ class PerPeerWorker {
         }
         catch (err) {
             this.log.warn(`batch send failed (${batch.length} msgs): ${err.message}`);
+            // 发送失败：更新探针时间戳标记 peer 不健康
+            this.lastSuccessfulSend.delete(this.peerId);
+            this.lastFailedMs = now;
             // 发送失败：全部放回队列，升级 retryCount
             for (const item of batch) {
                 const newRetry = item.retryCount + 1;
@@ -528,11 +1010,24 @@ class OutboxReplicationManager {
     reloadTimer = null;
     configFilePath = null;
     log;
+    /** NAS curve 目录路径（用于 Worker 动态发现） */
+    curveDir;
+    /** R9: 分区冻结标志 — 不在 majority 时暂停所有出站发送 */
+    _frozen = false;
     constructor(config) {
         this.config = config;
         const dbPath = config.dbPath ?? path.join(process.cwd(), 'data', 'outbox');
-        this.outbox = new Outbox(dbPath);
+        // 根据 usePerPeerDb 选择 OutboxV2 或 Outbox
+        if (config.usePerPeerDb) {
+            // OutboxV2 使用目录（含 _seq-counter.lmdb + 各 peer LMDB）
+            const v2Dir = dbPath.endsWith('.lmdb') ? dbPath.replace(/\.lmdb$/, '') : dbPath;
+            this.outbox = new OutboxV2(v2Dir);
+        }
+        else {
+            this.outbox = new Outbox(dbPath);
+        }
         this.log = config.logger ?? new logger_1.Logger('outbox-mgr');
+        this.curveDir = config.curveDir || null;
         const envPath = process.env.ML_CONFIG_PATH;
         if (envPath) {
             this.configFilePath = path.resolve(envPath);
@@ -663,6 +1158,23 @@ class OutboxReplicationManager {
                     data: { __es_msg: streamMsg },
                 };
                 await this.config.eventBus.send(peerId, msg);
+            },
+            batchSendSerializedFn: async (items) => {
+                // 预序列化批量发送：buffer 已经是序列化的 TransportMessage JSON Buffer
+                // 直接 JSON.parse 后传给 eventBus.batchSend，跳过原始 payload 的 JSON.parse → 重构 → JSON.stringify
+                if (this.config.eventBus.batchSend) {
+                    const parsed = items.map(({ msgId, buffer }) => {
+                        return JSON.parse(buffer.toString('utf-8'));
+                    });
+                    await this.config.eventBus.batchSend(peerId, parsed);
+                }
+                else {
+                    // 退化：逐条通过 eventBus.send（但 Buffer 已序列化，直接 parse 后传）
+                    for (const { msgId, buffer } of items) {
+                        const msg = JSON.parse(buffer.toString('utf-8'));
+                        await this.config.eventBus.send(peerId, msg);
+                    }
+                }
             },
             batchSendFn: async (items) => {
                 // 批量发送：将多个消息合并为一次 ZMQ send
@@ -802,6 +1314,8 @@ class OutboxReplicationManager {
     }
     /** DeliveryCheck：定时检查所有 peer 的 pending 状态，推送哨兵消息 */
     _deliveryCheckPeers() {
+        // 先执行 Worker 动态发现
+        this.discoverPeers();
         const now = Date.now();
         for (const [peerId, worker] of this.workerMap) {
             // 如果 worker 的 ackTracker 有未 ack 的消息，但 pending 队列为空 → 可能是 ack 丢失
@@ -819,6 +1333,44 @@ class OutboxReplicationManager {
             }
         }
     }
+    /**
+     * Worker 动态发现：扫描 curveDir 中的 *.pub 文件，
+     * 为新增 peer 创建 Worker，清理已消失 peer 的 Worker 记录。
+     */
+    discoverPeers() {
+        if (!this.curveDir)
+            return;
+        try {
+            // 扫描 curveDir 获取所有 peer nodeId
+            const allPeers = event_bus_1.EventBus.readAllPeerKeys(this.curveDir);
+            const newPeers = allPeers
+                .filter(p => p.nodeId !== this.config.nodeId)
+                .map(p => p.nodeId);
+            // 为新增 peer 创建 Worker
+            for (const peerId of newPeers) {
+                const existing = this.workerMap.get(peerId);
+                if (!existing) {
+                    this.log.info(`[discoverPeers] new peer ${peerId}, creating worker`);
+                    this._ensureWorker(peerId).start();
+                }
+                else if (!existing.isRunning) {
+                    // Worker 已停止（可能因 peer pub key 尚未出现），重新启动
+                    this.log.info(`[discoverPeers] restarting stopped worker for ${peerId}`);
+                    existing.start();
+                }
+            }
+            // 清理已消失 peer 的 Worker（pub 删除 → Worker 已 self-stop）
+            for (const [peerId, worker] of this.workerMap) {
+                if (!newPeers.includes(peerId) && !worker.isRunning) {
+                    this.log.info(`[discoverPeers] peer ${peerId} gone, removing worker`);
+                    this.workerMap.delete(peerId);
+                }
+            }
+        }
+        catch (err) {
+            this.log.warn(`[discoverPeers] error: ${err.message}`);
+        }
+    }
     _isWorkerRunning(peerId) {
         // 检查 worker 是否存在（running 状态只能通过 getStats 间接判断）
         // 如果 worker 遇到 .pub 消失会 self-stop（设置 running=false）
@@ -832,6 +1384,10 @@ class OutboxReplicationManager {
         const worker = this._ensureWorker(peerId);
         worker.start();
     }
+    /** 获取指定 peer 的 Worker 实例（用于测试） */
+    getWorker(peerId) {
+        return this.workerMap.get(peerId);
+    }
     /** 通知指定 peer 的 Worker 已连接 */
     notifyConnected(peerId) {
         const worker = this.workerMap.get(peerId);
@@ -843,6 +1399,29 @@ class OutboxReplicationManager {
         const worker = this.workerMap.get(peerId);
         if (worker)
             worker.notifyConnected();
+    }
+    /** R9: 设置 frozen 状态 — 暂停/恢复所有 PerPeerWorker 的出站发送 */
+    setFrozen(frozen) {
+        if (this._frozen === frozen)
+            return;
+        this._frozen = frozen;
+        if (frozen) {
+            this.log.warn('[Outbox] Frozen: not in majority, pausing all outbox sends');
+        }
+        else {
+            this.log.info('[Outbox] Unfrozen: back in majority, resuming all outbox sends');
+        }
+        for (const worker of this.workerMap.values()) {
+            worker.setFrozen(frozen);
+        }
+    }
+    /**
+     * R9: 设置 majority 状态，同步反映为 Outbox frozen/unfrozen
+     * true = in majority → unfrozen（正常发送）
+     * false = not in majority → frozen（暂停发送，防止幽灵消息）
+     */
+    setMajorityStatus(inMajority) {
+        this.setFrozen(!inMajority);
     }
     getStats() {
         return {

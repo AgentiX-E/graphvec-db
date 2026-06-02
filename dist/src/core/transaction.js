@@ -1,86 +1,576 @@
 "use strict";
 /**
- * Transaction — 轻量级事务接口
+ * Transaction — MVCC 增强事务系统
  *
- * 在内存中缓存写操作，commit 时通过 GraphEngine 一次性 flush。
- * 走 engine 路径确保 label index、HNSW（由 overgraph 托管）、event emission 不绕过。
- * 冲突检测使用简单的时间戳 + 写集碰撞检测。
- *
- * 设计原则:
- * - 不需要修改现有 GraphEngine 同步方法
- * - beginTransaction() + commit()/rollback() 是可选路径
- * - 连接层 (Raft/rest) 可以将一组操作包装成事务
+ * 支持：
+ * - 快照隔离 (Snapshot Isolation)
+ * - 写集锁 + 冲突检测
+ * - 读集追踪
+ * - SSI (Serializable Snapshot Isolation) — 读集冲突检测
+ * - 死锁检测 — Wait-for 图循环检测
+ * - 版本链 — 多版本读取
+ * - 隔离级别选择 (read-committed / snapshot / serializable)
+ * - 超时锁清理
+ * - 与 GraphEngine 深度集成
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TransactionManager = exports.Transaction = void 0;
-let nextTxnId = 1;
+exports.Transaction = exports.TransactionManager = void 0;
+// ── 事务管理器 ──
+class TransactionManager {
+    _nextSnapshotId = 1;
+    _locks = new Map();
+    _lockTimeoutMs;
+    /** 已提交事务的写入记录（用于 SSI 读集冲突检测）
+     *  key = nodeId string (or "name:${name}" for upsert operations)
+     *  value = committedAt 时间戳 */
+    _committedWrites = new Map();
+    constructor(lockTimeoutMs = 5000) {
+        this._lockTimeoutMs = lockTimeoutMs;
+    }
+    get lockCount() {
+        return this._locks.size;
+    }
+    begin(opts) {
+        const snapshot = {
+            id: this._nextSnapshotId++,
+            createdAt: Date.now(),
+        };
+        const isolation = opts?.isolation ?? 'snapshot';
+        const txn = new Transaction(this, snapshot, isolation);
+        // 跨分片 awareness: 如果指定了多个 range，启用 2PC
+        if (opts?.rangeIds && opts.rangeIds.length > 1) {
+            ;
+            txn._use2PC = true;
+            txn._rangeIds = [...opts.rangeIds];
+        }
+        return txn;
+    }
+    isLocked(nodeId) {
+        this._cleanupStaleLocks();
+        return this._locks.has(String(nodeId));
+    }
+    lock(nodeId, snapshotId) {
+        const key = String(nodeId);
+        if (this._locks.has(key)) {
+            throw new Error(`Node ${nodeId} is already locked`);
+        }
+        this._locks.set(key, { nodeId, snapshotId, lockedAt: Date.now() });
+    }
+    unlock(nodeId) {
+        this._locks.delete(String(nodeId));
+    }
+    unlockAll(snapshotId) {
+        for (const [key, lock] of this._locks) {
+            if (lock.snapshotId === snapshotId) {
+                this._locks.delete(key);
+            }
+        }
+    }
+    /** 清理超时锁 */
+    _cleanupStaleLocks() {
+        const now = Date.now();
+        for (const [key, lock] of this._locks) {
+            if (now - lock.lockedAt > this._lockTimeoutMs) {
+                this._locks.delete(key);
+            }
+        }
+    }
+    /**
+     * 记录事务提交时的写入（用于 SSI 读集冲突检测）
+     * 会记录 writeSet 中的 name 和 deleteSet 中的 nodeId
+     */
+    _recordCommitWrite(snapshotId, writeSet, deleteSet, engine) {
+        const now = Date.now();
+        for (const [name, data] of writeSet) {
+            // 如果不是边操作，按 name 记录
+            if (!name.startsWith('edge:')) {
+                this._committedWrites.set(`name:${name}`, now);
+                // 如果引擎可用，尝试通过 name 查询 nodeId 并记录 nodeId 键
+                // 这样读集冲突可以通过 nodeId 直接匹配
+                if (engine) {
+                    try {
+                        const node = engine.findNodeByName(name);
+                        if (node !== null && node !== undefined) {
+                            this._committedWrites.set(String(node.id ?? node), now);
+                        }
+                    }
+                    catch {
+                        // 查询可能因 flush 后的 engine 状态变化失败，静默处理
+                    }
+                }
+            }
+        }
+        for (const nodeId of deleteSet) {
+            this._committedWrites.set(String(nodeId), now);
+        }
+    }
+    /**
+     * 检查节点的读集冲突
+     * 如果 committedWrites 中有任何条目在 snapshot 创建之后记录了该节点，说明有冲突
+     */
+    _checkNodeConflict(nodeId, snapshotCreatedAt) {
+        const entry = this._committedWrites.get(String(nodeId));
+        // Use >= to handle same-ms race between snapshot and commit write
+        if (entry && entry >= snapshotCreatedAt)
+            return true;
+        // 也检查 name: 前缀的条目（upsert 节点按 name 键）
+        for (const [key, timestamp] of this._committedWrites) {
+            if (key.startsWith('name:') && timestamp >= snapshotCreatedAt) {
+                return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * 检测死锁 — 构建 wait-for 图，使用 DFS 检测循环
+     * 返回第一个检测到的死锁描述字符串，无死锁返回 null
+     *
+     * 算法：
+     * 1. 每个 snapshotId 是一个节点
+     * 2. 如果 T1 持有节点 X 的锁，T2 正在请求节点 X（T2 已在 wait-for 表中），
+     *    则 T2 → T1（T2 等待 T1）
+     * 3. 由于我们使用阻塞锁（lock() 直接抛异常），
+     *    死锁场景是：T1 持有 A，T2 持有 B，T1 请求 B，T2 请求 A
+     *    → 在 lock 阶段，T1 锁了 A，T2 锁了 B
+     *    → T1 再锁 B 失败（超时/异常），T2 再锁 A 失败
+     *    但等待关系需要在 commit 前建立
+     *
+     * 实际实现：在 Phase 0.5，我们已经部分加锁了，
+     * 构建 wait-for：对于每个尝试加锁的 snapshot，检查它需要的锁被谁持有
+     *
+     * 简化实现：检查当前所有锁中，是否存在循环等待
+     * - 构建图: 节点 = snapshotId, 边 = A → B 表示 A 在等待 B 持有的锁
+     * - 每个锁的持有者是 snapshotId，被锁的 node 是该锁的资源
+     * - 如果一个 snapshot 有 pending_lock_request(resource, blockedBySnapshotId)，
+     *   则 snapshot → blockedBySnapshotId
+     *
+     * 这里的实现采用简化版：如果存在一个锁循环（多个 snapshot 互相持有对方需要的锁），
+     * 则存在死锁。对于当前阻塞锁模型，我们检查是否两个 snapshot 各自锁了对方需要的节点。
+     */
+    detectDeadlock(snapshotId) {
+        // 构建 wait-for 图
+        // 节点: 所有有锁的 snapshotId
+        // 边: 从持有锁的 snapshot 视角，它锁了哪些节点 → 哪些其他 snapshot 也想要这些节点
+        //
+        // 在我们的加锁模型中，lock() 阶段是依次对每个 key 加锁的。
+        // 在 commit() 的 Phase 2，我们先检查所有 key 是否 locked，
+        // 然后依次 lock()。如果 lock() 抛异常，之前的锁会被 unlockAll 释放。
+        //
+        // 死锁场景需要更精细的建模。这里采用简化方案：
+        // 构建 wait-for 图 snapshotId → [blockedBySnapshotId, ...]
+        // 使用 DFS 检测循环
+        const waitFor = new Map();
+        const allSnapshots = new Set();
+        // 收集所有有锁的 snapshot
+        for (const [, lock] of this._locks) {
+            allSnapshots.add(lock.snapshotId);
+        }
+        // 这里模拟等待关系检测：
+        // 如果两个 snapshot 持有对方需要的节点锁，则构成 wait-for
+        for (const sidA of allSnapshots) {
+            for (const sidB of allSnapshots) {
+                if (sidA >= sidB)
+                    continue;
+                // 检查 sidA 的锁集和 sidB 的锁集
+                const locksA = new Set();
+                const locksB = new Set();
+                for (const [, lock] of this._locks) {
+                    if (lock.snapshotId === sidA)
+                        locksA.add(lock.nodeId);
+                    if (lock.snapshotId === sidB)
+                        locksB.add(lock.nodeId);
+                }
+                // 如果 A 和 B 各自有对方需要的节点，构建双向往边
+                // 但这只适用于两个 snapshot 的情况
+                // 更通用的实现：对于每个节点，如果有多个 snapshot 锁了它，可能存在等待关系
+            }
+        }
+        // 通用实现：对于每个被多 snapshot 锁住的节点，建立 wait-for 边
+        // 注意：在我们的实现中，同一节点不能被多个 snapshot 加锁（lock() 会抛异常）
+        // 所以真正的死锁发生在：T1 锁了 A 请求 B，T2 锁了 B 请求 A
+        // 由于我们的 lock() 是抛异常而非阻塞，死锁需要通过显式的锁请求跟踪来实现
+        //
+        // 简化实现：使用 deadlock detection request tracker
+        // 在 commit 的 phase 2 中，如果 lock() 失败，记录待请求关系
+        // 然后在 Phase 0.5 检测循环
+        //
+        // 这里不构建复杂的 wait-for，因为我们的锁模型不阻塞等待。
+        // 对于写 skew 检测（SSI），由 _checkReadSetConflict 负责。
+        //
+        // 死锁检测在实际阻塞锁模型中才有意义。
+        // 这里实现为接口存在但功能先返回 null（测试中通过模拟场景测试）
+        // 实际死锁检测会在增强的锁模型中实现
+        // 使用 DFS 检测 wait-for 图中的循环
+        // 从给定 snapshotId 出发
+        const visited = new Set();
+        const recStack = new Set();
+        function dfs(current, graph) {
+            if (recStack.has(current)) {
+                // 找到循环
+                return `Deadlock detected involving snapshot ${current}`;
+            }
+            if (visited.has(current))
+                return null;
+            visited.add(current);
+            recStack.add(current);
+            const neighbors = graph.get(current);
+            if (neighbors) {
+                for (const next of neighbors) {
+                    const result = dfs(next, graph);
+                    if (result)
+                        return result;
+                }
+            }
+            recStack.delete(current);
+            return null;
+        }
+        return dfs(snapshotId, waitFor);
+    }
+    /**
+     * 注册锁请求（用于死锁检测）
+     * 当 lock() 失败时调用，记录请求关系
+     */
+    _lockRequests = new Map();
+    _registerLockRequest(nodeId, snapshotId) {
+        const key = String(nodeId);
+        this._lockRequests.set(key, { nodeId, snapshotId });
+    }
+    _clearLockRequest(nodeId) {
+        this._lockRequests.delete(String(nodeId));
+    }
+    _clearAllLockRequests(snapshotId) {
+        for (const [key, req] of this._lockRequests) {
+            if (req.snapshotId === snapshotId) {
+                this._lockRequests.delete(key);
+            }
+        }
+    }
+    /**
+     * 增强版死锁检测 — 基于锁请求跟踪
+     * 构建完整的 wait-for 图，检测循环
+     */
+    detectDeadlockFull(snapshotId) {
+        // 构建 wait-for 图
+        // 节点 = snapshotId
+        // 边 = sid → blockedBySid (sid 等待 blockedBySid 释放锁)
+        const waitFor = new Map();
+        const allSids = new Set();
+        // 收集所有 snapshot IDs（持有锁或请求锁的）
+        for (const [, lock] of this._locks) {
+            allSids.add(lock.snapshotId);
+        }
+        for (const [, req] of this._lockRequests) {
+            allSids.add(req.snapshotId);
+        }
+        allSids.add(snapshotId);
+        // 构建 wait-for 边：对于每个锁请求，请求者正在等待锁的持有者
+        for (const [key, req] of this._lockRequests) {
+            const lockEntry = this._locks.get(key);
+            if (lockEntry && lockEntry.snapshotId !== req.snapshotId) {
+                // 请求者 req.snapshotId 等待锁持有者 lockEntry.snapshotId
+                const neighbors = waitFor.get(req.snapshotId) ?? new Set();
+                neighbors.add(lockEntry.snapshotId);
+                waitFor.set(req.snapshotId, neighbors);
+            }
+        }
+        // 从给定 snapshotId 出发 DFS 检测循环
+        const visited = new Set();
+        const recStack = new Set();
+        const path = [];
+        function dfs(current, graph, path) {
+            if (recStack.has(current)) {
+                const cycleStart = path.indexOf(current);
+                const cycle = path.slice(cycleStart).concat(current);
+                return `Deadlock detected: snapshot ${current} is in a wait-for cycle [${cycle.join(' → ')}]`;
+            }
+            if (visited.has(current))
+                return null;
+            visited.add(current);
+            recStack.add(current);
+            path.push(current);
+            const neighbors = graph.get(current);
+            if (neighbors) {
+                for (const next of neighbors) {
+                    const result = dfs(next, graph, path);
+                    if (result)
+                        return result;
+                }
+            }
+            path.pop();
+            recStack.delete(current);
+            return null;
+        }
+        // 从所有 snapshot 出发检测（确保覆盖整个图）
+        for (const sid of allSids) {
+            if (!visited.has(sid)) {
+                const result = dfs(sid, waitFor, []);
+                if (result)
+                    return result;
+            }
+        }
+        return null;
+    }
+    /**
+     * 获取等待关系图（用于调试/测试）
+     */
+    getWaitForGraph() {
+        const waitFor = new Map();
+        for (const [key, req] of this._lockRequests) {
+            const lockEntry = this._locks.get(key);
+            if (lockEntry && lockEntry.snapshotId !== req.snapshotId) {
+                const neighbors = waitFor.get(req.snapshotId) ?? new Set();
+                neighbors.add(lockEntry.snapshotId);
+                waitFor.set(req.snapshotId, neighbors);
+            }
+        }
+        return waitFor;
+    }
+}
+exports.TransactionManager = TransactionManager;
+// ── 事务 ──
 class Transaction {
-    id;
-    startedAt;
-    _writes = [];
+    snapshot;
+    writeSet;
+    deleteSet;
+    readSet;
+    isolation;
+    /** 是否使用 2PC — 跨分片事务标志 */
+    _use2PC;
+    /** 关联的跨分片 range IDs */
+    _rangeIds;
     _committed = false;
     _rolledBack = false;
-    constructor() {
-        this.id = nextTxnId++;
-        this.startedAt = Date.now();
+    _mgr;
+    _engine;
+    /**
+     * @param mgr - TransactionManager
+     * @param snapshotOrEngine - Either MVCCSnapshot (called from mgr.begin())
+     *                          or GraphEngine (called from tests: new Transaction(mgr, engine))
+     */
+    constructor(mgr, snapshotOrEngine, isolation) {
+        if (snapshotOrEngine && 'id' in snapshotOrEngine && 'createdAt' in snapshotOrEngine) {
+            // Called from mgr.begin(): new Transaction(this, snapshot)
+            this.snapshot = snapshotOrEngine;
+            this._engine = null;
+        }
+        else {
+            // Called directly: new Transaction(mgr, engine) — create placeholder snapshot
+            this.snapshot = { id: -1, createdAt: Date.now() };
+            this._engine = snapshotOrEngine ?? null;
+        }
+        this._mgr = mgr ?? null;
+        this.writeSet = new Map();
+        this.deleteSet = new Set();
+        this.readSet = new Set();
+        this.isolation = isolation ?? 'snapshot';
+        // 为 snapshot 设置版本号，支持版本链
+        this.snapshot.version = this.snapshot.id;
+        // 跨分片 awareness
+        this._use2PC = false;
+        this._rangeIds = [];
     }
-    /** 插入/更新节点 */
-    upsertNode(typeId, name, opts) {
+    get active() {
+        return !this._committed && !this._rolledBack;
+    }
+    get snapshotId() {
+        return this.snapshot?.id ?? 0;
+    }
+    upsertNode(typeId, name, props) {
         this._checkActive();
-        this._writes.push({ kind: 'upsertNode', typeId, name, opts });
+        this.writeSet.set(name, { typeId, name, props });
+        return -1;
     }
-    /** 删除节点 */
-    deleteNode(id) {
+    deleteNode(nodeId) {
         this._checkActive();
-        this._writes.push({ kind: 'deleteNode', id });
+        this.deleteSet.add(nodeId);
     }
-    /** 插入/更新边 */
-    upsertEdge(src, dst, typeId, opts) {
+    upsertEdge(src, dst, typeId, props) {
         this._checkActive();
-        this._writes.push({ kind: 'upsertEdge', src, dst, typeId, opts });
+        this.writeSet.set(`edge:${src}:${dst}:${typeId}`, { typeId, name: `edge:${src}:${dst}`, props });
     }
-    /** 删除边 */
-    deleteEdge(src, dst, typeId) {
-        this._checkActive();
-        this._writes.push({ kind: 'deleteEdge', src, dst, typeId });
+    readNode(nodeId) {
+        this.readSet.add(nodeId);
     }
-    /** 将事务写入 flush 到 engine（走完整路径：label index + overgraph HNSW + event） */
-    async commit(engine) {
+    /**
+     * 读节点（带版本信息）
+     * 在多版本读取中，返回 snapshot-time 的值
+     * 如果 engine 提供了版本链支持，读取对应版本
+     */
+    readNodeVersioned(nodeId, engines) {
+        this.readSet.add(nodeId);
+        if (!engines)
+            return null;
+        const engList = Array.isArray(engines) ? engines : [engines];
+        // 尝试读取节点，如果 engine 支持版本链，读取 snapshot-time 的值
+        for (const eng of engList) {
+            if (typeof eng.getNodeVersioned === 'function') {
+                const result = eng.getNodeVersioned(nodeId, this.snapshot.version);
+                if (result !== undefined)
+                    return result;
+            }
+        }
+        return null;
+    }
+    /**
+     * Phase 0: SSI 读集冲突检测
+     * 检查读集中的节点是否被其他事务在 snapshot 之后修改过
+     * 仅当 isolation === 'serializable' 时调用
+     */
+    _checkReadSetConflict(_engine) {
+        if (this.readSet.size === 0) {
+            return false;
+        }
+        if (!this._mgr)
+            return false;
+        for (const nodeId of this.readSet) {
+            // 检查节点是否被当前 writeSet 或 deleteSet 覆盖
+            // 如果读和写是同一个节点，不算冲突（这是正常的更新）
+            if (this.writeSet.has(String(nodeId)) || this.deleteSet.has(nodeId)) {
+                continue;
+            }
+            // 通过 TransactionManager 的 committedWrites 检查是否被其他事务修改
+            const conflict = this._mgr._checkNodeConflict(nodeId, this.snapshot.createdAt);
+            if (conflict)
+                return true;
+        }
+        return false;
+    }
+    /**
+     * Phase 0.5: 死锁检测
+     * 检测当前事务是否陷入死锁（wait-for 图循环）
+     */
+    _detectDeadlock(snapshotId, mgr) {
+        if (!mgr)
+            return false;
+        const result = mgr.detectDeadlock(snapshotId);
+        return result !== null;
+    }
+    async commit() {
         if (this._committed)
             throw new Error('Transaction already committed');
         if (this._rolledBack)
             throw new Error('Transaction already rolled back');
-        this._committed = true;
-        for (const write of this._writes) {
-            switch (write.kind) {
-                case 'upsertNode':
-                    engine.upsertNode(write.typeId, write.name, write.opts);
-                    break;
-                case 'deleteNode':
-                    engine.deleteNode(write.id);
-                    break;
-                case 'upsertEdge':
-                    engine.upsertEdge(write.src, write.dst, write.typeId, write.opts);
-                    break;
-                case 'deleteEdge':
-                    engine.deleteEdge(write.src, write.dst, write.typeId);
-                    break;
+        // ── Phase 0: SSI 读集冲突检查（Serializable Snapshot Isolation） ──
+        if (this.isolation === 'serializable' && this._mgr) {
+            const hasConflict = this._checkReadSetConflict(this._engine);
+            if (hasConflict) {
+                if (this._mgr) {
+                    this._mgr.unlockAll(this.snapshotId);
+                    this._mgr._clearAllLockRequests(this.snapshotId);
+                }
+                this._rolledBack = true;
+                throw new Error('Commit failed: serialization conflict detected — read-set has been modified by another transaction');
             }
         }
+        // Phase 1: 写集锁检查
+        const allKeys = new Set();
+        for (const nodeId of this.deleteSet) {
+            allKeys.add(String(nodeId));
+        }
+        for (const key of this.writeSet.keys()) {
+            if (key.startsWith('edge:'))
+                continue;
+            allKeys.add(key);
+        }
+        // Try lock check
+        for (const key of allKeys) {
+            if (this._mgr && this._mgr.isLocked(Number(key))) {
+                // 注册锁请求（用于死锁检测）
+                if (this._mgr) {
+                    this._mgr._registerLockRequest(Number(key), this.snapshotId);
+                }
+                throw new Error(`Commit failed: node ${key} is locked by another transaction`);
+            }
+        }
+        // Phase 2: 加锁（如果需要）
+        if (this._mgr) {
+            for (const key of allKeys) {
+                // 只对数字 key 加锁（writeSet 中可能包含名字字符串，Number()=NaN）
+                const numKey = Number(key);
+                if (!isNaN(numKey)) {
+                    this._mgr.lock(numKey, this.snapshotId);
+                }
+            }
+        }
+        // ── Phase 0.5: 死锁检测（加锁后，获取资源前） ──
+        if (this._mgr) {
+            const deadlock = this._mgr.detectDeadlockFull(this.snapshotId);
+            if (deadlock) {
+                if (this._mgr) {
+                    this._mgr.unlockAll(this.snapshotId);
+                    this._mgr._clearAllLockRequests(this.snapshotId);
+                }
+                this._rolledBack = true;
+                throw new Error(`Commit failed: ${deadlock}`);
+            }
+        }
+        try {
+            // Phase 3: flush
+            if (this._engine) {
+                await this._flushToEngine(this._engine);
+            }
+            // 记录已提交的写入（用于 SSI 读集冲突检测）
+            if (this._mgr) {
+                this._mgr._recordCommitWrite(this.snapshotId, this.writeSet, this.deleteSet, this._engine);
+            }
+            // Phase 4: 释放锁
+            if (this._mgr) {
+                this._mgr.unlockAll(this.snapshotId);
+                this._mgr._clearAllLockRequests(this.snapshotId);
+            }
+        }
+        catch (err) {
+            if (this._mgr) {
+                this._mgr.unlockAll(this.snapshotId);
+                this._mgr._clearAllLockRequests(this.snapshotId);
+            }
+            throw err;
+        }
+        this._committed = true;
     }
-    /** 放弃缓存的写入 */
-    rollback() {
+    async rollback() {
         if (this._committed)
             throw new Error('Cannot rollback a committed transaction');
         this._rolledBack = true;
-        this._writes = [];
+        this.writeSet.clear();
+        this.deleteSet.clear();
+        this.readSet.clear();
+        if (this._mgr) {
+            this._mgr.unlockAll(this.snapshotId);
+            this._mgr._clearAllLockRequests(this.snapshotId);
+        }
     }
-    /** 获取写集快照 (用于 external observer / WAL 日志) */
-    snapshot() {
-        return {
-            writes: [...this._writes],
-            startedAt: this.startedAt,
-        };
+    async _flushToEngine(engine) {
+        for (const [, data] of this.writeSet) {
+            await engine.upsertNode(data.typeId, data.name, { props: data.props, _mvccVersion: this.snapshotId });
+        }
+        for (const nodeId of this.deleteSet) {
+            await engine.deleteNode(nodeId);
+        }
+    }
+    /**
+     * 从引擎读取节点，应用 MVCC 快照可见性
+     * 在 snapshot 隔离级别下，只返回在事务开始前已提交的节点
+     */
+    getNode(engine, nodeId) {
+        this.readSet.add(nodeId);
+        return engine.getNodeWithTxn(nodeId, this);
+    }
+    /**
+     * 检查引擎中节点的版本是否对当前快照可见
+     */
+    isNodeVisible(engine, nodeId) {
+        const version = engine.getNodeVersion(nodeId);
+        if (version === undefined || version === null) {
+            // 没有版本信息的节点视为始终可见（非 MVCC 写入）
+            return true;
+        }
+        // snapshot 隔离：只能看到 snapshotId 及之前写入的版本
+        return version <= this.snapshotId;
+    }
+    /** 设置 engine（可选，用于 flush） */
+    setEngine(engine) {
+        this._engine = engine;
     }
     _checkActive() {
         if (this._committed)
@@ -90,53 +580,4 @@ class Transaction {
     }
 }
 exports.Transaction = Transaction;
-/**
- * TransactionManager — 管理活跃事务
- * 提供轻量级碰撞检测 (基于写集交集)
- */
-class TransactionManager {
-    _active = new Map();
-    _maxActive;
-    constructor(maxActive = 100) {
-        this._maxActive = maxActive;
-    }
-    begin() {
-        if (this._active.size >= this._maxActive) {
-            throw new Error(`Too many active transactions (max ${this._maxActive})`);
-        }
-        const txn = new Transaction();
-        this._active.set(txn.id, txn);
-        return txn;
-    }
-    get(id) {
-        return this._active.get(id);
-    }
-    remove(id) {
-        this._active.delete(id);
-    }
-    /** 乐观锁冲突检测: 检查两个事务的写集是否有节点冲突 */
-    detectConflict(a, b) {
-        const idsA = new Set();
-        for (const w of a.writes) {
-            if (w.kind === 'deleteNode' || w.kind === 'upsertNode')
-                idsA.add(w.kind === 'deleteNode' ? w.id : 0); // 简化
-        }
-        const idsB = new Set();
-        for (const w of b.writes) {
-            if (w.kind === 'deleteNode' || w.kind === 'upsertNode')
-                idsB.add(w.kind === 'deleteNode' ? w.id : 0);
-        }
-        // 检查交集 (简化为节点级别)
-        for (const id of idsA) {
-            if (idsB.has(id))
-                return true;
-        }
-        return false;
-    }
-    /** 所有活跃事务数量 */
-    get activeCount() {
-        return this._active.size;
-    }
-}
-exports.TransactionManager = TransactionManager;
 //# sourceMappingURL=transaction.js.map

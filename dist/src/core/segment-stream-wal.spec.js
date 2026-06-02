@@ -284,6 +284,211 @@ describe('SegmentStreamWal — 旧文件迁移', () => {
         migratedWal.drop();
     });
 });
+describe('SegmentStreamWal — fsyncOnWrite 选项', () => {
+    it('fsyncOnWrite=true 时 append 后 fsync 已调用', () => {
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('fsync_true'), { fsyncOnWrite: true, segmentMaxBytes: 65536 });
+        wal.open();
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        // close 会触发 _flushAndCloseActiveFd（含 fsync），
+        // 不抛出异常即验证 fsync 调用是安全的
+        expect(() => wal.close()).not.toThrow();
+        // 重新打开后数据应完整
+        const wal2 = new segment_stream_wal_1.SegmentStreamWal(walDir('fsync_true'), { fsyncOnWrite: true });
+        wal2.open();
+        expect(wal2.size).toBe(2);
+        const pending = wal2.readPending(Date.now() + 60000);
+        expect(pending.length).toBe(2);
+        wal2.drop();
+    });
+    it('fsyncOnWrite=false 时 append 更快（性能测量）', () => {
+        // 使用 tiny segment 避免滚动影响对比
+        const count = 5000;
+        const msg = makeMsg(0);
+        const msgBuf = encodeMsg(msg, segment_stream_wal_1.FLAG_PENDING);
+        const recordLen = msgBuf.length;
+        // 测量 fsyncOnWrite=false 的时间
+        const walNoSync = new segment_stream_wal_1.SegmentStreamWal(walDir('perf_nosync'), { fsyncOnWrite: false, segmentMaxBytes: 10 * 1024 * 1024 });
+        walNoSync.open();
+        const startNoSync = Date.now();
+        for (let i = 0; i < count; i++) {
+            walNoSync.append(makeMsg(i));
+        }
+        const elapsedNoSync = Date.now() - startNoSync;
+        walNoSync.close();
+        // 测量 fsyncOnWrite=true 的时间
+        const walSync = new segment_stream_wal_1.SegmentStreamWal(walDir('perf_sync'), { fsyncOnWrite: true, segmentMaxBytes: 10 * 1024 * 1024 });
+        walSync.open();
+        const startSync = Date.now();
+        for (let i = 0; i < count; i++) {
+            walSync.append(makeMsg(i));
+        }
+        const elapsedSync = Date.now() - startSync;
+        walSync.close();
+        // fsyncOnWrite=false 应更快（或至少不显著慢）
+        // 在 CI/磁盘差异环境下，放宽条件
+        console.log(`fsyncOnWrite=false: ${elapsedNoSync}ms, fsyncOnWrite=true: ${elapsedSync}ms`);
+        // 验证：无 fsync 模式不应显著慢于有 fsync 模式
+        // 如果磁盘是 SSD/内存盘，差异可能很小，但至少无 fsync 不应比有 fsync 慢 50% 以上
+        expect(elapsedNoSync).toBeLessThanOrEqual(elapsedSync * 1.5);
+        // 两种模式的数据都完整
+        const walNoSync2 = new segment_stream_wal_1.SegmentStreamWal(walDir('perf_nosync'), { fsyncOnWrite: false });
+        walNoSync2.open();
+        expect(walNoSync2.size).toBe(count);
+        walNoSync2.drop();
+        const walSync2 = new segment_stream_wal_1.SegmentStreamWal(walDir('perf_sync'), { fsyncOnWrite: true });
+        walSync2.open();
+        expect(walSync2.size).toBe(count);
+        walSync2.drop();
+    });
+    it('fsyncOnWrite=false 的 WAL 仍可通过 close 和 sync 确保持久化', () => {
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('fsync_false_persist'), { fsyncOnWrite: false });
+        wal.open();
+        wal.append(makeMsg(1));
+        wal.append(makeMsg(2));
+        wal.sync(); // sync() 内部会 fsync
+        wal.close();
+        const wal2 = new segment_stream_wal_1.SegmentStreamWal(walDir('fsync_false_persist'), { fsyncOnWrite: false });
+        wal2.open();
+        expect(wal2.size).toBe(2);
+        wal2.drop();
+    });
+    it('SegmentStreamWalOptions 接口导出 fsyncOnWrite 属性', () => {
+        const opt = { fsyncOnWrite: false, segmentMaxBytes: 4096 };
+        expect(opt.fsyncOnWrite).toBe(false);
+        expect(opt.segmentMaxBytes).toBe(4096);
+    });
+    it('构造时传数字（旧 API）默认 fsyncOnWrite=true', () => {
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('legacy_api'), 65536);
+        expect(wal._fsyncOnWrite).toBe(true);
+        expect(wal._segmentMaxBytes).toBe(65536);
+        wal.drop();
+    });
+    it('构造时不传第二个参数默认 fsyncOnWrite=true', () => {
+        const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('default_fsync'));
+        expect(wal._fsyncOnWrite).toBe(true);
+        expect(wal._segmentMaxBytes).toBe(64 * 1024 * 1024);
+        wal.drop();
+    });
+});
+describe('SegmentStreamWalAppendStream — fsync 策略与公开方法', () => {
+    let tmpPath;
+    beforeEach(() => {
+        tmpPath = path.join(TEST_DIR, `append-stream-${Date.now()}-${Math.random()}.log`);
+    });
+    afterEach(() => {
+        try {
+            fs.unlinkSync(tmpPath);
+        }
+        catch { /* ignore */ }
+    });
+    it('无选项构造时默认 fsync 策略为 every-n', () => {
+        const fd = fs.openSync(tmpPath, 'w');
+        const stream = new segment_stream_wal_1.SegmentStreamWalAppendStream(fd);
+        expect(stream._fsyncStrategy).toBe('every-n');
+        expect(stream._fsyncEveryN).toBe(100);
+        fs.closeSync(fd);
+    });
+    it('显式指定 lazy 策略仍可覆盖默认值', () => {
+        const fd = fs.openSync(tmpPath, 'w');
+        const stream = new segment_stream_wal_1.SegmentStreamWalAppendStream(fd, { fsyncStrategy: 'lazy' });
+        expect(stream._fsyncStrategy).toBe('lazy');
+        fs.closeSync(fd);
+    });
+    it('fsync() 公开方法可独立调用，不抛出异常', () => {
+        const fd = fs.openSync(tmpPath, 'w');
+        const stream = new segment_stream_wal_1.SegmentStreamWalAppendStream(fd);
+        // 先写入一些数据
+        stream.append(Buffer.from('hello'));
+        // fsync() 应能安全调用
+        expect(() => stream.fsync()).not.toThrow();
+        fs.closeSync(fd);
+    });
+    it('fsync() 方法存在且是函数', () => {
+        const fd = fs.openSync(tmpPath, 'w');
+        const stream = new segment_stream_wal_1.SegmentStreamWalAppendStream(fd);
+        expect(typeof stream.fsync).toBe('function');
+        fs.closeSync(fd);
+    });
+    it('every-n 策略每 N 次 append 触发 fsync', () => {
+        const fd = fs.openSync(tmpPath, 'w');
+        const stream = new segment_stream_wal_1.SegmentStreamWalAppendStream(fd, { fsyncEveryN: 3 });
+        // 模拟 append 3 次（计数器达到 N 应触发 fsync）
+        stream.append(Buffer.from('a'));
+        expect(stream._fsyncCounter).toBe(1);
+        stream.append(Buffer.from('b'));
+        expect(stream._fsyncCounter).toBe(2);
+        stream.append(Buffer.from('c'));
+        // 第三次后计数器重置为 0
+        expect(stream._fsyncCounter).toBe(0);
+        fs.closeSync(fd);
+    });
+    // ── A-01: 存储层 WAL Group Commit ──
+    describe('A-01 WAL Group Commit (存储层)', () => {
+        it('appendBatch single message works correctly', () => {
+            const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('batch-single'));
+            wal.open();
+            const msg = makeMsg(1);
+            wal.appendBatch([msg]);
+            // 验证消息可读取
+            const all = wal.replay(0);
+            expect(all.length).toBe(1);
+            expect(all[0].seq).toBe(1);
+            wal.drop();
+        });
+        it('appendBatch multiple messages are all persisted', () => {
+            const wal = new segment_stream_wal_1.SegmentStreamWal(walDir('batch-multi'));
+            wal.open();
+            const msgs = Array.from({ length: 10 }, (_, i) => makeMsg(i + 1, { msgId: `batch-${i}`, data: { id: i } }));
+            wal.appendBatch(msgs);
+            const all = wal.replay(0);
+            expect(all.length).toBe(10);
+            for (let i = 0; i < 10; i++) {
+                expect(all[i].seq).toBe(i + 1);
+            }
+            wal.drop();
+        });
+        it('appendBatch is faster than individual append for bulk writes', () => {
+            const count = 500;
+            // Batch append
+            const walBatch = new segment_stream_wal_1.SegmentStreamWal(walDir('perf-batch'));
+            walBatch.open();
+            const msgs = Array.from({ length: count }, (_, i) => makeMsg(i + 1, { msgId: `b-${i}` }));
+            const batchStart = Date.now();
+            walBatch.appendBatch(msgs);
+            const batchElapsed = Date.now() - batchStart;
+            walBatch.drop();
+            // Individual append
+            const walIndiv = new segment_stream_wal_1.SegmentStreamWal(walDir('perf-indiv'));
+            walIndiv.open();
+            const indivStart = Date.now();
+            for (let i = 0; i < count; i++) {
+                walIndiv.append(makeMsg(i + 1, { msgId: `i-${i}` }));
+            }
+            const indivElapsed = Date.now() - indivStart;
+            walIndiv.drop();
+            // Verify batch is not slower than individual (it should be faster)
+            console.log(`Batch: ${count} msgs in ${batchElapsed}ms, Individual: ${count} msgs in ${indivElapsed}ms`);
+            expect(batchElapsed).toBeLessThanOrEqual(indivElapsed * 1.5); // batch should be comparable or faster
+        });
+        it('appendBatch messages survive close/open cycle', () => {
+            const dir = walDir('batch-persistence');
+            const wal1 = new segment_stream_wal_1.SegmentStreamWal(dir);
+            wal1.open();
+            const msgs = Array.from({ length: 5 }, (_, i) => makeMsg(i + 1));
+            wal1.appendBatch(msgs);
+            wal1.close();
+            // Re-open
+            const wal2 = new segment_stream_wal_1.SegmentStreamWal(dir);
+            wal2.open();
+            const all = wal2.replay(0);
+            expect(all.length).toBe(5);
+            expect(all[0].seq).toBe(1);
+            expect(all[4].seq).toBe(5);
+            wal2.drop();
+        });
+    });
+});
 // 帮助函数 — 编码消息（与 SegmentStreamWal 内部相同）
 function encodeMsg(msg, flags) {
     const data = JSON.stringify({

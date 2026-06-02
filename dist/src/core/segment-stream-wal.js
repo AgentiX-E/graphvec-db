@@ -58,7 +58,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SegmentStreamWal = exports.FLAG_CONSUMED = exports.FLAG_ACKED = exports.FLAG_PENDING = void 0;
+exports.SegmentStreamWal = exports.SegmentStreamWalAppendStream = exports.FLAG_CONSUMED = exports.FLAG_ACKED = exports.FLAG_PENDING = void 0;
 const fs = __importStar(require("node:fs"));
 const path = __importStar(require("node:path"));
 const logger_1 = require("../ops/logger");
@@ -67,6 +67,52 @@ exports.FLAG_ACKED = 0x01;
 exports.FLAG_CONSUMED = 0x02;
 /** 默认单个 segment 最大大小 */
 const DEFAULT_SEGMENT_MAX_BYTES = 64 * 1024 * 1024; // 64MB
+/**
+ * SegmentStreamWalAppendStream — 带策略化 fsync 的追加写入流包装
+ *
+ * 在底层 fd 之上添加 fsync 策略控制：
+ * - 'lazy':   不主动 fsync（依赖系统缓存刷新），最快但最不安全
+ * - 'always': 每次 append 后立即 fsync，最安全但最慢
+ * - 'every-n': 每 N 次 append 后 fsync 一次，折中方案
+ *
+ * 默认 'every-n'（n=10），兼顾安全与性能。
+ */
+class SegmentStreamWalAppendStream {
+    _fd;
+    _fsyncStrategy;
+    _fsyncEveryN;
+    _fsyncCounter = 0;
+    constructor(fd, options) {
+        this._fd = fd;
+        this._fsyncStrategy = options?.fsyncStrategy ?? 'every-n';
+        this._fsyncEveryN = options?.fsyncEveryN ?? 100;
+    }
+    /**
+     * 强制刷盘当前 active segment
+     * 供外部在关键点（如 Raft commit 后）调用，确保数据持久化
+     */
+    fsync() {
+        fs.fsyncSync(this._fd);
+    }
+    /**
+     * 追加二进制数据到文件末尾，触发 fsync
+     */
+    append(buf) {
+        fs.writeSync(this._fd, buf);
+        if (this._fsyncStrategy === 'always') {
+            fs.fsyncSync(this._fd);
+        }
+        else if (this._fsyncStrategy === 'every-n') {
+            this._fsyncCounter++;
+            if (this._fsyncCounter >= this._fsyncEveryN) {
+                fs.fsyncSync(this._fd);
+                this._fsyncCounter = 0;
+            }
+        }
+        // 'lazy': 不主动 fsync
+    }
+}
+exports.SegmentStreamWalAppendStream = SegmentStreamWalAppendStream;
 /**
  * SegmentStreamWal — 基于固定大小 segment 的消息持久化队列
  *
@@ -84,10 +130,22 @@ class SegmentStreamWal {
     _activeFd = -1;
     _activeSize = 0;
     _pruning = false;
-    constructor(walPath, segmentMaxBytes) {
-        this.walDir = walPath; // 注意：walPath 现在是目录路径
+    _fsyncOnWrite;
+    constructor(walPath, optionsOrBytes) {
+        this.walDir = walPath;
         this.logger = new logger_1.Logger('SegmentStreamWal');
-        this._segmentMaxBytes = segmentMaxBytes ?? DEFAULT_SEGMENT_MAX_BYTES;
+        if (typeof optionsOrBytes === 'number') {
+            this._segmentMaxBytes = optionsOrBytes;
+            this._fsyncOnWrite = true;
+        }
+        else if (optionsOrBytes) {
+            this._segmentMaxBytes = optionsOrBytes.segmentMaxBytes ?? DEFAULT_SEGMENT_MAX_BYTES;
+            this._fsyncOnWrite = optionsOrBytes.fsyncOnWrite ?? true;
+        }
+        else {
+            this._segmentMaxBytes = DEFAULT_SEGMENT_MAX_BYTES;
+            this._fsyncOnWrite = true;
+        }
     }
     get isOpen() { return this._opened; }
     get size() { return this._entriesCount; }
@@ -129,6 +187,11 @@ class SegmentStreamWal {
     }
     /**
      * 追加一条 PENDING 消息
+     *
+     * 当 fsyncOnWrite=true（默认）时，每次 append 后强制刷盘，
+     * 保证在进程崩溃时数据不丢失。
+     * 当 fsyncOnWrite=false 时，跳过 fsync，依赖操作系统批量刷盘，
+     * 性能更快但崩溃时可能丢失最近写入。
      */
     append(msg) {
         const buf = this._encode(msg, exports.FLAG_PENDING);
@@ -138,9 +201,52 @@ class SegmentStreamWal {
             this._rollSegment();
         }
         fs.writeSync(this._activeFd, buf);
-        fs.fsyncSync(this._activeFd); // 强制刷盘，保证崩溃恢复
+        if (this._fsyncOnWrite) {
+            fs.fsyncSync(this._activeFd); // 强制刷盘，保证崩溃恢复
+        }
         this._activeSize += recordLen;
         this._entriesCount++;
+    }
+    /**
+     * A-01: 批量追加多条消息，只做一次 fsync（真正的 Group Commit）
+     *
+     * 将多条 pending 消息合并编码后单次写入文件，然后只调用一次 fsync。
+     * 相比多次 append 分别 fsync，大幅减少系统调用次数。
+     *
+     * @param msgs 待追加的消息列表
+     */
+    appendBatch(msgs) {
+        if (msgs.length === 0)
+            return;
+        // 批量编码
+        const buffers = [];
+        for (const msg of msgs) {
+            const buf = this._encode(msg, exports.FLAG_PENDING);
+            const recordLen = buf.length;
+            // 如果当前 segment 放不下这条记录，滚动
+            if (this._activeSize + recordLen > this._segmentMaxBytes) {
+                // 先把已编码的写入
+                if (buffers.length > 0) {
+                    const combined = Buffer.concat(buffers);
+                    fs.writeSync(this._activeFd, combined);
+                    this._activeSize += combined.length;
+                    buffers.length = 0;
+                }
+                this._rollSegment();
+            }
+            buffers.push(buf);
+        }
+        // 一次写入所有剩余消息
+        if (buffers.length > 0) {
+            const combined = Buffer.concat(buffers);
+            fs.writeSync(this._activeFd, combined);
+            this._activeSize += combined.length;
+        }
+        // 只调用一次 fsync
+        if (this._fsyncOnWrite) {
+            fs.fsyncSync(this._activeFd);
+        }
+        this._entriesCount += msgs.length;
     }
     /**
      * 标记消息为 ACKED

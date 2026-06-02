@@ -97,4 +97,451 @@ describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
         expect(plan.returnColumns).toEqual(['username']);
     });
 });
+// ── Item 10: Cypher-lite 注入防护 ─────────────────────────
+describe('execQuery — 参数化查询（Cypher-lite 注入防护）', () => {
+    // TC-10.1: 正常参数化查询
+    it('正常参数化查询 — 字符串参数', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = $1 RETURN n", ['Alice']);
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe('Alice');
+        expect(plan.filters[0].operator).toBe('EQ');
+    });
+    it('正常参数化查询 — 数字参数', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.age > $1 RETURN n", [30]);
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe(30);
+        expect(plan.filters[0].operator).toBe('GT');
+    });
+    it('正常参数化查询 — 布尔参数', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n) WHERE n.active = $1 RETURN n", [true]);
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe(true);
+        expect(plan.filters[0].operator).toBe('EQ');
+    });
+    it('多个参数 $1, $2', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.age > $1 AND n.status = $2 RETURN n", [18, 'active']);
+        expect(plan.filters.length).toBe(2);
+        expect(plan.filters[0].value).toBe(18);
+        expect(plan.filters[0].operator).toBe('GT');
+        expect(plan.filters[1].value).toBe('active');
+        expect(plan.filters[1].operator).toBe('EQ');
+    });
+    // TC-10.2: SQL注入式字符串 — 作为字面值匹配
+    it('注入防护 — 单引号注入字符串作为字面值', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = $1 RETURN n", ["' OR 1=1 --"]);
+        expect(plan.filters.length).toBe(1);
+        // 字符串含 `'`（不含 `"`），使用双引号包裹 → 原值完整保留
+        expect(plan.filters[0].value).toBe("' OR 1=1 --");
+    });
+    it('注入防护 — DROP 注入字符串作为字面值', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = $1 RETURN n", ["'; DROP TABLE users; --"]);
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe("'; DROP TABLE users; --");
+    });
+    it('注入防护 — 含单双号两种引号的注入字符串', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = $1 RETURN n", ["' OR 1=1 -- \" OR 'a'='a"]);
+        expect(plan.filters.length).toBe(1);
+        // 同时含 `'` 和 `"`，两者都会被移除作为安全兜底
+        // 保留的值不含任何引号，注入被彻底阻断
+        expect(plan.filters[0].value).toBe(' OR 1=1 --  OR a=a');
+    });
+    it('注入防护 — 等号注入', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = $1 RETURN n", ["admin' = 'admin"]);
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe("admin' = 'admin");
+    });
+    it('注入防护 — 闭合括号注入', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = $1 RETURN n", [") OR (1=1"]);
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe(") OR (1=1");
+    });
+    // TC-10.3: 数组参数 — 序列化为数组字面值后传入解析器
+    it('数组参数 — 数字数组（解析器暂不支持数组字面值）', () => {
+        // Cypher-lite 解析器暂不支持 `[25, 30, 35]` 数组字面值语法，
+        // 但 execQuery 能安全序列化（不会注入），解析器会抛出格式错误
+        expect(() => {
+            (0, query_engine_1.execQuery)("MATCH (n) WHERE n.age = $1 RETURN n", [[25, 30, 35]]);
+        }).toThrow('Query parse error');
+    });
+    it('数组参数 — 字符串数组（解析器暂不支持数组字面值）', () => {
+        expect(() => {
+            (0, query_engine_1.execQuery)("MATCH (n) WHERE n.status = $1 RETURN n", [['active', 'pending']]);
+        }).toThrow('Query parse error');
+    });
+    // TC-10.4: 参数数量不匹配
+    it('参数数量不匹配 — 占位符多参数少', () => {
+        expect(() => {
+            (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.age > $1 AND n.status = $2 RETURN n", [18] // 只有 1 个参数，但查询有 2 个占位符
+            );
+        }).toThrow('Parameter count mismatch');
+    });
+    it('参数数量不匹配 — 占位符少参数多', () => {
+        expect(() => {
+            (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = $1 RETURN n", ['Alice', 'extra'] // 2 个参数，但查询有 1 个占位符
+            );
+        }).toThrow('Parameter count mismatch');
+    });
+    it('无参数时 execQuery 与 parseQuery 行为一致', () => {
+        const plan1 = (0, query_engine_1.parseQuery)("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n");
+        const plan2 = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n");
+        expect(plan2.scanLabel).toBe(plan1.scanLabel);
+        expect(plan2.filters).toEqual(plan1.filters);
+        expect(plan2.returnColumns).toEqual(plan1.returnColumns);
+    });
+    it('带 return 的参数化查询', () => {
+        const plan = (0, query_engine_1.execQuery)("MATCH (n:Person) WHERE n.name = $1 RETURN n.age", ['Bob']);
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe('Bob');
+        expect(plan.returnColumns).toEqual(['age']);
+    });
+});
+// ── Item 17: Cypher-lite DML 扩展 ─────────────────────────
+describe('parseQuery — DML 语句（CREATE / DELETE / SET / MERGE）', () => {
+    // TC-17.1: 简单 CREATE 节点
+    it('CREATE 单节点', () => {
+        const plan = (0, query_engine_1.parseQuery)('CREATE (n:Label {prop: "val"})');
+        expect(plan.type).toBe('CREATE');
+        expect(plan.createNodes).toBeDefined();
+        expect(plan.createNodes.length).toBe(1);
+        expect(plan.createNodes[0].alias).toBe('n');
+        expect(plan.createNodes[0].label).toBe('Label');
+        expect(plan.createNodes[0].props).toEqual({ prop: { type: 'STRING', value: 'val' } });
+    });
+    // TC-17.2: CREATE 带边
+    it('CREATE 带边', () => {
+        const plan = (0, query_engine_1.parseQuery)('CREATE (a)-[:KNOWS]->(b)');
+        expect(plan.type).toBe('CREATE');
+        expect(plan.createNodes).toBeDefined();
+        expect(plan.createEdges).toBeDefined();
+        expect(plan.createNodes.length).toBe(2); // a + b
+        expect(plan.createEdges.length).toBe(1);
+        expect(plan.createEdges[0].label).toBe('KNOWS');
+        expect(plan.createEdges[0].direction).toBe('out');
+    });
+    // TC-17.3: DELETE 节点
+    it('DELETE 节点', () => {
+        const plan = (0, query_engine_1.parseQuery)('MATCH (n) DELETE n');
+        expect(plan.type).toBe('DELETE');
+        expect(plan.deleteTargets).toBeDefined();
+        expect(plan.deleteTargets.length).toBe(1);
+        expect(plan.deleteTargets[0]).toBe('n');
+    });
+    it('DELETE 多个节点', () => {
+        const plan = (0, query_engine_1.parseQuery)('MATCH (a)-[:KNOWS]->(b) DELETE a, b');
+        expect(plan.type).toBe('DELETE');
+        expect(plan.deleteTargets.length).toBe(2);
+        expect(plan.deleteTargets[0]).toBe('a');
+        expect(plan.deleteTargets[1]).toBe('b');
+    });
+    // TC-17.4: SET 属性
+    it('SET 属性', () => {
+        const plan = (0, query_engine_1.parseQuery)("MATCH (n) SET n.name = 'new'");
+        expect(plan.type).toBe('SET');
+        expect(plan.setClauses).toBeDefined();
+        expect(plan.setClauses.length).toBe(1);
+        expect(plan.setClauses[0].property).toBe('name');
+        expect(plan.setClauses[0].value).toBe('new');
+    });
+    it('SET 多属性', () => {
+        const plan = (0, query_engine_1.parseQuery)("MATCH (n) SET n.name = 'alice', n.age = 30");
+        expect(plan.type).toBe('SET');
+        expect(plan.setClauses.length).toBe(2);
+        expect(plan.setClauses[0].property).toBe('name');
+        expect(plan.setClauses[0].value).toBe('alice');
+        expect(plan.setClauses[1].property).toBe('age');
+        expect(plan.setClauses[1].value).toBe(30);
+    });
+    // TC-17.5: MERGE 节点
+    it('MERGE 节点', () => {
+        const plan = (0, query_engine_1.parseQuery)('MERGE (n:Label {id: 1})');
+        expect(plan.type).toBe('MERGE');
+        expect(plan.mergeNodes).toBeDefined();
+        expect(plan.mergeNodes.length).toBe(1);
+        expect(plan.mergeNodes[0].alias).toBe('n');
+        expect(plan.mergeNodes[0].label).toBe('Label');
+    });
+    // TC-17.6: 组合语句
+    it('CREATE + RETURN', () => {
+        const plan = (0, query_engine_1.parseQuery)('CREATE (n) RETURN n');
+        expect(plan.type).toBe('CREATE');
+        expect(plan.createNodes).toBeDefined();
+        expect(plan.createNodes.length).toBe(1);
+        expect(plan.createNodes[0].alias).toBe('n');
+        expect(plan.returnColumns).toEqual(['n']);
+    });
+    // TC-17.7: 语法错误恢复
+    it('语法错误 — CREAT (n)', () => {
+        expect(() => (0, query_engine_1.parseQuery)('CREAT (n)')).toThrow('Query parse error');
+    });
+    it('语法错误 — 非法关键字', () => {
+        expect(() => (0, query_engine_1.parseQuery)('DELET n')).toThrow('Query parse error');
+    });
+});
+// ── UNION / UNION ALL / INTERSECT / SUBTRACT 解析测试 ──
+describe('parseQuery — Set operations (UNION / UNION ALL / INTERSECT / SUBTRACT)', () => {
+    it('UNION — 解析左右查询', () => {
+        const plan = (0, query_engine_1.parseQuery)('MATCH (a:Person) WHERE a.age = 30 RETURN a UNION MATCH (b:Person) WHERE b.age = 35 RETURN b');
+        expect(plan.unionType).toBe('union');
+        expect(plan.rightPlan).toBeDefined();
+        expect(plan.rightPlan.scanLabel).toBe('Person');
+        expect(plan.rightPlan.filters.length).toBe(1);
+        expect(plan.rightPlan.filters[0].property).toBe('age');
+        expect(plan.rightPlan.filters[0].operator).toBe('EQ');
+        expect(plan.rightPlan.filters[0].value).toBe(35);
+        expect(plan.rightPlan.returnColumns).toEqual(['b']); // right RETURN col
+    });
+    it('UNION ALL — 解析', () => {
+        const plan = (0, query_engine_1.parseQuery)('MATCH (n) WHERE n.age = 30 RETURN n UNION ALL MATCH (m) WHERE m.age = 35 RETURN m');
+        expect(plan.unionType).toBe('union_all');
+        expect(plan.rightPlan).toBeDefined();
+    });
+    it('INTERSECT — 解析', () => {
+        const plan = (0, query_engine_1.parseQuery)('MATCH (a) WHERE a.age >= 25 RETURN a INTERSECT MATCH (b) WHERE b.age <= 30 RETURN b');
+        expect(plan.unionType).toBe('intersect');
+        expect(plan.rightPlan).toBeDefined();
+    });
+    it('SUBTRACT — 解析', () => {
+        const plan = (0, query_engine_1.parseQuery)('MATCH (a) WHERE a.age >= 25 RETURN a SUBTRACT MATCH (b) WHERE b.age > 30 RETURN b');
+        expect(plan.unionType).toBe('subtract');
+        expect(plan.rightPlan).toBeDefined();
+    });
+    it('UNION — 左右查询独立解析', () => {
+        // 左查询有 label 过滤，右查询有不同的 label 过滤
+        const plan = (0, query_engine_1.parseQuery)("MATCH (a:Person) WHERE a.name = 'Alice' RETURN a.name UNION MATCH (b:Company) WHERE b.name = 'Acme' RETURN b.name");
+        expect(plan.unionType).toBe('union');
+        expect(plan.scanLabel).toBe('Person');
+        expect(plan.filters.length).toBe(1);
+        expect(plan.rightPlan.scanLabel).toBe('Company');
+        expect(plan.rightPlan.filters.length).toBe(1);
+        expect(plan.rightPlan.filters[0].property).toBe('name');
+        expect(plan.rightPlan.filters[0].value).toBe('Acme');
+    });
+});
+// ── _executeQuery UNION 执行测试 ──
+describe('_executeQuery — Set operations with in-memory data', () => {
+    // 测试用节点数据
+    const testNodes = [
+        { id: 1, name: 'Alice', age: 30 },
+        { id: 2, name: 'Bob', age: 25 },
+        { id: 3, name: 'Carol', age: 35 },
+        { id: 4, name: 'Dave', age: 30 },
+        { id: 5, name: 'Eve', age: 35 },
+    ];
+    it('UNION — 合并两个节点集，去重', () => {
+        // 使用 _executeQuery 但 union 的执行在 graph-engine 层
+        // 这里只验证 parse 结果正确即可，完整集成测试在 graph-engine.spec.ts
+        const plan = (0, query_engine_1.parseQuery)('MATCH (n) WHERE n.age = 30 RETURN n UNION MATCH (m) WHERE m.age = 35 RETURN m');
+        expect(plan.unionType).toBe('union');
+        expect(plan.rightPlan).toBeDefined();
+        // 左查询返回 age=30 的节点
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].property).toBe('age');
+        expect(plan.filters[0].value).toBe(30);
+        // 右查询返回 age=35 的节点
+        expect(plan.rightPlan.filters.length).toBe(1);
+        expect(plan.rightPlan.filters[0].property).toBe('age');
+        expect(plan.rightPlan.filters[0].value).toBe(35);
+    });
+});
+// ═══════════════════════════════════════════════════════
+// ParameterizedQuery — 参数化查询
+// ═══════════════════════════════════════════════════════
+describe('ParameterizedQuery — 预编译参数化查询', () => {
+    // TC-P1: 基本参数绑定
+    it('基本参数绑定 — 单字符串参数 $name', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name RETURN n", { name: 'Alice' });
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe('Alice');
+        expect(plan.filters[0].operator).toBe('EQ');
+    });
+    it('基本参数绑定 — 单数字参数 $id', () => {
+        const plan = (0, query_engine_1.cypher)('MATCH (n) WHERE n.id = $id RETURN n', { id: 5 });
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe(5);
+        expect(plan.filters[0].operator).toBe('EQ');
+    });
+    it('基本参数绑定 — 数字 > 比较', () => {
+        const plan = (0, query_engine_1.cypher)('MATCH (n:Person) WHERE n.age > $age RETURN n', { age: 30 });
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe(30);
+        expect(plan.filters[0].operator).toBe('GT');
+    });
+    // TC-P2: 多参数
+    it('多参数 $name 和 $age', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name AND n.age > $age RETURN n", { name: 'Alice', age: 25 });
+        expect(plan.filters.length).toBe(2);
+        // Find the name filter and age filter (order may vary)
+        const nameFilter = plan.filters.find(f => f.property === 'name');
+        const ageFilter = plan.filters.find(f => f.property === 'age');
+        expect(nameFilter).toBeDefined();
+        expect(nameFilter.value).toBe('Alice');
+        expect(nameFilter.operator).toBe('EQ');
+        expect(ageFilter).toBeDefined();
+        expect(ageFilter.value).toBe(25);
+        expect(ageFilter.operator).toBe('GT');
+    });
+    // TC-P3: 参数类型安全
+    it('参数类型安全 — number 保持为 number', () => {
+        const plan = (0, query_engine_1.cypher)('MATCH (n) WHERE n.score = $score RETURN n', { score: 99.5 });
+        expect(plan.filters.length).toBe(1);
+        expect(typeof plan.filters[0].value).toBe('number');
+        expect(plan.filters[0].value).toBe(99.5);
+    });
+    it('参数类型安全 — boolean 保持为 boolean', () => {
+        const plan = (0, query_engine_1.cypher)('MATCH (n) WHERE n.active = $active RETURN n', { active: true });
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe(true);
+        expect(typeof plan.filters[0].value).toBe('boolean');
+    });
+    it('参数类型安全 — null 值', () => {
+        // IS NULL not supported by peggy parser, test null equality instead
+        const plan = (0, query_engine_1.cypher)('MATCH (n) WHERE n.deletedAt = $val RETURN n', { val: null });
+        // null -> 'null' string serialization
+        expect(plan.filters.length).toBe(1);
+        // ParameterizedQuery injects null as actual null value in filter
+        expect(plan.filters[0].value).toBeNull();
+    });
+    // TC-P4: 注入防护 — 参数值不会作为字符串插值执行
+    it('注入防护 — 注入字符串被安全地作为参数值传递', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name RETURN n", { name: "'; DROP TABLE users; --" });
+        expect(plan.filters.length).toBe(1);
+        // 注入字符串作为字面值保留，不会被解析为 Cypher 语法
+        expect(plan.filters[0].value).toBe("'; DROP TABLE users; --");
+        // 验证查询结构是干净的 — 没有额外的 filter
+        expect(plan.scanLabel).toBe('Person');
+        expect(plan.returnColumns).toEqual(['n']);
+    });
+    it('注入防护 — 等号注入不会破坏查询', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name RETURN n", { name: "admin' = 'admin" });
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe("admin' = 'admin");
+        expect(plan.filters[0].operator).toBe('EQ');
+        // 确认只有一个 filter — 没有被解析成额外的条件
+        expect(plan.filters.length).toBe(1);
+    });
+    // TC-P5: 缺少参数
+    it('缺少参数抛出有意义错误', () => {
+        expect(() => {
+            (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name AND n.age > $age RETURN n", { name: 'Alice' } // 缺少 $age
+            );
+        }).toThrow(/Missing parameter/);
+    });
+    it('缺少参数错误信息包含参数名', () => {
+        expect(() => {
+            (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name RETURN n", { wrongName: 'Alice' } // 缺少 $name，但有 wrongName
+            );
+        }).toThrow(/\$name/);
+    });
+    // TC-P6: 额外参数被忽略（安全）
+    it('额外参数被忽略 — 不影响查询', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name RETURN n", { name: 'Alice', extra: 'should be ignored' });
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe('Alice');
+        // 查询结构不变
+        expect(plan.scanLabel).toBe('Person');
+        expect(plan.returnColumns).toEqual(['n']);
+    });
+    // TC-P7: ParameterizedQuery 类直接使用
+    it('ParameterizedQuery 类 — compile + execute', () => {
+        const pq = new query_engine_1.ParameterizedQuery("MATCH (n:Person) WHERE n.age > $minAge RETURN n.name AS username");
+        expect(pq.getParamNames()).toEqual(['minAge']);
+        expect(pq.hasParam('minAge')).toBe(true);
+        expect(pq.hasParam('nonexistent')).toBe(false);
+        const plan = pq.execute({ minAge: 21 });
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe(21);
+        expect(plan.filters[0].operator).toBe('GT');
+        expect(plan.returnColumns).toEqual(['username']);
+    });
+    // TC-P8: 编译缓存 — 多次执行不同参数
+    it('compileCypher — 静态工厂，复用已编译模板', () => {
+        const pq = (0, query_engine_1.compileCypher)("MATCH (n:Person) WHERE n.status = $status RETURN n.name");
+        expect(pq.getParamNames()).toEqual(['status']);
+        // 执行多次，每次不同参数
+        const plan1 = pq.execute({ status: 'active' });
+        expect(plan1.filters[0].value).toBe('active');
+        const plan2 = pq.execute({ status: 'inactive' });
+        expect(plan2.filters[0].value).toBe('inactive');
+        // 同一个 template 不同参数值
+        expect(plan1.filters[0].value).not.toBe(plan2.filters[0].value);
+    });
+    // TC-P9: cypher() 函数便捷调用
+    it('cypher() — 便捷函数，不需要创建对象', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.age >= $min AND n.age <= $max RETURN n", { min: 18, max: 65 });
+        expect(plan.filters.length).toBe(2);
+        const minFilter = plan.filters.find(f => f.operator === 'GTE');
+        const maxFilter = plan.filters.find(f => f.operator === 'LTE');
+        expect(minFilter?.value).toBe(18);
+        expect(maxFilter?.value).toBe(65);
+    });
+    // TC-P10: 无参数模板直接解析
+    it('无参数模板 — 直接解析为普通查询', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n");
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe('Alice');
+        expect(plan.returnColumns).toEqual(['n']);
+    });
+    // TC-P11: 带 ORDER BY 和 LIMIT 的参数化
+    it('带 ORDER BY + LIMIT 的参数化查询', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.type = $type RETURN n.name ORDER BY n.age DESC LIMIT $limit", { type: 'employee', limit: 10 });
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe('employee');
+        expect(plan.orderBy.length).toBe(1);
+        expect(plan.orderBy[0].direction).toBe('DESC');
+        expect(plan.limit).toBe(10);
+    });
+    // TC-P12: 链式调用返回
+    it('cypher() 返回完整的 QueryPlan', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name RETURN n.age AS userAge", { name: 'Bob' });
+        expect(plan.scanLabel).toBe('Person');
+        expect(plan.returnColumns).toEqual(['userAge']);
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].property).toBe('name');
+        expect(plan.filters[0].value).toBe('Bob');
+    });
+    // TC-P13: 空参数对象
+    it('空参数对象 — 按无参数处理', () => {
+        const plan = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = 'Direct' RETURN n", {});
+        expect(plan.filters.length).toBe(1);
+        expect(plan.filters[0].value).toBe('Direct');
+    });
+    // TC-P14: 多次执行测试缓存
+    it('多次执行同一模板 — 缓存有效', () => {
+        const plan1 = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name RETURN n", { name: 'First' });
+        const plan2 = (0, query_engine_1.cypher)("MATCH (n:Person) WHERE n.name = $name RETURN n", { name: 'Second' });
+        expect(plan1.filters[0].value).toBe('First');
+        expect(plan2.filters[0].value).toBe('Second');
+        // Both should have same structure
+        expect(plan1.scanLabel).toBe(plan2.scanLabel);
+        expect(plan1.returnColumns).toEqual(plan2.returnColumns);
+    });
+    // ── P1-Q7: 默认 LIMIT ────────────────────────────────────
+    it('无显式 LIMIT 时 _executeQuery 应用 DEFAULT_LIMIT=1000', () => {
+        // 构造一个无 LIMIT 的 plan，并生成超过 1000 条候选数据
+        const plan = {
+            scanLabel: 'Test',
+            steps: [],
+            returnColumns: ['name'],
+            filters: [],
+            orderBy: [],
+            limit: undefined,
+            aggregate: undefined,
+            skip: undefined,
+            with: undefined,
+            optionalMatches: [],
+            subQueries: [],
+            matchPatterns: [],
+        };
+        // 生成 1500 条候选节点
+        const manyNodes = [];
+        for (let i = 0; i < 1500; i++) {
+            manyNodes.push({ id: i, name: `node-${i}` });
+        }
+        const result = (0, query_engine_1._executeQuery)(plan, manyNodes);
+        expect(result.length).toBe(query_engine_1.DEFAULT_LIMIT);
+        expect(result.length).toBe(1000);
+        // 确认最后一条是第 999 项（0-based）
+        expect(result[result.length - 1].name).toBe('node-999');
+    });
+});
 //# sourceMappingURL=query-engine.spec.js.map

@@ -16,7 +16,28 @@ export interface AutoSplitterConfig {
     checkIntervalMs?: number;
     /** 最小分裂间隔（毫秒，同一个 Range 两次 split 之间，默认 60000 = 1min） */
     minSplitIntervalMs?: number;
+    /** 每个检查周期最大分裂次数，超过此数则跳过后续 split（默认 2，防止 split 风暴） */
+    maxSplitsPerCycle?: number;
 }
+/**
+ * SplitSuggestion — AutoSplitter 传递给外部 ReshardManager 的 split 建议
+ *
+ * 包含触发原因、当前负载和建议的分片数量，使 ReshardManager 无需二次计算即可决策。
+ */
+export interface SplitSuggestion {
+    rangeId: string;
+    nodeCount: number;
+    edgeCount: number;
+    diskSizeBytes: number;
+    suggestedSplitKey?: number;
+    suggestedTargetCount: number;
+    reason: string;
+}
+/**
+ * ReshardCallback — 触发 rebalance 的回调签名
+ * - suggestion 可选：传递时不破坏向后兼容，ReshardManager 可选择忽略或使用建议。
+ */
+export type ReshardCallback = (suggestion?: SplitSuggestion) => void;
 export declare class AutoSplitter {
     private _config;
     private _getRangeInstances;
@@ -24,7 +45,7 @@ export declare class AutoSplitter {
     private _timer;
     private _lastSplit;
     private _running;
-    constructor(getRangeInstances: () => RangeInstance[], onReshard: () => void, config?: AutoSplitterConfig);
+    constructor(getRangeInstances: () => RangeInstance[], onReshard: ReshardCallback, config?: AutoSplitterConfig);
     /** 启动自动分裂检查 */
     start(): void;
     /** 停止自动分裂检查 */

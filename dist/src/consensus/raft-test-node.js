@@ -48,6 +48,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const raft_logic_consensus_1 = require("./raft-logic-consensus");
 const fs = __importStar(require("node:fs"));
 const readline = __importStar(require("node:readline"));
+const logger_1 = require("../ops/logger");
+const logger = new logger_1.Logger('RaftTestNode');
 function logOut(msg) {
     const str = JSON.stringify(msg) + '\n';
     try {
@@ -210,7 +212,7 @@ async function main() {
     });
 }
 main().catch(err => {
-    console.error(`[${process.env.RT_NODE_ID}] Fatal:`, err);
+    logger.error(`Fatal:`, err);
     process.exit(1);
 });
 //# sourceMappingURL=raft-test-node.js.map

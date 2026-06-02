@@ -41,6 +41,48 @@ export interface StreamWalEntry {
     message: StreamMessage;
 }
 /**
+ * SegmentStreamWalAppendStream — 带策略化 fsync 的追加写入流包装
+ *
+ * 在底层 fd 之上添加 fsync 策略控制：
+ * - 'lazy':   不主动 fsync（依赖系统缓存刷新），最快但最不安全
+ * - 'always': 每次 append 后立即 fsync，最安全但最慢
+ * - 'every-n': 每 N 次 append 后 fsync 一次，折中方案
+ *
+ * 默认 'every-n'（n=10），兼顾安全与性能。
+ */
+export declare class SegmentStreamWalAppendStream {
+    private _fd;
+    private _fsyncStrategy;
+    private _fsyncEveryN;
+    private _fsyncCounter;
+    constructor(fd: number, options?: {
+        fsyncStrategy?: 'lazy' | 'always' | 'every-n';
+        fsyncEveryN?: number;
+    });
+    /**
+     * 强制刷盘当前 active segment
+     * 供外部在关键点（如 Raft commit 后）调用，确保数据持久化
+     */
+    fsync(): void;
+    /**
+     * 追加二进制数据到文件末尾，触发 fsync
+     */
+    append(buf: Buffer): void;
+}
+/** SegmentStreamWal 构造选项 */
+export interface SegmentStreamWalOptions {
+    /** 单个 segment 最大字节数（默认 64MB） */
+    segmentMaxBytes?: number;
+    /**
+     * 每次 append 后是否强制 fsync 刷盘。
+     * - true:  每次 append 后调用 fsyncSync（最安全，默认）
+     * - false: 不强制 fsync（性能更好，但崩溃时可能丢失最近写入）
+     *
+     * 即使设为 false，open() 和正常 close() 仍会 fsync。
+     */
+    fsyncOnWrite?: boolean;
+}
+/**
  * SegmentStreamWal — 基于固定大小 segment 的消息持久化队列
  *
  * 与 StreamWal API 完全兼容，但内部使用多 segment 文件。
@@ -57,6 +99,8 @@ export declare class SegmentStreamWal {
     private _activeFd;
     private _activeSize;
     private _pruning;
+    private _fsyncOnWrite;
+    constructor(walPath: string, options?: SegmentStreamWalOptions);
     constructor(walPath: string, segmentMaxBytes?: number);
     get isOpen(): boolean;
     get size(): number;
@@ -69,8 +113,22 @@ export declare class SegmentStreamWal {
     sync(): void;
     /**
      * 追加一条 PENDING 消息
+     *
+     * 当 fsyncOnWrite=true（默认）时，每次 append 后强制刷盘，
+     * 保证在进程崩溃时数据不丢失。
+     * 当 fsyncOnWrite=false 时，跳过 fsync，依赖操作系统批量刷盘，
+     * 性能更快但崩溃时可能丢失最近写入。
      */
     append(msg: StreamMessage): void;
+    /**
+     * A-01: 批量追加多条消息，只做一次 fsync（真正的 Group Commit）
+     *
+     * 将多条 pending 消息合并编码后单次写入文件，然后只调用一次 fsync。
+     * 相比多次 append 分别 fsync，大幅减少系统调用次数。
+     *
+     * @param msgs 待追加的消息列表
+     */
+    appendBatch(msgs: StreamMessage[]): void;
     /**
      * 标记消息为 ACKED
      */

@@ -34,9 +34,9 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
- * StreamWal 压力测试
+ * SegmentStreamWal 压力测试
  */
-const stream_wal_1 = require("./stream-wal");
+const segment_stream_wal_1 = require("./segment-stream-wal");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const TEST_DIR = '/tmp/wal-stress-test-' + Date.now();
@@ -46,9 +46,9 @@ beforeAll(() => {
 afterAll(() => {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
 });
-describe('StreamWal 压力测试', () => {
+describe('SegmentStreamWal 压力测试', () => {
     test('并发 append 1000 条消息', () => {
-        const wal = new stream_wal_1.StreamWal(path.join(TEST_DIR, 'concurrent-1000.wal'));
+        const wal = new segment_stream_wal_1.SegmentStreamWal(path.join(TEST_DIR, 'concurrent-1000'));
         wal.open();
         const batch = [];
         for (let i = 0; i < 1000; i++) {
@@ -72,7 +72,7 @@ describe('StreamWal 压力测试', () => {
         wal.close();
     });
     test('ACK + markConsumed 后 replay 不包含已消费消息', () => {
-        const wal = new stream_wal_1.StreamWal(path.join(TEST_DIR, 'consume-test.wal'));
+        const wal = new segment_stream_wal_1.SegmentStreamWal(path.join(TEST_DIR, 'consume-test'));
         wal.open();
         for (let i = 0; i < 500; i++) {
             wal.append({
@@ -111,9 +111,9 @@ describe('StreamWal 压力测试', () => {
         wal.close();
     });
     test('close + reopen 数据完整性', () => {
-        const fp = path.join(TEST_DIR, 'reopen-test.wal');
+        const dir = path.join(TEST_DIR, 'reopen-test');
         // 写入
-        const wal1 = new stream_wal_1.StreamWal(fp);
+        const wal1 = new segment_stream_wal_1.SegmentStreamWal(dir);
         wal1.open();
         for (let i = 0; i < 2000; i++) {
             wal1.append({
@@ -127,7 +127,7 @@ describe('StreamWal 压力测试', () => {
         }
         wal1.close();
         // 重新打开
-        const wal2 = new stream_wal_1.StreamWal(fp);
+        const wal2 = new segment_stream_wal_1.SegmentStreamWal(dir);
         wal2.open();
         const entries = wal2.replay(0);
         expect(entries.length).toBe(2000);

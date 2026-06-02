@@ -13,13 +13,13 @@ export declare class ScatterGather {
     private _getRanges;
     constructor(getRanges: () => RangeInstance[]);
     /**
-     * 向量搜索 — 广播到所有 Range
+     * 向量搜索 — 广播到所有 Range（带可选超时）
      */
     vectorSearch(query: VectorSearchOptions, options?: ScatterGatherOptions): Promise<VectorSearchResult[]>;
     /**
-     * 获取所有节点（带可选分页）
+     * 获取所有节点（带可选分页，超时兜底）
      */
-    getAllNodes(page?: number, pageSize?: number): Promise<Array<{
+    getAllNodes(page?: number, pageSize?: number, options?: ScatterGatherOptions): Promise<Array<{
         id: number;
         record: NodeRecord;
     }>>;
@@ -34,7 +34,7 @@ export declare class ScatterGather {
     personalizedPageRank(opts: {
         sourceNode: number;
         k?: number;
-    }): Promise<Array<{
+    }, options?: ScatterGatherOptions): Promise<Array<{
         nodeId: number;
         score: number;
     }>>;

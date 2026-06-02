@@ -205,6 +205,8 @@ export interface QueryPlan {
   aggregate?: AggregateClause
   /** GROUP BY 列 */
   groupBy?: string[]
+  /** HAVING 过滤器 */
+  having?: HavingClause[]
   /** OPTIONAL MATCH 步骤（如果匹配不到返回 null 绑定） */
   optionalMatchSteps?: Array<{
     scanLabel: string | null
@@ -611,7 +613,39 @@ export function _preprocessQuery(query: string): {
     withRE.lastIndex = withStart
   }
 
-  // Step 3: If after extraction there's no MATCH at all, add a dummy one
+  // ── Step 3: handle HAVING clause ──
+  // Extract HAVING from the query (appears after GROUP BY, before ORDER BY/LIMIT/end)
+  let havingRaw: string | undefined
+  const havingRE = /\bHAVING\s+(.+?)(?:\bORDER\s+BY\b|\bLIMIT\b|\bSKIP\b|$)/i
+  const havingMatch = modifiedQuery.match(havingRE)
+  if (havingMatch) {
+    havingRaw = havingMatch[1].trim()
+    // Remove HAVING clause from modified query
+    modifiedQuery = modifiedQuery.replace(havingRE, '').trim()
+  }
+
+  // ── Step 3.5: handle ORDER BY with aggregate function calls ──
+  // The peggy parser can't handle function calls in ORDER BY (e.g., ORDER BY count(n.age)).
+  // Replace aggregate calls with a placeholder identifier.
+  // We store the mapping to restore later in plan construction.
+  const orderByAggReplacements: Array<{ placeholder: string; original: string }> = []
+  modifiedQuery = modifiedQuery.replace(
+    /\bORDER\s+BY\s+(.+?)(?:\bLIMIT\b|\bSKIP\b|$)/gi,
+    (match, orderPart: string) => {
+      // Check if orderPart contains '(' — if so, it has function calls
+      if (!orderPart.includes('(')) return match
+      // Replace each function call with placeholder
+      let replaced = orderPart.replace(/(\w+)\(([^)]*)\)/g, (fnMatch: string) => {
+        const placeholder = `__agg_order_${orderByAggReplacements.length}__`
+        orderByAggReplacements.push({ placeholder, original: fnMatch })
+        return placeholder
+      })
+      // Reconstruct the ORDER BY clause with placeholders
+      return match.replace(orderPart, replaced)
+    }
+  )
+
+  // Step 4: If after extraction there's no MATCH at all, add a dummy one
   // This handles cases like "OPTIONAL MATCH (n) RETURN n" where all MATCH
   // clauses were OPTIONAL.
   if (optPatterns.length > 0 && !/MATCH\b/i.test(modifiedQuery) && /\bRETURN\b/i.test(modifiedQuery)) {
@@ -625,6 +659,9 @@ export function _preprocessQuery(query: string): {
       optionalMatches: optPatterns,
       withRaw: withPatterns.length > 0 ? withPatterns : undefined,
       withClause: null,
+      havingRaw,
+      orderByAggReplacements:
+        orderByAggReplacements.length > 0 ? orderByAggReplacements : undefined,
     },
   }
 }
@@ -671,6 +708,8 @@ export interface _QueryExtracts {
   optionalMatches: string[]
   withRaw?: string[]
   withClause: null
+  havingRaw?: string
+  orderByAggReplacements?: Array<{ placeholder: string; original: string }>
 }
 
 /**
@@ -897,6 +936,18 @@ export function parseQuery(query: string): QueryPlan {
   return planFromAST(ast)
 }
 
+function _mapHavingOperator(op: string): HavingClause['operator'] {
+  switch (op) {
+    case '>': return 'GT'
+    case '>=': return 'GTE'
+    case '<': return 'LT'
+    case '<=': return 'LTE'
+    case '=': return 'EQ'
+    case '!=': case '<>': return 'NEQ'
+    default: return 'GT'
+  }
+}
+
 /**
  * Post-process the parsed AST to attach OPTIONAL MATCH and WITH information
  * extracted during preprocessing.
@@ -1010,6 +1061,33 @@ export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
 
       ast.with = withClause
     }
+  }
+
+  // ── Attach HAVING ────────────────────────────────────────
+  if (extracts.havingRaw) {
+    const havingRaw = extracts.havingRaw.trim()
+    // Parse HAVING clause: aggregation expression [operator] [value]
+    // Examples: count(n.age) > 1, count(*) > 999
+    const havingParts = havingRaw.match(
+      /(\w+(?:\([^)]*\))?)\s*(>|>=|<|<=|=|!=|<>)\s*(\d+(?:\.\d+)?)/i
+    )
+    if (havingParts) {
+      const havingClause: HavingClause = {
+        property: havingParts[1].trim(),
+        operator: _mapHavingOperator(havingParts[2]),
+        value: parseFloat(havingParts[3]),
+      }
+      // Attach to AST's return.having
+      if (ast.return) {
+        (ast.return as any).having = [havingClause]
+      }
+    }
+  }
+
+  // ── Restore ORDER BY aggregate replacements ─────────────────
+  if (extracts.orderByAggReplacements && extracts.orderByAggReplacements.length > 0) {
+    // Store replacements info for planFromAST to use
+    (ast as any).__orderByAggReplacements = extracts.orderByAggReplacements
   }
 }
 
@@ -1279,12 +1357,30 @@ export function planFromAST(
       plan.groupBy = ast.groupBy.map(col => formatColumn(col))
     }
 
+    // 处理 HAVING（从 AST 的 return.having 中读取，由 _postProcessAST 注入）
+    if (ast.return && (ast.return as any).having) {
+      plan.having = (ast.return as any).having as HavingClause[]
+    }
+
     // 处理 ORDER BY（只有在有 RETURN 时才有效）
     if (ast.orderBy) {
       plan.orderBy = ast.orderBy.columns.map(col => ({
         property: formatColumn(col.expression),
         direction: col.direction as 'ASC' | 'DESC',
       }))
+    }
+
+    // Restore ORDER BY aggregate function call placeholders
+    const aggReplacements: Array<{ placeholder: string; original: string }> | undefined =
+      (ast as any).__orderByAggReplacements
+    if (aggReplacements && plan.orderBy) {
+      for (const ob of plan.orderBy) {
+        for (const r of aggReplacements) {
+          if (ob.property === r.placeholder) {
+            ob.property = r.original
+          }
+        }
+      }
     }
   }
 
@@ -2092,6 +2188,47 @@ export function _executeQuery(
 
       let resultRows = _executeAggregation(rows, aggInfo, groupByKeys)
 
+      // Apply HAVING filter on aggregated result
+      if (plan.having && plan.having.length > 0) {
+        // Build mapping from HAVING property references to result row keys
+        // The HAVING property is like 'count(n.age)' — we need to match it to the
+        // aggregate key in the result row, which is agg.alias ?? agg.fn.toLowerCase()
+        const aggKey = aggInfo[0].alias ?? aggInfo[0].fn.toLowerCase()
+        resultRows = resultRows.filter(row => {
+          for (const h of plan.having!) {
+            // Try the aggregate key first
+            let val = row[aggKey]
+            // Try exact property match
+            if (val === undefined || val === null) {
+              val = row[h.property]
+            }
+            // Try field name without variable prefix
+            if (val === undefined || val === null) {
+              const propName = h.property.includes('.')
+                ? h.property.split('.').pop()!
+                : h.property
+              val = row[propName]
+            }
+            if (val === undefined || val === null) return false
+            const numVal = Number(val)
+            if (isNaN(numVal)) return false
+            const passes = (() => {
+              switch (h.operator) {
+                case 'GT': return numVal > h.value
+                case 'GTE': return numVal >= h.value
+                case 'LT': return numVal < h.value
+                case 'LTE': return numVal <= h.value
+                case 'EQ': return numVal === h.value
+                case 'NEQ': return numVal !== h.value
+                default: return true
+              }
+            })()
+            if (!passes) return false
+          }
+          return true
+        })
+      }
+
       // Apply ORDER BY on aggregated result
       if (plan.orderBy.length > 0) {
         resultRows = _applyOrderByOnRows(resultRows, plan.orderBy)
@@ -2859,4 +2996,137 @@ export function compileCypher(template: string): ParameterizedQuery {
   const pq = new ParameterizedQuery(template)
   parameterizedCache.set(template, pq)
   return pq
+}
+
+// ─── C-04: Cypher 内置函数 ───
+export const BUILTIN_FUNCTIONS: Record<string, (...args: any[]) => any> = {
+  toUpper: (s: string) => (s ?? '').toUpperCase(),
+  toLower: (s: string) => (s ?? '').toLowerCase(),
+  substring: (s: string, start: number, length?: number) => {
+    if (s == null) return ''
+    if (length !== undefined) {
+      return s.substring(start, start + length)
+    }
+    return s.substring(start)
+  },
+  abs: (x: number) => Math.abs(x),
+  round: (x: number, precision?: number) => {
+    if (precision !== undefined) {
+      const factor = Math.pow(10, precision)
+      return Math.round(x * factor) / factor
+    }
+    return Math.round(x)
+  },
+  coalesce: (...args: any[]) => args.find(a => a != null),
+  timestamp: () => Date.now(),
+}
+
+export function isBuiltinFunction(name: string): boolean {
+  return name in BUILTIN_FUNCTIONS
+}
+
+export function executeBuiltinFunction(name: string, args: any[]): any {
+  const fn = BUILTIN_FUNCTIONS[name]
+  if (!fn) throw new Error(`Unknown built-in function: ${name}`)
+  return fn(...args)
+}
+
+// ─── C-06: GROUP BY + HAVING 辅助函数 ───
+
+export interface HavingClause {
+  property: string
+  operator: 'GT' | 'GTE' | 'LT' | 'LTE' | 'EQ' | 'NEQ'
+  value: number
+}
+
+/**
+ * Apply GROUP BY aggregation and HAVING filter on data.
+ * Groups data by groupBy keys, applies aggregate function, then filters by HAVING.
+ */
+export function _applyGroupByHaving(
+  data: Array<Record<string, unknown>>,
+  groupBy: string[],
+  aggregate: { type: string; field?: string },
+  having?: HavingClause[],
+): Array<Record<string, unknown>> {
+  if (groupBy.length === 0 && !aggregate) {
+    return data
+  }
+
+  // Group the data
+  const groups = new Map<string, Array<Record<string, unknown>>>()
+
+  for (const row of data) {
+    let key: string
+    if (groupBy.length === 0) {
+      key = '_all'
+    } else {
+      key = groupBy.map(gb => String(row[gb] ?? '__NULL__')).join('||')
+    }
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(row)
+  }
+
+  const result: Array<Record<string, unknown>> = []
+
+  for (const [key, group] of groups) {
+    const out: Record<string, unknown> = {}
+
+    // Copy group-by key values (use first row's values)
+    for (const gb of groupBy) {
+      out[gb] = group[0]?.[gb] ?? null
+    }
+
+    // Compute aggregate
+    const aggField = aggregate.field ?? '*'
+    const aggType = aggregate.type
+
+    if (aggType === 'count') {
+      if (aggField === '*') {
+        out['count(*)'] = group.length
+      } else {
+        // Count non-null values of the field
+        const values = group.map(r => r[aggField]).filter(v => v != null)
+        out[aggField] = values.length
+      }
+    } else if (aggType === 'sum') {
+      const values = group.map(r => Number(r[aggField])).filter(v => !isNaN(v))
+      out[aggField] = values.reduce((a, b) => a + b, 0)
+    } else if (aggType === 'avg') {
+      const values = group.map(r => Number(r[aggField])).filter(v => !isNaN(v))
+      out[aggField] = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null
+    } else if (aggType === 'max') {
+      const values = group.map(r => Number(r[aggField])).filter(v => !isNaN(v))
+      out[aggField] = values.length > 0 ? Math.max(...values) : null
+    } else if (aggType === 'min') {
+      const values = group.map(r => Number(r[aggField])).filter(v => !isNaN(v))
+      out[aggField] = values.length > 0 ? Math.min(...values) : null
+    }
+
+    // Apply HAVING filter
+    if (having && having.length > 0) {
+      let pass = true
+      for (const h of having) {
+        const val = out[h.property] as number
+        if (val === undefined || val === null) {
+          pass = false
+          break
+        }
+        switch (h.operator) {
+          case 'GT': if (!(val > h.value)) pass = false; break
+          case 'GTE': if (!(val >= h.value)) pass = false; break
+          case 'LT': if (!(val < h.value)) pass = false; break
+          case 'LTE': if (!(val <= h.value)) pass = false; break
+          case 'EQ': if (!(val === h.value)) pass = false; break
+          case 'NEQ': if (!(val !== h.value)) pass = false; break
+        }
+        if (!pass) break
+      }
+      if (!pass) continue
+    }
+
+    result.push(out)
+  }
+
+  return result
 }

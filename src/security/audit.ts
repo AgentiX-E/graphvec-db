@@ -393,6 +393,54 @@ export class AuditLogger {
     return this.storagePath
   }
 
+  /**
+   * 查询审计日志（按条件过滤）
+   *
+   * @param filters 过滤条件
+   * @returns 过滤后的审计条目列表
+   */
+  query(filters: {
+    user?: string
+    operation?: string
+    result?: string
+    resource?: string
+    since?: string
+    until?: string
+    limit?: number
+  }): AuditEntry[] {
+    let result = [...this.entries]
+
+    if (filters.user !== undefined) {
+      result = result.filter(e => e.user === filters.user)
+    }
+    if (filters.operation !== undefined) {
+      result = result.filter(e => e.operation === filters.operation)
+    }
+    if (filters.result !== undefined) {
+      result = result.filter(e => e.result === filters.result)
+    }
+    if (filters.resource !== undefined) {
+      result = result.filter(e => e.resource === filters.resource)
+    }
+    if (filters.since !== undefined) {
+      const sinceTime = new Date(filters.since).getTime()
+      if (!isNaN(sinceTime)) {
+        result = result.filter(e => new Date(e.timestamp).getTime() >= sinceTime)
+      }
+    }
+    if (filters.until !== undefined) {
+      const untilTime = new Date(filters.until).getTime()
+      if (!isNaN(untilTime)) {
+        result = result.filter(e => new Date(e.timestamp).getTime() <= untilTime)
+      }
+    }
+    if (filters.limit !== undefined && filters.limit > 0) {
+      result = result.slice(0, filters.limit)
+    }
+
+    return result
+  }
+
   // ─── 内部方法 ──────────────────────────────
 
   /**

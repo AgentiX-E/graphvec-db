@@ -25,6 +25,7 @@ class AutoSplitter {
             maxNodesPerRange: config?.maxNodesPerRange ?? 100000,
             checkIntervalMs: config?.checkIntervalMs ?? 30000,
             minSplitIntervalMs: config?.minSplitIntervalMs ?? 60000,
+            maxSplitsPerCycle: config?.maxSplitsPerCycle ?? 2,
         };
     }
     /** 启动自动分裂检查 */
@@ -59,6 +60,9 @@ class AutoSplitter {
                 // 跳过 draining range
                 if (range.isDraining())
                     continue;
+                // 风暴预防：一周期最多 split maxSplitsPerCycle 次
+                if (splits >= this._config.maxSplitsPerCycle)
+                    break;
                 const engine = range.engine;
                 const stats = engine.stats();
                 const nodeCount = stats.nodeCount ?? 0;
@@ -70,7 +74,15 @@ class AutoSplitter {
                     }
                     // 触发 split
                     this._lastSplit.set(rangeId, now);
-                    this._onReshard();
+                    const suggestion = {
+                        rangeId,
+                        nodeCount,
+                        edgeCount: stats.edgeCount ?? 0,
+                        diskSizeBytes: stats.diskSizeBytes ?? 0,
+                        suggestedTargetCount: Math.ceil(nodeCount / this._config.maxNodesPerRange),
+                        reason: 'node_count_exceeded',
+                    };
+                    this._onReshard(suggestion);
                     splits++;
                 }
             }

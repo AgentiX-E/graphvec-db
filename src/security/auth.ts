@@ -819,3 +819,327 @@ export async function authenticateToken(): Promise<{ user: string; role: string 
 export function requireAuth(): void {
   throw new Error('Token-based auth is deprecated. Use mTLS only.')
 }
+
+// ──────────────────────────────────────────
+// OIDCValidator — OAuth2/OIDC Token 验证
+// ──────────────────────────────────────────
+
+export interface OIDCValidatorOptions {
+  /** OIDC Issuer URL（用于发现 JWKS 端点） */
+  issuer: string
+  /** 预期 audience (client_id) */
+  clientId: string
+  /** JWKS 端点地址（可选，默认从 issuer 的 .well-known/openid-configuration 发现） */
+  jwksUri?: string
+}
+
+/**
+ * OIDCValidator — OIDC ID Token / Access Token 验证
+ *
+ * 支持 JWKS (JSON Web Key Set) 验证。
+ * 注：此实现为同步/无网络的最小驱动版本，实际生产应使用 jose 等库。
+ *
+ * 验证流程：
+ * - 解码 JWT header 获取 kid
+ * - 从 JWKS 端点抓取公钥（可缓存）
+ * - 验证签名（当前为 stub，仅校验 header 和 payload 格式）
+ * - 校验 iss, aud, exp
+ */
+export class OIDCValidator {
+  public options: OIDCValidatorOptions
+  /** JWKS 缓存 */
+  private _jwksCache: any = null
+  /** 上次缓存时间 */
+  private _cacheTime = 0
+  /** 缓存 TTL（毫秒） */
+  private readonly CACHE_TTL = 300000 // 5 分钟
+
+  constructor(options: OIDCValidatorOptions) {
+    this.options = options
+  }
+
+  /**
+   * 验证 OIDC token
+   *
+   * @param token 完整的 JWT token 字符串
+   * @returns 解码后的 payload (包含 sub, iss, aud, exp 等字段)
+   * @throws AuthError 如果 token 无效
+   */
+  async validateToken(token: string): Promise<Record<string, unknown>> {
+    const parts = token.split('.')
+    if (parts.length !== 3 && parts.length !== 5) {
+      throw new AuthError('Invalid token format', 401)
+    }
+
+    if (parts.length < 2) {
+      throw new AuthError('Invalid token format', 401)
+    }
+
+    // Decode header
+    let header: Record<string, unknown>
+    try {
+      header = this._decodeHeader(token)
+    } catch {
+      throw new AuthError('Invalid token header', 401)
+    }
+
+    // Decode payload
+    let payload: Record<string, unknown>
+    try {
+      const payloadB64 = parts[1]
+      const decoded = JSON.parse(
+        Buffer.from(payloadB64, 'base64url').toString('utf-8'),
+      )
+      payload = decoded
+    } catch {
+      throw new AuthError('Invalid token payload', 401)
+    }
+
+    // Verify expiration
+    const now = Math.floor(Date.now() / 1000)
+    if (payload.exp && typeof payload.exp === 'number' && payload.exp <= now) {
+      throw new AuthError('Token has expired', 401)
+    }
+
+    // Verify issuer
+    if (payload.iss && payload.iss !== this.options.issuer) {
+      throw new AuthError('Invalid issuer', 401)
+    }
+
+    // Verify audience
+    if (payload.aud) {
+      const aud = payload.aud
+      if (Array.isArray(aud)) {
+        if (!aud.includes(this.options.clientId)) {
+          throw new AuthError('Invalid audience', 401)
+        }
+      } else if (aud !== this.options.clientId) {
+        throw new AuthError('Invalid audience', 401)
+      }
+    }
+
+    return payload
+  }
+
+  /**
+   * 设置本地 JWKS（用于测试或离线验证）
+   */
+  setJwks(jwks: any): void {
+    this._jwksCache = jwks
+    this._cacheTime = Date.now()
+  }
+
+  /**
+   * 获取缓存的 JWKS
+   */
+  getCachedJwks(): any {
+    if (this._jwksCache && (Date.now() - this._cacheTime) < this.CACHE_TTL) {
+      return this._jwksCache
+    }
+    return null
+  }
+
+  /**
+   * 解码 JWT header（base64url → JSON）
+   */
+  _decodeHeader(token: string): Record<string, unknown> {
+    const parts = token.split('.')
+    if (parts.length < 2) {
+      throw new Error('Invalid token')
+    }
+    const headerB64 = parts[0]
+    const decoded = JSON.parse(
+      Buffer.from(headerB64, 'base64url').toString('utf-8'),
+    )
+    return decoded
+  }
+}
+
+// ──────────────────────────────────────────
+// AuthenticatorChain — 认证链
+// ──────────────────────────────────────────
+
+export type AuthenticatorFn = (
+  req: http.IncomingMessage,
+) => Promise<AuthResult | null>
+
+export interface AuthenticatorEntry {
+  name: string
+  fn: AuthenticatorFn
+}
+
+/**
+ * AuthenticatorChain — 按顺序尝试多个认证器
+ *
+ * 每个认证器接收 http.IncomingMessage，返回 AuthResult | null。
+ * - 返回 AuthResult → 认证成功，直接返回
+ * - 返回 null → 继续尝试下一个
+ * - 抛出错误 → 记录日志并继续尝试下一个
+ *
+ * 所有认证器都失败时，抛出 AuthError (401)。
+ */
+export class AuthenticatorChain {
+  private authenticators: AuthenticatorEntry[] = []
+
+  /**
+   * 注册一个认证器
+   */
+  use(name: string, fn: AuthenticatorFn): void {
+    this.authenticators.push({ name, fn })
+  }
+
+  /**
+   * 按注册顺序尝试每个认证器，直到有一个成功
+   *
+   * @throws AuthError 如果所有认证器都失败
+   */
+  async authenticate(req: http.IncomingMessage): Promise<AuthResult> {
+    if (this.authenticators.length === 0) {
+      throw new AuthError('Authentication required', 401)
+    }
+
+    let lastError: Error | null = null
+
+    for (const entry of this.authenticators) {
+      try {
+        const result = await entry.fn(req)
+        if (result !== null) {
+          return result
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err))
+        // Continue to next authenticator
+      }
+    }
+
+    throw new AuthError('Authentication required', 401)
+  }
+
+  /**
+   * 获取当前注册的认证器列表
+   */
+  list(): AuthenticatorEntry[] {
+    return [...this.authenticators]
+  }
+}
+
+// ──────────────────────────────────────────
+// JWT Refresh Token 扩展
+// ──────────────────────────────────────────
+
+export interface RefreshTokenResult {
+  accessToken: string
+  expiresIn: number
+}
+
+/**
+ * JWT Manager — Refresh Token 方法
+ */
+/**
+ * signRefreshToken — 签发 Refresh Token（更长的有效期）
+ * @param userId 用户标识
+ * @param role 用户角色
+ * @param expiresInSec 过期时间（秒），默认 86400 (24h)
+ */
+/**
+ * signRefreshToken — 签发 Refresh Token（更长的有效期）
+ * @param userId 用户标识
+ * @param role 用户角色
+ * @param expiresInSec 过期时间（秒），默认 86400 (24h)
+ */
+;(JwtManager as any).prototype.signRefreshToken = function (
+  this: JwtManager,
+  userId: string,
+  role: Role,
+  expiresInSec: number = 86400,
+): string {
+  // Add _rt marker to differentiate from access tokens.
+  // Build the JWT manually with the extra claim in payload.
+  const headerStr = JSON.stringify({ alg: 'HS256', typ: 'JWT' })
+  const now = Math.floor(Date.now() / 1000)
+  const payloadObj = {
+    userId,
+    role,
+    _rt: true,
+    exp: now + expiresInSec,
+    iat: now,
+  }
+  const headerB64 = Buffer.from(headerStr).toString('base64url')
+  const payloadB64 = Buffer.from(JSON.stringify(payloadObj)).toString('base64url')
+  const data = `${headerB64}.${payloadB64}`
+
+  // Use the same HMAC-SHA256 signing logic
+  const hmac = crypto.createHmac('sha256', this.secret)
+  hmac.update(data)
+  const sig = hmac.digest().toString('base64url')
+
+  return `${headerB64}.${payloadB64}.${sig}`
+}
+
+/**
+ * refreshAccessToken — 使用 Refresh Token 换取新的 Access Token
+ * @param refreshToken Refresh Token
+ * @returns 新的 access token 信息
+ * @throws AuthError 如果 token 无效或过期
+ */
+;(JwtManager as any).prototype.refreshAccessToken = function (
+  this: JwtManager,
+  refreshToken: string,
+): RefreshTokenResult {
+  // Decode the token header to verify format first
+  const parts = refreshToken.split('.')
+  if (parts.length !== 3) {
+    throw new AuthError('Invalid token format', 401)
+  }
+
+  // Verify the refresh token via the manager's verifyToken
+  const payload = this.verifyToken(refreshToken)
+
+  // Decode the raw payload to check for refresh token marker
+  // (verifyToken strips unknown fields, so we decode raw)
+  let rawPayload: any
+  try {
+    rawPayload = JSON.parse(
+      Buffer.from(parts[1], 'base64url').toString('utf-8'),
+    )
+  } catch {
+    throw new AuthError('Invalid token payload', 401)
+  }
+
+  // Check for refresh token marker
+  if (rawPayload._rt !== true) {
+    throw new AuthError('Not a refresh token', 401)
+  }
+
+  // Check expiration
+  const now = Math.floor(Date.now() / 1000)
+  if (rawPayload.exp && rawPayload.exp <= now) {
+    throw new AuthError('Refresh token has expired', 401)
+  }
+
+  // Issue a new access token (1 hour)
+  const accessToken = this.signToken(payload.userId, payload.role, 3600)
+
+  return {
+    accessToken,
+    expiresIn: 3600,
+  }
+}
+
+/**
+ * loadSecretFromFile — 从文件加载 JWT secret
+ * @param filePath 密钥文件路径
+ * @returns 密钥 buffer
+ * @throws Error 如果文件不存在或为空
+ */
+;(JwtManager as any).loadSecretFromFile = function (filePath: string): Buffer {
+  const fs = require('fs')
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`JWT secret file not found: ${filePath}`)
+  }
+  const content = fs.readFileSync(filePath, 'utf-8').trim()
+  if (!content) {
+    throw new Error('JWT secret file is empty')
+  }
+  return Buffer.from(content)
+}

@@ -45,6 +45,11 @@ export class GraphQuery {
    */
   private useOptimizer_: boolean = true
 
+  /**
+   * 当前绑定的事务 ID（由 withinTxn 设置）
+   */
+  private _txId: string | null = null
+
   constructor(manager: ShardManager) {
     this.manager = manager
   }
@@ -55,6 +60,17 @@ export class GraphQuery {
    */
   enableOptimizer(enabled: boolean = true): GraphQuery {
     this.useOptimizer_ = enabled
+    return this
+  }
+
+  /**
+   * 绑定到指定事务 ID。之后的所有写入操作（updateEdge, deleteEdge）将缓冲到事务中。
+   *
+   * @param txId 事务 ID（由 SimpleTxnManager.begin() 获取）
+   * @returns `this` 以支持链式调用
+   */
+  withinTxn(txId: string): GraphQuery {
+    this._txId = txId
     return this
   }
 
@@ -138,6 +154,17 @@ export class GraphQuery {
    * @param updates 要更新/设置的属性
    */
   async updateEdge(src: number, dst: number, typeId: number, updates?: Record<string, unknown>): Promise<void> {
+    // If bound to a transaction, buffer the operation
+    if (this._txId) {
+      const txnMgr = (this.manager as any).getSimpleTxnManager?.()
+      if (txnMgr) {
+        txnMgr.addOp(this._txId, {
+          type: 'upsertEdge',
+          args: [src, dst, typeId, updates],
+        })
+        return
+      }
+    }
     await this.manager.upsertEdge(src, dst, typeId, {
       props: updates as any,
     })
@@ -150,6 +177,17 @@ export class GraphQuery {
    * @param typeId 边类型
    */
   async deleteEdge(src: number, dst: number, typeId: number): Promise<void> {
+    // If bound to a transaction, buffer the operation
+    if (this._txId) {
+      const txnMgr = (this.manager as any).getSimpleTxnManager?.()
+      if (txnMgr) {
+        txnMgr.addOp(this._txId, {
+          type: 'deleteEdge',
+          args: [src, dst, typeId],
+        })
+        return
+      }
+    }
     await this.manager.deleteEdge(src, dst, typeId)
   }
 
