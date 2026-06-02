@@ -1,0 +1,76 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+[90mstderr[2m | core/config-watcher.spec.ts[2m > [22m[2mConfigWatcher[2m > [22m[2mreload from file[2m > [22m[2mshould survive invalid JSON in config file
+[22m[39m[ConfigWatcher] Failed to parse config file: Unexpected token 'i', "invalid json{{{" is not valid JSON
+
+[90mstderr[2m | core/config-watcher.spec.ts[2m > [22m[2mConfigWatcher[2m > [22m[2masync handlers[2m > [22m[2mshould not reject the caller when async handler throws
+[22m[39m[ConfigWatcher] Handler error for key "a": Error: handler error
+    at [90m/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.spec.ts:198:49
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:302:11
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:1903:26
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2326:20
+    at new Promise (<anonymous>)
+    at runWithCancel [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2323:10[90m)[39m
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2305:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2272:10[90m)[39m
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2955:64
+
+ [32m✓[39m api/compression.spec.ts[2m > [22mnegotiateEncoding[2m > [22mshould return null for no Accept-Encoding header[32m 2[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mnegotiateEncoding[2m > [22mshould return gzip for gzip in Accept-Encoding[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mnegotiateEncoding[2m > [22mshould return brotli for brotli in Accept-Encoding[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mnegotiateEncoding[2m > [22mshould prefer brotli over gzip[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mnegotiateEncoding[2m > [22mshould return gzip for wildcard[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mnegotiateEncoding[2m > [22mshould respect q values[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mnegotiateEncoding[2m > [22mshould return null when q=0[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mnegotiateEncoding[2m > [22mshould return null for identity only[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mconstructor and options[2m > [22mshould apply default options[32m 1[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mconstructor and options[2m > [22mshould accept custom options[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mconstructor and options[2m > [22mshould allow runtime option update[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mwrapResponse - compressed output[2m > [22mshould set Content-Encoding header for gzip-compressed response[32m 4[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mwrapResponse - compressed output[2m > [22mshould add Content-Length after compression[32m 1[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mwrapResponse - compressed output[2m > [22mshould NOT compress response when body below threshold[32m 1[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mwrapResponse - compressed output[2m > [22mshould NOT compress non-JSON content types[32m 2[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mwrapResponse - compressed output[2m > [22mshould not compress when no Accept-Encoding header[32m 1[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mwrapResponse - compressed output[2m > [22mshould remove Content-Length when compressing[32m 1[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mgetGrpcCompressionOptions[2m > [22mshould return gzip compression options by default[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mgetGrpcCompressionOptions[2m > [22mshould return 0 for algorithm=none[32m 0[2mms[22m[39m
+ [32m✓[39m api/compression.spec.ts[2m > [22mCompressionMiddleware[2m > [22mcompression failure fallback[2m > [22mshould not crash on normal operation[32m 1[2mms[22m[39m
+[90mstderr[2m | core/config-watcher.spec.ts[2m > [22m[2mConfigWatcher[2m > [22m[2masync handlers[2m > [22m[2mshould not reject the caller when sync handler throws
+[22m[39m[ConfigWatcher] Handler error for key "a": Error: sync error
+    at [90m/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.spec.ts:212:43
+    at Mock [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/spy[24m/dist/index.js:332:34[90m)[39m
+    at ConfigWatcher.invokeHandler [90m(/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.ts:257:22[90m)[39m
+    at ConfigWatcher.fireHandlers [90m(/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.ts:241:16[90m)[39m
+    at ConfigWatcher.setConfig [90m(/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.ts:90:10[90m)[39m
+    at [90m/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.spec.ts:217:28
+    at Proxy.assertThrows [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4mchai[24m/index.js:2798:5[90m)[39m
+    at Proxy.methodWrapper [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4mchai[24m/index.js:1700:25[90m)[39m
+    at Proxy.<anonymous> [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/expect[24m/dist/index.js:1216:12[90m)[39m
+    at Proxy.overwritingMethodWrapper [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4mchai[24m/index.js:1750:33[90m)[39m
+
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mconstructor and getConfig[2m > [22mshould store initial config[32m 2[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mconstructor and getConfig[2m > [22mshould return a frozen copy[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22msetConfig[2m > [22mshould update config values[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mon and onAny event handlers[2m > [22mshould fire onAny when setConfig changes a value[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mon and onAny event handlers[2m > [22mshould fire specific on handler when setConfig changes its key[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mon and onAny event handlers[2m > [22mshould not fire handler when value is unchanged[32m 0[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mon and onAny event handlers[2m > [22mshould handle multiple handlers for the same key[32m 0[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mreload from file[2m > [22mshould reload config from file and fire handlers[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mreload from file[2m > [22mshould return null for non-existent config file[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mreload from file[2m > [22mshould survive invalid JSON in config file[32m 2[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mstart and stop watching[2m > [22mshould start without throwing[32m 2[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mstart and stop watching[2m > [22mshould not start twice[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mstart and stop watching[2m > [22mshould stop without throwing[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22mstart and stop watching[2m > [22mshould report isWatching correctly[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22moff handler removal[2m > [22mshould remove a specific handler[32m 1[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22moff handler removal[2m > [22mshould not throw when removing non-existent handler[32m 3[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22masync handlers[2m > [22mshould not reject the caller when async handler throws[32m 8[2mms[22m[39m
+ [32m✓[39m core/config-watcher.spec.ts[2m > [22mConfigWatcher[2m > [22masync handlers[2m > [22mshould not reject the caller when sync handler throws[32m 3[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[32m38 passed[39m[22m[90m (38)[39m
+[2m   Start at [22m 14:32:43
+[2m   Duration [22m 241ms[2m (transform 79ms, setup 0ms, import 160ms, tests 47ms, environment 0ms)[22m
+

@@ -1,0 +1,196 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mVariableLengthPathNode 接口[2m > [22m应包含所有必需字段[32m 4[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mVariableLengthPathNode 接口[2m > [22m可选字段应为 undefined 默认[32m 0[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mVariableLengthPathNode 接口[2m > [22m应支持 edgeType 和 edgeTypes 设置[32m 3[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mbuildIRFromSpec 变长路径[2m > [22mspec 含 variableLengthPath 时生成 VARIABLE_LENGTH_PATH 节点[32m 1[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mbuildIRFromSpec 变长路径[2m > [22mVARIABLE_LENGTH_PATH 的子节点应为 SCAN[32m 1[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mBFS 变长展开执行[2m > [22mMATCH (a:1)-[*1..1]->(b) — 单跳变长（等价于 neighbors 1）[32m 2[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mBFS 变长展开执行[2m > [22mMATCH (a)-[*1..3]->(b) — 三跳内可到达节点[32m 2[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mBFS 变长展开执行[2m > [22mMATCH (a)-[*2..4]->(b) — 跳数范围匹配[32m 1[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mBFS 变长展开执行[2m > [22m无匹配边时返回空结果[32m 0[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mBFS 变长展开执行[2m > [22m方向为 both 时双向遍历[32m 1[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22moptimizeIR 变长路径[2m > [22mVARIABLE_LENGTH_PATH 节点不会被优化器消除[32m 0[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22moptimizeIR 变长路径[2m > [22m优化后保持 depth 参数[32m 0[2mms[22m[39m
+ [32m✓[39m query/var-length-path.spec.ts[2m > [22mVariableLengthPath (GAP-20)[2m > [22mformatPlanExplain 变长路径[2m > [22mVARIABLE_LENGTH_PATH 应出现在 EXPLAIN 输出中[32m 0[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22m注册所有 6 种事件类型的 listener[32m 20[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22m事件过滤器：只注册指定类型[32m 2[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22m收到 local emit 后通过 SSE 推送[32m 3[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22m初始连接确认消息[32m 1[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22m事件数据传递：无 data 字段时回退到 event 本身[32m 1[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22mcleanup 移除所有 listener[32m 0[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22mcleanup 后不再推送[32m 1[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22mactiveConnections 计数正确[32m 1[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22mSSE 响应头正确[32m 1[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22m空事件过滤器 = 全部订阅[32m 1[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22medge 事件也能正确传递[32m 1[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts[2m > [22mGraphQLSubscription[2m > [22m连接关闭时 write 不抛错（容错）[32m 2[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22m_parseCert[2m > [22mshould parse a valid self-signed certificate and extract subject/issuer[32m 228[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22m_parseCert[2m > [22mshould return null for invalid cert path[32m 18[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22m_parseCert[2m > [22mshould return null for invalid PEM content[32m 11[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22mout() — 出边遍历[2m > [22mout() 应沿出边遍历邻居[32m 5[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22mout() — 出边遍历[2m > [22mout(edgeTypes) 应按边类型过滤[32m 1[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22mout() — 出边遍历[2m > [22mout() 链式调用应返回 this[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22min() — 入边遍历[2m > [22min() 应设置方向为 in[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22min() — 入边遍历[2m > [22min() 链式调用应返回 this[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22mboth() — 双向遍历[2m > [22mboth() 应设置方向为 both[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22mboth() — 双向遍历[2m > [22mboth() 链式调用应返回 this[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22mhas() — 属性过滤[2m > [22mhas(key, value) 应过滤匹配属性[32m 1[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22mhas() — 属性过滤[2m > [22mhas() 链式调用应返回 this[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22mhas() — 属性过滤[2m > [22mhas() 可与 where() 组合[32m 1[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22moutE() / inE() / bothE() — 边遍历[2m > [22moutE() 应设置遍历参数[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22moutE() / inE() / bothE() — 边遍历[2m > [22minE() 应设置方向为 in[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22moutE() / inE() / bothE() — 边遍历[2m > [22mbothE() 应设置方向为 both[32m 0[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22m完整链式调用[2m > [22mmatch → out → has → return[32m 4[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts[2m > [22mFluent Traverse (GAP-21)[2m > [22m完整链式调用[2m > [22mmatch → out → where → return — 多步链式组合[32m 0[2mms[22m[39m
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould get a client for an address
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould return the same client on repeated gets (undersaturated)
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould create up to maxPerAddress clients when previous ones have failures
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 2)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould reuse a released client
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould execute gRPC calls via pooled client
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould get a client for an address[32m 8[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould return the same client on repeated gets (undersaturated)[32m 1[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould create up to maxPerAddress clients when previous ones have failures[32m 3[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould reuse a released client[32m 1[2mms[22m[39m
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould query neighbors via pooled client
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould return true from healthCheck on a live server
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould close all connections on close()
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 2)
+[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 3)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould return pool stats
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould evict idle connections after idleTimeoutMs
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould execute gRPC calls via pooled client[32m 59[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould query neighbors via pooled client[32m 35[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould return true from healthCheck on a live server[32m 10[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould return false from healthCheck on a dead address[32m 0[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould close all connections on close()[32m 3[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould throw on get() after close()[32m 2[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould return pool stats[32m 1[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mexpiry detection[2m > [22mshould detect an already-expired certificate[33m 361[2mms[22m[39m
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould evict idle connections after idleTimeoutMs
+[22m[39m[GrpcClientPool] evicting idle connection to 127.0.0.1:34175 (idle 149ms)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould close unmanaged client on release
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:34175 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould maintain separate pools for different addresses
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:50051 (pool size: 1)
+[GrpcClientPool] created connection to 127.0.0.1:50052 (pool size: 1)
+
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould evict idle connections after idleTimeoutMs[32m 252[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould close unmanaged client on release[32m 1[2mms[22m[39m
+ [32m✓[39m api/grpc-pool.spec.ts[2m > [22mGrpcClientPool[2m > [22mshould maintain separate pools for different addresses[32m 1[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mexpiry detection[2m > [22mshould trigger onExpired callback for expired cert[33m 637[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mwarning ranges[2m > [22mshould trigger onCritical when within critical days[32m 250[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mwarning ranges[2m > [22mshould trigger onWarning when within warning days but outside critical[32m 227[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mwarning ranges[2m > [22mshould not trigger any callback for a long-lived cert[32m 203[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mstart / stop[2m > [22mshould start interval and return immediately when already started[33m 547[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mstart / stop[2m > [22mshould stop and clear the interval[33m 424[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mstart / stop[2m > [22mshould be idempotent — multiple stop calls do nothing[32m 216[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mautoRenew (GAP-23)[2m > [22mshould return false when no ACME config set[32m 281[2mms[22m[39m
+[14:32:54.443] [32mINFO[39m (cert-monitor/88300): [36mCertificate is valid[39m
+    [35mdaysUntilExpiry[39m: 365
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mnotAfter[39m: "2027-06-02T06:32:54.000Z"
+[14:32:56.334] [32mINFO[39m (cert-monitor/88300): [36mautoRenew: starting ACME certificate renewal[39m
+    [35mdomains[39m: [
+      "test.example.com"
+    ]
+[14:32:56.335] [32mINFO[39m (cert-monitor/88300): [36mautoRenew: already in progress, skipping[39m
+[14:32:55.631] [32mINFO[39m (cert-monitor/88300): [36mCertMonitor started[39m
+    [35mintervalMs[39m: 3600000
+    [35mwarnDays[39m: 30
+    [35mcriticalDays[39m: 7
+[14:32:55.631] [32mINFO[39m (cert-monitor/88300): [36mCertMonitor stopped[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mautoRenew (GAP-23)[2m > [22mshould not trigger concurrent renewals[33m 696[2mms[22m[39m
+[14:32:53.763] [31mERROR[39m (cert-monitor/88300): [36mCertificate has expired[39m
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mexpiredAt[39m: "2026-06-01T06:32:53.000Z"
+[14:32:56.609] [31mERROR[39m (cert-monitor/88300): [36mautoRenew: ACME renewal failed[39m
+    [35mstack[39m: "TypeError: acme.crypto.readPrivateKey is not a function\n    at CertMonitor.autoRenew (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:239:32)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:242:13\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+    err: "acme.crypto.readPrivateKey is not a function"
+[14:32:56.841] [32mINFO[39m (cert-monitor/88300): [36mautoRenew: starting ACME certificate renewal[39m
+    [35mdomains[39m: [
+      "test.example.com"
+    ]
+[14:32:52.734] [32mINFO[39m (cert-monitor/88300): [36mCertificate is valid[39m
+    [35mdaysUntilExpiry[39m: 365
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mnotAfter[39m: "2027-06-02T06:32:52.000Z"
+[14:32:55.912] [33mWARN[39m (cert-monitor/88300): [36mautoRenew: ACME config not set[39m
+[14:32:52.753] [31mERROR[39m (cert-monitor/88300): [36mFailed to parse certificate file[39m
+    [35mstack[39m: "Error: ENOENT: no such file or directory, open '/nonexistent/cert.pem'\n    at Proxy.readFileSync (node:fs:440:20)\n    at CertMonitor._parseCert (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:318:22)\n    at CertMonitor.checkNow (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:134:25)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:64:30\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20"
+    [35mcertPath[39m: "/nonexistent/cert.pem"
+    err: "ENOENT: no such file or directory, open '/nonexistent/cert.pem'"
+[14:32:52.754] [31mERROR[39m (cert-monitor/88300): [36mFailed to parse certificate[39m
+    [35mstack[39m: "Error: parse error\n    at CertMonitor.checkNow (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:137:63)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:64:30\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)"
+    [35mcertPath[39m: "/nonexistent/cert.pem"
+    err: "parse error"
+[14:32:52.761] [31mERROR[39m (cert-monitor/88300): [36mFailed to parse certificate file[39m
+    [35mstack[39m: "Error: error:0480006C:PEM routines::no start line\n    at new X509Certificate (node:internal/crypto/x509:119:21)\n    at CertMonitor._parseCert (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:319:20)\n    at CertMonitor.checkNow (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:134:25)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:74:30\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20"
+    [35mcertPath[39m: "/tmp/cert-monitor-test-mduojl/bad.pem"
+    err: "error:0480006C:PEM routines::no start line"
+[14:32:52.764] [31mERROR[39m (cert-monitor/88300): [36mFailed to parse certificate[39m
+    [35mstack[39m: "Error: parse error\n    at CertMonitor.checkNow (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:137:63)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:74:30\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)"
+    [35mcertPath[39m: "/tmp/cert-monitor-test-mduojl/bad.pem"
+    err: "parse error"
+[14:32:54.990] [32mINFO[39m (cert-monitor/88300): [36mCertMonitor started[39m
+    [35mintervalMs[39m: 3600000
+    [35mwarnDays[39m: 30
+    [35mcriticalDays[39m: 7
+[14:32:54.990] [32mINFO[39m (cert-monitor/88300): [36mCertMonitor stopped[39m
+[14:32:54.013] [33mWARN[39m (cert-monitor/88300): [36mCertificate is in CRITICAL state — expiring soon[39m
+    [35mdaysUntilExpiry[39m: 3
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mnotAfter[39m: "2026-06-05T06:32:54.000Z"
+[14:32:54.239] [33mWARN[39m (cert-monitor/88300): [36mCertificate is approaching expiry[39m
+    [35mdaysUntilExpiry[39m: 15
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mnotAfter[39m: "2026-06-17T06:32:54.000Z"
+[14:32:53.126] [31mERROR[39m (cert-monitor/88300): [36mCertificate has expired[39m
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mexpiredAt[39m: "2026-06-01T06:32:53.000Z"
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mautoRenew (GAP-23)[2m > [22mshould invoke onRenewed when ACME process succeeds[32m 289[2mms[22m[39m
+[14:32:55.415] [32mINFO[39m (cert-monitor/88300): [36mCertMonitor started[39m
+    [35mintervalMs[39m: 3600000
+    [35mwarnDays[39m: 30
+    [35mcriticalDays[39m: 7
+[14:32:55.415] [32mINFO[39m (cert-monitor/88300): [36mCertMonitor stopped[39m
+[14:32:57.479] [32mINFO[39m (cert-monitor/88300): [36mautoRenew: starting ACME certificate renewal[39m
+    [35mdomains[39m: [
+      "test.example.com"
+    ]
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mautoRenew (GAP-23)[2m > [22mshould write challenges and cleanup on success (happy path mock)[33m 616[2mms[22m[39m
+[14:32:56.898] [31mERROR[39m (cert-monitor/88300): [36mautoRenew: ACME renewal failed[39m
+    [35mstack[39m: "TypeError: acme.crypto.readPrivateKey is not a function\n    at CertMonitor.autoRenew (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:239:32)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:267:24\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+    err: "acme.crypto.readPrivateKey is not a function"
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mautoRenew (GAP-23)[2m > [22mshould handle updateAcmeConfig correctly[32m 257[2mms[22m[39m
+ [32m✓[39m ops/cert-monitor.spec.ts[2m > [22mCertMonitor[2m > [22mautoRenew (GAP-23)[2m > [22mshould check existing cert and trigger autoRenew in critical range[32m 214[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m      Tests [22m [1m[32m71 passed[39m[22m[90m (71)[39m
+[2m   Start at [22m 14:32:52
+[2m   Duration [22m 5.92s[2m (transform 995ms, setup 0ms, import 1.91s, tests 6.01s, environment 1ms)[22m
+

@@ -1,0 +1,48 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mregisterRoute[2m > [22mshould register a single route[32m 2[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mregisterRoute[2m > [22mshould normalize method to uppercase[32m 1[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mregisterRoute[2m > [22mshould create default operationId from summary[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mregisterRoute[2m > [22mshould add default 200 response if none provided[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mregisterRoute[2m > [22mshould register parameters[32m 1[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mregisterRoutes (batch)[2m > [22mshould register multiple routes at once[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mbuildDocument[2m > [22mshould include base paths from generateOpenAPIDocument[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mbuildDocument[2m > [22mshould merge registered paths with base paths[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mbuildDocument[2m > [22mshould accept custom title and version[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mbuildDocument[2m > [22mshould set server url from constructor[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mgetJSON[2m > [22mshould return valid JSON string[32m 1[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mgetSwaggerUIHTML[2m > [22mshould return HTML string[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mgetSwaggerUIHTML[2m > [22mshould include custom spec URL[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mclear[2m > [22mshould reset all registered routes[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mcreateJSONHandler[2m > [22mshould return a function that writes JSON response[32m 2[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22mcreateSwaggerUIHandler[2m > [22mshould return a function that writes HTML response[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22medge cases[2m > [22mshould handle duplicate route registrations (last wins)[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22medge cases[2m > [22mshould handle trailing slash in path[32m 0[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts[2m > [22mOpenAPIRegistry[2m > [22medge cases[2m > [22mshould chaining API[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mconstructor and config[2m > [22mshould use default config[32m 2[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mconstructor and config[2m > [22mshould accept custom config[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mconstructor and config[2m > [22mshould allow runtime config update[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mrunWithTimeout[2m > [22mshould resolve fast async functions[32m 1[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mrunWithTimeout[2m > [22mshould reject with QueryTimeoutError when promise exceeds timeout[32m 11[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mrunWithTimeout[2m > [22mshould use per-type timeout when specified[32m 11[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mrunWithTimeout[2m > [22mshould use default timeout for unknown type[32m 11[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mrunWithTimeout[2m > [22mshould propagate original error[32m 1[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mrunWithTimeout[2m > [22mshould respect external AbortSignal[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mwrapPromise[2m > [22mshould timeout a slow promise[32m 10[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mwrapPromise[2m > [22mshould resolve a fast promise[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mcreateRequestTimeout[2m > [22mshould create controller and cancel function[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mcreateRequestTimeout[2m > [22mshould abort after timeout[32m 51[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mcreateRequestTimeout[2m > [22mshould not abort before timeout[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mcreateRequestTimeout[2m > [22mshould link to parent signal[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mcreateRequestTimeout[2m > [22mcancel should cleanup timer[32m 51[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mstats[2m > [22mshould track total runs[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mstats[2m > [22mshould track timeout count[32m 16[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mstats[2m > [22mshould track cancel count via AbortSignal[32m 0[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts[2m > [22mQueryTimeoutManager[2m > [22mstats[2m > [22mshould reset stats[32m 0[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[32m39 passed[39m[22m[90m (39)[39m
+[2m   Start at [22m 14:32:42
+[2m   Duration [22m 400ms[2m (transform 110ms, setup 0ms, import 147ms, tests 182ms, environment 0ms)[22m
+

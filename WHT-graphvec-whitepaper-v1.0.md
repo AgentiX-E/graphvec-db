@@ -720,3 +720,134 @@ Phase 9B (P3 并行): 仪表盘 (GAP-36) + RBAC (GAP-38) + 图分割 (GAP-39) + 
 | 测试通过率 | ≥95% | 100% | ✅ |
 | 向后兼容 | 必要 | 全部满足 | ✅ 无需 Breaking Change |
 | 新增代码 | — | ~3.5K 行 | ✅
+
+---
+
+## 11. V10 差距分析（✅ 全部已实现）
+
+### 11.1 V10 新方向总览
+
+V10 方向聚焦于 **API 完善、查询体验、运维可观测性**，共 **8 个方向**：
+
+| # | 方向 | GAP | 优先级 | 估值工时 | 核心依赖 |
+|:-:|------|:---:|:------:|:--------:|---------|
+| V10-01 | 查询超时/取消 | GAP-45 | P2 | 2~3d | 无（复用 AbortController） |
+| V10-02 | OpenAPI/Swagger 文档 | GAP-43 | P3 | 1~2d | 无（复用 openapi-docs.ts） |
+| V10-03 | 健康检查增强 | GAP-44 | P3 | 2~3d | 无 |
+| V10-04 | 自定义聚合函数 | GAP-47 | P3 | 1~2d | 无（复用 ProcedureRegistry 模式） |
+| V10-05 | 审计日志导出 | GAP-46 | P3 | 2~3d | 无（复用 AuditLogger） |
+| V10-06 | 多语言 SDK | GAP-48 | P3 | 5~7d | OpenAPI 规范 |
+| V10-07 | 压缩传输 | GAP-49 | P3 | 3~4d | Node.js 内置 `zlib` |
+| V10-08 | 配置热加载 | GAP-50 | P3 | 3~4d | `chokidar`（已有） |
+
+### 11.2 各方向简介
+
+#### V10-01: 查询超时/取消（P2 · GAP-45）
+**方案**: `QueryTimeoutManager` 集成层，连接 AbortController 与查询引擎/REST/gRPC
+- `runWithTimeout(query, fn)` 创建带超时的查询上下文
+- `extractTimeoutFromRequest(req)` 从头部 `X-Query-Timeout` 提取自定义超时
+- `middleware()` REST 中间件封装
+- 超时后返回 `408 Request Timeout` 并释放资源
+- 默认 30s，最大 300s
+- **核心文件**: `src/query/query-timeout-manager.ts`, `src/api/rest.ts`, `src/api/grpc-server.ts`
+
+#### V10-02: OpenAPI/Swagger 文档（P3 · GAP-43）
+**方案**: 在 `Route` 接口中增加 `openapi?: OpenAPIOperation` 元数据字段，路由变更时自动同步
+- 新建 `src/api/openapi-bridge.ts` — `collectOpenAPIDocs(routes)` 聚合器
+- `GET /api/openapi.json` 返回完整 OpenAPI 3.0.3 规范
+- `GET /api/docs` Swagger UI 渲染
+- **核心文件**: `src/api/openapi-bridge.ts`, `src/api/rest.ts`
+
+#### V10-03: 健康检查增强（P3 · GAP-44）
+**方案**: 健康检查增强（P3 · GAP-44）：Kubernetes 风格 liveness/readiness 探针，组件级健康状况报告
+- `GET /api/health/live` — 进程存活探针（200/503）
+- `GET /api/health/ready` — 组件就绪探针，包含 Storage/Consensus/Outbox/Index 状态
+- 组件状态分级：`healthy` / `degraded` / `unhealthy`
+- **核心文件**: `src/api/health-check.ts`, `src/api/rest.ts`
+
+#### V10-04: 自定义聚合函数（P3 · GAP-47）
+**方案**: 参照 `ProcedureRegistry` 模式构建 `AggregationRegistry`，支持运行时注册自定义聚合
+- 保留内置 count/sum/avg/max/min
+- `register(factory)` 用户注册入口（如 stddev, collect, percentile）
+- GROUP BY + AS 别名兼容
+- **核心文件**: `src/query/aggregation-registry.ts`, `src/query/query-engine.ts`
+
+#### V10-05: 审计日志导出（P3 · GAP-46）
+**方案**: 基于已有 `AuditLogger` 和 `RemoteAuditSink`，构建 `AuditLogExporter` 结构化导出模块
+- 支持导出 JSON Lines（`.jsonl`）和 JSON Array（`.json`）格式
+- 支持按时间范围、操作类型、用户过滤导出
+- `scheduleExport(cronPattern, format, targetDir)` 定时导出
+- `setRetentionPolicy(maxAgeDays, maxSizeBytes)` 归档轮转策略
+- **核心文件**: `src/security/audit-exporter.ts`
+
+#### V10-06: 多语言 SDK（P3 · GAP-48）
+**方案**: 增强已有 Python/Go SDK 骨架为生产级 SDK，新增 Java SDK
+- Python SDK：httpx 替代 urllib.request，支持同步+异步、连接池、指数退避重试
+- Go SDK：标准错误模式、认证流程、批量操作
+- Java SDK：OkHttp 客户端、CRUD + 图查询 + 健康检查
+- **核心文件**: `sdk/python/agentix_client/`, `sdk/go/`, `sdk/java/`
+
+#### V10-07: 压缩传输（P3 · GAP-49）
+**方案**: 为 REST API 实现 `CompressionMiddleware`，gRPC 启用压缩
+- 接受编码协商（Accept-Encoding → Content-Encoding: gzip/brotli）
+- 阈值可配置（默认 >= 1024 bytes 才压缩）
+- 仅压缩 `application/json` 响应
+- gRPC 通道启用 `grpc.default_compression_algorithm`
+- **核心文件**: `src/api/compression-middleware.ts`, `src/api/rest.ts`, `src/api/grpc-server.ts`
+
+#### V10-08: 配置热加载（P3 · GAP-50）
+**方案**: 复用 chokidar 实践，构建通用 `ConfigWatcher`，支持配置文件变更热生效
+- `watcher.on('key', handler)` 按配置项注册回调
+- `watcher.onAny(handler)` 全局变更监听
+- 集成 `GraphConfig`：运行时生效
+- 无效 JSON 文件不触发加载
+- **核心文件**: `src/core/config-watcher.ts`, `src/core/graph-config.ts`
+
+### 11.3 推荐执行顺序
+
+```
+Phase 10A (P2 优先): V10-01 查询超时/取消（GAP-45）
+Phase 10B (P3 并行): V10-02 OpenAPI → V10-03 健康检查 → V10-04 聚合函数 → V10-05 审计导出 → V10-06 SDK → V10-07 压缩 → V10-08 配置热加载
+```
+
+### 11.4 V10 竞品对比（✅ 已实现）
+
+| 方向 | Neo4j | Dgraph | ArangoDB | **GraphVec(V10)** |
+|:----|:-----:|:------:|:--------:|:-----------------:|
+| 查询超时/取消 | ✅ | ✅ | ✅ | ✅ **已实现** |
+| OpenAPI/Swagger | ✅ | ✅ | ✅ | ✅ **已实现** |
+| 健康检查增强 | ✅ | ✅ | ✅ | ✅ **已实现** |
+| 聚合函数扩展 | ✅ APOC | ❌ | ❌ | ✅ **已实现** |
+| 审计日志导出 | ✅ 企业版 | ❌ | ✅ | ✅ **已实现** |
+| 多语言 SDK | ✅ | ✅ | ✅ | ✅ **已实现** |
+| 压缩传输 | ✅ | ✅ | ✅ | ✅ **已实现** |
+| 配置热加载 | ✅ | ✅ | ✅ | ✅ **已实现** |
+
+### 11.5 V10 实现摘要（✅ 已实现）
+
+**状态**: ✅ 已实现 — 8/8 方向全部关闭，`HEAD: e47db827`
+
+#### §11.5.1 实现概览
+
+V10 共 **8 个方向**（P2×1 + P3×7）于 2026-06-02 全部完成验收：
+
+| 方向 | GAP | 优先级 | 核心文件 | 验收 |
+|:----|:---:|:------:|----------|:----:|
+| 查询超时/取消 | GAP-45 | P2 | `query-timeout-manager.ts`, `rest.ts`, `grpc-server.ts` | ✅ 超时返回 408 |
+| OpenAPI/Swagger 文档 | GAP-43 | P3 | `openapi-bridge.ts`, `rest.ts` | ✅ 自动同步 |
+| 健康检查增强 | GAP-44 | P3 | `health-check.ts`, `rest.ts` | ✅ 组件级探针 |
+| 自定义聚合函数 | GAP-47 | P3 | `aggregation-registry.ts`, `query-engine.ts` | ✅ 运行时注册 |
+| 审计日志导出 | GAP-46 | P3 | `audit-exporter.ts` | ✅ 结构化 JSON 导出 |
+| 多语言 SDK | GAP-48 | P3 | `sdk/python/`, `sdk/go/`, `sdk/java/` | ✅ 三语言生产级 |
+| 压缩传输 | GAP-49 | P3 | `compression-middleware.ts`, `rest.ts` | ✅ gzip/brotli |
+| 配置热加载 | GAP-50 | P3 | `config-watcher.ts`, `graph-config.ts` | ✅ 热生效 |
+
+#### §11.5.2 关键度量
+
+| 指标 | 目标 | 实际 | 评价 |
+|------|:---:|:----:|:----:|
+| 总方向数 | 8 | 8 | ✅ 全部完成 |
+| 交付工时 | 22~31d | 并行加速 | ✅ 超预期 |
+| 测试通过率 | ≥95% | 100% | ✅ |
+| 向后兼容 | 必要 | 全部满足 | ✅ 无需 Breaking Change |
+| 总体闭包 | 42/42 → **50/50 GAPs** | **50/50** | ✅ **全部已实现** |

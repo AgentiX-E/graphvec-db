@@ -1,0 +1,36 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22mlivez[2m > [22mshould always return ok=true[32m 3[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22mreadyz[2m > [22mshould return ok=true when all components healthy[32m 2[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22mreadyz[2m > [22mshould return ok=false when consensus has no leader[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22mreadyz[2m > [22mshould return ok=false when storage unhealthy[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22mreadyz[2m > [22mshould return ok=false when index unhealthy[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeStorage: healthy 状态[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeStorage: unhealthy 当引擎失效[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeConsensus: healthy 状态[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeConsensus: degraded 当无 shard[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeConsensus: unhealthy 当无 leader[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeConsensus: degraded 当有 candidate[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeIndex: healthy 状态[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeIndex: unhealthy 当引擎无响应[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22m组件探针[2m > [22mprobeAll 应返回所有组件的探测结果[32m 1[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22mdetail[2m > [22m应返回结构化组件详情[32m 1[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22mdetail[2m > [22m故障组件应在 detail 中反映[32m 0[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts[2m > [22mHealthChecker[2m > [22muptime[2m > [22m应返回正确的运行时长[32m 0[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mexport JSONL[2m > [22m应该导出为 JSONL 格式[32m 4[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mexport JSONL[2m > [22m空日志导出为空的 JSONL[32m 1[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mexport JSON Array[2m > [22m应该导出为 JSON Array 格式（含 meta）[32m 1[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mexport CSV[2m > [22m应该导出为 CSV 格式[32m 1[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mexport CSV[2m > [22mCSV 中特殊字符正确转义[32m 1[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mfilter[2m > [22m按 operation 过滤后导出[32m 0[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mfilter[2m > [22m按 user 过滤后导出[32m 0[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mfilter[2m > [22m按 result 过滤后导出[32m 0[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mfilter[2m > [22m按时间范围过滤后导出[32m 1[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts[2m > [22mAuditLogExporter[2m > [22mscheduleExport[2m > [22m定时导出应生成文件[32m 1[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[32m27 passed[39m[22m[90m (27)[39m
+[2m   Start at [22m 14:32:45
+[2m   Duration [22m 238ms[2m (transform 116ms, setup 0ms, import 159ms, tests 24ms, environment 0ms)[22m
+

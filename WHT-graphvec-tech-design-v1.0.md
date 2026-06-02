@@ -1743,3 +1743,176 @@ class BatchImportExport {
 | 9A | **P2** | 图算法扩充 + 批量导入导出 | 2 | 5~7d | ✅ 已实现 |
 | 9B | **P3** | 仪表盘 + RBAC + 图分割 + 告警 + 可视化输出 | 5 | 12~17d | ✅ 已实现 |
 | | **合计** | — | **7** | **17~24d** | ✅ **已实现** (`c6e5a0ef` 2026-06-02) |
+
+---
+
+## §15 V10 差距分析 — 设计变更预设（✅ 全部已实现）
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v10-gap-research.md`  
+> 状态: ✅ **已实现**  
+> 合并 HEAD: `e47db827`
+
+---
+
+### §15.1 查询超时/取消（P2 · GAP-45）
+
+**状态**: ✅ 已实现 (`e47db827`)
+
+**设计目标**: 构建 `QueryTimeoutManager` 集成层，连接 AbortController 与查询引擎/REST/gRPC
+
+**设计决策**:
+1. 默认超时 30s，最大 300s，通过 `X-Query-Timeout` 头部自定义
+2. `AsyncLocalStorage` 可选上下文传播（默认关闭）
+3. 超时后返回 `408 Request Timeout` 并释放资源
+
+**接口设计**:
+```typescript
+class QueryTimeoutManager {
+  runWithTimeout<T>(query: string, fn: (signal: AbortSignal) => Promise<T>, timeoutMs?: number): Promise<T>;
+  extractTimeoutFromRequest(req: IncomingMessage): number;
+  middleware(): (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
+}
+```
+
+**受影响的文件**（新建 + 修改）:
+- `src/query/query-timeout-manager.ts`（新建）
+- 修改 `src/query/query-engine.ts`（注入 AbortSignal）
+- 修改 `src/api/rest.ts`（REST 中间件）
+- 修改 `src/api/grpc-server.ts`（gRPC 超时）
+
+**依赖项**: 无（复用已有 `withQueryTimeout()` + AbortController）
+
+### §15.2 OpenAPI/Swagger 文档（P3 · GAP-43）
+
+**状态**: ✅ 已实现 (`e47db827`)
+
+**设计目标**: 将手动更新的 `openapi-docs.ts` 与 Route 定义绑定，路由变更时自动同步
+
+**设计决策**:
+1. 在 `Route` 接口中增加 `openapi?: OpenAPIOperation` 元数据字段
+2. 启动时自动收集所有 route 的 OpenAPI 元数据
+3. `GET /api/openapi.json` 返回完整规范，`GET /api/docs` 渲染 Swagger UI
+
+**受影响的文件**（新建 + 修改）:
+- `src/api/openapi-bridge.ts`（新建）
+- 修改 `src/api/rest.ts`（Route 元数据 + 端点）
+
+**依赖项**: 无（复用已有 `openapi-docs.ts` / `generateOpenAPIDocument()`）
+
+### §15.3 健康检查增强（P3 · GAP-44）
+
+**状态**: ✅ 已实现 (`e47db827`)
+
+**设计目标**: Kubernetes 风格 liveness/readiness 探针，组件级健康状况报告
+
+**设计决策**:
+1. `GET /api/health/live` 进程存活探针（200/503）
+2. `GET /api/health/ready` 组件就绪探针，包含 Storage/Consensus/Outbox/Index 状态
+3. 组件状态分级：`healthy` / `degraded` / `unhealthy`
+4. 健康检查端点不认证（`requireAuth: false`）
+
+**受影响的文件**（新建 + 修改）:
+- `src/api/health-check.ts`（HealthChecker + HealthComponent 接口）
+- 修改 `src/api/rest.ts`（注册端点）
+
+**依赖项**: 无
+
+### §15.4 自定义聚合函数（P3 · GAP-47）
+
+**状态**: ✅ 已实现 (`e47db827`)
+
+**设计目标**: 参照 `ProcedureRegistry` 模式构建 `AggregationRegistry`，支持运行时注册自定义聚合
+
+**设计决策**:
+1. 保留内置 count/sum/avg/max/min，提取到 registry
+2. `register(factory)` 用户注册入口（如 stddev, collect, percentile）
+3. `isAggregate(expr)` 判断查询表达式是否为聚合
+4. GROUP BY + AS 别名兼容
+
+**受影响的文件**（新建 + 修改）:
+- `src/query/aggregation-registry.ts`（AggregationRegistry + AggregationState 接口）
+- 修改 `src/query/query-engine.ts`（正则匹配 → registry 查询）
+
+**依赖项**: 无（复用现有累加器模式）
+
+### §15.5 审计日志导出（P3 · GAP-46）
+
+**状态**: ✅ 已实现 (`e47db827`)
+
+**设计目标**: 基于已有 `AuditLogger` 和 `RemoteAuditSink`，构建 `AuditLogExporter` 结构化导出模块
+
+**设计决策**:
+1. 支持 JSON Lines（`.jsonl`）和 JSON Array（`.json`）格式
+2. 支持按时间范围、操作类型、用户过滤导出
+3. `scheduleExport(cronPattern, format, targetDir)` 定时导出（setInterval）
+4. `setRetentionPolicy(maxAgeDays, maxSizeBytes)` 归档轮转策略
+
+**受影响的文件**（新建）:
+- `src/security/audit-exporter.ts`（AuditLogExporter 类）
+
+**依赖项**: 无（复用已有 `AuditLogger.entries`）
+
+### §15.6 多语言 SDK（P3 · GAP-48）
+
+**状态**: ✅ 已实现 (`e47db827`)
+
+**设计目标**: 增强已有 Python/Go SDK 骨架为生产级 SDK，新增 Java SDK
+
+**设计决策**:
+1. Python SDK：httpx 替代 urllib.request，同步+异步双模式
+2. Go SDK：标准错误处理、认证流程、批量操作
+3. Java SDK：OkHttp 客户端骨架
+4. 三个 SDK 均支持自动从 OpenAPI 规范生成
+
+**受影响的文件**（新建 + 修改）:
+- `sdk/python/agentix_client/`（核心 + async 客户端）
+- `sdk/go/`（Go module）
+- `sdk/java/`（Java Maven 骨架）
+
+**依赖项**: OpenAPI 规范稳定（依赖 §15.2）
+
+### §15.7 压缩传输（P3 · GAP-49）
+
+**状态**: ✅ 已实现 (`e47db827`)
+
+**设计目标**: REST API `CompressionMiddleware` + gRPC 启用压缩
+
+**设计决策**:
+1. 接受编码协商（Accept-Encoding → Content-Encoding: gzip/brotli）
+2. 阈值可配置（默认 >= 1024 bytes 才压缩）
+3. 仅压缩 `application/json` 响应
+4. 压缩级别可配置（fast / balanced / max）
+
+**受影响的文件**（新建 + 修改）:
+- `src/api/compression-middleware.ts`（CompressionMiddleware）
+- 修改 `src/api/rest.ts`（挂载中间件）
+- 修改 `src/api/grpc-server.ts`（启用压缩）
+
+**依赖项**: Node.js 内置 `zlib`
+
+### §15.8 配置热加载（P3 · GAP-50）
+
+**状态**: ✅ 已实现 (`e47db827`)
+
+**设计目标**: 复用 chokidar 实践，构建通用 `ConfigWatcher`，支持配置文件变更热生效
+
+**设计决策**:
+1. `watcher.on('key', handler)` 按配置项注册回调
+2. `watcher.onAny(handler)` 全局变更监听
+3. 集成 `GraphConfig`：运行时生效
+4. 无效 JSON 文件不触发加载
+
+**受影响的文件**（新建 + 修改）:
+- `src/core/config-watcher.ts`（ConfigWatcher 类）
+- 修改 `src/core/graph-config.ts`（集成 watcher）
+
+**依赖项**: `chokidar`（已有）
+
+### V10 阶段汇总
+
+| Phase | 优先级 | 包含方向 | 方向数 | 总估值工时 | 状态 |
+|:-----:|:------:|----------|:-----:|:----------:|:----:|
+| 10A | **P2** | 查询超时/取消 | 1 | 2~3d | ✅ 已实现 |
+| 10B | **P3** | OpenAPI / 健康检查 / 聚合函数 / 审计导出 / SDK / 压缩 / 配置热加载 | 7 | 20~28d | ✅ 已实现 |
+| | **合计** | — | **8** | **22~31d** | ✅ **已实现** (`e47db827` 2026-06-02) |

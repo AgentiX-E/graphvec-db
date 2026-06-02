@@ -1,0 +1,116 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+ [32m✓[39m algorithms/yenksp.spec.ts[2m > [22myenKSP - Yen's K-Shortest Paths[2m > [22mfinds the single shortest path (K=1)[32m 3[2mms[22m[39m
+ [32m✓[39m algorithms/yenksp.spec.ts[2m > [22myenKSP - Yen's K-Shortest Paths[2m > [22mfinds top 2 shortest paths[32m 1[2mms[22m[39m
+ [32m✓[39m algorithms/yenksp.spec.ts[2m > [22myenKSP - Yen's K-Shortest Paths[2m > [22mfinds top 3 paths in a graph with multiple routes[32m 1[2mms[22m[39m
+ [32m✓[39m algorithms/yenksp.spec.ts[2m > [22myenKSP - Yen's K-Shortest Paths[2m > [22mreturns empty when no path exists[32m 1[2mms[22m[39m
+ [32m✓[39m algorithms/yenksp.spec.ts[2m > [22myenKSP - Yen's K-Shortest Paths[2m > [22msource equals target returns single path[32m 0[2mms[22m[39m
+ [32m✓[39m algorithms/yenksp.spec.ts[2m > [22myenKSP - Yen's K-Shortest Paths[2m > [22mK=0 returns empty[32m 0[2mms[22m[39m
+ [32m✓[39m algorithms/yenksp.spec.ts[2m > [22myenKSP - Yen's K-Shortest Paths[2m > [22mdisconnected graph returns safe empty[32m 0[2mms[22m[39m
+ [32m✓[39m algorithms/yenksp.spec.ts[2m > [22myenKSP - Yen's K-Shortest Paths[2m > [22mpaths are in ascending weight order[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould grant permission and check returns allowed[32m 3[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould revoke permission and check returns denied[32m 1[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould deny action not granted[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould allow admin for everything[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould return reason on denial[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould allow node upsert with write permission[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould deny node upsert for reader[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould allow admin node upsert[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould allow node delete with permission[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould deny node delete for reader[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould allow admin node delete[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould allow edge upsert with permission[32m 2[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould deny edge upsert for reader[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould allow query for reader[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould deny query for unauthenticated role[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould throw AuthError for denied result[32m 1[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould not throw for allowed result[32m 1[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mPermissionResolver[2m > [22mshould return RowLevelSecurity instance[32m 1[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould wrap engine and preserve methods[32m 1[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould grant, check, and revoke via guardian[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould check via guardian and get denial[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould allow upsertNode when ctx has permission[32m 1[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould deny upsertNode when ctx has no permission[32m 1[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould allow admin upsertNode[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould allow deleteNode when ctx has permission[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould deny deleteNode when ctx has no permission[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould allow upsertEdge when ctx has permission[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould deny upsertEdge for reader[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould allow query for reader via guardian[32m 1[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould deny query for unauthorized role[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould skip permission check when no ctx provided (backward compat)[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould skip permission check on deleteNode without ctx[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould skip permission check on query without ctx[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould have getRLS method on guardian[32m 3[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould propagate AuthError from permission check with 403 status[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould handle missing engine methods gracefully[32m 0[2mms[22m[39m
+ [32m✓[39m security/permission-resolver.spec.ts[2m > [22mwrapEngine[2m > [22mshould construct without resolver[32m 0[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22mimport nodes from JSONL[32m 9[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22mimport edges from JSONL[32m 5[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22mmixed nodes and edges[32m 4[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22mauto-detect edge by src/dst[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22merror handling with non-JSON line[32m 3[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22mstrict mode throws on error[32m 3[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22mskip empty lines[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22mprogress callback[32m 4[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - JSONL[2m > [22mempty file returns empty result[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - CSV[2m > [22mimport nodes from CSV[32m 2[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - CSV[2m > [22mimport edges from CSV[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - CSV[2m > [22mCSV with quoted fields[32m 3[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - CSV[2m > [22mCSV without header[32m 2[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchImport - CSV[2m > [22mCSV with custom delimiter[32m 4[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchExport - JSONL[2m > [22mexport nodes to JSONL[32m 3[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchExport - JSONL[2m > [22mexport edges to JSONL[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchExport - JSONL[2m > [22moverwrite protection[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchExport - JSONL[2m > [22moverwrite with option[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchExport - CSV[2m > [22mexport nodes to CSV[32m 2[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchExport - CSV[2m > [22mexport edges to CSV[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchExport - CSV[2m > [22mexport with custom delimiter[32m 1[2mms[22m[39m
+ [32m✓[39m ops/batch-io.spec.ts[2m > [22mbatchExport - CSV[2m > [22mround-trip: export then import preserves data[32m 2[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mdepth 1 from node 1 includes nodes {0,1,2,4}[32m 7[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mdepth 3 from node 0 includes all 5 nodes[32m 1[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mdepth 0 returns only ego node[32m 1[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mdepth 1 from node 3 returns {2,3}[32m 0[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22medges are included correctly[32m 1[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22medges include weights when weighted function is provided[32m 0[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mexcludeEgo works[32m 0[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mincludeEdges=false returns no edges[32m 1[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mdepth > 0 from isolated node returns just that node[32m 1[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mnegative depth returns empty[32m 0[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mlarge depth does not overshoot[32m 0[2mms[22m[39m
+ [32m✓[39m algorithms/ego-net.spec.ts[2m > [22megoNet - Ego Network[2m > [22mdirected mode only follows out-edges[32m 0[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Louvain-based[2m > [22mtwo clear clusters with strong intra edges[32m 5[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Louvain-based[2m > [22msingle cluster returns all nodes in same partition[32m 1[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Louvain-based[2m > [22mempty graph returns empty result[32m 1[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Louvain-based[2m > [22msingle node returns one partition[32m 0[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Greedy[2m > [22msimple graph split into partitions[32m 1[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Greedy[2m > [22mstar graph with many partitions[32m 1[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Greedy[2m > [22medge-cut strategy[32m 0[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Greedy[2m > [22mmaxPartitionSize constraint[32m 0[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Greedy[2m > [22mbalance is computed correctly[32m 0[2mms[22m[39m
+ [32m✓[39m consensus/graph-partitioner.spec.ts[2m > [22mGraphPartitioner - Metadata[2m > [22mpartition metadata is correct[32m 1[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mformats undirected graph[32m 3[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mformats directed graph[32m 1[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mincludes custom graph name[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mincludes edge label[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mincludes node properties[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mescapes special characters in labels[32m 1[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mempty graph produces valid DOT[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mformatFromAdjacency produces correct DOT[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mdirected adjacency format[32m 1[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mGraphVizFormatter - DOT format[2m > [22mincludes graph-level properties[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mCytoscapeFormatter - JSON format[2m > [22mformats nodes[32m 1[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mCytoscapeFormatter - JSON format[2m > [22mformats edges with weight[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mCytoscapeFormatter - JSON format[2m > [22mnodes without label use id as label[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mCytoscapeFormatter - JSON format[2m > [22medge id format[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mCytoscapeFormatter - JSON format[2m > [22mincludes node properties[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mCytoscapeFormatter - JSON format[2m > [22mformatFromAdjacency for directed graph[32m 1[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mCytoscapeFormatter - JSON format[2m > [22mformatFromAdjacency for undirected graph deduplicates edges[32m 0[2mms[22m[39m
+ [32m✓[39m api/graph-viz.spec.ts[2m > [22mCytoscapeFormatter - JSON format[2m > [22mempty graph produces empty array[32m 0[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[32m107 passed[39m[22m[90m (107)[39m
+[2m   Start at [22m 14:32:48
+[2m   Duration [22m 562ms[2m (transform 261ms, setup 0ms, import 419ms, tests 134ms, environment 5ms)[22m
+

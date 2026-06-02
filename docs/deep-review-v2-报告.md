@@ -722,4 +722,89 @@ RBAC 权限集成 ──无新依赖── 复用 rbac.ts + rls.ts + auth.ts
 | V7 | GAP-27~GAP-34 | **8** | ✅ 全部关闭 |
 | V8 | GAP-28~GAP-35 修正项 | **8** | ✅ 全部关闭 |
 | V9 | GAP-36 ~ GAP-42 | **7** | ✅ **全部关闭** |
-| | **总计（全部轮次）** | **42** | ✅ **42/42 全部已实现** |
+| | **总计（V1~V9）** | **42** | ✅ **42/42 全部已实现** |
+
+## 13. V10 差距分析（✅ 全部已实现）
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v10-gap-research.md`  
+> 状态: ✅ **已实现** · 8/8 GAPs 关闭  
+> 合并 HEAD: `e47db827`
+
+### 13.1 V10 调研结论汇总
+
+V10 方向聚焦于 **API 完善、查询体验、运维可观测性**，共 **8 个方向**（P2×1 + P3×7）：
+
+| # | 方向 | GAP | 优先级 | 估值工时 |
+|:-:|------|:---:|:------:|:--------:|
+| V10-01 | 查询超时/取消 | GAP-45 | P2 | 2~3d |
+| V10-02 | OpenAPI/Swagger 文档 | GAP-43 | P3 | 1~2d |
+| V10-03 | 健康检查增强 | GAP-44 | P3 | 2~3d |
+| V10-04 | 自定义聚合函数 | GAP-47 | P3 | 1~2d |
+| V10-05 | 审计日志导出 | GAP-46 | P3 | 2~3d |
+| V10-06 | 多语言 SDK | GAP-48 | P3 | 5~7d |
+| V10-07 | 压缩传输 | GAP-49 | P3 | 3~4d |
+| V10-08 | 配置热加载 | GAP-50 | P3 | 3~4d |
+
+### 13.2 各方向简介
+
+#### V10-01: 查询超时/取消（GAP-45, P2）
+构建 `QueryTimeoutManager` 集成层，AbortController 与查询引擎/REST/gRPC 打通。默认超时 30s，支持 `X-Query-Timeout` 自定义头部，超时返回 408。**核心文件**: `query-timeout-manager.ts`, `rest.ts`, `grpc-server.ts`
+
+#### V10-02: OpenAPI/Swagger 文档（GAP-43, P3）
+Route 元数据绑定 → 自动收集 → `GET /api/openapi.json` + Swagger UI。**核心文件**: `openapi-bridge.ts`, `rest.ts`
+
+#### V10-03: 健康检查增强（GAP-44, P3）
+Kubernetes 风格 liveness/readiness 探针，组件级状态（healthy/degraded/unhealthy）。**核心文件**: `health-check.ts`, `rest.ts`
+
+#### V10-04: 自定义聚合函数（GAP-47, P3）
+`AggregationRegistry` 支持运行时注册自定义聚合。**核心文件**: `aggregation-registry.ts`, `query-engine.ts`
+
+#### V10-05: 审计日志导出（GAP-46, P3）
+`AuditLogExporter` 支持 JSONL/JSON 导出、过滤、定时导出、轮转策略。**核心文件**: `audit-exporter.ts`
+
+#### V10-06: 多语言 SDK（GAP-48, P3）
+Python SDK 升级（httpx 同步+异步），Go SDK 补全（错误/认证/批量），Java SDK 骨架（OkHttp）。**核心文件**: `sdk/python/`, `sdk/go/`, `sdk/java/`
+
+#### V10-07: 压缩传输（GAP-49, P3）
+`CompressionMiddleware` 支持 gzip/brotli 协商，阈值可配，仅压缩 JSON。**核心文件**: `compression-middleware.ts`, `rest.ts`, `grpc-server.ts`
+
+#### V10-08: 配置热加载（GAP-50, P3）
+`ConfigWatcher` 支持 chokidar 文件监听，按 key 注册回调，热生效。**核心文件**: `config-watcher.ts`, `graph-config.ts`
+
+### 13.3 执行路线
+
+```
+Phase 10A (P2) V10-01 查询超时/取消
+
+Phase 10B (P3 并行):
+  V10-02 OpenAPI ─→ V10-06 SDK（依赖 OpenAPI 规范）
+  V10-03 健康检查 ─→ 独立
+  V10-04 聚合函数 ─→ 独立
+  V10-05 审计导出 ─→ 独立
+  V10-07 压缩传输 ─→ 独立
+  V10-08 配置热加载 ─→ 独立
+```
+
+### 13.4 关键决策
+
+1. **查询超时/取消**: `AsyncLocalStorage` 可选关闭，默认不传播上下文
+2. **OpenAPI 自动化**: Route 元数据驱动，不引入新构建步骤
+3. **健康检查**: 端点免认证（`requireAuth: false`）
+4. **聚合函数**: 复用 `ProcedureRegistry` 注册模式，内置聚合提取到 registry
+5. **SDK 规范驱动**: 三个 SDK 均从 OpenAPI 规范自动生成，保证一致性
+
+### 13.5 依赖关系
+
+```
+V10-06 (SDK) ──依赖──→ V10-02 (OpenAPI 规范)
+其余 6 个方向无外部依赖
+```
+
+### 13.6 总体闭包统计
+
+| 迭代 | GAP 范围 | 数量 | 状态 |
+|:----:|----------|:----:|:----:|
+| V1~V9 | GAP-01~GAP-42 | **42** | ✅ 全部关闭 |
+| V10 | GAP-43~GAP-50 | **8** | ✅ 全部关闭 |
+| | **总计（全部轮次）** | **50** | ✅ **50/50 全部已实现** |
