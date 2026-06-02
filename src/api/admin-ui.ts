@@ -148,6 +148,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="tabs">
       <button class="active" data-tab="dashboard">Dashboard</button>
       <button data-tab="topology">Topology</button>
+      <button data-tab="editor">🌐 Editor</button>
       <button data-tab="procedures">Procedures</button>
       <button data-tab="query">Query</button>
     </div>
@@ -170,6 +171,36 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       </div>
       <div id="topo-cy"></div>
       <div class="topo-tooltip" id="topo-tooltip"></div>
+    </div>
+
+    <div id="editor" class="tab-content">
+      <div class="topo-info">
+        <span>⚡ Editor Mode</span>
+        <span>Nodes: <strong id="editor-node-count">0</strong></span>
+        <span>Edges: <strong id="editor-edge-count">0</strong></span>
+        <span id="editor-mode-badge" style="background:#f59e0b;color:#000;padding:2px 8px;border-radius:4px;font-size:12px;">Select</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+        <button class="editor-btn" data-tool="select" style="background:#3b82f6;">↖ Select</button>
+        <button class="editor-btn" data-tool="add-node" style="background:#22c55e;">+ Node</button>
+        <button class="editor-btn" data-tool="add-edge" style="background:#a855f7;">+ Edge</button>
+        <button class="editor-btn" data-tool="delete" style="background:#ef4444;">🗑 Delete</button>
+        <button onclick="saveEditorGraph()" style="background:#2563eb;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:500;">💾 Save</button>
+        <button onclick="resetEditorGraph()" style="background:#475569;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:500;">↺ Reset</button>
+      </div>
+      <div id="editor-cy" style="width:100%;height:500px;background:#0f172a;border:1px solid #334155;border-radius:8px;"></div>
+      <div id="editor-props-panel" style="margin-top:12px;background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;display:none;">
+        <h4 style="color:#e2e8f0;margin-bottom:8px;">Properties Editor</h4>
+        <div style="color:#94a3b8;font-size:13px;margin-bottom:8px;">
+          Editing: <code id="editor-edit-id" style="color:#e2e8f0;">—</code>
+          (<span id="editor-edit-type" style="color:#94a3b8;">node</span>)
+        </div>
+        <div id="editor-props-fields"></div>
+        <div style="margin-top:8px;display:flex;gap:8px;">
+          <button onclick="addEditorPropField()" style="background:#475569;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;">+ Add Prop</button>
+          <button onclick="applyEditorProps()" style="background:#22c55e;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;">✓ Apply</button>
+        </div>
+      </div>
     </div>
 
     <div id="procedures" class="tab-content">
@@ -386,6 +417,231 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    // ── Graph Editor ──────────────────────────────────────
+    let editorCy = null;
+    let editorTool = 'select';
+    let editorEdgeSource = null;
+    let editorSelectedEl = null;
+    let editorChangeCount = 0;
+
+    function initEditor() {
+      const container = document.getElementById('editor-cy');
+      if (!container) return;
+
+      editorCy = cytoscape({
+        container: container,
+        style: [
+          { selector: 'node', style: { 'background-color': '#3b82f6', 'label': 'data(label)', 'color': '#e2e8f0', 'font-size': '12px', 'text-valign': 'bottom', 'text-halign': 'center', 'width': 30, 'height': 30 } },
+          { selector: 'node[typeId]', style: { 'shape': function(el) { const t = parseInt(el.data('typeId')); return t % 3 === 0 ? 'rectangle' : t % 3 === 1 ? 'diamond' : 'ellipse'; } } },
+          { selector: 'edge', style: { 'width': 2, 'line-color': '#64748b', 'target-arrow-color': '#64748b', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
+          { selector: ':selected', style: { 'border-width': 3, 'border-color': '#fbbf24' } },
+        ],
+        layout: { name: 'grid', fit: true, padding: 30 },
+        wheelSensitivity: 0.5,
+        userZoomingEnabled: true,
+        userPanningEnabled: true,
+        boxSelectionEnabled: true,
+      });
+
+      editorLoadFromTopo();
+
+      editorCy.on('tap', function(evt) {
+        const target = evt.target;
+        const isBg = target === editorCy;
+
+        if (editorTool === 'add-node' && isBg) {
+          const pos = evt.position || evt.renderedPosition || { x: 100, y: 100 };
+          const id = 'n' + Date.now();
+          const typeId = 1 + (editorCy.nodes().length % 5);
+          editorCy.add({ group: 'nodes', data: { id: id, label: 'Node' + (editorCy.nodes().length + 1), typeId: typeId } });
+          editorCy.getElementById(id).position({ x: pos.x, y: pos.y });
+          editorUpdateCounts();
+          editorChangeCount++;
+          return;
+        }
+
+        if (editorTool === 'add-edge' && target.isNode()) {
+          if (!editorEdgeSource) {
+            editorEdgeSource = target;
+            target.style({ 'border-width': 3, 'border-color': '#a855f7' });
+          } else {
+            const src = editorEdgeSource;
+            const dst = target;
+            src.style({ 'border-width': 0 });
+            const edgeId = 'e' + Date.now();
+            if (src.id() !== dst.id()) {
+              editorCy.add({ group: 'edges', data: { id: edgeId, source: src.id(), target: dst.id(), label: '' } });
+              editorChangeCount++;
+            }
+            editorEdgeSource = null;
+            editorUpdateCounts();
+          }
+          return;
+        }
+
+        if (editorTool === 'delete' && target !== editorCy) {
+          target.remove();
+          editorUpdateCounts();
+          editorChangeCount++;
+          return;
+        }
+
+        if (editorTool === 'select' && target !== editorCy) {
+          editorSelectedEl = target;
+          const isNode = target.isNode();
+          const data = target.data();
+          document.getElementById('editor-props-panel').style.display = 'block';
+          document.getElementById('editor-edit-id').textContent = data.id;
+          document.getElementById('editor-edit-type').textContent = isNode ? 'node' : 'edge';
+          renderEditorProps(target);
+        }
+      });
+
+      editorCy.on('dragfree', 'node', function() {
+        editorChangeCount++;
+      });
+    }
+
+    function editorSetTool(tool) {
+      editorTool = tool;
+      if (tool === 'select') {
+        editorCy.nodes().style({ 'border-width': 0 });
+        editorEdgeSource = null;
+      }
+      document.getElementById('editor-mode-badge').textContent =
+        tool === 'select' ? 'Select' :
+        tool === 'add-node' ? 'Add Node' :
+        tool === 'add-edge' ? 'Add Edge' :
+        tool === 'delete' ? 'Delete' : tool;
+    }
+
+    function editorLoadFromTopo() {
+      if (!editorCy) return;
+      fetch('/api/admin/graph-live')
+        .then(r => r.json())
+        .then(data => {
+          const els = data.elements || [];
+          editorCy.elements().remove();
+          for (const el of els) {
+            if (el.group === 'nodes' && el.data.id !== 'placeholder') {
+              editorCy.add(el);
+            } else if (el.group === 'edges') {
+              editorCy.add(el);
+            }
+          }
+          editorCy.layout({ name: 'cose', fit: true, padding: 30 }).run();
+          editorUpdateCounts();
+        })
+        .catch(e => console.error('Editor load error:', e));
+    }
+
+    function editorUpdateCounts() {
+      if (!editorCy) return;
+      document.getElementById('editor-node-count').textContent = editorCy.nodes().length;
+      document.getElementById('editor-edge-count').textContent = editorCy.edges().length;
+    }
+
+    function renderEditorProps(el) {
+      const container = document.getElementById('editor-props-fields');
+      const data = el.data();
+
+      let html = '';
+      html += '<div style="margin-bottom:6px;"><label style="color:#94a3b8;font-size:12px;display:block;">Label</label>';
+      html += '<input id="editor-prop-label" style="width:100%;background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10px;border-radius:4px;" value="' + escAttr(data.label || '') + '" /></div>';
+      html += '<div style="margin-bottom:6px;"><label style="color:#94a3b8;font-size:12px;display:block;">TypeId</label>';
+      html += '<input id="editor-prop-typeid" style="width:100%;background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10px;border-radius:4px;" value="' + escAttr(String(data.typeId ?? '')) + '" /></div>';
+      for (const key in data) {
+        if (key === 'id' || key === 'source' || key === 'target' || key === 'label' || key === 'typeId' || key === 'group') continue;
+        html += '<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">';
+        html += '<input class="editor-prop-key" style="flex:1;background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10px;border-radius:4px;font-size:12px;" placeholder="key" value="' + escAttr(key) + '" />';
+        html += '<input class="editor-prop-val" style="flex:1;background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10px;border-radius:4px;font-size:12px;" placeholder="value" value="' + escAttr(String(data[key] ?? '')) + '" />';
+        html += '<button onclick="this.parentElement.remove()" style="background:transparent;border:none;color:#ef4444;cursor:pointer;font-size:18px;">×</button>';
+        html += '</div>';
+      }
+      container.innerHTML = html;
+    }
+
+    function escAttr(s) {
+      return String(s).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function addEditorPropField() {
+      const container = document.getElementById('editor-props-fields');
+      const div = document.createElement('div');
+      div.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;align-items:center;';
+      div.innerHTML =
+        '<input class="editor-prop-key" style="flex:1;background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10px;border-radius:4px;font-size:12px;" placeholder="key" />' +
+        '<input class="editor-prop-val" style="flex:1;background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:6px 10px;border-radius:4px;font-size:12px;" placeholder="value" />' +
+        '<button onclick="this.parentElement.remove()" style="background:transparent;border:none;color:#ef4444;cursor:pointer;font-size:18px;">×</button>';
+      container.appendChild(div);
+    }
+
+    function applyEditorProps() {
+      if (!editorSelectedEl) return;
+      const el = editorSelectedEl;
+      const newData = {};
+
+      const label = document.getElementById('editor-prop-label').value || String(el.data('id'));
+      newData.label = label;
+      const typeId = parseInt(document.getElementById('editor-prop-typeid').value);
+      if (!isNaN(typeId)) newData.typeId = typeId;
+
+      const keyInputs = document.querySelectorAll('#editor-props-fields .editor-prop-key');
+      const valInputs = document.querySelectorAll('#editor-props-fields .editor-prop-val');
+      for (let i = 0; i < keyInputs.length; i++) {
+        const k = keyInputs[i].value.trim();
+        const v = valInputs[i].value.trim();
+        if (k) {
+          const num = Number(v);
+          newData[k] = v === '' ? '' : (isNaN(v) ? v : (v.includes('.') ? num : (v === 'true' ? true : v === 'false' ? false : (isNaN(num) ? v : num))));
+        }
+      }
+
+      el.data(newData);
+      editorChangeCount++;
+      renderEditorProps(el);
+    }
+
+    function saveEditorGraph() {
+      const elements = editorCy.elements().jsons().map(function(e) {
+        const d = Object.assign({}, e.data);
+        if (d.group === 'nodes') {
+          const pos = e.position || { x: 0, y: 0 };
+          d._pos = pos;
+        }
+        return { group: e.group, data: d };
+      });
+
+      fetch('/api/admin/graph-save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elements: elements }),
+      })
+      .then(r => r.json())
+      .then(res => {
+        if (res.success) {
+          editorChangeCount = 0;
+          alert('Graph saved successfully!');
+        } else {
+          alert('Save failed: ' + (res.error || 'unknown error'));
+        }
+      })
+      .catch(e => alert('Save error: ' + e.message));
+    }
+
+    function resetEditorGraph() {
+      if (editorChangeCount > 0 && !confirm('Unsaved changes will be lost. Continue?')) return;
+      editorLoadFromTopo();
+      editorChangeCount = 0;
+    }
+
+    document.addEventListener('click', function(e) {
+      const btn = e.target.closest('.editor-btn');
+      if (btn) {
+        editorSetTool(btn.dataset.tool);
+      }
+    });
+
     // ── Init ──
     loadDashboard()
     loadProcedures()
@@ -527,6 +783,60 @@ export async function startAdminUI(
     } catch (err) {
       reply.code(500)
       return { error: (err as Error).message }
+    }
+  })
+
+  // Graph Save endpoint — receives edited topology from the graph editor (GAP-66)
+  app.post('/api/admin/graph-save', async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = req.body as { elements: CyElement[] }
+    if (!body || !Array.isArray(body.elements)) {
+      reply.code(400)
+      return { success: false, error: 'Missing "elements" array' }
+    }
+
+    try {
+      for (const el of body.elements) {
+        if (el.group === 'nodes') {
+          stream.push({
+            type: 'node_upsert',
+            id: parseInt(el.data.id as string) || (el.data.id as any),
+            data: {
+              id: parseInt(el.data.id as string) || (el.data.id as any),
+              label: el.data.label as string | undefined,
+              typeId: el.data.typeId as number | undefined,
+              props: el.data.props as Record<string, unknown> | undefined,
+            },
+            timestamp: Date.now(),
+          })
+        } else if (el.group === 'edges') {
+          const sourceId = parseInt(el.data.source as string) || (el.data.source as any)
+          const targetId = parseInt(el.data.target as string) || (el.data.target as any)
+          stream.push({
+            type: 'edge_upsert',
+            id: parseInt(el.data.id as string) || (el.data.id as any),
+            data: {
+              id: parseInt(el.data.id as string) || (el.data.id as any),
+              label: el.data.label as string | undefined,
+              source: sourceId,
+              target: targetId,
+              props: el.data.props as Record<string, unknown> | undefined,
+            },
+            timestamp: Date.now(),
+          })
+        }
+      }
+
+      stream.push({
+        type: 'node_upsert',
+        id: 0,
+        data: { id: 0, label: '__save_checkpoint__' },
+        timestamp: Date.now(),
+      })
+
+      return { success: true, accepted: body.elements.length }
+    } catch (err) {
+      reply.code(500)
+      return { success: false, error: (err as Error).message }
     }
   })
 
