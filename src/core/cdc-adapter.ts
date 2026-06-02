@@ -4,6 +4,11 @@
  * 挂接到 EventStream 的 emit 路径，将图变更事件转为标准化 CDC 事件，
  * 供外部系统通过 WebSocket / HTTP Long-Polling / Webhook 消费。
  *
+ * GAP-60 增强：
+ * - 新增 PropertyFilter 按属性值过滤
+ * - CdcFilter.properties 支持 eq/neq/gt/gte/lt/lte/exists 操作符
+ * - querySince 支持属性过滤
+ *
  * 架构：
  *   GraphEngine → EventStream.emit()
  *     → EventStream 的 handlers 回调（已注册 on()）
@@ -45,6 +50,24 @@ export interface CdcEvent {
 }
 
 /**
+ * 属性值过滤操作符。
+ * eq=等于, neq=不等于, gt=大于, gte=大于等于, lt=小于, lte=小于等于,
+ * exists=属性存在性检查（值是否存在，忽略比较值）。
+ */
+export type CdcPropertyOp = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'exists'
+
+/**
+ * 属性值过滤条件。
+ * - op='exists' 时忽略 value
+ * - 字符串比较按字典序
+ * - 数字比较按数值大小
+ */
+export interface CdcPropertyFilter {
+  op: CdcPropertyOp
+  value?: string | number
+}
+
+/**
  * CDC 事件过滤条件
  */
 export interface CdcFilter {
@@ -54,6 +77,13 @@ export interface CdcFilter {
   ops?: CdcOp[]
   /** 只接收指定实体类型 */
   entities?: CdcEntity[]
+  /**
+   * 按属性值过滤。
+   * 键为属性名，值为过滤条件。
+   * 多个属性之间为 AND 关系（必须所有条件都匹配）。
+   * 只对 after（create/update）和 before（delete）中的属性进行匹配。
+   */
+  properties?: Record<string, CdcPropertyFilter>
 }
 
 /**
@@ -83,6 +113,63 @@ function extractBeforeAfter(
     return { entity: 'node', after: data as Record<string, unknown> }
   } else {
     return { entity: 'edge', after: data as Record<string, unknown> }
+  }
+}
+
+/**
+ * 检查属性的值是否符合 CdcPropertyFilter 条件。
+ * 用于属性级过滤。
+ *
+ * @param actualVal  事件中的实际属性值
+ * @param filter     过滤条件
+ * @returns true 如果匹配
+ */
+function matchesPropertyFilter(actualVal: unknown, filter: CdcPropertyFilter): boolean {
+  switch (filter.op) {
+    case 'exists':
+      return actualVal !== undefined && actualVal !== null
+
+    case 'eq': {
+      if (filter.value === undefined) return actualVal === undefined || actualVal === null
+      return actualVal === filter.value
+    }
+
+    case 'neq': {
+      if (filter.value === undefined) return actualVal !== undefined && actualVal !== null
+      return actualVal !== filter.value
+    }
+
+    case 'gt':
+    case 'gte':
+    case 'lt':
+    case 'lte': {
+      if (filter.value === undefined) return false
+      if (typeof actualVal !== 'number' && typeof actualVal !== 'string') return false
+      if (typeof filter.value !== typeof actualVal) {
+        // 尝试数值比较
+        const numActual = Number(actualVal)
+        const numFilter = Number(filter.value)
+        if (isNaN(numActual) || isNaN(numFilter)) return false
+        return compare(numActual, numFilter, filter.op)
+      }
+      return compare(actualVal as string | number, filter.value, filter.op)
+    }
+
+    default:
+      return false
+  }
+}
+
+/**
+ * 数值/字符串比较内部函数
+ */
+function compare(a: string | number, b: string | number, op: CdcPropertyOp): boolean {
+  switch (op) {
+    case 'gt': return a > b
+    case 'gte': return a >= b
+    case 'lt': return a < b
+    case 'lte': return a <= b
+    default: return false
   }
 }
 
@@ -209,6 +296,27 @@ export class CdcAdapter {
   }
 
   /**
+   * 检查 CDC 事件是否匹配属性过滤条件。
+   * 对 create/update 事件匹配 after 中的属性，对 delete 事件匹配 before 中的属性。
+   */
+  private _matchesPropertiesFilter(
+    event: CdcEvent,
+    properties: Record<string, CdcPropertyFilter>,
+  ): boolean {
+    const props = event.op === 'delete' ? event.before : event.after
+    if (!props) return false
+
+    for (const [propName, propFilter] of Object.entries(properties)) {
+      const actualVal = props[propName]
+      if (!matchesPropertyFilter(actualVal, propFilter)) {
+        return false
+      }
+    }
+
+    return true
+  }
+
+  /**
    * 检查事件是否匹配过滤条件。
    */
   private _matchesFilter(
@@ -235,6 +343,13 @@ export class CdcAdapter {
     if (effectiveFilter.labels && effectiveFilter.labels.length > 0) {
       if (!label) return false
       if (!effectiveFilter.labels.includes(label)) return false
+    }
+
+    // GAP-60: 按属性值过滤
+    if (effectiveFilter.properties && Object.keys(effectiveFilter.properties).length > 0) {
+      if (!this._matchesPropertiesFilter(event, effectiveFilter.properties)) {
+        return false
+      }
     }
 
     return true
@@ -295,9 +410,15 @@ export class CdcAdapter {
     const results: CdcEvent[] = []
     for (const event of this.buffer) {
       if (event.seq <= sinceSeq) continue
-      // 暂不考虑 label 过滤（事件可能没有 label 元信息）
+      // 基础过滤
       if (filter?.ops && !filter.ops.includes(event.op)) continue
       if (filter?.entities && !filter.entities.includes(event.entity)) continue
+
+      // GAP-60: 属性过滤
+      if (filter?.properties && Object.keys(filter.properties).length > 0) {
+        if (!this._matchesPropertiesFilter(event, filter.properties)) continue
+      }
+
       results.push(event)
     }
     return results

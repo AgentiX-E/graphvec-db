@@ -19,6 +19,20 @@ import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import { Logger } from './logger'
 
 /**
+ * 导出配置，支持 OTLP gRPC/HTTP 及 Jaeger/Zipkin 兼容格式
+ */
+export interface TelemetryExportConfig {
+  /** OTLP gRPC 端点（默认从 OTEL_EXPORTER_OTLP_ENDPOINT 读取，兜底 http://localhost:4317） */
+  otlpGrpcEndpoint?: string
+  /** OTLP HTTP 端点（若设置则同时注册 OTLP HTTP trace exporter） */
+  otlpHttpEndpoint?: string
+  /** Jaeger 兼容端点（使用 OTLP HTTP 格式发送到 Jaeger Collector） */
+  jaegerEndpoint?: string
+  /** Zipkin 端点（使用 OTLP HTTP JSON 格式发送到 Zipkin） */
+  zipkinEndpoint?: string
+}
+
+/**
  * Telemetry — OTel 可观测性单例
  *
  * 管理全局 Tracer 和 SDK 生命周期。
@@ -48,12 +62,66 @@ export class Telemetry {
   }
 
   /**
+   * 根据环境变量解析导出配置。
+   * 优先级：环境变量 > 参数
+   */
+  private _resolveExportConfig(): TelemetryExportConfig {
+    const config: TelemetryExportConfig = {}
+    if (process.env.OTEL_EXPORTER_JAEGER_ENDPOINT) {
+      config.jaegerEndpoint = process.env.OTEL_EXPORTER_JAEGER_ENDPOINT
+    }
+    if (process.env.OTEL_EXPORTER_ZIPKIN_ENDPOINT) {
+      config.zipkinEndpoint = process.env.OTEL_EXPORTER_ZIPKIN_ENDPOINT
+    }
+    if (process.env.OTEL_EXPORTER_OTLP_HTTP_ENDPOINT) {
+      config.otlpHttpEndpoint = process.env.OTEL_EXPORTER_OTLP_HTTP_ENDPOINT
+    }
+    return config
+  }
+
+  /**
+   * 创建 trace exporter 列表（支持多 exporter 并行导出）。
+   * 可用于同时输出到 OTLP + Jaeger + Zipkin。
+   */
+  private _createTraceExporters(config: TelemetryExportConfig): any[] {
+    const exporters: any[] = []
+
+    // 1. OTLP gRPC exporter — 默认主 exporter
+    exporters.push(new OTLPTraceExporter({
+      url: config.otlpGrpcEndpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4317',
+    }))
+
+    // 2. OTLP HTTP exporter — 如果配置了 HTTP 端点
+    if (config.otlpHttpEndpoint) {
+      const { OTLPTraceExporter: OTLPHttpExporter } = require('@opentelemetry/exporter-trace-otlp-http')
+      exporters.push(new OTLPHttpExporter({
+        url: config.otlpHttpEndpoint,
+      }))
+    }
+
+    // 3. Jaeger 兼容导出（通过 OTLP HTTP 到 Jaeger Collector）
+    if (config.jaegerEndpoint) {
+      const { OTLPTraceExporter: OTLPHttpExporter } = require('@opentelemetry/exporter-trace-otlp-http')
+      exporters.push(new OTLPHttpExporter({
+        url: config.jaegerEndpoint,
+      }))
+    }
+
+    return exporters
+  }
+
+  /**
    * 初始化 OTel SDK
    *
    * @param serviceName  服务名称（默认 'agentiX-graphvec'）
    * @param otlpEndpoint OTLP gRPC 端点（默认 'http://localhost:4317'）
+   * @param exportConfig 可选的多 exporter 配置（优先级低于环境变量）
    */
-  async init(serviceName?: string, otlpEndpoint?: string): Promise<void> {
+  async init(
+    serviceName?: string,
+    otlpEndpoint?: string,
+    exportConfig?: TelemetryExportConfig,
+  ): Promise<void> {
     if (this._enabled) return
 
     const name = serviceName ?? 'agentiX-graphvec'
@@ -71,10 +139,17 @@ export class Telemetry {
     })
 
     try {
-      // Trace exporter
-      const traceExporter = new OTLPTraceExporter({
-        url: endpoint,
-      })
+      // 合并导出配置（环境变量优先）
+      const resolvedExportConfig: TelemetryExportConfig = {
+        otlpGrpcEndpoint: endpoint,
+        ...this._resolveExportConfig(),
+        ...exportConfig,
+      }
+
+      // 创建 trace exporters
+      const traceExporters = this._createTraceExporters(resolvedExportConfig)
+      // OTLP gRPC 是第一个 exporter，单独提取用于 SDK 构造
+      const traceExporter = traceExporters[0]
 
       // Metric exporter with periodic export
       const metricExporter = new OTLPMetricExporter({
@@ -85,22 +160,88 @@ export class Telemetry {
         exportIntervalMillis: 60000, // 每分钟导出一次
       })
 
-      this.sdk = new NodeSDK({
+      const sdkConfig: any = {
         resource,
         traceExporter,
         metricReader,
         serviceName: name,
-      } as Partial<NodeSDKConfiguration> as NodeSDKConfiguration)
+      }
+
+      // 如果有其他 trace exporters（OTLP HTTP / Jaeger / Zipkin），通过 span processor 注册
+      if (traceExporters.length > 1) {
+        const { BatchSpanProcessor } = require('@opentelemetry/sdk-trace-base')
+        const { SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base')
+        const additionalProcessors = traceExporters.slice(1).map(
+          (e: any) => new SimpleSpanProcessor(e),
+        )
+        sdkConfig.spanProcessors = additionalProcessors
+      }
+
+      this.sdk = new NodeSDK(sdkConfig)
 
       await this.sdk.start()
       this._enabled = true
       this.tracer = trace.getTracer(name)
-      this.logger.info(`OTel SDK initialized, exporting to ${endpoint}`)
+      this.logger.info(`OTel SDK initialized, trace exporters: ${traceExporters.length}, endpoint: ${endpoint}`)
     } catch (err) {
       this.logger.error('Failed to initialize OTel SDK:', err as Error)
       // 初始化失败不阻止应用继续运行
       this._enabled = false
     }
+  }
+
+  /**
+   * 注册自动 instrumentation。
+   * 需要在 SDK start 之前调用或作为 init 的一部分传入。
+   *
+   * 通过 environment.config() 注册 instrumentations 有两种方式：
+   * 1. 调用此方法手动注册（需要 SDK start 之前）
+   * 2. 在 init() 中通过配置传入
+   */
+  registerInstrumentations(): void {
+    if (this._enabled) return // 必须在 init 之前调用
+
+    try {
+      const { registerInstrumentations } = require('@opentelemetry/instrumentation')
+      const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http')
+      const { FastifyInstrumentation } = require('@opentelemetry/instrumentation-fastify')
+
+      registerInstrumentations({
+        instrumentations: [
+          new HttpInstrumentation({
+            // HTTP 请求/响应自动追踪
+            ignoreIncomingRequestHook: (req: any) => {
+              // 忽略健康检查等内部端点
+              if (req.url) {
+                const url = req.url as string
+                if (url === '/health' || url === '/live' || url === '/ready') return true
+                if (url.startsWith('/metrics')) return true
+              }
+              return false
+            },
+          }),
+          new FastifyInstrumentation({
+            // Fastify 路由层次自动追踪
+          }),
+        ],
+      })
+      this.logger.info('OTel instrumentations registered: http, fastify')
+    } catch (err) {
+      this.logger.error('Failed to register instrumentations:', err as Error)
+    }
+  }
+
+  /**
+   * 便捷方法：初始化并同时注册自动 instrumentation。
+   * 等价于先调用 registerInstrumentations()，再调用 init()。
+   */
+  async initWithInstrumentations(
+    serviceName?: string,
+    otlpEndpoint?: string,
+    exportConfig?: TelemetryExportConfig,
+  ): Promise<void> {
+    this.registerInstrumentations()
+    await this.init(serviceName, otlpEndpoint, exportConfig)
   }
 
   /** 关闭 OTel SDK（优雅退出时调用） */

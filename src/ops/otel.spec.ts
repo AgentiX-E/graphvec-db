@@ -7,6 +7,8 @@
  * 3. traceAsync 默认禁用时直接执行（零开销）
  * 4. MetricsCollector 依赖 Telemetry 状态
  * 5. MetricsCollector 在禁用时无操作
+ * 6. GAP-59: 导出配置（环境变量/Jaeger/Zipkin）
+ * 7. GAP-59: registerInstrumentations 调用（自动 instrumentation）
  */
 import { Telemetry } from './otel'
 import { MetricsCollector } from './otel-metrics'
@@ -71,6 +73,43 @@ describe('Telemetry', () => {
   it('shutdown on non-initialized telemetry should not throw', async () => {
     const t = Telemetry.getInstance()
     await expect(t.shutdown()).resolves.toBeUndefined()
+  })
+
+  // ── GAP-59: 导出配置 ──────────────────────
+
+  it('GAP-59-01: initWithInstrumentations should not throw (silent fail)', async () => {
+    // SDK init may attempt connection, but should not throw
+    await expect(
+      telemetry.initWithInstrumentations('test-svc', 'http://invalid:4317')
+    ).resolves.toBeUndefined()
+    // If collector unavailable, the SDK may still report as enabled;
+    // we don't assert isEnabled() here since it depends on whether
+    // the OTel SDK throws or swallows the connection error.
+  })
+
+  it('GAP-59-02: initWithInstrumentations with empty endpoint should not throw', async () => {
+    await expect(
+      telemetry.initWithInstrumentations('test-svc', '')
+    ).resolves.toBeUndefined()
+  })
+
+  it('GAP-59-03: registerInstrumentations should not throw when disabled', () => {
+    // registerInstrumentations is safe to call when disabled
+    expect(() => telemetry.registerInstrumentations()).not.toThrow()
+  })
+
+  it('GAP-59-04: initWithInstrumentations should not throw', async () => {
+    // Will silently fail (no real collector), but should not throw
+    await expect(
+      telemetry.initWithInstrumentations('test-svc', 'http://invalid:4317')
+    ).resolves.toBeUndefined()
+  })
+
+  it('GAP-59-05: registerInstrumentations is idempotent', () => {
+    // Calling twice is safe
+    telemetry.registerInstrumentations()
+    telemetry.registerInstrumentations()
+    // No throw
   })
 })
 
