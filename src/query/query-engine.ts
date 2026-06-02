@@ -266,6 +266,12 @@ export interface QueryPlan {
     rowVariable: string
     hasHeaders: boolean
   }
+  /** 窗口函数 */
+  windowFunctions?: Array<{
+    function: string
+    partitionBy: string[]
+    orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }>
+  }>
   // DML fields
   /** CREATE 节点 */
   createNodes?: Array<{
@@ -604,6 +610,36 @@ export function _preprocessQuery(query: string): {
     cleanQuery = cleanQuery.replace(csvRE, ' ').trim()
   }
 
+  // ── Step 0.8: 提取窗口函数 ──
+  // count(n.age) OVER (PARTITION BY n.gender ORDER BY n.age DESC)
+  // 提取后替换为普通标识符
+  const windowRE = /(\w+)\s*\(([^)]*)\)\s+OVER\s*\(([\s\S]+?)\)/gi
+  const windowExtracts: Array<{ function: string; partitionBy: string[]; orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }> }> = []
+  cleanQuery = cleanQuery.replace(windowRE, (_match, func: string, args: string, overClause: string) => {
+    const pby: string[] = []
+    const oby: Array<{ column: string; direction: 'ASC' | 'DESC' }> = []
+    // 解析 OVER 内部：PARTITION BY cols ORDER BY cols
+    const pbyMatch = overClause.match(/PARTITION\s+BY\s+(.+?)(?:\bORDER\s+BY\b|$)/i)
+    if (pbyMatch) {
+      pbyMatch[1].split(',').forEach((c: string) => pby.push(c.trim()))
+    }
+    const obyMatch = overClause.match(/ORDER\s+BY\s+(.+)$/i)
+    if (obyMatch) {
+      obyMatch[1].split(',').forEach((c: string) => {
+        const parts = c.trim().split(/\s+/)
+        oby.push({
+          column: parts[0],
+          direction: parts[1]?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC',
+        })
+      })
+    }
+    windowExtracts.push({ function: `${func}(${args})`, partitionBy: pby, orderBy: oby })
+    return `__window_val_${windowExtracts.length - 1}__`
+  })
+  if (windowExtracts.length > 0) {
+    result.windowExtracts = windowExtracts
+  }
+
   // ── Step 1: handle OPTIONAL MATCH by stripping the "OPTIONAL " prefix ──
   // After peggy parses "MATCH ...", we can detect which MATCH was OPTIONAL by
   // checking if the original query had "OPTIONAL MATCH" before it.
@@ -752,6 +788,7 @@ export function _preprocessQuery(query: string): {
       foreachExtract: result.foreachExtract,
       reduceExtract: result.reduceExtract,
       loadCsvExtract: result.loadCsvExtract,
+      windowExtracts: result.windowExtracts,
     },
   }
 }
@@ -820,6 +857,13 @@ export interface _QueryExtracts {
     rowVariable: string
     hasHeaders: boolean
   }
+  /** 窗口函数提取 */
+  windowExtracts?: Array<{
+    function: string
+    partitionBy: string[]
+    orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }>
+    alias?: string
+  }>
 }
 
 /**
@@ -1105,6 +1149,11 @@ export function parseQuery(query: string): QueryPlan {
       rowVariable: extracts.loadCsvExtract.rowVariable,
       hasHeaders: extracts.loadCsvExtract.hasHeaders,
     }
+  }
+
+  // Step 7: Attach window functions if extracted
+  if (extracts.windowExtracts && extracts.windowExtracts.length > 0) {
+    plan.windowFunctions = extracts.windowExtracts
   }
 
   return plan
