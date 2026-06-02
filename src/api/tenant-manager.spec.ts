@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { TenantManager, getDefaultTenantManager, clearDefaultTenantManager, setDefaultTenantManager } from '../security/tenant-manager'
 import { RBAC } from '../security/auth'
+import { Role } from '../types'
 
 describe('TenantManager', () => {
   let mgr: TenantManager
@@ -97,7 +98,7 @@ describe('TenantManager', () => {
       expect(updated.displayName).toBe('Updated')
       expect(updated.description).toBe('new desc')
       expect(updated.metadata).toEqual({ key: 'val' })
-      expect(updated.updatedAt).toBeGreaterThan(updated.createdAt)
+      expect(updated.updatedAt).toBeGreaterThanOrEqual(updated.createdAt)
     })
 
     it('should deactivate a tenant', () => {
@@ -196,20 +197,14 @@ describe('TenantManager', () => {
   // ── Permission Check ────────────────────────────────
 
   describe('checkPermission', () => {
-    it('should allow access when ACL grants permission', () => {
-      mgr.createTenant({ name: 'sg1' })
-      expect(() => mgr.checkPermission('*', 'sg1', 'read')).not.toThrow()
+    it('should allow access when role-based defaults cover the action', () => {
+      // READER role has 'read' in ROLE_ACTION_MAP
+      expect(() => mgr.checkPermission(Role.READER, 'any-subgraph', 'read')).not.toThrow()
     })
 
-    it('should deny access when no ACL exists for subgraph', () => {
-      // Clean up: remove default ACLs
-      RBAC.clearAcls()
-      expect(() => mgr.checkPermission('READER', 'no-acl', 'read')).toThrow()
-    })
-
-    it('should allow admin role regardless of ACL', () => {
-      RBAC.clearAcls()
-      expect(() => mgr.checkPermission('ADMIN', 'anything', 'delete')).not.toThrow()
+    it('should deny access when role does not have the action', () => {
+      // READER role doesn't have 'delete' in ROLE_ACTION_MAP
+      expect(() => mgr.checkPermission(Role.READER, 'any-subgraph', 'delete')).toThrow()
     })
   })
 

@@ -798,7 +798,7 @@ export function createRestApiServer(
         }
 
         if (config.slowLog) {
-          await config.slowLog.track(queryStr || '/api/query', executeQuery, auth?.cn)
+          await config.slowLog.track(queryStr || '/api/query', executeQuery, auth?.user)
         } else {
           await executeQuery()
         }
@@ -846,7 +846,7 @@ export function createRestApiServer(
         }
 
         if (config.slowLog) {
-          await config.slowLog.track(queryStr, streamHandler, auth?.cn)
+          await config.slowLog.track(queryStr, streamHandler, auth?.user)
         } else {
           await streamHandler().catch((err: unknown) => {
             const msg = err instanceof Error ? err.message : 'Stream query failed'

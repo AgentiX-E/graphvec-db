@@ -8,6 +8,7 @@ import { Authenticator, RBAC } from '../security/auth'
 import { TLSConfig } from '../security/tls'
 import { ShardManager } from '../shard/shard-manager'
 import { DatabaseManager, DatabaseInstance } from '../core/database-manager'
+import { QuerySlowLog } from '../ops/query-slow-log'
 import * as https from 'https'
 import * as http from 'http'
 import * as path from 'path'
@@ -1028,10 +1029,15 @@ describe('RestApiServer', () => {
         query: 'MATCH (n) WHERE n.typeId=1 RETURN n LIMIT 100',
       })
       expect(res.statusCode).toBe(200)
-      expect((res.body as any).results).toBeInstanceOf(Array)
-      expect((res.body as any).count).toBeDefined()
-      expect((res.body as any).plan).toBeDefined()
-      expect((res.body as any).plan.type).toBeDefined()
+      const body = (res.body as any)
+      // HATEOAS 包装 → 数据在 data 字段下
+      expect(body.data).toBeDefined()
+      expect(body.data.results).toBeInstanceOf(Array)
+      expect(body.data.count).toBeDefined()
+      expect(body.data.plan).toBeDefined()
+      expect(body.data.plan.type).toBeDefined()
+      expect(body._links).toBeDefined()
+      expect(body._links.self.href).toBe('/api/query')
     })
 
     test('POST /api/query without query string should return 400', async () => {
@@ -1057,8 +1063,10 @@ describe('RestApiServer', () => {
         limit: 10,
       })
       expect(res.statusCode).toBe(200)
-      expect((res.body as any).results).toBeInstanceOf(Array)
-      expect((res.body as any).count).toBe(1)
+      const body = (res.body as any)
+      expect(body.data.results).toBeInstanceOf(Array)
+      expect(body.data.count).toBe(1)
+      expect(body._links).toBeDefined()
     })
 
     test('GET /api/query/stream should return SSE response', async () => {
@@ -1905,5 +1913,306 @@ describe('RestApiServer inline TLS (config.tls)', () => {
     // When ca is provided without requestCert, the file is still read as CA cert
     expect(() => createServerWithTls({ ca: '/nonexistent/ca.pem', requestCert: false }))
       .toThrow(/TLS CA file not found/)
+  })
+})
+
+// ──────────────────────────────────────────
+// GAP-51: GNN 推理端点集成测试
+// ──────────────────────────────────────────
+
+/**
+ * 模拟 GNN 引擎，用于集成测试（不加载真实 ONNX 模型）
+ */
+class MockGnnEngine {
+  isLoaded = false
+  private config = { featureDimension: 16, embeddingDimension: 128, batchSize: 64 }
+
+  getConfig() { return { ...this.config } }
+
+  async loadModel(_path: string) {
+    this.isLoaded = true
+    return
+  }
+
+  async predictLink(source: string, target: string): Promise<any> {
+    if (!this.isLoaded) throw new Error('GNN model not loaded')
+    return { source, target, score: 0.85, probability: 0.95 }
+  }
+
+  async computeEmbedding(nodeId: string): Promise<Float32Array> {
+    if (!this.isLoaded) throw new Error('GNN model not loaded')
+    const arr = new Float32Array(this.config.embeddingDimension)
+    arr[0] = 1.0
+    return arr
+  }
+
+  async recommend(startNode: string, candidates: any[], topK: number = 10): Promise<any[]> {
+    if (!this.isLoaded) throw new Error('GNN model not loaded')
+    return candidates.slice(0, topK).map((c, i) => ({
+      candidate: c,
+      score: 1 - i * 0.1,
+    }))
+  }
+}
+
+describe('GAP-51: GNN REST API Endpoints', () => {
+  let mockShardManager: MockShardManager
+  let mockGnnEngine: MockGnnEngine
+  let server: RestApiServer
+  let mockAuthenticator: Authenticator
+  let mockTlsConfig: TLSConfig
+
+  function createGnnServer() {
+    return createRestApiServer(mockShardManager as any, {
+      port: 0,
+      host: '127.0.0.1',
+      authenticator: mockAuthenticator,
+      tlsConfig: mockTlsConfig,
+      gnnEngine: mockGnnEngine as any,
+    })
+  }
+
+  beforeEach(() => {
+    mockShardManager = new MockShardManager()
+    mockAuthenticator = createMockAuthenticator()
+    mockTlsConfig = createMockTlsConfig()
+    mockGnnEngine = new MockGnnEngine()
+  })
+
+  afterEach(async () => {
+    if (server) await server.stop()
+  })
+
+  test('GET /api/v1/gnn/status should return model state', async () => {
+    server = createGnnServer()
+    await server.start()
+    const res = await makeRequest(server, 'GET', '/api/v1/gnn/status')
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).loaded).toBe(false)
+    expect((res.body as any).config).toBeDefined()
+    expect((res.body as any).config.featureDimension).toBe(16)
+  })
+
+  test('POST /api/v1/gnn/predict-link after loading model', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/predict-link', {
+      source: 'A',
+      target: 'B',
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).score).toBe(0.85)
+    expect((res.body as any).source).toBe('A')
+  })
+
+  test('POST /api/v1/gnn/predict-link before loading model', async () => {
+    mockGnnEngine.isLoaded = false
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/predict-link', {
+      source: 'A',
+      target: 'B',
+    })
+    expect(res.statusCode).toBe(500)
+  })
+
+  test('POST /api/v1/gnn/predict-link missing fields', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/predict-link', {
+      source: 'A',
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/embedding should return float array', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/embedding', {
+      nodeId: 'node-1',
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).nodeId).toBe('node-1')
+    expect((res.body as any).embedding).toBeInstanceOf(Array)
+    expect((res.body as any).embedding[0]).toBe(1.0)
+  })
+
+  test('POST /api/v1/gnn/embedding missing nodeId', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/embedding', {})
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/recommend should return ranked candidates', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/recommend', {
+      startNode: 'A',
+      candidates: ['B', 'C', 'D'],
+      topK: 2,
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).results).toBeInstanceOf(Array)
+    expect((res.body as any).results.length).toBe(2)
+    expect((res.body as any).results[0].candidate).toBe('B')
+  })
+
+  test('POST /api/v1/gnn/recommend missing fields', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/recommend', {
+      startNode: 'A',
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/load-model should load the model', async () => {
+    server = createGnnServer()
+    await server.start()
+
+    expect(mockGnnEngine.isLoaded).toBe(false)
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/load-model', {
+      modelPath: '/path/to/model.onnx',
+    })
+    expect(res.statusCode).toBe(200)
+    expect(mockGnnEngine.isLoaded).toBe(true)
+  })
+
+  test('POST /api/v1/gnn/load-model missing modelPath', async () => {
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/load-model', {})
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('GNN endpoints should require admin for load-model', async () => {
+    server = createGnnServer()
+    await server.start()
+
+    const resReader = await makeRequest(server, 'POST', '/api/v1/gnn/load-model',
+      { modelPath: '/m.pb' }, readerAgent)
+    expect(resReader.statusCode).toBe(403)
+  })
+})
+
+// ──────────────────────────────────────────
+// GAP-53: 慢查询日志集成测试
+// ──────────────────────────────────────────
+
+describe('GAP-53: Slow Query Log Integration', () => {
+  let mockShardManager: MockShardManager
+  let server: RestApiServer
+  let mockAuthenticator: Authenticator
+  let mockTlsConfig: TLSConfig
+  let slowLog: QuerySlowLog
+
+  beforeEach(() => {
+    mockShardManager = new MockShardManager()
+    // 创建一个固定的管理员用户节点
+    mockShardManager.setNodes([
+      { id: 1, type: 1, name: 'testNode', props: {}, createdAt: Date.now(), degree: 0 },
+    ])
+    mockAuthenticator = createMockAuthenticator()
+    mockTlsConfig = createMockTlsConfig()
+    slowLog = new QuerySlowLog(50)
+  })
+
+  afterEach(async () => {
+    if (server) await server.stop()
+  })
+
+  function createSlowLogServer() {
+    return createRestApiServer(mockShardManager as any, {
+      port: 0,
+      host: '127.0.0.1',
+      authenticator: mockAuthenticator,
+      tlsConfig: mockTlsConfig,
+      slowLog,
+    })
+  }
+
+  test('GET /api/v1/ops/slow-queries should return empty initially', async () => {
+    server = createSlowLogServer()
+    await server.start()
+    const res = await makeRequest(server, 'GET', '/api/v1/ops/slow-queries')
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).count).toBe(0)
+    expect((res.body as any).queries).toBeInstanceOf(Array)
+  })
+
+  test('POST /api/query should be tracked by slowLog', async () => {
+    // 使用 0 阈值确保所有查询都算慢
+    slowLog.setThreshold(0)
+    server = createSlowLogServer()
+    await server.start()
+
+    await makeRequest(server, 'POST', '/api/query', {
+      match: { typeId: 1 },
+    })
+
+    // 验证 slow log 记录了查询
+    const queries = slowLog.getSlowQueries()
+    expect(queries.length).toBeGreaterThanOrEqual(1)
+  })
+
+  test('PUT /api/v1/ops/slow-queries/threshold should update threshold', async () => {
+    server = createSlowLogServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'PUT', '/api/v1/ops/slow-queries/threshold', {
+      thresholdMs: 200,
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).message).toBe('Threshold updated')
+    expect((res.body as any).thresholdMs).toBe(200)
+  })
+
+  test('PUT /api/v1/ops/slow-queries/threshold with invalid value', async () => {
+    server = createSlowLogServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'PUT', '/api/v1/ops/slow-queries/threshold', {
+      thresholdMs: -1,
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('DELETE /api/v1/ops/slow-queries should clear logs', async () => {
+    slowLog.setThreshold(0)
+    server = createSlowLogServer()
+    await server.start()
+
+    // 触发一次查询
+    await makeRequest(server, 'POST', '/api/query', { match: { typeId: 1 } })
+    expect(slowLog.getSlowQueries().length).toBeGreaterThanOrEqual(1)
+
+    // 清空
+    const res = await makeRequest(server, 'DELETE', '/api/v1/ops/slow-queries')
+    expect(res.statusCode).toBe(200)
+    expect(slowLog.count).toBe(0)
+  })
+
+  test('slowLog endpoints should require admin role', async () => {
+    server = createSlowLogServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'GET', '/api/v1/ops/slow-queries',
+      undefined, readerAgent)
+    expect(res.statusCode).toBe(403)
   })
 })
