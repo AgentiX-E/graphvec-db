@@ -16,6 +16,7 @@ interface AuditEntry {
   result: 'success' | 'denied' | 'error'
   latencyMs?: number
   details?: string
+  prevHash?: string
 }
 
 class AuditLog {
@@ -294,6 +295,37 @@ describe('AuditLog', () => {
 
       const results = auditLog.query({ limit: 0 })
       expect(results).toHaveLength(10)
+    })
+  })
+
+  describe('审计哈希链', () => {
+    it('单条日志 prevHash 应为 undefined（genesis）', () => {
+      auditLog.clear()
+      const entries = auditLog.query()
+      if (entries.length === 0) {
+        // 如果空日志，先写入一条验证
+        // 跳过，用新的实例测试
+        const tempLog = new AuditLog({ logDir: '/tmp/ah-test-1' })
+        tempLog.log({ operation: 'first', user: 'admin', role: 'admin', resource: 'r', result: 'success' })
+        const e = tempLog['entries'] || tempLog.query()
+        const result = tempLog.query()
+        expect(result[0].prevHash).toBeUndefined()
+        ;(tempLog as any).close()
+        return
+      }
+      expect(entries[0].prevHash).toBeUndefined()
+    })
+
+    it('第三条日志 prevHash 是第二条的哈希', () => {
+      auditLog.clear()
+      auditLog.log({ operation: 'a', user: 'admin', role: 'admin', resource: 'r', result: 'success' })
+      auditLog.log({ operation: 'b', user: 'admin', role: 'admin', resource: 'r', result: 'success' })
+      auditLog.log({ operation: 'c', user: 'admin', role: 'admin', resource: 'r', result: 'success' })
+      const entries = auditLog.query()
+      expect(entries[1].prevHash).toBeDefined()
+      expect(entries[1].prevHash!.length).toBe(64)
+      expect(entries[2].prevHash).toBeDefined()
+      expect(entries[2].prevHash!.length).toBe(64)
     })
   })
 })

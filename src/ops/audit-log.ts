@@ -4,6 +4,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { createHash } from 'node:crypto'
 import { type AuditEntry } from '../types'
 import { createStream } from 'rotating-file-stream'
 
@@ -39,6 +40,25 @@ export interface AuditLogQuery {
 export class AuditLog {
   private entries: AuditEntry[] = []
   private stream: ReturnType<typeof createStream> | null = null
+  private lastHash: string | undefined
+
+  private serializeEntry(entry: AuditEntry): string {
+    const { prevHash: _, ...rest } = entry
+    return JSON.stringify(rest, Object.keys(rest).sort())
+  }
+
+  private hashEntry(entry: AuditEntry): string {
+    return createHash('sha256').update(this.serializeEntry(entry)).digest('hex')
+  }
+
+  verifyChain(): boolean {
+    let prevHash: string | undefined
+    for (const entry of this.entries) {
+      if (entry.prevHash !== prevHash) return false
+      prevHash = this.hashEntry(entry)
+    }
+    return true
+  }
 
   constructor(opts?: AuditLogOptions) {
     const logDir = opts?.logDir || './logs/audit'
@@ -57,14 +77,16 @@ export class AuditLog {
   }
 
   /**
-   * 写入一条审计条目
+   * 写入一条审计条目（含哈希链完整性校验）
    */
-  log(entry: Omit<AuditEntry, 'timestamp'>): void {
+  log(entry: Omit<AuditEntry, 'timestamp' | 'prevHash'>): void {
     const fullEntry: AuditEntry = {
       ...entry,
       timestamp: new Date().toISOString(),
+      prevHash: this.lastHash,
     }
 
+    this.lastHash = this.hashEntry(fullEntry)
     this.entries.push(fullEntry)
 
     if (this.stream) {

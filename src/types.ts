@@ -350,6 +350,8 @@ export interface AuditEntry {
   result: 'success' | 'denied' | 'error'
   latencyMs?: number
   details?: string
+  /** SHA256 hash of the previous audit entry (hash chain integrity) */
+  prevHash?: string
 }
 
 // ──────────────────────────────────────────
