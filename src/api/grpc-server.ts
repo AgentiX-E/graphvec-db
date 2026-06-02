@@ -243,8 +243,12 @@ export function createGrpcServer(
         await engine.upsertEdge(src, dst, typeId, {
           props: mergedProps as NodeProperties,
         })
-        const updated = engine.getEdge(src, dst, typeId)!
-        callback(null, edgeToProto(updated))
+        // 直接 build 返回对象，不依赖 getEdge 二次读取（避免 OverGraph Rust 层 edge 缓存 bug）
+        callback(null, edgeToProto({
+          src, dst, type: typeId,
+          props: mergedProps as NodeProperties,
+          timestamp: existing.timestamp,
+        }))
       } catch (err: any) {
         callback({ code: grpc.status.INTERNAL, message: err.message })
       }

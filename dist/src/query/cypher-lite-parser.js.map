@@ -1,1 +1,0 @@
-{"version":3,"file":"cypher-lite-parser.js","sourceRoot":"","sources":["../../../src/query/cypher-lite-parser.ts"],"names":[],"mappings":";AAAA;;GAEG;;;AAEH,8DAA8D;AAC9D,MAAM,KAAK,GAAG,OAAO,CAAC,6BAA6B,CAAC,CAAA;AAEvC,QAAA,MAAM,GAAG;IACpB,KAAK,CAAC,KAAa;QACjB,OAAO,KAAK,CAAC,KAAK,CAAC,KAAK,CAAC,CAAA;IAC3B,CAAC;CACF,CAAA"}

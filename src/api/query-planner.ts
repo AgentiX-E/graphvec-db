@@ -966,7 +966,11 @@ export function buildIRFromSpec(spec: QuerySpec): PlanNode {
       estimatedCost: 200,
       estimatedRows: spec.vectorSearch.topK,
       children: [],
-      details: { vector: spec.vectorSearch.vector, topK: spec.vectorSearch.topK },
+      details: {
+        vector: spec.vectorSearch.vector,
+        topK: spec.vectorSearch.topK,
+        typeId: spec.match?.typeId ?? null,
+      },
     }
   } else {
     child = {
@@ -1079,12 +1083,16 @@ export function buildIRFromSpec(spec: QuerySpec): PlanNode {
 export function limitPushdown(plan: PlanNode): PlanNode {
   if (plan.type === PlanNodeType.LIMIT && plan.children.length === 1) {
     const limitValue = plan.details['limit'] as number | undefined
+    const skipValue = plan.details['skip'] as number | undefined
     if (limitValue === undefined) return plan
+
+    // 如果有 skip，下推 limit + skip 的合值，使 SCAN 返回足够数据供 skip 使用
+    const pushLimit = (skipValue ?? 0) + limitValue
 
     // Walk down through SORT, FILTER to find SCAN/NEIGHBORS
     const walkDown = (node: PlanNode): boolean => {
       if (node.type === PlanNodeType.SCAN || node.type === PlanNodeType.NEIGHBORS) {
-        node.details['pushedLimit'] = limitValue
+        node.details['pushedLimit'] = pushLimit
         return true
       }
       // Recurse through single-child intermediate nodes
@@ -1434,11 +1442,7 @@ async function executeNode(
             projected[field] = val
           }
         }
-        // Preserve type and props to satisfy NodeRecord interface
-        projected['type'] = node.type
-        projected['name'] = node.name ?? ''
-        projected['props'] = {}
-        return projected as unknown as NodeRecord
+        return projected
       })
     }
 
@@ -1482,13 +1486,28 @@ async function executeNode(
     case PlanNodeType.VECTOR_SEARCH: {
       const vector = details['vector'] as number[]
       const topK = details['topK'] as number
+      const typeId = details['typeId'] as number | null
 
       const results = await shardManager.vectorSearch({
         denseQuery: vector,
         k: topK,
       })
 
-      return results.map(r => r.node)
+      let nodes = results.map(r => r.node)
+
+      // 按 typeId 过滤（来自 match 子句）
+      if (typeId !== null && typeId !== undefined) {
+        nodes = nodes.filter(n => n.type === typeId)
+      }
+
+      // 应用函数式 predicates（where 过滤）
+      if (fnPredicates && fnPredicates.length > 0) {
+        for (const fn of fnPredicates) {
+          nodes = nodes.filter(fn)
+        }
+      }
+
+      return nodes
     }
 
     case PlanNodeType.INDEX_LOOKUP:
