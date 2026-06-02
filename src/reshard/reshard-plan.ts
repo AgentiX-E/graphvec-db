@@ -92,7 +92,7 @@ export class ReshardPlan {
 
     const planIdHash = crypto
       .createHash('md5')
-      .update(`plan-${shardMap.version}-${splits.length}`)
+      .update(`plan-${shardMap.version}-${splits.length}-${Date.now()}-${Math.random()}`)
       .digest('hex')
       .slice(0, 12)
 
