@@ -85,6 +85,7 @@
     "graphology-metrics": "^2.4.0",
     "graphology-shortest-path": "^2.1.0",
     "graphology-traversal": "^0.3.1",
+    "gremlin": "^3.8.1",
     "hnswlib-node": "^3.0.0",
     "jwks-rsa": "^4.0.1",
     "libsodium-wrappers": "^0.8.4",

@@ -243,3 +243,56 @@ AgentiX GraphVec 适合成为"**Node.js 生态中唯一原生图数据库**"，�
 - 多活 CRDT + 向量搜索的独有组合优势
 
 P0 修复（GAP-01、GAP-02）是当前最紧迫的缺陷，直接影响数据库的 ACID 承诺和可靠性。
+
+---
+
+## 7. V6 差距分析（⬜ 计划中）
+
+> 基于 V6 Gap 深度调研报告（2026-06-02），面向 V6 的未来能力扩展方向。以下内容标记为 **⬜ 计划中**，尚未实现。
+
+### 7.1 V6 新方向总览
+
+| 优先级 | 方向 | 状态 | 估值工时 | 新依赖 |
+|:------:|------|:----:|:--------:|--------|
+| **P2** | 列式索引（列式存储优化属性布局） | ⬜ 计划中 | 5~7 天 | 无 |
+| **P2** | CDC 变更数据捕获 | ⬜ 计划中 | 3~4 天 | `ws`（已有别处依赖） |
+| **P2** | GNN 图神经网络推理（Phase 1: ONNX 推理） | ⬜ 计划中 | 5~8 天 | `onnxruntime-node`（已有） |
+| **P3** | Gremlin 协议兼容 | ⬜ 计划中 | 5~6 天 | `gremlin`（npm） |
+| **P3** | 多模型支持（文档/KV/图） | ⬜ 计划中 | 4~5 天 | 无 |
+| **P3** | SQL 桥接（SQL→Cypher 翻译） | ⬜ 计划中 | 3~4 天 | `alasql`（自定义） |
+
+### 7.2 各方向简要描述
+
+**① 列式索引（P2）** — 在现有 LMDB 行式存储基础上，为频繁查询的属性列构建独立 B-Tree 索引。解决大属性节点下全量反序列化的性能瓶颈，使属性扫描场景加速 ≥5x。
+
+**② CDC 变更数据捕获（P2）** — 在现有 EventStream 之上叠加 CDC Adapter 层，提供 WebSocket/HTTP 长轮询/webhook 三种订阅方式。外部系统可订阅图变更事件，支持断点续传（基于 seq）和按 label 过滤。
+
+**③ GNN 图神经网络推理（P2）** — 二阶段策略：Phase 1 基于 `onnxruntime-node`（已装）加载预训练 ONNX 模型，提供链接预测、节点嵌入计算和推荐 API。Phase 2 未来在 Node 侧增量训练。
+
+**④ Gremlin 协议兼容（P3）** — 实现轻量 Gremlin WebSocket Server（默认端口 8182），兼容 TinkerPop 生态。实现常用遍历步骤（V/E/has/out/in/both/values/limit/count）的 Bytecode 解释器，结果以 GraphSON 格式输出。
+
+**⑤ 多模型支持（P3）** — 在 StorageProvider 上叠加 DocumentStore 抽象，利用 LMDB 独立 database 实现文档集合存储。对标 ArangoDB 的多模型能力，允许 `graph.documentCollection('users')` API。
+
+**⑥ SQL 桥接（P3）** — 轻量 SQL→Cypher 翻译桥，复用 `alasql` 的 SQL 解析器生成 AST，再由 AST 翻译器转为 Cypher 查询。支持 SELECT/WHERE/ORDER BY/LIMIT/OFFSET 子集。
+
+### 7.3 推荐执行顺序
+
+```
+V6 Phase 1（P2 核心 — 底层存储优化）:
+  [2] 列式索引 → 提升属性扫描性能       (5~7 天)
+  [1] CDC 适配层 → 打通外部数据管道     (3~4 天)
+  ─────────────────────────────────
+  checkpoint: 底层存储优化完成
+
+V6 Phase 2（P2 痛点 — 图计算与推理）:
+  [3] GNN ONNX 推理 → 图学习能力       (5~8 天)
+  ─────────────────────────────────
+  checkpoint: 图计算与推理就绪
+
+V6 Phase 3（P3 生态 — 标准化与多模型）:
+  [5] 多模型支持 → 文档/KV/图          (4~5 天)
+  [4] Gremlin 协议 → TinkerPop 生态    (5~6 天)
+  [6] SQL 桥接 → 降低使用门槛          (3~4 天)
+```
+
+**总估值工时**: 25~34 天 | **新依赖**: 2 个 (`gremlin`, `alasql` + 复用 `ws`/`onnxruntime-node`)

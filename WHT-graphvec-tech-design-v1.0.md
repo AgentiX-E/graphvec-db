@@ -659,3 +659,180 @@ Storage Path:
 - **设计要点**: 链接预测评估（AUC 计算）；t-SNE 2D/3D 坐标输出；PCA 主成分分析；嵌入相似度搜索 REST API
 - **状态**: ✅ **已实现**
 - **实现细节**: `commit d5c808f4` — t-SNE/PCA 降维可视化 + 链接预测评估 + 嵌入相似度搜索 REST API
+
+---
+
+## §11 V6 差距分析 — 设计变更预设（⬜ 计划中）
+
+> 以下内容基于 V6 Gap 深度调研报告（2026-06-02），标记为 **⬜ 计划中**，尚未实现。
+
+### §11.1 列式索引 — 分层混合策略
+
+**问题**: 当前 `NodeRecord.props` 和 `EdgeRecord.props` 以 `Record<string, unknown>` 存储，`msgpackr` 编码为二进制 blob 存入 LMDB。大属性场景（KB~MB 级）下即使读取单个字段也要全量反序列化；属性扫描（`WHERE n.age > 30`）需遍历所有节点。
+
+**方案** — 分层混合策略：
+```
+StorageProvider (现有):
+  └→ Primary Store (LMDB Key-Value)    —— 存储完整节点/边记录（msgpack）
+  └→ Columnar Index (NEW)              —— 新增列索引
+        ├→ 对"频繁查询"的属性列构建独立 B-Tree 索引
+        ├→ 索引键: <column_name>:<value>:<node_id>
+        ├→ 实现: 复用 lmdb 或 sorted-btree
+        └→ 配置式启用: colIndex: { enable: true, columns: ['age', 'name', 'score'] }
+```
+
+**依赖包**: 无（复用 `lmdb`、`sorted-btree`）
+
+**关键设计决策**:
+1. 在 `StorageConfig` 中新增 `colIndex` 配置，含 `enable` / `columns` / `indexPath` / `syncOnWrite` 选项
+2. `StorageProvider` 扩展 `readProps` 方法：索引列查询走 Columnar Index，否则回退到完整记录反序列化
+3. 写入路径：`upsertNode()` 在写完整记录后异步维护列索引（可选 `syncOnWrite: true` 强一致性或 `false` 最终一致性）
+4. 节点删除时自动清理列索引条目
+5. 支持 String 和 Number 类型的属性列索引
+
+**状态**: ⬜ 计划中
+
+### §11.2 CDC 变更数据捕获 — CDC Adapter 层
+
+**问题**: 当前变更传播链路 `graph-engine → EventStream → SegmentStreamWal + EventBus` 存在三个缺陷：无标准化 CDC 流（外部系统无法订阅）、无 schema-aware 变更事件（缺乏字段级变更描述）、EventBus 是 ZMQ 私有协议。
+
+**方案** — 在现有 EventStream 上叠加 CDC Adapter 层：
+```
+graph-engine emit()
+  └→ EventStream (现有)
+       ├→ SegmentStreamWal (持久化)     —— 不变
+       ├→ EventBus (集群复制)           —— 不变
+       └→ CDC Adapter (NEW)            —— 新增
+              ├→ CDC WebSocket Server (ws://node:port/cdc)
+              ├→ CDC HTTP Long-Polling (GET /api/v1/cdc/stream)
+              └→ CDC Push Sink (webhook POST)
+```
+
+**依赖包**: `ws`（已有别处依赖）
+
+**关键设计决策**:
+1. 复用 `SegmentStreamWal.seq` 作为 CDC offset 标记，实现断点续传
+2. 变更事件格式：`{ op: "create"|"update"|"delete", entity: "node"|"edge", before: {...}, after: {...}, seq: number, ts: number }`
+3. 支持 configurable filter（按 label、按属性前缀）
+4. 不引入 Kafka/RabbitMQ，保持单体轻量
+5. 三种订阅方式：WebSocket 实时推送 / HTTP 长轮询 / Webhook 推送
+
+**状态**: ⬜ 计划中
+
+### §11.3 GNN 图神经网络推理 — 二阶段策略
+
+**问题**: 当前嵌入链路（node2vec → embedding → HNSW）缺少端到端 GNN 训练能力：不利用节点属性、无法 fine-tune、无法增量训练、无法对未见节点实时计算嵌入。
+
+**方案** — 二阶段策略：
+
+**Phase 1（⬜ 计划中·P2）— 基于 ONNX 的推理：**
+```
+训练（外部/Python）→ DGL/PyG 训练 GraphSAGE → 导出 ONNX
+推理（Node 侧）→ onnxruntime-node 加载模型 → 链接预测/嵌入计算
+```
+```typescript
+class GnnInferenceEngine {
+  async loadModel(modelPath: string): Promise<void>
+  async predictLink(source: NodeId, target: NodeId): Promise<number>  // [0,1]
+  async computeEmbedding(nodeId: NodeId): Promise<Float32Array>       // 支持未见节点
+  async recommend(startNode: NodeId, topK: number): Promise<NodeId[]> // 个性化推荐
+}
+```
+
+**Phase 2（未来·P3）— Node 侧增量训练（ml-matrix + 手动 GCN）：**
+```
+exportLocalSubgraph() → adjacency + features → 两层 GCN 矩阵乘法 → 对比学习 Loss
+```
+
+**依赖包**: `onnxruntime-node`（已有）
+
+**关键设计决策**:
+1. Phase 1 仅做推理，训练在外部 Python 环境（DGL/PyG）完成
+2. ONNX 模型加载后缓存为 InferenceSession，支持多模型热切换
+3. `predictLink` 输出概率，可用于链接预测和推荐
+4. `computeEmbedding` 利用 GNN 模型为未见节点实时计算嵌入（cold start 解决）
+
+**状态**: ⬜ 计划中
+
+### §11.4 Gremlin 协议兼容 — WebSocket Server
+
+**问题**: 当前协议栈（Bolt/Cypher、gRPC、REST）缺少 Gremlin/TinkerPop 生态的支持。与 Bolt/Cypher 互补：Gremlin 是遍历式（traversal-based），Cypher 是声明式（pattern-based）。
+
+**方案** — 轻量 Gremlin WebSocket Server：
+```
+/gremlin (ws://host:8182/gremlin)
+  └→ GremlinTraversalInterpreter
+       ├→ Gremlin Bytecode → AST Translator
+       ├→ GraphTraversalSource (V/E/has/out/in/both/values/limit/count)
+       └→ ResultSet → GraphSON 序列化
+```
+
+**依赖包**: `gremlin`（npm，v3.8.x，80K downloads/week）
+
+**关键设计决策**:
+1. 只实现常用遍历步骤子集（V/E/has/out/in/both/values/limit/count/order），不实现完整 GLV
+2. Bytecode 反序列化参考 `gremlin` 包的 `Bytecode.js` 模块
+3. 结果以 TinkerPop GraphSON 格式输出
+4. WebSocket 默认端口 8182（TinkerPop 标准端口），可配置
+5. 每个 WebSocket 连接独立会话，复用现有 Bolt 的认证机制
+6. 与现有 Bolt 服务并行运行互不干扰
+
+**状态**: ⬜ 计划中
+
+### §11.5 多模型支持 — DocumentStore 抽象
+
+**问题**: 当前为纯图数据库。`NodeType.DOCUMENT = 5` 已存在但无实际文档存储抽象。对标 ArangoDB 的多模型能力（文档/KV/图）需要扩展。
+
+**方案** — 在 StorageProvider 上叠加 DocumentStore 抽象：
+```
+StorageProvider (现有)
+  ├→ NodeStore (lmdb，存图节点)
+  ├→ EdgeStore (lmdb，存图边)
+  └→ DocumentStore (NEW，lmdb 独立 database)
+       ├→ db.document.openDB({ name: 'documents' })
+       └→ DocumentCollection: 对标 ArangoDB collection
+            ├→ documents = graph.documentCollection('users')
+            ├→ doc.save({ name: 'Alice', age: 30 })
+            ├→ doc.get('doc-key-123')
+            ├→ doc.query({ age: { $gt: 25 } })
+            └→ doc.delete('doc-key-123')
+```
+
+**依赖包**: 无（复用 `lmdb`、`msgpackr`、`sorted-btree`）
+
+**关键设计决策**:
+1. LMDB 原生支持多个 named databases 在同一个 env 中，文档集合开 `lmdb.openDB({ name: 'collection_xxx' })`
+2. 文档与节点共享同一 LMDB 环境，共享事务和加密
+3. 文档操作不影响图操作的性能（同一 LMDB env 不同 database）
+4. 图节点通过 `props.docRef = 'collection:users:doc-key-123'` 关联文档
+
+**状态**: ⬜ 计划中
+
+### §11.6 SQL 桥接 — SQL→Cypher 翻译
+
+**问题**: 目标用户群中较多熟悉 SQL 而不熟悉 Cypher，需要允许用户直接用 SQL 查询图数据。
+
+**方案** — 轻量 SQL→Cypher 翻译桥：
+```
+SQL 语句 → alasql.parse(sql) → AST → translator.toCypher() → Cypher AST → query-engine.execute()
+```
+
+**支持子集**:
+| SQL 构造 | Cypher 等效 |
+|----------|------------|
+| `FROM nodes` | `MATCH (n)` |
+| `WHERE n.age > 30` | `WHERE n.age > 30` |
+| `ORDER BY n.name DESC` | `ORDER BY n.name DESC` |
+| `LIMIT 10 OFFSET 5` | `SKIP 5 LIMIT 10` |
+
+**不可翻译**（明确报错）：多表 JOIN、子查询、GROUP BY + 聚合（未来可扩展）
+
+**依赖包**: `alasql`（npm，v4.17.x，轻量纯 JS SQL 解析器）
+
+**关键设计决策**:
+1. 只取 `alasql` 的解析能力（不依赖其执行引擎），执行走现有 Cypher 引擎
+2. 翻译结果需与等效 Cypher 查询返回相同数据集（通过集成测试保证）
+3. 通过环境变量 `ENABLE_SQL_BRIDGE=<bool>` 控制开关（默认关闭）
+4. 不支持的操作返回明确错误消息
+
+**状态**: ⬜ 计划中
