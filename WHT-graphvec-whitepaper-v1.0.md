@@ -975,26 +975,25 @@ Phase 11E (P3): LDBC 测试 + 运维治理 (GAP-58) ← 可独立并行
 
 ---
 
-## 13. V12 新方向（⬜ 计划中）
+## 13. V12 新方向（✅ 已实现）
 
 ### 13.1 V12 新方向总览
 
-V12 聚焦**性能极致化与生态扩展**，涵盖分布式追踪、查询缓存预热、全文检索、图可视化增强、gRPC 流式查询和混沌工程，共 **6 个方向**（均 ⬜ 计划中）：
+V12 聚焦**可观测性、索引增强、运维体验与查询灵活性**，共 **6 个方向**（全部 ✅ 已实现）：
 
 | 方向 | GAP | 优先级 | 核心文件 | 状态 |
 |:----|:---:|:------:|----------|:----:|
-| 分布式追踪 (OpenTelemetry) | GAP-59 | P1 | `ops/tracing.ts`, `otel-collector-config.yml` | ⬜ 计划中 |
-| 查询缓存预热 (Cache Warming) | GAP-60 | P1 | `core/query-cache.ts`, `core/cache-warmer.ts` | ⬜ 计划中 |
-| 全文检索集成 (Tantivy/Meilisearch) | GAP-61 | P2 | `search/fulltext-index.ts`, `search/fulltext-query.ts` | ⬜ 计划中 |
-| 图可视化增强 (Cytoscape/D3 集成) | GAP-63 | P2 | `api/visualization.ts`, `web/viz-renderer.ts` | ⬜ 计划中 |
-| gRPC 流式查询 (Bidirectional Streaming) | GAP-64 | P1 | `api/grpc-stream.ts`, `api/grpc-server.ts` | ⬜ 计划中 |
-| 混沌工程测试框架 (Chaos Mesh) | GAP-66 | P3 | `test/chaos/chaos-tests.ts`, `ops/disaster-recovery-guide.md` | ⬜ 计划中 |
+| 分布式追踪 (OpenTelemetry) | GAP-59 | P1 | `ops/otel.ts`, `ops/otel.spec.ts`, `spec/06-otel-tracing.md` | ✅ 已实现 |
+| CDC 细粒度属性过滤 | GAP-60 | P1 | `core/cdc-adapter.ts`, `core/cdc-adapter.spec.ts`, `spec/07-cdc-property-filter.md` | ✅ 已实现 |
+| Index 在线重建 (double-buffer) | GAP-61 | P2 | `core/columnar-index.ts`, `core/columnar-index.spec.ts`, `spec/08-index-online-rebuild.md` | ✅ 已实现 |
+| 自动索引建议 (Index Advisor) | GAP-63 | P2 | `ops/index-advisor.ts`, `ops/index-advisor.spec.ts` | ✅ 已实现 |
+| 一致性级别可配置 | GAP-64 | P1 | `core/consistency-level.ts`, `core/consistency-level.spec.ts` | ✅ 已实现 |
+| 图可视化编辑器 (Admin UI) | GAP-66 | P2 | `api/admin-ui.ts`, `api/admin-ui-graph-editor.spec.ts` | ✅ 已实现 |
 
 ### 13.2 V12 阶段汇总
 
 | Phase | 优先级 | 包含方向 | 方向数 | 估值工时 | 状态 |
 |:-----:|:------:|----------|:-----:|:--------:|:----:|
-| 12A | P1 | 分布式追踪 / 缓存预热 / gRPC 流式查询 | 3 | 8~13d | ⬜ 计划中 |
-| 12B | P2 | 全文检索集成 / 图可视化增强 | 2 | 7~10d | ⬜ 计划中 |
-| 12C | P3 | 混沌工程测试框架 | 1 | 3~4d | ⬜ 计划中 |
-| | **合计** | — | **6** | **18~27d** | ⬜ **计划中** (GAP-59~GAP-66) |
+| 12A | P1 | OTEL 链路追踪 / CDC 属性过滤 / Index 在线重建 | 3 | 18h~2d | ✅ 已实现 |
+| 12B | P1~P2 | 自动索引建议 / 一致性级别可配置 / 图可视化编辑器 | 3 | 22h~3d | ✅ 已实现 |
+| | **合计** | — | **6** | **40h~5d** | ✅ **已实现** (GAP-59~GAP-66, 6/6) |

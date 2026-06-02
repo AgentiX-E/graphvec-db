@@ -1,0 +1,21 @@
+=== Batch 2: OTEL + CDC + 索引 ===
+    at NodeSDK.start (/home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@opentelemetry/sdk-node/build/src/sdk.js:237:25)
+    at Telemetry.init (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/otel.ts:182:22)
+    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/otel.spec.ts:134:21
+    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11
+    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26
+    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20
+    at new Promise (<anonymous>)
+    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)
+
+ [32m✓[39m ops/otel.spec.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 267[2mms[22m[39m
+[18:27:12.844] [32mINFO[39m (Telemetry/108455): [36mOTel SDK shut down[39m
+[18:27:12.844] [32mINFO[39m (Telemetry/108455): [36mOTel instrumentations registered: http, fastify[39m
+[18:27:12.845] [32mINFO[39m (Telemetry/108455): [36mOTel instrumentations registered: http, fastify[39m
+[18:27:12.855] [32mINFO[39m (Telemetry/108455): [36mOTel SDK initialized, trace exporters: 1, endpoint: http://localhost:4317[39m
+
+[2m Test Files [22m [1m[32m3 passed[39m[22m[90m (3)[39m
+[2m      Tests [22m [1m[32m75 passed[39m[22m[90m (75)[39m
+[2m   Start at [22m 18:27:10
+[2m   Duration [22m 2.00s[2m (transform 719ms, setup 0ms, import 1.86s, tests 747ms, environment 0ms)[22m
+

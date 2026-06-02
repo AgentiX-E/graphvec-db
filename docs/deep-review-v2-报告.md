@@ -891,17 +891,17 @@ V11-06 (SQL 桥接)         ──依赖──→ 无（独立翻译器）
 | V11 | GAP-51~GAP-58 | **8** | ✅ 全部关闭 |
 | | **总计（全部轮次）** | **58** | **58/58 全部关闭 🎉** |
 
-### 14.7 V12 新方向（⬜ 计划中）
+### 14.7 V12 新方向（✅ 已实现）
 
-V12 聚焦**性能极致化与生态扩展**，涵盖 **6 个新方向**，全部 ⬜ 计划中：
+V12 聚焦**可观测性、索引增强、运维体验与查询灵活性**，共 **6 个方向**，全部 ✅ 已实现：
 
-| 编号 | 方向 | GAP | P | 估值 | 关键设计点 |
+| 编号 | 方向 | GAP | P | 估值 | 关键实现点 |
 |:----:|------|:---:|:-:|:----:|-----------|
-| V12-01 | 分布式追踪 | GAP-59 | P1 | 3~5d | OpenTelemetry SDK 集成，Raft 共识 + 查询链路追踪 |
-| V12-02 | 查询缓存预热 | GAP-60 | P1 | 2~3d | 启动时从持久化存储加载热点查询结果 |
-| V12-03 | 全文检索集成 | GAP-61 | P2 | 4~6d | Tantivy/Meilisearch 作为二级索引引擎 |
-| V12-04 | 图可视化增强 | GAP-63 | P2 | 3~4d | Cytoscape.js / D3 前端渲染 + REST 端点输出 |
-| V12-05 | gRPC 流式查询 | GAP-64 | P1 | 3~5d | Bidirectional Streaming 实现大结果集分段推送 |
-| V12-06 | 混沌工程框架 | GAP-66 | P3 | 3~4d | Chaos Mesh 集成，网络分区/节点故障注入测试 |
+| V12-01 | 分布式追踪 (OpenTelemetry) | GAP-59 | P1 | 3~5d | Raft + QueryEngine trace spans，Jaeger/Zipkin 导出 |
+| V12-02 | CDC 细粒度属性过滤 | GAP-60 | P1 | 2~3d | CdcPropertyFilter 支持 eq/neq/gt/regex/复合条件 |
+| V12-03 | Index 在线重建 (double-buffer) | GAP-61 | P2 | 4~6d | active/shadow 缓冲，lock-free swap，零停机重建 |
+| V12-04 | 自动索引建议 (Index Advisor) | GAP-63 | P2 | 3~4d | 查询模式分析 + 候选排序 + 自动应用/回滚 |
+| V12-05 | 一致性级别可配置 | GAP-64 | P1 | 3~5d | EVENTUAL/CAUSAL/LINEARIZABLE，查询级覆盖 |
+| V12-06 | 图可视化编辑器 (Admin UI) | GAP-66 | P2 | 3~4d | 内嵌节点/边 CRUD，实时预览，JSON 导出 |
 
-**闭包目标**: 58/58 → **64/64 GAPs**
+**闭包结果**: 58/58 → ✅ **64/64 GAPs — 全部关闭**

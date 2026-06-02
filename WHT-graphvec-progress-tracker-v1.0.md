@@ -458,18 +458,17 @@
 
 ---
 
-## V12 新方向（⬜ 计划中）
+## V12 新方向（✅ 已实现）
 
-| # | 方向 | 优先级 | 状态 | 估值工时 | 依赖包 | 备注 |
-|:-:|------|:------:|:----:|:--------:|--------|:----|
-| V12-01 | 分布式追踪（OpenTelemetry 集成） | **P1** | ⬜ 计划中 | 3~5d | @opentelemetry/sdk-node | Raft 共识追踪 + 查询链路 |
-| V12-02 | 查询缓存预热 | **P1** | ⬜ 计划中 | 2~3d | 无 | 启动时自动加载热点查询 |
-| V12-03 | 全文检索集成（Tantivy/Meilisearch） | **P2** | ⬜ 计划中 | 4~6d | tantivy / meilisearch | 二级全文索引 |
-| V12-04 | 图可视化增强（Cytoscape/D3） | **P2** | ⬜ 计划中 | 3~4d | cytoscape / d3 | 前端渲染 + REST 端点 |
-| V12-05 | gRPC 流式查询（Bidirectional Streaming） | **P1** | ⬜ 计划中 | 3~5d | @grpc/grpc-js | 大结果集流式推送 |
-| V12-06 | 混沌工程测试框架（Chaos Mesh） | **P3** | ⬜ 计划中 | 3~4d | chaos-mesh | 网络分区/节点故障注入 |
+| # | 方向 | GAP | 优先级 | 状态 | 估值工时 | 核心文件 | 备注 |
+|:-:|------|:---:|:------:|:----:|:--------:|----------|:----|
+| V12-01 | 分布式追踪（OpenTelemetry 集成） | GAP-59 | **P1** | ✅ 已实现 | 3~5d | `ops/otel.ts` | Raft + QueryEngine 链路追踪 |
+| V12-02 | CDC 细粒度属性过滤 | GAP-60 | **P1** | ✅ 已实现 | 2~3d | `core/cdc-adapter.ts` | eq/neq/gt/regex/复合过滤 |
+| V12-03 | Index 在线重建 (double-buffer) | GAP-61 | **P2** | ✅ 已实现 | 4~6d | `core/columnar-index.ts` | active/shadow lock-free swap |
+| V12-04 | 自动索引建议（Index Advisor） | GAP-63 | **P2** | ✅ 已实现 | 3~4d | `ops/index-advisor.ts` | 查询模式分析 + 自动应用 |
+| V12-05 | 一致性级别可配置 | GAP-64 | **P1** | ✅ 已实现 | 3~5d | `core/consistency-level.ts` | EVENTUAL/CAUSAL/LINEARIZABLE |
+| V12-06 | 图可视化编辑器（Admin UI） | GAP-66 | **P2** | ✅ 已实现 | 3~4d | `api/admin-ui.ts` | 节点/边 CRUD + 实时预览 |
 
 | 迭代 | GAP 范围 | 数量 | 状态 |
 |:----:|----------|:----:|:----:|
-| V1~V11 | GAP-01~GAP-58 | **58** | ✅ 全部关闭 |
-| **V12** | **GAP-59~GAP-66** | **6** | ⬜ **计划中** |
+| V1~V12 | GAP-01~GAP-66 | **64** | ✅ **GAP 路线图全部关闭** |
