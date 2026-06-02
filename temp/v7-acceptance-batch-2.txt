@@ -1,0 +1,92 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+ [32m✓[39m core/query-cache.spec.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m api/graphql-subscription.spec.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32m✓[39m api/fluent-traverse.spec.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+[12:23:03.156] [33mWARN[39m (cert-monitor/60107): [36mautoRenew: ACME config not set[39m
+[12:23:03.426] [32mINFO[39m (cert-monitor/60107): [36mautoRenew: starting ACME certificate renewal[39m
+    [35mdomains[39m: [
+      "test.example.com"
+    ]
+[12:23:03.426] [32mINFO[39m (cert-monitor/60107): [36mautoRenew: already in progress, skipping[39m
+[12:23:02.434] [32mINFO[39m (cert-monitor/60107): [36mCertMonitor started[39m
+    [35mintervalMs[39m: 3600000
+    [35mwarnDays[39m: 30
+    [35mcriticalDays[39m: 7
+[12:23:02.434] [32mINFO[39m (cert-monitor/60107): [36mCertMonitor stopped[39m
+[12:23:01.422] [31mERROR[39m (cert-monitor/60107): [36mCertificate has expired[39m
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mexpiredAt[39m: "2026-06-01T04:23:01.000Z"
+[12:23:03.001] [32mINFO[39m (cert-monitor/60107): [36mCertMonitor started[39m
+    [35mintervalMs[39m: 3600000
+    [35mwarnDays[39m: 30
+    [35mcriticalDays[39m: 7
+[12:23:03.002] [32mINFO[39m (cert-monitor/60107): [36mCertMonitor stopped[39m
+[12:23:01.691] [33mWARN[39m (cert-monitor/60107): [36mCertificate is in CRITICAL state — expiring soon[39m
+    [35mdaysUntilExpiry[39m: 3
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mnotAfter[39m: "2026-06-05T04:23:01.000Z"
+[12:23:02.720] [32mINFO[39m (cert-monitor/60107): [36mCertMonitor started[39m
+    [35mintervalMs[39m: 3600000
+    [35mwarnDays[39m: 30
+    [35mcriticalDays[39m: 7
+[12:23:02.720] [32mINFO[39m (cert-monitor/60107): [36mCertMonitor stopped[39m
+[12:23:03.824] [32mINFO[39m (cert-monitor/60107): [36mautoRenew: starting ACME certificate renewal[39m
+    [35mdomains[39m: [
+      "test.example.com"
+    ]
+[12:23:00.719] [32mINFO[39m (cert-monitor/60107): [36mCertificate is valid[39m
+    [35mdaysUntilExpiry[39m: 365
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mnotAfter[39m: "2027-06-02T04:23:00.000Z"
+[12:23:01.804] [33mWARN[39m (cert-monitor/60107): [36mCertificate is approaching expiry[39m
+    [35mdaysUntilExpiry[39m: 15
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mnotAfter[39m: "2026-06-17T04:23:01.000Z"
+[12:23:00.737] [31mERROR[39m (cert-monitor/60107): [36mFailed to parse certificate file[39m
+    [35mstack[39m: "Error: error:0480006C:PEM routines::no start line\n    at new X509Certificate (node:internal/crypto/x509:119:21)\n    at CertMonitor._parseCert (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:319:20)\n    at CertMonitor.checkNow (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:134:25)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:74:30\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20"
+    [35mcertPath[39m: "/tmp/cert-monitor-test-QHf379/bad.pem"
+    err: "error:0480006C:PEM routines::no start line"
+[12:23:00.737] [31mERROR[39m (cert-monitor/60107): [36mFailed to parse certificate[39m
+    [35mstack[39m: "Error: parse error\n    at CertMonitor.checkNow (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:137:63)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:74:30\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)"
+    [35mcertPath[39m: "/tmp/cert-monitor-test-QHf379/bad.pem"
+    err: "parse error"
+[12:23:00.733] [31mERROR[39m (cert-monitor/60107): [36mFailed to parse certificate file[39m
+    [35mstack[39m: "Error: ENOENT: no such file or directory, open '/nonexistent/cert.pem'\n    at Proxy.readFileSync (node:fs:440:20)\n    at CertMonitor._parseCert (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:318:22)\n    at CertMonitor.checkNow (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:134:25)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:64:30\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20"
+    [35mcertPath[39m: "/nonexistent/cert.pem"
+    err: "ENOENT: no such file or directory, open '/nonexistent/cert.pem'"
+[12:23:00.734] [31mERROR[39m (cert-monitor/60107): [36mFailed to parse certificate[39m
+    [35mstack[39m: "Error: parse error\n    at CertMonitor.checkNow (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:137:63)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:64:30\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)"
+    [35mcertPath[39m: "/nonexistent/cert.pem"
+    err: "parse error"
+[12:23:03.708] [31mERROR[39m (cert-monitor/60107): [36mautoRenew: ACME renewal failed[39m
+    [35mstack[39m: "TypeError: acme.crypto.readPrivateKey is not a function\n    at CertMonitor.autoRenew (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:239:32)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:242:13\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+    err: "acme.crypto.readPrivateKey is not a function"
+[12:23:01.047] [31mERROR[39m (cert-monitor/60107): [36mCertificate has expired[39m
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mexpiredAt[39m: "2026-06-01T04:23:01.000Z"
+[12:23:02.077] [32mINFO[39m (cert-monitor/60107): [36mCertificate is valid[39m
+    [35mdaysUntilExpiry[39m: 365
+    [35msubject[39m: "C=CN\nST=Test\nL=Test\nO=AgentiX\nOU=Test\nCN=test.agentix.local"
+    [35mnotAfter[39m: "2027-06-02T04:23:02.000Z"
+[12:23:04.216] [32mINFO[39m (cert-monitor/60107): [36mautoRenew: starting ACME certificate renewal[39m
+    [35mdomains[39m: [
+      "test.example.com"
+    ]
+[12:23:03.877] [31mERROR[39m (cert-monitor/60107): [36mautoRenew: ACME renewal failed[39m
+    [35mstack[39m: "TypeError: acme.crypto.readPrivateKey is not a function\n    at CertMonitor.autoRenew (/home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.ts:239:32)\n    at /home/admin/openclaw/workspace/agentiX-graphvec/src/ops/cert-monitor.spec.ts:267:24\n    at file:///home/admin/openclaw/workspace/agentiX-graphvec/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+    err: "acme.crypto.readPrivateKey is not a function"
+ [32m✓[39m ops/cert-monitor.spec.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 4821[2mms[22m[39m
+       [33m[2m✓[22m[39m should parse a valid self-signed certificate and extract subject/issuer [33m 775[2mms[22m[39m
+       [33m[2m✓[22m[39m should detect an already-expired certificate [33m 307[2mms[22m[39m
+       [33m[2m✓[22m[39m should trigger onExpired callback for expired cert [33m 375[2mms[22m[39m
+       [33m[2m✓[22m[39m should start interval and return immediately when already started [33m 357[2mms[22m[39m
+       [33m[2m✓[22m[39m should not trigger concurrent renewals [33m 552[2mms[22m[39m
+       [33m[2m✓[22m[39m should write challenges and cleanup on success (happy path mock) [33m 397[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+[2m      Tests [22m [1m[32m62 passed[39m[22m[90m (62)[39m
+[2m   Start at [22m 12:22:59
+[2m   Duration [22m 5.37s[2m (transform 444ms, setup 0ms, import 714ms, tests 4.91s, environment 1ms)[22m
+

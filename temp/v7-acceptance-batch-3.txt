@@ -1,0 +1,58 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould get a client for an address
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould return the same client on repeated gets (undersaturated)
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould create up to maxPerAddress clients when previous ones have failures
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 2)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould reuse a released client
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould execute gRPC calls via pooled client
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould query neighbors via pooled client
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould return true from healthCheck on a live server
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould close all connections on close()
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 2)
+[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 3)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould return pool stats
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould evict idle connections after idleTimeoutMs
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould evict idle connections after idleTimeoutMs
+[22m[39m[GrpcClientPool] evicting idle connection to 127.0.0.1:42947 (idle 150ms)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould close unmanaged client on release
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:42947 (pool size: 1)
+
+[90mstdout[2m | api/grpc-pool.spec.ts[2m > [22m[2mGrpcClientPool[2m > [22m[2mshould maintain separate pools for different addresses
+[22m[39m[GrpcClientPool] created connection to 127.0.0.1:50051 (pool size: 1)
+[GrpcClientPool] created connection to 127.0.0.1:50052 (pool size: 1)
+
+ [32m✓[39m api/grpc-pool.spec.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 426[2mms[22m[39m
+ [32m✓[39m benchmark/ldbc-snb.spec.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 509273[2mms[22m[39m
+       [33m[2m✓[22m[39m should run all 20 queries and return results [33m 128307[2mms[22m[39m
+       [33m[2m✓[22m[39m each result should have latency metrics [33m 127020[2mms[22m[39m
+       [33m[2m✓[22m[39m should produce a Markdown table report [33m 126882[2mms[22m[39m
+       [33m[2m✓[22m[39m report should include latency columns [33m 126717[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[32m31 passed[39m[22m[90m (31)[39m
+[2m   Start at [22m 12:28:03
+[2m   Duration [22m 509.96s[2m (transform 654ms, setup 0ms, import 1.15s, tests 509.70s, environment 0ms)[22m
+

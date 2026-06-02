@@ -816,7 +816,8 @@ StorageProvider (现有)
 
 > 调研日期: 2026-06-02  
 > 来源: `temp/v7-gap-research.md`  
-> 状态: 全部 ⬜ 计划中
+> 状态: 全部 ✅ **已实现**  
+> 合并 HEAD: `b471213b`
 
 ---
 

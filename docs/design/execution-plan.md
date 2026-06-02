@@ -605,13 +605,13 @@ Phase 6: 运维文档 (1d) ← 最后
 
 ---
 
-### Phase 7: V7 剩余差距（⬜ 计划中）
+### Phase 7: V7 剩余差距（✅ **已完成**）
 
 **目标**: 封闭 V7 调研识别的 8 项差距，覆盖功能完整、安全增强、性能优化、生态补齐
 
 > 调研日期: 2026-06-02  
 > 来源: `temp/v7-gap-research.md`  
-> 状态: 全部 ⬜ 计划中
+> 状态: 全部 ✅ **已实现**
 
 #### Phase 7A: P1 + P2 五项（核心能力补齐，预估: 6~9d）
 
@@ -619,11 +619,11 @@ Phase 6: 运维文档 (1d) ← 最后
 
 | 任务 | 方向 | 优先级 | 估值工时 | 依赖包 | 状态 |
 |------|------|:------:|:--------:|--------|:----:|
-| **Task 7A.1** | 变长路径匹配 — BFS 执行器 + QueryIR | **P1** | 2~3d | 无（复用内置 BFS/graphology-traversal） | ⬜ 计划中 |
-| **Task 7A.2** | GraphQL Subscription — Schema 集成 + Adapter 扩展 | **P2** | 1~2d | 无（复用 SSE + EventBus） | ⬜ 计划中 |
-| **Task 7A.3** | TLS 证书自动轮转 — ACME 客户端集成 | **P2** | 2~3d | `acme-client`（新增） | ⬜ 计划中 |
-| **Task 7A.4** | 查询结果缓存 — QueryResultCache + 失效策略 | **P2** | 1.5~2.5d | 无（复用 LRUCache） | ⬜ 计划中 |
-| **Task 7A.5** | Fluent API 链式遍历补齐 — out()/in()/both()/has() | **P2** | 1~1.5d | 无 | ⬜ 计划中 |
+| **Task 7A.1** | 变长路径匹配 — BFS 执行器 + QueryIR | **P1** | 2~3d | 无（复用内置 BFS/graphology-traversal） | ✅ 已完成 |
+| **Task 7A.2** | GraphQL Subscription — Schema 集成 + Adapter 扩展 | **P2** | 1~2d | 无（复用 SSE + EventBus） | ✅ 已完成 |
+| **Task 7A.3** | TLS 证书自动轮转 — ACME 客户端集成 | **P2** | 2~3d | `acme-client`（新增） | ✅ 已完成 |
+| **Task 7A.4** | 查询结果缓存 — QueryResultCache + 失效策略 | **P2** | 1.5~2.5d | 无（复用 LRUCache） | ✅ 已完成 |
+| **Task 7A.5** | Fluent API 链式遍历补齐 — out()/in()/both()/has() | **P2** | 1~1.5d | 无 | ✅ 已完成 |
 
 7A 可并行执行：Task 7A.2~7A.5 互不依赖，Task 7A.1 可独立推进。
 
@@ -679,9 +679,9 @@ Phase 6: 运维文档 (1d) ← 最后
 
 | 任务 | 方向 | 优先级 | 估值工时 | 依赖包 | 状态 |
 |------|------|:------:|:--------:|--------|:----:|
-| **Task 7B.1** | 连接池管理 — GrpcClientPool | **P3** | 1~1.5d | 无（自研轻量池） | ⬜ 计划中 |
-| **Task 7B.2** | LDBC SNB 基准测试 — 规范升级 | **P3** | 3.5~5d | 无 | ⬜ 计划中 |
-| **Task 7B.3** | 批量边删除 — StorageProvider + GraphEngine | **P3** | 1.5~2d | 无 | ⬜ 计划中 |
+| **Task 7B.1** | 连接池管理 — GrpcClientPool | **P3** | 1~1.5d | 无（自研轻量池） | ✅ 已完成 |
+| **Task 7B.2** | LDBC SNB 基准测试 — 规范升级 | **P3** | 3.5~5d | 无 | ✅ 已完成 |
+| **Task 7B.3** | 批量边删除 — StorageProvider + GraphEngine | **P3** | 1.5~2d | 无 | ✅ 已完成 |
 
 ##### Task 7B.1 — 连接池管理（1~1.5d）
 
@@ -714,6 +714,6 @@ Phase 2:
 
 | Phase | 包含方向 | 优先级范围 | 总估值工时 | 方向数 | 状态 |
 |:-----:|----------|:----------:|:----------:|:-----:|:----:|
-| Phase 7A | 变长路径 / GraphQL Sub / TLS 轮转 / 查询缓存 / Fluent 补齐 | P1+P2 | 6~9d | **5** | ⬜ 计划中 |
-| Phase 7B | 连接池 / SNB 基准 / 批量删除 | P3 | 6~8.5d | **3** | ⬜ 计划中 |
-| **V7 合计** | — | P1~P3 | **12~17.5d** | **8** | ⬜ 计划中 |
+| Phase 7A | 变长路径 / GraphQL Sub / TLS 轮转 / 查询缓存 / Fluent 补齐 | P1+P2 | 6~9d | **5** | ✅ 已完成 |
+| Phase 7B | 连接池 / SNB 基准 / 批量删除 | P3 | 6~8.5d | **3** | ✅ 已完成 |
+| **V7 合计** | — | P1~P3 | **12~17.5d** | **8** | ✅ **已实现** |
