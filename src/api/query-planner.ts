@@ -95,6 +95,7 @@ export enum PlanNodeType {
   UNION = 'union',
   INTERSECT = 'intersect',
   SUBTRACT = 'subtract',
+  VARIABLE_LENGTH_PATH = 'variable_length_path',
 }
 
 export interface PlanNode {
@@ -887,6 +888,43 @@ export interface QuerySpec {
   skip?: number
   neighbors?: { id: number; edgeType?: number; maxDepth?: number }
   vectorSearch?: { vector: number[]; topK: number }
+  /** 边遍历方向：'out' | 'in' | 'both'，默认 'out' */
+  direction?: 'out' | 'in' | 'both'
+  /** 变长路径匹配配置（如 MATCH (a)-[:TYPE*1..3]->(b)） */
+  variableLengthPath?: {
+    /** 起始节点 ID 或占位符 */
+    startId?: number
+    /** 边类型 ID（可选） */
+    edgeType?: number
+    /** 最小深度 */
+    minDepth: number
+    /** 最大深度（undefined 表示无上限） */
+    maxDepth: number
+    /** 遍历方向 */
+    direction: 'out' | 'in' | 'both'
+    /** 目标边类型限制 */
+    edgeTypes?: number[]
+  }
+}
+
+/**
+ * VariableLengthPathNode — 变长路径匹配计划节点
+ * 支持 MATCH (a)-[:TYPE*1..3]->(b) 语法
+ * 通过 BFS 在图中展开变长路径
+ */
+export interface VariableLengthPathNode {
+  /** 起始节点 ID */
+  startId: number
+  /** 边类型 ID（可选） */
+  edgeType?: number
+  /** 最小深度 */
+  minDepth: number
+  /** 最大深度（undefined 表示无上限） */
+  maxDepth: number
+  /** 遍历方向 */
+  direction: 'out' | 'in' | 'both'
+  /** 多个边类型限制 */
+  edgeTypes?: number[]
 }
 
 /**
@@ -940,8 +978,23 @@ export function buildIRFromSpec(spec: QuerySpec): PlanNode {
     }
   }
 
-  // 2. 邻居遍历阶段（在过滤之前，因为 neighbors 在 Fluent 中通常比 where 更早链式调用）
-  if (spec.neighbors) {
+  // 2. 变长路径匹配阶段（优先于普通 neighbors）
+  if (spec.variableLengthPath) {
+    child = {
+      type: PlanNodeType.VARIABLE_LENGTH_PATH,
+      estimatedCost: 500,
+      estimatedRows: child.estimatedRows * 10,
+      children: [child],
+      details: {
+        startId: spec.variableLengthPath.startId,
+        edgeType: spec.variableLengthPath.edgeType,
+        minDepth: spec.variableLengthPath.minDepth,
+        maxDepth: spec.variableLengthPath.maxDepth,
+        direction: spec.variableLengthPath.direction,
+        edgeTypes: spec.variableLengthPath.edgeTypes,
+      },
+    }
+  } else if (spec.neighbors) {
     child = {
       type: PlanNodeType.NEIGHBORS,
       estimatedCost: 200,
@@ -1488,6 +1541,28 @@ async function executeNode(
       return inputData
     }
 
+    case PlanNodeType.VARIABLE_LENGTH_PATH: {
+      const minDepth = (details['minDepth'] as number) ?? 1
+      const maxDepth = details['maxDepth'] as number | undefined
+      const edgeType = details['edgeType'] as number | null | undefined
+      const dir = (details['direction'] as string) ?? 'out'
+      const edgeTypes = details['edgeTypes'] as number[] | undefined
+
+      const result: NodeRecord[] = []
+      const visited = new Set<number>()
+
+      // BFS 变长展开
+      // 每个起始节点独立 BFS
+      for (const startNode of inputData) {
+        await bfsVariableExpand(
+          startNode.id, minDepth, maxDepth, edgeType ?? edgeTypes,
+          dir, visited, result, shardManager, 0,
+        )
+      }
+
+      return result
+    }
+
     case PlanNodeType.PARALLEL_UNION:
     default:
       // 暂未实现的节点类型，返回输入数据
@@ -1498,6 +1573,87 @@ async function executeNode(
 // ──────────────────────────────────────────
 // QueryIR 辅助函数
 // ──────────────────────────────────────────
+
+/**
+ * bfsVariableExpand — BFS 变长路径展开
+ *
+ * 从 startId 开始，沿指定边类型 / 方向进行 BFS 遍历，
+ * 收集深度在 [minDepth, maxDepth] 范围内的所有目标节点。
+ *
+ * @param startId - 起始节点 ID
+ * @param minDepth - 最小深度（<1 时从 1 开始计数）
+ * @param maxDepth - 最大深度（undefined 表示无上限）
+ * @param edgeTypeOrTypes - 边类型 ID 或 IDs（可选）
+ * @param direction - 遍历方向：'out' | 'in' | 'both'
+ * @param visited - 已访问节点集合
+ * @param result - 结果收集数组
+ * @param shardManager - 分片管理器
+ * @param _depth - 内部递归深度
+ */
+async function bfsVariableExpand(
+  startId: number,
+  minDepth: number,
+  maxDepth: number | undefined,
+  edgeTypeOrTypes: number | number[] | null | undefined,
+  direction: string,
+  visited: Set<number>,
+  result: NodeRecord[],
+  shardManager: ShardManager,
+  _depth: number = 0,
+): Promise<void> {
+  if (visited.has(startId)) return
+  visited.add(startId)
+
+  // BFS 队列: { nodeId, depth }
+  interface BFSFrame {
+    nodeId: number
+    depth: number
+  }
+
+  const queue: BFSFrame[] = [{ nodeId: startId, depth: 0 }]
+  let head = 0
+
+  const effectiveMaxDepth = maxDepth ?? 100 // 默认上限100层
+  let effectiveEdgeType: number | undefined
+  if (edgeTypeOrTypes !== null && edgeTypeOrTypes !== undefined) {
+    effectiveEdgeType = Array.isArray(edgeTypeOrTypes) ? edgeTypeOrTypes[0] : edgeTypeOrTypes
+  }
+
+  while (head < queue.length) {
+    const { nodeId, depth } = queue[head]
+    head++
+
+    if (depth >= effectiveMaxDepth) continue
+
+    // 获取邻居
+    try {
+      const { nodes } = await shardManager.neighbors(nodeId, {
+        maxDepth: 1,
+        edgeTypeFilter: effectiveEdgeType !== undefined ? [effectiveEdgeType] : undefined,
+      })
+
+      for (const neighbor of nodes) {
+        if (visited.has(neighbor.id)) continue
+        visited.add(neighbor.id)
+
+        const nextDepth = depth + 1
+
+        // 如果在有效深度范围内，加入结果
+        if (nextDepth >= minDepth && nextDepth <= effectiveMaxDepth) {
+          result.push(neighbor)
+        }
+
+        // 继续扩展
+        if (nextDepth < effectiveMaxDepth) {
+          queue.push({ nodeId: neighbor.id, depth: nextDepth })
+        }
+      }
+    } catch {
+      // 如果邻居获取失败，跳过该节点
+      continue
+    }
+  }
+}
 
 /**
  * scanAllNodes — 通过 ShardManager 获取所有节点

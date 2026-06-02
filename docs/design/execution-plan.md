@@ -602,3 +602,118 @@ Phase 6: 运维文档 (1d) ← 最后
 - Gremlin: `g.V().has('name', 'Alice')` 返回 GraphSON 格式正确结果
 - 多模型: `graph.documentCollection('users').save(...)` 返回 `{ _key, _rev }`
 - SQL 桥接: SQL 查询结果与等效 Cypher 查询一致；不支持操作返回明确错误
+
+---
+
+### Phase 7: V7 剩余差距（⬜ 计划中）
+
+**目标**: 封闭 V7 调研识别的 8 项差距，覆盖功能完整、安全增强、性能优化、生态补齐
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v7-gap-research.md`  
+> 状态: 全部 ⬜ 计划中
+
+#### Phase 7A: P1 + P2 五项（核心能力补齐，预估: 6~9d）
+
+**目标**: 优先实现变长路径（Cypher-lite 语义完整性）、TLS 自动轮转（生产安全）、查询缓存（性能）等核心功能。
+
+| 任务 | 方向 | 优先级 | 估值工时 | 依赖包 | 状态 |
+|------|------|:------:|:--------:|--------|:----:|
+| **Task 7A.1** | 变长路径匹配 — BFS 执行器 + QueryIR | **P1** | 2~3d | 无（复用内置 BFS/graphology-traversal） | ⬜ 计划中 |
+| **Task 7A.2** | GraphQL Subscription — Schema 集成 + Adapter 扩展 | **P2** | 1~2d | 无（复用 SSE + EventBus） | ⬜ 计划中 |
+| **Task 7A.3** | TLS 证书自动轮转 — ACME 客户端集成 | **P2** | 2~3d | `acme-client`（新增） | ⬜ 计划中 |
+| **Task 7A.4** | 查询结果缓存 — QueryResultCache + 失效策略 | **P2** | 1.5~2.5d | 无（复用 LRUCache） | ⬜ 计划中 |
+| **Task 7A.5** | Fluent API 链式遍历补齐 — out()/in()/both()/has() | **P2** | 1~1.5d | 无 | ⬜ 计划中 |
+
+7A 可并行执行：Task 7A.2~7A.5 互不依赖，Task 7A.1 可独立推进。
+
+##### Task 7A.1 — 变长路径匹配（2~3d）
+
+- [ ] 确认 Peggy `Range` 规则与 `EdgePattern` 的联动正确性
+- [ ] QueryIR 新增 `VariableLengthPathNode` 类型
+- [ ] BFS 执行器：逐层展开 + 方向过滤 + 边标签过滤
+- [ ] minSteps/maxSteps 剪枝逻辑
+- [ ] 环形路径去重
+- [ ] 与 WHERE / RETURN / LIMIT 组合验证
+
+**验收**: `MATCH (a)-[:*1..3]->(b)` 返回 1~3 跳节点；`MATCH (a)-[:KNOWS*2]->(b)` 精确 2 跳
+
+##### Task 7A.2 — GraphQL Subscription（1~2d）
+
+- [ ] `adapter.execute('subscription { ... }')` 返回 AsyncIterator
+- [ ] `getSchemaSDL()` 输出 `type Subscription`
+- [ ] SSE 端点 `POST /graphql (operationType=subscription)` 支持
+- [ ] 连接断开自动清理 EventBus 监听器
+- [ ] 事件过滤支持：`subscription { nodeCreated(label: "Person") { id } }`
+
+##### Task 7A.3 — TLS 证书自动轮转（2~3d）
+
+- [ ] 引入 `acme-client` 包
+- [ ] `autoRenew()`: ACME 目录 → 账号注册 → HTTP-01 验证 → 签发
+- [ ] 续期后自动触发 chokidar 热加载
+- [ ] 失败重试（指数退避，最多 3 次）
+- [ ] 离线跳过续期，日志记录
+- [ ] 与 CertMonitor 集成
+
+##### Task 7A.4 — 查询结果缓存（1.5~2.5d）
+
+- [ ] 新建 `src/core/query-cache.ts`
+- [ ] `QueryResultCache` 类（get/set/失效/统计）
+- [ ] 写时全失效策略：写入操作后清除查询缓存
+- [ ] TTL 失效（默认 30s）
+- [ ] 在 `QueryEngine.execute()` 中插入缓存层
+- [ ] Fluent API 中缓存 QuerySpec hash
+
+##### Task 7A.5 — Fluent API 链式遍历补齐（1~1.5d）
+
+- [ ] `out(label?)`: 出边方向遍历
+- [ ] `in(label?)`: 入边方向遍历
+- [ ] `both(label?)`: 双向遍历
+- [ ] `has(key)`: 属性存在性过滤
+- [ ] `has(key, value)`: 属性等值过滤
+- [ ] `outE()`/`inE()`/`bothE()`: 返回 EdgeRecord
+
+#### Phase 7B: P3 三项（优化与测量，预估: 6~8.5d）
+
+**目标**: 实现运维基础设施和测量基准的补齐。
+
+| 任务 | 方向 | 优先级 | 估值工时 | 依赖包 | 状态 |
+|------|------|:------:|:--------:|--------|:----:|
+| **Task 7B.1** | 连接池管理 — GrpcClientPool | **P3** | 1~1.5d | 无（自研轻量池） | ⬜ 计划中 |
+| **Task 7B.2** | LDBC SNB 基准测试 — 规范升级 | **P3** | 3.5~5d | 无 | ⬜ 计划中 |
+| **Task 7B.3** | 批量边删除 — StorageProvider + GraphEngine | **P3** | 1.5~2d | 无 | ⬜ 计划中 |
+
+##### Task 7B.1 — 连接池管理（1~1.5d）
+
+- [ ] 新建 `src/api/grpc-pool.ts`
+- [ ] `GrpcClientPool` 类：maxPerAddress / idleTimeout
+- [ ] 健康检查 + 自动重连
+- [ ] 集成到 RestApiServer 生命周期
+- [ ] 测试：并发获取、空闲回收、重建
+
+##### Task 7B.2 — LDBC SNB 基准测试（3.5~5d）
+
+Phase 1:
+- [ ] 扩展 SNB 数据模型（Person/Forum/Post/Comment/Tag/Place + 关系）
+- [ ] 实现 6+ IC 查询模板（IC-1, IC-2, IC-5, IC-6, IC-7, IC-14）
+- [ ] 查询参数化：从预生成参数池中随机选取
+
+Phase 2:
+- [ ] 正确性验证：预计算已知结果 + assert
+- [ ] 多规模测试：small(1K) / medium(10K) / large(100K)
+- [ ] JSON 基准报告输出
+
+##### Task 7B.3 — 批量边删除（1.5~2d）
+
+- [ ] `StorageProvider` 接口新增 `batchDeleteNodes` / `batchDeleteEdges`
+- [ ] `GraphEngine` 实现：索引清除 + 缓存失效 + 复制 + 事件
+- [ ] Fluent API 暴露 `deleteNodes()` / `deleteEdges()`
+- [ ] 事务模式下批量缓冲到 SimpleTxnManager
+
+#### V7 估算汇总
+
+| Phase | 包含方向 | 优先级范围 | 总估值工时 | 方向数 | 状态 |
+|:-----:|----------|:----------:|:----------:|:-----:|:----:|
+| Phase 7A | 变长路径 / GraphQL Sub / TLS 轮转 / 查询缓存 / Fluent 补齐 | P1+P2 | 6~9d | **5** | ⬜ 计划中 |
+| Phase 7B | 连接池 / SNB 基准 / 批量删除 | P3 | 6~8.5d | **3** | ⬜ 计划中 |
+| **V7 合计** | — | P1~P3 | **12~17.5d** | **8** | ⬜ 计划中 |

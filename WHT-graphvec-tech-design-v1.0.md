@@ -810,6 +810,271 @@ StorageProvider (现有)
 
 ### §11.6 SQL 桥接 — SQL→Cypher 翻译
 
+---
+
+## §12 V7 差距分析 — 设计变更预设
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v7-gap-research.md`  
+> 状态: 全部 ⬜ 计划中
+
+---
+
+### §12.1 变长路径匹配（P1 功能）
+
+**问题**: Peggy 解析器已从语法层面支持 `[*min..max]` 变长路径（`EdgePattern` 返回的 edge 对象包含 `range` 字段），但查询执行器/优化器未处理 `range`，导致变长路径降级为单跳边匹配。
+
+**设计变更**:
+
+**Layer 1: Peggy 语法** — 已就绪，只需确认 `Range` 规则与 `EdgePattern` 的联动正确性。
+
+**Layer 2: Query IR 新增节点类型**:
+```typescript
+// src/query/query-engine.ts
+interface VariableLengthPathNode {
+  type: 'VARIABLE_LENGTH_PATH'
+  sourceVar: string
+  targetVar: string
+  edgeLabel?: number
+  direction: 'out' | 'in' | 'both'
+  minSteps: number  // 默认 1
+  maxSteps: number  // null = 不限
+}
+```
+
+**Layer 3: BFS 执行器扩展**（`optimizer-executor.ts`）:
+- BFS 逐层展开，每层按 direction 和 edgeLabel 过滤
+- minSteps 之前的结果不输出
+- maxSteps 后停止展开
+- 环形路径去重
+
+**依赖项**: `graphology-traversal`（已有）或内置 `BFS` 类（`src/algorithms/bfs.ts`）
+
+**设计决策**: 使用内置 BFS 而非 graphology-traversal，减少依赖耦合
+
+**受影响的文件**:
+- `src/query/query-engine.ts` — QueryPlan 新增 VariableLengthPathNode
+- `src/query/optimizer-executor.ts` — 新增 executeVarLengthPath
+- `src/query/cypher-lite.peggy` — 验证规则正确性
+
+---
+
+### §12.2 GraphQL Subscription（P2 增强）
+
+**问题**: 当前 SSE 订阅端点暴露在 REST 层而非 GraphQL 层；GraphQL Schema 无 `type Subscription` 类型定义。
+
+**设计变更**:
+
+1. **GraphQL Adapter 扩展**: `execute()` 中增加 `subscription` 操作路径，返回 AsyncIterator
+2. **SDL 生成扩展**: `getSchemaSDL()` 增加 `type Subscription { nodeCreated: Node, edgeCreated: Edge, ... }`
+3. **SSE 端点整合**: `/api/v1/subscribe` 别名到 `POST /graphql` 的 subscription 操作
+4. **连接生命周期**: 使用 EventBus 的 `off()` 清理，防止内存泄漏
+
+**依赖项**: 无新 npm 包（复用已有 EventBus + SSE 基础设施）
+
+**设计决策**: 保留 SSE 传输层而非引入 `graphql-ws` 包，保持 0 额外依赖
+
+**受影响的文件**:
+- `src/api/graphql-adapter.ts` — 扩展 execute() 支持 subscription
+- `src/api/graphql-subscription.ts` — 调整与 adapter 的接口
+- `src/api/rest.ts` — 支持 GraphQL Subscription 路由
+
+---
+
+### §12.3 TLS 证书自动轮转（P2 安全）
+
+**问题**: CertMonitor 到期预警 + TLSConfig 热加载均已实现，但中间缺少 ACME 自动续期环节。生产部署需要证书自动轮转。
+
+**设计变更**:
+
+在 `src/ops/cert-monitor.ts` 中新增 `autoRenew()` 方法:
+```typescript
+async autoRenew(config: AcmeRenewConfig): Promise<boolean> {
+  // 1. 判断是否需要续期（< criticalDays）
+  // 2. ACME 目录请求 → 账号注册（Let's Encrypt / ZeroSSL）
+  // 3. 订单创建 → HTTP-01 授权验证
+  // 4. 证书签发 → 保存到 certPath
+  // 5. chokidar 检测到变更 → TLSConfig._reloadCerts() 热加载
+  // 6. 记录续期日志，触发 onRenewed 回调
+}
+```
+
+流程: `CertMonitor.checkNow()` → 发现到期 → `autoRenew()` → 在 `:80` 启动 HTTP-01 服务器 → 向 LE 申请证书 → 写入 certPath → chokidar 热加载
+
+**依赖项**: `acme-client`（npm，约 70KB gzip）
+
+**设计决策**: 使用 `acme-client` 自研集成而非 `greenlock` 或 `certbot` CLI，保持纯 JS 无额外二进制依赖
+
+**受影响的文件**:
+- `src/ops/cert-monitor.ts` — 新增 autoRenew()
+- `src/security/tls.ts` — 确认热加载流程兼容
+
+---
+
+### §12.4 查询结果缓存（P2 性能）
+
+**问题**: `LRUCache` 基础类已用于内部存储缓存，但缺少查询级缓存，重复查询重复执行。
+
+**设计变更**:
+
+新增 `src/core/query-cache.ts`:
+```typescript
+class QueryResultCache {
+  private cache: LRUCache<string, { results: NodeRecord[]; cachedAt: number }>
+
+  get(queryHash: string): ...   // MD5 查询文本作为 key
+  set(queryHash: string, results: NodeRecord[]): void
+  invalidateByNode(nodeId: NodeId): void
+  invalidateByLabel(label: string): void
+  invalidateAll(): void
+  get stats(): { hits: number; misses: number; entries: number }
+}
+```
+
+**失效策略**:
+1. **写时全失效（简单模式）**: 任何写入操作后清除所有查询缓存
+2. **TTL 失效**: 默认 30s TTL
+3. **标签级失效（增强）**: 写入 typeId=1 时只清除涉及该标签的缓存
+
+**集成点**:
+- `QueryEngine.execute()` — 插入缓存查询层
+- Fluent API — 缓存 `QuerySpec` hash
+- GraphEngine 写入方法 — 通过 EventBus 广播 `cache:invalidate` 事件
+
+**依赖项**: 无新包（复用现有 LRUCache 和 crypto）
+
+**设计决策**: 写时全失效作为默认模式，TTL 作为兜底，标签级失效作为优化可选
+
+**受影响的文件**:
+- `src/core/query-cache.ts`（新建）
+- `src/core/graph-engine.ts` — 写入方法中触发缓存失效
+- `src/query/query-engine.ts` — 插入缓存层
+
+---
+
+### §12.5 Fluent API 链式遍历补齐（P2 增强）
+
+**问题**: `GraphQuery` 已有 `match()`/`where()`/`neighbors()`/`limit()` 等链式方法，但缺少方向控制元语（`out`/`in`/`both`）和属性过滤方法 `has()`。
+
+**设计变更**:
+
+在 `src/api/fluent.ts` 的 `GraphQuery` 类中新增:
+```typescript
+// 方向控制
+out(label?: number): GraphQuery     // 只遍历出边
+in(label?: number): GraphQuery      // 只遍历入边
+both(label?: number): GraphQuery    // 双向遍历
+
+// 属性过滤
+has(key: string, value?: unknown): GraphQuery  // 存在性/等值过滤
+
+// 边遍历
+outE(label?: number): GraphEdgeQuery  // 返回 EdgeRecord[]
+inE(label?: number): GraphEdgeQuery
+bothE(label?: number): GraphEdgeQuery
+```
+
+**依赖项**: 无新包（纯方法新增）
+
+**设计决策**: 参考 Gremlin 遍历语义设计方法签名；与现有 `neighbors()` 兼容（方向 + maxDepth 组合）
+
+**受影响的文件**:
+- `src/api/fluent.ts` — GraphQuery 新增方法
+
+---
+
+### §12.6 连接池管理（P3 运维）
+
+**问题**: gRPC 客户端每次 `createGrpcClient()` 创建独立 channel，无复用机制、无健康检查、无重连逻辑。
+
+**设计变更**:
+
+新增 `src/api/grpc-pool.ts`:
+```typescript
+class GrpcClientPool {
+  private channels: Map<string, { client: GraphVecClient; lastUsed: number }>
+  private maxPerAddress: number = 4
+  private idleTimeoutMs: number = 300000  // 5min
+
+  get(address: string): GraphVecClient     // 获取或创建
+  release(address: string, client: GraphVecClient): void  // 归还
+  healthCheck(address: string): Promise<boolean>  // 健康检查
+  close(): void  // 优雅关闭所有连接
+}
+```
+
+集成到 `RestApiServer` 的 `start()` 生命周期中初始化，`stop()` 中关闭。
+
+**依赖项**: 无新包（自研轻量池）
+
+**设计决策**: 不引入 `generic-pool` 包，自研池子减少依赖；每个 address 独立管理
+
+**受影响的文件**:
+- `src/api/grpc-pool.ts`（新建）
+- `src/api/grpc-client.ts` — 改为通过 pool 获取连接
+- `src/api/rest.ts` — 集成到生命周期
+
+---
+
+### §12.7 LDBC SNB 基准测试（P3 测量）
+
+**问题**: 现有 `test/benchmark/ldbc-snb.ts` 实现了 20 查询基准测试，但非官方 SNB 规范，缺正确性验证、参数化和多规模支持。
+
+**设计变更**:
+
+**Phase 1 — 规范兼容**:
+1. 扩展数据模型: Person（firstName, lastName, gender, birthday, city, country）、Forum、Post、Comment、Tag、Place
+2. IC 查询模板: IC-1 (Profile)、IC-2 (Recent Posts)、IC-5 (Friend Rec)、IC-6 (Tag Co-occurrence)、IC-7 (Recent Likes)、IC-14 (Message Thread)
+3. 查询参数化: 从随机参数池中抽取参数
+
+**Phase 2 — 验证与可扩展性**:
+4. 正确性验证: 预计算已知结果，assert 查询输出
+5. 多规模测试: small (1K) / medium (10K) / large (100K)
+6. JSON 基准报告: 支持对比历史运行
+
+**依赖项**: 无新包
+
+**设计决策**: 分两阶段实现（Phase 1 基础兼容 → Phase 2 验证 + 规模），降低单次 PR 复杂度
+
+**受影响的文件**:
+- `test/benchmark/ldbc-snb.ts` — 数据模型扩展
+- `test/benchmark/ldbc-queries.ts` — IC 查询模板 + 参数化
+- `test/benchmark/ldbc-snb-validator.ts`（新建）
+
+---
+
+### §12.8 批量边删除（P3 增强）
+
+**问题**: 只有单条 `deleteEdge()`/`deleteNode()`，缺少批量删除。`batchUpsertNodes()` 的模式可参考。
+
+**设计变更**:
+
+**Step 1**: `StorageProvider` 接口新增:
+```typescript
+batchDeleteNodes(ids: NodeId[]): boolean
+batchDeleteEdges(edges: Array<{ src: NodeId; dst: NodeId; typeId: number }>): boolean
+```
+
+**Step 2**: `GraphEngine` 实现 `batchDeleteNodes`/`batchDeleteEdges`:
+1. 获取关联边（级联时）
+2. 批量清除标签索引
+3. 批量清除三个缓存（nodeCache / degreeCache / neighborCache）
+4. 调用 storage.batchDelete*
+5. 批量发 Multi-Leader 复制事件
+6. 批量发 EventStream 事件
+
+**Step 3**: Fluent API 暴露 `deleteNodes()`/`deleteEdges()`
+
+**依赖项**: 无新包
+
+**设计决策**: 参考 `batchUpsertNodes` 模式，保持一致性；事务模式下批量缓冲到 SimpleTxnManager
+
+**受影响的文件**:
+- `src/core/storage-provider.ts` — 接口扩展
+- `src/core/graph-engine.ts` — 实现批量删除
+- `src/api/fluent.ts` — 暴露 API
+- `test/core/batch-delete.test.ts`（新建）
+
 **问题**: 目标用户群中较多熟悉 SQL 而不熟悉 Cypher，需要允许用户直接用 SQL 查询图数据。
 
 **方案** — 轻量 SQL→Cypher 翻译桥：

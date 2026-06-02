@@ -325,3 +325,144 @@ V6 Phase 3（P3 生态 — 标准化与多模型）:
 | 关闭情况 | **6/6 GAPs ✅ 全部关闭** |
 | 涉及设计文档 | 5 份（白皮书 / 技术设计 / 执行计划 / Deep Review 报告 / 进度追踪） |
 | 合并 commit | `b37e717a` — v6-closure: sync 6/6 GAPs ✅ to all design docs |
+
+---
+
+## 8. V7 差距分析 — 8 个新方向
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v7-gap-research.md`  
+> 状态: 全部 ⬜ 计划中
+
+### 8.1 V7 新方向总览
+
+| # | 方向 | 优先级 | 类别 | 状态 | 估值工时 | 现有基础 |
+|:-:|------|:------:|:----:|:----:|:--------:|----------|
+| V7-01 | 变长路径匹配 | **P1** 功能 | 🟢 | ⬜ 计划中 | 2~3 天 | Peggy 语法已就绪，缺执行器 |
+| V7-02 | GraphQL Subscription | **P2** 增强 | 🟡 | ⬜ 计划中 | 1~2 天 | SSE + EventBus 已实现，缺 Schema 集成 |
+| V7-03 | TLS 证书自动轮转 | **P2** 安全 | 🟡 | ⬜ 计划中 | 2~3 天 | CertMonitor + TLSConfig 热加载已实现 |
+| V7-04 | 查询结果缓存 | **P2** 性能 | 🟡 | ⬜ 计划中 | 1.5~2.5 天 | LRUCache 基础类已实现 |
+| V7-05 | Fluent API 链式遍历补齐 | **P2** 增强 | 🟡 | ⬜ 计划中 | 1~1.5 天 | GraphQuery 基础类丰富 |
+| V7-06 | 连接池管理 | **P3** 运维 | 🔵 | ⬜ 计划中 | 1~1.5 天 | 当前无连接复用，需新增 |
+| V7-07 | LDBC SNB 基准测试 | **P3** 测量 | 🔵 | ⬜ 计划中 | 3.5~5 天 | 现有 20 查询基准，需规范升级 |
+| V7-08 | 批量边删除 | **P3** 增强 | 🔵 | ⬜ 计划中 | 1.5~2 天 | 批量 upsert 模式可参考 |
+| | **合计** | — | — | — | **13~22 天** | — |
+
+### 8.2 各方向关键描述
+
+#### V7-01: 变长路径匹配（P1 功能）
+
+**问题**: Peggy 解析器已支持 `[*1..5]` 变长路径语法并输出 `range` 字段，但查询执行器忽略该字段，变长路径被当作单跳执行。
+
+**方案**: 3 层修改：
+1. Layer 1: Peggy 语法微调（已就绪）
+2. Layer 2: QueryIR 新增 `VariableLengthPathNode` 节点类型
+3. Layer 3: BFS 执行器扩展（逐层展开 + min/maxSteps 剪枝 + 去重）
+
+**依赖**: `graphology-traversal`（已有）或内置 `BFS` 类
+
+**验收**: `MATCH (a)-[:*1..3]->(b)` 正确返回 1~3 跳节点
+
+#### V7-02: GraphQL Subscription（P2 增强）
+
+**问题**: GraphQL Adapter 已支持 Query 和 Mutation，但缺少 `type Subscription`，客户端需轮询。
+
+**方案**:
+1. `adapter.execute('subscription')` 返回 AsyncIterator
+2. `getSchemaSDL()` 输出 `type Subscription`
+3. SSE 端点整合到 GraphQL 层
+
+**验收**: 创建节点时订阅者收到 `nodeCreated` 事件；连接断开自动清理监听器
+
+#### V7-03: TLS 证书自动轮转（P2 安全）
+
+**问题**: `CertMonitor` 到期预警 + `TLSConfig` 热加载均已实现，但中间缺少 ACME 自动续期环节。
+
+**方案**: 引入 `acme-client` 包，在 `cert-monitor.ts` 中新增 `autoRenew()`：
+1. 判断是否需要续期
+2. ACME 目录请求 → 账号注册 → 订单创建 → HTTP-01 验证
+3. 新证书写入自动触发 chokidar 热加载
+
+**验收**: 证书过期前自动续期并热加载
+
+#### V7-04: 查询结果缓存（P2 性能）
+
+**问题**: 内部存储层已有 LRU 缓存（nodeCache/edgeCache/neighborCache），但缺少查询级缓存。
+
+**方案**: 新增 `QueryResultCache` 类：
+- 基于 query hash 缓存执行结果
+- 写时全失效 / TTL 失效 / 标签级失效
+- 在 `QueryEngine.execute()` 中插入缓存层
+
+**验收**: 相同查询第二次执行命中缓存（0 存储 IO）；写操作后缓存失效
+
+#### V7-05: Fluent API 链式遍历补齐（P2 增强）
+
+**问题**: `GraphQuery` 已有丰富链式方法，但缺少 `out()`/`in()`/`both()` 方向控制和 `has()` 属性过滤。
+
+**方案**: 新增方向元语 + `outE()`/`inE()`/`bothE()` 边遍历方法
+
+**验收**: `query.out(10).has('age', 30).limit(10).return()` 正确执行
+
+#### V7-06: 连接池管理（P3 运维）
+
+**问题**: gRPC 客户端每次 `createGrpcClient()` 创建独立 channel，无复用/健康检查/重连。
+
+**方案**: `src/api/grpc-client.ts` 中新增 `GrpcClientPool` 类：
+- 每 address 维护最多 maxPerAddress 连接
+- idleTimeoutMs 自动关闭空闲连接
+- 健康检查失败自动重建
+
+**验收**: gRPC 客户端复用；空闲连接自动回收
+
+#### V7-07: LDBC SNB 基准测试（P3 测量）
+
+**问题**: 现有 20 查询基准测试，但非官方 SNB 规范，缺正确性验证和多规模支持。
+
+**方案**: 两阶段升级：
+- Phase 1: 扩展 SNB 数据模型（Person/Forum/Post/Comment/Tag/Place） + IC 查询模板
+- Phase 2: 正确性验证 + 多规模测试（1K/10K/100K）
+
+**验收**: 6+ IC 查询参数化执行 + JSON 基准报告
+
+#### V7-08: 批量边删除（P3 增强）
+
+**问题**: 只有单条 `deleteEdge()`/`deleteNode()`，缺少批量删除。批量 upsert 已有模式可参考。
+
+**方案**: `StorageProvider` 接口新增 `batchDeleteNodes`/`batchDeleteEdges`；`GraphEngine` 实现批量索引清除 + 缓存失效 + 复制 + 事件
+
+**验收**: 一次调用删除多个节点/边，缓存在批量操作后一致
+
+### 8.3 推荐执行顺序
+
+```
+Phase 7A (P1 + P2 四项)
+├── V7-01 变长路径匹配 (P1, 2~3d) — Cypher-lite 语义完整性
+├── V7-02 GraphQL Subscription (P2, 1~2d)
+├── V7-03 TLS 证书自动轮转 (P2, 2~3d)
+└── V7-04 查询结果缓存 (P2, 1.5~2.5d)
+       ▲
+       └── V7-05 Fluent API 链式遍历补齐 (P2, 1~1.5d) — 可并行
+
+Phase 7B (P3 三项)
+├── V7-06 连接池管理 (P3, 1~1.5d) — 独立模块
+├── V7-07 LDBC SNB 基准测试 (P3, 3.5~5d) — 不依赖代码变更
+└── V7-08 批量边删除 (P3, 1.5~2d) — 可参考批量 upsert 模式
+
+Phase 7A 合计: 6~9 人天
+Phase 7B 合计: 6~8.5 人天
+V7 总计: 12~17.5 人天 (不含并行优化)
+```
+
+### 8.4 依赖关系
+
+```
+变长路径匹配 ─────────────────────────────────────── (独立)
+GraphQL Subscription ─── 依赖已有 EventBus + SSE   (独立)
+TLS 证书自动轮转 ─── 依赖 CertMonitor + TLSConfig  (独立)
+查询结果缓存 ─── 依赖已有 LRUCache + EventBus       (独立)
+Fluent API 链式遍历补齐 ─── 不依赖其他方向
+连接池管理 ─── 独立模块
+LDBC SNB 基准测试 ─── 不依赖代码变更
+批量边删除 ─── 不依赖其他方向
+```

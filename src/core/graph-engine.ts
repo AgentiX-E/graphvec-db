@@ -26,6 +26,7 @@ import { astar as astarAlgo, HeuristicFn } from '../algorithms/astar'
 import { getEventBus } from './event-bus'
 import { EventStream } from './event-stream'
 import { MultiLeaderReplication } from './multi-leader-replication'
+import { QueryResultCache, makeQueryCacheKey } from './query-cache'
 import { SchemaDef, ValidationResult } from '../schema/schema-types'
 import { validateNodeType, validateEdgeType } from '../schema/schema-validator'
 
