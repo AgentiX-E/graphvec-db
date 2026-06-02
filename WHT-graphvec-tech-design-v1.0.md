@@ -2122,3 +2122,29 @@ SELECT * FROM Person WHERE age > (SELECT AVG(age) FROM Person)
 | 11C | **P2** | SQL 桥接完善 / 复合索引+Geo-Spatial | 2 | 5~7d | ✅ 已实现 |
 | 11D | **P3** | LDBC 标准测试 + 运维治理 | 1 | 4~6d | ✅ 已实现 |
 | | **合计** | — | **8** | **20~31d** | ✅ **已实现** (GAP-51~GAP-58)
+
+---
+
+## §17 V12 新方向（⬜ 计划中）
+
+### V12 新方向总览
+
+V12 聚焦**性能极致化与生态扩展**，涵盖分布式追踪、查询缓存预热、全文检索、图可视化增强、gRPC 流式查询和混沌工程，共 **6 个方向**（均 ⬜ 计划中）：
+
+| 编号 | 方向 | GAP | 优先级 | 估值工时 | 依赖 | 核心影响模块 |
+|:----:|------|:---:|:------:|:--------:|:----:|:----------:|
+| V12-01 | 分布式追踪 (OpenTelemetry) | GAP-59 | **P1** | 3~5d | opentelemetry-js | `RaftCore`, `QueryEngine` |
+| V12-02 | 查询缓存预热 (Cache Warming) | GAP-60 | **P1** | 2~3d | 无 | `QueryCache` |
+| V12-03 | 全文检索集成 (Tantivy/Meilisearch) | GAP-61 | **P2** | 4~6d | tantivy / meilisearch | `IndexEngine`, `QueryEngine` |
+| V12-04 | 图可视化增强 (Cytoscape/D3 集成) | GAP-63 | **P2** | 3~4d | cytoscape / d3 | `API Server`, `Visualization` |
+| V12-05 | gRPC 流式查询 (Bidirectional Streaming) | GAP-64 | **P1** | 3~5d | @grpc/grpc-js | `gRPC Server`, `QueryEngine` |
+| V12-06 | 混沌工程测试框架 (Chaos Mesh) | GAP-66 | **P3** | 3~4d | chaos-mesh | `Test Infra`, `CI` |
+
+### V12 阶段汇总
+
+| Phase | 优先级 | 包含方向 | 方向数 | 总估值工时 | 状态 |
+|:-----:|:------:|----------|:-----:|:----------:|:----:|
+| 12A | **P1** | 分布式追踪 / 缓存预热 / gRPC 流式查询 | 3 | 8~13d | ⬜ 计划中 |
+| 12B | **P2** | 全文检索集成 / 图可视化增强 | 2 | 7~10d | ⬜ 计划中 |
+| 12C | **P3** | 混沌工程测试框架 | 1 | 3~4d | ⬜ 计划中 |
+| | **合计** | — | **6** | **18~27d** | ⬜ **计划中** (GAP-59~GAP-66)

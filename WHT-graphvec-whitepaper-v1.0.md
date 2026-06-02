@@ -972,3 +972,29 @@ Phase 11E (P3): LDBC 测试 + 运维治理 (GAP-58) ← 可独立并行
 | 总估值工时 | 20~31d | 已完成 |
 | 竞品差距 | 8 项 | 全部 ✅ |
 | 总体闭包 | 50/50 → **58/58 GAPs** | **58/58** 全部关闭 |
+
+---
+
+## 13. V12 新方向（⬜ 计划中）
+
+### 13.1 V12 新方向总览
+
+V12 聚焦**性能极致化与生态扩展**，涵盖分布式追踪、查询缓存预热、全文检索、图可视化增强、gRPC 流式查询和混沌工程，共 **6 个方向**（均 ⬜ 计划中）：
+
+| 方向 | GAP | 优先级 | 核心文件 | 状态 |
+|:----|:---:|:------:|----------|:----:|
+| 分布式追踪 (OpenTelemetry) | GAP-59 | P1 | `ops/tracing.ts`, `otel-collector-config.yml` | ⬜ 计划中 |
+| 查询缓存预热 (Cache Warming) | GAP-60 | P1 | `core/query-cache.ts`, `core/cache-warmer.ts` | ⬜ 计划中 |
+| 全文检索集成 (Tantivy/Meilisearch) | GAP-61 | P2 | `search/fulltext-index.ts`, `search/fulltext-query.ts` | ⬜ 计划中 |
+| 图可视化增强 (Cytoscape/D3 集成) | GAP-63 | P2 | `api/visualization.ts`, `web/viz-renderer.ts` | ⬜ 计划中 |
+| gRPC 流式查询 (Bidirectional Streaming) | GAP-64 | P1 | `api/grpc-stream.ts`, `api/grpc-server.ts` | ⬜ 计划中 |
+| 混沌工程测试框架 (Chaos Mesh) | GAP-66 | P3 | `test/chaos/chaos-tests.ts`, `ops/disaster-recovery-guide.md` | ⬜ 计划中 |
+
+### 13.2 V12 阶段汇总
+
+| Phase | 优先级 | 包含方向 | 方向数 | 估值工时 | 状态 |
+|:-----:|:------:|----------|:-----:|:--------:|:----:|
+| 12A | P1 | 分布式追踪 / 缓存预热 / gRPC 流式查询 | 3 | 8~13d | ⬜ 计划中 |
+| 12B | P2 | 全文检索集成 / 图可视化增强 | 2 | 7~10d | ⬜ 计划中 |
+| 12C | P3 | 混沌工程测试框架 | 1 | 3~4d | ⬜ 计划中 |
+| | **合计** | — | **6** | **18~27d** | ⬜ **计划中** (GAP-59~GAP-66) |

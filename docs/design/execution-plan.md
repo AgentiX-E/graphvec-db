@@ -1219,3 +1219,122 @@ V9 聚焦**生态扩展&运营体验**，涵盖算法深度、可视化、安全
 | Phase 11C | SQL 桥接完善 / 复合索引+Geo-Spatial | P2 | 5~7d | **2** | ✅ 已实现 |
 | Phase 11D | LDBC 测试+运维治理 | P3 | 4~6d | **1** | ✅ 已实现 |
 | **V11 合计** | — | P0~P3 | **20~31d** | **8** | ✅ **已实现** (GAP-51~GAP-58) |
+
+---
+
+### Phase 12: V12 新方向（⬜ 计划中）
+
+**目标**: 基于 V12 调研结论，实现 6 项新方向，覆盖分布式追踪、查询缓存预热、全文检索、图可视化增强、gRPC 流式查询和混沌工程。
+
+> 调研日期: 2026-06-02  
+> 状态: ⬜ **计划中** · 0/6 GAPs 实现
+
+#### Phase 12A: P1 三项（追踪+缓存+gRPC · 预估: 8~13d）
+
+**目标**: 实现分布式追踪、查询缓存预热和 gRPC 流式查询，提升集群可观测性和查询吞吐。
+
+##### Task 12A.1 — 分布式追踪 — OpenTelemetry SDK 集成（GAP-59, P1, 3~5d）
+
+**目标**: 集成 OpenTelemetry，Raft 共识 + 查询链路追踪，支持 Jaeger/Zipkin 导出。
+
+**任务分解**:
+- [ ] `@opentelemetry/sdk-node` 初始化 + 自动打桩
+- [ ] Raft core 集成 trace spans：appendEntries / requestVote / installSnapshot
+- [ ] QueryEngine 集成 trace spans：查询解析 / 优化 / 执行
+- [ ] 自定义 span 属性：subgraph、cost、rows
+- [ ] OpenTelemetry Collector 配置：batch processor + Jaeger exporter
+- [ ] 测试：trace 链路完整性、span 属性正确性
+
+**依赖**: 无
+**影响**: `src/ops/tracing.ts`（新建）, `otel-collector-config.yml`（新建）, `src/consensus/raft-core.ts`, `src/core/query-engine.ts`
+
+##### Task 12A.2 — 查询缓存预热 — 热点查询持久化加载（GAP-60, P1, 2~3d）
+
+**目标**: 启动时从持久化存储自动加载热点查询结果至内存缓存，减少冷启动期延迟。
+
+**任务分解**:
+- [ ] `CacheWarmer` 接口定义 + 持久化热点查询列表
+- [ ] 启动时读取热点查询列表，预热 `QueryCache`
+- [ ] 定时采样：最近 N 分钟高频查询自动加入热点列表
+- [ ] 缓存 TTL 刷新：预热条目按查询频率动态延长 TTL
+- [ ] 测试：预热后冷启动延迟对比、热点自动更新
+
+**依赖**: 无（复用 `QueryCache`）
+**影响**: `src/core/query-cache.ts`, `src/core/cache-warmer.ts`（新建）
+
+##### Task 12A.3 — gRPC 流式查询 — Bidirectional Streaming（GAP-64, P1, 3~5d）
+
+**目标**: gRPC 双向流实现大结果集分段推送，支持进度反馈和取消。
+
+**任务分解**:
+- [ ] proto 定义：`StreamQueryRequest` / `StreamQueryResponse`
+- [ ] 双向流 RPC：`rpc StreamQuery(stream StreamQueryRequest) returns (stream StreamQueryResponse)`
+- [ ] 服务端：每 100 条结果推送一次，支持流控
+- [ ] 客户端：支持中途取消、并行流
+- [ ] 错误处理：流中断重连、deadline 超时
+- [ ] 测试：大结果集流式传输正确性、取消/重连
+
+**依赖**: 无（复现 `@grpc/grpc-js`）
+**影响**: `src/api/grpc-stream.ts`（新建）, `src/api/grpc-server.ts`, `graphvec.proto`
+
+#### Phase 12B: P2 两项（全文检索+可视化 · 预估: 7~10d）
+
+**目标**: 实现全文检索和图可视化，扩展图查询能力和用户交互体验。
+
+##### Task 12B.1 — 全文检索集成 — Tantivy / Meilisearch 二级索引（GAP-61, P2, 4~6d）
+
+**目标**: 集成外部全文检索引擎，支持节点/边属性的全文搜索和混合查询。
+
+**任务分解**:
+- [ ] `FullTextIndex` 接口抽象：索引/搜索/删除操作
+- [ ] Tantivy 实现：属性文本索引 + BM25 排序
+- [ ] Meilisearch 实现（可选）：近乎实时索引
+- [ ] 混合查询：全文 + 图遍历联合过滤
+- [ ] 索引同步：图写入时自动同步至全文索引
+- [ ] 测试：全文搜索正确性、混合查询性能、索引同步一致性
+
+**依赖**: tantivy（Node 绑定）/ meilisearch（可选）
+**影响**: `src/search/fulltext-index.ts`（新建）, `src/search/fulltext-index-tantivy.ts`（新建）, `src/search/fulltext-query.ts`（新建）
+
+##### Task 12B.2 — 图可视化增强 — Cytoscape.js / D3 集成（GAP-63, P2, 3~4d）
+
+**目标**: 提供图可视化 REST 端点 + 前端渲染组件。
+
+**任务分解**:
+- [ ] REST 端点：`GET /api/v1/:db/graph/viz` 返回 Cytoscape JSON / GraphML
+- [ ] 布局算法：dagre / cose / concentric 布局
+- [ ] 前端组件：Cytoscape.js 封装，支持缩放/拖拽/搜索
+- [ ] 交互：节点点击显示属性、边高亮、子图展开
+- [ ] 大图分页：10K 节点分批加载
+- [ ] 测试：可视化 JSON 正确性、大图分页
+
+**依赖**: cytoscape / d3（前端）
+**影响**: `src/api/visualization.ts`（新建）, `web/viz-renderer.ts`（新建）
+
+#### Phase 12C: P3 一项（混沌工程 · 预估: 3~4d）
+
+**目标**: 建立混沌工程测试框架，提升系统抗故障能力。
+
+##### Task 12C — 混沌工程测试框架 — Chaos Mesh 集成（GAP-66, P3, 3~4d）
+
+**目标**: Chaos Mesh 集成 + 故障注入测试 + 灾难恢复文档。
+
+**任务分解**:
+- [ ] Docker Compose 集成 Chaos Mesh：network-delay / pod-kill / partition
+- [ ] 故障注入测试：网络分区、节点崩溃、磁盘延迟
+- [ ] 恢复验证：Raft 重新选举、数据一致性、请求重试
+- [ ] 灾难恢复文档：`docs/ops/disaster-recovery-guide.md`
+- [ ] CI 集成：nightly chaos test pipeline
+- [ ] 测试：各故障场景下系统正确性和自我修复能力
+
+**依赖**: chaos-mesh
+**影响**: `test/chaos/chaos-tests.ts`（新建）, `docker-compose.chaos.yml`（新建）, `docs/ops/disaster-recovery-guide.md`（新建）
+
+#### V12 估算汇总
+
+| Phase | 包含方向 | 优先级范围 | 总估值工时 | 方向数 | 状态 |
+|:-----:|----------|:----------:|:----------:|:-----:|:----:|
+| Phase 12A | 分布式追踪 / 缓存预热 / gRPC 流式查询 | P1 | 8~13d | **3** | ⬜ 计划中 |
+| Phase 12B | 全文检索集成 / 图可视化增强 | P2 | 7~10d | **2** | ⬜ 计划中 |
+| Phase 12C | 混沌工程测试框架 | P3 | 3~4d | **1** | ⬜ 计划中 |
+| **V12 合计** | — | P1~P3 | **18~27d** | **6** | ⬜ **计划中** (GAP-59~GAP-66) |
