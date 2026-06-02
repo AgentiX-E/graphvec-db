@@ -18,6 +18,7 @@ import {
 import { encode, decode } from 'msgpackr'
 import { GeoIndex } from './geo-index'
 import { EncryptionAtRest, CipherConfig } from './cipher'
+import { ColumnarIndex } from './columnar-index'
 
 // ── 流式分块快照协议 (Streaming Chunked Snapshot Protocol) ──
 //
@@ -323,10 +324,15 @@ export class OverGraphStorage implements StorageProvider {
   /** 复合索引集合: name → index definition */
   private _compositeIndexes: Map<string, CompositeIndexDef> = new Map()
 
+  /** 列式索引 */
+  private _colIndex: ColumnarIndex | null = null
+
   get isOpen(): boolean { return this._isOpen }
   get compressionEnabled(): boolean { return this._compress }
   /** Get the EncryptionAtRest instance (null if not configured) */
   get cipher(): EncryptionAtRest | null { return this._cipher }
+  /** Get the ColumnarIndex instance (null if not configured) */
+  get colIndex(): ColumnarIndex | null { return this._colIndex }
 
   constructor(cipher?: EncryptionAtRest) {
     this._cipher = cipher ?? null
@@ -365,10 +371,26 @@ export class OverGraphStorage implements StorageProvider {
     }
     this._db = OverGraph.open(config.path, ogOpts)
     this._isOpen = true
+
+    // 初始化列式索引
+    if (config.colIndex?.enable) {
+      const colIdxConfig = {
+        enable: true,
+        columns: config.colIndex.columns,
+        indexPath: config.colIndex.indexPath,
+        syncOnWrite: config.colIndex.syncOnWrite ?? true,
+      }
+      this._colIndex = new ColumnarIndex(colIdxConfig, config.path)
+      this._colIndex.open()
+    }
   }
 
   close(): void {
     if (!this._isOpen || !this._db) return
+    if (this._colIndex) {
+      this._colIndex.close()
+      this._colIndex = null
+    }
     this._db.close()
     this._db = null
     this._isOpen = false
@@ -394,6 +416,10 @@ export class OverGraphStorage implements StorageProvider {
     // 更新复合索引
     if (this._compositeIndexes.size > 0 && rawProps) {
       this._updateCompositeIndex(typeId, id, rawProps)
+    }
+    // 更新列索引
+    if (this._colIndex && rawProps) {
+      this._colIndex.updateNodeIndexes(id, rawProps)
     }
     // 更新地理索引
     if (rawProps) {
@@ -423,6 +449,10 @@ export class OverGraphStorage implements StorageProvider {
 
   deleteNode(id: NodeId): boolean {
     this._geoIndex.removeNode(id)
+    // 清理列索引
+    if (this._colIndex) {
+      this._colIndex.deleteNodeIndexes(id)
+    }
     // 清理复合索引
     for (const [, def] of this._compositeIndexes) {
       const key = `${def.name}:${id}`

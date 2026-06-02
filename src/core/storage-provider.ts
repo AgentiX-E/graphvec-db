@@ -63,6 +63,22 @@ export interface StorageConfig {
    * 只对 LMDB 后端生效。
    */
   encryptionKey?: string | Buffer
+
+  /**
+   * 列式索引配置
+   * 对频繁查询的属性列构建独立 B-Tree 索引，
+   * 加速属性范围扫描，避免全节点反序列化。
+   */
+  colIndex?: {
+    /** 是否启用列索引 */
+    enable: boolean
+    /** 要索引的属性列名列表 */
+    columns: string[]
+    /** 索引存储路径，默认 {storagePath}/col-index/ */
+    indexPath?: string
+    /** 是否在写入时同步维护索引，默认 true */
+    syncOnWrite?: boolean
+  }
 }
 
 /**
