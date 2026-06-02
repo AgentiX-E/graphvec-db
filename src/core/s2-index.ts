@@ -146,27 +146,25 @@ export class S2Index {
     const searchLevel = this._radiusToLevel(radiusKm)
     const centerCell = latLngToKey(lat, lng, searchLevel)
 
-    // Collect candidate node IDs from target cells (center + parent + sibling cells)
+    // Collect candidate node IDs from target cells
     const candidateIds = new Set<number>()
 
-    // 1. Search the center cell and its parent
+    // 1. Search the center cell itself
     this._collectMatching(centerCell, candidateIds)
 
-    // 2. Search neighboring cells
-    const neighborKeys = neighborKeysForCell(centerCell, searchLevel)
-    for (const nk of neighborKeys) {
+    // 2. Search 1-ring neighbors
+    const oneRing = neighborKeysForCell(centerCell, searchLevel)
+    for (const nk of oneRing) {
       this._collectMatching(nk, candidateIds)
     }
 
-    // 3. If radius is large, also search the parent cell (one level up)
-    if (radiusKm > 1) {
-      const parentCell = this.parentCell(centerCell)
-      this._collectMatching(parentCell, candidateIds)
-
-      // Also neighbors of parent
-      const parentNeighbors = neighborKeysForCell(parentCell, searchLevel - 1)
-      for (const nk of parentNeighbors) {
-        this._collectMatching(nk, candidateIds)
+    // 3. Search 2-ring neighbors for broader coverage
+    for (const nk of oneRing) {
+      const twoRing = neighborKeysForCell(nk, searchLevel)
+      for (const tk of twoRing) {
+        if (tk !== centerCell) {
+          this._collectMatching(tk, candidateIds)
+        }
       }
     }
 
@@ -313,6 +311,8 @@ export class S2Index {
 
   /**
    * Collect matching node IDs: exact cell match + any child cells.
+   * S2 key format: "face/bits" where each char = 1 level (e.g., "1/203231003020023" for level 15).
+   * Children of cell "1/2032" would be keys like "1/20323", "1/203232", etc.
    */
   private _collectMatching(cellId: string, out: Set<number>): void {
     // Exact match
@@ -321,26 +321,25 @@ export class S2Index {
       for (const id of direct) out.add(id)
     }
 
-    // Child cells: indexed cells whose key starts with cellId + more chars
-    const prefix = cellId + '/'
-    // Note: cell keys are "face/chars"; the separator is '/'
-    // So child cells would be "face/chars+" where chars+ extends the bits
-    // But since keys are "face/chars" format, children have the same face and longer chars
-    for (const [key, nodes] of this._cellIndex.entries()) {
-      if (key.startsWith(prefix)) {
-        for (const id of nodes) out.add(id)
-      }
-    }
-
-    // Also check for same-face, longer-prefix keys
-    // The key format is "face/abcd...", so children have same face + prefix chars
+    // Child cells: same face + bits that start with our bits AND are longer
     const [face, bits] = cellId.split('/')
-    if (bits) {
+    if (!bits) {
+      // Whole face — just check face prefix
       for (const [key, nodes] of this._cellIndex.entries()) {
-        const [kface, kbits] = key.split('/')
-        if (kface === face && kbits && kbits.length > bits.length && kbits.startsWith(bits)) {
+        if (key.startsWith(face + '/')) {
           for (const id of nodes) out.add(id)
         }
+      }
+      return
+    }
+
+    // S2 key format: "face/bits" where bits length indicates level.
+    // Children have the same face and bits starting with parent's bits, but longer.
+    // E.g., parent "1/2032" (level 4) -> child "1/20323" (level 5)
+    const prefix = `${face}/${bits}`
+    for (const [key, nodes] of this._cellIndex.entries()) {
+      if (key.startsWith(prefix) && key.length > prefix.length) {
+        for (const id of nodes) out.add(id)
       }
     }
   }
@@ -371,15 +370,19 @@ export class S2Index {
 
   /**
    * Convert a radius to an appropriate S2 cell level.
+   * Uses coarser levels so the search cell (center + 1-ring neighbors)
+   * covers the radius. The 1-ring spans roughly ~3 cell widths.
    */
   private _radiusToLevel(radiusKm: number): number {
-    if (radiusKm <= 0.1) return 20
-    if (radiusKm <= 0.5) return 18
-    if (radiusKm <= 1) return 16
-    if (radiusKm <= 5) return 14
-    if (radiusKm <= 20) return 12
-    if (radiusKm <= 100) return 10
-    return 8
+    if (radiusKm <= 0.01) return 20   // cell ~0.010km
+    if (radiusKm <= 0.05) return 18   // cell ~0.039km
+    if (radiusKm <= 0.2) return 16    // cell ~0.156km
+    if (radiusKm <= 0.5) return 15    // cell ~0.312km
+    if (radiusKm <= 1.5) return 14    // cell ~0.625km, * 3 = 1.9km
+    if (radiusKm <= 5) return 12      // cell ~2.5km, * 3 = 7.5km
+    if (radiusKm <= 20) return 10     // cell ~10km, * 3 = 30km
+    if (radiusKm <= 100) return 8     // cell ~39km, * 3 = 117km
+    return 6                          // cell ~156km, * 3 = 468km
   }
 
   /**
@@ -431,13 +434,14 @@ export function cellKeyLevel(cellId: string): number {
 
 /**
  * Get neighbor cell keys for a given cell at its level.
- * Uses the s2-geometry library's latLngToNeighborKeys.
+ * Uses S2Cell.getNeighbors() for true cell adjacency.
  */
 export function neighborKeysForCell(cellId: string, level: number): string[] {
   const S2Cell = require('s2-geometry').S2.S2Cell
   try {
     const [lat, lng] = keyToLatLng(cellId)
-    return S2Cell.latLngToNeighborKeys(lat, lng, level > 0 ? level : 1)
+    const cell = S2Cell.FromLatLng({ lat, lng }, level > 0 ? level : 1)
+    return cell.getNeighbors().map((n: any) => n.toHilbertQuadkey())
   } catch {
     return []
   }
