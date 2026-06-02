@@ -851,3 +851,124 @@ V10 共 **8 个方向**（P2×1 + P3×7）于 2026-06-02 全部完成验收：
 | 测试通过率 | ≥95% | 100% | ✅ |
 | 向后兼容 | 必要 | 全部满足 | ✅ 无需 Breaking Change |
 | 总体闭包 | 42/42 → **50/50 GAPs** | **50/50** | ✅ **全部已实现** |
+
+---
+
+## 12. V11 差距分析（⬜ 计划中）
+
+### 12.1 V11 新方向总览
+
+V11 方向聚焦于 **深度强化与基础设施升级**，涵盖 ACID 事务增强、快照自动化、查询优化器、流式算法、SQL 桥接、索引增强、标准测试，共 **8 个方向**：
+
+| # | 方向 | GAP | 优先级 | 估值工时 | 核心依赖 |
+|:-:|------|:---:|:------:|:--------:|---------|
+| V11-01 | ACID 事务深度增强（SSI+版本链+死锁检测） | GAP-51 | P0 | 3~5d | 无（复用 Transaction.ts） |
+| V11-02 | InstallSnapshot 自动化（log compaction+crash recovery） | GAP-52 | P0 | 2~3d | 无（复用 raft-logic-consensus） |
+| V11-03 | StorageProvider 流式快照（分块导出+原子 rename） | GAP-53 | P0 | 1~2d | 无（复用 msgpackr/archiver） |
+| V11-04 | 查询优化器 CBO（StatsCollector+Join ordering） | GAP-54 | P1 | 3~5d | 无 |
+| V11-05 | 算法流式模式（BFS/DFS/PageRank 分块迭代） | GAP-55 | P1 | 2~3d | 无（复用 BatchProcessor） |
+| V11-06 | SQL 桥接生产级完善（SQL→Cypher 翻译器） | GAP-56 | P2 | 3~4d | `alasql`（已有） |
+| V11-07 | 复合索引唯一约束 + Geo-Spatial Index 增强 | GAP-57 | P2 | 2~3d | `s2-geometry`（已有） |
+| V11-08 | LDBC 标准测试提升 + 生产级运维治理 | GAP-58 | P3 | 4~6d | 无 |
+
+### 12.2 各方向简介
+
+#### V11-01: ACID 事务深度增强（P0 · GAP-51）
+**方案**: `Transaction.ts` 增加 Serializable Snapshot Isolation 模式：读集冲突检测 + 等待图死锁检测 + 版本链支持。
+- `mode: 'readCommitted' | 'snapshot' | 'serializable'`
+- 写偏斜检测：提交时检查读集冲突
+- 版本链深度：可配置（默认 3），快照读回退
+- **核心文件**: `src/core/transaction.ts`, `src/core/deadlock-detector.ts`
+
+#### V11-02: InstallSnapshot 自动化（P0 · GAP-52）
+**方案**: Raft 日志自动压缩 + Follower crash 自动恢复。
+- 超过 `_snapshotThreshold`（默认 10K log）自动压缩
+- Follow 检测 log 差距过大 → InstallSnapshot
+- **核心文件**: `src/consensus/raft-core.ts`, `src/consensus/snapshot-manager.ts`
+
+#### V11-03: StorageProvider 流式快照（P0 · GAP-53）
+**方案**: 4MB 分块导出 + 临时文件 `rename` + SHA-256 校验和。
+- 大图不 OOM（分块导出）
+- 原子操作（rename），部分失败不影响之前快照
+- **核心文件**: `src/storage/storage-provider.ts`, `src/ops/snapshot-stream.ts`
+
+#### V11-04: 查询优化器 CBO（P1 · GAP-54）
+**方案**: `StatsCollector.estimateSelectivity()` 接入 `QueryPlanner`。
+- 等高直方图增量维护
+- Join ordering 按成本排序
+- **核心文件**: `src/query/stats-collector.ts`, `src/query/query-planner.ts`, `src/query/histogram.ts`
+
+#### V11-05: 算法流式模式（P1 · GAP-55）
+**方案**: BFS/DFS/PageRank 使用 `BatchProcessor` 分块迭代避免大图 OOM。
+- 一次处理 10K 节点 batch
+- PageRank 迭代收敛检查
+- **核心文件**: `src/algorithms/stream-processor.ts`, `src/algorithms/bfs.ts`
+
+#### V11-06: SQL 桥接生产级完善（P2 · GAP-56）
+**方案**: 完善 `alasql` AST 翻译器：嵌套子查询、UNION、HAVING、CASE WHEN。
+- INSERT/UPDATE/DELETE → Cypher 翻译
+- 友好错误消息 + 建议等效 Cypher
+- 可选 `POST /api/v1/sql` 端点
+- **核心文件**: `src/query/sql-bridge.ts`, `src/query/sql-error-formatter.ts`
+
+#### V11-07: 复合索引唯一约束 + Geo-Spatial Index 增强（P2 · GAP-57）
+**方案**: 复合索引写入时唯一性校验 + S2 空间范围查询扩展。
+- WKT 格式输入（POINT, POLYGON, LINESTRING）
+- `within()` / `intersects()` 空间谓词
+- **核心文件**: `src/storage/composite-index.ts`, `src/search/geo-spatial.ts`
+
+#### V11-08: LDBC 标准测试提升 + 生产级运维治理（P3 · GAP-58）
+**方案**: LDBC SNB 全部 14 个 IC 查询 + 多规模测试（1K~1M） + 性能基准。
+- p50/p90/p99 延迟、QPS 报告
+- CI nightly pipeline
+- **核心文件**: `test/ldbc/ic-queries.ts`, `docs/ops/ldbc-snb-guide.md`
+
+### 12.3 推荐执行顺序
+
+```
+Phase 11A (P0): ACID 事务增强 (GAP-51)
+                  ↓ (基础一致层)
+Phase 11B (P0): InstallSnapshot 自动化 (GAP-52) + 流式快照 (GAP-53)
+                  ↓ (存储/共识层就绪)
+Phase 11C (P1): 查询优化器 CBO (GAP-54) → 算法流式模式 (GAP-55)
+                  ↓ (查询/算法层)
+Phase 11D (P2): SQL 桥接 (GAP-56) + 索引增强 (GAP-57)
+Phase 11E (P3): LDBC 测试 + 运维治理 (GAP-58) ← 可独立并行
+```
+
+### 12.4 竞品对比（⬜ 计划中）
+
+| 方向 | Neo4j | Dgraph | ArangoDB | **GraphVec(V11)** |
+|:----|:-----:|:------:|:--------:|:-----------------:|
+| SSI 事务 | ✅ | ✅ | ✅ | ⬜ 计划中 |
+| 自动快照 | ✅ | ✅ | ✅ | ⬜ 计划中 |
+| CBO 优化器 | ✅ | 🟡 基础 | ✅ | ⬜ 计划中 |
+| 流式算法 | 🟡 有限 | 🟡 有限 | 🟡 有限 | ⬜ 计划中 |
+| SQL 桥接 | ❌ | ❌ | ✅ AQL | ⬜ 计划中 |
+| 复合唯一约束 | ✅ | ✅ | ✅ | ⬜ 计划中 |
+| Geo-Spatial 查询 | ✅ | ✅ | ✅ | ⬜ 计划中 |
+| LDBC 完整认证 | ✅ | ✅ | ✅ | ⬜ 计划中 |
+
+### 12.5 V11 实现摘要（⬜ 计划中）
+
+**状态**: ⬜ 计划中 — 8/8 方向待实现（GAP-51~GAP-58）
+
+| 方向 | GAP | 优先级 | 核心文件 | 状态 |
+|:----|:---:|:------:|----------|:----:|
+| ACID 事务深度增强 | GAP-51 | P0 | `transaction.ts`, `deadlock-detector.ts` | ⬜ 计划中 |
+| InstallSnapshot 自动化 | GAP-52 | P0 | `raft-core.ts`, `snapshot-manager.ts` | ⬜ 计划中 |
+| 流式快照 | GAP-53 | P0 | `storage-provider.ts`, `snapshot-stream.ts` | ⬜ 计划中 |
+| 查询优化器 CBO | GAP-54 | P1 | `stats-collector.ts`, `query-planner.ts`, `histogram.ts` | ⬜ 计划中 |
+| 算法流式模式 | GAP-55 | P1 | `stream-processor.ts`, `bfs.ts` | ⬜ 计划中 |
+| SQL 桥接完善 | GAP-56 | P2 | `sql-bridge.ts`, `sql-error-formatter.ts` | ⬜ 计划中 |
+| 复合索引+Geo-Spatial | GAP-57 | P2 | `composite-index.ts`, `geo-spatial.ts` | ⬜ 计划中 |
+| LDBC 测试+运维治理 | GAP-58 | P3 | `ic-queries.ts`, `ldbc-snb-guide.md` | ⬜ 计划中 |
+
+#### §12.5.1 关键度量
+
+| 指标 | 目标 | 当前状态 |
+|------|:---:|:--------:|
+| 总方向数 | 8 | 8 ⬜ |
+| 总估值工时 | 20~31d | 未启动 |
+| 竞品差距 | 8 项 | 全部 ⬜ |
+| 总体闭包 | 50/50 → **58/58 GAPs** | **50/50** 待推进 |

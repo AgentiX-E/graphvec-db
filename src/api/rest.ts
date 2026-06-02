@@ -17,6 +17,11 @@ import { register } from 'prom-client'
 import { executeIR, QuerySpec, buildIRFromSpec, optimizeIR } from './query-planner'
 import { GraphQLSubscription } from './graphql-subscription'
 import type { EventBus } from '../core/event-bus'
+import { QuerySlowLog } from '../ops/query-slow-log'
+import { GnnInferenceEngine } from '../algorithms/gnn-engine'
+import { enrichNodeLinks, enrichEdgeLinks, enrichListLinks, enrichQueryLinks } from './hypermedia'
+import { getDefaultTenantManager } from '../security/tenant-manager'
+import type { ShardHealth } from '../shard/shard-manager' // for shard health info in admin endpoints
 
 // ──────────────────────────────────────────
 // 类型定义
@@ -54,6 +59,10 @@ export interface RestApiConfig {
   eventBus?: EventBus
   /** HealthChecker 实例（可选），提供后启用 /health/live 和 /health/ready 端点 */
   healthChecker?: import('./health-checker').HealthChecker
+  /** QuerySlowLog 实例（可选），提供后注入慢查询日志功能到查询路由 */
+  slowLog?: QuerySlowLog
+  /** GnnInferenceEngine 实例（可选），提供后启用 /api/v1/gnn/... 推理端点 */
+  gnnEngine?: GnnInferenceEngine
 }
 
 export interface RestApiServer {
@@ -121,6 +130,8 @@ interface Route {
   handler: RouteHandler
   requireAuth?: boolean
   requiredPermission?: string
+  /** 可选：子图（租户）隔离标识。如果设置，会在认证后检查子图 ACL */
+  subgraph?: string
 }
 
 // ── GraphQL Subscription via SSE ────────
@@ -757,7 +768,10 @@ export function createRestApiServer(
           return
         }
 
-        try {
+        const queryStr = String(body.query || '')
+
+        // 包装查询执行以支持慢查询日志
+        const executeQuery = async () => {
           // Build QuerySpec from the request body
           const spec: QuerySpec = body.query
             ? parseQueryString(String(body.query))
@@ -767,7 +781,8 @@ export function createRestApiServer(
           const optimized = optimizeIR(plan)
           const results = await executeIR(optimized, shardManager)
 
-          jsonResponse(res, 200, {
+          // 注入 HATEOAS _links
+          const data = {
             results,
             count: results.length,
             plan: {
@@ -775,10 +790,17 @@ export function createRestApiServer(
               estimatedRows: optimized.estimatedRows,
               estimatedCost: optimized.estimatedCost,
             },
-          })
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : 'Query execution failed'
-          jsonResponse(res, 500, { error: msg })
+          }
+
+          // 如果有慢查询日志，追踪执行
+          const enriched = enrichQueryLinks(data, '/api/query')
+          jsonResponse(res, 200, enriched)
+        }
+
+        if (config.slowLog) {
+          await config.slowLog.track(queryStr || '/api/query', executeQuery, auth?.cn)
+        } else {
+          await executeQuery()
         }
       },
     },
@@ -796,7 +818,7 @@ export function createRestApiServer(
           return
         }
 
-        try {
+        const streamHandler = async () => {
           const spec = parseQueryString(queryStr)
           const plan = buildIRFromSpec(spec)
           const optimized = optimizeIR(plan)
@@ -821,17 +843,21 @@ export function createRestApiServer(
           // 发送完成事件
           res.write(`event: complete\ndata: {}\n\n`)
           res.end()
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : 'Stream query failed'
+        }
 
-          res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            Connection: 'keep-alive',
+        if (config.slowLog) {
+          await config.slowLog.track(queryStr, streamHandler, auth?.cn)
+        } else {
+          await streamHandler().catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : 'Stream query failed'
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              Connection: 'keep-alive',
+            })
+            res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
+            res.end()
           })
-
-          res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
-          res.end()
         }
       },
     },
@@ -866,6 +892,565 @@ export function createRestApiServer(
           'Content-Length': Buffer.byteLength(metrics),
         })
         res.end(metrics)
+      },
+    },
+
+    // ── GNN 推理端点（GAP-51）────────────────
+
+    // GET /api/v1/gnn/status — 模型加载状态
+    ...(config.gnnEngine
+      ? [{
+          method: 'GET' as const,
+          path: '/api/v1/gnn/status',
+          requireAuth: true as const,
+          requiredPermission: 'read' as const,
+          handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            jsonResponse(res, 200, {
+              loaded: engine.isLoaded,
+              config: engine.getConfig(),
+            })
+          },
+        }]
+      : []),
+
+    // POST /api/v1/gnn/predict-link — 链接预测
+    ...(config.gnnEngine
+      ? [{
+          method: 'POST' as const,
+          path: '/api/v1/gnn/predict-link',
+          requireAuth: true as const,
+          requiredPermission: 'read' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            const body = await parseBody(req) as Record<string, unknown>
+            if (body.source === undefined || body.target === undefined) {
+              jsonResponse(res, 400, { error: 'source and target are required' })
+              return
+            }
+            try {
+              const result = await engine.predictLink(
+                body.source as any,
+                body.target as any,
+              )
+              jsonResponse(res, 200, result)
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Link prediction failed'
+              jsonResponse(res, 500, { error: msg })
+            }
+          },
+        }]
+      : []),
+
+    // POST /api/v1/gnn/embedding — 计算节点嵌入
+    ...(config.gnnEngine
+      ? [{
+          method: 'POST' as const,
+          path: '/api/v1/gnn/embedding',
+          requireAuth: true as const,
+          requiredPermission: 'read' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            const body = await parseBody(req) as Record<string, unknown>
+            if (body.nodeId === undefined) {
+              jsonResponse(res, 400, { error: 'nodeId is required' })
+              return
+            }
+            try {
+              const embedding = await engine.computeEmbedding(body.nodeId as any)
+              jsonResponse(res, 200, {
+                nodeId: body.nodeId,
+                embedding: Array.from(embedding),
+              })
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Embedding computation failed'
+              jsonResponse(res, 500, { error: msg })
+            }
+          },
+        }]
+      : []),
+
+    // POST /api/v1/gnn/recommend — Top-K 推荐
+    ...(config.gnnEngine
+      ? [{
+          method: 'POST' as const,
+          path: '/api/v1/gnn/recommend',
+          requireAuth: true as const,
+          requiredPermission: 'read' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            const body = await parseBody(req) as Record<string, unknown>
+            if (body.startNode === undefined || body.candidates === undefined) {
+              jsonResponse(res, 400, { error: 'startNode and candidates are required' })
+              return
+            }
+            const candidates = Array.isArray(body.candidates) ? body.candidates as any[] : []
+            const topK = body.topK !== undefined ? Number(body.topK) : 10
+            try {
+              const results = await engine.recommend(body.startNode as any, candidates, topK)
+              jsonResponse(res, 200, {
+                startNode: body.startNode,
+                candidates: candidates.length,
+                topK,
+                results,
+              })
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Recommendation failed'
+              jsonResponse(res, 500, { error: msg })
+            }
+          },
+        }]
+      : []),
+
+    // POST /api/v1/gnn/load-model — 热加载/切换模型
+    ...(config.gnnEngine
+      ? [{
+          method: 'POST' as const,
+          path: '/api/v1/gnn/load-model',
+          requireAuth: true as const,
+          requiredPermission: 'admin' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            const body = await parseBody(req) as Record<string, unknown>
+            if (!body.modelPath) {
+              jsonResponse(res, 400, { error: 'modelPath is required' })
+              return
+            }
+            try {
+              await engine.loadModel(String(body.modelPath))
+              jsonResponse(res, 200, { message: 'Model loaded successfully', loaded: true })
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Model load failed'
+              jsonResponse(res, 500, { error: msg })
+            }
+          },
+        }]
+      : []),
+
+    // ── 慢查询日志端点（GAP-53）──────────────
+
+    // GET /api/v1/ops/slow-queries — 获取慢查询列表
+    ...(config.slowLog
+      ? [{
+          method: 'GET' as const,
+          path: '/api/v1/ops/slow-queries',
+          requireAuth: true as const,
+          requiredPermission: 'admin' as const,
+          handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const slowLog = config.slowLog!
+            const queries = slowLog.getSlowQueries()
+            jsonResponse(res, 200, {
+              count: queries.length,
+              thresholdMs: (slowLog as any).thresholdMs ?? 'unknown',
+              queries,
+            })
+          },
+        }]
+      : []),
+
+    // PUT /api/v1/ops/slow-queries/threshold — 动态调整阈值
+    ...(config.slowLog
+      ? [{
+          method: 'PUT' as const,
+          path: '/api/v1/ops/slow-queries/threshold',
+          requireAuth: true as const,
+          requiredPermission: 'admin' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const slowLog = config.slowLog!
+            const body = await parseBody(req) as Record<string, unknown>
+            if (body.thresholdMs === undefined || isNaN(Number(body.thresholdMs)) || Number(body.thresholdMs) <= 0) {
+              jsonResponse(res, 400, { error: 'thresholdMs must be a positive number' })
+              return
+            }
+            slowLog.setThreshold(Number(body.thresholdMs))
+            jsonResponse(res, 200, { message: 'Threshold updated', thresholdMs: Number(body.thresholdMs) })
+          },
+        }]
+      : []),
+
+    // DELETE /api/v1/ops/slow-queries — 清空慢查询日志
+    ...(config.slowLog
+      ? [{
+          method: 'DELETE' as const,
+          path: '/api/v1/ops/slow-queries',
+          requireAuth: true as const,
+          requiredPermission: 'admin' as const,
+          handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const slowLog = config.slowLog!
+            slowLog.clear()
+            jsonResponse(res, 200, { message: 'Slow query log cleared' })
+          },
+        }]
+      : []),
+
+    // ════════════════════════════════════════════════════
+    // GAP-54: 租户（子图）管理 CRUD 端点
+    // ════════════════════════════════════════════════════
+    // 需要 admin 权限才能管理租户
+    // 子图端点内置 subgraph 隔离校验
+
+    // GET /api/admin/tenants — 列出所有租户
+    {
+      method: 'GET',
+      path: '/api/admin/tenants',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+        const mgr = getDefaultTenantManager()
+        const tenants = mgr.listTenants()
+        jsonResponse(res, 200, {
+          tenants,
+          count: tenants.length,
+        })
+      },
+    },
+
+    // POST /api/admin/tenants — 创建新租户
+    {
+      method: 'POST',
+      path: '/api/admin/tenants',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+        const mgr = getDefaultTenantManager()
+        const body = await parseBody(req) as Record<string, unknown>
+        if (!body.name || typeof body.name !== 'string') {
+          jsonResponse(res, 400, { error: 'name is required and must be a string' })
+          return
+        }
+        try {
+          const tenant = mgr.createTenant({
+            name: body.name as string,
+            displayName: body.displayName as string | undefined,
+            description: body.description as string | undefined,
+            metadata: body.metadata as Record<string, string> | undefined,
+          })
+          jsonResponse(res, 201, tenant)
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Create failed'
+          const status = msg.includes('already exists') ? 409 : 500
+          jsonResponse(res, status, { error: msg })
+        }
+      },
+    },
+
+    // GET /api/admin/tenants/:name — 获取租户详情
+    {
+      method: 'GET',
+      path: '/api/admin/tenants/:name',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, params: Record<string, string>, _auth: AuthResult) => {
+        const mgr = getDefaultTenantManager()
+        const tenant = mgr.getTenant(params.name)
+        if (!tenant) {
+          jsonResponse(res, 404, { error: `Tenant '${params.name}' not found` })
+          return
+        }
+        // Also return ACLs for this tenant
+        const acls = mgr.listAccess(params.name)
+        jsonResponse(res, 200, { ...tenant, acls })
+      },
+    },
+
+    // PUT /api/admin/tenants/:name — 更新租户
+    {
+      method: 'PUT',
+      path: '/api/admin/tenants/:name',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, params: Record<string, string>, _auth: AuthResult) => {
+        const mgr = getDefaultTenantManager()
+        const body = await parseBody(req) as Record<string, unknown>
+        try {
+          const tenant = mgr.updateTenant(params.name, {
+            displayName: body.displayName as string | undefined,
+            description: body.description as string | undefined,
+            active: body.active as boolean | undefined,
+            metadata: body.metadata as Record<string, string> | undefined,
+          })
+          jsonResponse(res, 200, tenant)
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Update failed'
+          jsonResponse(res, msg.includes('not found') ? 404 : 500, { error: msg })
+        }
+      },
+    },
+
+    // DELETE /api/admin/tenants/:name — 删除租户
+    {
+      method: 'DELETE',
+      path: '/api/admin/tenants/:name',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, params: Record<string, string>, _auth: AuthResult) => {
+        const mgr = getDefaultTenantManager()
+        const deleted = mgr.deleteTenant(params.name)
+        if (!deleted) {
+          jsonResponse(res, 404, { error: `Tenant '${params.name}' not found` })
+          return
+        }
+        jsonResponse(res, 200, { message: `Tenant '${params.name}' deleted` })
+      },
+    },
+
+    // POST /api/admin/tenants/:name/grant — 授予角色子图访问权限
+    {
+      method: 'POST',
+      path: '/api/admin/tenants/:name/grant',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, params: Record<string, string>, _auth: AuthResult) => {
+        const mgr = getDefaultTenantManager()
+        const body = await parseBody(req) as Record<string, unknown>
+        if (!body.role || typeof body.role !== 'string' || !body.actions || !Array.isArray(body.actions)) {
+          jsonResponse(res, 400, { error: 'role (string) and actions (string[]) are required' })
+          return
+        }
+        try {
+          mgr.grantAccess(params.name, body.role as string, body.actions as string[])
+          jsonResponse(res, 200, { message: `Access granted to role '${body.role}' on '${params.name}'` })
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : 'Grant failed'
+          jsonResponse(res, msg.includes('not found') ? 404 : 500, { error: msg })
+        }
+      },
+    },
+
+    // POST /api/admin/tenants/:name/revoke — 撤销角色子图访问权限
+    {
+      method: 'POST',
+      path: '/api/admin/tenants/:name/revoke',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, params: Record<string, string>, _auth: AuthResult) => {
+        const mgr = getDefaultTenantManager()
+        const body = await parseBody(req) as Record<string, unknown>
+        if (!body.role || typeof body.role !== 'string') {
+          jsonResponse(res, 400, { error: 'role (string) is required' })
+          return
+        }
+        const removed = mgr.revokeAccess(params.name, body.role as string)
+        if (!removed) {
+          jsonResponse(res, 404, { error: `No ACL found for role '${body.role}' on '${params.name}'` })
+          return
+        }
+        jsonResponse(res, 200, { message: `Access revoked for role '${body.role}' on '${params.name}'` })
+      },
+    },
+
+    // ════════════════════════════════════════════════════
+    // GAP-55: JMX / 管理终端端点
+    // ════════════════════════════════════════════════════
+    // 6 个 admin 端点，复用 mTLS + RBAC（requiredPermission: admin）
+
+    // 1) GET /api/admin/cache — 缓存信息
+    {
+      method: 'GET',
+      path: '/api/admin/cache',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+        const ranges = shardManager.getAllRanges()
+        let totalCachedNodes = 0
+        let totalCachedEdges = 0
+        let totalCacheHits = 0
+        let totalCacheMisses = 0
+        for (const [, range] of ranges) {
+          const status = range.getStatus()
+          totalCachedNodes += status.cache?.nodeCacheSize || 0
+          totalCachedEdges += status.cache?.edgeCacheSize || 0
+          totalCacheHits += status.cache?.hitCount || 0
+          totalCacheMisses += status.cache?.missCount || 0
+        }
+        jsonResponse(res, 200, {
+          cachedNodes: totalCachedNodes,
+          cachedEdges: totalCachedEdges,
+          hitCount: totalCacheHits,
+          missCount: totalCacheMisses,
+          hitRate: (totalCacheHits + totalCacheMisses) > 0
+            ? (totalCacheHits / (totalCacheHits + totalCacheMisses) * 100).toFixed(2) + '%'
+            : 'N/A',
+          rangeCount: ranges.size,
+        })
+      },
+    },
+
+    // 2) GET /api/admin/shard — 分片状态
+    {
+      method: 'GET',
+      path: '/api/admin/shard',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+        const status = shardManager.getShardStatus()
+        const ranges = shardManager.getAllRanges()
+        const shards: Array<{
+          id: string
+          nodeCount: number
+          edgeCount: number
+          isStable: boolean
+          sizeBytes: number
+        }> = []
+        for (const [id, range] of ranges) {
+          const s = range.getStatus()
+          shards.push({
+            id,
+            nodeCount: s.storage?.nodeCount || 0,
+            edgeCount: s.storage?.edgeCount || 0,
+            isStable: s.isStable ?? true,
+            sizeBytes: s.storage?.sizeBytes || 0,
+          })
+        }
+        jsonResponse(res, 200, {
+          overall: status,
+          shards,
+          shardCount: shards.length,
+          totalNodes: status.reduce((sum: number, s: any) => sum + (s.nodeCount || 0), 0),
+        })
+      },
+    },
+
+    // 3) GET /api/admin/config — 运行时配置
+    {
+      method: 'GET',
+      path: '/api/admin/config',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+        const publicConfig: Record<string, unknown> = {
+          port: config.port,
+          host: config.host,
+          bodySizeLimit: config.bodySizeLimit,
+          enableCors: config.enableCors,
+          enableRatelimit: config.enableRatelimit,
+          maxRatelimitPerMin: config.maxRatelimitPerMin,
+          nodeVersion: process.version,
+          platform: process.platform,
+          uptime: process.uptime(),
+          memoryUsage: process.memoryUsage(),
+        }
+        if (config.replicationManager) {
+          publicConfig.replication = config.replicationManager.getConfig()
+        }
+        jsonResponse(res, 200, publicConfig)
+      },
+    },
+
+    // 4) POST /api/admin/compact — 手动触发 compaction
+    {
+      method: 'POST',
+      path: '/api/admin/compact',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+        const ranges = shardManager.getAllRanges()
+        let compacted = 0
+        const errors: Array<{ rangeId: string; error: string }> = []
+        for (const [id, range] of ranges) {
+          try {
+            if (typeof (range as any).compact === 'function') {
+              await (range as any).compact()
+              compacted++
+            }
+          } catch (err: unknown) {
+            errors.push({
+              rangeId: id,
+              error: err instanceof Error ? err.message : 'Compaction failed',
+            })
+          }
+        }
+        jsonResponse(res, 200, {
+          message: `Compaction triggered on ${compacted}/${ranges.size} ranges`,
+          compacted,
+          total: ranges.size,
+          errors: errors.length > 0 ? errors : undefined,
+        })
+      },
+    },
+
+    // 5) POST /api/admin/ttl — 设置/触发 TTL 清理
+    {
+      method: 'POST',
+      path: '/api/admin/ttl',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const ttlHours = body.ttlHours !== undefined ? Number(body.ttlHours) : undefined
+        const ranges = shardManager.getAllRanges()
+        let cleaned = 0
+        const errors: Array<{ rangeId: string; error: string }> = []
+        for (const [id, range] of ranges) {
+          try {
+            if (typeof (range as any).applyTTL === 'function') {
+              const result = await (range as any).applyTTL(ttlHours)
+              cleaned += result?.removed || 0
+            }
+          } catch (err: unknown) {
+            errors.push({
+              rangeId: id,
+              error: err instanceof Error ? err.message : 'TTL cleanup failed',
+            })
+          }
+        }
+        jsonResponse(res, 200, {
+          message: `TTL cleanup completed, removed ${cleaned} items across ${ranges.size} ranges`,
+          removed: cleaned,
+          ttlHours: ttlHours ?? 'default',
+          errors: errors.length > 0 ? errors : undefined,
+        })
+      },
+    },
+
+    // 6) GET /api/admin/status — 全面管理状态聚合
+    {
+      method: 'GET',
+      path: '/api/admin/status',
+      requireAuth: true,
+      requiredPermission: 'admin',
+      handler: async (_req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+        const gc = await import('os')
+        const status = shardManager.getShardStatus()
+        const ranges = shardManager.getAllRanges()
+        let totalNodes = 0
+        let totalEdges = 0
+        let totalSizeBytes = 0
+        let stableRanges = 0
+        for (const [, range] of ranges) {
+          const s = range.getStatus()
+          totalNodes += s.storage?.nodeCount || 0
+          totalEdges += s.storage?.edgeCount || 0
+          totalSizeBytes += s.storage?.sizeBytes || 0
+          if (s.isStable) stableRanges++
+        }
+        jsonResponse(res, 200, {
+          status: status.every((s: any) => s.healthy !== false) ? 'healthy' : 'degraded',
+          uptime: process.uptime(),
+          shards: {
+            total: ranges.size,
+            stable: stableRanges,
+            unstable: ranges.size - stableRanges,
+          },
+          storage: {
+            totalNodes,
+            totalEdges,
+            totalSizeBytes,
+            totalSizeFormatted: totalSizeBytes > 1048576
+              ? (totalSizeBytes / 1048576).toFixed(2) + ' MB'
+              : totalSizeBytes + ' bytes',
+          },
+          system: {
+            memory: process.memoryUsage(),
+            cpu: gc.cpus().length,
+            loadAvg: gc.loadavg(),
+            hostname: gc.hostname(),
+          },
+          tenants: {
+            count: getDefaultTenantManager().count,
+          },
+          timestamp: Date.now(),
+        })
       },
     },
   ]
@@ -1172,23 +1757,29 @@ export function createRestApiServer(
           jsonResponse(res, 400, { error: 'query string or match object is required' })
           return
         }
-        try {
+        const queryStr = String(body.query || '')
+        const queryFn = async () => {
           const spec: QuerySpec = body.query ? parseQueryString(String(body.query)) : parseMatchBody(body)
           const plan = buildIRFromSpec(spec)
           const optimized = optimizeIR(plan)
           const results = await executeIR(optimized, sm)
           jsonResponse(res, 200, { results, count: results.length, plan: { type: optimized.type, estimatedRows: optimized.estimatedRows, estimatedCost: optimized.estimatedCost } })
-        } catch (err: unknown) {
-          jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Query execution failed' })
+        }
+        if (config.slowLog) {
+          await config.slowLog.track(queryStr, queryFn)
+        } else {
+          await queryFn().catch((err: unknown) => {
+            jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Query execution failed' })
+          })
         }
       },
     )
 
     addMultiDbRoute('GET', '/api/v1/:db/query/stream', true, 'read',
-      async (sm, _req, res, parsed) => {
+      async (sm, req, res, parsed) => {
         const queryStr = parsed.searchParams.get('query')
         if (!queryStr) { jsonResponse(res, 400, { error: 'query parameter is required' }); return }
-        try {
+        const streamFn = async () => {
           const spec = parseQueryString(queryStr)
           const plan = buildIRFromSpec(spec)
           const optimized = optimizeIR(plan)
@@ -1200,11 +1791,16 @@ export function createRestApiServer(
           }
           res.write(`event: complete\ndata: {}\n\n`)
           res.end()
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : 'Stream query failed'
-          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
-          res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
-          res.end()
+        }
+        if (config.slowLog) {
+          await config.slowLog.track(queryStr, streamFn)
+        } else {
+          await streamFn().catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : 'Stream query failed'
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
+            res.write(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`)
+            res.end()
+          })
         }
       },
     )
@@ -1708,6 +2304,22 @@ export function createRestApiServer(
             RBAC.checkAclPermission(auth.role, matched.requiredPermission)
           } catch {
             jsonResponse(res, 403, { error: 'Forbidden: insufficient permissions' })
+            return
+          }
+        }
+
+        // 子图(租户)隔离校验中间件 (GAP-54)
+        // 如果路由声明了 subgraph，则在校验完成后检查子图 ACL
+        if (matched.subgraph) {
+          // 支持路径参数替换：subgraph 字段中的 :param 会被替换为路径参数的实际值
+          let subgraphName = matched.subgraph
+          for (const [k, v] of Object.entries(matchedParams)) {
+            subgraphName = subgraphName.replace(`:${k}`, v)
+          }
+          try {
+            getDefaultTenantManager().checkPermission(auth.role, subgraphName, matched.requiredPermission || 'read')
+          } catch {
+            jsonResponse(res, 403, { error: `Access denied to subgraph '${subgraphName}'` })
             return
           }
         }

@@ -1,0 +1,120 @@
+# ============================================================
+# docker-compose.yml — 3-node AgentiX GraphVec cluster
+# ============================================================
+# Usage:
+#   1. Generate certs:   bash scripts/init-certs.sh
+#   2. Start cluster:    docker compose up -d
+#   3. Check logs:       docker compose logs -f
+#   4. Scale (optional): docker compose up -d --scale node=5
+#
+# All three nodes form a multi-active graph database
+# with mutual TLS (mTLS) authentication between nodes.
+# ============================================================
+
+version: "3.9"
+
+services:
+  # ── Node 1 (seed / bootstrap) ──────────────────────────
+  node-1:
+    image: agentix-graphvec:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentix-node-1
+    hostname: node-1
+    restart: unless-stopped
+    ports:
+      - "443:443"        # mTLS REST/GraphQL API
+      - "8080:8080"      # Admin UI / JMX management
+    volumes:
+      - node1-data:/data
+      - ./certs:/config/certs:ro
+    environment:
+      - NODE_ID=node-1
+      - NODE_HOST=node-1
+      - NODE_PORT=443
+      - PEERS=node-1,node-2,node-3
+      - DATA_DIR=/data
+      - TLS_CERT=/config/certs/server-cert.pem
+      - TLS_KEY=/config/certs/server-key.pem
+      - TLS_CA=/config/certs/ca-cert.pem
+      - AUTH_MODE=mtls
+      - ADMIN_PORT=8080
+      - LOG_LEVEL=info
+    networks:
+      - graphvec-net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:443/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── Node 2 ─────────────────────────────────────────────
+  node-2:
+    image: agentix-graphvec:latest
+    container_name: agentix-node-2
+    hostname: node-2
+    restart: unless-stopped
+    ports:
+      - "4443:443"       # mTLS REST/GraphQL API (mapped to 4443 to avoid conflict)
+      - "8081:8080"      # Admin UI (mapped to 8081)
+    volumes:
+      - node2-data:/data
+      - ./certs:/config/certs:ro
+    environment:
+      - NODE_ID=node-2
+      - NODE_HOST=node-2
+      - NODE_PORT=443
+      - PEERS=node-1,node-2,node-3
+      - DATA_DIR=/data
+      - TLS_CERT=/config/certs/server-cert.pem
+      - TLS_KEY=/config/certs/server-key.pem
+      - TLS_CA=/config/certs/ca-cert.pem
+      - AUTH_MODE=mtls
+      - ADMIN_PORT=8080
+      - LOG_LEVEL=info
+    networks:
+      - graphvec-net
+    depends_on:
+      - node-1
+
+  # ── Node 3 ─────────────────────────────────────────────
+  node-3:
+    image: agentix-graphvec:latest
+    container_name: agentix-node-3
+    hostname: node-3
+    restart: unless-stopped
+    ports:
+      - "4453:443"       # mTLS REST/GraphQL API (mapped to 4453)
+      - "8082:8080"      # Admin UI (mapped to 8082)
+    volumes:
+      - node3-data:/data
+      - ./certs:/config/certs:ro
+    environment:
+      - NODE_ID=node-3
+      - NODE_HOST=node-3
+      - NODE_PORT=443
+      - PEERS=node-1,node-2,node-3
+      - DATA_DIR=/data
+      - TLS_CERT=/config/certs/server-cert.pem
+      - TLS_KEY=/config/certs/server-key.pem
+      - TLS_CA=/config/certs/ca-cert.pem
+      - AUTH_MODE=mtls
+      - ADMIN_PORT=8080
+      - LOG_LEVEL=info
+    networks:
+      - graphvec-net
+    depends_on:
+      - node-1
+
+# ── Named volumes ─────────────────────────────────────────
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+
+# ── Network ───────────────────────────────────────────────
+networks:
+  graphvec-net:
+    driver: bridge

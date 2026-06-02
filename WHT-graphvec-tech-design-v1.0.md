@@ -1916,3 +1916,209 @@ class QueryTimeoutManager {
 | 10A | **P2** | 查询超时/取消 | 1 | 2~3d | ✅ 已实现 |
 | 10B | **P3** | OpenAPI / 健康检查 / 聚合函数 / 审计导出 / SDK / 压缩 / 配置热加载 | 7 | 20~28d | ✅ 已实现 |
 | | **合计** | — | **8** | **22~31d** | ✅ **已实现** (`e47db827` 2026-06-02) |
+
+---
+
+## §16 V11 差距分析 — 设计变更预设（⬜ 计划中）
+
+### V11 新方向总览
+
+V11 聚焦**深度强化与基础设施升级**，涵盖 ACID 事务深度增强、快照自动化、查询优化器、流式算法、SQL 桥接、索引增强、标准测试，共 **8 个方向**：
+
+| # | 方向 | GAP | 优先级 | 工时 | 核心依赖 | 复用组件 |
+|:-:|------|:---:|:------:|:----:|----------|:---------|
+| V11-01 | ACID 事务深度增强（SSI+版本链+死锁检测） | GAP-51 | **P0** | 3~5d | 无（复用 Transaction.ts） | `Transaction`, `LockManager` |
+| V11-02 | InstallSnapshot 自动化（log compaction+crash recovery） | GAP-52 | **P0** | 2~3d | 无（复用 raft-logic-consensus） | `RaftCore`, `StorageProvider` |
+| V11-03 | StorageProvider 流式快照（分块导出+原子 rename） | GAP-53 | **P0** | 1~2d | 无（复用 msgpackr/archiver） | `StorageProvider` |
+| V11-04 | 查询优化器 CBO（StatsCollector+Join ordering） | GAP-54 | **P1** | 3~5d | 无 | `QueryPlanner`, `StatsCollector` |
+| V11-05 | 算法流式模式（BFS/DFS/PageRank 分块迭代） | GAP-55 | **P1** | 2~3d | 无 | `BatchProcessor` |
+| V11-06 | SQL 桥接生产级完善（SQL→Cypher 翻译器） | GAP-56 | **P2** | 3~4d | `alasql`（已有） | `ProcedureRegistry`, `QueryEngine` |
+| V11-07 | 复合索引唯一约束 + Geo-Spatial Index 增强 | GAP-57 | **P2** | 2~3d | `s2-geometry`（已有） | `StorageProvider`, `colIndex` |
+| V11-08 | LDBC 标准测试提升 + 生产级运维治理 | GAP-58 | **P3** | 4~6d | 无 | 现有测试框架 |
+
+### §16.1 ACID 事务深度增强 — SSI + 版本链 + 死锁检测（P0 · GAP-51）
+
+**问题**: 当前 SI 级事务缺少写偏斜检测、多版本链、死锁检测。
+
+**方案**: `Transaction.ts` 增加 Serializable Snapshot Isolation 模式：
+
+```typescript
+interface SSITransactionConfig {
+  mode: 'readCommitted' | 'snapshot' | 'serializable'
+  enableDeadlockDetection: boolean
+  versionChainDepth: number   // 默认 3
+  conflictRetryCount: number  // 默认 3
+}
+```
+
+**设计决策**:
+1. 读集冲突检测：`SELECT ... FOR UPDATE` 语义读集注册
+2. 等待图死锁检测（DFS 环检测），超时触发回滚
+3. 版本链支持：每个 key 保留前 N 个版本（配置式），快照读回退到版本链
+4. 写偏斜检测：读集的 key 在提交时被其他事务修改则 abort
+5. 非侵入式：不修改现有 GraphEngine 写入路径，仅在 SimpleTxnManager 层扩展
+
+**受影响的文件**:
+- `src/core/transaction.ts`（扩展 SSI 模式）
+- `src/core/simple-txn-manager.ts`（死锁检测器集成）
+- 新建 `src/core/deadlock-detector.ts`
+
+**依赖项**: 无（复用 `Transaction.ts`、`LockManager`）
+
+### §16.2 InstallSnapshot 自动化 — log compaction + crash recovery（P0 · GAP-52）
+
+**问题**: snapshot 手动触发，follower crash 后无自动恢复。
+
+**方案**: 基于 Log 大小阈值自动压缩，follower recovery 从 StorageProvider 重装。
+
+**设计决策**:
+1. `RaftCore` 增加 `_snapshotThreshold` 配置（默认 10_000 条 log）
+2. 超过阈值后自动触发 `createSnapshot()` → `pruneLogs()`
+3. Follower `requestVote` 响应时检测 log 差距，差距过大则发送 InstallSnapshot
+4. 快照包含完整 state machine 状态 + lastAppliedIndex
+5. 存储作为 WAL segment 文件，LMDB 中存快照元数据
+
+**受影响的文件**:
+- `src/consensus/raft-core.ts`（自动压缩 / InstallSnapshot 回调）
+- 新建 `src/consensus/snapshot-manager.ts`
+
+**依赖项**: 无（复用 raft-logic-consensus 和 overgraph-storage）
+
+### §16.3 StorageProvider 流式快照 — 分块导出 + 原子 rename（P0 · GAP-53）
+
+**问题**: 大图整图序列化 OOM，无原子操作。
+
+**方案**: 分块导出（4MB） + 临时文件 rename + 校验和。
+
+**设计决策**:
+1. `exportSnapshot()` 按 LMDB database 分块遍历，4MB 为一块
+2. 每个块写入临时文件（`.tmp` 后缀）
+3. 全部块完成后对每个块计算 SHA-256 校验和
+4. `fs.renameSync(tmpPath, targetPath)` 原子操作
+5. 失败时部分块不 rename，不影响之前快照
+6. 与 `IncrementalBackupManager` 兼容：增量仅导出变更块
+
+**受影响的文件**:
+- `src/storage/storage-provider.ts`（流式快照方法）
+- 新建 `src/ops/snapshot-stream.ts`
+
+**依赖项**: 无（复用 `msgpackr`、`fs`、`crypto`）
+
+### §16.4 查询优化器 CBO — StatsCollector + Join ordering（P1 · GAP-54）
+
+**问题**: 无成本估算、Join ordering、谓词选择性。
+
+**方案**: `StatsCollector.estimateSelectivity()` 接入 QueryPlanner。
+
+**设计决策**:
+1. `StatsCollector` 增加 `estimateSelectivity(predicate)` 方法，基于直方图 + 采样
+2. 直方图：为每个属性维护等高直方图（等宽近似），写入时增量更新
+3. `QueryPlanner.optimize(plan)` 遍历 join tree，按成本排序
+4. 成本函数：`cost = scanRows + filterSelectivity * scanRows + joinSelectivity * scanRows * joinRows`
+5. 支持 range/equality/IN/NOT 谓词选择性估算
+6. 兜底：无统计信息时退化为左深树，与当前行为一致
+
+**受影响的文件**:
+- `src/query/query-planner.ts`（optimize 方法）
+- `src/query/stats-collector.ts`（estimateSelectivity / histogram 维护）
+- 新建 `src/query/histogram.ts`
+
+**依赖项**: 无
+
+### §16.5 算法流式模式 — BFS/DFS/PageRank 分块迭代（P1 · GAP-55）
+
+**问题**: BFS/DFS/PageRank 全内存，大图 OOM。
+
+**方案**: `BatchProcessor` 分块加载 + 迭代收敛。
+
+**设计决策**:
+1. 基于现有 `BatchProcessor` 模式：一次处理一批节点（默认 10_000 个）
+2. 分块加载：每次从 LMDB 加载一个 batch 的邻接边
+3. BFS：迭代批处理，每轮处理当前层节点，生成下一层
+4. PageRank：迭代批处理，每轮更新 PageRank 值，检查收敛
+5. 每个 batch 完成后释放结果集，控制峰值内存
+6. 与现有算法接口完全兼容（`src/algorithms/` 目录）
+
+**受影响的文件**:
+- `src/algorithms/bfs.ts`（流式模式）
+- `src/algorithms/dfs.ts`（流式模式）
+- `src/algorithms/pagerank.ts`（流式模式）
+- 新建 `src/algorithms/stream-processor.ts`
+
+**依赖项**: 无（复用 `BatchProcessor`）
+
+### §16.6 SQL 桥接生产级完善 — SQL→Cypher 翻译器（P2 · GAP-56）
+
+**问题**: 现有 `alasql` 桥接存在解析边界情况（嵌套子查询、UNION、聚合嵌套）、不完善的 LIMIT/OFFSET 翻译、无错误消息等。
+
+**方案**: SQL→Cypher 翻译器生产级增强。
+
+**设计决策**:
+1. 完善 AST 翻译器：支持嵌套子查询、UNION、HAVING、CASE WHEN
+2. INSERT/UPDATE/DELETE → Cypher 翻译路径（通过 ProcedureRegistry）
+3. 错误消息友好：`parse`
+```sql
+SELECT * FROM Person WHERE age > (SELECT AVG(age) FROM Person)
+```
+等复杂 SQL 返回明确错误码 + 建议等效 Cypher
+4. `alasql` 版本锁定到 v4.17.x 避免 breaking change
+5. 可选 SQL 端点 `POST /api/v1/sql`（与现有 `/api/v1/cypher` 并行）
+
+**受影响的文件**:
+- `src/query/sql-bridge.ts`（增强翻译器）
+- `src/api/rest.ts`（可选 SQL 端点）
+- 新建 `src/query/sql-error-formatter.ts`
+
+**依赖项**: `alasql`（已有，v4.17.x）
+
+### §16.7 复合索引唯一约束 + Geo-Spatial Index 增强（P2 · GAP-57）
+
+**问题**: 复合索引不支持唯一约束校验；Geo-Spatial Index（GAP-06 S2 集成）缺少空间范围查询。
+
+**方案**: 复合索引唯一约束 + S2 空间范围查询扩展。
+
+**设计决策**:
+1. 复合索引唯一约束：写入时检查复合键（label+prop1+prop2）唯一性，冲突拒绝写入
+2. S2 空间范围查询：`within(pointCellId, radiusMeters)` / `intersects(regionCellIds)`
+3. S2 空间 JOIN：基于 S2 cell 覆盖的空间连接
+4. 支持 WKT（Well-Known Text）格式输入：`POINT, POLYGON, LINESTRING`
+5. 与 `colIndex`（列式索引）组合使用：空间条件 + 属性过滤联合查询
+
+**受影响的文件**:
+- `src/storage/composite-index.ts`（唯一约束校验）
+- `src/search/geo-spatial.ts`（S2 范围查询扩展）
+- `src/query/query-engine.ts`（空间谓词注册）
+- 新建 `src/query/geo-predicate.ts`
+
+**依赖项**: `s2-geometry`（已有）
+
+### §16.8 LDBC 标准测试提升 + 生产级运维治理（P3 · GAP-58）
+
+**问题**: 现有 LDBC SNB 测试为 Phase 1 基础实现，缺少大规模测试（100K+）、性能基准、运维治理。
+
+**方案**: LDBC 标准测试提升 + 生产级运维治理。
+
+**设计决策**:
+1. LDBC SNB Phase 2：实现 IC-3/IC-4/IC-8/IC-9/IC-10/IC-11/IC-12/IC-13 完整交互查询，覆盖全部 14 个 IC 查询
+2. 大规模测试：small(1K) / medium(10K) / large(100K) / xlarge(1M)
+3. 性能基准：每个查询输出 p50/p90/p99 延迟、QPS、吞吐
+4. 运维治理文档：`docs/ops/ldbc-snb-guide.md`（运行指南 + 结果解读）
+5. 自动 CI 回归：GitHub Actions 中 LDBC 测试作为 nightly pipeline
+
+**受影响的文件**:
+- `test/ldbc/` 目录（扩展测试覆盖）
+- 新建 `test/ldbc/ic-queries.ts`
+- 新建 `docs/ops/ldbc-snb-guide.md`
+- 新建 `.github/workflows/ldbc-nightly.yml`
+
+**依赖项**: 无
+
+### V11 阶段汇总
+
+| Phase | 优先级 | 包含方向 | 方向数 | 总估值工时 | 状态 |
+|:-----:|:------:|----------|:-----:|:----------:|:----:|
+| 11A | **P0** | ACID 事务深度增强 / InstallSnapshot 自动化 / 流式快照 | 3 | 6~10d | ⬜ 计划中 |
+| 11B | **P1** | 查询优化器 CBO / 算法流式模式 | 2 | 5~8d | ⬜ 计划中 |
+| 11C | **P2** | SQL 桥接完善 / 复合索引+Geo-Spatial | 2 | 5~7d | ⬜ 计划中 |
+| 11D | **P3** | LDBC 标准测试 + 运维治理 | 1 | 4~6d | ⬜ 计划中 |
+| | **合计** | — | **8** | **20~31d** | ⬜ **计划中** (GAP-51~GAP-58)

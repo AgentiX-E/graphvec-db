@@ -808,3 +808,85 @@ V10-06 (SDK) ──依赖──→ V10-02 (OpenAPI 规范)
 | V1~V9 | GAP-01~GAP-42 | **42** | ✅ 全部关闭 |
 | V10 | GAP-43~GAP-50 | **8** | ✅ 全部关闭 |
 | | **总计（全部轮次）** | **50** | ✅ **50/50 全部已实现** |
+
+---
+
+## 14. V11 差距分析（⬜ 计划中）
+
+### 14.1 V11 调研结论汇总
+
+V11 方向聚焦于 **深度强化与基础设施升级**，涵盖 ACID 事务增强、快照自动化、查询优化器、流式算法、SQL 桥接、索引增强、标准测试，共 **8 个方向**（P0×3 + P1×2 + P2×2 + P3×1）：
+
+| # | 方向 | GAP | 优先级 | 估值工时 |
+|:-:|------|:---:|:------:|:--------:|
+| V11-01 | ACID 事务深度增强（SSI+版本链+死锁检测） | GAP-51 | P0 | 3~5d |
+| V11-02 | InstallSnapshot 自动化（log compaction+crash recovery） | GAP-52 | P0 | 2~3d |
+| V11-03 | StorageProvider 流式快照（分块导出+原子 rename） | GAP-53 | P0 | 1~2d |
+| V11-04 | 查询优化器 CBO（StatsCollector+Join ordering） | GAP-54 | P1 | 3~5d |
+| V11-05 | 算法流式模式（BFS/DFS/PageRank 分块迭代） | GAP-55 | P1 | 2~3d |
+| V11-06 | SQL 桥接生产级完善（SQL→Cypher 翻译器） | GAP-56 | P2 | 3~4d |
+| V11-07 | 复合索引唯一约束 + Geo-Spatial Index 增强 | GAP-57 | P2 | 2~3d |
+| V11-08 | LDBC 标准测试提升 + 生产级运维治理 | GAP-58 | P3 | 4~6d |
+
+### 14.2 各方向简介
+
+#### V11-01: ACID 事务深度增强（GAP-51, P0）
+**方案**: `Transaction.ts` 增加 Serializable Snapshot Isolation 模式：读集冲突检测 + 等待图死锁检测 + 版本链支持（`deadlock-detector.ts` 新增）。
+
+#### V11-02: InstallSnapshot 自动化（GAP-52, P0）
+**方案**: Raft 日志自动压缩（`_snapshotThreshold` >= 10K） + Follower crash 自动 InstallSnapshot 恢复。
+
+#### V11-03: StorageProvider 流式快照（GAP-53, P0）
+**方案**: 4MB 分块导出 + 临时文件 `rename` + SHA-256 校验和，大图不 OOM。
+
+#### V11-04: 查询优化器 CBO（GAP-54, P1）
+**方案**: `StatsCollector.estimateSelectivity()` + 等高直方图 + Join ordering 成本排序。
+
+#### V11-05: 算法流式模式（GAP-55, P1）
+**方案**: BFS/DFS/PageRank 基于 `BatchProcessor` 分块迭代加载，10K 节点/batch。
+
+#### V11-06: SQL 桥接生产级完善（GAP-56, P2）
+**方案**: `alasql` AST 翻译器增强 — 嵌套子查询/UNION/HAVING/INSERT/UPDATE/DELETE 翻译，友好错误消息。
+
+#### V11-07: 复合索引唯一约束 + Geo-Spatial Index 增强（GAP-57, P2）
+**方案**: 复合索引写入唯一性校验 + S2 空间范围查询（`within()`/`intersects()`）+ WKT 格式输入。
+
+#### V11-08: LDBC 标准测试提升 + 生产级运维治理（GAP-58, P3）
+**方案**: LDBC SNB 全部 14 个 IC 查询 + 多规模（1K~1M） + 性能基准报告 + CI nightly。
+
+### 14.3 执行路线
+
+```
+Phase 11A (P0): ACID 事务增强 (GAP-51)
+                  ↓
+Phase 11B (P0): InstallSnapshot 自动化 (GAP-52) + 流式快照 (GAP-53)
+                  ↓
+Phase 11C (P1): 查询优化器 CBO (GAP-54) → 算法流式模式 (GAP-55)
+                  ↓
+Phase 11D (P2): SQL 桥接 (GAP-56) + 索引增强 (GAP-57)
+Phase 11E (P3): LDBC 测试 + 运维治理 (GAP-58) ← 独立并行
+```
+
+### 14.4 关键决策
+
+1. **SSI 事务**: 非侵入式 — 仅在 SimpleTxnManager 层扩展，不修改 GraphEngine 写入路径
+2. **自动快照**: 存储作为 WAL segment 文件，LMDB 中存快照元数据
+3. **流式快照**: 失败时部分块不 rename，不影响之前快照
+4. **CBO**: 无统计信息时退化为左深树，与当前行为一致
+5. **SQL 桥接**: `alasql` 版本锁 v4.17.x，可选 SQL 端点与现有 Cypher 端点并行
+
+### 14.5 依赖关系
+
+```
+V11-02 (InstallSnapshot) ──依赖──→ V11-03 (流式快照)
+V11-06 (SQL 桥接)         ──依赖──→ 无（独立翻译器）
+其余 5 个方向无外部依赖
+```
+
+### 14.6 总体闭包统计
+
+| 迭代 | GAP 范围 | 数量 | 状态 |
+|:----:|----------|:----:|:----:|
+| V1~V10 | GAP-01~GAP-50 | **50** | ✅ 全部关闭 |
+| V11 | GAP-51~GAP-58 | **8** | ⬜ 计划中 |
+| | **总计（全部轮次）** | **58** | **50/58 已实现 · 8 项计划中** |
