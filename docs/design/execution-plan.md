@@ -517,3 +517,39 @@ Phase 6: 运维文档 (1d) ← 最后
 ### 未来计划 / 待定项
 - P2 改进中的远期构想（复合索引唯一约束、Geo-Spatial Index 增强等）已转为 F31+ 功能课题
 - 下一阶段关注：性能基准持续优化、LDBC 标准测试通过率提升、生产级运维治理完善
+
+---
+
+### Phase 3: P0 修复 — 待开始
+
+**目标**: 对标行业标杆（Neo4j/Dgraph）补全最紧迫的 ACID 与存储缺陷，修复直接影响数据库可靠性承诺的 P0 级差距。
+
+| 任务 | GAP 引用 | 依赖包 | 预估工时 |
+|------|----------|--------|:--------:|
+| GAP-01: `StorageProvider` 多后端抽象 + `classic-level` + `better-sqlite3` 后端 | GAP-01 | `classic-level`, `better-sqlite3` | 2-3 周 |
+| GAP-02: Serializable 隔离级别 + 死锁检测 (`deadlock` 等待图) | GAP-02 | `deadlock`, `async-mutex` | 3-4 周 |
+
+### Phase 4: P1 改进 — 待开始
+
+**目标**: 补全 P1 级差距，显著提升系统实用性、生态兼容性和运维体验。
+
+| 任务 | GAP 引用 | 依赖包 | 预估工时 |
+|------|----------|--------|:--------:|
+| GAP-03: APOC 过程注册系统（Peggy 扩展 + CALL 语法） | GAP-03 | 无（复用 Peggy） | 2-3 周 |
+| GAP-04: 热迁移 + `geoip-lite` 区域路由 | GAP-04 | `geoip-lite` | 3-4 周 |
+| GAP-06: S2 地理索引 + 中文分词 | GAP-06 | `s2-geometry`, `@node-rs/jieba` | 1-2 周 |
+| GAP-07: Web 管理 UI（Fastify + React + Chaos Engineering） | GAP-07 | `fastify`, `d3-dag`, `chaos-monkey` | 3-4 周 |
+| GAP-08: Node2Vec 嵌入 + 并行算法（ml-matrix） | GAP-08 | `ml-matrix`, `random-js` | 2-3 周 |
+
+### Phase 5: P2+P3 改进 — 待开始
+
+**目标**: 企业级差异化能力，为 AI Agent 场景提供端到端的图+向量+ML 基础设施。
+
+| 任务 | GAP 引用 | 依赖包 | 预估工时 |
+|------|----------|--------|:--------:|
+| GAP-05: LDAP 认证 + 子图权限 | GAP-05 | `ldapjs` | 1-2 周 |
+| GAP-09: Bolt 协议兼容 + LDBC SNB | GAP-09 | `neo4j-driver-lite`（参考） | 3-4 周 |
+| GAP-10: 多语言 SDK + 部署工具链 | GAP-10 | `openapi-generator-cli`, `commander` | 2-3 周 |
+| GAP-11: HNSW 向量索引 + ONNX 推理 | GAP-11 | `hnswlib-node`, `onnxruntime-node` | 3-4 周 |
+| GAP-12: 时序图 + 时间窗口 | GAP-12 | `rxjs` | 2-3 周 |
+| GAP-13: 嵌入可视化评估 | GAP-13 | `tsne-js`, `ml-pca` | 1 周 |

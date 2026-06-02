@@ -7,6 +7,7 @@ import {
 } from '../types'
 import { StorageProvider, StorageConfig, NeighborsOptions, NeighborEntry } from './storage-provider'
 import { OverGraphStorage } from './overgraph-storage'
+import { ClassicLevelStorageProvider } from './storage-classic-level'
 import { EncryptionAtRest, CipherConfig } from './cipher'
 
 import { LabelEngine } from './label-engine'
@@ -368,8 +369,16 @@ export class GraphEngine {
   /** 打开数据库 */
   open(): void {
     if (this._isOpen) return
-    this.storage.open({
+
+    // 如果未注入 StorageProvider，根据 backend 配置自动选择
+    if (this.config.backend === 'classic-level' && !(this.storage instanceof ClassicLevelStorageProvider)) {
+      // 只有在经典后端模式下才替换，且仅在外部未注入时
+      this.storage = new ClassicLevelStorageProvider()
+    }
+
+    const storageConfig: StorageConfig = {
       path: this.config.path,
+      backend: this.config.backend,
       denseVector: this.config.denseVector
         ? { dimension: this.config.denseVector.dimension }
         : undefined,
@@ -377,7 +386,8 @@ export class GraphEngine {
       overgraph: this.config.overgraph,
       compress: this.config.storageCompression,
       compressionStrategy: this.config.storageCompression ? 'msgpack' : 'none',
-    })
+    }
+    this.storage.open(storageConfig)
 
     // 恢复持久化内存索引
     if (this._persistIndexes) {

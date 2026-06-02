@@ -323,3 +323,54 @@
 - K8s 三探针、慢查询日志持久化
 - 导入事务、恢复可观测性 onProgress
 - 审计远程 Sink（Syslog/HTTP）、指标 OTel 统一上报
+
+---
+
+## 8. V5 差距分析（2026-06-02）
+
+> 基于 V5 深度对比报告（`temp/v4-deep-review-gaps.md`），与 Neo4j、Dgraph、ArangoDB、JanusGraph 四个行业标杆的 10 维度分析，识别 13 项差距。
+
+### 8.1 分析结论
+
+AgentiX GraphVec (v0.1.0, ~50K 行 TypeScript) 在**嵌入式图数据库**类别中已具备完整能力（Raft 共识、分片、22 种图算法、Cypher-lite 查询、安全体系），与竞品的核心差距集中在 P0-P3 三个级别。核心竞争力在于纯 TypeScript 嵌入式部署、零外部依赖、多活 CRDT + 向量搜索组合优势。
+
+### 8.2 13 项差距优先级与依赖包一览
+
+| GAP | 标题 | 优先级 | 关键依赖包 | 建议工时 |
+|-----|------|:------:|-----------|:--------:|
+| 01 | 多存储后端 | **P0** | `classic-level`, `better-sqlite3` | 2-3 周 |
+| 02 | Serializable 隔离 + 死锁检测 | **P0** | `deadlock`, `async-mutex` | 3-4 周 |
+| 03 | APOC 过程注册系统 | **P1** | 无（复用 Peggy） | 2-3 周 |
+| 04 | 热迁移 + 区域路由 | **P1** | `geoip-lite` | 3-4 周 |
+| 05 | LDAP 认证 + 子图权限 | **P2** | `ldapjs` | 1-2 周 |
+| 06 | S2 地理索引 + 中文分词 | **P1** | `s2-geometry`, `@node-rs/jieba` | 1-2 周 |
+| 07 | Web 管理 UI | **P1** | `fastify`, `d3-dag`, `chaos-monkey` | 3-4 周 |
+| 08 | Node2Vec + 并行算法 | **P1** | `ml-matrix`, `random-js` | 2-3 周 |
+| 09 | Bolt 协议 + LDBC SNB | **P2** | `neo4j-driver-lite`（参考） | 3-4 周 |
+| 10 | 多语言 SDK + 部署工具链 | **P2** | `openapi-generator-cli`, `commander` | 2-3 周 |
+| 11 | HNSW 向量索引 + ONNX 推理 | **P2** | `hnswlib-node`, `onnxruntime-node` | 3-4 周 |
+| 12 | 时序图 + 时间窗口 | **P2** | `rxjs` | 2-3 周 |
+| 13 | 图嵌入可视化评估 | **P3** | `tsne-js`, `ml-pca` | 1 周 |
+
+### 8.3 关键指标对比
+
+| 维度 | AgentiX (当前) | Neo4j | Dgraph | ArangoDB | JanusGraph |
+|------|:---:|:---:|:---:|:---:|:---:|
+| 图算法数量 | 22 | 50+ | 有限 | ~10 | Spark 生态 |
+| 查询语言 | Cypher-lite | Cypher 完整 | DQL | AQL | Gremlin |
+| 事务隔离 | MVCC 快照 | 完整 ACID | SSI | MVCC+OCI | 依赖后端 |
+| 存储引擎 | LMDB | 原生图存储 | Badger | RocksDB | 多后端适配 |
+| 分片能力 | 完整 | 因果集群 | 原生分片 | SmartGraph | 依赖后端 |
+| 安全 | RBAC/RLS/TLS | 企业级 | ACL | JWT/RBAC | 无内置 |
+| 图嵌入 | 无 | GDS 企业 | 无 | 无 | Spark 生态 |
+| 向量索引 | 无 | 企业 | 无 | 无 | 无 |
+| 可嵌入性 | ✅ 纯 JS | ❌ JVM | ❌ Go | ❌ C++ | ❌ JVM |
+| Cypher 兼容性 | 语法子集 | ✅ 原生 | ❌ 不适用 | ❌ 不适用 | ❌ Gremlin |
+
+### 8.4 实施路线
+
+| 阶段 | 范围 | 工作项 | 建议开始时间 |
+|------|------|--------|:-----------:|
+| Phase 3 | P0 修复 | GAP-01 多存储后端 + GAP-02 Serializable+死锁检测 | V4 闭包后立即启动 |
+| Phase 4 | P1 改进 | GAP-03~GAP-08（APOC/热迁移/S2 索引/Web UI/Node2Vec） | Phase 3 完成后 |
+| Phase 5 | P2+P3 | GAP-05/GAP-09~GAP-13（LDAP/Bolt/SDK/HNSW/时序/可视化） | Phase 4 完成后 |

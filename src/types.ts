@@ -203,6 +203,8 @@ export interface RangeConfig {
 
 export interface OverGraphConfig {
   path: string
+  /** 存储后端类型，默认 'lmdb'（通过 overgraph 实现） */
+  backend?: 'lmdb' | 'classic-level'
   denseVector?: { dimension: number }
   defaultRetention?: { nodes?: string; edges?: string }
   cacheSize?: number

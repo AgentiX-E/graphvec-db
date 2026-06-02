@@ -250,3 +250,35 @@
 | 恢复可观测性 onProgress | `src/ops/backup-helpers.ts` | ✅ |
 | 审计远程 Sink | `src/ops/audit-log.ts` | ✅ |
 | 指标 OTel 统一 | `src/ops/` | ✅ |
+
+---
+
+## V5 差距分析 — Phase 3~5 统计数据（计划中）
+
+> 基于 V5 深度对比（`temp/v4-deep-review-gaps.md`），以下为对标行业标杆识别的 13 项差距，**全部标记为"计划中"**。
+
+### V5 阶段总览
+
+| 阶段 | 优先级 | 覆盖 GAP | 功能项 | 总工时 | 状态 |
+|:----:|:------:|:--------:|:------:|:------:|:----:|
+| Phase 3 | **P0** | GAP-01, GAP-02 | 2 | 5-7 周 | ⬜ 待开始 |
+| Phase 4 | **P1** | GAP-03, GAP-04, GAP-06, GAP-07, GAP-08 | 5 | 11-15 周 | ⬜ 待开始 |
+| Phase 5 | **P2+P3** | GAP-05, GAP-09, GAP-10, GAP-11, GAP-12, GAP-13 | 6 | 12-17 周 | ⬜ 待开始 |
+
+### Gap 明细矩阵
+
+| GAP | 标题 | 优先级 | 复杂度 | 依赖包 | 预估工时 |
+|-----|------|:------:|:------:|--------|:--------:|
+| 01 | 多存储后端（classic-level / better-sqlite3） | **P0** | 高 | `classic-level`, `better-sqlite3` | 2-3 周 |
+| 02 | Serializable 隔离 + 死锁检测 | **P0** | 高 | `deadlock`, `async-mutex` | 3-4 周 |
+| 03 | APOC 过程注册系统 | **P1** | 中 | 无（复用 Peggy） | 2-3 周 |
+| 04 | 热迁移 + 区域路由 | **P1** | 高 | `geoip-lite` | 3-4 周 |
+| 05 | LDAP 认证 + 子图权限 | **P2** | 中 | `ldapjs` | 1-2 周 |
+| 06 | S2 地理索引 + 中文分词 | **P1** | 中 | `s2-geometry`, `@node-rs/jieba` | 1-2 周 |
+| 07 | Web 管理 UI（Fastify + React） | **P1** | 高 | `fastify`, `d3-dag`, `chaos-monkey` | 3-4 周 |
+| 08 | Node2Vec 嵌入 + 并行算法 | **P1** | 中 | `ml-matrix`, `random-js` | 2-3 周 |
+| 09 | Bolt 协议 + LDBC SNB | **P2** | 高 | `neo4j-driver-lite`（参考） | 3-4 周 |
+| 10 | 多语言 SDK + 部署工具链 | **P2** | 中 | `openapi-generator-cli`, `commander` | 2-3 周 |
+| 11 | HNSW 向量索引 + ONNX 推理 | **P2** | 高 | `hnswlib-node`, `onnxruntime-node` | 3-4 周 |
+| 12 | 时序图 + 时间窗口 | **P2** | 中 | `rxjs` | 2-3 周 |
+| 13 | 图嵌入可视化评估 | **P3** | 低 | `tsne-js`, `ml-pca` | 1 周 |

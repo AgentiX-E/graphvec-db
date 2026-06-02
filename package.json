@@ -68,6 +68,7 @@
     "archiver": "^8.0.0",
     "check-disk-space": "^3.4.0",
     "chokidar": "^5.0.0",
+    "classic-level": "^3.0.0",
     "consistent-hashing": "^0.3.0",
     "csv-parse": "^6.2.1",
     "dotenv": "^16.6.1",

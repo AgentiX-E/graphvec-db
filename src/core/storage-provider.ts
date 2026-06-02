@@ -19,6 +19,8 @@ import {
  */
 export interface StorageConfig {
   path: string
+  /** 存储后端类型，默认 'lmdb'（通过 overgraph 实现） */
+  backend?: 'lmdb' | 'classic-level'
   denseVector?: { dimension: number }
   defaultRetention?: { nodes?: string; edges?: string }
   /** OverGraph 存储优化参数 */
