@@ -14,7 +14,7 @@ import { Role, AuthError } from '../types'
 // Types
 // ──────────────────────────────────────────
 
-export type AclResourceType = 'database' | 'graph_node' | 'graph_edge' | 'query'
+export type AclResourceType = 'database' | 'graph_node' | 'graph_edge' | 'query' | 'subgraph'
 export type AclAction = 'create' | 'read' | 'update' | 'delete' | 'query' | 'admin'
 
 export interface AclEntry {
@@ -225,6 +225,65 @@ export class RBAC {
    */
   static clearAcls(): void {
     RBAC.aclStore.clear()
+  }
+
+  /**
+   * Check if a role has permission to perform an action on a subgraph.
+   * Subgraph ACLs use resource type 'subgraph' with resourceId as the subgraph name.
+   *
+   * Unlike checkAclPermission, this does NOT fall back to role-based defaults —
+   * subgraph access must be explicitly granted via ACLs.
+   *
+   * @param role User's role
+   * @param subgraph Subgraph name
+   * @param action Action to check (read, write, admin)
+   * @throws { AuthError } if not authorized (statusCode=403)
+   */
+  static checkSubgraphPermission(
+    role: Role | string,
+    subgraph: string,
+    action: string,
+  ): void {
+    if (role === Role.ADMIN) return
+
+    // Check if there are any subgraph ACLs defined
+    const allSubgraphAcls = RBAC.aclStore.getAcls().filter(e => e.resource === 'subgraph')
+    if (allSubgraphAcls.length === 0) {
+      throw new AuthError(
+        `Role '${role}' does not have '${action}' permission on subgraph '${subgraph}' — no subgraph ACLs defined`,
+        403,
+      )
+    }
+
+    // Check specific subgraph ACL
+    const matching = allSubgraphAcls.filter(e => e.resourceId === subgraph)
+    if (matching.length === 0) {
+      throw new AuthError(
+        `Role '${role}' does not have '${action}' permission on subgraph '${subgraph}' — no ACLs for this subgraph`,
+        403,
+      )
+    }
+
+    // Check role has the action in this subgraph's ACLs
+    for (const acl of matching) {
+      if (acl.role !== role && acl.role !== '*') continue
+      if (acl.actions.includes(action as AclAction) || acl.actions.includes('admin')) {
+        return
+      }
+    }
+
+    throw new AuthError(
+      `Role '${role}' does not have '${action}' permission on subgraph '${subgraph}'`,
+      403,
+    )
+  }
+
+  /**
+   * Get ACL entries for a specific subgraph (debug/audit).
+   * Returns all roles that have access to the given subgraph.
+   */
+  static getSubgraphAcls(subgraph: string): AclEntry[] {
+    return RBAC.aclStore.getAcls().filter(e => e.resource === 'subgraph' && e.resourceId === subgraph)
   }
 
   /**
