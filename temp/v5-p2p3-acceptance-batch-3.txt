@@ -1,0 +1,42 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+ [32m✓[39m security/ldap.spec.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 43[2mms[22m[39m
+[09:33:38.024] [32mINFO[39m (LdapAuthenticator/41289): [36mLdapAuthenticator initialized[39m
+[09:33:38.021] [32mINFO[39m (LdapAuthenticator/41289): [36mLdapAuthenticator initialized[39m
+[09:33:38.045] [32mINFO[39m (LdapAuthenticator/41289): [36mLdapAuthenticator initialized[39m
+[09:33:38.042] [32mINFO[39m (LdapAuthenticator/41289): [36mLdapAuthenticator initialized[39m
+[09:33:38.033] [32mINFO[39m (LdapAuthenticator/41289): [36mLdapAuthenticator initialized[39m
+[09:33:38.048] [32mINFO[39m (LdapAuthenticator/41289): [36mLdapAuthenticator initialized[39m
+ [32m✓[39m core/multi-backend.spec.ts [2m([22m[2m57 tests[22m[2m)[22m[33m 1210[2mms[22m[39m
+ [32m✓[39m core/txn-isolation.spec.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 598[2mms[22m[39m
+ [32m✓[39m query/procedure-registry.spec.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32m✓[39m reshard/hot-migrate.spec.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 247[2mms[22m[39m
+[09:33:39.429] [32mINFO[39m (HotMigrator/41289): [36mPreparing target range for hot migration[39m
+[09:33:39.449] [32mINFO[39m (HotMigrator/41289): [36mTarget range started[39m
+[09:33:39.452] [32mINFO[39m (HotMigrator/41289): [36mEnabling dual write[39m
+[09:33:39.453] [32mINFO[39m (HotMigrator/41289): [36mDual write verified and active[39m
+[09:33:39.457] [32mINFO[39m (HotMigrator/41289): [36mStarting snapshot sync for hot migration[39m
+[09:33:39.458] [32mINFO[39m (HotMigrator/41289): [36mSnapshot sync completed[39m
+[09:33:39.458] [32mINFO[39m (HotMigrator/41289): [36mVerifying dual-write catch-up...[39m
+[09:33:39.460] [32mINFO[39m (HotMigrator/41289): [36mCatch-up verification[39m
+[09:33:39.462] [32mINFO[39m (HotMigrator/41289): [36mPerforming atomic route switch[39m
+[09:33:39.469] [32mINFO[39m (HotMigrator/41289): [36mAtomic route switch completed — all traffic now goes to target[39m
+[09:33:39.469] [32mINFO[39m (HotMigrator/41289): [36mSource range cleaned up[39m
+[09:33:39.480] [32mINFO[39m (HotMigrator/41289): [36mPreparing target range for hot migration[39m
+[09:33:39.512] [32mINFO[39m (HotMigrator/41289): [36mTarget range started[39m
+[09:33:39.512] [32mINFO[39m (HotMigrator/41289): [36mEnabling dual write[39m
+[09:33:39.516] [31mERROR[39m (HotMigrator/41289):
+    [35mmsg[39m: {
+      "error": "Engine error",
+      "rangeId": "range-a"
+    }
+[09:33:39.442] [33mWARN[39m (RangeInstance[range-b]/41289): [36mNo ConsensusProvider provided — falling back to StandaloneConsensus. This is SAFE for single-node development but DANGEROUS for multi-node production. Provide a ConsensusProvider (raft-logic or simulated-raft) for multi-node deployments.[39m
+[09:33:39.492] [33mWARN[39m (RangeInstance[range-b]/41289): [36mNo ConsensusProvider provided — falling back to StandaloneConsensus. This is SAFE for single-node development but DANGEROUS for multi-node production. Provide a ConsensusProvider (raft-logic or simulated-raft) for multi-node deployments.[39m
+ [32m✓[39m core/s2-index.spec.ts [2m([22m[2m42 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[32m178 passed[39m[22m[90m (178)[39m
+[2m   Start at [22m 09:33:37
+[2m   Duration [22m 2.43s[2m (transform 1.05s, setup 0ms, import 2.26s, tests 2.16s, environment 1ms)[22m
+

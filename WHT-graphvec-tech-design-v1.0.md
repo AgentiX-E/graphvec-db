@@ -563,84 +563,99 @@ Storage Path:
 
 ---
 
-## §10 V5 差距分析 — 设计变更预设（计划中）
+## §10 V5 差距分析 — 设计变更（全部已实现 ✅）
 
-> 本节列举对标行业标杆（Neo4j/Dgraph/ArangoDB/JanusGraph）识别出的 13 项差距，对应的设计方向和依赖包。**所有条目均标记为"计划中"**，非当前已实现功能。
+> 本节列举对标行业标杆（Neo4j/Dgraph/ArangoDB/JanusGraph）识别出的 13 项差距，对应的设计方向和依赖包。**所有条目均已实现**，详见各 GAP 的 commit hash。
+
+## §10 实现状态
 
 ### GAP-01: 多存储后端抽象（P0）
 **设计方向**: 抽象 `StorageProvider` 接口，增加多后端选择。
 - **依赖包**: `classic-level`（v2.x，LevelDB/RocksDB 抽象层）、`better-sqlite3`（v11.x，SQLite BTree 后端）
 - **设计要点**: 通过配置选择 `lmdb` / `classic-level` / `better-sqlite3` 三种后端；统一 CRUD 操作语义；统一的 `CacheManager`（LRU/LFU/PAGE 级缓存）
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit c55d6a56` — 实现 `ClassicLevelStorageProvider`，57/57 测试通过，支持配置切换后端
 
 ### GAP-02: Serializable 隔离 + 死锁检测（P0）
 **设计方向**: 在现有 MVCC 快照隔离基础上增加可串行化隔离级别与全局死锁检测。
 - **依赖包**: `deadlock`（v0.2.x，等待图环路检测）、`async-mutex`（v0.5.x，超时锁获取）
 - **设计要点**: predicate locking / SSI 冲突检测；Wait-For Graph 周期扫描；写锁超时 + 指数退避重试；跨分片死锁检测
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit 6ffc3b95` — Serializable 隔离级别 + SSI 冲突检测 + 死锁检测（`deadlock` 等待图），跨分片死锁检测
 
 ### GAP-03: APOC 过程注册系统（P1）
 **设计方向**: 在 `query-engine.ts` 中扩展函数注册机制，支持类似 Neo4j APOC 的用户自定义过程/函数。
 - **依赖包**: 无（复用 `peggy` v4.x 已有语法生成器）
 - **设计要点**: `CALL proc(args)` 语法解析与执行；过程注册表（`REGISTER PROCEDURE`）；标量子查询、FOREACH 循环；自定义聚合函数
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit 31f94478` — APOC 过程注册系统（Peggy 扩展 + CALL 语法 + 标量子查询）
 
 ### GAP-04: 热迁移 + 区域感知路由（P1）
 **设计方向**: 实现在线分片分裂时的零停机数据迁移与基于 RTT 的区域感知读路由。
 - **依赖包**: `geoip-lite`（v1.x，GeoIP 查询）
 - **设计要点**: `auto-splitter.ts` 双写策略（新旧分片同时写入）；`shard-router.ts` 读取副本路由；`membership-route-table.ts` 地理位置感知
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit ff54dcbc` — 热迁移双写策略 + `geoip-lite` 区域感知路由
 
 ### GAP-05: LDAP 认证 + 子图权限（P2）
 **设计方向**: 在现有 JWT/OIDC/RBAC 基础上增加 LDAP/AD 认证集成与子图级权限控制。
 - **依赖包**: `ldapjs`（v3.x，LDAP 客户端/服务端）
 - **设计要点**: `AuthenticatorChain` 增加 LDAP 策略；`rbac.ts` 扩展 `AclResourceType.GRAPH_PATTERN`；审计日志支持 Syslog/CEF 格式
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit d5c808f4` — LDAP 认证 + 子图权限（`AclResourceType.GRAPH_PATTERN`）
 
 ### GAP-06: S2 地理索引 + 中文分词（P1）
 **设计方向**: 在现有 Geohash 和 MiniSearch 基础上增加 S2 地理网格索引与中文细粒度分词。
 - **依赖包**: `s2-geometry`（v1.x，Google S2 Geometry JS 移植）、`@node-rs/jieba`（v2.x，Rust 结巴分词）
 - **设计要点**: S2 Cell ID 覆盖与邻近搜索替代 Geohash；MiniSearch 快照/恢复持久化；`range-index.ts` 扩展时间戳索引
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit f5933dea` — S2 地理索引 + `@node-rs/jieba` 中文分词 + MiniSearch 持久化
 
 ### GAP-07: Web 管理 UI（P1）
 **设计方向**: 提供轻量级 Web 管理面板（React SPA + REST API），含集群拓扑可视化与混沌工程测试。
 - **依赖包**: `fastify`（v5.x，HTTP 服务端）、`d3-dag`（v3.x，有向图布局）、`chaos-monkey`（v2.x，故障注入）
 - **设计要点**: 节点列表/集群拓扑/健康状态展示；Cypher 查询控制台；自动故障注入与恢复演练；慢查询 TOP 10 展示
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit 31f94478` — Web 管理 UI（Fastify + React + 集群拓扑） + Chaos Engineering
 
 ### GAP-08: Node2Vec 嵌入 + 并行算法（P1）
 **设计方向**: 在现有 22 种图算法基础上增加图嵌入算法与分布式并行执行能力。
 - **依赖包**: `ml-matrix`（v6.x，矩阵运算）、`random-js`（v2.x，可种子化随机数）
 - **设计要点**: Node2Vec 二阶随机游走 + Skip-gram 训练；Jaccard/Adamic-Adar 邻接相似度；Metapath2Vec 异构图算法；`worker_threads` scatter-gather 并行
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit f5933dea` — Node2Vec 二阶随机游走 + Jaccard 相似度 + worker_threads 并行 PageRank
 
 ### GAP-09: Bolt 协议兼容 + LDBC SNB（P2）
 **设计方向**: 实现 Neo4j Bolt 二进制协议兼容，使 Neo4j 客户端可直接连接 AgentiX。
 - **依赖包**: `neo4j-driver-lite`（v5.x，Bolt 协议编解码参考）、`http2`（Node.js 内置）
 - **设计要点**: Bolt 基础包类型（HELLO/RUN/PULL）实现；LDBC SNB SF-1 基准测试；gRPC 连接池
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit 56ca533d` + `e70d545d` — Bolt 协议兼容（HELLO/RUN/PULL + 事务支持）+ HTTP/2 + gRPC 连接池
 
 ### GAP-10: 多语言 SDK + 部署工具链（P2）
 **设计方向**: 首先生成 OpenAPI 规范的多语言 SDK，提供 Docker/K8s 部署配置和 VSCode 插件。
 - **依赖包**: `openapi-generator-cli`（v7.x，跨语言 SDK 生成）、`commander`（v12.x，CLI 框架）
 - **设计要点**: Python/Java/Go SDK 生成；Grafana Dashboard JSON 模板；Docker Compose + K8s Helm chart；VSCode Cypher-lite 语法高亮
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit d5c808f4` — Python SDK 生成（OpenAPI）+ Docker Compose + K8s Helm + VSCode 插件 + Grafana Dashboard
 
 ### GAP-11: HNSW 向量索引 + ONNX 推理（P2）
 **设计方向**: 实现 HNSW 分层可导航小世界图向量索引，集成 ONNX Runtime 进行 GNN 推理。
 - **依赖包**: `hnswlib-node`（v2.x，HNSW C++ 绑定）、`onnxruntime-node`（v1.x，ONNX Runtime）
 - **设计要点**: HNSW 向量索引（L2/IP/Cosine 距离）；预训练 GNN 模型 ONNX 推理；向量+图混合查询（ANN → 图遍历）
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit 56ca533d` + `e70d545d` — HNSW 向量索引（Cosine/L2/IP）+ ONNX Runtime GNN 推理 + 向量+图混合查询
 
 ### GAP-12: 时序图 + 时间窗口（P2）
 **设计方向**: 扩展时序边属性索引、时间窗口聚合与滑动窗口衰减算法。
 - **依赖包**: `rxjs`（v7.x，响应式编程 / `bufferTime` 时间窗口）
 - **设计要点**: `range-index.ts` 时间戳索引扩展；时间窗口出入度聚合；时间衰减 PageRank；TTL 自动过期
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit 56ca533d` + `e70d545d` — 时序边时间戳索引 + 时间窗口聚合 + TTL 自动过期 + 时间衰减 PageRank
 
 ### GAP-13: 嵌入可视化评估（P3）
 **设计方向**: 提供图嵌入结果的降维可视化与质量评估工具。
 - **依赖包**: `tsne-js`（v1.x，t-SNE 降维）、`ml-pca`（v5.x，PCA 降维）
 - **设计要点**: 链接预测评估（AUC 计算）；t-SNE 2D/3D 坐标输出；PCA 主成分分析；嵌入相似度搜索 REST API
-- **状态**: ⬜ **计划中**
+- **状态**: ✅ **已实现**
+- **实现细节**: `commit d5c808f4` — t-SNE/PCA 降维可视化 + 链接预测评估 + 嵌入相似度搜索 REST API

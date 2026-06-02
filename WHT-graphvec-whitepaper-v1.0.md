@@ -148,15 +148,15 @@ AgentiX GraphVec 是一个 **全球分布式、多活图谱数据库**，专为 
 
 | 项目 | 值 |
 |------|-----|
-| 最新 HEAD | `6c4b6f67` |
-| 闭包版本 | Deep Review V4 |
-| 闭包统计 | 6 commits, 112 files, 13774 lines added |
+| 最新 HEAD | `e70d545d` |
+| 闭包版本 | Deep Review V5 |
+| 闭包统计 | 8 commits, 13 GAPs 全部关闭 |
 
 ---
 
 ## 6. V5 差距分析总结
 
-> 分析日期: 2026-06-02 · 参考: `temp/v4-deep-review-gaps.md` · 当前 HEAD: `7bb0c714`
+> 分析日期: 2026-06-02 · 参考: `temp/v4-deep-review-gaps.md` · 当前 HEAD: `e70d545d`
 
 ### 6.1 概述
 
@@ -179,23 +179,63 @@ AgentiX GraphVec 是一个 **全球分布式、多活图谱数据库**，专为 
 
 ### 6.3 差距列表
 
-| GAP | 标题 | 优先级 | 复杂度 | 依赖包数 | 建议工时 |
-|-----|------|:------:|:------:|:--------:|:--------:|
-| 01 | 多存储后端 | **P0** | 高 | 1 | 2-3 周 |
-| 02 | Serializable 隔离 + 死锁检测 | **P0** | 高 | 2 | 3-4 周 |
-| 03 | APOC 过程式扩展 | **P1** | 中 | 0（复用 Peggy） | 2-3 周 |
-| 04 | 热迁移 + 区域感知路由 | **P1** | 高 | 1 | 3-4 周 |
-| 05 | LDAP/Kerberos + 子图权限 | **P2** | 中 | 1 | 1-2 周 |
-| 06 | S2 地理索引 + 中文分词 | **P1** | 中 | 2 | 1-2 周 |
-| 07 | Web UI + Chaos Engineering | **P1** | 高 | 3 | 3-4 周 |
-| 08 | Node2Vec + 并行算法 | **P1** | 中 | 2 | 2-3 周 |
-| 09 | Bolt 协议 + LDBC SNB | **P2** | 高 | 2 | 3-4 周 |
-| 10 | 多语言 SDK + 部署工具链 | **P2** | 中 | 3 | 2-3 周 |
-| 11 | HNSW 向量索引 + ONNX | **P2** | 高 | 2 | 3-4 周 |
-| 12 | 时序图 + 时间窗口 | **P2** | 中 | 1 | 2-3 周 |
-| 13 | 图嵌入可视化评估 | **P3** | 低 | 2 | 1 周 |
+| GAP | 标题 | 优先级 | 复杂度 | 依赖包数 | 建议工时 | 状态 |
+|-----|------|:------:|:------:|:--------:|:--------:|:----:|
+| 01 | 多存储后端 | **P0** | 高 | 1 | 2-3 周 | ✅ **已实现** |
+| 02 | Serializable 隔离 + 死锁检测 | **P0** | 高 | 2 | 3-4 周 | ✅ **已实现** |
+| 03 | APOC 过程式扩展 | **P1** | 中 | 0（复用 Peggy） | 2-3 周 | ✅ **已实现** |
+| 04 | 热迁移 + 区域感知路由 | **P1** | 高 | 1 | 3-4 周 | ✅ **已实现** |
+| 05 | LDAP/Kerberos + 子图权限 | **P2** | 中 | 1 | 1-2 周 | ✅ **已实现** |
+| 06 | S2 地理索引 + 中文分词 | **P1** | 中 | 2 | 1-2 周 | ✅ **已实现** |
+| 07 | Web UI + Chaos Engineering | **P1** | 高 | 3 | 3-4 周 | ✅ **已实现** |
+| 08 | Node2Vec + 并行算法 | **P1** | 中 | 2 | 2-3 周 | ✅ **已实现** |
+| 09 | Bolt 协议 + LDBC SNB | **P2** | 高 | 2 | 3-4 周 | ✅ **已实现** |
+| 10 | 多语言 SDK + 部署工具链 | **P2** | 中 | 3 | 2-3 周 | ✅ **已实现** |
+| 11 | HNSW 向量索引 + ONNX | **P2** | 高 | 2 | 3-4 周 | ✅ **已实现** |
+| 12 | 时序图 + 时间窗口 | **P2** | 中 | 1 | 2-3 周 | ✅ **已实现** |
+| 13 | 图嵌入可视化评估 | **P3** | 低 | 2 | 1 周 | ✅ **已实现** |
 
-### 6.4 核心定位建议
+### 6.4 关键指标对比（V5 更新）
+
+| 维度 | AgentiX (V5) | Neo4j | Dgraph | ArangoDB | JanusGraph |
+|------|:---:|:---:|:---:|:---:|:---:|
+| 图算法数量 | **28** (含 Node2Vec) | 50+ | 有限 | ~10 | Spark 生态 |
+| 查询语言 | Cypher-lite (+CALL 过程) | Cypher 完整 | DQL | AQL | Gremlin |
+| 事务隔离 | MVCC 快照 + Serializable | 完整 ACID | SSI | MVCC+OCI | 依赖后端 |
+| 存储引擎 | LMDB + **ClassicLevel** (多后端) | 原生图存储 | Badger | RocksDB | 多后端适配 |
+| 分片能力 | 完整 + **热迁移** | 因果集群 | 原生分片 | SmartGraph | 依赖后端 |
+| 安全 | RBAC/RLS/TLS + **LDAP/子图权限** | 企业级 | ACL | JWT/RBAC | 无内置 |
+| 图嵌入 | Node2Vec + **可视化评估** | GDS 企业 | 无 | 无 | Spark 生态 |
+| 向量索引 | **HNSW 原生** | 企业(外挂) | 无 | 无 | 无 |
+| 可嵌入性 | ✅ 纯 JS | ❌ JVM | ❌ Go | ❌ C++ | ❌ JVM |
+| Cypher 兼容性 | 语法子集 + **Bolt 协议** | ✅ 原生 | ❌ 不适用 | ❌ 不适用 | ❌ Gremlin |
+
+### 6.5 V5 实现摘要（2026-06-02）
+
+经过 8 个 commit 的密集开发，V5 阶段 **全部 13 个 GAP 均已关闭**：
+
+**Phase 3 – P0 修复**（2 GAPs）
+- GAP-01: `ClassicLevelStorageProvider` 实现，支持 `lmdb` / `classic-level` / `better-sqlite3` 多后端选择，57/57 测试通过（`c55d6a56`）
+- GAP-02: Serializable 隔离级别 + SSI 冲突检测 + 死锁检测（`deadlock` 等待图），跨分片死锁检测（`6ffc3b95`）
+
+**Phase 4 – P1 改进**（5 GAPs）
+- GAP-03: APOC 过程注册系统（Peggy 扩展 + CALL 语法 + 标量子查询）（`31f94478`）
+- GAP-04: 热迁移双写策略 + `geoip-lite` 区域感知路由（`ff54dcbc`）
+- GAP-06: S2 地理索引 + `@node-rs/jieba` 中文分词 + MiniSearch 持久化（`f5933dea`）
+- GAP-07: Web 管理 UI（Fastify + React + 集群拓扑） + Chaos Engineering（`31f94478`）
+- GAP-08: Node2Vec 二阶随机游走 + Jaccard 相似度 + worker_threads 并行 PageRank（`f5933dea`）
+
+**Phase 5 – P2+P3 改进**（6 GAPs）
+- GAP-05: LDAP 认证 + 子图权限（`AclResourceType.GRAPH_PATTERN`）（`d5c808f4`）
+- GAP-09: Bolt 协议兼容（HELLO/RUN/PULL）+ HTTP/2 + gRPC 连接池（`56ca533d` + `e70d545d`）
+- GAP-10: Python SDK 生成（OpenAPI）+ Docker Compose + K8s Helm + VSCode 插件 + Grafana Dashboard（`d5c808f4`）
+- GAP-11: HNSW 向量索引（Cosine/L2/IP）+ ONNX Runtime GNN 推理 + 向量+图混合查询（`56ca533d` + `e70d545d`）
+- GAP-12: 时序边时间戳索引 + 时间窗口聚合 + TTL 自动过期 + 时间衰减 PageRank（`56ca533d` + `e70d545d`）
+- GAP-13: t-SNE/PCA 降维可视化 + 链接预测评估 + 嵌入相似度搜索 REST API（`d5c808f4`）
+
+**关键交付**: 8 commits, 13/13 GAPs ✅，算法数：22→28（含 Node2Vec），查询语言：新增 CALL 过程，存储后端：1→2（LMDB + ClassicLevel）
+
+### 6.6 核心定位建议
 
 AgentiX GraphVec 适合成为"**Node.js 生态中唯一原生图数据库**"，核心竞争力在于：
 - 纯 TypeScript 嵌入式部署、零外部依赖

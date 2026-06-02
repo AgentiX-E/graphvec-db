@@ -367,10 +367,12 @@ AgentiX GraphVec (v0.1.0, ~50K 行 TypeScript) 在**嵌入式图数据库**类�
 | 可嵌入性 | ✅ 纯 JS | ❌ JVM | ❌ Go | ❌ C++ | ❌ JVM |
 | Cypher 兼容性 | 语法子集 | ✅ 原生 | ❌ 不适用 | ❌ 不适用 | ❌ Gremlin |
 
-### 8.4 实施路线
+### 8.4 实施路线（已全部实施 ✅）
 
-| 阶段 | 范围 | 工作项 | 建议开始时间 |
-|------|------|--------|:-----------:|
-| Phase 3 | P0 修复 | GAP-01 多存储后端 + GAP-02 Serializable+死锁检测 | V4 闭包后立即启动 |
-| Phase 4 | P1 改进 | GAP-03~GAP-08（APOC/热迁移/S2 索引/Web UI/Node2Vec） | Phase 3 完成后 |
-| Phase 5 | P2+P3 | GAP-05/GAP-09~GAP-13（LDAP/Bolt/SDK/HNSW/时序/可视化） | Phase 4 完成后 |
+| 阶段 | 范围 | 工作项 | 建议开始时间 | 完成状态 |
+|------|------|--------|:-----------:|:--------:|
+| Phase 3 | P0 修复 | GAP-01 多存储后端 + GAP-02 Serializable+死锁检测 | V4 闭包后立即启动 | ✅ **已实施**（`c55d6a56`, `6ffc3b95`） |
+| Phase 4 | P1 改进 | GAP-03~GAP-08（APOC/热迁移/S2 索引/Web UI/Node2Vec） | Phase 3 完成后 | ✅ **已实施**（`31f94478`, `ff54dcbc`, `f5933dea`） |
+| Phase 5 | P2+P3 | GAP-05/GAP-09~GAP-13（LDAP/Bolt/SDK/HNSW/时序/可视化） | Phase 4 完成后 | ✅ **已实施**（`d5c808f4`, `56ca533d`, `e70d545d`） |
+
+**GAP 关闭统计**: 13/13 GAPs ✅ 全部关闭，8 commits，HEAD: `e70d545d`
