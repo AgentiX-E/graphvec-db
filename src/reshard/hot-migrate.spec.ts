@@ -162,9 +162,15 @@ describe('HotMigrator', () => {
         overgraphConfig: { path: `${TEST_DIR}/range-b/graph` },
       }
 
-      // Add mock target range before migration starts
-      const mockSource = (shardManager as any).ranges.get('range-a')
-      ;(shardManager as any).addRange('range-b', createMockRange('range-b', { nodeCount: 0, edgeCount: 0 }))
+      // Use a migrator that has its addRange mocked so it doesn't create real RangeInstances
+      // We manually pre-add both ranges
+      const sourceMock = createMockRange('range-a', { nodeCount: 100, edgeCount: 50 })
+      const targetMock = createMockRange('range-b', { nodeCount: 100, edgeCount: 50 })
+      ;(shardManager as any).ranges.set('range-a', sourceMock)
+      ;(shardManager as any).ranges.set('range-b', targetMock)
+
+      // Make addRange just record the call, don't actually create
+      ;(shardManager as any).addRange = vi.fn()
 
       const progress = await migrator.migrate(split, targetConfig)
 
@@ -210,7 +216,7 @@ describe('HotMigrator', () => {
       expect((shardManager as any).removeRange).toHaveBeenCalledWith('range-b')
     })
 
-    it('should throw if trying to rollback after atomic switch', () => {
+    it('should throw if trying to rollback after atomic switch', async () => {
       const progress: HotMigrateProgress = {
         rangeId: 'range-a',
         targetRangeId: 'range-b',
@@ -224,7 +230,7 @@ describe('HotMigrator', () => {
       // Directly set the internal state
       ;(migrator as any)._progress.set('range-a', progress)
 
-      expect(migrator.rollback(split)).rejects.toThrow('Cannot rollback after atomic switch')
+      await expect(migrator.rollback(split)).rejects.toThrow('Cannot rollback after atomic switch')
     })
   })
 

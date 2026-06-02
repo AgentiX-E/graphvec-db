@@ -43,7 +43,7 @@ export interface SearchResult {
 export interface FullTextOptions {
   defaultFieldWeight?: number
   fieldWeights?: Record<string, number>
-  analyzer?: 'simple' | 'standard' | 'cjk'
+  analyzer?: 'simple' | 'standard' | 'cjk' | 'jieba'
   baseDir?: string
   snapshotThreshold?: number  // 触发快照的文档数阈值，默认 10000
 }
@@ -70,13 +70,39 @@ export const Analyzers: Record<string, AnalyzerFn> = {
     return text.toLowerCase().split(/[\s,.;:!?"'()]+/).filter(Boolean)
   },
 
-  /** cjk: 中英文混合分词 */
+  /** cjk: 中英文混合分词（基于字符二元组） */
   cjk: (text: string): string[] => {
     const tokens: string[] = []
     const segments = text.split(/([\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+)/).filter(Boolean)
     for (const seg of segments) {
       if (/^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+$/.test(seg)) {
         _cjkBigrams(seg, tokens)
+      } else {
+        tokens.push(...seg.toLowerCase().split(/[^a-zA-Z0-9]+/).filter(Boolean))
+      }
+    }
+    return tokens
+  },
+
+  /** jieba: 基于 @node-rs/jieba 的中文分词（需 optional dependency） */
+  jieba: (text: string): string[] => {
+    const tokens: string[] = []
+    // 分割中英文：中文部分用 jieba 分词，英文部分常规处理
+    const segments = text.split(/([\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+)/).filter(Boolean)
+    for (const seg of segments) {
+      if (/^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+$/.test(seg)) {
+        // 使用 jieba 分词
+        try {
+          // Dynamic require to avoid hard dependency
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { Jieba } = require('@node-rs/jieba') as { Jieba: new () => { cut: (text: string, hmm: boolean) => string[] } }
+          const instance = new Jieba()
+          const words = instance.cut(seg, true) // HMM 模式
+          tokens.push(...words)
+        } catch {
+          // Fallback: jieba not available, use bigram
+          _cjkBigrams(seg, tokens)
+        }
       } else {
         tokens.push(...seg.toLowerCase().split(/[^a-zA-Z0-9]+/).filter(Boolean))
       }
@@ -294,6 +320,27 @@ export class FullTextIndex {
       tokenizeFn = (text: string) => text.toLowerCase().split(/[^a-zA-Z0-9]+/).filter(Boolean)
     } else if (analyzerOpt === 'standard') {
       tokenizeFn = (text: string) => text.toLowerCase().split(/[\s,.;:!?"'()]+/).filter(Boolean)
+    } else if (analyzerOpt === 'jieba') {
+      tokenizeFn = (text: string) => {
+        const tokens: string[] = []
+        const segments = text.split(/([\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+)/).filter(Boolean)
+        for (const seg of segments) {
+          if (/^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]+$/.test(seg)) {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-var-requires
+              const { Jieba } = require('@node-rs/jieba') as { Jieba: new () => { cut: (text: string, hmm: boolean) => string[] } }
+              const instance = new Jieba()
+              const words = instance.cut(seg, true)
+              tokens.push(...words)
+            } catch {
+              _cjkBigrams(seg, tokens)
+            }
+          } else {
+            tokens.push(...seg.toLowerCase().split(/[^a-zA-Z0-9]+/).filter(Boolean))
+          }
+        }
+        return tokens
+      }
     } else {
       // cjk default
       tokenizeFn = (text: string) => FullTextIndex._cjkTokenize(text)

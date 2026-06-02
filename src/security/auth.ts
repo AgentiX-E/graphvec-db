@@ -274,6 +274,40 @@ export class RBAC {
     }
   }
 
+  /**
+   * 检查用户对子图的权限
+   * 子图级权限是 ACL 的扩展，允许按子图粒度控制读写访问。
+   *
+   * @param role 用户角色
+   * @param subgraph 子图名称
+   * @param action 操作（read | write | admin）
+   * @throws AuthError 如果无权限
+   */
+  static checkSubgraphPermission(
+    role: Role,
+    subgraph: string,
+    action: string,
+  ): void {
+    if (role === Role.ADMIN) return
+
+    // 通过 ACL 系统的子图资源类型检查
+    return RBAC.checkAclPermission(role, action, `subgraph:${subgraph}`)
+  }
+
+  /**
+   * 获取指定子图的 ACL（调试/审计用）
+   * 返回能够访问该子图的角色列表
+   */
+  static getSubgraphAcls(subgraph: string): Array<{ role: string; actions: string[] }> {
+    const allAcls = RBAC.getAcls()
+    return allAcls
+      .filter(e => e.resource === `subgraph:${subgraph}`)
+      .map(e => ({
+        role: e.role,
+        actions: e.actions as string[],
+      }))
+  }
+
   /** 获取角色的所有权限 */
   static getPermissions(role: Role): string[] {
     if (role === Role.ADMIN) return ['* (all)']
@@ -870,202 +904,18 @@ export class ApiKeyManager {
 // OAuth2 / OIDC — 远程 JWKS Token 验证 + AuthenticatorChain
 // ──────────────────────────────────────────
 
-/**
- * OIDC 配置
- */
-export interface OIDCConfig {
-  /** OIDC Issuer URL (e.g. https://accounts.google.com) */
-  issuer: string
-  /** Client ID */
-  clientId: string
-  /** 可选 — Client Secret for confidential clients */
-  clientSecret?: string
-  /** JWKS endpoint (如不提供，自动从 .well-known/openid-configuration 发现) */
-  jwksUri?: string
-  /** 受众验证（aud claim），默认使用 clientId */
-  audience?: string
-  /** 允许的签发人列表（可选） */
-  allowedIssuers?: string[]
-}
-
-/**
- * OIDC Token 验证器
- *
- * 使用 JWKS (JSON Web Key Set) 验证远程签发的 JWT bearer token。
- * 支持自动发现 OIDC provider 的配置。
- */
-export class OIDCValidator {
-  private config: OIDCConfig
-  private getKeyFn: ((header: any) => Promise<any>) | null = null
-  private initialized = false
-  private initPromise: Promise<void> | null = null
-
-  constructor(config: OIDCConfig) {
-    this.config = config
-  }
-
-  /**
-   * 初始化 JWKS key 获取函数
-   * 惰性初始化，仅在首次验证时执行
-   */
-  async ensureInitialized(): Promise<void> {
-    if (this.initialized) return
-    if (this.initPromise) return this.initPromise
-
-    this.initPromise = this._init()
-    await this.initPromise
-  }
-
-  private async _init(): Promise<void> {
-    try {
-      const jwksClient = require('jwks-rsa')
-      let jwksUri = this.config.jwksUri
-
-      if (!jwksUri) {
-        // 自动发现
-        const openidClient = require('openid-client')
-        const issuerUrl = new URL(this.config.issuer)
-        const discoveryUrl = `${issuerUrl.protocol}//${issuerUrl.host}/.well-known/openid-configuration`
-
-        try {
-          const response = await fetch(discoveryUrl)
-          const discovery = await response.json() as any
-          jwksUri = discovery.jwks_uri
-          if (!jwksUri) throw new Error('No jwks_uri in OIDC discovery')
-        } catch {
-          // fallback: construct common jwks uri
-          jwksUri = `${issuerUrl.protocol}//${issuerUrl.host}${issuerUrl.pathname}/.well-known/jwks.json`
-        }
-      }
-
-      const client = jwksClient({
-        jwksUri,
-        requestHeaders: {}, // override default headers
-        timeout: 10000,
-      })
-
-      this.getKeyFn = (header: any) => {
-        return new Promise<any>((resolve, reject) => {
-          client.getSigningKey(header.kid, (err: Error | null, key: any) => {
-            if (err) return reject(err)
-            resolve(key.getPublicKey())
-          })
-        })
-      }
-
-      this.initialized = true
-    } catch (err) {
-      this.initialized = true // Mark as initialized so we don't retry failed init
-      throw new Error(`OIDC initialization failed: ${(err as Error).message}`)
-    }
-  }
-
-  /**
-   * 验证 OIDC JWT token
-   *
-   * @returns 解码后的 payload（已验证签名、过期时间、签发人、受众）
-   * @throws AuthError 如果 token 无效
-   */
-  async validateToken(token: string): Promise<{ sub: string; email?: string; role?: string; payload: Record<string, unknown> }> {
-    await this.ensureInitialized()
-
-    if (!this.getKeyFn) {
-      throw new AuthError('OIDC not initialized', 401)
-    }
-
-    try {
-      const jwt = require('jsonwebtoken')
-      const header = this._decodeHeader(token)
-
-      const publicKey = await this.getKeyFn(header)
-      const payload = jwt.verify(token, publicKey, {
-        algorithms: ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512'],
-        audience: this.config.audience ?? this.config.clientId,
-        issuer: this.config.allowedIssuers ?? [this.config.issuer],
-      }) as Record<string, unknown>
-
-      return {
-        sub: String(payload.sub ?? ''),
-        email: payload.email as string | undefined,
-        role: payload.role as string | undefined,
-        payload,
-      }
-    } catch (err: unknown) {
-      if (err instanceof AuthError) throw err
-      if (err instanceof Error && (err.name === 'TokenExpiredError' || (err as any).name === 'JsonWebTokenError')) {
-        throw new AuthError(`OIDC token validation failed: ${err.message}`, 401)
-      }
-      throw new AuthError(`OIDC token validation failed: ${(err as Error).message}`, 401)
-    }
-  }
-
-  /**
-   * decode JWT header without verification (extract kid)
-   */
-  private _decodeHeader(token: string): any {
-    const parts = token.split('.')
-    if (parts.length !== 3) {
-      throw new AuthError('Invalid JWT format', 401)
-    }
-    return JSON.parse(Buffer.from(parts[0], 'base64').toString('utf-8'))
-  }
-}
-
-/**
- * AuthenticatorChain — 多级认证链
- *
- * 按顺序尝试每个 authenticator，任一成功即返回对应身份。
- * 适合需要同时支持 mTLS、JWT、API Key、OIDC 等认证方式的场景。
- */
-export class AuthenticatorChain {
-  private authenticators: Array<{
-    name: string
-    authenticate: (req: http.IncomingMessage) => Promise<AuthResult | null>
-  }> = []
-
-  /**
-   * 注册一个 authenticator 到链尾
-   */
-  use(name: string, authenticate: (req: http.IncomingMessage) => Promise<AuthResult | null>): this {
-    this.authenticators.push({ name, authenticate })
-    return this
-  }
-
-  /**
-   * 按顺序尝试所有 authenticator，返回第一个成功的
-   */
-  async authenticate(req: http.IncomingMessage): Promise<AuthResult> {
-    const authHeader = req.headers['authorization'] as string | undefined
-    const lastErrors: string[] = []
-
-    for (const auth of this.authenticators) {
-      try {
-        const result = await auth.authenticate(req)
-        if (result) return result
-      } catch (err) {
-        lastErrors.push(`${auth.name}: ${(err as Error).message}`)
-      }
-    }
-
-    if (lastErrors.length > 0) {
-      throw new AuthError(`All authenticators failed: ${lastErrors.join('; ')}`, 401)
-    }
-    throw new AuthError('Authentication required', 401)
-  }
-}
-
 /** @deprecated */
-export async function authenticateBasic(): Promise<string> {
-  throw new Error('Basic Auth is deprecated. Use mTLS only.')
-}
-
-/** @deprecated */
-export async function authenticateToken(): Promise<{ user: string; role: string } | null> {
+export function requireAuth(): void {
   throw new Error('Token-based auth is deprecated. Use mTLS only.')
 }
 
 /** @deprecated */
-export function requireAuth(): void {
+export async function authenticateBasic(): Promise<never> {
+  throw new Error('Token-based auth is deprecated. Use mTLS only.')
+}
+
+/** @deprecated */
+export async function authenticateToken(): Promise<never> {
   throw new Error('Token-based auth is deprecated. Use mTLS only.')
 }
 

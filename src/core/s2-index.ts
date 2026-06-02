@@ -27,12 +27,6 @@ export interface S2IndexItem {
 export interface S2IndexOptions {
   /** S2 cell level (0-30). Higher = finer granularity. Default: 15 */
   defaultLevel?: number
-  /** Max cells for region covering. Default: 30 */
-  maxCoverCells?: number
-  /** Min level for region covering. Default: 10 */
-  minCoverLevel?: number
-  /** Max level for region covering. Default: 20 */
-  maxCoverLevel?: number
 }
 
 /**
@@ -50,15 +44,9 @@ export class S2Index {
   private _cellIndex: Map<string, Set<number>> = new Map()
 
   private _defaultLevel: number
-  private _maxCoverCells: number
-  private _minCoverLevel: number
-  private _maxCoverLevel: number
 
   constructor(options?: S2IndexOptions) {
     this._defaultLevel = options?.defaultLevel ?? 15
-    this._maxCoverCells = options?.maxCoverCells ?? 30
-    this._minCoverLevel = options?.minCoverLevel ?? 10
-    this._maxCoverLevel = options?.maxCoverLevel ?? 20
   }
 
   /**
@@ -133,7 +121,6 @@ export class S2Index {
 
   /**
    * Get the S2 cell key for a lat/lng at the given level.
-   * Uses the s2-geometry library.
    */
   cellIdAt(lat: number, lng: number, level?: number): string {
     return latLngToKey(lat, lng, level ?? this._defaultLevel)
@@ -141,25 +128,11 @@ export class S2Index {
 
   /**
    * Get the parent cell key for a given cell.
-   * Returns the cell key at parent level (one level up).
    */
   parentCell(cellId: string): string {
-    return parentKey(cellId)
-  }
-
-  /**
-   * Get the four neighboring cells for a given cell.
-   */
-  neighborCells(cellId: string): string[] {
-    try {
-      const s2Cell = require('s2-geometry').S2.S2Cell
-      return s2Cell.latLngToNeighborKeys(
-        ...keyToLatLng(cellId),
-        0,  // dummy — the function uses lat/lng and level
-      )
-    } catch {
-      return []
-    }
+    const parts = cellId.split('/')
+    if (parts.length < 2 || parts[1].length <= 1) return parts[0]
+    return `${parts[0]}/${parts[1].slice(0, -1)}`
   }
 
   /**
@@ -169,44 +142,46 @@ export class S2Index {
   queryRadius(lat: number, lng: number, radiusKm: number): number[] {
     if (radiusKm <= 0) return []
 
-    // Determine appropriate level from radius (coarser for larger radius)
-    const level = this._radiusToLevel(radiusKm)
+    // Compute all cells to search: start with the center's cell, expand to neighbors
+    const searchLevel = this._radiusToLevel(radiusKm)
+    const centerCell = latLngToKey(lat, lng, searchLevel)
 
-    // Compute bounding box for the radius
-    const { latKm, lngKm } = kmPerDegree(lat)
-    const dLat = radiusKm / latKm
-    const dLng = radiusKm / lngKm
+    // Collect candidate node IDs from target cells (center + parent + sibling cells)
+    const candidateIds = new Set<number>()
 
-    const minLat = lat - dLat
-    const maxLat = lat + dLat
-    const minLng = lng - dLng
-    const maxLng = lng + dLng
+    // 1. Search the center cell and its parent
+    this._collectMatching(centerCell, candidateIds)
 
-    // Get covering S2 cells for the bounding box
-    const coveringCells = this._coverRect(minLat, minLng, maxLat, maxLng, level)
-
-    // Collect candidates from covering cells (and their sub-cells)
-    const seen = new Set<number>()
-    const candidates: Array<{ nodeId: number; lat: number; lng: number }> = []
-
-    for (const cellId of coveringCells) {
-      this._collectNodesInCell(cellId, seen, candidates)
+    // 2. Search neighboring cells
+    const neighborKeys = neighborKeysForCell(centerCell, searchLevel)
+    for (const nk of neighborKeys) {
+      this._collectMatching(nk, candidateIds)
     }
 
-    // If few covering cells, also search neighboring cells
-    if (coveringCells.length <= 4) {
-      for (const cellId of coveringCells) {
-        this._collectNeighborNodes(cellId, seen, candidates)
+    // 3. If radius is large, also search the parent cell (one level up)
+    if (radiusKm > 1) {
+      const parentCell = this.parentCell(centerCell)
+      this._collectMatching(parentCell, candidateIds)
+
+      // Also neighbors of parent
+      const parentNeighbors = neighborKeysForCell(parentCell, searchLevel - 1)
+      for (const nk of parentNeighbors) {
+        this._collectMatching(nk, candidateIds)
       }
     }
 
-    // Post-filter with Haversine for accurate radius
-    return candidates
-      .filter(item => {
-        const dist = haversineKm(lat, lng, item.lat, item.lng)
-        return dist <= radiusKm
-      })
-      .map(item => item.nodeId)
+    // Post-filter with Haversine for accuracy
+    const results: number[] = []
+    for (const nodeId of candidateIds) {
+      const item = this._items.get(nodeId)
+      if (!item) continue
+      const dist = haversineKm(lat, lng, item.lat, item.lng)
+      if (dist <= radiusKm) {
+        results.push(nodeId)
+      }
+    }
+
+    return results
   }
 
   /**
@@ -218,34 +193,39 @@ export class S2Index {
   ): number[] {
     const [minLat, minLng] = southWest
     const [maxLat, maxLng] = northEast
+    const centerLat = (minLat + maxLat) / 2
+    const centerLng = (minLng + maxLng) / 2
 
-    const coveringCells = this._coverRect(minLat, minLng, maxLat, maxLng)
+    // Approximate radius covering the bbox
+    const diagKm = haversineKm(minLat, minLng, maxLat, maxLng)
+    const radiusKm = diagKm / 2 + 0.1 // add buffer
 
-    const seen = new Set<number>()
-    const result: number[] = []
+    const searchLevel = this._radiusToLevel(radiusKm)
 
-    for (const cellId of coveringCells) {
-      this._collectNodesInCell(cellId, seen, result)
-    }
+    const candidateIds = new Set<number>()
+    const centerCell = latLngToKey(centerLat, centerLng, searchLevel)
+    this._collectMatching(centerCell, candidateIds)
 
-    // Also expand to neighboring cells to catch boundary cases
-    if (coveringCells.length <= 4) {
-      for (const cellId of coveringCells) {
-        this._collectNeighborNodes(cellId, seen, result)
-      }
-    }
+    // Include neighbors
+    const nk = neighborKeysForCell(centerCell, searchLevel)
+    for (const k of nk) this._collectMatching(k, candidateIds)
 
     // Post-filter by bbox
-    return result.filter(nodeId => {
+    const results: number[] = []
+    for (const nodeId of candidateIds) {
       const item = this._items.get(nodeId)
-      if (!item) return false
-      return (
+      if (!item) continue
+      if (
         item.lat >= minLat &&
         item.lat <= maxLat &&
         item.lng >= minLng &&
         item.lng <= maxLng
-      )
-    })
+      ) {
+        results.push(nodeId)
+      }
+    }
+
+    return results
   }
 
   /**
@@ -258,24 +238,35 @@ export class S2Index {
   ): number[] {
     if (k <= 0 || this._items.size === 0) return []
 
-    // Determine search radius
     const searchRadius = maxRadiusKm ?? this._estimateRadius(k)
-    const candidates = this.queryRadius(lat, lng, searchRadius)
 
-    // If not enough candidates, expand search
-    let finalCandidates = candidates
-    if (finalCandidates.length < k && (!maxRadiusKm || maxRadiusKm <= 0)) {
-      // Expand radius iteratively
-      const expanded = this.queryRadius(lat, lng, searchRadius * 3)
-      for (const id of expanded) {
-        if (!finalCandidates.includes(id)) {
-          finalCandidates.push(id)
-        }
+    // Collect all nodes within search radius, expanding if necessary
+    let candidates = this._collectCandidatesForRadius(lat, lng, searchRadius)
+
+    if (maxRadiusKm && maxRadiusKm > 0) {
+      candidates = candidates.filter(nodeId => {
+        const item = this._items.get(nodeId)!
+        return haversineKm(lat, lng, item.lat, item.lng) <= maxRadiusKm!
+      })
+    }
+
+    // If not enough candidates, try a broader search
+    if (candidates.length < k && (!maxRadiusKm || maxRadiusKm <= 0)) {
+      const larger = this._collectCandidatesForRadius(lat, lng, searchRadius * 5)
+      for (const id of larger) {
+        if (!candidates.includes(id)) candidates.push(id)
+      }
+    }
+
+    // If still not enough, use all nodes
+    if (candidates.length < k) {
+      for (const nodeId of this._items.keys()) {
+        if (!candidates.includes(nodeId)) candidates.push(nodeId)
       }
     }
 
     // Sort by Haversine distance
-    return finalCandidates
+    return candidates
       .map(nodeId => ({
         nodeId,
         dist: haversineKm(lat, lng,
@@ -321,8 +312,65 @@ export class S2Index {
   }
 
   /**
+   * Collect matching node IDs: exact cell match + any child cells.
+   */
+  private _collectMatching(cellId: string, out: Set<number>): void {
+    // Exact match
+    const direct = this._cellIndex.get(cellId)
+    if (direct) {
+      for (const id of direct) out.add(id)
+    }
+
+    // Child cells: indexed cells whose key starts with cellId + more chars
+    const prefix = cellId + '/'
+    // Note: cell keys are "face/chars"; the separator is '/'
+    // So child cells would be "face/chars+" where chars+ extends the bits
+    // But since keys are "face/chars" format, children have the same face and longer chars
+    for (const [key, nodes] of this._cellIndex.entries()) {
+      if (key.startsWith(prefix)) {
+        for (const id of nodes) out.add(id)
+      }
+    }
+
+    // Also check for same-face, longer-prefix keys
+    // The key format is "face/abcd...", so children have same face + prefix chars
+    const [face, bits] = cellId.split('/')
+    if (bits) {
+      for (const [key, nodes] of this._cellIndex.entries()) {
+        const [kface, kbits] = key.split('/')
+        if (kface === face && kbits && kbits.length > bits.length && kbits.startsWith(bits)) {
+          for (const id of nodes) out.add(id)
+        }
+      }
+    }
+  }
+
+  /**
+   * Collect candidates within a given radius for kNearest.
+   * Returns nodeIds (unsorted).
+   */
+  private _collectCandidatesForRadius(lat: number, lng: number, radiusKm: number): number[] {
+    const searchLevel = this._radiusToLevel(radiusKm)
+    const centerCell = latLngToKey(lat, lng, searchLevel)
+
+    const ids = new Set<number>()
+    this._collectMatching(centerCell, ids)
+
+    const nk = neighborKeysForCell(centerCell, searchLevel)
+    for (const k of nk) this._collectMatching(k, ids)
+
+    if (radiusKm > 1) {
+      const parentCell = this.parentCell(centerCell)
+      this._collectMatching(parentCell, ids)
+      const pnk = neighborKeysForCell(parentCell, searchLevel - 1)
+      for (const k of pnk) this._collectMatching(k, ids)
+    }
+
+    return [...ids]
+  }
+
+  /**
    * Convert a radius to an appropriate S2 cell level.
-   * Smaller radius → higher level (finer cells).
    */
   private _radiusToLevel(radiusKm: number): number {
     if (radiusKm <= 0.1) return 20
@@ -339,132 +387,11 @@ export class S2Index {
    */
   private _estimateRadius(k: number): number {
     if (this._items.size === 0) return 1
-    const density = this._items.size / 510.1 // Earth surface area ~510M km²
+    const density = this._items.size / 510.1
     if (density === 0) return 1
     const areaPerK = k / density
     const radius = Math.sqrt(areaPerK / Math.PI)
     return Math.max(radius, 0.1)
-  }
-
-  /**
-   * Get covering S2 cells for a rectangular region.
-   */
-  private _coverRect(
-    minLat: number, minLng: number,
-    maxLat: number, maxLng: number,
-    level?: number,
-  ): string[] {
-    const cellLevel = level ?? this._defaultLevel
-
-    // Simplified covering: compute corner cells and all cells between them
-    // Since s2-geometry doesn't have a native cover, we compute a set of cells
-    // that cover the bounding box at the target level.
-    return this._computeCellsInRect(minLat, minLng, maxLat, maxLng, cellLevel)
-  }
-
-  /**
-   * Compute all S2 cell keys that overlap with a bounding box at a given level.
-   * Uses a simple grid-based approach: compute cells for corners and interior points.
-   */
-  private _computeCellsInRect(
-    minLat: number, minLng: number,
-    maxLat: number, maxLng: number,
-    level: number,
-  ): string[] {
-    const cells = new Set<string>()
-
-    // Add center
-    const centerLat = (minLat + maxLat) / 2
-    const centerLng = (minLng + maxLng) / 2
-    cells.add(latLngToKey(centerLat, centerLng, level))
-
-    // Add 4 corners
-    cells.add(latLngToKey(minLat, minLng, level))
-    cells.add(latLngToKey(minLat, maxLng, level))
-    cells.add(latLngToKey(maxLat, minLng, level))
-    cells.add(latLngToKey(maxLat, maxLng, level))
-
-    // Add edge midpoints
-    cells.add(latLngToKey((minLat + maxLat) / 2, minLng, level))
-    cells.add(latLngToKey((minLat + maxLat) / 2, maxLng, level))
-    cells.add(latLngToKey(minLat, (minLng + maxLng) / 2, level))
-    cells.add(latLngToKey(maxLat, (minLng + maxLng) / 2, level))
-
-    // For wider boxes, add more interior points
-    const latSpan = Math.abs(maxLat - minLat)
-    const lngSpan = Math.abs(maxLng - minLng)
-    const cellSize = cellApproxSize(level)
-
-    if (latSpan > cellSize * 3 || lngSpan > cellSize * 3) {
-      const steps = Math.min(
-        Math.max(Math.ceil(latSpan / cellSize), 1),
-        this._maxCoverCells
-      )
-      for (let i = 0; i <= steps; i++) {
-        for (let j = 0; j <= steps; j++) {
-          const lat = minLat + (maxLat - minLat) * (i / steps)
-          const lng = minLng + (maxLng - minLng) * (j / steps)
-          cells.add(latLngToKey(lat, lng, level))
-        }
-      }
-    }
-
-    return [...cells]
-  }
-
-  /**
-   * Collect all indexed node IDs that fall under a given S2 cell.
-   */
-  private _collectNodesInCell(
-    cellId: string,
-    seen: Set<number>,
-    out: number[] | Array<{ nodeId: number; lat: number; lng: number }>,
-  ): void {
-    const direct = this._cellIndex.get(cellId)
-    if (direct) {
-      for (const nodeId of direct) {
-        if (!seen.has(nodeId)) {
-          seen.add(nodeId)
-          out.push(nodeId)
-        }
-      }
-    }
-
-    // Check all indexed cells — if the indexed cell is a child of this cell (cellId prefix match),
-    // include those nodes too
-    const prefix = cellId + '/'
-    for (const [idxCellId, nodeIds] of this._cellIndex.entries()) {
-      if (idxCellId.startsWith(prefix) || idxCellId === cellId) {
-        for (const nodeId of nodeIds) {
-          if (!seen.has(nodeId)) {
-            seen.add(nodeId)
-            out.push(nodeId)
-          }
-        }
-      }
-    }
-  }
-
-  /**
-   * Collect nodes from neighboring cells.
-   */
-  private _collectNeighborNodes(
-    cellId: string,
-    seen: Set<number>,
-    out: number[] | Array<{ nodeId: number; lat: number; lng: number }>,
-  ): void {
-    try {
-      const S2Cell = require('s2-geometry').S2.S2Cell
-      // Extract lat/lng from the cell key to get neighbors
-      const [lat, lng] = keyToLatLng(cellId)
-      const level = cellKeyLevel(cellId)
-      const neighbors = S2Cell.latLngToNeighborKeys(lat, lng, level)
-      for (const neighborId of neighbors) {
-        this._collectNodesInCell(neighborId, seen, out)
-      }
-    } catch {
-      // ignore
-    }
   }
 }
 
@@ -474,20 +401,10 @@ export class S2Index {
 
 /**
  * Convert lat/lng to S2 cell key (Hilbert quadkey) at given level.
- * Wraps s2-geometry library.
  */
 export function latLngToKey(lat: number, lng: number, level: number): string {
   const S2Cell = require('s2-geometry').S2.S2Cell
   return S2Cell.latLngToKey(lat, lng, level)
-}
-
-/**
- * Convert lat/lng to S2 cell numeric ID at given level.
- */
-export function latLngToId(lat: number, lng: number, level: number): string {
-  const S2Cell = require('s2-geometry').S2.S2Cell
-  const key = S2Cell.latLngToKey(lat, lng, level)
-  return String(S2Cell.keyToId(key))
 }
 
 /**
@@ -503,32 +420,33 @@ export function keyToLatLng(cellId: string): [number, number] {
 }
 
 /**
- * Get the parent cell key (one level up).
- */
-export function parentKey(cellId: string): string {
-  const parts = cellId.split('/')
-  if (parts.length < 2) return cellId
-  const parentParts = parts[1].slice(0, -3) // Remove last 3 bits (S2 uses 3 bits per level)
-  if (parentParts.length === 0) return parts[0]
-  return `${parts[0]}/${parentParts}`
-}
-
-/**
  * Extract the level from an S2 cell key.
+ * Since each char = 1 level, level = number of chars after '/'.
  */
 export function cellKeyLevel(cellId: string): number {
   const parts = cellId.split('/')
   if (parts.length < 2) return 0
-  return Math.floor(parts[1].length / 3) // S2: 3 chars per level
+  return parts[1].length
+}
+
+/**
+ * Get neighbor cell keys for a given cell at its level.
+ * Uses the s2-geometry library's latLngToNeighborKeys.
+ */
+export function neighborKeysForCell(cellId: string, level: number): string[] {
+  const S2Cell = require('s2-geometry').S2.S2Cell
+  try {
+    const [lat, lng] = keyToLatLng(cellId)
+    return S2Cell.latLngToNeighborKeys(lat, lng, level > 0 ? level : 1)
+  } catch {
+    return []
+  }
 }
 
 /**
  * Approximate cell size (km) at a given S2 level.
- * S2 cells vary in size; this is a rough estimate.
  */
 export function cellApproxSize(level: number): number {
-  // Approximate cell width at each level (in km, at equator)
-  // S2 has ~6e7 cells at level 30 covering 510M km²
   const sizes: Record<number, number> = {
     0: 10000,
     1: 5000,
@@ -553,26 +471,6 @@ export function cellApproxSize(level: number): number {
     20: 0.010,
   }
   return sizes[level] ?? 0.001
-}
-
-// ──────────────────────────────────────────────
-//  Utility functions
-// ──────────────────────────────────────────────
-
-/**
- * Convert degrees to radians.
- */
-function toRad(deg: number): number {
-  return (deg * Math.PI) / 180
-}
-
-/**
- * Approximate km-per-degree at a given latitude.
- */
-function kmPerDegree(lat: number): { latKm: number; lngKm: number } {
-  const latKm = 111.32
-  const lngKm = 111.32 * Math.cos(toRad(lat))
-  return { latKm, lngKm }
 }
 
 export { haversineKm }
