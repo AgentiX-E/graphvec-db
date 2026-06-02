@@ -556,30 +556,30 @@ Phase 6: 运维文档 (1d) ← 最后
 
 ---
 
-### Phase 6: V6 能力扩展（⬜ 待开始）
+### Phase 6: V6 能力扩展（✅ 已完成）
 
-> 基于 V6 Gap 深度调研报告（2026-06-02）。以下内容标记为 ⬜ 计划中，尚未开始实现。
+> 基于 V6 Gap 深度调研报告（2026-06-02）。以下内容标记为 ✅ 已实现，已于 2026-06-02 全部完成。
 
-#### Phase 6A: 列式索引 + CDC（P2，⬜ 待开始）
+#### Phase 6A: 列式索引 + CDC（P2，✅ 已完成）
 
 **目标**: 优化底层存储性能并打通外部数据管道。
 
 | 任务 | 优先级 | 依赖包 | 估值工时 | 状态 |
 |------|:------:|--------|:--------:|:----:|
-| 列式索引（分层混合策略 — B-Tree 索引 + 配置式启用） | **P2** | 无（复用 `lmdb`, `sorted-btree`） | 5~7 天 | ⬜ 待开始 |
-| CDC 变更数据捕获（WebSocket Server + HTTP 长轮询 + Webhook） | **P2** | `ws`（已有别处依赖） | 3~4 天 | ⬜ 待开始 |
+| 列式索引（分层混合策略 — B-Tree 索引 + 配置式启用） | **P2** | 无（复用 `lmdb`, `sorted-btree`） | 5~7 天 | ✅ 已完成 |
+| CDC 变更数据捕获（WebSocket Server + HTTP 长轮询 + Webhook） | **P2** | `ws`（已有别处依赖） | 3~4 天 | ✅ 已完成 |
 
 **验收标准**:
 - 列式索引：`scanNodes({ age_gt_30 })` 耗时降低 ≥5x；写入性能损失 <20%
 - CDC：外部客户端通过 WebSocket 能订阅图变更；断点续传支持；按 label 过滤支持
 
-#### Phase 6B: GNN 推理（P2，⬜ 待开始）
+#### Phase 6B: GNN 推理（P2，✅ 已完成）
 
 **目标**: 引入 GNN 图学习能力，提供链接预测和嵌入推理 API。
 
 | 任务 | 优先级 | 依赖包 | 估值工时 | 状态 |
 |------|:------:|--------|:--------:|:----:|
-| GNN ONNX 推理（GnnInferenceEngine + 子图导出） | **P2** | `onnxruntime-node`（已有） | 5~8 天 | ⬜ 待开始 |
+| GNN ONNX 推理（GnnInferenceEngine + 子图导出） | **P2** | `onnxruntime-node`（已有） | 5~8 天 | ✅ 已完成 |
 
 **验收标准**:
 - `GnnInferenceEngine.loadModel()` 成功加载 ONNX 模型
@@ -588,15 +588,15 @@ Phase 6: 运维文档 (1d) ← 最后
 - `computeEmbedding` 对未见过的节点返回嵌入向量
 - 推理延迟 < 50ms（CPU）
 
-#### Phase 6C: Gremlin + 多模型 + SQL 桥接（P3，⬜ 待开始）
+#### Phase 6C: Gremlin + 多模型 + SQL 桥接（P3，✅ 已完成）
 
 **目标**: 拓展生态兼容性，降低使用门槛，提供多模型数据服务。
 
 | 任务 | 优先级 | 依赖包 | 估值工时 | 状态 |
 |------|:------:|--------|:--------:|:----:|
-| Gremlin 协议兼容（WebSocket Server + Bytecode 解释器） | **P3** | `gremlin`（npm v3.8.x） | 5~6 天 | ⬜ 待开始 |
-| 多模型支持（DocumentStore 抽象 + LMDB 独立 database） | **P3** | 无（复用 `lmdb`, `msgpackr`） | 4~5 天 | ⬜ 待开始 |
-| SQL 桥接（alasql 解析 + AST 翻译 → Cypher） | **P3** | `alasql`（npm v4.17.x） | 3~4 天 | ⬜ 待开始 |
+| Gremlin 协议兼容（WebSocket Server + Bytecode 解释器） | **P3** | `gremlin`（npm v3.8.x） | 5~6 天 | ✅ 已完成 |
+| 多模型支持（DocumentStore 抽象 + LMDB 独立 database） | **P3** | 无（复用 `lmdb`, `msgpackr`） | 4~5 天 | ✅ 已完成 |
+| SQL 桥接（alasql 解析 + AST 翻译 → Cypher） | **P3** | `alasql`（npm v4.17.x） | 3~4 天 | ✅ 已完成 |
 
 **验收标准**:
 - Gremlin: `g.V().has('name', 'Alice')` 返回 GraphSON 格式正确结果

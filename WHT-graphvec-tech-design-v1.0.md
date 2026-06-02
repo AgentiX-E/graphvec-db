@@ -662,9 +662,9 @@ Storage Path:
 
 ---
 
-## §11 V6 差距分析 — 设计变更预设（⬜ 计划中）
+## §11 V6 差距分析 — 设计变更（✅ 全部已实现，HEAD: `b37e717a`）
 
-> 以下内容基于 V6 Gap 深度调研报告（2026-06-02），标记为 **⬜ 计划中**，尚未实现。
+> 以下内容基于 V6 Gap 深度调研报告（2026-06-02），标记为 **✅ 已实现**，截至 2026-06-02 全部完成。V4 闭包后已重新提交 v6-closure commit。
 
 ### §11.1 列式索引 — 分层混合策略
 
@@ -690,7 +690,7 @@ StorageProvider (现有):
 4. 节点删除时自动清理列索引条目
 5. 支持 String 和 Number 类型的属性列索引
 
-**状态**: ⬜ 计划中
+**状态**: ✅ **已实现**
 
 ### §11.2 CDC 变更数据捕获 — CDC Adapter 层
 
@@ -717,7 +717,7 @@ graph-engine emit()
 4. 不引入 Kafka/RabbitMQ，保持单体轻量
 5. 三种订阅方式：WebSocket 实时推送 / HTTP 长轮询 / Webhook 推送
 
-**状态**: ⬜ 计划中
+**状态**: ✅ **已实现**
 
 ### §11.3 GNN 图神经网络推理 — 二阶段策略
 
@@ -725,7 +725,7 @@ graph-engine emit()
 
 **方案** — 二阶段策略：
 
-**Phase 1（⬜ 计划中·P2）— 基于 ONNX 的推理：**
+**Phase 1（✅ 已实现·P2）— 基于 ONNX 的推理：**
 ```
 训练（外部/Python）→ DGL/PyG 训练 GraphSAGE → 导出 ONNX
 推理（Node 侧）→ onnxruntime-node 加载模型 → 链接预测/嵌入计算
@@ -752,7 +752,7 @@ exportLocalSubgraph() → adjacency + features → 两层 GCN 矩阵乘法 → �
 3. `predictLink` 输出概率，可用于链接预测和推荐
 4. `computeEmbedding` 利用 GNN 模型为未见节点实时计算嵌入（cold start 解决）
 
-**状态**: ⬜ 计划中
+**状态**: ✅ **已实现**
 
 ### §11.4 Gremlin 协议兼容 — WebSocket Server
 
@@ -777,7 +777,7 @@ exportLocalSubgraph() → adjacency + features → 两层 GCN 矩阵乘法 → �
 5. 每个 WebSocket 连接独立会话，复用现有 Bolt 的认证机制
 6. 与现有 Bolt 服务并行运行互不干扰
 
-**状态**: ⬜ 计划中
+**状态**: ✅ **已实现**
 
 ### §11.5 多模型支持 — DocumentStore 抽象
 
@@ -835,4 +835,4 @@ SQL 语句 → alasql.parse(sql) → AST → translator.toCypher() → Cypher AS
 3. 通过环境变量 `ENABLE_SQL_BRIDGE=<bool>` 控制开关（默认关闭）
 4. 不支持的操作返回明确错误消息
 
-**状态**: ⬜ 计划中
+**状态**: ✅ **已实现**

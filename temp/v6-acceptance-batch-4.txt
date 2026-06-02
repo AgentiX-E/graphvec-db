@@ -1,0 +1,42 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+ [32m✓[39m core/txn-isolation.spec.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 575[2mms[22m[39m
+ [32m✓[39m core/multi-backend.spec.ts [2m([22m[2m57 tests[22m[2m)[22m[33m 846[2mms[22m[39m
+ [32m✓[39m algorithms/node2vec.spec.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 1369[2mms[22m[39m
+     [33m[2m✓[22m[39m should produce reasonable embedding dimensions [33m 1109[2mms[22m[39m
+ [32m✓[39m security/ldap.spec.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 207[2mms[22m[39m
+[11:58:28.110] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.108] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.111] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.114] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.129] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.165] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.139] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.136] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.131] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.142] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.145] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.133] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+[11:58:28.160] [32mINFO[39m (LdapAuthenticator/50339): [36mLdapAuthenticator initialized[39m
+ [32m✓[39m core/s2-index.spec.ts [2m([22m[2m42 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m reshard/hot-migrate.spec.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 161[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[32m178 passed[39m[22m[90m (178)[39m
+[2m   Start at [22m 11:58:26
+[2m   Duration [22m 2.59s[2m (transform 771ms, setup 0ms, import 1.96s, tests 3.18s, environment 1ms)[22m
+
+[11:58:28.960] [33mWARN[39m (RangeInstance[range-b]/50339): [36mNo ConsensusProvider provided — falling back to StandaloneConsensus. This is SAFE for single-node development but DANGEROUS for multi-node production. Provide a ConsensusProvider (raft-logic or simulated-raft) for multi-node deployments.[39m
+[11:58:28.956] [32mINFO[39m (HotMigrator/50339): [36mPreparing target range for hot migration[39m
+[11:58:28.967] [32mINFO[39m (HotMigrator/50339): [36mTarget range started[39m
+[11:58:28.967] [32mINFO[39m (HotMigrator/50339): [36mEnabling dual write[39m
+[11:58:28.968] [32mINFO[39m (HotMigrator/50339): [36mDual write verified and active[39m
+[11:58:28.968] [32mINFO[39m (HotMigrator/50339): [36mStarting snapshot sync for hot migration[39m
+[11:58:28.969] [32mINFO[39m (HotMigrator/50339): [36mSnapshot sync completed[39m
+[11:58:28.969] [32mINFO[39m (HotMigrator/50339): [36mVerifying dual-write catch-up...[39m
+[11:58:28.969] [32mINFO[39m (HotMigrator/50339): [36mCatch-up verification[39m
+[11:58:28.969] [32mINFO[39m (HotMigrator/50339): [36mPerforming atomic route switch[39m
+[11:58:28.969] [32mINFO[39m (HotMigrator/50339): [36mAtomic route switch completed — all traffic now goes to target[39m
+[11:58:28.969] [32mINFO[39m (HotMigrator/50339): [36mSource range cleaned up[39m
+[11:58:29.036] [32mINFO[39m (HotMigrator/50339): [36mRolling back hot migration[39m
