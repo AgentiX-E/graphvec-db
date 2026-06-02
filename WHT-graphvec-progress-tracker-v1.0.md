@@ -364,3 +364,25 @@
 | V8-06 | Prometheus 指标集成 | **P3** | ✅ 已实现 | 2~3d | `prom-client`（已有） | `PrometheusMetricsExporter` 桥接 |
 | V8-07 | WebSocket 流式查询 | **P3** | ✅ 已实现 | 4~5d | `ws`（已有） | `WsStreamQuery` JSON 帧 + 背压 |
 | V8-08 | Cypher 事务函数 | **P3** | ✅ 已实现 | 2~3d | 无 | `CALL periodic.commit()` 注册到 ProcedureRegistry |
+
+## V9 差距分析 — 阶段总览（⬜ **计划中** · 7/7 GAPs 待实现）
+
+### V9 阶段总览
+
+| Phase | 优先级 | 包含方向 | 方向数 | 估值工时 | 状态 | 截止日期 | commit |
+|:-----:|:------:|----------|:-----:|:--------:|:----:|:--------:|:------:|
+| Phase 9A | **P2** | 图算法扩充 / 批量导入导出 | 2 | 5~7d | ⬜ 计划中 | — | — |
+| Phase 9B | **P3** | 仪表盘 / RBAC / 图分割 / 告警 / 可视化输出 | 5 | 12~17d | ⬜ 计划中 | — | — |
+| | **合计** | — | **7** | **17~24d** | ⬜ **计划中** | — | — |
+
+### V9 方向明细矩阵
+
+| # | 方向 | 优先级 | 状态 | 估值工时 | 依赖包 | 备注 |
+|:-:|------|:------:|:----:|:--------:|--------|:----|
+| V9-01 | 可视化仪表盘 | **P3** | ⬜ 计划中 | 3~4d | `cytoscape`, `react`, `esbuild` | React + cytoscape 实时拓扑面板 |
+| V9-02 | 图算法库扩充 | **P2** | ⬜ 计划中 | 3~4d | 无 | YenKSP + ApproxBetweenness + EgoNet |
+| V9-03 | RBAC 权限集成 | **P3** | ⬜ 计划中 | 2~3d | 无 | PermissionResolver + GraphEngine 注入 |
+| V9-04 | 图分割/分区 | **P3** | ⬜ 计划中 | 3~4d | 无 | LouvainPartitioner + BfsPartitioner |
+| V9-05 | 监控告警规则 | **P3** | ⬜ 计划中 | 2~3d | `prom-client`（已有） | AlertRuleManager + 7 条预置规则 YAML |
+| V9-06 | 批量导入/导出 | **P3** | ⬜ 计划中 | 2~3d | `csv-parse`（已有）, `jsonlines` | BatchImportExport 统一封装 |
+| V9-07 | 图可视化输出 | **P3** | ⬜ 计划中 | 2~3d | 无 | DOT / Cytoscape JSON 序列化器 |

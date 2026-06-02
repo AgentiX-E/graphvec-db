@@ -1563,3 +1563,183 @@ CALL periodic.commit(
 - `src/query/procedure-registry.ts` — 确认接口兼容
 
 **状态**: ✅ 已实现
+
+---
+
+## §14 V9 差距分析 — 设计变更预设
+
+### V9 新方向总览
+
+V9 聚焦**生态扩展&运营体验**，涵盖算法、可视化、安全、分区、监控、导入导出、格式输出，共 **7 个方向**：
+
+| # | 方向 | GAP | 优先级 | 工时 | 核心依赖 | 复用组件 |
+|:-:|------|:---:|:------:|:----:|---------|---------|
+| V9-01 | 可视化仪表盘 | GAP-36 | P3 | 3~4d | `cytoscape`, `react`, `esbuild` | admin-ui, ws-query, cdc-server |
+| V9-02 | 图算法库扩充 | GAP-37 | P2 | 3~4d | 无 | dijkstra.ts, index.ts |
+| V9-03 | RBAC 权限集成 | GAP-38 | P3 | 2~3d | 无 | rbac.ts, rls.ts, auth.ts |
+| V9-04 | 图分割/分区 | GAP-39 | P3 | 3~4d | 无 | louvain.ts, shard-manager.ts |
+| V9-05 | 监控告警规则 | GAP-40 | P3 | 2~3d | `prom-client` (已有) | prometheus-exporter.ts |
+| V9-06 | 批量导入/导出 | GAP-41 | P3 | 2~3d | `csv-parse`(已有), `jsonlines` | importer.ts, graph-import.ts |
+| V9-07 | 图可视化输出 | GAP-42 | P3 | 2~3d | 无 | rest.ts, query-planner.ts |
+
+### §14.1 可视化仪表盘（P3 · GAP-36）
+
+**状态**: ⬜ 计划中
+
+**设计目标**:
+- 基于 `ws-query.ts` WebSocket 通道构建实时图拓扑面板
+- React + `cytoscape` 前端，esbuild 内联打包为独立 HTML
+
+**设计决策**:
+1. **增量推送**: CDC 事件（`cdc-server.ts`）→ WebSocket → `cytoscape.js` 增量更新
+2. **不引入额外构建工具链**：esbuild 内联 HTML 到 admin-ui 已有模式
+3. **性能目标**: 500+ 节点帧率 > 30fps
+
+**受影响的文件**（新建）:
+- `src/api/admin/GraphLiveStream.ts`（WebSocket 桥接）
+- `src/api/admin/graph-live.html.ts`（内联 HTML 模板）
+
+**依赖项**: `cytoscape`（主渲染）, `react`（框架）, `esbuild`（已有）
+
+### §14.2 图算法库扩充（P2 · GAP-37）
+
+**状态**: ⬜ 计划中
+
+**设计目标**: 补充高级图算法，不与现有 25+ 算法冲突
+
+**新增算法**:
+
+| 算法 | 文件 | 说明 |
+|------|------|------|
+| YenKShortestPaths | `src/algorithms/yen-ksp.ts` | K 最短路径，复用 `dijkstra.ts` |
+| ApproxBetweenness | `src/algorithms/approx-betweenness.ts` | Brandes + K 采样，大图近似 |
+| EgoNet | `src/algorithms/ego-net.ts` | n 跳子图提取 |
+
+**设计决策**:
+1. 所有新算法注册到 `src/algorithms/index.ts` 标准导出
+2. 不与现有算法冲突，`TriangleCount`/`LSH` 等已有算法不修改
+
+**依赖项**: 无（复用 Dijkstra 等现有算法）
+
+### §14.3 RBAC 权限集成（P3 · GAP-38）
+
+**状态**: ⬜ 计划中
+
+**设计目标**: `PermissionResolver` 接口 + GraphEngine 操作路径自动注入
+
+**接口设计**:
+```typescript
+interface PermissionResolver {
+  checkNodeAccess(ctx: RLSContext, node: NodeRecord, action: 'read'|'write'|'delete'): boolean;
+  checkEdgeAccess(ctx: RLSContext, edge: EdgeRecord, action: 'read'|'write'|'delete'): boolean;
+  checkQueryAccess(ctx: RLSContext, query: string): boolean;
+}
+```
+
+**设计决策**:
+1. **向后兼容**: 未注入时 `GraphEngine` 行为不变
+2. **属性级拦截**: 如 `user.tenantId === node.props.tenantId`
+3. **默认实现**: `DefaultPermissionResolver` 匹配 ACL 资源类型 + 属性策略
+4. **拒绝**: 抛出 `AuthError`，类似 RLS 的 `enforceQuery`
+
+**受影响的文件**（新建）:
+- `src/security/permission-resolver.ts`（接口 + 默认实现）
+- 修改 `src/core/graph-engine.ts`（构造函数 + 操作入口注入）
+
+**依赖项**: 无（复用 `rbac.ts`, `rls.ts`, `auth.ts`）
+
+### §14.4 图分割/分区（P3 · GAP-39）
+
+**状态**: ⬜ 计划中
+
+**设计目标**: 智能图分割减少跨分片边，替代现有纯哈希分布
+
+**设计决策**:
+1. **LouvainPartitioner**: 复用 `src/algorithms/louvain.ts` → 社区标签 → 合并至 k 分区
+2. **BfsPartitioner**: 贪心 BFS 种子扩展后备方案
+3. **集成**: 分区结果导出到 `ShardManager.reshard()`
+
+**接口设计**:
+```typescript
+interface GraphPartitioner {
+  partition(graph: GraphData, k: number): Map<string, number>;
+}
+```
+
+**受影响的文件**（新建 + 修改）:
+- `src/shard/graph-partitioner.ts`（接口 + LouvainPartitioner + BfsPartitioner）
+- 修改 `src/shard/shard-manager.ts`（集成 reshard 流程）
+
+**性能目标**: 100K 节点 + 500K 边在 30s 内完成分割，跨分片边比随机哈希降低 ≥40%
+
+**依赖项**: 无（复用 Louvain 算法）
+
+### §14.5 监控告警规则（P3 · GAP-40）
+
+**状态**: ⬜ 计划中
+
+**设计目标**: `AlertRuleManager` 管理预置告警规则，输出 Prometheus YAML
+
+**设计决策**:
+1. **不引入新包**: 统一输出 YAML 供外部 Alertmanager 加载
+2. **预置 7 条规则**: Down / Latency / Error / Shard / Cache / Cluster / Cert
+3. **运行时评估**: `evaluateRules()` 基于 prom-client metrics 返回触发列表
+
+**受影响的文件**（新建）:
+- `src/ops/alert-rule-manager.ts`（核心类）
+- `src/ops/preset-alert-rules.yaml`（预置规则 YAML）
+
+**依赖项**: `prom-client`（已有）
+
+### §14.6 批量导入/导出（P3 · GAP-41）
+
+**状态**: ⬜ 计划中
+
+**设计目标**: `BatchImportExport` 统一封装类
+
+**接口设计**:
+```typescript
+class BatchImportExport {
+  exportNodes(format: 'csv'|'jsonl', filePath: string, options?: ExportOptions): Promise<ExportResult>;
+  exportEdges(format: 'csv'|'jsonl', filePath: string, options?: ExportOptions): Promise<ExportResult>;
+  importNodes(filePath: string, format: 'csv'|'jsonl', options?: ImportOptions): Promise<ImportResult>;
+  importEdges(filePath: string, format: 'csv'|'jsonl', options?: ImportOptions): Promise<ImportResult>;
+}
+```
+
+**设计决策**:
+1. **流式遍历**: 使用 `cursor` 分页遍历，大文件不 OOM
+2. **桥接导入**: 路由到现有 `Importer` / `GraphImporter`
+3. **Roundtrip**: 导出文件可通过同格式导入恢复
+
+**受影响的文件**（新建）:
+- `src/ops/batch-import-export.ts`（核心类）
+- 引入 `jsonlines`（~5KB）
+
+**依赖项**: `csv-parse`（已有）, `jsonlines`（新增~5KB）
+
+### §14.7 图可视化输出（P3 · GAP-42）
+
+**状态**: ⬜ 计划中
+
+**设计目标**: 轻量级 DOT/Cytoscape JSON 序列化器
+
+**设计决策**:
+1. **不引入外部库**: DOT 为字符串模版，Cytoscape JSON 为纯数据结构
+2. **REST API 集成**: `Accept` header或 `?format=` 参数切换输出格式
+3. **空结果不报错**: 返回空 DOT 图 / 空 elements 数组
+
+**受影响的文件**（新建 + 修改）:
+- `src/api/graphviz-formatter.ts`（DOT 序列化器）
+- `src/api/cytoscape-formatter.ts`（Cytoscape JSON 序列化器）
+- 修改 `src/api/rest.ts`（输出格式协商）
+
+**依赖项**: 无
+
+### V9 阶段汇总
+
+| Phase | 优先级 | 包含方向 | 方向数 | 总估值工时 | 状态 |
+|:-----:|:------:|----------|:-----:|:----------:|:----:|
+| 9A | **P2** | 图算法扩充 + 批量导入导出 | 2 | 5~7d | ⬜ 计划中 |
+| 9B | **P3** | 仪表盘 + RBAC + 图分割 + 告警 + 可视化输出 | 5 | 12~17d | ⬜ 计划中 |
+| | **合计** | — | **7** | **17~24d** | ⬜ **计划中** |

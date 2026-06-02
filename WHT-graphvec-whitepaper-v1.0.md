@@ -590,3 +590,100 @@ Phase 8B (P3 四项 — 查询+运维生态, 10~14d) — ✅ 已实现
 
 > 实现 commits: 2（`b11dd8ed`, `637716a6`），新增代码约 2,851 行，新增测试文件 6 个
 > 总体闭包: **35/35 GAPs ✅**（V4: 13 + V6: 5 + V7: 8 + V8: 8）
+
+---
+
+## 10. V9 差距分析
+
+### 10.1 V9 新方向总览
+
+V9 方向聚焦于**生态扩展&运营体验**，涵盖算法深度、可视化、安全集成、运维智能化和数据互操作，共 **7 个方向**：
+
+| # | 方向 | GAP | 优先级 | 估值工时 | 核心依赖 | 复用组件 |
+|:-:|------|:---:|:------:|:--------:|---------|---------|
+| V9-01 | 可视化仪表盘 | GAP-36 | P3 | 3~4d | `cytoscape`, `react`, `esbuild` | admin-ui, ws-query, cdc-server |
+| V9-02 | 图算法库扩充 | GAP-37 | P2 | 3~4d | 无 | dijkstra.ts, index.ts |
+| V9-03 | RBAC 权限集成 | GAP-38 | P3 | 2~3d | 无 | rbac.ts, rls.ts, auth.ts |
+| V9-04 | 图分割/分区 | GAP-39 | P3 | 3~4d | 无 | louvain.ts, shard-manager.ts |
+| V9-05 | 监控告警规则 | GAP-40 | P3 | 2~3d | `prom-client` (已有) | prometheus-exporter.ts |
+| V9-06 | 批量导入/导出 | GAP-41 | P3 | 2~3d | `csv-parse` (已有), `jsonlines` | importer.ts, graph-import.ts |
+| V9-07 | 图可视化输出 | GAP-42 | P3 | 2~3d | 无 | rest.ts, query-planner.ts |
+
+### 10.2 各方向简述
+
+#### V9-01: 可视化仪表盘（P3 · GAP-36）
+**方案**: WebSocket + React 轻量面板，复用 `ws-query.ts` WebSocket 通道
+- 前端: React + `cytoscape` 渲染实时图拓扑
+- 后端: 新增 `/api/admin/graph-live` WS 端点，CDC 事件流 → WebSocket 增量推送
+- 打包: esbuild 内联为独立 HTML
+- **预估工时**: 3~4d
+
+#### V9-02: 图算法库扩充（P2 · GAP-37）
+**补充实现**:
+1. **YenKShortestPaths** — 基于 Dijkstra 的 K 最短路径（`src/algorithms/yen-ksp.ts`）
+2. **ApproxBetweenness** — 基于 Brandes + K 采样的大规模近似（`src/algorithms/approx-betweenness.ts`）
+3. **EgoNet** — 给定节点 n 跳子图提取（`src/algorithms/ego-net.ts`）
+- 注册到 `src/algorithms/index.ts`
+- **预估工时**: 3~4d
+
+#### V9-03: RBAC 权限集成（P3 · GAP-38）
+**方案**: `PermissionResolver` 接口 + `GraphEngine` 操作路径自动拦截
+- `checkNodeAccess(ctx, node, action)` / `checkEdgeAccess(...)` / `checkQueryAccess(...)`
+- 复用现有 `RLSContext` + `RBAC.checkAclPermission()`
+- 注入后: `upsertNode` 被拒绝时抛出 `AuthError`
+- 未注入时行为不变（向后兼容）
+- **预估工时**: 2~3d
+
+#### V9-04: 图分割/分区（P3 · GAP-39）
+**方案**: 基于 Louvain 社区发现的分割器 + BFS 后备
+- `GraphPartitioner.partition(graph, k)` → `Map<nodeId, partitionId>`
+- LouvainPartitioner: Louvain → 社区合并至 k 分区
+- BfsPartitioner: 贪心 BFS 种子扩展
+- 结果接入 `ShardManager.reshard()`
+- **预估工时**: 3~4d
+
+#### V9-05: 监控告警规则（P3 · GAP-40）
+**方案**: `AlertRuleManager` 类管理预置告警规则，输出 Prometheus Alerting Rules YAML
+- 7 条预置规则: Down / Latency / Error / Shard / Cache / Cluster / Cert
+- `toPrometheusYAML()` → Alertmanager 兼容
+- `evaluateRules(metrics)` → 运行时触发检查
+- **预估工时**: 2~3d
+
+#### V9-06: 批量导入/导出（P3 · GAP-41）
+**方案**: `BatchImportExport` 统一类封装导入+导出
+- 导出: 流式遍历 GraphEngine 节点/边 → CSV 或 JSONL
+- 导入: 桥接到现有 `Importer` / `GraphImporter`
+- 格式: `csv` / `jsonl` / `ndjson`
+- 支持过滤（按 typeId/label），大文件不 OOM
+- **预估工时**: 2~3d
+
+#### V9-07: 图可视化输出（P3 · GAP-42）
+**方案**: 轻量级 DOT/Cytoscape JSON 序列化器，REST API 可选输出格式
+- `GraphVizFormatter`: 查询结果 → DOT 格式字符串
+- `CytoscapeFormatter`: 查询结果 → Cytoscape.js `elements` 数组
+- REST API: `?format=dot` → `text/vnd.graphviz`，`?format=cytoscape` → `application/json`
+- 空结果返回空 DOT/空 elements（不报错）
+- **预估工时**: 2~3d
+
+### 10.3 推荐执行顺序
+
+```
+Phase 9A (P2 优先): V9-02 (图算法扩充, P2) → V9-06 (批量导入/导出, P3)
+Phase 9B (P3 并行): V9-01 (仪表盘) → V9-03 (RBAC) → V9-04 (图分割) → V9-05 (告警) → V9-07 (可视化输出)
+```
+
+### 10.4 V9 竞品对比（计划中）
+
+| 方向 | Neo4j | NebulaGraph | Dgraph | **GraphVec**(V9 目标) |
+|:----|:-----:|:-----------:|:------:|:--------------------:|
+| 可视化仪表盘 | ✅ Neo4j Browser | ✅ Studio | ✅ Ratel | ⬜ **计划中** |
+| Yen KSP | ✅ APOC | ❌ | ❌ | ⬜ **计划中** |
+| RBAC 细粒度 | ✅ 企业版 | ✅ RBAC | ✅ | ⬜ **计划中** |
+| 图分割 | ⚠️ 社区检测 | ✅ Partition | ❌ | ⬜ **计划中** |
+| 告警规则 | ❌ | ⚠️ 部分 | ✅ | ⬜ **计划中** |
+| 批量导出 | ✅ APOC | ✅ | ✅ | ⬜ **计划中** |
+| 可视化输出 | ✅ DOT/GraphML | ✅ GraphML | ✅ JSON | ⬜ **计划中** |
+
+### 10.5 V9 实现摘要（计划中）
+
+**状态**: ⬜ 计划中 — 7 个方向待实现

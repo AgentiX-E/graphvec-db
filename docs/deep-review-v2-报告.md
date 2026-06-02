@@ -613,3 +613,105 @@ V8-08 事务函数 ──────── 依赖 ProcedureRegistry 已有注�
 | V7 | GAP-19~GAP-26 | **8** | ✅ 全部关闭 |
 | V8 | GAP-27~GAP-35 修正为 GAP-28~GAP-35 | **8** | ✅ 全部关闭 |
 | | **总计** | **35** | ✅ **35/35 GAPs 全部关闭** |
+
+---
+
+## 12. V9 差距分析（⬜ 计划中）
+
+### 12.1 调研结论汇总
+
+V9 聚焦**生态扩展&运营体验**，共 **7 个新方向**，其中 P2 优先 2 项，P3 五项：
+
+| 方向 | GAP | 优先级 | 估值工时 | 核心思路 |
+|:----|:---:|:------:|:--------:|---------|
+| 可视化仪表盘 | GAP-36 | P3 | 3~4d | React + cytoscape WebSocket 实时拓扑面板 |
+| 图算法库扩充 | GAP-37 | **P2** | 3~4d | YenKSP + ApproxBetweenness + EgoNet |
+| RBAC 权限集成 | GAP-38 | P3 | 2~3d | PermissionResolver 接口 + GraphEngine 自动拦截 |
+| 图分割/分区 | GAP-39 | P3 | 3~4d | Louvain 社区发现分割 + BFS 后备 |
+| 监控告警规则 | GAP-40 | P3 | 2~3d | AlertRuleManager + Prometheus YAML 预置规则 |
+| 批量导入/导出 | GAP-41 | P3 | 2~3d | BatchImportExport 统一封装，流式 CSV/JSONL |
+| 图可视化输出 | GAP-42 | P3 | 2~3d | DOT / Cytoscape JSON 序列化器，REST 可选格式 |
+
+**现有基础（全部大于等于同类产品）**:
+- 图算法体系 25+ 文件，Louvin/Dijkstra/Betweenness/Closeness 已全部实现
+- RBAC 核心 ACL 体系已完成，缺操作路径自动集成
+- 已有 admin-ui 内嵌面板、ws-query WebSocket 通道、CDC 事件流
+- 批量导入器已存在（ops/importer.ts + graph-import.ts），缺导出功能统一封装
+- Prometheus exporter 已暴露 `/metrics`，缺预置告警规则 YAML
+
+### 12.2 各方向简介
+
+#### V9-01: 可视化仪表盘（GAP-36, P3）
+**方案**: React + cytoscape WebSocket 面板，复用 `ws-query.ts` + CDC 事件流
+- 增量推送而非全量刷新，目标 500+ 节点 > 30fps
+- esbuild 内联打包到 admin-ui
+
+#### V9-02: 图算法库扩充（GAP-37, P2）
+**因 Louvain/Dijkstra/Betweenness/Closeness 已全部实现，仅补充**:
+- YenKShortestPaths + ApproxBetweenness + EgoNet
+
+#### V9-03: RBAC 权限集成（GAP-38, P3）
+**核心**: `PermissionResolver` 接口注入 GraphEngine 操作路径
+- 向后兼容（未注入时不变）
+- 属性级 + 图级 + 层级继承
+
+#### V9-04: 图分割/分区（GAP-39, P3）
+**核心**: Louvain 社区发现 → 合并至 k 分区，BFS 贪心后备
+- 跨分片边比随机哈希降低 ≥40%
+
+#### V9-05: 监控告警规则（GAP-40, P3）
+**核心**: AlertRuleManager + 7 条预置规则 YAML 输出
+- 不引入新包，纯 YAML 供外部 Alertmanager 加载
+
+#### V9-06: 批量导入/导出（GAP-41, P3）
+**核心**: BatchImportExport 统一封装
+- 流式导出 CSV/JSONL，桥接现有导入器
+- Roundtrip 可恢复
+
+#### V9-07: 图可视化输出（GAP-42, P3）
+**核心**: 轻量 DOT/Cytoscape JSON 序列化器
+- REST API `?format=dot` | `?format=cytoscape`
+- 不引入外部库
+
+### 12.3 执行路线
+
+```
+Phase 9A (P2 优先, ~5~7d):  图算法扩充 → 批量导入/导出
+Phase 9B (P3, ~12~17d):    仪表盘 → RBAC → 图分割 → 告警规则 → 可视化输出
+                         (可并行: RBAC+图分割, 告警+可视化输出)
+```
+
+**并行策略**:
+- | 仪表盘 | 与 | RBAC + 图分割 | = 3~4d + 4~5d = 7~9d (并行)
+- | 告警规则 | 与 | 可视化输出 | = 2~3d (串行，可合并)
+
+### 12.4 关键决策
+
+| 方向 | 选型决定 | 舍弃选项 | 理由 |
+|:----|---------|---------|:----:|
+| 可视化 | `cytoscape` + `react` | `d3-force`自行渲染, `vis-network` | cytoscape 内置布局算法 + 成熟社区 |
+| 图算法 | **自行补充** | `graphology`, `ngraph`, `js-graph-algorithms` | 核心 25+ 算法已自研，只需增量 |
+| RBAC | **自研接口** | `casbin`, `accesscontrol`, `@casl/ability` | 已有 RBAC+ACL，只需操作路径集成 |
+| 图分割 | **LouvainPartitioner** | `metis-native`(需本地编译) | 复用现有 Louvain，纯 JS 无原生依赖 |
+| 告警 | **YAML 输出** | `nodemailer` (邮件通知) | 告警由外部 Alertmanager 处理 |
+| 导入导出 | **引入 `jsonlines`** | `papaparse` | 已有 `csv-parse`，JSONL 仅需~5KB |
+| 可视化输出 | **字符串模版 + 数据结构** | `viz.js`, `graphviz` C 绑定 | DOT 自身是模版，无需外部库 |
+
+### 12.5 依赖关系
+
+```
+批导导出 ──依赖── csv-parse(已有), jsonlines(新增~5KB)
+可视化仪表盘 ──依赖── cytoscape, react, esbuild(已有)
+RBAC 权限集成 ──无新依赖── 复用 rbac.ts + rls.ts + auth.ts
+图分割 ──无新依赖── 复用 louvain.ts
+告警规则 ──无新依赖── prom-client(已有)
+图算法扩充 ──无新依赖── 复用 dijkstra.ts
+可视化输出 ──无新依赖── 纯字符串模版
+```
+
+### 12.6 总体闭包统计
+
+| 迭代 | GAP 范围 | 数量 | 状态 |
+|:----:|----------|:----:|:----:|
+| V9 | GAP-36 ~ GAP-42 | **7** | ⬜ **计划中** |
+| | **总计（含前 8 轮）** | **42** | ✅ 35/35 已实现 + ⬜ **7 计划中** |
