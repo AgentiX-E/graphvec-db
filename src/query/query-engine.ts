@@ -260,6 +260,12 @@ export interface QueryPlan {
     isVarRef: boolean
     expression: string
   }
+  /** LOAD CSV 子句 */
+  loadCsv?: {
+    url: string
+    rowVariable: string
+    hasHeaders: boolean
+  }
   // DML fields
   /** CREATE 节点 */
   createNodes?: Array<{
@@ -584,6 +590,20 @@ export function _preprocessQuery(query: string): {
     cleanQuery = cleanQuery.replace(reduceRE, '__reduce_val__')
   }
 
+  // ── Step 0.7: 提取 LOAD CSV ──
+  // LOAD CSV FROM 'url' AS row [WITH HEADERS]
+  // 提取后从 query 中移除（LOAD CSV 是独立语句）
+  const csvRE = /LOAD\s+CSV\s+FROM\s+['"]([^'"]+)['"]\s+AS\s+(\w+)(?:\s+WITH\s+HEADERS)?\s*/i
+  const csvMatch = cleanQuery.match(csvRE)
+  if (csvMatch) {
+    result.loadCsvExtract = {
+      url: csvMatch[1],
+      rowVariable: csvMatch[2],
+      hasHeaders: /WITH\s+HEADERS/i.test(csvMatch[0]),
+    }
+    cleanQuery = cleanQuery.replace(csvRE, ' ').trim()
+  }
+
   // ── Step 1: handle OPTIONAL MATCH by stripping the "OPTIONAL " prefix ──
   // After peggy parses "MATCH ...", we can detect which MATCH was OPTIONAL by
   // checking if the original query had "OPTIONAL MATCH" before it.
@@ -731,6 +751,7 @@ export function _preprocessQuery(query: string): {
         orderByAggReplacements.length > 0 ? orderByAggReplacements : undefined,
       foreachExtract: result.foreachExtract,
       reduceExtract: result.reduceExtract,
+      loadCsvExtract: result.loadCsvExtract,
     },
   }
 }
@@ -792,6 +813,12 @@ export interface _QueryExtracts {
     variable: string
     listExpr: string
     expression: string
+  }
+  /** LOAD CSV 提取 */
+  loadCsvExtract?: {
+    url: string
+    rowVariable: string
+    hasHeaders: boolean
   }
 }
 
@@ -1068,6 +1095,15 @@ export function parseQuery(query: string): QueryPlan {
       list,
       isVarRef,
       expression: extracts.reduceExtract.expression,
+    }
+  }
+
+  // Step 6: Attach LOAD CSV if extracted
+  if (extracts.loadCsvExtract) {
+    plan.loadCsv = {
+      url: extracts.loadCsvExtract.url,
+      rowVariable: extracts.loadCsvExtract.rowVariable,
+      hasHeaders: extracts.loadCsvExtract.hasHeaders,
     }
   }
 
