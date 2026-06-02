@@ -13,7 +13,13 @@
  */
 
 import type { ProcedureRegistry, ProcedureArg, ProcedureContext, ProcedureResult } from './procedure-registry'
-import type { GraphEngine } from '../core/graph-engine'
+
+/** GraphEngineLike 接口（避免直接引用 graph-engine.ts 的复杂依赖链） */
+export interface GraphEngineLike {
+  executeQuery?: (query: string, params: Record<string, unknown>) => Promise<unknown>
+  getAllNodes?: () => Array<{ id: string }>
+  [key: string]: unknown
+}
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -73,10 +79,10 @@ const DEFAULT_CONFIG: PeriodicCommitConfig = {
  *   4. 返回累计统计
  */
 export class PeriodicCommitProcedure {
-  private _engine: GraphEngine
+  private _engine: GraphEngineLike
   private _onProgress?: (progress: PeriodicCommitProgress) => void
 
-  constructor(engine: GraphEngine) {
+  constructor(engine: GraphEngineLike) {
     this._engine = engine
   }
 
@@ -197,7 +203,7 @@ export class PeriodicCommitProcedure {
 
   /**
    * 执行单批次的查询操作
-   * 通过 GraphEngine 的查询接口执行
+   * 通过 GraphEngineLike 的查询接口执行
    *
    * @returns 影响的行数
    */
@@ -256,7 +262,7 @@ export class PeriodicCommitProcedure {
  */
 export function registerPeriodicCommit(
   registry: ProcedureRegistry,
-  engine: GraphEngine,
+  engine: GraphEngineLike,
 ): void {
   // 先移除已存在的注册（如果有），避免注册冲突
   // 因为 ProcedureRegistry.registerProcedure 会检查重复
