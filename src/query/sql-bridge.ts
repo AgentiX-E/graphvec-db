@@ -260,6 +260,16 @@ export class SqlToCypherBridge {
     if (expr.left !== undefined && expr.op && expr.right !== undefined) {
       const op = expr.op.toUpperCase()
 
+      // Handle logical AND/OR: recursively translate both sides
+      if (op === 'AND' || op === 'OR') {
+        const leftStr = this.translateExpression(expr.left, defaultAlias)
+        const rightStr = this.translateExpression(expr.right, defaultAlias)
+        if (leftStr && rightStr) {
+          return `(${leftStr} ${op} ${rightStr})`
+        }
+        return leftStr || rightStr
+      }
+
       // Handle IN: right side is an array in alasql
       if (op === 'IN' && Array.isArray(expr.right)) {
         const leftStr = this.exprToString(expr.left, defaultAlias)

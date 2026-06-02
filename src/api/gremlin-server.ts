@@ -127,15 +127,17 @@ function buildResponse(
   // Version
   bufs.push(Buffer.from([0x81]))
 
-  // Request ID (UUID)
+  // Request ID (UUID with nullable value_flag=0x00 for non-null)
   const hex = requestId.replace(/-/g, '')
+  bufs.push(Buffer.from([0x00])) // value_flag = present
   bufs.push(Buffer.from(hex, 'hex'))
 
   // Status code (Int)
   bufs.push(gb.graphBinaryWriter.ioc.intSerializer.serialize(statusCode, false))
 
-  // Status message (nullable String)
-  bufs.push(gb.graphBinaryWriter.ioc.stringSerializer.serialize(null, false))
+  // Status message (nullable String — format: {value_flag}{length}{text})
+  // reader uses: deserialize(cursor, false, true) => expects value_flag, then length+text if present
+  bufs.push(Buffer.from([0x01])) // value_flag=1 means null
 
   // Status attributes (Map — empty)
   bufs.push(gb.graphBinaryWriter.ioc.mapSerializer.serialize({}, false))
@@ -143,8 +145,9 @@ function buildResponse(
   // Result meta (Map)
   bufs.push(gb.graphBinaryWriter.ioc.mapSerializer.serialize(meta || {}, false))
 
-  // Result data — serialize as a list
-  bufs.push(gb.graphBinaryWriter.ioc.listSerializer.serialize(data, false))
+  // Result data — serialize as a fully qualified typed value (list)
+  // The reader expects a fully qualified value: {type_code}{type_info}{value_flag}{value}
+  bufs.push(gb.graphBinaryWriter.ioc.listSerializer.serialize(data, true))
 
   return Buffer.concat(bufs)
 }
@@ -160,10 +163,17 @@ function buildErrorResponse(message: string, requestId?: string): Buffer {
 
   const rid = requestId || crypto.randomUUID()
   const hex = rid.replace(/-/g, '')
+  bufs.push(Buffer.from([0x00])) // value_flag = present
   bufs.push(Buffer.from(hex, 'hex'))
 
   bufs.push(gb.graphBinaryWriter.ioc.intSerializer.serialize(STATUS.ERROR, false))
-  bufs.push(gb.graphBinaryWriter.ioc.stringSerializer.serialize(message, false))
+
+  // Status message (nullable String — {value_flag}{length}{text})
+  const errMsg = Buffer.from(message, 'utf8')
+  bufs.push(Buffer.from([0x00])) // value_flag = present
+  bufs.push(gb.graphBinaryWriter.ioc.intSerializer.serialize(errMsg.length, false))
+  bufs.push(errMsg)
+
   bufs.push(gb.graphBinaryWriter.ioc.mapSerializer.serialize({}, false))
   bufs.push(gb.graphBinaryWriter.ioc.mapSerializer.serialize({}, false))
   bufs.push(gb.graphBinaryWriter.ioc.anySerializer.serialize(null, true))
@@ -209,6 +219,8 @@ export class GremlinServer {
     this._wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
       const sessionId = crypto.randomUUID()
       const session = new GremlinSession(sessionId, ws, this._executeQuery)
+      // Default to authenticated for simplicity (no auth required by default)
+      session.authenticated = true
       this._connections.set(sessionId, ws)
       ;(ws as any)._session = session
 

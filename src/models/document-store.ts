@@ -400,14 +400,15 @@ export class DocumentCollection<T = DocumentBody> {
  * 所有 collection 共享同一个 LMDB 环境（加密、事务）。
  */
 export class DocumentStore {
-  private env: lmdb.RootDatabase<any>
+  private env: lmdb.Database<any, any>
   private collections: Map<string, DocumentCollection> = new Map()
   private _path: string
+  private _closed = false
 
   constructor(config: DocumentStoreConfig) {
     this._path = config.path
 
-    const lmdbOptions: lmdb.RootDatabaseOptions = {
+    const lmdbOptions: lmdb.DatabaseOptions & { path?: string; mapSize?: number } = {
       path: config.path,
       mapSize: config.mapSize ?? DEFAULT_MAP_SIZE,
     }
@@ -423,7 +424,7 @@ export class DocumentStore {
       ;(lmdbOptions as any).encryptionKey = keyBuffer
     }
 
-    this.env = new lmdb.RootDatabase(lmdbOptions)
+    this.env = lmdb.open(lmdbOptions as any)
   }
 
   /** 数据库路径 */
@@ -484,6 +485,8 @@ export class DocumentStore {
    * 关闭文档存储并释放 LMDB 资源
    */
   async close(): Promise<void> {
+    if (this._closed) return
+    this._closed = true
     this.collections.clear()
     await this.env.close()
   }
