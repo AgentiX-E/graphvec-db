@@ -328,6 +328,18 @@ export class AuthError extends Error {
   }
 }
 
+/**
+ * 子图权限 — 控制用户对特定子图的访问
+ */
+export interface SubgraphPermission {
+  /** 用户标识 */
+  userId: string
+  /** 子图名称 */
+  subgraph: string
+  /** 允许的操作 */
+  actions: ('read' | 'write' | 'admin')[]
+}
+
 export interface AuditEntry {
   timestamp: string
   hlcTimestamp?: string

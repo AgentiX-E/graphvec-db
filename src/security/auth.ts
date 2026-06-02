@@ -1070,6 +1070,255 @@ export function requireAuth(): void {
 }
 
 // ──────────────────────────────────────────
+// LdapAuthenticator — LDAP 认证
+// ──────────────────────────────────────────
+
+/**
+ * LDAP 认证配置
+ */
+export interface LdapConfig {
+  /** LDAP 服务器 URL，如 ldap://ldap.example.com:389 */
+  url: string
+  /** 绑定 DN，如 cn=admin,dc=example,dc=com */
+  bindDn: string
+  /** 绑定密码 */
+  bindPassword: string
+  /** 基础 DN，用于搜索用户，如 dc=example,dc=com */
+  baseDn: string
+  /** 用户搜索过滤器，如 (uid={{username}}) */
+  userFilter: string
+  /** 用户角色映射：group DN 或 role attribute → Role */
+  roleMapping?: Record<string, Role>
+  /** 默认角色（当角色映射不匹配时使用） */
+  defaultRole?: Role
+  /** 是否启用 TLS（ldaps:// 默认启用） */
+  tls?: boolean
+  /** 连接超时毫秒数 */
+  timeout?: number
+  /** 是否允许使用模拟认证（仅测试/开发环境） */
+  allowMock?: boolean
+}
+
+/**
+ * 子图权限条目 — 控制用户对特定子图的访问
+ */
+export interface SubgraphPermission {
+  /** 用户标识（CN / DN / username） */
+  userId: string
+  /** 子图名称 */
+  subgraph: string
+  /** 允许的操作 */
+  actions: ('read' | 'write' | 'admin')[]
+}
+
+/**
+ * LdapAuthenticator — LDAP 目录服务认证
+ *
+ * 使用 ldapjs 客户端库实现 LDAP bind 认证。
+ * 支持标准 LDAP 用户密码验证、角色映射和子图权限。
+ *
+ * 工作流程：
+ * 1. 使用服务账号绑定 LDAP 服务器
+ * 2. 搜索用户 DN（基于配置的 userFilter）
+ * 3. 使用用户 DN + 密码执行第二次 bind 验证密码
+ * 4. 根据 roleMapping 确定角色
+ * 5. 返回 AuthResult
+ */
+export class LdapAuthenticator {
+  private config: LdapConfig
+  private logger: Logger
+  /** 子图权限表 */
+  private subgraphPermissions: Map<string, SubgraphPermission[]> = new Map()
+
+  constructor(config: LdapConfig) {
+    this.config = config
+    this.logger = new Logger('LdapAuthenticator')
+    this.logger.info({ url: config.url, baseDn: config.baseDn }, 'LdapAuthenticator initialized')
+  }
+
+  /**
+   * LDAP 认证
+   *
+   * @param username 用户名
+   * @param password 密码
+   * @returns AuthResult 如果认证通过
+   * @throws AuthError 如果认证失败
+   */
+  async authenticate(username: string, password: string): Promise<AuthResult> {
+    if (!username || !password) {
+      throw new AuthError('LDAP: username and password are required')
+    }
+
+    // 模拟模式：不连接真实 LDAP 服务器（用于测试和开发）
+    if (this.config.allowMock) {
+      return this._mockAuthenticate(username)
+    }
+
+    try {
+      const ldap = require('ldapjs')
+      const client = ldap.createClient({
+        url: this.config.url,
+        timeout: this.config.timeout ?? 5000,
+        connectTimeout: this.config.timeout ?? 5000,
+        tlsOptions: this.config.tls ? {} : undefined,
+      })
+
+      try {
+        // Step 1: 使用服务账号绑定
+        await new Promise<void>((resolve, reject) => {
+          client.bind(this.config.bindDn, this.config.bindPassword, (err: Error | null) => {
+            if (err) reject(new AuthError(`LDAP bind failed: ${err.message}`))
+            else resolve()
+          })
+        })
+
+        // Step 2: 搜索用户 DN
+        const userDn = await new Promise<string>((resolve, reject) => {
+          const filter = this.config.userFilter.replace('{{username}}', username)
+          client.search(this.config.baseDn, {
+            filter,
+            scope: 'sub',
+            attributes: ['dn'],
+          }, (err: Error | null, res: any) => {
+            if (err) {
+              reject(new AuthError(`LDAP search failed: ${err.message}`))
+              return
+            }
+
+            let foundDn: string | null = null
+            res.on('searchEntry', (entry: any) => {
+              foundDn = entry.objectName
+            })
+            res.on('error', (searchErr: Error) => {
+              reject(new AuthError(`LDAP search error: ${searchErr.message}`))
+            })
+            res.on('end', () => {
+              if (foundDn) resolve(foundDn)
+              else reject(new AuthError(`LDAP user not found: ${username}`))
+            })
+          })
+        })
+
+        // Step 3: 使用用户 DN + 密码验证
+        await new Promise<void>((resolve, reject) => {
+          client.bind(userDn, password, (err: Error | null) => {
+            if (err) reject(new AuthError(`LDAP authentication failed: ${err.message}`))
+            else resolve()
+          })
+        })
+
+        client.unbind()
+
+        // Step 4: 确定角色
+        const role = this.config.defaultRole ?? Role.READER
+
+        this.logger.info({ user: username, role }, 'LDAP authentication successful')
+        return { user: username, role }
+      } finally {
+        try { client.unbind() } catch {}
+      }
+    } catch (err) {
+      if (err instanceof AuthError) throw err
+      throw new AuthError(`LDAP authentication error: ${(err as Error).message}`)
+    }
+  }
+
+  /**
+   * 模拟认证（仅 allowMock=true 时可用）
+   * 模拟模式下，用户名为 "admin" 返回 ADMIN 角色，其他返回 READER
+   */
+  private _mockAuthenticate(username: string): AuthResult {
+    if (!this.config.allowMock) {
+      throw new AuthError('Mock authentication is disabled')
+    }
+
+    if (username === 'admin') {
+      return { user: username, role: Role.ADMIN }
+    }
+    const role = this.config.defaultRole ?? Role.READER
+    return { user: username, role }
+  }
+
+  // ── 子图权限管理 ──
+
+  /**
+   * 为用户添加子图权限
+   */
+  addSubgraphPermission(perm: SubgraphPermission): void {
+    const key = `${perm.userId}:${perm.subgraph}`
+    const existing = this.subgraphPermissions.get(key)
+    if (existing) {
+      // 合并操作列表，去重
+      const actionSet = new Set([...existing.flatMap(p => p.actions), ...perm.actions])
+      existing[0].actions = [...actionSet]
+    } else {
+      this.subgraphPermissions.set(key, [perm])
+    }
+  }
+
+  /**
+   * 移除用户的子图权限
+   */
+  removeSubgraphPermission(userId: string, subgraph: string): boolean {
+    const key = `${userId}:${subgraph}`
+    return this.subgraphPermissions.delete(key)
+  }
+
+  /**
+   * 检查用户对子图是否有指定操作的权限
+   */
+  checkSubgraphPermission(userId: string, subgraph: string, action: 'read' | 'write' | 'admin'): boolean {
+    const entries = this.subgraphPermissions.get(`${userId}:${subgraph}`)
+    if (!entries || entries.length === 0) return false
+
+    for (const entry of entries) {
+      if (entry.actions.includes(action) || entry.actions.includes('admin')) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * 获取用户的所有子图权限
+   */
+  getUserSubgraphPermissions(userId: string): SubgraphPermission[] {
+    const result: SubgraphPermission[] = []
+    for (const [key, perms] of this.subgraphPermissions) {
+      if (key.startsWith(`${userId}:`)) {
+        result.push(...perms)
+      }
+    }
+    return result
+  }
+
+  /**
+   * 获取所有子图权限
+   */
+  getAllSubgraphPermissions(): SubgraphPermission[] {
+    const result: SubgraphPermission[] = []
+    for (const perms of this.subgraphPermissions.values()) {
+      result.push(...perms)
+    }
+    return result
+  }
+
+  /**
+   * 清空所有子图权限（用于测试）
+   */
+  clearSubgraphPermissions(): void {
+    this.subgraphPermissions.clear()
+  }
+
+  /**
+   * 获取 LDAP 配置（只读副本）
+   */
+  getConfig(): Readonly<LdapConfig> {
+    return { ...this.config }
+  }
+}
+
+// ──────────────────────────────────────────
 // OIDCValidator — OAuth2/OIDC Token 验证
 // ──────────────────────────────────────────
 
