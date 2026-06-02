@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc",
     "test:unit": "npx vitest run --config vitest.config.ts --root .",
-    "test:all": "npm run test:core-base && npm run test:eventbus && npm run test:eventbus-live && npm run test:eventbus-edge && npm run test:multileader && npm run test:multileader-edge && npm run test:outbox && npm run test:workerpool && npm run test:replication && npm run test:consensus && npm run test:reshard && npm run test:shard-core && npm run test:shard-cluster && npm run test:shard-routing && npm run test:shard-stability && npm run test:security && npm run test:multileader-extreme && npm run test:multileader-benchmark && npm run test:raft && npm run test:int && npm run test:fault && npm run test:algorithms && npm run test:api && npm run test:import && npm run test:index && npm run test:materialized-view && npm run test:ops && npm run test:query && npm run test:search && npm run test:utils && npm run test:ldbc",
+    "test:all": "npm run test:core-base && npm run test:eventbus && npm run test:eventbus-live && npm run test:eventbus-edge && npm run test:multileader && npm run test:multileader-edge && npm run test:outbox && npm run test:workerpool && npm run test:replication && npm run test:consensus && npm run test:reshard && npm run test:shard-core && npm run test:shard-cluster && npm run test:shard-routing && npm run test:shard-stability && npm run test:security && npm run test:multileader-extreme && npm run test:multileader-benchmark && npm run test:raft && npm run test:int && npm run test:fault && npm run test:algorithms && npm run test:api && npm run test:import && npm run test:index && npm run test:materialized-view && npm run test:ops && npm run test:query && npm run test:search && npm run test:utils && npm run test:benchmark",
     "test:core": "npx vitest run --config vitest.config.ts --root . src/core/*.spec.ts",
     "test:eventbus": "npx vitest run --config vitest.config.ts --root . src/core/event-bus-worker-pool.spec.ts src/core/event-stream.spec.ts",
     "test:eventbus-live": "NODE_OPTIONS='--max-old-space-size=4096' npx vitest run --config vitest.config.ts --root . src/core/event-bus.live.spec.ts",
@@ -42,7 +42,7 @@
     "test:query": "npx vitest run --config vitest.config.ts --root . src/query",
     "test:search": "npx vitest run --config vitest.config.ts --root . src/search",
     "test:utils": "npx vitest run --config vitest.config.ts --root . src/utils",
-    "test:ldbc": "NODE_OPTIONS='--max-old-space-size=8192' npx vitest run --config vitest.config.ts --root . src/benchmark/ldbc-snb.spec.ts",
+    "test:benchmark": "NODE_OPTIONS='--max-old-space-size=8192' npx vitest run --config vitest.config.ts --root . src/benchmark/ldbc-snb.spec.ts",
     "bench": "npx tsx test/benchmark/benchmark-runner.ts",
     "bench:legacy": "npx ts-node bench/core-ops.bench.ts",
     "dev": "ts-node scripts/dev-cluster.ts",
