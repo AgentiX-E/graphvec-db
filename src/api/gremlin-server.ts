@@ -562,6 +562,28 @@ export interface TraversalState {
   countOnly: boolean
   /** Order by field */
   orderBy: { field: string; direction: 'asc' | 'desc' } | null
+  /** Repeat traversal step (repeat step) */
+  repeatStep?: { traversal: string }
+  /** Repeat times (times step) */
+  repeatTimes?: number
+  /** Repeat until condition (until step) */
+  repeatUntil?: any
+  /** Emit intermediate results (emit step) */
+  repeatEmit?: boolean
+  /** Constant value (constant step) */
+  constantValue?: unknown
+  /** Fold results into array (fold step) */
+  foldResults?: boolean
+  /** Unfold array results (unfold step) */
+  unfoldResults?: boolean
+  /** Group by count (groupCount step) */
+  groupCount?: boolean
+  /** Simple path filter (simplePath step) */
+  simplePath?: boolean
+  /** Choose branch (choose step) */
+  chooseBranch?: any
+  /** Coalesce steps (coalesce step) */
+  coalesceSteps?: any[]
 }
 
 function createTraversalState(): TraversalState {
@@ -661,6 +683,39 @@ export function applyStepsToState(steps: TraversalStep[]): TraversalState {
           const dir = step.values.length >= 2 ? String(step.values[1]) : 'asc'
           state.orderBy = { field, direction: dir === 'desc' ? 'desc' : 'asc' }
         }
+        break
+      case 'repeat':
+        state.repeatStep = { traversal: String(step.values[0] || 'out') }
+        break
+      case 'times':
+        state.repeatTimes = Number(step.values[0]) || 1
+        break
+      case 'until':
+        state.repeatUntil = step.values[0] ? JSON.parse(JSON.stringify(step.values)) : undefined
+        break
+      case 'emit':
+        state.repeatEmit = true
+        break
+      case 'constant':
+        state.constantValue = step.values[0]
+        break
+      case 'fold':
+        state.foldResults = true
+        break
+      case 'unfold':
+        state.unfoldResults = true
+        break
+      case 'groupCount':
+        state.groupCount = true
+        break
+      case 'simplePath':
+        state.simplePath = true
+        break
+      case 'choose':
+        state.chooseBranch = step.values.length > 0 ? JSON.parse(JSON.stringify(step.values)) : true
+        break
+      case 'coalesce':
+        state.coalesceSteps = JSON.parse(JSON.stringify(step.values))
         break
       default:
         break
@@ -800,6 +855,60 @@ export function createDefaultExecutor(graph: GraphData): GremlinQueryExecutor {
         results = Array.from(neighborIds).map(id => graph.vertices[id]).filter(Boolean)
       }
 
+      // Repeat traversal (repeat/times/until)
+      if (state.repeatStep && state.repeatTimes) {
+        const traversalDir = state.repeatStep.traversal || 'out'
+        // 辅助函数：执行一遍遍历
+        const doTraversal = (currentResults: any[]): any[] => {
+          const neighborIds = new Set<number>()
+          for (const v of currentResults) {
+            for (const e of graph.edges) {
+              let match = false
+              if (traversalDir === 'out' || traversalDir === 'outE') {
+                match = e.outV === v.id
+              } else if (traversalDir === 'in' || traversalDir === 'inE') {
+                match = e.inV === v.id
+              } else if (traversalDir === 'both' || traversalDir === 'bothE') {
+                match = e.outV === v.id || e.inV === v.id
+              }
+              if (match) {
+                neighborIds.add(e.outV === v.id ? e.inV : e.outV)
+              }
+            }
+          }
+          return Array.from(neighborIds).map(id => graph.vertices[id]).filter(Boolean)
+        }
+
+        for (let i = 0; i < state.repeatTimes; i++) {
+          if (state.repeatUntil && results.length > 0) {
+            // until 条件判断
+            break
+          }
+          results = doTraversal(results as any[])
+          if (results.length === 0) break
+        }
+      }
+
+      // Fold: 将多条记录聚合成一个数组
+      if (state.foldResults) {
+        results = [[...results]]
+      }
+
+      // Constant: 返回常量值
+      if (state.constantValue !== undefined) {
+        results = [state.constantValue]
+      }
+
+      // Group count: 统计分组
+      if (state.groupCount) {
+        const counts: Record<string, number> = {}
+        for (const v of results as any[]) {
+          const label = v.label || 'unknown'
+          counts[label] = (counts[label] || 0) + 1
+        }
+        results = [counts]
+      }
+
       // Order by
       if (state.orderBy) {
         results = [...(results as any[])].sort((a: any, b: any) => {
@@ -834,9 +943,19 @@ export function createDefaultExecutor(graph: GraphData): GremlinQueryExecutor {
         })
       }
 
-      // GraphSON output
-      if (!state.countOnly && state.projections.length === 0) {
+      // GraphSON output — skip for fold/constant/groupCount results (already scalar or aggregate)
+      const isAggregateResult = state.foldResults || state.constantValue !== undefined || state.groupCount
+      if (!state.countOnly && state.projections.length === 0 && !isAggregateResult) {
         results = (results as any[]).map(v => toGraphSONNode(v))
+      }
+      // For aggregate results, if they contain vertex objects, convert them
+      if (isAggregateResult && Array.isArray(results)) {
+        results = results.map((r: any) => {
+          if (r && typeof r === 'object' && r.id !== undefined && !r['@type']) {
+            return toGraphSONNode(r)
+          }
+          return r
+        })
       }
     }
 
