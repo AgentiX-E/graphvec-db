@@ -251,6 +251,15 @@ export interface QueryPlan {
   callQuery?: QueryPlan
   /** FOREACH 子句：列表迭代执行子查询 */
   forEach?: ForEachClause
+  /** REDUCE 表达式：列表累积归约 */
+  reduce?: {
+    accumulator: string
+    initial: unknown
+    variable: string
+    list: unknown[]
+    isVarRef: boolean
+    expression: string
+  }
   // DML fields
   /** CREATE 节点 */
   createNodes?: Array<{
@@ -559,6 +568,22 @@ export function _preprocessQuery(query: string): {
     }
   }
 
+  // ── Step 0.5: 提取 REDUCE ──
+  // REDUCE(acc = init, x IN list | expression) [AS alias]
+  // 提取后从 query 中移除（替换为标识符保持语法完整性）
+  const reduceRE = /REDUCE\s*\(\s*(\w+)\s*=\s*([^,]+?)\s*,\s*(\w+)\s+IN\s+(.+?)\s*\|\s*([\s\S]+?)\s*\)(?:\s+AS\s+\w+)?/i
+  const reduceMatch = cleanQuery.match(reduceRE)
+  if (reduceMatch) {
+    result.reduceExtract = {
+      accumulator: reduceMatch[1],
+      initial: reduceMatch[2].trim(),
+      variable: reduceMatch[3],
+      listExpr: reduceMatch[4].trim(),
+      expression: reduceMatch[5].trim(),
+    }
+    cleanQuery = cleanQuery.replace(reduceRE, '__reduce_val__')
+  }
+
   // ── Step 1: handle OPTIONAL MATCH by stripping the "OPTIONAL " prefix ──
   // After peggy parses "MATCH ...", we can detect which MATCH was OPTIONAL by
   // checking if the original query had "OPTIONAL MATCH" before it.
@@ -705,6 +730,7 @@ export function _preprocessQuery(query: string): {
       orderByAggReplacements:
         orderByAggReplacements.length > 0 ? orderByAggReplacements : undefined,
       foreachExtract: result.foreachExtract,
+      reduceExtract: result.reduceExtract,
     },
   }
 }
@@ -758,6 +784,14 @@ export interface _QueryExtracts {
     variable: string
     listExpr: string
     operation: string
+  }
+  /** REDUCE 提取 */
+  reduceExtract?: {
+    accumulator: string
+    initial: string
+    variable: string
+    listExpr: string
+    expression: string
   }
 }
 
@@ -1007,6 +1041,34 @@ export function parseQuery(query: string): QueryPlan {
     if (/^CREATE\b/i.test(opText)) plan.forEach.operation.type = 'CREATE'
     else if (/^SET\b/i.test(opText)) plan.forEach.operation.type = 'SET'
     else if (/^DELETE\b/i.test(opText)) plan.forEach.operation.type = 'DELETE'
+  }
+
+  // Step 5: Attach REDUCE if extracted
+  if (extracts.reduceExtract) {
+    const listExpr = extracts.reduceExtract.listExpr.trim()
+    let list: unknown[] = []
+    let isVarRef = true
+    if (listExpr.startsWith('[') && listExpr.endsWith(']')) {
+      isVarRef = false
+      try { list = JSON.parse(listExpr.replace(/'/g, '"')) } catch { list = [] }
+    }
+    let initial: unknown = extracts.reduceExtract.initial
+    // 处理引号包裹的字符串
+    if (/^"[^"]*"$/.test(initial as string) || /^'[^']*'$/.test(initial as string)) {
+      initial = (initial as string).slice(1, -1)
+    } else if (/^\d+(\.\d+)?$/.test(initial as string)) {
+      initial = Number(initial)
+    } else if (initial === 'true') initial = true
+    else if (initial === 'false') initial = false
+
+    plan.reduce = {
+      accumulator: extracts.reduceExtract.accumulator,
+      initial,
+      variable: extracts.reduceExtract.variable,
+      list,
+      isVarRef,
+      expression: extracts.reduceExtract.expression,
+    }
   }
 
   return plan
