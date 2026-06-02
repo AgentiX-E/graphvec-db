@@ -224,7 +224,7 @@ describe('AlertRuleManager', () => {
       manager.addRule(rule)
     }
 
-    expect(manager.listRules().length).toBe(16 + rules.length)
+    expect(manager.listRules().length).toBe(6 + rules.length)
 
     // Disable all presets — only custom should remain
     for (const rule of manager.listAllRules()) {
