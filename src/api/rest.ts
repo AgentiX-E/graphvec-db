@@ -52,6 +52,8 @@ export interface RestApiConfig {
   databaseManager?: DatabaseManager
   /** EventBus 实例（可选），提供后启用 GraphQL Subscription SSE 端点 */
   eventBus?: EventBus
+  /** HealthChecker 实例（可选），提供后启用 /health/live 和 /health/ready 端点 */
+  healthChecker?: import('./health-checker').HealthChecker
 }
 
 export interface RestApiServer {
@@ -449,6 +451,32 @@ export function createRestApiServer(
         jsonResponse(res, 200, { status: 'ok' })
       },
     },
+
+    // GET /health/live (仅当 healthChecker 可用时注册)
+    ...(config.healthChecker
+      ? [{
+          method: 'GET' as const,
+          path: '/health/live',
+          requireAuth: false,
+          handler: async (_req: http.IncomingMessage, res: http.ServerResponse) => {
+            const result = await config.healthChecker!.livez()
+            jsonResponse(res, result.ok ? 200 : 503, result)
+          },
+        }]
+      : []),
+
+    // GET /health/ready (仅当 healthChecker 可用时注册)
+    ...(config.healthChecker
+      ? [{
+          method: 'GET' as const,
+          path: '/health/ready',
+          requireAuth: false,
+          handler: async (_req: http.IncomingMessage, res: http.ServerResponse) => {
+            const result = await config.healthChecker!.readyz()
+            jsonResponse(res, result.ok ? 200 : 503, result)
+          },
+        }]
+      : []),
 
     // ── 节点 CRUD ────────────────────────────
 
