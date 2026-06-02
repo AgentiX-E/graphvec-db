@@ -1,0 +1,44 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.7 [39m[90m/home/admin/openclaw/workspace/agentiX-graphvec/src[39m
+
+ [32m✓[39m api/compression.spec.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 74[2mms[22m[39m
+[90mstderr[2m | core/config-watcher.spec.ts[2m > [22m[2mConfigWatcher[2m > [22m[2mreload from file[2m > [22m[2mshould survive invalid JSON in config file
+[22m[39m[ConfigWatcher] Failed to parse config file: Unexpected token 'i', "invalid json{{{" is not valid JSON
+
+[90mstderr[2m | core/config-watcher.spec.ts[2m > [22m[2mConfigWatcher[2m > [22m[2masync handlers[2m > [22m[2mshould not reject the caller when async handler throws
+[22m[39m[ConfigWatcher] Handler error for key "a": Error: handler error
+    at [90m/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.spec.ts:198:49
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:302:11
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:1903:26
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2326:20
+    at new Promise (<anonymous>)
+    at runWithCancel [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2323:10[90m)[39m
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2305:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2272:10[90m)[39m
+    at [90mfile:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2955:64
+
+[90mstderr[2m | core/config-watcher.spec.ts[2m > [22m[2mConfigWatcher[2m > [22m[2masync handlers[2m > [22m[2mshould not reject the caller when sync handler throws
+[22m[39m[ConfigWatcher] Handler error for key "a": Error: sync error
+    at [90m/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.spec.ts:212:43
+    at Mock [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/spy[24m/dist/index.js:332:34[90m)[39m
+    at ConfigWatcher.invokeHandler [90m(/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.ts:257:22[90m)[39m
+    at ConfigWatcher.fireHandlers [90m(/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.ts:241:16[90m)[39m
+    at ConfigWatcher.setConfig [90m(/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.ts:90:10[90m)[39m
+    at [90m/home/admin/openclaw/workspace/agentiX-graphvec/[39msrc/core/config-watcher.spec.ts:217:28
+    at Proxy.assertThrows [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4mchai[24m/index.js:2798:5[90m)[39m
+    at Proxy.methodWrapper [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4mchai[24m/index.js:1700:25[90m)[39m
+    at Proxy.<anonymous> [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4m@vitest/expect[24m/dist/index.js:1216:12[90m)[39m
+    at Proxy.overwritingMethodWrapper [90m(file:///home/admin/openclaw/workspace/agentiX-graphvec/[39mnode_modules/[4mchai[24m/index.js:1750:33[90m)[39m
+
+ [32m✓[39m core/config-watcher.spec.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 99[2mms[22m[39m
+ [32m✓[39m query/query-timeout-manager.spec.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 188[2mms[22m[39m
+ [32m✓[39m api/openapi-bridge.spec.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 40[2mms[22m[39m
+ [32m✓[39m ops/audit-exporter.spec.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m api/health-checker.spec.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[32m104 passed[39m[22m[90m (104)[39m
+[2m   Start at [22m 15:35:45
+[2m   Duration [22m 1.58s[2m (transform 618ms, setup 0ms, import 1.15s, tests 439ms, environment 3ms)[22m
+

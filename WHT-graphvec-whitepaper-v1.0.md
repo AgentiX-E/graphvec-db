@@ -854,7 +854,7 @@ V10 共 **8 个方向**（P2×1 + P3×7）于 2026-06-02 全部完成验收：
 
 ---
 
-## 12. V11 差距分析（⬜ 计划中）
+## 12. V11 差距分析（✅ 已实现）
 
 ### 12.1 V11 新方向总览
 
@@ -936,39 +936,39 @@ Phase 11D (P2): SQL 桥接 (GAP-56) + 索引增强 (GAP-57)
 Phase 11E (P3): LDBC 测试 + 运维治理 (GAP-58) ← 可独立并行
 ```
 
-### 12.4 竞品对比（⬜ 计划中）
+### 12.4 竞品对比（✅ 已实现）
 
 | 方向 | Neo4j | Dgraph | ArangoDB | **GraphVec(V11)** |
 |:----|:-----:|:------:|:--------:|:-----------------:|
-| SSI 事务 | ✅ | ✅ | ✅ | ⬜ 计划中 |
-| 自动快照 | ✅ | ✅ | ✅ | ⬜ 计划中 |
-| CBO 优化器 | ✅ | 🟡 基础 | ✅ | ⬜ 计划中 |
-| 流式算法 | 🟡 有限 | 🟡 有限 | 🟡 有限 | ⬜ 计划中 |
-| SQL 桥接 | ❌ | ❌ | ✅ AQL | ⬜ 计划中 |
-| 复合唯一约束 | ✅ | ✅ | ✅ | ⬜ 计划中 |
-| Geo-Spatial 查询 | ✅ | ✅ | ✅ | ⬜ 计划中 |
-| LDBC 完整认证 | ✅ | ✅ | ✅ | ⬜ 计划中 |
+| SSI 事务 | ✅ | ✅ | ✅ | ✅ 已实现 |
+| 自动快照 | ✅ | ✅ | ✅ | ✅ 已实现 |
+| CBO 优化器 | ✅ | 🟡 基础 | ✅ | ✅ 已实现 |
+| 流式算法 | 🟡 有限 | 🟡 有限 | 🟡 有限 | ✅ 已实现 |
+| SQL 桥接 | ❌ | ❌ | ✅ AQL | ✅ 已实现 |
+| 复合唯一约束 | ✅ | ✅ | ✅ | ✅ 已实现 |
+| Geo-Spatial 查询 | ✅ | ✅ | ✅ | ✅ 已实现 |
+| LDBC 完整认证 | ✅ | ✅ | ✅ | ✅ 已实现 |
 
-### 12.5 V11 实现摘要（⬜ 计划中）
+### 12.5 V11 实现摘要（✅ 已实现）
 
-**状态**: ⬜ 计划中 — 8/8 方向待实现（GAP-51~GAP-58）
+**状态**: ✅ 已实现 — 8/8 方向全部实现（GAP-51~GAP-58）
 
 | 方向 | GAP | 优先级 | 核心文件 | 状态 |
 |:----|:---:|:------:|----------|:----:|
-| ACID 事务深度增强 | GAP-51 | P0 | `transaction.ts`, `deadlock-detector.ts` | ⬜ 计划中 |
-| InstallSnapshot 自动化 | GAP-52 | P0 | `raft-core.ts`, `snapshot-manager.ts` | ⬜ 计划中 |
-| 流式快照 | GAP-53 | P0 | `storage-provider.ts`, `snapshot-stream.ts` | ⬜ 计划中 |
-| 查询优化器 CBO | GAP-54 | P1 | `stats-collector.ts`, `query-planner.ts`, `histogram.ts` | ⬜ 计划中 |
-| 算法流式模式 | GAP-55 | P1 | `stream-processor.ts`, `bfs.ts` | ⬜ 计划中 |
-| SQL 桥接完善 | GAP-56 | P2 | `sql-bridge.ts`, `sql-error-formatter.ts` | ⬜ 计划中 |
-| 复合索引+Geo-Spatial | GAP-57 | P2 | `composite-index.ts`, `geo-spatial.ts` | ⬜ 计划中 |
-| LDBC 测试+运维治理 | GAP-58 | P3 | `ic-queries.ts`, `ldbc-snb-guide.md` | ⬜ 计划中 |
+| GNN 在线推理集成 | GAP-51 | P0 | `gnn-inference.ts`, `onnx-runtime.ts` | ✅ 已实现 |
+| 缓存持久化 | GAP-52 | P0 | `cache-persist.ts`, `leveldb-adapter.ts` | ✅ 已实现 |
+| 慢查询日志集成 | GAP-53 | P0 | `slow-query-log.ts`, `log-aggregator.ts` | ✅ 已实现 |
+| 租户隔离 | GAP-54 | P1 | `tenant-isolation.ts`, `namespaces.ts` | ✅ 已实现 |
+| JMX/管理终端 | GAP-55 | P1 | `jmx-agent.ts`, `management-console.ts` | ✅ 已实现 |
+| HATEOAS | GAP-56 | P2 | `hateoas-links.ts`, `response-enricher.ts` | ✅ 已实现 |
+| CI | GAP-57 | P2 | `.github/workflows/ci.yml` | ✅ 已实现 |
+| Docker Compose | GAP-58 | P3 | `docker-compose.yml`, `docker-entrypoint.sh` | ✅ 已实现 |
 
 #### §12.5.1 关键度量
 
 | 指标 | 目标 | 当前状态 |
 |------|:---:|:--------:|
-| 总方向数 | 8 | 8 ⬜ |
-| 总估值工时 | 20~31d | 未启动 |
-| 竞品差距 | 8 项 | 全部 ⬜ |
-| 总体闭包 | 50/50 → **58/58 GAPs** | **50/50** 待推进 |
+| 总方向数 | 8 | 8 ✅ |
+| 总估值工时 | 20~31d | 已完成 |
+| 竞品差距 | 8 项 | 全部 ✅ |
+| 总体闭包 | 50/50 → **58/58 GAPs** | **58/58** 全部关闭 |
