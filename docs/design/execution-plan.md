@@ -717,3 +717,142 @@ Phase 2:
 | Phase 7A | 变长路径 / GraphQL Sub / TLS 轮转 / 查询缓存 / Fluent 补齐 | P1+P2 | 6~9d | **5** | ✅ 已完成 |
 | Phase 7B | 连接池 / SNB 基准 / 批量删除 | P3 | 6~8.5d | **3** | ✅ 已完成 |
 | **V7 合计** | — | P1~P3 | **12~17.5d** | **8** | ✅ **已实现** |
+
+---
+
+### Phase 8: V8 新方向（⬜ **计划中**）
+
+**目标**: 基于 V8 深度调研结论（`temp/v8-gap-research.md`），实现 8 项新方向，覆盖持久化完善、分布式拓扑、查询运维三大板块。
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v8-gap-research.md`  
+> 状态: **⬜ 计划中** · 尚未实施
+
+#### Phase 8A: P2 四项（存储+分布式基础，预估: 14~19d）
+
+**目标**: 优先实现全文搜索持久化完善、Schema 校验引擎集成、多 DC 部署、增量备份恢复。这些方向修复现有实现的半成品状态。
+
+| 任务 | 方向 | 优先级 | 估值工时 | 依赖包 | 状态 |
+|------|------|:------:|:--------:|--------|:----:|
+| **Task 8A.1** | 全文搜索持久化完善 — 定时自动快照 + 写计数触发 | **P2** | 2~3d | 无（复用 WALWriter） | ⬜ 计划中 |
+| **Task 8A.2** | 属性图 Schema 校验 — SchemaValidator类 + 引擎集成 | **P2** | 3~4d | 无（复用 schema-validator） | ⬜ 计划中 |
+| **Task 8A.3** | 多数据中心部署 — MultiRegionTopology + locality-aware | **P2** | 5~7d | `s2-geometry`（已有） | ⬜ 计划中 |
+| **Task 8A.4** | 增量备份/恢复 — IncrementalBackupManager + PITR | **P2** | 4~5d | 无（复用 fs/archiver） | ⬜ 计划中 |
+
+8A 中 Task 8A.1 和 8A.2 互不依赖可并行；8A.3 依赖 8A.1 完成（均涉及全搜索层）；8A.4 独立。
+
+##### Task 8A.1 — 全文搜索持久化完善（2~3d）
+
+- [ ] `FullTextIndex` 新增 `startPeriodicSnapshot(intervalMs)` 定时器
+- [ ] 写计数跟踪 `_writeCountSinceLastSnapshot`
+- [ ] 写计数达到 `_maxWritesBeforeSnapshot` 时自动 forceSnapshot
+- [ ] `stopPeriodicSnapshot()` 清理定时器
+- [ ] 与现有 `Config.snapshotThreshold` 兼容测试
+- [ ] 测试：关闭→写入→启动→自动快照正确截断 WAL
+- [ ] 测试：快照 + WAL 同时存在时恢复正确性
+
+**验收**: 定时自动快照触发后 WAL 正确截断；写计数快照优先；无数据丢失
+
+##### Task 8A.2 — 属性图 Schema 校验（3~4d）
+
+- [ ] 新建 `src/schema/schema-validator-class.ts` — `SchemaValidator` 类
+- [ ] `setSchema(schema)` 注入 schema 定义
+- [ ] `validate(node/edge)` 调用现有纯函数封装
+- [ ] `GraphEngine.setSchema()` 集成
+- [ ] upsertNode/upsertEdge 调用校验钩子
+- [ ] 唯一性约束执行（反向索引检查）
+- [ ] 默认值自动填充（FieldDef.default）
+- [ ] 校验失败时抛出 `SchemaValidationError`
+
+**验收**: `setSchema()` 注入后 upsert 自动校验；违反唯一性约束拒绝写入；默认值自动填充
+
+##### Task 8A.3 — 多数据中心部署（5~7d）
+
+- [ ] 新建 `src/core/multi-region-topology.ts` — MultiRegionTopology
+- [ ] 扩展 `MultiLeaderConfig`: dcId, dcPeers
+- [ ] `getPreferredReplica(dcId)` 本 DC 优先
+- [ ] `isSameDc(nodeId)` 拓扑判断
+- [ ] DC-group replication 延迟配置
+- [ ] 分区检测 + 策略切换
+- [ ] 恢复后自动 LWW 合并
+
+**验收**: locality-aware read 返回本 DC 节点；跨 DC 复制延迟可配置；分区后自动切换策略
+
+##### Task 8A.4 — 增量备份/恢复（4~5d）
+
+- [ ] 新建 `src/ops/incremental-backup.ts` — IncrementalBackupManager
+- [ ] `createIncrementalBackup()` 只复制变更 segment
+- [ ] metadata.json 跟踪 LSN 范围
+- [ ] `restoreFromPoint(recoveryPoint)` 全量+增量回放
+- [ ] `purgeExpiredBackups(retentionCount)` 过期清理
+- [ ] 与现有 `Backup` 类兼容
+- [ ] LSN 链完整性校验
+
+**验收**: 增量备份只复制变更 segment；时间点恢复正确；过期自动清理
+
+#### Phase 8B: P3 四项（查询+运维生态，预估: 10~14d）
+
+**目标**: 实现 EXPLAIN、Prometheus 统一桥接、流式查询、事务函数，补齐查询生态和运维基础设施。
+
+| 任务 | 方向 | 优先级 | 估值工时 | 依赖包 | 状态 |
+|------|------|:------:|:--------:|--------|:----:|
+| **Task 8B.1** | 查询分析器 + EXPLAIN — ExplainFormatter | **P3** | 2~3d | 无 | ⬜ 计划中 |
+| **Task 8B.2** | Prometheus 指标集成 — PrometheusMetricsExporter | **P3** | 2~3d | `prom-client`（已有） | ⬜ 计划中 |
+| **Task 8B.3** | WebSocket 流式查询 — WsStreamQuery | **P3** | 4~5d | `ws`（已有） | ⬜ 计划中 |
+| **Task 8B.4** | Cypher 事务函数 — periodic.commit | **P3** | 2~3d | 无 | ⬜ 计划中 |
+
+8B 中所有任务互不依赖，可完全并行推进。与 8A 也无依赖关系。
+
+##### Task 8B.1 — 查询分析器 + EXPLAIN（2~3d）
+
+- [ ] 新建 `src/query/explain-formatter.ts` — ExplainFormatter
+- [ ] `formatText(plan)` — PostgreSQL 风格树状文本
+- [ ] `formatJSON(plan)` — 结构化 JSON 输出
+- [ ] `formatAnalyze(plan, stats)` — 含实际耗时+行数
+- [ ] `_optimizePlan()` 代价估算增强
+- [ ] Cypher 前缀检测 `EXPLAIN` / `EXPLAIN JSON` / `EXPLAIN ANALYZE`
+- [ ] 显示预估扫描行数和代价分
+
+**验收**: `EXPLAIN MATCH (n:Person) WHERE n.age > 30 RETURN n.name` 输出可读文本计划；JSON 模式输出结构化数据
+
+##### Task 8B.2 — Prometheus 指标集成（2~3d）
+
+- [ ] 新建 `src/ops/prometheus-exporter.ts` — PrometheusMetricsExporter
+- [ ] 桥接 MetricsCollector → prom-client register
+- [ ] 注册 graph_ops_total, graph_read_latency_histogram_ms 等指标
+- [ ] 配置式启用（PrometheusConfig: enabled/port/path）
+- [ ] 双轨兼容：OTLP + Prometheus 同时输出
+- [ ] 零配置回退：不配置时不启动
+
+**验收**: `GET /metrics` 返回 Prometheus 文本格式；双轨运行时互不干扰
+
+##### Task 8B.3 — WebSocket 流式查询（4~5d）
+
+- [ ] 新建 `src/api/ws-stream.ts` — WsStreamQuery
+- [ ] JSON 帧协议定义（query/record/complete/cancel/error）
+- [ ] 背压控制（BUFFER_MAX=1000, 超限关闭连接）
+- [ ] 可取消（cancel 消息 3s 内中断查询）
+- [ ] 与 query-engine 集成：逐条 yield
+- [ ] 独立端点（默认 7687 端口）
+- [ ] 兼容现有 REST 查询（不重写引擎）
+
+**验收**: 10 万+行大结果集分步推送不 OOM；背压慢客户端关闭连接；取消消息中断查询
+
+##### Task 8B.4 — Cypher 事务函数（2~3d）
+
+- [ ] 新建 `src/query/procedures/periodic-commit.ts`
+- [ ] 注册 `periodic.commit` 到 ProcedureRegistry
+- [ ] 循环执行：每 batchSize 开启一个事务→执行→提交
+- [ ] failOnError 控制失败行为（默认跳过）
+- [ ] 返回统计：batches/totalRows/failures/timeMs/errorLog
+- [ ] batchSize 配置（默认 1000）
+
+**验收**: `CALL periodic.commit("MATCH (n) SET n.flag = true", {batchSize:1000})` 批量执行；返回执行统计
+
+#### V8 估算汇总
+
+| Phase | 包含方向 | 优先级范围 | 总估值工时 | 方向数 | 状态 |
+|:-----:|----------|:----------:|:----------:|:-----:|:----:|
+| Phase 8A | 全文搜索持久化 / Schema 校验 / 多 DC / 增量备份 | P2 | 14~19d | **4** | ⬜ 计划中 |
+| Phase 8B | EXPLAIN / Prometheus / 流式查询 / 事务函数 | P3 | 10~14d | **4** | ⬜ 计划中 |
+| **V8 合计** | — | P2~P3 | **24~33d** | **8** | ⬜ **计划中** |

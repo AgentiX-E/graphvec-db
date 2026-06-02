@@ -1102,3 +1102,463 @@ SQL 语句 → alasql.parse(sql) → AST → translator.toCypher() → Cypher AS
 4. 不支持的操作返回明确错误消息
 
 **状态**: ✅ **已实现**
+
+---
+
+## §13 V8 差距分析 — 设计变更预设
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v8-gap-research.md`  
+> 状态: **⬜ 计划中** · 尚未实施
+
+### §13.1 全文搜索持久化完善（P2）
+
+**问题**: MiniSearch 为纯内存索引，现有 WAL 持久化已有 JSONL append-only WAL、自动轮转、快照触发、maxOldWals 清理，但**缺少定期自动快照**。当前仅在文档数达到 `snapshotThreshold` 时触发。
+
+**设计变更**:
+
+在 `src/search/fulltext.ts` 的 `FullTextIndex` 类中新增：
+```typescript
+// 新增定时器快照
+class FullTextIndex {
+  private _snapshotTimer: ReturnType<typeof setInterval> | null = null
+
+  // 启动定时自动快照
+  startPeriodicSnapshot(intervalMs: number = 300000 /* 5min */): void {
+    this._snapshotTimer = setInterval(() => {
+      this.forceSnapshot()
+    }, intervalMs)
+  }
+
+  // 停止定时器
+  stopPeriodicSnapshot(): void {
+    if (this._snapshotTimer) {
+      clearInterval(this._snapshotTimer)
+      this._snapshotTimer = null
+    }
+  }
+
+  // 写入计数触发（≥ 1000 条写入后自动 forceSnapshot）
+  private _writeCountSinceLastSnapshot = 0
+  private _maxWritesBeforeSnapshot = 1000
+
+  // 在 _writeToWal() 中增加计数，达到上限后触发 forceSnapshot
+}
+```
+
+**依赖项**: 无新包（复用现有 `WALWriter` / `forceSnapshot`）
+
+**设计决策**: 
+1. 定时器与写计数双触发策略，保证写入量可控
+2. 快照后自动截断 WAL（现有 `forceSnapshot` 已支持）
+3. 与 `Config.snapshotThreshold` 兼容：写计数快照优先，定时器兜底
+
+**受影响的文件**: `src/search/fulltext.ts`
+
+**状态**: ⬜ 计划中
+
+---
+
+### §13.2 属性图 Schema 校验（P2）
+
+**问题**: `schema-validator.ts` 已实现 `validateNodeType()` / `validateEdgeType()` 纯函数，但缺集中的 `SchemaValidator` 类实例；GraphEngine 入口未自动调用校验；唯一性约束不执行；默认值不填充。
+
+**设计变更**:
+
+新增 `src/schema/schema-validator-class.ts`:
+```typescript
+class SchemaValidator {
+  private schema: SchemaDef | null = null
+
+  constructor(private engine?: GraphEngine) {}
+
+  // 注入 schema 定义
+  setSchema(schema: SchemaDef): void { this.schema = schema }
+
+  // 校验节点
+  validate(node: { typeId: number; properties: Record<string, unknown> }): ValidationResult {
+    if (!this.schema) return { valid: true }
+    const typeDef = this.schema.nodeTypes.find(t => t.typeId === node.typeId)
+    if (!typeDef) throw new SchemaValidationError(`Unknown node type: ${node.typeId}`)
+    // 必填检查 + 类型检查 + 唯一性检查 + 默认值填充
+    return validateNodeType(typeDef, node.properties)
+  }
+
+  // 校验边
+  validateEdge(edge: { typeId: number; properties: Record<string, unknown> }): ValidationResult
+}
+
+// GraphEngine 集成
+class GraphEngine {
+  private schemaValidator: SchemaValidator
+
+  setSchema(schema: SchemaDef): void {
+    this.schemaValidator.setSchema(schema)
+  }
+
+  async upsertNode(typeId: number, ...): Promise<NodeRecord> {
+    this.schemaValidator.validate({ typeId, properties })  // ← 新增校验钩子
+    // ... 原有逻辑
+  }
+}
+```
+
+**唯一性约束执行**：
+- 在 StorageProvider 中，为定义了 `uniqueConstraints` 的字段组合构建反向索引
+- `upsertNode` 时检查反向索引，重复写入抛出 `UniqueConstraintError`
+- 与现有 labelIndex / fulltextIndex 同类机制
+
+**默认值填充**：
+- `FieldDef.default` 在 `upsertNode` 时自动填充缺失字段
+- 不覆盖显式传入的 `undefined` 值
+
+**依赖项**: 无新包（复用 `schema-types.ts`、`schema-validator.ts`）
+
+**设计决策**: GraphEngine 构造函数注入 SchemaValidator（紧耦合），通过 `setSchema()` 启用/关闭校验。
+
+**受影响的文件**:
+- `src/schema/schema-validator-class.ts`（新建）
+- `src/core/graph-engine.ts` — 集成校验钩子
+- `src/schema/schema-types.ts` — 确认接口兼容
+
+**状态**: ⬜ 计划中
+
+---
+
+### §13.3 多数据中心部署（P2）
+
+**问题**: 所有 peer 一视同仁；缺 locality-aware read、DC 分组拓扑、分区优先策略。
+
+**设计变更**:
+
+新增 `src/core/multi-region-topology.ts`:
+```typescript
+class MultiRegionTopology {
+  private dcId: string                    // 本 DC 标识
+  private dcPeers: Map<string, string[]>  // DC → nodeIds 映射
+  private intraDcBackoff: number = 3000   // 同 DC 退避 (ms)
+  private crossDcBackoff: number = 60000  // 跨 DC 退避 (ms)
+
+  constructor(config: MultiRegionConfig & { dcId: string; dcPeers: Record<string, string[]> })
+
+  // locality-aware read 路由
+  getPreferredReplica(dcId: string): string | null
+
+  // 判断节点是否在同一 DC
+  isSameDc(nodeId: string): boolean
+
+  // 跨 DC 复制延迟
+  getCrossDcBackoff(): number
+}
+```
+
+**MultiLeaderConfig 扩展**:
+```typescript
+interface MultiRegionConfig {
+  topologyType: TopologyType   // 现有
+  dcId: string                 // 新增
+  dcPeers: Record<string, string[]>  // 新增: {"dc1": ["node1","node2"], "dc2": ["node3"]}
+  partitionStrategy: 'ignore' | 'lww' | 'crdt'  // 现有
+}
+```
+
+**分区策略**：
+1. 心跳超时 → 标记节点为疑似
+2. 持续超时 → 触发分区策略（`ignore`: 降级，待恢复后合并）
+3. 恢复后自动 LWW 合并（已有 CRDT 基础）
+
+**依赖项**: `s2-geometry`（已有）
+
+**设计决策**: 代码式/文件式配置 region 拓扑（YAML/JSON），与现有 `TopologyType` 兼容。
+
+**受影响的文件**:
+- `src/core/multi-region-topology.ts`（新建）
+- `src/core/multi-leader-replication.ts` — 集成拓扑判断
+
+**状态**: ⬜ 计划中
+
+---
+
+### §13.4 增量备份/恢复（P2）
+
+**问题**: 当前 `Backup` 类仅全量复制 OverGraph 目录；`backup-wal.ts` 能读 LSN 但无增量备份逻辑；`PITRConfig` 定义了接口但未实现。
+
+**设计变更**:
+
+新增 `src/ops/incremental-backup.ts`:
+```typescript
+class IncrementalBackupManager {
+  // 全量备份 metadata（记录 snapshot 时各 segment 的 LSN）
+  private lastFullBackupMeta: { lsn: Map<string, number>; timestamp: number } | null
+
+  // 创建增量备份：只复制 LSN 高于上次快照点的 segment
+  async createIncrementalBackup(): Promise<BackupResult>
+
+  // 时间点恢复：全量 → 按序回放增量 WAL
+  async restoreFromPoint(recoveryPoint: RecoveryPoint): Promise<void>
+
+  // 清理过期增量
+  async purgeExpiredBackups(retentionCount: number): Promise<void>
+}
+```
+
+**metadata.json 格式**:
+```json
+{
+  "type": "incremental",
+  "baseSnapshot": "backup_20260602_120000",
+  "lsnRange": { "start": 12345, "end": 23456 },
+  "segmentsCopied": ["wal-001.seg", "wal-002.seg"],
+  "createdAt": "2026-06-02T12:30:00Z"
+}
+```
+
+**恢复流程**:
+1. `restoreFromPoint(recoveryPoint)`:
+   - 找到最近的 full backup
+   - 恢复全量备份
+   - 按时间顺序回放所有增量 WAL（直到目标时间点）
+   - 校验 LSN 链完整性（无 gap）
+
+**依赖项**: 无新包（复用 `fs.copyFile`, `archiver`, `readWalLsnSnapshots`）
+
+**设计决策**: 复用现有 `Backup` 类接口，增量备份继承 `BackupResult` 类型。
+
+**受影响的文件**:
+- `src/ops/incremental-backup.ts`（新建）
+- `src/ops/backup-types.ts` — 扩展 `BackupResult`
+- `src/ops/backup.ts` — 与全量备份共享基类
+
+**状态**: ⬜ 计划中
+
+---
+
+### §13.5 查询分析器 + EXPLAIN（P3）
+
+**问题**: `QueryPlan` 类型结构完整（scanLabel, steps, filters, returnColumns 等），但无 EXPLAIN 输出格式；`_optimizePlan()` 代价模型简单。
+
+**设计变更**:
+
+新增 `src/query/explain-formatter.ts`:
+```typescript
+class ExplainFormatter {
+  // 文本树状输出 (类似 PostgreSQL)
+  formatText(plan: QueryPlan): string
+  // JSON 结构化输出
+  formatJSON(plan: QueryPlan): object
+  // EXPLAIN ANALYZE (含实际行数 + 耗时)
+  formatAnalyze(plan: QueryPlan, stats: ExecutionStats): string
+}
+```
+
+**文本输出示例**:
+```
+EXPLAIN MATCH (n:Person) WHERE n.age > 30 RETURN n.name
+─────────────────────────────────────────────────
+Scan on label Person  (estimated rows=5000, cost=125.00)
+  └─ Filter: (n.age > 30)  (selectivity=0.30, estimated rows=1500)
+       └─ Return: n.name  (projected columns=1)
+```
+
+**代价估算增强**:
+- `_optimizePlan()` 加入基于 `StatsCollector` 的 estimateSelectivity
+- 显示预估扫描行数和代价分
+- 与 CBO 直方图联动
+
+**Cypher 解析入口集成**:
+- 检测查询前缀 `EXPLAIN` / `EXPLAIN JSON` / `EXPLAIN ANALYZE`
+- 前缀分离 → 执行查询 → 格式化输出 → 返回字符串/JSON
+
+**依赖项**: 无新包
+
+**设计决策**: 三种输出格式满足不同场景：文本（终端）、JSON（API 调用方）、ANALYZE（调优）。
+
+**受影响的文件**:
+- `src/query/explain-formatter.ts`（新建）
+- `src/query/query-engine.ts` — 集成 EXPLAIN 前缀检测
+- `src/query/query-planner.ts` — 代价估算增强
+
+**状态**: ⬜ 计划中
+
+---
+
+### §13.6 Prometheus 指标集成（P3）
+
+**问题**: OTel push（`MetricsCollector`）与 prom-client pull（`rest.ts /metrics`）双轨，缺少统一桥接。无 Prometheus 适配器。
+
+**设计变更**:
+
+新增 `src/ops/prometheus-exporter.ts`:
+```typescript
+class PrometheusMetricsExporter {
+  private register: promClient.Registry
+
+  constructor(config: PrometheusConfig) {
+    this.register = promClient.register
+    // 注册熟悉的计数器/直方图/仪表
+    this._initMetrics()
+  }
+
+  // 桥接：MetricsCollector 的 Counter → prom-client Counter
+  private _initMetrics(): void {
+    new promClient.Counter({
+      name: 'graph_ops_total',
+      help: 'Total number of graph operations',
+      labelNames: ['operation', 'status'],
+    })
+    // ... 更多指标
+  }
+}
+```
+
+**配置**:
+```typescript
+interface PrometheusConfig {
+  enabled: boolean
+  port?: number     // 默认 9464 (OpenMetrics 默认端口)
+  path?: string     // 默认 /metrics
+  prefix?: string   // 指标名称前缀
+}
+```
+
+**双轨兼容**:
+- 同时输出 OTLP 和 Prometheus
+- MetricsCollector 保持 OTel push 不变
+- PrometheusMetricsExporter 桥接到 prom-client register
+- 当 OTel 不启用时，Prometheus 端点作为独立可选项
+
+**依赖项**: `prom-client`（已有 v15.1.3）
+
+**设计决策**: 桥接模式而非替换，保持与 OTel 兼容。指标命名遵循 Prometheus 惯例（`graph_*` 前缀）。
+
+**受影响的文件**:
+- `src/ops/prometheus-exporter.ts`（新建）
+- `src/api/rest.ts` — 集成 `/metrics` 端点
+- `src/ops/metrics.ts` — 确认兼容
+
+**状态**: ⬜ 计划中
+
+---
+
+### §13.7 WebSocket 流式查询（P3）
+
+**问题**: 现有 REST/gRPC 返回完整结果，大结果集（10万+行）OOM 风险；无流式推送能力。
+
+**设计变更**:
+
+新增 `src/api/ws-stream.ts`:
+```typescript
+class WsStreamQuery {
+  private wss: WebSocketServer
+
+  constructor(port: number = 7687)  // 默认 7687 端口
+
+  // 流式 JSON 帧协议
+  // 客户端 → { type: "query", id: "req1", cypher: "MATCH (n) RETURN n" }
+  // 服务端 → { type: "record", id: "req1", data: { node: {...} } }
+  // 服务端 → { type: "complete", id: "req1", summary: { total: 1000, timeMs: 45 } }
+  // 客户端 → { type: "cancel", id: "req1" }
+}
+```
+
+**背压控制**：
+```typescript
+private readonly BUFFER_MAX = 1000          // 缓冲区上限
+private readonly BACKPRESSURE_WATERMARK = 800
+
+private _writeRecord(ws: WebSocket, record: object): boolean {
+  if (this._buffer.size >= this.BACKPRESSURE_WATERMARK) {
+    // 触发背压：暂停读取，等待客户端消费
+    ws.pause()
+    ws.once('drain', () => ws.resume())
+  }
+  if (this._buffer.size >= this.BUFFER_MAX) {
+    // 超过上限：关闭连接（客户端消费太慢）
+    ws.close(4000, 'backpressure: buffer overflow')
+    return false
+  }
+  return true
+}
+```
+
+**协议设计**:
+```
+请求:   { type: "query", id: "req-001", cypher: "MATCH (n:Person) RETURN n" }
+推送:   { type: "record", id: "req-001", seq: 1, data: { ... } }
+推送:   { type: "record", id: "req-001", seq: 2, data: { ... } }
+推送:   { type: "record", id: "req-001", seq: 3, data: { ... } }
+完成:   { type: "complete", id: "req-001", summary: { total: 3, timeMs: 12 } }
+取消:   { type: "cancel", id: "req-001" }
+错误:   { type: "error", id: "req-001", message: "...", code: "..." }
+```
+
+**依赖项**: `ws`（已有 v8.x）
+
+**设计决策**: 
+1. 独立端点（不影响 Gremlin WS 的 8182 端口）
+2. 与现有 `query-engine` 集成：逐条 yield 而非一次性返回
+3. 不超过 3s 取消响应延迟
+
+**受影响的文件**:
+- `src/api/ws-stream.ts`（新建）
+- `src/query/query-engine.ts` — 支持逐条 yield
+- `src/api/rest.ts` — 可选集成
+
+**状态**: ⬜ 计划中
+
+---
+
+### §13.8 Cypher 事务函数（P3）
+
+**问题**: `ProcedureRegistry` 已有内置过程（pageRank, shortestPath 等），但无批处理/事务过程。
+
+**设计变更**:
+
+在 `src/query/procedures/` 目录下新增 `periodic-commit.ts`:
+```typescript
+class PeriodicCommitProcedure {
+  register(registry: ProcedureRegistry): void {
+    registry.registerProcedure({
+      name: 'periodic.commit',
+      handler: async (ctx: ProcedureContext, query: string, opts: {
+        batchSize?: number      // 默认 1000
+        failOnError?: boolean   // 默认 false（跳过继续）
+        params?: Record<string, unknown>
+      }) => {
+        // 1. 编译 Cypher 查询
+        // 2. 循环执行，每次 batchSize 条记录为一个事务
+        // 3. 每批提交，记录统计
+        // 4. failOnError=false 时跳过，记录错误日志
+        return {
+          batches: number,
+          totalRows: number,
+          failures: number,
+          timeMs: number,
+          errorLog: string[],
+        }
+      },
+    })
+  }
+}
+```
+
+**调用方式**:
+```cypher
+CALL periodic.commit(
+  "MATCH (n:Person) WHERE n.status = 'pending' SET n.flag = true RETURN count(*)",
+  { batchSize: 1000 }
+)
+```
+
+**设计决策**:
+1. 失败时默认跳过（`failOnError: false`），类似 APOC 行为
+2. 每批原子提交，跨批次无原子性
+3. 注册在现有的 `procedureRegistry` 中
+
+**依赖项**: 无（复用 `ProcedureRegistry`、`QueryEngine`）
+
+**受影响的文件**:
+- `src/query/procedures/periodic-commit.ts`（新建）
+- `src/query/procedure-registry.ts` — 确认接口兼容
+
+**状态**: ⬜ 计划中

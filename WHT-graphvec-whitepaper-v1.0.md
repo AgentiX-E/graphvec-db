@@ -485,3 +485,89 @@ LDBC SNB 基准测试 ─── 不依赖代码变更
 | 连接池管理 | ✅ **V7 已实现**（GrpcClientPool） | Bolt 连接池 | 内置 | 内置 | 依赖后端 |
 | LDBC SNB 基准 | ✅ **V7 已实现**（IC 查询 + 多规模） | 支持 | 支持 | 支持 | 支持 |
 | 批量边删除 | ✅ **V7 已实现**（batchDeleteNodes/Edges） | 原生 | 原生 | 原生 | 原生 |
+
+---
+
+## 9. V8 差距分析
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v8-gap-research.md`  
+> 状态: **⬜ 计划中** · 尚未实施
+
+### 9.1 V8 新方向总览
+
+| # | 方向 | 优先级 | 类别 | 状态 | 估算工时 | 现有基础 |
+|:-:|------|:------:|:----:|:----:|:--------:|----------|
+| V8-01 | 全文搜索持久化完善 | **P2** | 存储 | ⬜ 计划中 | 2~3d | MiniSearch + WAL 已实现，缺定时自动快照 |
+| V8-02 | 属性图 Schema 校验 | **P2** | 功能 | ⬜ 计划中 | 3~4d | schema-validator.ts 已有纯函数，缺 SchemaValidator 类 |
+| V8-03 | 多数据中心部署 | **P2** | 分布式 | ⬜ 计划中 | 5~7d | MultiLeaderConfig 已有 TopologyType，缺 region 拓扑 |
+| V8-04 | 增量备份/恢复 | **P2** | 运维 | ⬜ 计划中 | 4~5d | backup-wal.ts 能读 LSN，缺增量备份逻辑 |
+| V8-05 | 查询分析器 + EXPLAIN | **P3** | 查询 | ⬜ 计划中 | 2~3d | QueryPlan 类型完整，缺 EXPLAIN 输出格式 |
+| V8-06 | Prometheus 指标集成 | **P3** | 运维 | ⬜ 计划中 | 2~3d | OTel + prom-client 双轨，缺 Prometheus 桥接 |
+| V8-07 | WebSocket 流式查询 | **P3** | API | ⬜ 计划中 | 4~5d | ws 已装，Gremlin WS 已有，缺 Cypher 流式端点 |
+| V8-08 | Cypher 事务函数 | **P3** | 查询 | ⬜ 计划中 | 2~3d | ProcedureRegistry 已实现，缺 periodic.commit 批处理 |
+| | **合计** | — | — | — | **24~33d** | — |
+
+### 9.2 各方向简述
+
+#### V8-01: 全文搜索持久化完善（P2）
+**问题**: MiniSearch 为纯内存索引，现有 WAL 持久化缺少定期自动快照。
+**方案**: 新增 `periodicSnapshot()` 定时器，每 5 分钟或 1000 条写入自动触发 forceSnapshot。
+
+#### V8-02: 属性图 Schema 校验（P2）
+**问题**: 校验为纯函数，未集成到 GraphEngine；唯一性约束不执行；默认值不填充。
+**方案**: 新增 `SchemaValidator` 类，`GraphEngine.setSchema()` 注入，upsertNode/upsertEdge 自动校验。
+
+#### V8-03: 多数据中心部署（P2）
+**问题**: 所有 peer 一视同仁，无本 DC / 跨 DC 区分。
+**方案**: 新增 `MultiRegionTopology` 类：locality-aware read、DC-group replication、分区优先策略。
+
+#### V8-04: 增量备份/恢复（P2）
+**问题**: 当前 `Backup` 类仅全量复制，`IncrementalBackupManager` 不存在。
+**方案**: 基于 WAL segment LSN 的差异备份，只复制变更 segment，支持时间点恢复。
+
+#### V8-05: 查询分析器 + EXPLAIN（P3）
+**问题**: QueryPlan 结构完整但无 EXPLAIN 输出。
+**方案**: 新增 `ExplainFormatter` 类：文本树状、JSON、EXPLAIN ANALYZE 三种输出。
+
+#### V8-06: Prometheus 指标集成（P3）
+**问题**: OTel push 与 prom-client pull 双轨，缺少统一桥接。
+**方案**: 新增 `PrometheusMetricsExporter` 类，桥接 MetricsCollector → prom-client register。
+
+#### V8-07: WebSocket 流式查询（P3）
+**问题**: 现有 REST/gRPC 返回完整结果，大结果集 OOM 风险。
+**方案**: 新建 `WsStreamQuery` 类，JSON 帧协议，支持背压控制和可取消。
+
+#### V8-08: Cypher 事务函数（P3）
+**问题**: 没有批处理/事务过程。
+**方案**: 注册 `CALL periodic.commit(query, {batchSize, failOnError})` 到 ProcedureRegistry。
+
+### 9.3 推荐执行顺序
+
+```
+Phase 8A (P2 四项 — 存储+分布式基础, 14~19d) — ⬜ 计划中
+  ├── V8-01 全文搜索持久化完善 (2~3d) — 独立，定时器新增
+  ├── V8-02 属性图 Schema 校验 (3~4d) — 依赖现有 schema-validator 函数
+  ├── V8-04 增量备份/恢复 (4~5d) — 依赖 WAL segment + Backup 类
+  └── V8-03 多数据中心部署 (5~7d) — 可独立实现
+
+Phase 8B (P3 四项 — 查询+运维生态, 10~14d) — ⬜ 计划中
+  ├── V8-05 查询分析器 + EXPLAIN (2~3d) — 纯新增
+  ├── V8-06 Prometheus 指标集成 (2~3d) — 桥接模式
+  ├── V8-07 WebSocket 流式查询 (4~5d) — 需要背压设计
+  └── V8-08 Cypher 事务函数 (2~3d) — 注册到现有 ProcedureRegistry
+```
+
+### 9.4 V8 竞品对比（预计扩展后）
+
+| 维度 | AgentiX (V8 预计) | Neo4j | Dgraph | ArangoDB |
+|------|:---:|:---:|:---:|:---:|
+| 全文搜索持久化 | ✅ **定时自动快照+WAL** | 内置 | 无 | 内置 |
+| Schema 校验引擎集成 | ✅ **类封装+自动校验** | 原生约束 | 不适用 | Schema |
+| 多 DC 部署 | ✅ **MultiRegionTopology** | 因果集群 | 无 | Datacenter |
+| 增量备份 | ✅ **IncrementalBackupManager** | 企业 | 企业 | 企业 |
+| EXPLAIN 查询分析 | ✅ **文本+JSON+ANALYZE** | PROFILE/EXPLAIN | 无 | explain() |
+| Prometheus 集成 | ✅ **PrometheusMetricsExporter** | 企业 | 内置 | 内置 |
+| 流式查询 | ✅ **WS JSON 帧+背压** | Bolt | 无 | 无 |
+| 批处理事务 | ✅ **periodic.commit** | APOC | 无 | Foxx |
+| 可嵌入性 | ✅ 纯 JS | ❌ JVM | ❌ Go | ❌ C++ |

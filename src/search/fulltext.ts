@@ -46,6 +46,8 @@ export interface FullTextOptions {
   analyzer?: 'simple' | 'standard' | 'cjk' | 'jieba'
   baseDir?: string
   snapshotThreshold?: number  // 触发快照的文档数阈值，默认 10000
+  snapshotIntervalSec?: number  // 定时自动快照间隔，默认 300（5分钟），0 表示不启用定时快照
+  maxOldWals?: number  // 保留的最大旧 WAL 文件数，默认 3
 }
 
 // ── Analyzer 链 ──────────────────────────────────────────
@@ -298,7 +300,10 @@ export class FullTextIndex {
   private _walFd: number | null = null
   private _walSize = 0
   private _snapshotThreshold: number
+  private _snapshotIntervalSec: number
   private _maxOldWals: number = 3
+  private _snapshotTimer: ReturnType<typeof setInterval> | null = null
+  private _needsSnapshot: boolean = false
   private static readonly MAX_WAL_BYTES = 1 * 1024 * 1024  // 1MB
   private static readonly WAL_FILENAME = 'fulltext-index.wal'
   private static readonly SNAPSHOT_FILENAME = 'fulltext-index.snapshot.json'
@@ -365,6 +370,10 @@ export class FullTextIndex {
     }
 
     this._snapshotThreshold = options?.snapshotThreshold ?? 10000
+    this._snapshotIntervalSec = options?.snapshotIntervalSec ?? 300
+    if (options?.maxOldWals !== undefined) {
+      this._maxOldWals = options.maxOldWals
+    }
 
     // ── WAL 恢复 ──
     if (options?.baseDir) {
@@ -373,6 +382,9 @@ export class FullTextIndex {
       this._snapshotPath = path.join(options.baseDir, FullTextIndex.SNAPSHOT_FILENAME)
       this._recoverFromWAL()
     }
+
+    // ── 启动定时自动快照 ──
+    this._startPeriodicSnapshot()
   }
 
   // ──────────────────────────────────────────────
@@ -437,11 +449,12 @@ export class FullTextIndex {
   // ──────────────────────────────────────────────
 
   /**
-   * 关闭 WAL 文件句柄。在不再需要写入 WAL 时调用。
-   * 注意：close() 后 add/remove 仍可工作，只是不再写入 WAL。
+   * 关闭 WAL 文件句柄并停止定时快照。在不再需要写入 WAL 时调用。
+   * 注意：close() 后 add/remove 仍可工作，只是不再写入 WAL 和定时快照。
    */
   close(): void {
     this._closeWalFd()
+    this._stopPeriodicSnapshot()
   }
 
   /**
@@ -454,9 +467,37 @@ export class FullTextIndex {
   /**
    * 强制将当前索引状态写入快照文件并清空 WAL。
    * 通常由内部自动触发（文档数达到阈值时），也可以手动调用。
+   * forceSnapshot() 后 WAL 会被截断。
    */
   forceSnapshot(): void {
     this._takeSnapshot()
+  }
+
+  // ── 定时自动快照 ──
+
+  /**
+   * 启动定时自动快照定时器。
+   * 每 _snapshotIntervalSec 秒检查一次，如果有写入则需要快照。
+   */
+  private _startPeriodicSnapshot(): void {
+    if (this._snapshotIntervalSec <= 0) return
+    if (this._snapshotTimer !== null) return
+    this._snapshotTimer = setInterval(() => {
+      if (this._needsSnapshot && this._baseDir) {
+        this._takeSnapshot()
+        this._needsSnapshot = false
+      }
+    }, this._snapshotIntervalSec * 1000)
+  }
+
+  /**
+   * 停止定时自动快照定时器
+   */
+  private _stopPeriodicSnapshot(): void {
+    if (this._snapshotTimer !== null) {
+      clearInterval(this._snapshotTimer)
+      this._snapshotTimer = null
+    }
   }
 
   /**
@@ -672,6 +713,9 @@ export class FullTextIndex {
     const line = JSON.stringify(entry) + '\n'
     const bytes = Buffer.byteLength(line, 'utf-8')
 
+    // 标记需要定时快照
+    this._needsSnapshot = true
+
     // 如果当前 WAL + 新条目超过上限，先轮转（rename），然后重新打开
     if (this._walSize + bytes > FullTextIndex.MAX_WAL_BYTES) {
       this._rotateWal()
@@ -755,6 +799,7 @@ export class FullTextIndex {
 
   /**
    * 生成快照：将当前索引状态（store + fieldIds）写入 JSON 文件，然后清空 WAL
+   * 同时清理超过 maxOldWals 的旧 WAL 文件。
    */
   private _takeSnapshot(): void {
     if (!this._snapshotPath || !this._baseDir) return
@@ -789,8 +834,47 @@ export class FullTextIndex {
     fs.writeFileSync(this._walPath!, '', 'utf-8')
     this._walSize = 0
 
+    // 清理超过 maxOldWals 的旧 WAL 文件（快照后旧 WAL 不再需要）
+    this._cleanupOldWals()
+
     // 重新打开 WAL
     this._openWalForAppend()
+  }
+
+  /**
+   * 清理超过 maxOldWals 数量的旧 WAL 文件。
+   * 文件命名格式：{walBase}.{seq}.old，如 fulltext-index.wal.0.old
+   * 保留序号最小的 maxOldWals 个文件（用于启动时回放），删除更老的。
+   */
+  private _cleanupOldWals(): void {
+    if (!this._walPath) return
+    const walDir = path.dirname(this._walPath)
+    const walBase = path.basename(this._walPath)
+    const oldFiles: Array<{ seq: number; fullPath: string }> = []
+
+    try {
+      const files = fs.readdirSync(walDir)
+      for (const f of files) {
+        const match = f.match(new RegExp(`^${escapeRegex(walBase)}\\.(\\d+)\\.old$`))
+        if (match) {
+          oldFiles.push({ seq: parseInt(match[1], 10), fullPath: path.join(walDir, f) })
+        }
+      }
+    } catch {
+      return
+    }
+
+    // 按序号降序排列，从最大的开始删除
+    oldFiles.sort((a, b) => b.seq - a.seq)
+    for (const ofile of oldFiles) {
+      if (ofile.seq >= this._maxOldWals) {
+        try {
+          fs.unlinkSync(ofile.fullPath)
+        } catch {
+          // ignore
+        }
+      }
+    }
   }
 
   // ──────────────────────────────────────────────

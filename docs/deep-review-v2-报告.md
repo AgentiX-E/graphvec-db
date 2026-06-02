@@ -478,3 +478,127 @@ Phase 7A 内所有方向互不依赖，可并行推进。Phase 7B 与 7A 也无�
 | 涉及设计文档 | 5 份（白皮书 / 技术设计 / 执行计划 / Deep Review / 进度追踪） |
 | 合并时间 | 2026-06-02 |
 | 合并 commit | `b471213b` |
+
+---
+
+## 11. V8 差距分析
+
+> 调研日期: 2026-06-02  
+> 来源: `temp/v8-gap-research.md`  
+> 状态: **⬜ 计划中** · 尚未实施
+
+### 11.1 调研结论汇总
+
+V8 调研覆盖 8 个新方向，重点解决现有实现的"半成品"问题（如 WAL 缺定时快照、Schema 校验未集成引擎、备份无增量模式）和查询运维生态补齐（EXPLAIN、Prometheus 桥接、流式查询、批处理事务）。
+
+| # | 方向 | 优先级 | 估算工时 | 新依赖 | 类型 | 状态 |
+|:-:|------|:------:|:--------:|--------|------|:----:|
+| 1 | 全文搜索持久化完善 | **P2** | 2~3d | 无 | 持久化 | ⬜ 计划中 |
+| 2 | 属性图 Schema 校验 | **P2** | 3~4d | 无 | 功能 | ⬜ 计划中 |
+| 3 | 多数据中心部署 | **P2** | 5~7d | `s2-geometry`（已有） | 分布式 | ⬜ 计划中 |
+| 4 | 增量备份/恢复 | **P2** | 4~5d | 无 | 运维 | ⬜ 计划中 |
+| 5 | 查询分析器 + EXPLAIN | **P3** | 2~3d | 无 | 查询 | ⬜ 计划中 |
+| 6 | Prometheus 指标集成 | **P3** | 2~3d | `prom-client`（已有） | 运维 | ⬜ 计划中 |
+| 7 | WebSocket 流式查询 | **P3** | 4~5d | `ws`（已有） | API | ⬜ 计划中 |
+| 8 | Cypher 事务函数 | **P3** | 2~3d | 无 | 查询 | ⬜ 计划中 |
+| | **合计** | — | **24~33d** | — | — | — |
+
+### 11.2 各方向简介
+
+**① 全文搜索持久化完善（P2）** — 在现有 MiniSearch + WAL 持久化基础上新增：
+- `startPeriodicSnapshot()` 定时器（默认 5 分钟）
+- 写计数跟踪（≥1000 条自动 forceSnapshot）
+- 与现有 `snapshotThreshold` 双触发策略兼容
+
+**② 属性图 Schema 校验（P2）** — 在现有纯函数校验基础上新增：
+- `SchemaValidator` 类（封装现有函数 + 配置式 schema 加载）
+- `GraphEngine.setSchema()` 注入机制
+- upsertNode/upsertEdge 自动校验钩子
+- 唯一性约束执行（反向索引）
+- 默认值自动填充
+
+**③ 多数据中心部署（P2）** — 在现有 MultiLeaderConfig 基础上新增：
+- `MultiRegionTopology` 类（dcId, dcPeers 拓扑）
+- locality-aware read 路由（本 DC 优先）
+- DC-group replication（跨 DC 延迟复制）
+- 分区优先策略 + 恢复后自动 LWW 合并
+
+**④ 增量备份/恢复（P2）** — 在现有 `Backup` 类基础上新增：
+- `IncrementalBackupManager` 类
+- 基于 WAL segment LSN 的差异备份
+- 时间点恢复（全量 + 增量 WAL 回放）
+- 过期增量自动清理
+
+**⑤ 查询分析器 + EXPLAIN（P3）** — 基于现有 `QueryPlan` 结构新增：
+- `ExplainFormatter` 类（文本/JSON/ANALYZE 三种格式）
+- Cypher 前缀 `EXPLAIN` / `EXPLAIN JSON` / `EXPLAIN ANALYZE` 检测
+- `_optimizePlan()` 代价估算增强（StatsCollector 联动）
+
+**⑥ Prometheus 指标集成（P3）** — 在现有 OTel + prom-client 双轨上新增：
+- `PrometheusMetricsExporter` 桥接类
+- MetricsCollector → prom-client register 映射
+- 配置式启用（enabled/port/path）
+- 双轨兼容：OTLP + Prometheus 同时输出
+
+**⑦ WebSocket 流式查询（P3）** — 新增独立 WS 端点：
+- JSON 帧协议（query/record/complete/cancel/error）
+- 背压控制（BUFFER_MAX=1000，超限关闭连接）
+- 可取消（cancel 消息 3s 内中断查询）
+- 与 query-engine 集成：逐条 yield
+
+**⑧ Cypher 事务函数（P3）** — 注册到 ProcedureRegistry：
+- `CALL periodic.commit(query, {batchSize, failOnError})`
+- 每 batchSize 条记录开启一个事务 → 执行 → 提交
+- 返回 batches/totalRows/failures/timeMs 统计
+
+### 11.3 执行路线
+
+```
+Phase 8A (P2 四项, 14~19d) — ⬜ 计划中
+  ├── V8-01 全文搜索持久化完善 (2~3d) — 独立，定时器新增
+  ├── V8-02 属性图 Schema 校验 (3~4d) — 依赖现有 schema-validator 函数
+  ├── V8-04 增量备份/恢复 (4~5d) — 依赖 WAL segment + Backup 类
+  └── V8-03 多数据中心部署 (5~7d) — 可独立实现
+
+Phase 8B (P3 四项, 10~14d) — ⬜ 计划中
+  ├── V8-05 查询分析器 + EXPLAIN (2~3d) — 纯新增
+  ├── V8-06 Prometheus 指标集成 (2~3d) — 桥接模式
+  ├── V8-07 WebSocket 流式查询 (4~5d) — 需要背压设计
+  └── V8-08 Cypher 事务函数 (2~3d) — 注册到现有 ProcedureRegistry
+```
+
+### 11.4 关键决策
+
+1. **全文搜索快照**: 定时器 + 写计数双触发，与现有 snapshotThreshold 兼容
+2. **Schema 校验集成**: GraphEngine 紧耦合，通过 setSchema() 配置起停
+3. **多 DC 路由**: 代码式/文件式配置 region 拓扑，与现有 TopologyType 兼容
+4. **增量备份**: 基于 WAL segment LSN，复用 Backup 接口
+5. **EXPLAIN 格式**: 三种输出——文本（终端）、JSON（API）、ANALYZE（调优）
+6. **Prometheus 桥接**: 不替换 OTel，双轨并行
+7. **流式查询**: 独立端点（7687），不干扰 Gremlin WS（8182）
+8. **事务函数**: 默认 failOnError=false（APOC 兼容）
+
+### 11.5 依赖关系
+
+```
+V8-01 全文搜索持久化 ─── 独立（全在 src/search/fulltext.ts 内）
+V8-02 Schema 校验 ─────── 依赖 GraphEngine 注入
+V8-03 多 DC ──────────── 依赖 MultiLeaderConfig 已有基础
+V8-04 增量备份 ───────── 依赖 Backup + WAL segment 基础
+V8-05 EXPLAIN ────────── 依赖 QueryPlan 已有结构
+V8-06 Prometheus ─────── 依赖 MetricsCollector + prom-client
+V8-07 流式查询 ──────── 依赖 query-engine 逐条 yield
+V8-08 事务函数 ──────── 依赖 ProcedureRegistry 已有注册表
+```
+
+所有方向之间无硬性依赖，Phase 8A 和 8B 可完全并行执行（两路并行、2 名开发者）。
+
+### 11.6 V8 实现承诺
+
+| 指标 | 数值 |
+|------|:----:|
+| V8 方向总数 | **8**（全文搜索持久化 / Schema 校验 / 多 DC / 增量备份 / EXPLAIN / Prometheus / 流式查询 / 事务函数） |
+| 优先级 | P2: 4 个, P3: 4 个 |
+| 总估算工时 | **24~33d** |
+| 建议并行 | 2 名开发者并行 → 日历 ≈ 2.5~3.5 周 |
+| 状态 | **⬜ 计划中** |
