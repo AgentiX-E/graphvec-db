@@ -108,13 +108,15 @@ describe('HnswIndex — Basic Operations', () => {
     expect(index.getCount()).toBe(1)
   })
 
-  test('GAP-11-9: save and load index', () => {
+  test('GAP-11-9: save and load index', async () => {
     index.addPoint(1, makeVec(1, 0, 0, 0, 0, 0, 0, 0))
     index.addPoint(2, makeVec(0, 1, 0, 0, 0, 0, 0, 0))
     index.addPoint(3, makeVec(0, 0, 1, 0, 0, 0, 0, 0))
 
-    const savePath = tempIndexPath()
+    const savePath = path.join(os.tmpdir(), `hnsw-save-load-${Date.now()}.hnsw`)
     index.saveIndex(savePath)
+    // writeIndex is async native — wait for flush
+    await new Promise(r => setTimeout(r, 200))
     expect(fs.existsSync(savePath)).toBe(true)
 
     // Create a new index and load
