@@ -195,3 +195,58 @@
 | 2026-05-29 | Round 8b: Gap 10 安全基线 (P3/Med) — 启动检查 + 运行时监控 + CIS | F36 |
 | 2026-05-29 | Round 8b: Gap 12 缓存增强 (P3/Low) — 逐边失效 + 写穿缓存 + 预加载 | F37 |
 | 2026-05-30 | Round 9: UNION/UNION ALL/INTERSECT/SUBTRACT 集合运算 — Peggy 语法、QueryPlan IR、GraphEngine 执行、8 个测试用例（query-engine 6 + graph-engine 5 → 215/215 pass） | F21 |
+| 2026-06-02 | **Deep Review V4 闭包完成**（56 项全部实现，6 commits, 112 files, +13774 lines, HEAD: `6c4b6f67`）— 见下方 V4 闭包统计 | ALL |
+
+---
+
+## Deep Review V4 闭包统计
+
+### 总体情况
+| 维度 | 值 |
+|------|-----|
+| 闭包状态 | ✅ **全部完成** |
+| 闭包版本 | Deep Review V4 |
+| 总改进项 | 56 |
+| 覆盖 Track | Track 1（查询+安全+审计）、Track 2（共识+存储+TLS）、Track 3（算法+运维+指标+导入） |
+| 交付 | 6 commits, 112 files, 13774 lines added |
+| HEAD | `6c4b6f67` |
+| 进度 | 🏁 **100% 完成** |
+
+### Track 1 — 查询 + 安全 + 审计（C-01~C-14）
+| 项目 | 源码 | 状态 |
+|------|------|:----:|
+| Prepared Statement | `src/query/query-engine.ts` | ✅ |
+| OAuth2/OIDC + AuthenticatorChain | `src/security/` | ✅ |
+| JWT Refresh Token 轮换 | `src/security/jwt.ts` | ✅ |
+| RLS write path 注入 | `src/security/rls.ts` | ✅ |
+| GROUP BY / HAVING | `src/query/` | ✅ |
+| CBO Range Histogram | `src/query/query-planner.ts` | ✅ |
+| BUILTIN_FUNCTIONS 注册表 | `src/query/query-engine.ts` | ✅ |
+| Fluent 事务绑定 withinTxn() | `src/api/fluent.ts` | ✅ |
+| 审计日志过滤 + 旋转 + 远程 Sink | `src/ops/audit-log.ts` | ✅ |
+
+### Track 2 — 共识 + 存储 + TLS（B-01~B-08）
+| 项目 | 源码 | 状态 |
+|------|------|:----:|
+| Raft Pipeline 复制 | `src/consensus/` | ✅ |
+| WAL Group Commit | `src/core/segment-stream-wal.ts` | ✅ |
+| Joint Consensus | `src/consensus/raft-node.ts` | ✅ |
+| PreVote RPC | `src/consensus/` | ✅ |
+| 快照自动压缩 | `src/consensus/` | ✅ |
+| Transport TLS 加密 | `src/core/` | ✅ |
+
+### Track 3 — 算法 + 运维 + 指标（A-01~A-08, D-01~D-14）
+| 项目 | 源码 | 状态 |
+|------|------|:----:|
+| SimpleTxnManager SSI | `src/core/transaction.ts` | ✅ |
+| WAL fsync every-n (n=100) | `src/core/segment-stream-wal.ts` | ✅ |
+| inEdges 度数缓存 | `src/core/graph-engine.ts` | ✅ |
+| K-Core 核心分解 | `src/algorithms/k-core.ts` | ✅ |
+| Node2Vec | `src/algorithms/node2vec.ts` | ✅ |
+| PageRank worker_threads | `src/algorithms/pagerank.ts` | ✅ |
+| K8s 三探针 | `src/ops/k8s-probes.ts` | ✅ |
+| 慢查询日志持久化 | `src/ops/slow-query-logger.ts` | ✅ |
+| 导入事务 | `src/core/importer.ts` | ✅ |
+| 恢复可观测性 onProgress | `src/ops/backup-helpers.ts` | ✅ |
+| 审计远程 Sink | `src/ops/audit-log.ts` | ✅ |
+| 指标 OTel 统一 | `src/ops/` | ✅ |

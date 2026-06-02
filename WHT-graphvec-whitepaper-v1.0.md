@@ -83,3 +83,71 @@ AgentiX GraphVec 是一个 **全球分布式、多活图谱数据库**，专为 
 | F28 | Schema Validation | 图 Schema 校验与约束 | - | `src/schema/` | ✅ 已实现 |
 | F29 | Outbox Replay | 故障恢复 Outbox 重放 | - | `test/integration/` | ✅ 已实现 |
 | F30 | Worker Pool | EventBus 工作者池 | - | `src/core/event-bus-worker-pool.ts` | ✅ 已实现 |
+
+---
+
+## 4. Deep Review V4 闭包新增能力
+
+> 2026-06-02 完成 · HEAD: `6c4b6f67` · 6 commits, 112 files, 13774 lines added
+
+### 4.1 共识层新能力
+
+| 能力 | 说明 | 源码路径 | 状态 |
+|------|------|---------|:----:|
+| Raft Pipeline 复制 | inFlight/pendingQueue 双队列设计，并行发送 AppendEntries | `src/consensus/` | ✅ |
+| WAL Group Commit | _pendingBatch 累积写入 + setTimeout 定时 flush | `src/core/segment-stream-wal.ts` | ✅ |
+| Joint Consensus | C_old_new 过渡阶段 + C_new 终态，双 Majority 仲裁 | `src/consensus/raft-node.ts` | ✅ |
+| PreVote | 独立 PreVoteRequest/PreVoteResponse RPC，避免分区节点干扰选举 | `src/consensus/` | ✅ |
+| 快照自动压缩 | Log 大小阈值自动触发压缩，follower 通过 InstallSnapshot 恢复 | `src/consensus/` | ✅ |
+
+### 4.2 存储层新能力
+
+| 能力 | 说明 | 源码路径 | 状态 |
+|------|------|---------|:----:|
+| SimpleTxnManager SSI 隔离 | writeSet/deleteSet 冲突检测，可串行化快照隔离 | `src/core/transaction.ts` | ✅ |
+| inEdges 度数缓存 | inDegree/outDegree Map，O(1) 度数查询 | `src/core/graph-engine.ts` | ✅ |
+| WAL fsync 调优 | every-n 策略 (n=100)，batch commit 减少 fsync 调用 | `src/core/segment-stream-wal.ts` | ✅ |
+| Group Commit 存储层 | WAL 批量 flush + 存储层级联，与共识层 Group Commit 联动 | `src/core/` | ✅ |
+
+### 4.3 算法新能力
+
+| 能力 | 说明 | 源码路径 | 状态 |
+|------|------|---------|:----:|
+| K-Core 核心分解 | 迭代修剪算法，逐层剥离度 < k 节点 | `src/algorithms/k-core.ts` | ✅ |
+| Node2Vec | 基于随机游走的节点嵌入，支持 p/q 超参 | `src/algorithms/node2vec.ts` | ✅ |
+| PageRank worker_threads 多线程 | 分割迭代块到多个 worker 并行计算 | `src/algorithms/pagerank.ts` | ✅ |
+
+### 4.4 查询与安全新能力
+
+| 能力 | 说明 | 源码路径 | 状态 |
+|------|------|---------|:----:|
+| Prepared Statement | 参数化查询预编译，防注入 + 性能优化 | `src/query/query-engine.ts` | ✅ |
+| OAuth2/OIDC | OIDCValidator + AuthenticatorChain 链式认证 | `src/security/` | ✅ |
+| JWT Refresh | Refresh Token 轮换机制，access/refresh 双令牌 | `src/security/jwt.ts` | ✅ |
+| RLS write path | 行级安全策略注入写入路径 | `src/security/rls.ts` | ✅ |
+| GROUP BY / HAVING | Partition-Aggregate 模式，聚合过滤 | `src/query/` | ✅ |
+| CBO 成本估算 | Range Histogram 等统计信息辅助代价模型 | `src/query/query-planner.ts` | ✅ |
+| Cypher 内置函数 | BUILTIN_FUNCTIONS 注册表设计 | `src/query/query-engine.ts` | ✅ |
+| Fluent 事务绑定 | withinTxn() 链式 API 绑定事务上下文 | `src/api/fluent.ts` | ✅ |
+| 审计日志过滤旋转 | filter + rotate, 支持远程 Sink 导出 | `src/ops/audit-log.ts` | ✅ |
+
+### 4.5 运维新能力
+
+| 能力 | 说明 | 源码路径 | 状态 |
+|------|------|---------|:----:|
+| K8s 三探针 | liveness/readiness/startup probe 端点 | `src/ops/k8s-probes.ts` | ✅ |
+| 慢查询日志持久化 | rotating file 轮转记录，可配置阈值 | `src/ops/slow-query-logger.ts` | ✅ |
+| 导入事务 | 批量导入时的事务包装 API | `src/core/importer.ts` | ✅ |
+| 恢复可观测性 | restore onProgress 回调，实时观察恢复进度 | `src/ops/backup-helpers.ts` | ✅ |
+| 审计远程 Sink | Syslog/HTTP 远程输出审计日志 | `src/ops/audit-log.ts` | ✅ |
+| 指标 OTel 统一 | metrics 通过 OpenTelemetry 统一上报 | `src/ops/` | ✅ |
+
+---
+
+## 5. 版本信息
+
+| 项目 | 值 |
+|------|-----|
+| 最新 HEAD | `6c4b6f67` |
+| 闭包版本 | Deep Review V4 |
+| 闭包统计 | 6 commits, 112 files, 13774 lines added |

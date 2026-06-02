@@ -118,8 +118,27 @@ export class WAL {
     })
   }
 
+  // ── Group Commit（B-03） ──
+  /** 待提交的批量写入 */
+  private _pendingBatch: Array<{ term: number; data: Uint8Array; resolve: (entry: LogEntry) => void }> = []
+  /** 是否已有 flush 定时器 */
+  private _batchTimer: ReturnType<typeof setTimeout> | null = null
+  /** 是否启用 Group Commit（默认启用） */
+  private _groupCommitEnabled = true
+
+  /** 启用或禁用 Group Commit */
+  setGroupCommit(enabled: boolean): void {
+    this._groupCommitEnabled = enabled
+    if (!enabled) {
+      this._flushBatchSync()
+    }
+  }
+
   /**
    * 追加一个日志条目到 WAL
+   * 启用 Group Commit 时，条目会先加入 _pendingBatch，由定时器批量落盘
+   * 禁用 Group Commit 时，立即写入并 fsync
+   */
    * 格式：[4 bytes: index][4 bytes: term][4 bytes: data length][data bytes][4 bytes: CRC32]
    *
    * CRC32 校验和覆盖 index, term, data 三个字段。

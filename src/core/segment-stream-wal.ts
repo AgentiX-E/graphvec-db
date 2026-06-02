@@ -72,7 +72,9 @@ interface SegmentInfo {
  * - 'always': 每次 append 后立即 fsync，最安全但最慢
  * - 'every-n': 每 N 次 append 后 fsync 一次，折中方案
  *
- * 默认 'every-n'（n=10），兼顾安全与性能。
+ * 默认 'every-n'（n=100），兼顾安全与性能。
+ * n=100 意味着每 100 条记录触发一次 fsync，
+ * 在最坏情况下最多丢失 99 条记录，但 fsync 调用减少 99%。
  */
 export class SegmentStreamWalAppendStream {
   private _fd: number
@@ -124,13 +126,19 @@ export interface SegmentStreamWalOptions {
   /** 单个 segment 最大字节数（默认 64MB） */
   segmentMaxBytes?: number
   /**
-   * 每次 append 后是否强制 fsync 刷盘。
-   * - true:  每次 append 后调用 fsyncSync（最安全，默认）
-   * - false: 不强制 fsync（性能更好，但崩溃时可能丢失最近写入）
+   * 是否启用 fsync 策略刷盘。
+   * - true（默认）: 使用 'every-n' 策略（默认 n=100），每 N 条记录刷盘一次
+   * - false: 不主动 fsync（性能更好，但崩溃时可能丢失最近写入）
    *
    * 即使设为 false，open() 和正常 close() 仍会 fsync。
+   * 可通过 fsyncEveryN 自定义刷盘频率。
    */
   fsyncOnWrite?: boolean
+  /**
+   * 'every-n' 策略中的 N 值，默认 100。
+   * 仅在 fsyncOnWrite=true 时生效。
+   */
+  fsyncEveryN?: number
 }
 
 /**
@@ -151,6 +159,8 @@ export class SegmentStreamWal {
   private _activeSize: number = 0
   private _pruning = false
   private _fsyncOnWrite: boolean
+  private _fsyncCounter: number = 0
+  private _fsyncEveryN: number = 100
 
   constructor(walPath: string, options?: SegmentStreamWalOptions)
   constructor(walPath: string, segmentMaxBytes?: number)
@@ -161,12 +171,15 @@ export class SegmentStreamWal {
     if (typeof optionsOrBytes === 'number') {
       this._segmentMaxBytes = optionsOrBytes
       this._fsyncOnWrite = true
+      this._fsyncEveryN = 100
     } else if (optionsOrBytes) {
       this._segmentMaxBytes = optionsOrBytes.segmentMaxBytes ?? DEFAULT_SEGMENT_MAX_BYTES
       this._fsyncOnWrite = optionsOrBytes.fsyncOnWrite ?? true
+      this._fsyncEveryN = optionsOrBytes.fsyncEveryN ?? 100
     } else {
       this._segmentMaxBytes = DEFAULT_SEGMENT_MAX_BYTES
       this._fsyncOnWrite = true
+      this._fsyncEveryN = 100
     }
   }
 
@@ -219,10 +232,14 @@ export class SegmentStreamWal {
   /**
    * 追加一条 PENDING 消息
    *
-   * 当 fsyncOnWrite=true（默认）时，每次 append 后强制刷盘，
-   * 保证在进程崩溃时数据不丢失。
+   * fsync 策略（默认 'every-n', n=100）：
+   * - 'every-n'（默认）：每 100 条记录触发一次 fsync，最坏情况最多丢失 N 条记录
+   * - 可通过 options.fsyncOnWrite 参数覆盖
+   *
+   * 当 fsyncOnWrite=true（默认）时，每 N 条记录后刷盘一次，
+   * 在性能与崩溃恢复之间取得平衡。
    * 当 fsyncOnWrite=false 时，跳过 fsync，依赖操作系统批量刷盘，
-   * 性能更快但崩溃时可能丢失最近写入。
+   * 性能更快但崩溃时可能丢失更多写入。
    */
   append(msg: StreamMessage): void {
     const buf = this._encode(msg, FLAG_PENDING)
@@ -235,7 +252,13 @@ export class SegmentStreamWal {
 
     fs.writeSync(this._activeFd, buf)
     if (this._fsyncOnWrite) {
-      fs.fsyncSync(this._activeFd) // 强制刷盘，保证崩溃恢复
+      this._fsyncCounter++
+      if (this._fsyncCounter >= this._fsyncEveryN) {
+        fs.fsyncSync(this._activeFd) // 每 N 条记录刷盘一次
+        this._fsyncCounter = 0
+      }
+    } else {
+      // 'lazy' 模式：不主动 fsync
     }
     this._activeSize += recordLen
     this._entriesCount++
@@ -467,6 +490,7 @@ export class SegmentStreamWal {
       } catch { /* ignore */ }
       this._activeFd = -1
     }
+    this._fsyncCounter = 0
   }
 
   /**

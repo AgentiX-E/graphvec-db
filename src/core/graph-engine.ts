@@ -224,6 +224,10 @@ export class GraphEngine {
   private _cacheMaxSize: number
   private _cacheDefaultTTLSec: number
 
+  // ── 度数缓存（D-07） ──
+  private _inDegrees: Map<NodeId, number> = new Map()
+  private _outDegrees: Map<NodeId, number> = new Map()
+
   // ── LRU Cache for individual nodes/edges (Gap 12) ──
   private _nodeCache: LRUCache<NodeId, NodeRecord>
   private _edgeCache: LRUCache<string, EdgeRecord>
@@ -658,6 +662,9 @@ export class GraphEngine {
     this.storage.deleteNode(id)
     this._nodeIds.delete(id)
     this._nodeCount = Math.max(0, this._nodeCount - 1)
+    // 清除度数缓存（D-07）
+    this._inDegrees.delete(id)
+    this._outDegrees.delete(id)
     this.onRecordChange?.(node.key, { _deleted: true, typeId: node.typeId })
 
     if (this._mlReplication && !skipReplication) {
@@ -755,12 +762,18 @@ export class GraphEngine {
     const ek = `${src}:${dst}:${typeId}`
     // 清除边缓存（Gap 12）
     this._edgeCache.delete(ek)
-    if (!this._edgeKeys.has(ek)) {
+    const isNewEdge = !this._edgeKeys.has(ek)
+    if (isNewEdge) {
       this._edgeKeys.add(ek)
       this._edgeCount++
       // Update degree cache for new edge
       this._outDegreeCounts.set(src, (this._outDegreeCounts.get(src) ?? 0) + 1)
       this._inDegreeCounts.set(dst, (this._inDegreeCounts.get(dst) ?? 0) + 1)
+    }
+    // 更新度数缓存（D-07）— 仅在边真正新增时递增
+    if (isNewEdge) {
+      this._outDegrees.set(src, (this._outDegrees.get(src) ?? 0) + 1)
+      this._inDegrees.set(dst, (this._inDegrees.get(dst) ?? 0) + 1)
     }
     this.onRecordChange?.(`edge:${src}->${dst}`, { typeId, src, dst, ...(opts?.props ?? {}) })
 
@@ -854,6 +867,10 @@ export class GraphEngine {
       this._outDegreeCounts.set(src, Math.max(0, (this._outDegreeCounts.get(src) ?? 0) - 1))
       this._inDegreeCounts.set(dst, Math.max(0, (this._inDegreeCounts.get(dst) ?? 0) - 1))
     }
+    // 更新度数缓存（D-07）— 无论 result 是否为 true，都递减缓存
+    // 注意：OverGraph 原生层 deleteEdge 返回 undefined，不依赖返回值
+    this._outDegrees.set(src, Math.max(0, (this._outDegrees.get(src) ?? 0) - 1))
+    this._inDegrees.set(dst, Math.max(0, (this._inDegrees.get(dst) ?? 0) - 1))
     this.onRecordChange?.(`edge:${src}->${dst}:${typeId}`, { _deleted: true, src, dst, typeId })
 
     if (this._mlReplication && result && !skipReplication) {
@@ -968,6 +985,84 @@ export class GraphEngine {
    */
   neighborsMany(ids: NodeId[], depth?: number): Map<NodeId, { edges: EdgeRecord[]; nodes: NodeRecord[] }> {
     return this.batchNeighbors(ids, { maxDepth: depth ?? 1 })
+  }
+
+  // ──────────────────────────────────────────
+  // 度数缓存（D-07）
+  // ──────────────────────────────────────────
+
+  /**
+   * 获取节点的入度（从度数缓存中读取，O(1) 性能）
+   * 如果缓存中没有，尝试从 storage 获取并缓存（取数代价较大）。
+   */
+  getInDegree(id: NodeId): number {
+    const cached = this._inDegrees.get(id)
+    if (cached !== undefined) return cached
+    try {
+      const d = this.storage.degrees(id)
+      this._inDegrees.set(id, d.inDegree)
+      this._outDegrees.set(id, d.outDegree)
+      return d.inDegree
+    } catch {
+      return 0
+    }
+  }
+
+  /**
+   * 获取节点的出度（O(1) 性能）
+   */
+  getOutDegree(id: NodeId): number {
+    const cached = this._outDegrees.get(id)
+    if (cached !== undefined) return cached
+    try {
+      const d = this.storage.degrees(id)
+      this._inDegrees.set(id, d.inDegree)
+      this._outDegrees.set(id, d.outDegree)
+      return d.outDegree
+    } catch {
+      return 0
+    }
+  }
+
+  /**
+   * 获取节点总度数（入度 + 出度），O(1) 性能
+   */
+  getDegree(id: NodeId): number {
+    return this.getInDegree(id) + this.getOutDegree(id)
+  }
+
+  /**
+   * 获取度数分布统计
+   * @returns { min, max, avg, totalNodes }
+   */
+  degreeDistribution(): { min: number; max: number; avg: number; totalNodes: number } {
+    const ids = Array.from(this._nodeIds)
+    if (ids.length === 0) {
+      return { min: 0, max: 0, avg: 0, totalNodes: 0 }
+    }
+
+    // 确保所有节点度数已被缓存
+    let min = Infinity
+    let max = -Infinity
+    let sum = 0
+    let cachedCount = 0
+
+    for (const id of ids) {
+      const inDeg = this.getInDegree(id)
+      const outDeg = this.getOutDegree(id)
+      const total = inDeg + outDeg
+      if (total < min) min = total
+      if (total > max) max = total
+      sum += total
+      cachedCount++
+    }
+
+    return {
+      min: min === Infinity ? 0 : min,
+      max: max === -Infinity ? 0 : max,
+      avg: cachedCount > 0 ? sum / cachedCount : 0,
+      totalNodes: cachedCount,
+    }
   }
 
   // ──────────────────────────────────────────

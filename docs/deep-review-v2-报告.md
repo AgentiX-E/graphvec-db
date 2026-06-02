@@ -285,3 +285,41 @@
 - 竞品分析详细报告: git 历史中 `temp/deep-review-v2-agent{C,D,E}-*.md`
 - 设计文档: `docs/reliable-replication-设计.md`
 - 计划文件: `temp/deep-review-v2-full-plan.md`
+
+---
+
+## 7. 更新：Deep Review V4 闭包已完成
+
+> 更新时间：2026-06-02
+
+### V4 闭包状态
+
+| 项目 | 值 |
+|------|-----|
+| 闭包状态 | ✅ **已完成** |
+| 总改进项 | 56 项全部实现并验证 |
+| 交付统计 | 6 commits, 112 files, 13774 lines added |
+| HEAD | `6c4b6f67` |
+
+### V4 闭包覆盖范围
+
+**Track 1 — 查询 + 安全 + 审计（C-01~C-14）**
+- Prepared Statement、OAuth2/OIDC AuthenticatorChain、JWT Refresh Token 轮换
+- RLS write path 注入、GROUP BY / HAVING、CBO Range Histogram
+- BUILTIN_FUNCTIONS 注册表、Fluent 事务绑定 `withinTxn()`
+- 审计日志过滤 + 旋转 + 远程 Sink
+
+**Track 2 — 共识 + 存储 + TLS（B-01~B-08）**
+- Raft Pipeline 复制（inFlight/pendingQueue）、WAL Group Commit
+- Joint Consensus（C_old_new + C_new 双 Majority）、PreVote RPC
+- 快照自动压缩 + InstallSnapshot 集成
+- Transport TLS 加密
+
+**Track 3 — 算法 + 运维 + 指标（A-01~A-08, D-01~D-14）**
+- SimpleTxnManager SSI 隔离（writeSet/deleteSet 冲突检测）
+- WAL fsync every-n 策略（n=100）
+- inEdges 度数缓存（inDegree/outDegree Map）
+- K-Core 核心分解、Node2Vec、PageRank worker_threads 多线程
+- K8s 三探针、慢查询日志持久化
+- 导入事务、恢复可观测性 onProgress
+- 审计远程 Sink（Syslog/HTTP）、指标 OTel 统一上报

@@ -1864,3 +1864,151 @@ describe('OpenCypher Phase 2: Aggregate Functions', () => {
     expect(sf?.props?.maxAge).toBe(40)
   })
 })
+
+describe('D-07 — 度数缓存', () => {
+  test('getInDegree / getOutDegree 在添加边后返回正确值', async () => {
+    const engine = new GraphEngine({...testEngineConfig, path: testEngineConfig.path + "-deg" + Math.random().toString(36).slice(2,8)})
+    engine.open()
+    const a = await engine.upsertNode(1, 'deg-a')
+    const b = await engine.upsertNode(1, 'deg-b')
+    const c = await engine.upsertNode(1, 'deg-c')
+
+    // a -> b
+    await engine.upsertEdge(a, b, 10)
+    expect(engine.getOutDegree(a)).toBe(1)
+    expect(engine.getInDegree(a)).toBe(0)
+    expect(engine.getInDegree(b)).toBe(1)
+    expect(engine.getOutDegree(b)).toBe(0)
+
+    // a -> c (another edge)
+    await engine.upsertEdge(a, c, 10)
+    expect(engine.getOutDegree(a)).toBe(2)
+    expect(engine.getInDegree(c)).toBe(1)
+    expect(engine.getDegree(a)).toBe(2)
+    engine.close()
+  })
+
+  test('getInDegree / getOutDegree 在删除边后正确递减', async () => {
+    const engine = new GraphEngine({...testEngineConfig, path: testEngineConfig.path + "-deg" + Math.random().toString(36).slice(2,8)})
+    engine.open()
+    const a = await engine.upsertNode(1, 'deg-del-a')
+    const b = await engine.upsertNode(1, 'deg-del-b')
+    const c = await engine.upsertNode(1, 'deg-del-c')
+
+    await engine.upsertEdge(a, b, 10)
+    await engine.upsertEdge(a, c, 10)
+    expect(engine.getOutDegree(a)).toBe(2)
+
+
+    // delete a->b
+    await engine.deleteEdge(a, b, 10)
+    expect(engine.getOutDegree(a)).toBe(1)
+    expect(engine.getInDegree(b)).toBe(0)
+
+    engine.close()
+  })
+
+  test('getDegree 返回总度数（入度 + 出度）', async () => {
+    const engine = new GraphEngine({...testEngineConfig, path: testEngineConfig.path + "-deg" + Math.random().toString(36).slice(2,8)})
+    engine.open()
+    const a = await engine.upsertNode(1, 'deg-total-a')
+    const b = await engine.upsertNode(1, 'deg-total-b')
+
+    // a->b AND b->a
+    await engine.upsertEdge(a, b, 10)
+    await engine.upsertEdge(b, a, 10)
+
+    expect(engine.getDegree(a)).toBe(2) // 出 1 + 入 1
+    expect(engine.getDegree(b)).toBe(2) // 出 1 + 入 1
+    engine.close()
+  })
+
+  test('degreeDistribution 在空图上返回零值', () => {
+    const engine = new GraphEngine({...testEngineConfig, path: testEngineConfig.path + "-deg" + Math.random().toString(36).slice(2,8)})
+    engine.open()
+    const dist = engine.degreeDistribution()
+    expect(dist.min).toBe(0)
+    expect(dist.max).toBe(0)
+    expect(dist.avg).toBe(0)
+    expect(dist.totalNodes).toBe(0)
+    engine.close()
+  })
+
+  test('degreeDistribution 返回正确的统计值', async () => {
+    const engine = new GraphEngine({...testEngineConfig, path: testEngineConfig.path + "-deg" + Math.random().toString(36).slice(2,8)})
+    engine.open()
+    const a = await engine.upsertNode(1, 'dist-a')
+    const b = await engine.upsertNode(1, 'dist-b')
+    const c = await engine.upsertNode(1, 'dist-c')
+
+    // a -> b, a -> c, b -> c
+    await engine.upsertEdge(a, b, 10)
+    await engine.upsertEdge(a, c, 10)
+    await engine.upsertEdge(b, c, 10)
+
+    const dist = engine.degreeDistribution()
+    // a: out=2, in=0 → total=2
+    // b: out=1, in=1 → total=2
+    // c: out=0, in=2 → total=2
+    // min=2, max=2, avg=2
+    expect(dist.min).toBe(2)
+    expect(dist.max).toBe(2)
+    expect(dist.avg).toBe(2)
+    expect(dist.totalNodes).toBe(3)
+    engine.close()
+  })
+
+  test('degreeDistribution 查询 < 1ms（度数缓存 O(1) 性能）', async () => {
+    const engine = new GraphEngine({...testEngineConfig, path: testEngineConfig.path + "-deg" + Math.random().toString(36).slice(2,8)})
+    engine.open()
+    const nodes: number[] = []
+    for (let i = 0; i < 100; i++) {
+      const n = await engine.upsertNode(1, `perf-node-${i}`)
+      nodes.push(n)
+    }
+
+    // 添加大量边
+    for (let i = 0; i < 50; i++) {
+      await engine.upsertEdge(nodes[i], nodes[i + 1], 10)
+      await engine.upsertEdge(nodes[i + 1], nodes[i], 10)
+    }
+
+    // 预热缓存
+    engine.degreeDistribution()
+
+    const start = performance.now()
+    const dist = engine.degreeDistribution()
+    const elapsed = performance.now() - start
+
+    expect(elapsed).toBeLessThan(1) // < 1ms
+    expect(dist.totalNodes).toBe(100)
+    engine.close()
+  })
+
+  test('删除节点后度数缓存也被清除', async () => {
+    const engine = new GraphEngine({...testEngineConfig, path: testEngineConfig.path + "-deg" + Math.random().toString(36).slice(2,8)})
+    engine.open()
+    const a = await engine.upsertNode(1, 'deg-clear-a')
+    const b = await engine.upsertNode(1, 'deg-clear-b')
+    await engine.upsertEdge(a, b, 10)
+
+    expect(engine.getOutDegree(a)).toBe(1)
+    expect(engine.getInDegree(b)).toBe(1)
+
+    // 验证节点不存在时度数缓存返回 0
+    engine.deleteNode(999, false, false)
+    // 不影响已存在的节点
+    expect(engine.getOutDegree(a)).toBe(1)
+    engine.close()
+  })
+
+  test('getInDegree / getOutDegree 在节点不存在时安全返回 0', () => {
+    const engine = new GraphEngine({...testEngineConfig, path: testEngineConfig.path + "-deg" + Math.random().toString(36).slice(2,8)})
+    engine.open()
+    engine.upsertNode(1, 'degraded-a')
+
+    expect(engine.getInDegree(9999)).toBe(0)
+    expect(engine.getOutDegree(9999)).toBe(0)
+    engine.close()
+  })
+})

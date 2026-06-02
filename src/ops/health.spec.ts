@@ -203,3 +203,118 @@ describe('Health', () => {
     })
   })
 })
+
+describe('D-09 — K8s 三探针', () => {
+  let shardManager: ShardManager
+  let health: Health
+
+  beforeEach(() => {
+    const shardMap: ShardMap = { version: 1, ranges: [], hashRing: { virtualNodes: 100, nodes: [] } }
+    const clock = new HlcClock()
+    shardManager = new (ShardManager as any)(shardMap, clock)
+    const engine = new (GraphEngine as any)()
+    health = new Health(shardManager, engine)
+  })
+
+  describe('liveness probe', () => {
+    test('返回 alive=true 当引擎正常', () => {
+      const result = health.liveness()
+      expect(result.alive).toBe(true)
+      expect(result.timestamp).toBeGreaterThan(0)
+      expect(result.error).toBeUndefined()
+    })
+
+    test('返回 alive=false 当引擎挂起', () => {
+      // 创建一个 Health 实例，其引擎 stats 抛出异常
+      const failingEngine = new (GraphEngine as any)()
+      failingEngine.stats = vi.fn().mockImplementation(function() {
+        throw new Error('Engine deadlocked')
+      })
+      const h = new Health(shardManager, failingEngine)
+      const result = h.liveness()
+      expect(result.alive).toBe(false)
+      expect(result.error).toContain('Engine deadlocked')
+      expect(result.timestamp).toBeGreaterThan(0)
+    })
+  })
+
+  describe('startup probe', () => {
+    test('返回 started=true 当引擎和分片都已初始化', async () => {
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+        { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
+      ])
+      const result = await health.startup()
+      expect(result.started).toBe(true)
+      expect(result.error).toBeUndefined()
+    })
+
+    test('返回 started=false 当分片未初始化', async () => {
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([])
+      const result = await health.startup()
+      expect(result.started).toBe(false)
+      expect(result.error).toContain('No shards initialized')
+    })
+
+    test('返回 started=false 当引擎未就绪', async () => {
+      const failingEngine = new (GraphEngine as any)()
+      failingEngine.stats = vi.fn().mockImplementation(function() {
+        throw new Error('Engine not ready')
+      })
+      const h = new Health(shardManager, failingEngine)
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+        { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
+      ])
+      const result = await h.startup()
+      expect(result.started).toBe(false)
+      expect(result.error).toContain('Engine not ready')
+    })
+  })
+
+  describe('readiness probe', () => {
+    test('返回 ready=true 当所有条件满足', async () => {
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+        { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
+      ])
+      const result = await health.readiness()
+      expect(result.ready).toBe(true)
+      expect(result.details).toBeDefined()
+      expect(result.details!.hasLeader).toBe(true)
+      expect(result.details!.healthyShards).toBe(1)
+      expect(result.details!.totalShards).toBe(1)
+      expect(result.details!.engineOK).toBe(true)
+    })
+
+    test('返回 ready=false 当无 Raft Leader', async () => {
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+        { rangeId: 'r1', raftRole: 'candidate', nodeCount: 100 },
+      ])
+      const result = await health.readiness()
+      expect(result.ready).toBe(false)
+      expect(result.error).toContain('No Raft leader')
+    })
+
+    test('返回 ready=false 当有分片不健康', async () => {
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+        { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
+        { rangeId: 'r2', raftRole: 'candidate', nodeCount: 50 },
+      ])
+      const result = await health.readiness()
+      expect(result.ready).toBe(false)
+      expect(result.error).toContain('Only 1/2 shards healthy')
+    })
+
+    test('返回 ready=false 当引擎探测失败', async () => {
+      const failingEngine = new (GraphEngine as any)()
+      failingEngine.upsertNode = vi.fn().mockImplementation(function() {
+        throw new Error('Engine crash')
+      })
+      const h = new Health(shardManager, failingEngine)
+      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+        { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
+      ])
+      const result = await h.readiness()
+      expect(result.ready).toBe(false)
+      expect(result.error).toContain('Engine probe failed')
+    })
+  })
+})

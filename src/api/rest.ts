@@ -1326,6 +1326,106 @@ export function createRestApiServer(
       },
     )
 
+    // POST /api/v1/:db/batch — 通用批量操作端点
+    // 在一个请求中执行多个异构操作，支持原子性（全部成功或全部失败）
+    addMultiDbRoute('POST', '/api/v1/:db/batch', true, 'write',
+      async (sm, req, res) => {
+        const body = await parseBody(req) as Record<string, unknown>
+        const operations = body.operations as Array<Record<string, unknown>> | undefined
+        if (!Array.isArray(operations) || operations.length === 0) {
+          jsonResponse(res, 400, { error: 'operations array is required and must be non-empty' })
+          return
+        }
+
+        const txnMgr = sm.getSimpleTxnManager()
+        if (!txnMgr) {
+          jsonResponse(res, 503, { error: 'No engine available for batch operations' })
+          return
+        }
+
+        // Start a transaction for atomicity
+        const txId = txnMgr.begin('batch')
+        const results: Array<{ index: number; op: string; result?: unknown; error?: string }> = []
+        let hasError = false
+
+        // Helper to enqueue a write op to the transaction buffer
+        const add = (type: string, args: any[]) => {
+          txnMgr.addOp(txId, { type: type as any, args })
+        }
+
+        try {
+          for (let i = 0; i < operations.length; i++) {
+            const op = operations[i]
+            const opName = String(op.op ?? 'unknown')
+            try {
+              switch (opName) {
+                case 'upsertNode': {
+                  const id = op.id
+                  const type = op.type
+                  if (id === undefined || type === undefined) {
+                    throw new Error('upsertNode requires id and type')
+                  }
+                  add('upsertNode', [Number(type), String(id), { props: op.props as Record<string, unknown> | undefined }])
+                  results.push({ index: i, op: opName, result: { queued: true } })
+                  break
+                }
+                case 'upsertEdge': {
+                  const src = op.src
+                  const dst = op.dst
+                  const type = op.type
+                  if (src === undefined || dst === undefined || type === undefined) {
+                    throw new Error('upsertEdge requires src, dst, and type')
+                  }
+                  add('upsertEdge', [Number(src), Number(dst), Number(type), op.props ? { props: op.props as any } : undefined])
+                  results.push({ index: i, op: opName, result: { queued: true } })
+                  break
+                }
+                case 'deleteNode': {
+                  const id = op.id
+                  if (id === undefined) throw new Error('deleteNode requires id')
+                  add('deleteNode', [Number(id), false, false])
+                  results.push({ index: i, op: opName, result: { queued: true } })
+                  break
+                }
+                case 'deleteEdge': {
+                  const src = op.src
+                  const dst = op.dst
+                  const type = op.type
+                  if (src === undefined || dst === undefined || type === undefined) {
+                    throw new Error('deleteEdge requires src, dst, and type')
+                  }
+                  add('deleteEdge', [Number(src), Number(dst), Number(type), false])
+                  results.push({ index: i, op: opName, result: { queued: true } })
+                  break
+                }
+                default:
+                  results.push({ index: i, op: opName, error: `Unknown operation: ${opName}` })
+                  hasError = true
+                  continue
+              }
+            } catch (err: unknown) {
+              results.push({ index: i, op: opName, error: err instanceof Error ? err.message : String(err) })
+              hasError = true
+            }
+          }
+
+          if (hasError) {
+            // Rollback on any operation failure
+            txnMgr.rollback(txId)
+            jsonResponse(res, 200, { success: false, results, txId, rolledBack: true })
+          } else {
+            // Commit all operations
+            const committed = await txnMgr.commit(txId, sm)
+            jsonResponse(res, 200, { success: true, results, txId, committed })
+          }
+        } catch (err: unknown) {
+          // Unexpected error - attempt rollback
+          try { txnMgr.rollback(txId) } catch { /* ignore */ }
+          jsonResponse(res, 500, { error: err instanceof Error ? err.message : 'Batch operation failed' })
+        }
+      },
+    )
+
     // ── Ops 管理路由 ──────────────────────────
 
     // GET /api/v1/databases — 列出所有数据库

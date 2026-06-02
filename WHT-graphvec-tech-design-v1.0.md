@@ -6,6 +6,7 @@
 |------|----------|
 | 2026-05-29 | Round 8 新增：Query Plan Cache（§8.8）、Graph Algorithms Expansion（§8.9）、Data Compression（§8.10） |
 | 2026-05-29 | Round 8b 新增：Composite Index（§8.11）、Geo-Spatial Index（§8.12）、Streaming Algorithm Engine（§8.13）、Cross-Shard 2PC Transactions（§8.14）、LDBC Benchmark Suite（§8.15）、Security Audit & Threat Detection（§8.16）、Node/Edge LRU Cache（§8.17）、OPTIONAL MATCH / WITH Clause（§8.18）、Aggregate Functions（§8.19） |
+| 2026-06-02 | Deep Review V4 闭包：共识层 Pipeline/Group Commit/Joint Consensus/PreVote、存储层 SSI/degree 缓存/WAL 调优、算法 K-Core/Node2Vec/多线程 PageRank、安全 OIDC/JWT Refresh/RLS write、查询 BUILTIN_FUNCTIONS/GROUP BY/CBO、运维 K8s 探针/慢查询日志/审计远程 Sink/OTel 统一（§9，HEAD: `6c4b6f67`） |
 
 ## 架构概览
 
@@ -415,3 +416,147 @@ Storage Path:
 **文件**: `src/core/database-manager.ts` — `dropDatabase()`
 
 当前 `dropDatabase()` 执行三阶段删除：Phase 1 写入 `.tombstone.json`（含 database/requestedAt/gcEarliestAt/phase），Phase 2 冷静期内可 restoreDatabase() 恢复，Phase 3 gcDatabases() 物理清理。设计文档 `docs/multi-database-arch-design.md §8` 已实现。
+
+---
+
+## §9 Deep Review V4 闭包新增设计（2026-06-02）
+
+> 更新 HEAD: `6c4b6f67` · 闭包版本: V4
+
+### 9.1 共识层新设计
+
+#### Raft Pipeline 复制
+**文件**: `src/consensus/`
+**设计**:
+- `inFlight` Map 跟踪已发送未确认的 AppendEntries，key 为 `(peerId, term, logIndex)` 组合
+- `pendingQueue` 数组存放等待发送的日志条目，当 `inFlight.size >= maxInFlight` (默认 5) 时暂缓
+- 每收到 AppendEntriesResponse (success=true) 从 inFlight 移除，并从 pendingQueue 取出下一批发送
+- 超时 (pipelineTimeout=50ms) 未收到响应的 inFlight 条目自动回退到非 pipeline 模式
+
+#### WAL Group Commit
+**文件**: `src/core/segment-stream-wal.ts`
+**设计**:
+- `_pendingBatch: LogEntry[]` 累积写入请求，默认 tick 间隔 5ms
+- 每批次最大条目数 `BATCH_MAX = 100`，达到上限强制 flush
+- `setTimeout(flush, GROUP_COMMIT_INTERVAL)` 定时机制，避免累积时间无限增长
+- flush 时批量编码为 msgpackr 格式，单次 fsync 写入 WAL
+
+#### Joint Consensus
+**文件**: `src/consensus/raft-node.ts`
+**设计**:
+- 两阶段配置变更：C_old_new 混合阶段 + C_new 最终阶段
+- C_old_new 阶段：同时向 C_old 和 C_new 分别发送 AppendEntries
+- commit 条件：C_old 的 Majority + C_new 的 Majority 同时满足（双 Majority）
+- C_new 阶段：C_old_new commit 后自动进入，仅需要 C_new 的 Majority
+- 每个新配置条目写入 Raft Log，随 commitIndex 推进自动完成过渡
+
+#### PreVote
+**文件**: `src/consensus/`
+**设计**:
+- 独立 PreVoteRequest/PreVoteResponse RPC 消息类型，与 RequestVote 分离
+- Candidate 发起选举前先发送 PreVote，仅 PreVoteResponse.granted === true 时进入正式选举
+- 接收方判断：分区的节点（term 落后）不会 grant PreVote，避免干扰新 Leader
+
+### 9.2 存储层新设计
+
+#### SimpleTxnManager SSI 冲突检测
+**文件**: `src/core/transaction.ts`
+**设计**:
+- `writeSet` / `deleteSet` 记录事务写入和删除的键集合
+- 提交时与并发的其他事务做 Intersection 检查：
+  - 读集冲突：本事务的 `readSet ∩ others.writeSet ≠ ∅` → 检测到读写冲突
+  - 写写冲突：本事务的 `writeSet ∩ others.writeSet ≠ ∅` → 写写冲突
+  - deleteSet 同理检查
+- 冲突 → 抛出 `SerializationError`，由上层 retry 驱动
+- 配合乐观锁 version 字段实现 SSI（可串行化快照隔离）
+
+#### WAL every-n 策略
+**文件**: `src/core/segment-stream-wal.ts`
+**设计**:
+- `fsyncEveryN: number = 100` 配置参数，每 N 次写入后才调用一次 fsync
+- 默认值从 10 调整为 100（commit 63fc8d5a）
+- 未 fsync 的批量写入在 `_pendingBatch` 中累积，进程崩溃会丢失（允许范围内）
+- 与 Raft commit 联动：Raft commit 的回调触发强制 fsync
+
+#### Degree 缓存架构
+**文件**: `src/core/graph-engine.ts`
+**设计**:
+- `_inDegree: Map<number, number>` — 节点入度缓存
+- `_outDegree: Map<number, number>` — 节点出度缓存
+- 节点创建/upsertEdge/deleteEdge 时同步更新度数 Map
+- `inDegree(nodeId)` / `outDegree(nodeId)` 返回 O(1) 时间
+- 后续可持久化到 LMDB 以避免启动重算
+
+### 9.3 算法新设计
+
+#### worker_threads 分割迭代块
+**文件**: `src/algorithms/pagerank.ts`
+**设计**:
+- 全图节点按 `numWorkers` 均匀分割为迭代块
+- 每个 worker 持有一个独立的 `{nodeId, score}` 数组切片
+- 每轮迭代：主线程分发当前轮 score 向量 → 各 worker 本地计算更新 → 主线程汇总合并
+- 合并后检查收敛条件 (`delta < tolerance`)，未收敛则进入下一轮
+- worker 通过 `worker_threads.Worker` 实例化，使用 `parentPort.postMessage` 通信
+
+#### K-Core 迭代修剪算法
+**文件**: `src/algorithms/k-core.ts`
+**设计**:
+- 输入：图 G 和整数 k
+- 迭代修剪：反复移除度 < k 的节点，每轮移除后更新邻居度数
+- 时间复杂度 O(m + n)（n 节点数，m 边数）
+- 输出：k-core 子图（满足所有节点度 ≥ k 的最大导出子图）
+- 扩展：`coreDecomposition()` 返回每个节点的 coreness（最大核心度）
+
+### 9.4 安全新设计
+
+#### OIDCValidator + AuthenticatorChain 链式认证
+**文件**: `src/security/`
+**设计**:
+- `AuthenticatorChain` 维护 `Authenticator[]` 数组，按优先级链式调用
+- `OIDCValidator` 处理 OAuth2/OIDC 令牌验证（JWT 签发者/受众/有效期检查）
+- `ApiKeyAuthenticator` 备用认证方式
+- 链式执行：任一 Authenticator 返回成功 → 通过；全部失败 → 返回 401
+- 通过 `AuthenticatorChain.addAuthenticator(auth)` 可动态注册
+
+#### JWT Refresh Token 轮换
+**文件**: `src/security/jwt.ts`
+**设计**:
+- access_token (短时效, e.g. 15m) + refresh_token (长时效, e.g. 7d)
+- 刷新时同时返回新的 access_token 和 refresh_token（轮换机制）
+- 旧 refresh_token 使用后立即失效，防止重放攻击
+- refresh_token 哈希存储在 LMDB 中，支持吊销
+
+#### RLS write path 注入
+**文件**: `src/security/rls.ts`
+**设计**:
+- `RlsEngine.enforceWrite(principal, action, resource)` 在写入前校验
+- 注入时机：`GraphEngine.upsertNode/upsertEdge/deleteNode/deleteEdge` 调用前检查
+- 未通过 → 抛出 `RlsAuthorizationError`
+- 策略定义：`(principal: Principal, action: 'write' | 'delete', resource: Node|Edge) => boolean`
+
+### 9.5 查询新设计
+
+#### BUILTIN_FUNCTIONS 注册表
+**文件**: `src/query/query-engine.ts`
+**设计**:
+- `BUILTIN_FUNCTIONS: Map<string, FunctionHandler>` — 全局函数注册表
+- 函数表达式在 AST 中解析为 `{type: 'function', name, args}` 节点
+- 执行时从 BUILTIN_FUNCTIONS 查找并调用，支持 count(), sum(), avg(), min(), max(), abs(), round(), size(), exists() 等
+- 可通过 `registerBuiltinFunction(name, handler)` 扩展
+
+#### GROUP BY partition-aggregate 模式
+**文件**: `src/query/`
+**设计**:
+- Partition 阶段：按 GROUP BY 字段哈希分区，每分区独立聚合
+- Aggregate 阶段：对每个分区执行聚合函数（count/sum/avg/min/max）
+- HAVING 过滤：聚合结果输出前应用 HAVING 条件
+- 内存内 Map-Reduce 模式实现，无外部依赖
+- HAVING 执行时使用相同函数注册表
+
+#### CBO Range Histogram
+**文件**: `src/query/query-planner.ts`
+**设计**:
+- `StatsCollector.collectHistogram(field)` — 按字段构建等深直方图（默认 100 bucket）
+- `estimateSelectivity(field, op, value)` — 基于直方图估算谓词选择率
+- 查询计划器在 Join Ordering 时使用选择率排序（低选择率优先）
+- 统计信息变更时自动清空 Plan Cache

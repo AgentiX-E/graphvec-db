@@ -459,3 +459,61 @@ Phase 6: 运维文档 (1d) ← 最后
 ---
 
 *执行日期: 2026-05-27 · 代码版本: OverGraph (agentiX-graphvec)*
+
+---
+
+## 执行状态更新（2026-06-02）
+
+### Phase 0: 工程基座 ✅（已完成）
+- Task 0.1: 移除 StandaloneConsensus fallback ✅
+- Task 0.2: 清理 Jest 残余 ✅
+- Task 0.3: 检查 jest.* 残留 ✅
+
+### Phase 1: 类型安全 ✅（已完成）
+- Task 1.1: event-bus 类型化 ✅
+- Task 1.2: event-stream 类型化 ✅
+
+### Phase 2: 数据一致性 ✅（已完成）
+- Task 2.1: Raft + Outbox 原子化 ✅
+- Task 2.2: 事件流本地回调修复 ✅
+- Task 2.3: 移除 isRaftLeader ✅
+
+### Phase 3: 传输层健壮性 ✅（已完成）
+- Task 3.1: ZMQ dealer 就绪检测 ✅
+- Task 3.2: Outbox 拓扑感知退避 ✅
+- Task 3.3: ROUTER 背压 ✅
+
+### Phase 4: 性能优化 ✅（已完成）
+- Task 4.1: msgpackr 序列化 ✅
+- Task 4.2: Outbox 分页 ✅
+- Task 4.3: 高吞吐压测 ✅
+
+### Phase 5: 测试覆盖 ✅（已完成）
+- Task 5.1: Raft + Outbox 组合测试 ✅
+- Task 5.2: Outbox 超时重传 + 幂等测试 ✅
+- Task 5.3: CURVE 配置错误故障测试 ✅
+- Task 5.4: Raft Leader 切换期间写入行为 ✅
+
+### Phase 6: 文档与运维 ✅（已完成）
+- Task 6.1: 部署配置模板 ✅
+- Task 6.2: 监控仪表板 ✅
+- Task 6.3: 文档体系整合 ✅
+
+### Phase 2 P0 改进（已完成，16 项全部关闭）
+所有 P0 Critical 修复已实现并验证，包括 `process.exit(0)` 移除、`exportSnapshot` 类型安全等。
+
+### Phase 2 P1 改进（已完成，22 项全部关闭）
+### Phase 2 P2 改进（已完成，15 项全部关闭）
+### Phase 2 P3 改进（已完成，3 项全部关闭）
+
+### Deep Review V4 闭包（已完成，56 项全部实现）
+详见 `temp/deep-review-v4-integrated.md`。
+
+**V4 闭包关键统计**：
+- 6 commits, 112 files, 13774 lines added
+- HEAD: `6c4b6f67`
+- 覆盖 Track 1（查询+安全+审计）、Track 2（共识+存储+TLS）、Track 3（算法+运维+指标+导入）
+
+### 未来计划 / 待定项
+- P2 改进中的远期构想（复合索引唯一约束、Geo-Spatial Index 增强等）已转为 F31+ 功能课题
+- 下一阶段关注：性能基准持续优化、LDBC 标准测试通过率提升、生产级运维治理完善

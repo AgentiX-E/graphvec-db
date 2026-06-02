@@ -72,7 +72,8 @@ MatchStatement
         match: matchClause,
         where: whereClause,
         return: returnClause,
-        groupBy: groupByClause,
+        groupBy: groupByClause ? groupByClause.columns : null,
+        having: groupByClause ? groupByClause.having : null,
         orderBy: orderByClause,
         limit: limitSkip ? limitSkip.limit : undefined,
         skip: limitSkip ? limitSkip.skip : undefined,
@@ -99,7 +100,8 @@ MatchStatement
         match: matchClause,
         where: whereClause,
         return: returnClause,
-        groupBy: groupByClause,
+        groupBy: groupByClause ? groupByClause.columns : null,
+        having: groupByClause ? groupByClause.having : null,
         orderBy: orderByClause,
         limit: limitSkip ? limitSkip.limit : undefined,
         skip: limitSkip ? limitSkip.skip : undefined,
@@ -125,7 +127,8 @@ MatchStatement
         match: matchClause,
         where: whereClause,
         return: returnClause,
-        groupBy: groupByClause,
+        groupBy: groupByClause ? groupByClause.columns : null,
+        having: groupByClause ? groupByClause.having : null,
         orderBy: orderByClause,
         limit: limitSkip ? limitSkip.limit : undefined,
         skip: limitSkip ? limitSkip.skip : undefined,
@@ -148,7 +151,8 @@ MatchStatement
         type: 'QUERY',
         match: null,
         return: returnClause,
-        groupBy: groupByClause,
+        groupBy: groupByClause ? groupByClause.columns : null,
+        having: groupByClause ? groupByClause.having : null,
         orderBy: orderByClause,
         limit: limitSkip ? limitSkip.limit : undefined,
         skip: limitSkip ? limitSkip.skip : undefined,
@@ -492,7 +496,12 @@ MinFunc
 // ── GROUP BY ────────────────────────────────────────────────
 
 GroupByClause
-  = _ "GROUP"i _ "BY"i _ cols:GroupByList { return cols }
+  = _ "GROUP"i _ "BY"i _ cols:GroupByList having:HavingClause? {
+      return { columns: cols, having: having ?? null }
+    }
+
+HavingClause
+  = _ "HAVING"i _ expr:OrExpression { return { type: 'HAVING', expression: expr } }
 
 GroupByList
   = head:GroupByColumn tail:(_ "," _ GroupByColumn)* {
@@ -515,6 +524,13 @@ Column
         type: 'AGGREGATE_COLUMN',
         expression: { type: 'AGGREGATE', func: agg.func, field },
         alias: agg.alias,
+      }
+    }
+  / expr:FunctionCall alias:AsClause? {
+      return {
+        type: 'COLUMN',
+        expression: expr,
+        alias: alias,
       }
     }
   / expr:CaseExpression alias:AsClause? {
@@ -569,6 +585,13 @@ OrderColumn
       return {
         type: 'ORDER_COLUMN',
         expression: ref,
+        direction: dir ? dir : 'ASC',
+      }
+    }
+  / func:FunctionCall dir:DirClause? {
+      return {
+        type: 'ORDER_COLUMN',
+        expression: func,
         direction: dir ? dir : 'ASC',
       }
     }
@@ -654,7 +677,8 @@ StringPredicateOp
   / "CONTAINS"i  { return 'CONTAINS' }
 
 Primary
-  = ExistsExpression
+  = FunctionCall
+  / ExistsExpression
   / CaseExpression
   / PropertyRef
   / StringLiteral
@@ -662,6 +686,22 @@ Primary
   / BooleanLiteral
   / Identifier
   / "(" _ expr:OrExpression _ ")" { return expr }
+
+// ── 内置函数调用 ──────────────────────────────────────────
+
+FunctionCall
+  = name:Identifier _ "(" _ args:FunctionArgList? _ ")" {
+      return {
+        type: 'FUNCTION_CALL',
+        name: name,
+        args: args ?? [],
+      }
+    }
+
+FunctionArgList
+  = head:Primary tail:(_ "," _ Primary)* {
+      return [head, ...tail.map(t => t[3])]
+    }
 
 // ── 基础词法 ──────────────────────────────────────────────
 

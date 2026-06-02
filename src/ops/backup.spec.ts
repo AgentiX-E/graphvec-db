@@ -442,3 +442,137 @@ function cleanDir(dir: string): void {
     }
   } catch { /* ignore */ }
 }
+
+describe('D-13 — 恢复可观测性（onProgress 回调）', () => {
+  const BACKUP_DIR = './test-data/backup-obs-test'
+  const DATA_DIR = './test-data/backup-obs-data'
+
+  beforeAll(() => {
+    cleanDir(BACKUP_DIR)
+    cleanDir(DATA_DIR)
+    process.env.DATA_DIR = DATA_DIR
+    fs.mkdirSync(DATA_DIR, { recursive: true })
+    const config = { ...testEngineConfig, path: DATA_DIR }
+    const engine = new GraphEngine(config)
+    engine.open()
+
+    // Write some data
+    const n1 = engine.upsertNode(1, 'obs-a')
+    const n2 = engine.upsertNode(1, 'obs-b')
+    engine.upsertEdge(n1, n2, 5)
+    engine.close()
+    engine.open()
+
+    // Create a backup
+    const backupDir = path.join(BACKUP_DIR, 'test-backup')
+    fs.mkdirSync(backupDir, { recursive: true })
+    fs.cpSync(DATA_DIR, backupDir, { recursive: true })
+    fs.writeFileSync(path.join(backupDir, '.consistency-marker'), JSON.stringify({
+      snapshotId: 1, hlcWallTime: Date.now(), hlcLogical: 0, createdAt: new Date().toISOString(),
+    }))
+
+    engine.close()
+    cleanDir(DATA_DIR)
+    engine.close()
+  })
+
+  afterAll(() => {
+    cleanDir(BACKUP_DIR)
+    cleanDir(DATA_DIR)
+  })
+
+  test('restore 应触发 onProgress 回调且每阶段至少一次', async () => {
+    const config = { ...testEngineConfig, path: DATA_DIR }
+    const engine = new GraphEngine(config)
+    const backup = new Backup(engine)
+
+    const progressCalls: { phase: string; percent: number; eta: number }[] = []
+    const onProgress = (phase: string, percent: number, eta: number) => {
+      progressCalls.push({ phase, percent, eta })
+    }
+
+    const backupDir = path.join(BACKUP_DIR, 'test-backup')
+    await backup.restore(backupDir, DATA_DIR, onProgress)
+
+    // 应该至少有 5 次回调（analyze, close_engine, backup_current, restore_data, reopen_engine, done）
+    expect(progressCalls.length).toBeGreaterThanOrEqual(5)
+
+    // 验证关键阶段出现了
+    const phases = progressCalls.map(p => p.phase)
+    expect(phases).toContain('analyze')
+    expect(phases).toContain('backup_current')
+    expect(phases).toContain('restore_data')
+    expect(phases).toContain('reopen_engine')
+    expect(phases).toContain('done')
+
+    // 验证 percent 在 0-100 范围内
+    for (const call of progressCalls) {
+      expect(call.percent).toBeGreaterThanOrEqual(0)
+      expect(call.percent).toBeLessThanOrEqual(100)
+    }
+
+    // 验证第一个回调 percent 为 0
+    expect(progressCalls[0].percent).toBe(0)
+    // 验证最后一个回调 percent 为 100
+    expect(progressCalls[progressCalls.length - 1].percent).toBe(100)
+
+    engine.close()
+    cleanDir(DATA_DIR)
+  }, 15000)
+
+  test('每 10% 或更细粒度应触发一次回调', async () => {
+    const config = { ...testEngineConfig, path: DATA_DIR }
+    const engine = new GraphEngine(config)
+    const backup = new Backup(engine)
+
+    const progressCalls: number[] = []
+    const onProgress = (_phase: string, percent: number, _eta: number) => {
+      progressCalls.push(percent)
+    }
+
+    const backupDir = path.join(BACKUP_DIR, 'test-backup')
+    await backup.restore(backupDir, DATA_DIR, onProgress)
+
+    // 应包含 0% 和 100%
+    expect(progressCalls).toContain(0)
+    expect(progressCalls).toContain(100)
+
+    engine.close()
+    cleanDir(DATA_DIR)
+  }, 15000)
+
+  test('不传 onProgress 时应正常工作（兼容旧调用）', async () => {
+    const config = { ...testEngineConfig, path: DATA_DIR }
+    const engine = new GraphEngine(config)
+    const backup = new Backup(engine)
+
+    const backupDir = path.join(BACKUP_DIR, 'test-backup')
+    // 不传 onProgress — 这应该正常工作
+    await expect(backup.restore(backupDir, DATA_DIR)).resolves.toBeUndefined()
+
+    // 验证备份被恢复
+    expect(fs.existsSync(path.join(DATA_DIR, 'segments'))).toBe(true)
+
+    engine.close()
+    cleanDir(DATA_DIR)
+  }, 15000)
+
+  test('回调中被记录到日志', async () => {
+    const config = { ...testEngineConfig, path: DATA_DIR }
+    const engine = new GraphEngine(config)
+    const backup = new Backup(engine)
+
+    let progressCount = 0
+    const onProgress = (phase: string, _percent: number, _eta: number) => {
+      progressCount++
+    }
+
+    const backupDir = path.join(BACKUP_DIR, 'test-backup')
+    await backup.restore(backupDir, DATA_DIR, onProgress)
+
+    expect(progressCount).toBeGreaterThan(0)
+
+    engine.close()
+    cleanDir(DATA_DIR)
+  }, 15000)
+})
