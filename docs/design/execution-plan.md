@@ -857,81 +857,81 @@ Phase 2:
 | Phase 8B | EXPLAIN / Prometheus / 流式查询 / 事务函数 | P3 | 10~14d | **4** | ✅ 已完成 |
 | **V8 合计** | — | P2~P3 | **24~33d** | **8** | ✅ **已实现** |
 
-### Phase 9: V9 新方向（⬜ **计划中**）
+### Phase 9: V9 新方向（✅ **已实现** · 7/7 GAPs 关闭）
 
 V9 聚焦**生态扩展&运营体验**，涵盖算法深度、可视化、安全集成、运维智能化和数据互操作，共 **7 个方向**。
 
-#### Phase 9A: P2 优先（图算法+导入导出，预估: 5~7d）⬜ 计划中
+#### Phase 9A: P2 优先（图算法+导入导出，预估: 5~7d）✅ 已实现
 
 ##### Task 9A.1 — 图算法库扩充（GAP-37, P2, 3~4d）
 **目标**: 补充 Yen's K-Shortest Paths / ApproxBetweenness / EgoNet
-- [ ] `YenKShortestPaths(graph, source, target, K)` 返回 K 条最短路径
-- [ ] `ApproxBetweenness(graph, sampleRatio)` 大图近似（10K 节点误差 <10%, 性能提升 >10x）
-- [ ] `EgoNet(graph, centerNode, maxDepth)` 返回 n 跳子图
-- [ ] 注册到 `src/algorithms/index.ts`
+- [x] `YenKShortestPaths(graph, source, target, K)` 返回 K 条最短路径
+- [x] `ApproxBetweenness(graph, sampleRatio)` 大图近似（10K 节点误差 <10%, 性能提升 >10x）
+- [x] `EgoNet(graph, centerNode, maxDepth)` 返回 n 跳子图
+- [x] 注册到 `src/algorithms/index.ts`
 - **依赖**: 无（复用 Dijkstra 等现有算法）
 - **影响**: `src/algorithms/yen-ksp.ts`, `src/algorithms/approx-betweenness.ts`, `src/algorithms/ego-net.ts`
 
 ##### Task 9A.2 — 批量导入/导出（GAP-41, P3, 2~3d）
 **目标**: `BatchImportExport` 统一封装类
-- [ ] `exportNodes('csv', '/tmp/nodes.csv')` 导出全部节点含属性列
-- [ ] `exportEdges('jsonl', '/tmp/edges.jsonl')` 导出全部边为 JSONL
-- [ ] `importNodes('/tmp/nodes.csv', 'csv')` 返回 `{imported, errors}`
-- [ ] 导出文件可通过同格式导入恢复（roundtrip）
-- [ ] 支持按 typeId/label 过滤
-- [ ] 100K 节点导出 ≤ 5s
+- [x] `exportNodes('csv', '/tmp/nodes.csv')` 导出全部节点含属性列
+- [x] `exportEdges('jsonl', '/tmp/edges.jsonl')` 导出全部边为 JSONL
+- [x] `importNodes('/tmp/nodes.csv', 'csv')` 返回 `{imported, errors}`
+- [x] 导出文件可通过同格式导入恢复（roundtrip）
+- [x] 支持按 typeId/label 过滤
+- [x] 100K 节点导出 ≤ 5s
 - **依赖**: `csv-parse`（已有）, `jsonlines`（新增~5KB）
 - **影响**: `src/ops/batch-import-export.ts`
 
-#### Phase 9B: P3 五项（仪表盘+RBAC+图分割+告警+可视化输出，预估: 12~17d）⬜ 计划中
+#### Phase 9B: P3 五项（仪表盘+RBAC+图分割+告警+可视化输出，预估: 12~17d）✅ 已实现
 
 ##### Task 9B.1 — 可视化仪表盘（GAP-36, P3, 3~4d）
 **目标**: WebSocket + React 实时图拓扑面板
-- [ ] `GET /api/admin/graph-live` 返回当前全量拓扑快照
-- [ ] WebSocket `ws://host/graph-live` 推送增量更新
-- [ ] 前端 cytoscape.js 力导向图布局，支持缩放/拖拽
-- [ ] 节点/边 tooltip 展示属性详情
-- [ ] 500+ 节点帧率 > 30fps
+- [x] `GET /api/admin/graph-live` 返回当前全量拓扑快照
+- [x] WebSocket `ws://host/graph-live` 推送增量更新
+- [x] 前端 cytoscape.js 力导向图布局，支持缩放/拖拽
+- [x] 节点/边 tooltip 展示属性详情
+- [x] 500+ 节点帧率 > 30fps
 - **依赖**: `cytoscape`, `react`, `esbuild`（已有）
 - **影响**: `src/api/admin/GraphLiveStream.ts`, `src/api/admin/graph-live.html.ts`
 
 ##### Task 9B.2 — RBAC 权限集成（GAP-38, P3, 2~3d）
 **目标**: Operation 路径自动拦截
-- [ ] `PermissionResolver` 接口: `checkNodeAccess` / `checkEdgeAccess` / `checkQueryAccess`
-- [ ] `GraphEngine` 构造函数可选注入
-- [ ] 未注入时向后兼容，注入后 `upsertNode` 拒绝时抛 `AuthError`
-- [ ] `query` 结果自动过滤无权限节点/边
-- [ ] 测试: 角色权限、属性级条件、层级继承
+- [x] `PermissionResolver` 接口: `checkNodeAccess` / `checkEdgeAccess` / `checkQueryAccess`
+- [x] `GraphEngine` 构造函数可选注入
+- [x] 未注入时向后兼容，注入后 `upsertNode` 拒绝时抛 `AuthError`
+- [x] `query` 结果自动过滤无权限节点/边
+- [x] 测试: 角色权限、属性级条件、层级继承
 - **依赖**: 无（复用 `rbac.ts`, `rls.ts`, `auth.ts`）
 - **影响**: `src/security/permission-resolver.ts`, `src/core/graph-engine.ts`
 
 ##### Task 9B.3 — 图分割/分区（GAP-39, P3, 3~4d）
 **目标**: 智能图分割减少跨分片边
-- [ ] `GraphPartitioner.partition(graph, k)` → `Map<nodeId, partitionId>`
-- [ ] LouvainPartitioner: 跨分片边比随机哈希降低 ≥40%
-- [ ] BfsPartitioner 作为后备
-- [ ] 分割结果导出到 `ShardManager.reshard()`
-- [ ] 100K 节点 + 500K 边在 30s 内完成
+- [x] `GraphPartitioner.partition(graph, k)` → `Map<nodeId, partitionId>`
+- [x] LouvainPartitioner: 跨分片边比随机哈希降低 ≥40%
+- [x] BfsPartitioner 作为后备
+- [x] 分割结果导出到 `ShardManager.reshard()`
+- [x] 100K 节点 + 500K 边在 30s 内完成
 - **依赖**: 无（复用 Louvain 算法）
 - **影响**: `src/shard/graph-partitioner.ts`, `src/shard/shard-manager.ts`
 
 ##### Task 9B.4 — 监控告警规则（GAP-40, P3, 2~3d）
 **目标**: 预置告警规则管理
-- [ ] `AlertRuleManager.addRule` / `removeRule` / `listRules`
-- [ ] `toPrometheusYAML()` → Alertmanager 兼容 YAML
-- [ ] 至少 7 条预置规则: Down/Latency/Error/Shard/Cache/Cluster/Cert
-- [ ] `evaluateRules()` 运行时触发检查
+- [x] `AlertRuleManager.addRule` / `removeRule` / `listRules`
+- [x] `toPrometheusYAML()` → Alertmanager 兼容 YAML
+- [x] 至少 7 条预置规则: Down/Latency/Error/Shard/Cache/Cluster/Cert
+- [x] `evaluateRules()` 运行时触发检查
 - **依赖**: `prom-client`（已有）
 - **影响**: `src/ops/alert-rule-manager.ts`, `src/ops/preset-alert-rules.yaml`
 
 ##### Task 9B.5 — 图可视化输出（GAP-42, P3, 2~3d）
 **目标**: DOT/Cytoscape JSON 序列化器 + REST API 可选格式
-- [ ] `GraphVizFormatter.formatQueryResult()` → DOT 格式字符串
-- [ ] DOT 可被 `dot -Tsvg` 正确渲染
-- [ ] `CytoscapeFormatter.formatQueryResult()` → Cytoscape.js `elements` 数组
-- [ ] REST API `?format=dot` → `Content-Type: text/vnd.graphviz`
-- [ ] REST API `?format=cytoscape` → `Content-Type: application/json`
-- [ ] 空结果不报错
+- [x] `GraphVizFormatter.formatQueryResult()` → DOT 格式字符串
+- [x] DOT 可被 `dot -Tsvg` 正确渲染
+- [x] `CytoscapeFormatter.formatQueryResult()` → Cytoscape.js `elements` 数组
+- [x] REST API `?format=dot` → `Content-Type: text/vnd.graphviz`
+- [x] REST API `?format=cytoscape` → `Content-Type: application/json`
+- [x] 空结果不报错
 - **依赖**: 无
 - **影响**: `src/api/graphviz-formatter.ts`, `src/api/cytoscape-formatter.ts`, `src/api/rest.ts`
 
@@ -939,6 +939,6 @@ V9 聚焦**生态扩展&运营体验**，涵盖算法深度、可视化、安全
 
 | Phase | 包含方向 | 优先级范围 | 总估值工时 | 方向数 | 状态 |
 |:-----:|----------|:----------:|:----------:|:-----:|:----:|
-| Phase 9A | 图算法扩充 / 批量导入导出 | P2→P3 | 5~7d | **2** | ⬜ 计划中 |
-| Phase 9B | 仪表盘 / RBAC / 图分割 / 告警 / 可视化输出 | P3 | 12~17d | **5** | ⬜ 计划中 |
-| **V9 合计** | — | P2~P3 | **17~24d** | **7** | ⬜ **计划中** |
+| Phase 9A | 图算法扩充 / 批量导入导出 | P2→P3 | 5~7d | **2** | ✅ 已实现 |
+| Phase 9B | 仪表盘 / RBAC / 图分割 / 告警 / 可视化输出 | P3 | 12~17d | **5** | ✅ 已实现 |
+| **V9 合计** | — | P2~P3 | **17~24d** | **7** | ✅ **已实现** (`c6e5a0ef` 2026-06-02) |
