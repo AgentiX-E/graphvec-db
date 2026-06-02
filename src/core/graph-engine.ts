@@ -242,6 +242,10 @@ export class GraphEngine {
   private _edgeCacheHits = 0
   private _edgeCacheMisses = 0
 
+  // ── QueryResultCache (GAP-24) ──
+  /** 查询结果缓存 */
+  private _queryCache: QueryResultCache | null = null
+
   /** Schema 类型定义（可选） */
   private _schema?: SchemaDef
 
@@ -499,9 +503,41 @@ export class GraphEngine {
     }
   }
 
-  // ──────────────────────────────────────────
-  // Node operations
-  // ──────────────────────────────────────────
+/**
+ * 启用查询结果缓存（GAP-24）
+ *
+ * @param config 缓存配置
+ */
+enableQueryCache(config?: { maxSize?: number; ttlSec?: number }): void {
+  this._queryCache = new QueryResultCache({
+    maxSize: config?.maxSize ?? 500,
+    ttlSec: config?.ttlSec ?? 30,
+  })
+  this.logger.info('QueryResultCache enabled', { maxSize: config?.maxSize ?? 500, ttlSec: config?.ttlSec ?? 30 })
+}
+
+/**
+ * 获取查询结果缓存实例（如果已启用）
+ */
+getQueryCache(): QueryResultCache | null {
+  return this._queryCache
+}
+
+/**
+ * 在写入操作后失效查询缓存
+ * 供 upsertNode / deleteNode / upsertEdge / deleteEdge 调用
+ */
+private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
+  if (!this._queryCache) return
+  const tags: import('./query-cache').CacheTag[] = []
+  if (typeId !== undefined) tags.push(typeId)
+  if (nodeId !== undefined) tags.push(String(nodeId))
+  this._queryCache.onWrite(tags.length > 0 ? tags : undefined)
+}
+
+// ──────────────────────────────────────────
+// Node operations
+// ──────────────────────────────────────────
 
   /**
    * 插入或更新一个节点（Multi-Leader 模式：同步等待所有远程节点 ACK）
@@ -536,6 +572,8 @@ export class GraphEngine {
     const id = this.storage.upsertNode(typeId, name, opts)
     // 清除节点缓存（Gap 12）
     this._nodeCache.delete(id)
+    // 查询结果缓存失效（GAP-24）
+    this._invalidateQueryCache(typeId, id)
     if (!this._nodeIds.has(id)) {
       this._nodeIds.add(id)
       this._nodeCount++
@@ -677,6 +715,8 @@ export class GraphEngine {
     this._inDegrees.delete(id)
     this._outDegrees.delete(id)
     this.onRecordChange?.(node.key, { _deleted: true, typeId: node.typeId })
+    // 查询结果缓存失效（GAP-24）
+    this._invalidateQueryCache(node.typeId, id)
 
     if (this._mlReplication && !skipReplication) {
       const result = await this._mlReplication.replicate('node:deleted', { id, typeId: node.typeId, name: node.key })
@@ -787,6 +827,8 @@ export class GraphEngine {
       this._inDegrees.set(dst, (this._inDegrees.get(dst) ?? 0) + 1)
     }
     this.onRecordChange?.(`edge:${src}->${dst}`, { typeId, src, dst, ...(opts?.props ?? {}) })
+    // 查询结果缓存失效（GAP-24）
+    this._invalidateQueryCache(typeId)
 
     if (this._mlReplication && !opts?.skipReplication) {
       const result = await this._mlReplication.replicate('edge:created', { src, dst, typeId, props: opts?.props })
@@ -883,6 +925,8 @@ export class GraphEngine {
     this._outDegrees.set(src, Math.max(0, (this._outDegrees.get(src) ?? 0) - 1))
     this._inDegrees.set(dst, Math.max(0, (this._inDegrees.get(dst) ?? 0) - 1))
     this.onRecordChange?.(`edge:${src}->${dst}:${typeId}`, { _deleted: true, src, dst, typeId })
+    // 查询结果缓存失效（GAP-24）
+    this._invalidateQueryCache(typeId)
 
     if (this._mlReplication && result && !skipReplication) {
       const r = await this._mlReplication.replicate('edge:deleted', { src, dst, typeId })
@@ -898,6 +942,111 @@ export class GraphEngine {
       this._emitLocal({ type: 'edge:deleted', data: { src, dst, typeId } })
     }
     return result
+  }
+
+  // ── 批量删除 (GAP-22) ─────────────────────
+
+  /**
+   * 批量删除节点
+   *
+   * 注意：默认实现采用循环逐条调用 storage.deleteNode。
+   * 如果后端存储支持原生批量删除（如实现了 batchDeleteNodes 接口），
+   * 则将委托给后端获得更高性能。
+   *
+   * @param ids 要删除的节点 ID 列表
+   * @returns 实际删除的节点数
+   */
+  async batchDeleteNodes(ids: NodeId[], skipReplication = false): Promise<number> {
+    this._ensureOpen()
+    this._ensureNotFrozen()
+
+    if (ids.length === 0) return 0
+
+    let deletedCount = 0
+
+    // 如果存储后端支持原生批量删除，使用它
+    if (typeof (this.storage as any).batchDeleteNodes === 'function') {
+      deletedCount = (this.storage as any).batchDeleteNodes(ids)
+
+      // 即便原批量 API 成功了，仍需维护引擎层状态
+      for (const id of ids) {
+        this._nodeCache.delete(id)
+        this._fulltext?.removeDocument(String(id))
+        this._nodeIds.delete(id)
+        this._inDegrees.delete(id)
+        this._outDegrees.delete(id)
+      }
+      // 注意：batchDeleteNodes 内部不会逐条递减计数
+      // 无法精确知道哪些被真正删除了，从总数中安全递减
+      this._nodeCount = Math.max(0, this._nodeCount - ids.length)
+
+      if (this._mlReplication && !skipReplication && deletedCount > 0) {
+        for (const id of ids) {
+          const node = this._nodeCache.get(id) ?? this.storage.getNode(id, false)
+          if (node) {
+            await this._mlReplication.replicate('node:deleted', { id, typeId: node.typeId, name: node.key })
+          }
+        }
+      }
+
+      return deletedCount
+    }
+
+    // 回退方案：逐条删除
+    for (const id of ids) {
+      const ok = await this.deleteNode(id, skipReplication)
+      if (ok) deletedCount++
+    }
+    return deletedCount
+  }
+
+  /**
+   * 批量删除边
+   *
+   * @param keys 要删除的边列表（src, dst, typeId 三元组）
+   * @returns 实际删除的边数
+   */
+  async batchDeleteEdges(
+    keys: Array<{ src: NodeId; dst: NodeId; typeId: number }>,
+    skipReplication = false,
+  ): Promise<number> {
+    this._ensureOpen()
+    this._ensureNotFrozen()
+
+    if (keys.length === 0) return 0
+
+    let deletedCount = 0
+
+    // 如果存储后端支持原生批量删除，使用它
+    if (typeof (this.storage as any).batchDeleteEdges === 'function') {
+      deletedCount = (this.storage as any).batchDeleteEdges(keys)
+
+      // 维护引擎层状态
+      for (const { src, dst, typeId } of keys) {
+        this._edgeCache.delete(`${src}:${dst}:${typeId}`)
+        this._outDegreeCounts.set(src, Math.max(0, (this._outDegreeCounts.get(src) ?? 0) - 1))
+        this._inDegreeCounts.set(dst, Math.max(0, (this._inDegreeCounts.get(dst) ?? 0) - 1))
+        this._outDegrees.set(src, Math.max(0, (this._outDegrees.get(src) ?? 0) - 1))
+        this._inDegrees.set(dst, Math.max(0, (this._inDegrees.get(dst) ?? 0) - 1))
+      }
+      this._edgeCount = Math.max(0, this._edgeCount - keys.length)
+      this._invalidateQueryCache(0) // 无法精确知道 typeId，失效全部
+
+      if (this._mlReplication && !skipReplication && deletedCount > 0) {
+        for (const { src, dst, typeId } of keys) {
+          await this._mlReplication.replicate('edge:deleted', { src, dst, typeId })
+        }
+      }
+
+      return deletedCount
+    }
+
+    // 回退方案：逐条删除
+    for (const { src, dst, typeId } of keys) {
+      const ok = await this.deleteEdge(src, dst, typeId, skipReplication)
+      if (ok) deletedCount++
+    }
+    return deletedCount
   }
 
   /**

@@ -1,7 +1,14 @@
 /**
- * graphql-adapter.spec.ts — GraphQL Adapter 测试（含 Mutation）
+ * graphql-adapter.spec.ts — GraphQL Adapter 测试（含 Mutation + Subscription）
  */
-import { GraphQLAdapter, ResolverMap, MutationResolvers } from './graphql-adapter'
+import {
+  GraphQLAdapter,
+  ResolverMap,
+  MutationResolvers,
+  SubscriptionResolvers,
+  DEFAULT_SUBSCRIPTION_RESOLVERS,
+  SubscriptionEventType,
+} from './graphql-adapter'
 
 describe('GraphQLAdapter', () => {
   const mockResolvers: ResolverMap = {
@@ -188,6 +195,123 @@ describe('GraphQLAdapter', () => {
       expect(sdl).toContain('updateNode')
       expect(sdl).toContain('deleteNode')
       expect(sdl).toContain('deleteEdge')
+    })
+
+    test('should include subscription type when subscription resolvers configured', () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      const sdl = adapter.getSchemaSDL()
+      expect(sdl).toContain('type Query')
+      expect(sdl).toContain('type Mutation')
+      expect(sdl).toContain('type Subscription')
+      expect(sdl).toContain('nodeCreated')
+      expect(sdl).toContain('nodeUpdated')
+      expect(sdl).toContain('nodeDeleted')
+      expect(sdl).toContain('edgeCreated')
+      expect(sdl).toContain('edgeUpdated')
+      expect(sdl).toContain('edgeDeleted')
+      expect(sdl).toContain('type SubscriptionEvent')
+      expect(sdl).toContain('type: String!')
+      expect(sdl).toContain('timestamp: Float!')
+      expect(sdl).toContain('nodeId: String!')
+      expect(sdl).toContain('data: JSON!')
+    })
+  })
+
+  // ── Subscription (GAP-25) ────────────────────────────────
+
+  describe('execute() - Subscription', () => {
+    test('should detect subscription operation from field name', async () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      const result = await adapter.execute('{ nodeCreated { type timestamp } }')
+
+      expect(result).toHaveProperty('nodeCreated')
+      const subResult = result.nodeCreated as any
+      expect(subResult._subscriptionEvent).toBe('node:created')
+      expect(subResult._options).toEqual({ events: 'node:created' })
+    })
+
+    test('should return subscription info for nodeDeleted', async () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      const result = await adapter.execute('{ nodeDeleted { type nodeId } }')
+
+      expect(result).toHaveProperty('nodeDeleted')
+      const subResult = result.nodeDeleted as any
+      expect(subResult._subscriptionEvent).toBe('node:deleted')
+      expect(subResult._options).toEqual({ events: 'node:deleted' })
+    })
+
+    test('should return subscription info for edgeCreated', async () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      const result = await adapter.execute('{ edgeCreated { data { src dst } } }')
+
+      expect(result).toHaveProperty('edgeCreated')
+      const subResult = result.edgeCreated as any
+      expect(subResult._subscriptionEvent).toBe('edge:created')
+      expect(subResult._options).toEqual({ events: 'edge:created' })
+    })
+
+    test('should return subscription info for all 6 event types', async () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      const query = `{ nodeCreated { type } nodeUpdated { type } nodeDeleted { type } edgeCreated { type } edgeUpdated { type } edgeDeleted { type } }`
+      const result = await adapter.execute(query)
+
+      expect(result).toHaveProperty('nodeCreated')
+      expect(result).toHaveProperty('nodeUpdated')
+      expect(result).toHaveProperty('nodeDeleted')
+      expect(result).toHaveProperty('edgeCreated')
+      expect(result).toHaveProperty('edgeUpdated')
+      expect(result).toHaveProperty('edgeDeleted')
+    })
+
+    test('should reject unknown subscription fields', async () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      await expect(adapter.execute('{ unknownEvent { type } }')).rejects.toThrow(/Unknown field/)
+    })
+
+    test('should detect subscription type via _detectOperationType', () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      const detected = (adapter as any)._detectOperationType('{ nodeCreated { type } }')
+      expect(detected).toBe('subscription')
+    })
+
+    test('should detect mutation type via _detectOperationType', () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      const detected = (adapter as any)._detectOperationType('{ createNode(name: "X") { id } }')
+      expect(detected).toBe('mutation')
+    })
+
+    test('should return query type for standard queries', () => {
+      const adapter = new GraphQLAdapter(mockResolvers, mockMutationResolvers, DEFAULT_SUBSCRIPTION_RESOLVERS)
+      const detected = (adapter as any)._detectOperationType('{ nodes { id } }')
+      expect(detected).toBe('query')
+    })
+  })
+
+  describe('SubscriptionResolvers', () => {
+    test('DEFAULT_SUBSCRIPTION_RESOLVERS maps all 6 fields correctly', () => {
+      const resolvers = DEFAULT_SUBSCRIPTION_RESOLVERS
+      expect(resolvers.getSSEEvent('nodeCreated')).toBe('node:created')
+      expect(resolvers.getSSEEvent('nodeUpdated')).toBe('node:updated')
+      expect(resolvers.getSSEEvent('nodeDeleted')).toBe('node:deleted')
+      expect(resolvers.getSSEEvent('edgeCreated')).toBe('edge:created')
+      expect(resolvers.getSSEEvent('edgeUpdated')).toBe('edge:updated')
+      expect(resolvers.getSSEEvent('edgeDeleted')).toBe('edge:deleted')
+    })
+
+    test('DEFAULT_SUBSCRIPTION_RESOLVERS returns null for unknown field', () => {
+      expect(DEFAULT_SUBSCRIPTION_RESOLVERS.getSSEEvent('unknownField')).toBeNull()
+    })
+
+    test('listFields returns all 6 subscription fields', () => {
+      const fields = DEFAULT_SUBSCRIPTION_RESOLVERS.listFields()
+      expect(fields).toHaveLength(6)
+      expect(fields).toContain('nodeCreated')
+      expect(fields).toContain('edgeDeleted')
+    })
+
+    test('getSubscribeOptions returns correct event filter', () => {
+      const opts = DEFAULT_SUBSCRIPTION_RESOLVERS.getSubscribeOptions('nodeCreated')
+      expect(opts.events).toBe('node:created')
     })
   })
 })

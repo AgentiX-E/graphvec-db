@@ -28,6 +28,11 @@ class MockShardManager {
     this.allNodes.set(node.id, node)
   }
 
+  /** Required by scanAllNodes in query-planner */
+  getAllNodes(): NodeRecord[] {
+    return Array.from(this.allNodes.values())
+  }
+
   async upsertNode(_typeId: number, _name: string): Promise<number> { return 0 }
   async upsertEdge(_src: number, _dst: number, _typeId: number, _opts?: any): Promise<void> {}
   async deleteEdge(_src: number, _dst: number, _typeId: number): Promise<void> {}

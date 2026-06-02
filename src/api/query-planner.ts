@@ -1547,13 +1547,35 @@ async function executeNode(
       const edgeType = details['edgeType'] as number | null | undefined
       const dir = (details['direction'] as string) ?? 'out'
       const edgeTypes = details['edgeTypes'] as number[] | undefined
+      const startId = details['startId'] as number | undefined
 
       const result: NodeRecord[] = []
       const visited = new Set<number>()
 
+      // 确定起始节点
+      // 优先使用 details.startId（来自 VariableLengthPathNode），
+      // 否则使用 inputData（来自 SCAN 子节点）的每个节点作为起点
+      const startNodes: NodeRecord[] = []
+
+      if (startId !== undefined && startId !== null) {
+        // 如果 startId 在 inputData 中，用它
+        const found = inputData.find(n => n.id === startId)
+        if (found) {
+          startNodes.push(found)
+        } else {
+          // startId 不在 inputData 中，创建一个虚拟起始节点
+          // 或尝试在 inputData 为空时跳过扫描
+          startNodes.push({ id: startId, type: 0, name: '', props: {}, createdAt: 0, degree: 0 })
+        }
+      } else {
+        // 使用 inputData 中的所有节点作为起点
+        startNodes.push(...inputData)
+      }
+
+      if (startNodes.length === 0) return result
+
       // BFS 变长展开
-      // 每个起始节点独立 BFS
-      for (const startNode of inputData) {
+      for (const startNode of startNodes) {
         await bfsVariableExpand(
           startNode.id, minDepth, maxDepth, edgeType ?? edgeTypes,
           dir, visited, result, shardManager, 0,

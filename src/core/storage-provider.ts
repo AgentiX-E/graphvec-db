@@ -171,6 +171,22 @@ export interface StorageProvider {
 
   neighbors(id: NodeId, opts?: NeighborsOptions): NeighborEntry[]
 
+  // ── 批量操作 ──────────────────────────────
+
+  /**
+   * 批量删除节点
+   * @param ids - 要删除的节点 ID 列表
+   * @returns 实际删除的节点数
+   */
+  batchDeleteNodes?(ids: NodeId[]): number
+
+  /**
+   * 批量删除边
+   * @param keys - 要删除的边列表（src, dst, typeId 三元组）
+   * @returns 实际删除的边数
+   */
+  batchDeleteEdges?(keys: Array<{ src: NodeId; dst: NodeId; typeId: number }>): number
+
   // ── 复合索引 ──────────────────────────────
 
   /**

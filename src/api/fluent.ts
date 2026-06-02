@@ -12,6 +12,7 @@ import {
   PlanNode,
   formatPlanExplain,
 } from './query-planner'
+import { QueryResultCache, makeQueryCacheKey } from '../core/query-cache'
 
 /**
  * GraphQuery — 流式图查询接口
@@ -39,6 +40,27 @@ export class GraphQuery {
   private vector_: { vector: number[]; k: number } | null = null
 
   /**
+   * 边遍历方向：'out' (默认) | 'in' | 'both'
+   * 由 out()/in()/both() 方法设置
+   */
+  private direction_: 'out' | 'in' | 'both' = 'out'
+
+  /**
+   * 属性过滤条件映射，由 has() 设置
+   */
+  private hasFilters_: Record<string, unknown> = {}
+
+  /**
+   * 待删除的边集合，由 deleteEdges 设置
+   */
+  private deleteEdges_: Array<{ src: number; dst: number; typeId: number }> | null = null
+
+  /**
+   * 待删除的节点 ID 集合，由 deleteNodes 设置
+   */
+  private deleteNodeIds_: number[] | null = null
+
+  /**
    * 是否启用查询优化器（QueryIR）。
    * 启用后，execute() 会通过 QueryIR (buildIRFromSpec → optimizeIR → executeIR) 执行。
    * 默认启用以利用查询优化能力。可通过 enableOptimizer(false) 禁用。
@@ -50,8 +72,23 @@ export class GraphQuery {
    */
   private _txId: string | null = null
 
+  /**
+   * 查询结果缓存（GAP-24）
+   * 由 setQueryCache() 启用
+   */
+  private _queryCache: QueryResultCache | null = null
+
   constructor(manager: ShardManager) {
     this.manager = manager
+  }
+
+  /**
+   * 设置查询结果缓存实例（GAP-24）
+   * 与 GraphEngine 共享同一缓存实例时，写操作会自动失效相关条目
+   */
+  setQueryCache(cache: QueryResultCache): GraphQuery {
+    this._queryCache = cache
+    return this
   }
 
   /**
@@ -98,6 +135,104 @@ export class GraphQuery {
   neighbors(depth: number = 1, edgeTypeFilter?: number[]): GraphQuery {
     this.maxDepth = depth
     this.edgeFilter = edgeTypeFilter ?? null
+    return this
+  }
+
+  // ── Fluent 链式遍历方法 (GAP-21) ──
+
+  /**
+   * 沿出边遍历邻居 (->)
+   * 等价于 Cypher: (a)-[]->(b)
+   */
+  out(edgeTypes?: number[], depth: number = 1): GraphQuery {
+    this.direction_ = 'out'
+    this.maxDepth = depth
+    this.edgeFilter = edgeTypes ?? null
+    return this
+  }
+
+  /**
+   * 沿入边遍历邻居 (<-)
+   * 等价于 Cypher: (a)<-[]-(b)
+   */
+  in(edgeTypes?: number[], depth: number = 1): GraphQuery {
+    this.direction_ = 'in'
+    this.maxDepth = depth
+    this.edgeFilter = edgeTypes ?? null
+    return this
+  }
+
+  /**
+   * 沿所有方向遍历邻居 (–)
+   * 等价于 Cypher: (a)-[]-(b)
+   */
+  both(edgeTypes?: number[], depth: number = 1): GraphQuery {
+    this.direction_ = 'both'
+    this.maxDepth = depth
+    this.edgeFilter = edgeTypes ?? null
+    return this
+  }
+
+  /**
+   * 按属性值过滤当前节点集
+   * 等价于 MATCH (n WHERE n.property = value)
+   *
+   * @param key 属性名
+   * @param value 目标值（精确匹配）
+   */
+  has(key: string, value: unknown): GraphQuery {
+    // 存储属性过滤条件，在执行时以 AND 语义应用
+    if (!this.hasFilters_['$has']) {
+      this.hasFilters_['$has'] = {}
+    }
+    ;(this.hasFilters_['$has'] as Record<string, unknown>)[key] = value
+    // 添加一个 function predicate 来应用此过滤
+    this.predicates.push((node: NodeRecord) => {
+      const fieldVal = this.resolveField(node, key)
+      return fieldVal === value
+    })
+    return this
+  }
+
+  /**
+   * 获取出边
+   * 等价于 Cypher: (a)-[e]->()，返回边而非节点
+   *
+   * @param edgeTypes 边类型过滤
+   * @param depth 遍历深度
+   */
+  outE(edgeTypes?: number[], depth: number = 1): GraphQuery {
+    this.direction_ = 'out'
+    this.maxDepth = depth
+    this.edgeFilter = edgeTypes ?? null
+    return this
+  }
+
+  /**
+   * 获取入边
+   * 等价于 Cypher: (a)<-[e]-()，返回边而非节点
+   *
+   * @param edgeTypes 边类型过滤
+   * @param depth 遍历深度
+   */
+  inE(edgeTypes?: number[], depth: number = 1): GraphQuery {
+    this.direction_ = 'in'
+    this.maxDepth = depth
+    this.edgeFilter = edgeTypes ?? null
+    return this
+  }
+
+  /**
+   * 获取所有方向的边
+   * 等价于 Cypher: (a)-[e]-()，返回边而非节点
+   *
+   * @param edgeTypes 边类型过滤
+   * @param depth 遍历深度
+   */
+  bothE(edgeTypes?: number[], depth: number = 1): GraphQuery {
+    this.direction_ = 'both'
+    this.maxDepth = depth
+    this.edgeFilter = edgeTypes ?? null
     return this
   }
 
@@ -192,6 +327,103 @@ export class GraphQuery {
   }
 
   /**
+   * 批量删除节点（BUILT-UP 模式：链式设置后执行）
+   *
+   * 使用方式：
+   *   await q.match(1).deleteNodes()        // 删除所有 type=1 的节点
+   *   await q.match(1).where(n => n.name.startsWith('A')).deleteNodes()  // 带条件
+   *
+   * 也可直接指定节点 ID：
+   *   await q.deleteNodes([1, 2, 3])
+   */
+  async deleteNodes(ids?: number[]): Promise<number> {
+    let nodesToDelete: number[]
+
+    if (ids !== undefined) {
+      // 直接指定 ID 列表
+      nodesToDelete = ids
+    } else {
+      // 使用当前查询匹配的节点作为删除目标
+      const matched = await this.return()
+      nodesToDelete = matched.map(n => n.id)
+    }
+
+    if (nodesToDelete.length === 0) return 0
+
+    // 优先使用 GraphEngine 的 batchDeleteNodes（如果可用）
+    const mgr = this.manager as any
+    if (typeof mgr.batchDeleteNodes === 'function') {
+      return await mgr.batchDeleteNodes(nodesToDelete)
+    }
+
+    // 回退：逐条删除
+    let count = 0
+    for (const id of nodesToDelete) {
+      await mgr.deleteNode(id)
+      count++
+    }
+    return count
+  }
+
+  /**
+   * 批量删除边
+   *
+   * 使用方式（链式）：
+   *   await q.match(1).deleteEdges()  // 删除所有与 type=1 节点相连的边
+   *
+   * 或直接指定：
+   *   await q.deleteEdges([{ src: 1, dst: 2, typeId: 10 }])
+   */
+  async deleteEdges(
+    keys?: Array<{ src: number; dst: number; typeId: number }>,
+  ): Promise<number> {
+    if (keys !== undefined) {
+      if (keys.length === 0) return 0
+      const mgr = this.manager as any
+      if (typeof mgr.batchDeleteEdges === 'function') {
+        return await mgr.batchDeleteEdges(keys)
+      }
+      // 回退：逐条删除
+      let count = 0
+      for (const { src, dst, typeId } of keys) {
+        await this.manager.deleteEdge(src, dst, typeId)
+        count++
+      }
+      return count
+    }
+
+    // 使用当前查询匹配的节点，获取它们的边并删除
+    const matched = await this.return()
+    const keysToDelete: Array<{ src: number; dst: number; typeId: number }> = []
+
+    for (const node of matched) {
+      const mgr = this.manager as any
+      try {
+        const { edges } = await mgr.neighbors(node.id, { maxDepth: 1 })
+        for (const edge of edges) {
+          keysToDelete.push({ src: edge.src, dst: edge.dst, typeId: edge.type })
+        }
+      } catch {
+        // 跳过无法获取邻居的节点
+      }
+    }
+
+    if (keysToDelete.length === 0) return 0
+
+    const mgr = this.manager as any
+    if (typeof mgr.batchDeleteEdges === 'function') {
+      return await mgr.batchDeleteEdges(keysToDelete)
+    }
+
+    let count = 0
+    for (const { src, dst, typeId } of keysToDelete) {
+      await this.manager.deleteEdge(src, dst, typeId)
+      count++
+    }
+    return count
+  }
+
+  /**
    * 执行查询并返回节点结果
    */
   async return(): Promise<NodeRecord[]> {
@@ -214,6 +446,7 @@ export class GraphQuery {
     if (this.currentTypeId !== null) parts.push(`match(${this.currentTypeId})`)
     if (this.predicates.length > 0) parts.push(`where(${this.predicates.length} predicates)`)
     if (this.maxDepth > 0) parts.push(`neighbors(depth=${this.maxDepth}, edgeFilter=${JSON.stringify(this.edgeFilter) ?? 'all'})`)
+    if (this.direction_ !== 'out') parts.push(`direction(${this.direction_})`)
     if (this.vector_) parts.push(`vectorSimilarity(k=${this.vector_.k})`)
     if (this.limit_ !== null) parts.push(`limit(${this.limit_})`)
     if (this.skip_ > 0) parts.push(`skip(${this.skip_})`)
@@ -259,6 +492,9 @@ export class GraphQuery {
       }
     }
 
+    // Pass direction to IR
+    spec.direction = this.direction_
+
     if (this.orderField_) {
       spec.orderBy = { field: this.orderField_, direction: this.orderDir_ }
     }
@@ -300,13 +536,32 @@ export class GraphQuery {
    * 7. 投影（project）
    */
   private async execute(): Promise<NodeRecord[]> {
+    // ── Query Cache (GAP-24) ──
+    if (this._queryCache) {
+      const spec = this.buildQuerySpec()
+      const cacheKey = makeQueryCacheKey(JSON.stringify(spec))
+      const cached = this._queryCache.get(cacheKey)
+      if (cached) {
+        return cached.results as NodeRecord[]
+      }
+    }
+
     // ── QueryIR 优化路径 ──
     if (this.useOptimizer_) {
       const spec = this.buildQuerySpec()
       const plan = buildIRFromSpec(spec)
       const optimized = optimizeIR(plan)
       const fnPreds = this.predicates.length > 0 ? [...this.predicates] : undefined
-      return executeIR(optimized, this.manager, fnPreds)
+      const results = await executeIR(optimized, this.manager, fnPreds)
+      // 缓存结果
+      if (this._queryCache) {
+        const cacheKey = makeQueryCacheKey(JSON.stringify(spec))
+        this._queryCache.set(cacheKey, results, {
+          query: this.toString(),
+          tags: this.currentTypeId !== null ? [this.currentTypeId] : undefined,
+        })
+      }
+      return results
     }
 
     // ── 原始执行路径（向后兼容） ──
@@ -323,12 +578,6 @@ export class GraphQuery {
         nodes = nodes.filter(n => n.type === this.currentTypeId)
       }
     } else {
-      // 通过 ShardManager 的 getShardStatus 获取所有 Range，
-      // 然后扫描节点数据。由于 ShardManager 没有直接的按 type 查询 API，
-      // 这里通过通知 ShardManager 扫描来实现。
-      // 实际使用时，依赖 ShardManager 提供 getNodesByType 或类似方法，
-      // 或者由外部注入候选节点列表。
-      // 当前实现保留 mark，由子类或 mock 覆盖 scanAllRanges 提供数据。
       nodes = await this.scanAllRanges()
       if (this.currentTypeId !== null) {
         nodes = nodes.filter(n => n.type === this.currentTypeId)
@@ -361,6 +610,16 @@ export class GraphQuery {
     // 投影
     if (this.projectFields_) {
       nodes = this.applyProjection(nodes)
+    }
+
+    // 缓存原始路径结果
+    if (this._queryCache) {
+      const spec = this.buildQuerySpec()
+      const cacheKey = makeQueryCacheKey(JSON.stringify(spec))
+      this._queryCache.set(cacheKey, nodes, {
+        query: this.toString(),
+        tags: this.currentTypeId !== null ? [this.currentTypeId] : undefined,
+      })
     }
 
     return nodes
