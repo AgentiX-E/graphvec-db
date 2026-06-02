@@ -4,7 +4,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { type AuditEntry } from '../types'
 import { createStream } from 'rotating-file-stream'
 
@@ -138,5 +138,38 @@ export class AuditLog {
       this.stream.end()
       this.stream = null
     }
+  }
+
+  /**
+   * 加密审计日志（AES-256-GCM）
+   * @param plaintext JSON 序列化的日志条目
+   * @param key 256-bit key (32 bytes Buffer)
+   * @returns 加密数据 { encrypted: Buffer, iv: Buffer, tag: Buffer }
+   */
+  static encryptEntry(
+    plaintext: string,
+    key: Buffer,
+  ): { encrypted: Buffer; iv: Buffer; tag: Buffer } {
+    const iv = randomBytes(12)
+    const cipher = createCipheriv('aes-256-gcm', key, iv)
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()])
+    const tag = cipher.getAuthTag()
+    return { encrypted, iv, tag }
+  }
+
+  /**
+   * 解密切审计日志（AES-256-GCM）
+   * @returns 明文 JSON 字符串
+   */
+  static decryptEntry(
+    encrypted: Buffer,
+    iv: Buffer,
+    tag: Buffer,
+    key: Buffer,
+  ): string {
+    const decipher = createDecipheriv('aes-256-gcm', key, iv)
+    decipher.setAuthTag(tag)
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()])
+    return decrypted.toString('utf-8')
   }
 }
