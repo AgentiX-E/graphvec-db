@@ -778,6 +778,30 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     return nameToId
   }
 
+  /**
+   * 批量插入边（利用 OverGraph 0.11 的 batchUpsertEdges）
+   * 自动分块提交（默认 5000 条/批，通过 OVERGRAPH_BATCH_EDGE_CHUNK 环境变量控制）
+   *
+   * @param inputs - 边输入数组
+   * @returns Float64Array 边 ID 数组
+   */
+  batchUpsertEdges(inputs: Array<{
+    src: NodeId; dst: NodeId; typeId: number
+    props?: Record<string, unknown>
+    weight?: number
+  }>): Float64Array {
+    this._ensureOpen()
+    if (typeof (this.storage as any).batchUpsertEdges !== 'function') {
+      // fallback: 无批量 API 时逐条插入
+      const ids: number[] = []
+      for (const i of inputs) {
+        ids.push(this.storage.upsertEdge(i.src, i.dst, i.typeId, { props: i.props, weight: i.weight }))
+      }
+      return new Float64Array(ids)
+    }
+    return (this.storage as any).batchUpsertEdges(inputs)
+  }
+
   // ──────────────────────────────────────────
   // Edge operations
   // ──────────────────────────────────────────

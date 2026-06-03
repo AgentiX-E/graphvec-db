@@ -522,6 +522,36 @@ export class OverGraphStorage implements StorageProvider {
     })
   }
 
+  batchUpsertEdges(inputs: Array<{
+    src: NodeId; dst: NodeId; typeId: number
+    props?: Record<string, unknown>
+    weight?: number
+  }>): Float64Array {
+    const results: number[] = []
+    const chunkSize = Math.max(1, this._chunkSizeEdges)
+    const _db = this._db!
+
+    const processChunk = (chunk: typeof inputs) => {
+      const mapped = chunk.map(i => ({
+        from: i.src,
+        to: i.dst,
+        label: String(i.typeId),
+        props: this._compress && this._compressionStrategy === 'msgpack'
+          ? _serializeProps(i.props)
+          : i.props,
+        weight: i.weight,
+      }))
+      const batchResult = _db.batchUpsertEdges(mapped)
+      results.push(...Array.from(batchResult))
+    }
+
+    for (let i = 0; i < inputs.length; i += chunkSize) {
+      processChunk(inputs.slice(i, i + chunkSize))
+    }
+
+    return new Float64Array(results)
+  }
+
   getEdge(src: NodeId, dst: NodeId, typeId: number): {
     from: NodeId; to: NodeId; typeId: number
     props?: Record<string, unknown>; createdAt: number

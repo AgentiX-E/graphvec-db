@@ -1705,7 +1705,7 @@ export function createRestApiServer(
           jsonResponse(res, 400, { error: 'items array is required and must be non-empty' })
           return
         }
-        let successCount = 0
+        const validItems: Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown>; weight?: number }> = []
         const errors: Array<{ index: number; error: string }> = []
         for (let i = 0; i < items.length; i++) {
           const item = items[i]
@@ -1713,15 +1713,24 @@ export function createRestApiServer(
             errors.push({ index: i, error: 'src, dst, and type are required' })
             continue
           }
-          try {
-            await sm.upsertEdge(Number(item.src), Number(item.dst), Number(item.type),
-              item.props ? { props: item.props as any } : undefined)
-            successCount++
-          } catch (err: unknown) {
-            errors.push({ index: i, error: err instanceof Error ? err.message : 'Unknown error' })
-          }
+          validItems.push({
+            src: Number(item.src),
+            dst: Number(item.dst),
+            typeId: Number(item.type),
+            props: item.props as Record<string, unknown> | undefined,
+            weight: item.weight !== undefined ? Number(item.weight) : undefined,
+          })
         }
-        jsonResponse(res, 200, { successCount, errorCount: errors.length, errors: errors.length > 0 ? errors : undefined })
+        let ids: Float64Array | undefined
+        if (validItems.length > 0) {
+          ids = await sm.batchUpsertEdges(validItems)
+        }
+        jsonResponse(res, 200, {
+          ids: ids ? Array.from(ids) : [],
+          count: ids?.length ?? 0,
+          errorCount: errors.length,
+          errors: errors.length > 0 ? errors : undefined,
+        })
       },
     )
 
