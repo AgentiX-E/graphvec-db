@@ -1002,6 +1002,88 @@ export function createRestApiServer(
         }]
       : []),
 
+    // POST /api/v1/gnn/predict-links-batch — 批量链接预测
+    ...(config.gnnEngine
+      ? [{
+          method: 'POST' as const,
+          path: '/api/v1/gnn/predict-links-batch',
+          requireAuth: true as const,
+          requiredPermission: 'read' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            const body = await parseBody(req) as Record<string, unknown>
+            const pairs = body.pairs
+            if (!Array.isArray(pairs)) {
+              jsonResponse(res, 400, { error: 'pairs array is required' })
+              return
+            }
+            if (pairs.length === 0) {
+              jsonResponse(res, 200, { results: [] })
+              return
+            }
+            for (let i = 0; i < pairs.length; i++) {
+              const p = pairs[i]
+              if (p.source === undefined || p.target === undefined) {
+                jsonResponse(res, 400, { error: `pairs[${i}] must have source and target` })
+                return
+              }
+            }
+            try {
+              const pairTuples = pairs.map((p: any) => [p.source, p.target] as [any, any])
+              const predictions = await engine.predictLinksBatch(pairTuples)
+              const results = pairs.map((p: any, i: number) => ({
+                source: p.source,
+                target: p.target,
+                probability: predictions[i].probability,
+              }))
+              jsonResponse(res, 200, { results })
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Batch link prediction failed'
+              jsonResponse(res, 500, { error: msg })
+            }
+          },
+        }]
+      : []),
+
+    // POST /api/v1/gnn/recommend-batch — 批量推荐
+    ...(config.gnnEngine
+      ? [{
+          method: 'POST' as const,
+          path: '/api/v1/gnn/recommend-batch',
+          requireAuth: true as const,
+          requiredPermission: 'read' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            const body = await parseBody(req) as Record<string, unknown>
+            const sources = body.sources
+            const candidates = body.candidates
+            if (!Array.isArray(sources) || sources.length === 0) {
+              jsonResponse(res, 400, { error: 'sources array (non-empty) is required' })
+              return
+            }
+            if (!Array.isArray(candidates) || candidates.length === 0) {
+              jsonResponse(res, 400, { error: 'candidates array (non-empty) is required' })
+              return
+            }
+            try {
+              const topK = body.topK !== undefined ? Number(body.topK) : 10
+              const results: Array<{ source: any; recommendations: Array<{ target: any; score: number }> }> = []
+              for (const src of sources) {
+                const recs = await engine.recommend(src, candidates as any[], topK)
+                results.push({
+                  source: src,
+                  recommendations: recs.map(r => ({ target: r.nodeId, score: r.score })),
+                })
+              }
+              jsonResponse(res, 200, { results })
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Batch recommendation failed'
+              jsonResponse(res, 500, { error: msg })
+            }
+          },
+        }]
+      : []),
+
     // POST /api/v1/gnn/load-model — 热加载/切换模型
     ...(config.gnnEngine
       ? [{

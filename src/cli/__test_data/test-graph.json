@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Node1",
+      "type": 1
+    },
+    {
+      "id": 2,
+      "name": "Node2",
+      "type": 1
+    }
+  ],
+  "edges": [
+    {
+      "src": 1,
+      "dst": 2,
+      "type": 10
+    }
+  ]
+}

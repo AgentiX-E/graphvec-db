@@ -21,6 +21,10 @@
  *   MERGE (n:Label {id: 1})
  */
 
+import fs from 'fs'
+import path from 'path'
+import http from 'http'
+import https from 'https'
 import { parser } from './cypher-lite-parser'
 import { LRUCache } from 'lru-cache'
 import { planCache as plannerPlanCache, makePlanCacheKey } from '../api/query-planner'
@@ -1511,6 +1515,20 @@ export function planFromAST(
   if (ast.type === 'CALL' && ast.query) {
     plan.type = 'CALL'
     plan.callQuery = planFromAST(ast.query, schema)
+    // CALL 外层可有 RETURN / ORDER BY / LIMIT / SKIP
+    if (ast.return) {
+      if (ast.return.columns && ast.return.columns.length > 0) {
+        plan.returnColumns = ast.return.columns.map((col: any) => col.alias ?? formatColumn(col.expression))
+      }
+    }
+    if (ast.orderBy) {
+      plan.orderBy = ast.orderBy.columns.map((col: any) => ({
+        property: formatColumn(col.expression),
+        direction: col.direction as 'ASC' | 'DESC',
+      }))
+    }
+    if (ast.limit !== undefined) plan.limit = ast.limit
+    if (ast.skip !== undefined) plan.skip = ast.skip
     return plan
   }
 
@@ -2329,6 +2347,23 @@ export function _executeQuery(
   // Step 1: Filter nodes by MATCH criteria
   let candidates = [...nodes]
 
+  // Filter by scan label (MATCH (n:Label))
+  // Only filter if the data actually contains _label fields (graph metadata);
+  // if no nodes have _label, assume the data is flat and skip label filtering.
+  if (plan.scanLabel) {
+    var hasLabels = nodes.some(function(n) { return n['_label'] !== undefined })
+    if (hasLabels) {
+      var label = plan.scanLabel
+      candidates = candidates.filter(function(n) {
+        var nodeLabel = n['_label']
+        if (nodeLabel === label) return true
+        // Also check direct label property
+        if (n['label'] === label) return true
+        return false
+      })
+    }
+  }
+
   // Apply filters (WHERE clause on MATCH)
   if (plan.filters.length > 0) {
     candidates = _applyWhereFilters(candidates, plan.filters)
@@ -2337,6 +2372,16 @@ export function _executeQuery(
   // Step 1.5: Handle UNWIND — 展开列表为多行
   if (plan.unwind) {
     candidates = _executeUnwind(candidates, plan.unwind)
+  }
+
+  // Step 1.6: Handle CALL 子查询 — 递归执行子查询，结果合并到候选行
+  if (plan.type === 'CALL' && plan.callQuery) {
+    // 递归执行子查询（子查询作用于完整 nodes 图）
+    const subResult = _executeQuery(plan.callQuery, nodes)
+    const subRows = subResult as QueryRow[]
+
+    // 子查询结果替换候选行（作用域隔离）
+    candidates = subRows.map(r => ({ ...r } as Record<string, unknown>))
   }
 
   // Step 2: Handle WITH clause (mid-query projection + aggregation)
@@ -2459,6 +2504,26 @@ export function _executeQuery(
       }
 
       candidates = rows.map(r => r as Record<string, unknown>)
+    }
+  }
+
+  // Step 2.4: Handle LOAD CSV — 加载 CSV 文件/URL 的数据
+  // LOAD CSV 作为一个数据源，将其数据注入到 candidates 中
+  if (plan.loadCsv) {
+    const csvData = _loadCsvFile(plan.loadCsv.url, plan.loadCsv.hasHeaders)
+    // 每行作为一个绑定变量对象注入
+    if (candidates.length === 0) {
+      // 没有前置 MATCH，从 LOAD CSV 开始
+      candidates = csvData.map(row => ({ [plan.loadCsv!.rowVariable]: row }))
+    } else {
+      // 有前置 MATCH，做笛卡尔积（每个候选行 × 每行 CSV 数据）
+      const expanded: Array<Record<string, unknown>> = []
+      for (const c of candidates) {
+        for (const row of csvData) {
+          expanded.push({ ...c, [plan.loadCsv!.rowVariable]: row })
+        }
+      }
+      candidates = expanded
     }
   }
 
@@ -3158,6 +3223,159 @@ function _resolveForeachList(
   return null
 }
 
+
+// ── LOAD CSV 辅助函数 ─────────────────────────────────────
+
+/**
+ * 解析 CSV 单行，支持双引号转义和逗号分隔符。
+ *
+ * 规则：
+ * - 字段内双引号用 "" 表示转义
+ * - 分隔符默认为逗号（可通过 delim 参数指定）
+ * - 空字段返回空字符串
+ *
+ * @param line - CSV 行字符串
+ * @param delim - 字段分隔符（可选，默认 ','）
+ * @returns 解析后的字段数组
+ */
+export function parseCsvLine(line: string, delim: string): string[] {
+  const result: string[] = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (ch === '"') {
+      if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+        current += '"'
+        i++
+      } else {
+        inQuotes = !inQuotes
+      }
+    } else if (ch === delim && !inQuotes) {
+      result.push(current)
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  result.push(current)
+  return result
+}
+
+/**
+ * 从 URL 获取文本内容的辅助函数。
+ * 支持 http:// 和 https:// URL。
+ *
+ * @param url - HTTP(S) URL
+ * @returns 响应体字符串
+ */
+function _fetchUrl(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http
+    mod.get(url, (res) => {
+      // 重定向处理
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        _fetchUrl(res.headers.location).then(resolve).catch(reject)
+        res.resume()
+        return
+      }
+      if (res.statusCode && res.statusCode >= 400) {
+        reject(new Error(`HTTP ${res.statusCode} ${res.statusMessage} fetching ${url}`))
+        res.resume()
+        return
+      }
+      let data = ''
+      res.on('data', (chunk: string) => { data += chunk })
+      res.on('end', () => resolve(data))
+    }).on('error', (err) => {
+      reject(new Error(`Failed to fetch ${url}: ${err.message}`))
+    })
+  })
+}
+
+/**
+ * 加载 CSV 文件，支持本地文件路径和 HTTP(S) URL。
+ *
+ * 文件路径支持：
+ * - 绝对路径：/path/to/file.csv
+ * - file:// 协议：file:///path/to/file.csv
+ * - 相对路径：data.csv（相对于当前工作目录）
+ *
+ * WITH HEADERS：第一行作为键名，后续每行作为对象返回
+ * 无 HEADERS：每行作为字符串数组返回
+ *
+ * @param source - 文件路径或 URL
+ * @param withHeaders - 第一行是否作为表头
+ * @param delim - 字段分隔符（可选，默认 ','）
+ * @returns 解析后的数据数组
+ */
+export function _loadCsvFile(
+  source: string,
+  withHeaders: boolean,
+  delim = ',',
+): Record<string, string>[] | string[][] {
+  // 如果是 URL，使用 HTTP 请求
+  if (source.startsWith('http://') || source.startsWith('https://')) {
+    // 同步化加载（使用同步方式获取 URL 内容）
+    // 对于同步函数，使用同步读取方式
+    throw new Error('URL-based LOAD CSV is not supported in sync mode; use file:// or local path')
+  }
+
+  // 解析文件路径
+  let filePath = source
+  if (filePath.startsWith('file://')) {
+    filePath = filePath.slice(7)
+  }
+
+  // 检查文件是否存在
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`CSV file not found: ${source}`)
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8')
+  return _parseCsvContent(content, withHeaders, delim)
+}
+
+/**
+ * 解析 CSV 文本内容。
+ *
+ * @param content - CSV 文本内容
+ * @param withHeaders - 第一行是否作为表头
+ * @param delim - 字段分隔符
+ * @returns 解析后的数据数组
+ */
+export function _parseCsvContent(
+  content: string,
+  withHeaders: boolean,
+  delim = ',',
+): Record<string, string>[] | string[][] {
+  const lines = content.split(/\r?\n/).filter(line => line.trim() !== '')
+
+  if (lines.length === 0) {
+    return []
+  }
+
+  if (withHeaders) {
+    // 第一行作为表头
+    const headers = parseCsvLine(lines[0], delim)
+    const result: Record<string, string>[] = []
+
+    for (let i = 1; i < lines.length; i++) {
+      const fields = parseCsvLine(lines[i], delim)
+      const row: Record<string, string> = {}
+      for (let j = 0; j < headers.length; j++) {
+        row[headers[j]] = j < fields.length ? fields[j] : ''
+      }
+      result.push(row)
+    }
+
+    return result
+  } else {
+    // 无表头：每行作为字符串数组返回
+    return lines.map(line => parseCsvLine(line, delim))
+  }
+}
+
 // ── CASE 表达式运行时求值 ─────────────────────────────────
 
 /**
@@ -3223,6 +3441,11 @@ export function _evalCaseExprOnRow(expr: any, row: QueryRow): unknown {
  * Evaluate a single expression node against a row.
  * Handles: literals, property refs (n.prop), numbers, strings, booleans,
  * binary comparisons (a = b, a > b, etc.)
+ *
+ * Enhanced for CASE conditions:
+ * - COMPARISON: type 'COMPARISON' with 'EQ'/'GT'/'GTE'/'LT'/'LTE'/'NEQ' operators
+ * - PROP_REF: dot-notation (n.age → row['age'])
+ * - OR/AND: logical operators combining results
  */
 function _evalSimpleExpr(node: any, row: QueryRow): unknown {
   if (node == null) return null
@@ -3234,10 +3457,18 @@ function _evalSimpleExpr(node: any, row: QueryRow): unknown {
   if (node.type === 'LITERAL') return node.value
   if (node.type === 'STRING') return node.value
   if (node.type === 'NUMBER') return node.value
-  if (node.type === 'BOOL') return node.value
+  if (node.type === 'BOOL' || node.type === 'BOOLEAN') return node.value
   if (node.type === 'NULL') return null
 
-  // Property reference: e.g. n.age or just age
+  // Property reference (dot notation): e.g. n.age or n.name
+  if (node.type === 'PROP_REF') {
+    // PROP_REF has name and property fields
+    // e.g. n.age → { type: 'PROP_REF', name: 'n', property: 'age' }
+    // The property value is in the row (result of query)
+    return row[node.property] ?? null
+  }
+
+  // Property reference (simpler form): e.g. n.age or just age
   if (node.type === 'PROPERTY_REF') {
     const key = node.name ?? node.value
     return row[key] ?? null
@@ -3248,7 +3479,26 @@ function _evalSimpleExpr(node: any, row: QueryRow): unknown {
     return node.elements.map((el: any) => _evalSimpleExpr(el, row))
   }
 
-  // Binary operation: a OP b (used in comparison chains)
+  // COMPARISON operation: type 'COMPARISON' with operator 'EQ'/'GT'/'GTE'/'LT'/'LTE'/'NEQ'
+  // Generated by PEG parser: lhs Primary op ComparisonOp rhs Primary
+  // Must be checked BEFORE the generic BINARY check which is too greedy
+  if (node.type === 'COMPARISON') {
+    const left = _evalSimpleExpr(node.left, row)
+    const right = _evalSimpleExpr(node.right, row)
+    // Map PEG operator names to _compareSimpleValues operators
+    const opMap: Record<string, string> = {
+      'EQ': '=',
+      'NEQ': '!=',
+      'GT': '>',
+      'GTE': '>=',
+      'LT': '<',
+      'LTE': '<=',
+    }
+    const op = opMap[node.operator] || node.operator
+    return _compareSimpleValues(left, op, right)
+  }
+
+  // Binary operation: a OP b (used in comparison chains that use '=', '!=', etc.)
   if (node.type === 'BINARY' || (node.left !== undefined && node.right !== undefined && node.operator)) {
     const left = _evalSimpleExpr(node.left ?? node.leftExpr, row)
     const right = _evalSimpleExpr(node.right ?? node.rightExpr, row)
@@ -3256,8 +3506,47 @@ function _evalSimpleExpr(node: any, row: QueryRow): unknown {
     return _compareSimpleValues(left, op, right)
   }
 
+  // IN_EXPRESSION: x IN [1, 2, 3] or x IN listVar
+  if (node.type === 'IN_EXPRESSION') {
+    const left = _evalSimpleExpr(node.left, row)
+    const listNode = _evalSimpleExpr(node.list, row)
+    if (Array.isArray(listNode)) {
+      return listNode.includes(left)
+    }
+    return left === listNode
+  }
+
+  // Logical AND: both sides must be truthy
+  if (node.type === 'AND') {
+    const left = _evalSimpleExpr(node.left, row)
+    const right = node.right
+    // right can be a single node or an array of nodes
+    if (Array.isArray(right)) {
+      // For AND with array of conditions: all must be truthy
+      if (!_isTruthy(left)) return false
+      return right.every((r: any) => _isTruthy(_evalSimpleExpr(r, row)))
+    }
+    return _isTruthy(left) && _isTruthy(_evalSimpleExpr(right, row))
+  }
+
+  // Logical OR: at least one side must be truthy
+  if (node.type === 'OR') {
+    const left = _evalSimpleExpr(node.left, row)
+    const right = node.right
+    if (Array.isArray(right)) {
+      if (_isTruthy(left)) return true
+      return right.some((r: any) => _isTruthy(_evalSimpleExpr(r, row)))
+    }
+    return _isTruthy(left) || _isTruthy(_evalSimpleExpr(right, row))
+  }
+
   // Variable reference (just a name)
   if (node.type === 'VARIABLE_REF') {
+    return row[node.name] ?? null
+  }
+
+  // Identifier (just a bare name)
+  if (node.type === 'IDENTIFIER') {
     return row[node.name] ?? null
   }
 

@@ -1949,6 +1949,11 @@ class MockGnnEngine {
     return { source, target, score: 0.85, probability: 0.95 }
   }
 
+  async predictLinksBatch(pairs: Array<[any, any]>): Promise<any[]> {
+    if (!this.isLoaded) throw new Error('GNN model not loaded')
+    return pairs.map(() => ({ probability: 0.75, logit: 1.5 }))
+  }
+
   async computeEmbedding(nodeId: string): Promise<Float32Array> {
     if (!this.isLoaded) throw new Error('GNN model not loaded')
     const arr = new Float32Array(this.config.embeddingDimension)
@@ -1959,7 +1964,7 @@ class MockGnnEngine {
   async recommend(startNode: string, candidates: any[], topK: number = 10): Promise<any[]> {
     if (!this.isLoaded) throw new Error('GNN model not loaded')
     return candidates.slice(0, topK).map((c, i) => ({
-      candidate: c,
+      nodeId: c,
       score: 1 - i * 0.1,
     }))
   }
@@ -2076,7 +2081,7 @@ describe('GAP-51: GNN REST API Endpoints', () => {
     expect(res.statusCode).toBe(200)
     expect((res.body as any).results).toBeInstanceOf(Array)
     expect((res.body as any).results.length).toBe(2)
-    expect((res.body as any).results[0].candidate).toBe('B')
+    expect((res.body as any).results[0].nodeId).toBe('B')
   })
 
   test('POST /api/v1/gnn/recommend missing fields', async () => {
@@ -2117,6 +2122,146 @@ describe('GAP-51: GNN REST API Endpoints', () => {
     const resReader = await makeRequest(server, 'POST', '/api/v1/gnn/load-model',
       { modelPath: '/m.pb' }, readerAgent)
     expect(resReader.statusCode).toBe(403)
+  })
+
+  // ──────────────────────────────────────────
+  // GNN batch 端点测试
+  // ──────────────────────────────────────────
+
+  test('POST /api/v1/gnn/predict-links-batch with 2 pairs should return 2 results', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/predict-links-batch', {
+      pairs: [
+        { source: 1, target: 2 },
+        { source: 3, target: 4 },
+      ],
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.body as any
+    expect(body.results).toBeInstanceOf(Array)
+    expect(body.results.length).toBe(2)
+    expect(body.results[0].source).toBe(1)
+    expect(body.results[0].target).toBe(2)
+    expect(typeof body.results[0].probability).toBe('number')
+    expect(body.results[1].source).toBe(3)
+    expect(body.results[1].target).toBe(4)
+  })
+
+  test('POST /api/v1/gnn/predict-links-batch with empty pairs should return empty results', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/predict-links-batch', {
+      pairs: [],
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).results).toEqual([])
+  })
+
+  test('POST /api/v1/gnn/predict-links-batch missing pairs should return 400', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/predict-links-batch', {})
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/predict-links-batch with invalid pair should return 400', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/predict-links-batch', {
+      pairs: [
+        { source: 1 }, // missing target
+      ],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/predict-links-batch before loading model should return 500', async () => {
+    mockGnnEngine.isLoaded = false
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/predict-links-batch', {
+      pairs: [{ source: 1, target: 2 }],
+    })
+    expect(res.statusCode).toBe(500)
+  })
+
+  test('POST /api/v1/gnn/recommend-batch with 3 sources should return 3 recommendation groups', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/recommend-batch', {
+      sources: [1, 3, 5],
+      candidates: [10, 11, 12],
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.body as any
+    expect(body.results).toBeInstanceOf(Array)
+    expect(body.results.length).toBe(3)
+    expect(body.results[0].source).toBe(1)
+    expect(body.results[0].recommendations).toBeInstanceOf(Array)
+    expect(body.results[0].recommendations.length).toBeGreaterThan(0)
+    expect(body.results[0].recommendations[0].target).toBeDefined()
+    expect(typeof body.results[0].recommendations[0].score).toBe('number')
+    expect(body.results[1].source).toBe(3)
+    expect(body.results[2].source).toBe(5)
+  })
+
+  test('POST /api/v1/gnn/recommend-batch with empty candidates should return 400', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/recommend-batch', {
+      sources: [1],
+      candidates: [],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/recommend-batch with empty sources should return 400', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/recommend-batch', {
+      sources: [],
+      candidates: [10, 11],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/recommend-batch missing sources should return 400', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/recommend-batch', {
+      candidates: [10, 11],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/recommend-batch before loading model should return 500', async () => {
+    mockGnnEngine.isLoaded = false
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/recommend-batch', {
+      sources: [1],
+      candidates: [10, 11],
+    })
+    expect(res.statusCode).toBe(500)
   })
 })
 
