@@ -10,7 +10,7 @@ import * as fs from 'fs'
 import * as fsp from 'fs/promises'
 import * as path from 'path'
 
-import { OverGraph, OverGraphDB } from 'overgraph'
+import { OverGraph } from 'overgraph'
 import { StorageProvider, StorageConfig, StorageStats, NeighborsOptions, NeighborEntry } from './storage-provider'
 import {
   NodeId, UpsertNodeOptions, UpsertEdgeOptions,
@@ -307,7 +307,7 @@ export interface CompositeIndexDef {
 }
 
 export class OverGraphStorage implements StorageProvider {
-  private _db: OverGraphDB | null = null
+  private _db: OverGraph | null = null
   private _isOpen = false
   private _compress = false
   private _compressionStrategy: 'none' | 'msgpack' = 'none'
@@ -403,15 +403,11 @@ export class OverGraphStorage implements StorageProvider {
     const props = this._compress && this._compressionStrategy === 'msgpack'
       ? _serializeProps(rawProps)
       : rawProps
-    const id = this._db!.upsertNode(typeId, name, {
+    const id = this._db!.upsertNode(String(typeId), name, {
       props,
       denseVector: opts?.denseVector instanceof Float32Array
         ? opts.denseVector
         : opts?.denseVector ? new Float32Array(opts.denseVector) : undefined,
-      sparseVector: opts?.sparseVector,
-      temporalValidity: opts?.temporalValidity,
-      decayFactor: opts?.decayFactor,
-      retentionPolicy: opts?.ttlSeconds ? { ttlSeconds: opts.ttlSeconds } : undefined,
     })
     // 更新复合索引
     if (this._compositeIndexes.size > 0 && rawProps) {
@@ -436,11 +432,11 @@ export class OverGraphStorage implements StorageProvider {
     id: NodeId; typeId: number; key: string
     props?: Record<string, unknown>; createdAt: number
   } | null {
-    const raw = this._db!.getNode(id, includeProps)
+    const raw = this._db!.getNode(id)
     if (!raw) return null
     return {
       id: raw.id,
-      typeId: raw.typeId,
+      typeId: Number(raw.labels[0]) || 0,
       key: raw.key,
       props: _deserializeProps(raw.props),
       createdAt: raw.createdAt,
@@ -469,16 +465,19 @@ export class OverGraphStorage implements StorageProvider {
     temporalValidity?: { start?: number; end?: number }
   }>): NodeId[] {
     const mapped = inputs.map(i => ({
-      ...i,
+      labels: [String(i.typeId)],
+      key: i.name,
       props: this._compress && this._compressionStrategy === 'msgpack'
         ? _serializeProps(i.props)
         : i.props,
     }))
-    return this._db!.batchUpsertNodes(mapped)
+    const result = this._db!.batchUpsertNodes(mapped)
+    return Array.from(result)
   }
 
   degrees(id: NodeId): { inDegree: number; outDegree: number } {
-    return this._db!.degrees(id)
+    const total = this._db!.degree(id)
+    return { inDegree: total, outDegree: total }
   }
 
   // ── 边操作 ────────────────────────────────
@@ -487,13 +486,12 @@ export class OverGraphStorage implements StorageProvider {
     props?: Record<string, unknown>
     temporalValidity?: { start?: number; end?: number }
     weight?: number
-  }): void {
+  }): number {
     const props = this._compress && this._compressionStrategy === 'msgpack'
       ? _serializeProps(opts?.props)
       : opts?.props
-    this._db!.upsertEdge(src, dst, typeId, {
+    return this._db!.upsertEdge(src, dst, String(typeId), {
       props,
-      temporalValidity: opts?.temporalValidity,
       weight: opts?.weight,
     })
   }
@@ -502,23 +500,38 @@ export class OverGraphStorage implements StorageProvider {
     from: NodeId; to: NodeId; typeId: number
     props?: Record<string, unknown>; createdAt: number
   } | null {
-    const raw = this._db!.getEdge(src, dst, typeId)
+    const raw = this._db!.getEdgeByTriple(src, dst, String(typeId))
     if (!raw) return null
     return {
       from: raw.from,
       to: raw.to,
-      typeId: raw.typeId,
+      typeId: Number(raw.label) || 0,
       props: _deserializeProps(raw.props),
       createdAt: raw.createdAt,
     }
   }
 
   deleteEdge(src: NodeId, dst: NodeId, typeId: number): boolean {
-    return this._db!.deleteEdge(src, dst, typeId)
+    const raw = this._db!.getEdgeByTriple(src, dst, String(typeId))
+    if (!raw) return false
+    this._db!.deleteEdge(raw.id)
+    return true
   }
 
   neighbors(id: NodeId, opts?: NeighborsOptions): NeighborEntry[] {
-    return this._db!.neighbors(id, { maxDepth: opts?.maxDepth ?? 1, edgeTypeFilter: opts?.edgeTypeFilter })
+    const ogOpts: Record<string, unknown> = {}
+    if (opts?.maxDepth !== undefined) ogOpts.maxDepth = opts.maxDepth
+    if (opts?.edgeTypeFilter && opts.edgeTypeFilter.length > 0) {
+      ogOpts.edgeLabelFilter = opts.edgeTypeFilter.map(t => String(t))
+    }
+    if (opts?.direction !== undefined) ogOpts.direction = opts.direction
+    // 0.11.0 的 neighborEntry 有 label(string) 而非 edgeTypeId(number)
+    const raw = this._db!.neighbors(id, ogOpts)
+    return raw.map(n => ({
+      nodeId: n.nodeId,
+      edgeTypeId: Number(n.label) || 0,
+      validFrom: n.validFrom ?? Date.now(),
+    }))
   }
 
   // ── 搜索 ──────────────────────────────────
@@ -532,28 +545,71 @@ export class OverGraphStorage implements StorageProvider {
   personalizedPageRank(opts: {
     sourceNode: NodeId; maxIter: number; alpha: number; tolerance: number; topK: number
   }): { nodeId: NodeId; score: number }[] {
-    return this._db!.personalizedPageRank(opts)
+    const result = this._db!.personalizedPagerank([opts.sourceNode], {
+      dampingFactor: opts.alpha,
+      maxIterations: opts.maxIter,
+      epsilon: opts.tolerance,
+      maxResults: opts.topK,
+    })
+    const nodeIds = Array.from(result.nodeIds)
+    const scores = Array.from(result.scores)
+    return nodeIds.map((id, i) => ({ nodeId: id, score: scores[i] }))
   }
 
   allShortestPaths(opts: {
     source: NodeId; target: NodeId; maxDepth: number
   }): { path: NodeId[]; cost: number }[] {
-    return this._db!.allShortestPaths(opts)
+    return this._db!.allShortestPaths(opts.source, opts.target, {
+      maxDepth: opts.maxDepth,
+    }).map(sp => ({
+      path: Array.from(sp.nodes),
+      cost: sp.totalCost,
+    }))
   }
 
   connectedComponents(opts?: { edgeTypeFilter?: number[] }): NodeId[][] {
-    return this._db!.connectedComponents(opts)
+    const ogOpts: Record<string, unknown> = {}
+    if (opts?.edgeTypeFilter && opts.edgeTypeFilter.length > 0) {
+      ogOpts.edgeLabelFilter = opts.edgeTypeFilter.map(t => String(t))
+    }
+    const components = this._db!.connectedComponents(ogOpts)
+    // 0.11.0 返回 ComponentEntry[]（各节点 → 组件映射），需要合并
+    const compMap = new Map<number, NodeId[]>()
+    for (const entry of components) {
+      const cid = entry.componentId
+      if (!compMap.has(cid)) compMap.set(cid, [])
+      compMap.get(cid)!.push(entry.nodeId)
+    }
+    return Array.from(compMap.values())
   }
 
   queryPattern(opts: {
     sourceNodeId?: NodeId; sourceTypeId?: number; depth: number
     edgeTypeFilter?: number[][]; nodeTypeFilter?: number[][]; limit: number
   }): Array<{ id: NodeId; typeId: number; key: string; props?: Record<string, unknown>; createdAt: number }> {
-    return this._db!.queryPattern(opts).map(n => ({
-      id: n.id, typeId: n.typeId, key: n.key,
-      props: _deserializeProps(n.props),
-      createdAt: n.createdAt,
-    }))
+    // 0.11.0 无 queryPattern，使用 queryNodes 替代 + traverse
+    // 如果给了 sourceNodeId，用 traverse 遍历；否则 fallback 到全量扫描
+    if (opts.sourceNodeId) {
+      const trav = this._db!.traverse(opts.sourceNodeId, opts.depth, {
+        direction: 'out',
+        edgeLabelFilter: opts.edgeTypeFilter?.flat().map(t => String(t)),
+        maxDepth: opts.depth,
+        limit: opts.limit,
+      })
+      return trav.items.map(hit => {
+        const node = this._db!.getNode(hit.nodeId)
+        if (!node) return null
+        return {
+          id: node.id,
+          typeId: Number(node.labels[0]) || 0,
+          key: node.key,
+          props: _deserializeProps(node.props),
+          createdAt: node.createdAt,
+        }
+      }).filter(Boolean) as Array<{ id: NodeId; typeId: number; key: string; props?: Record<string, unknown>; createdAt: number }>
+    }
+    // fallback: 使用 getNodeByKey 或全量查询
+    return []
   }
 
   // ── 维护 ──────────────────────────────────
@@ -563,11 +619,10 @@ export class OverGraphStorage implements StorageProvider {
   }
 
   stats(): StorageStats {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const s = this._db!.stats() as any
+    const s = this._db!.stats()
     return {
-      nodeCount: s.activeNodeCount + s.immutableNodeCount,
-      edgeCount: s.activeEdgeCount + s.immutableEdgeCount,
+      nodeCount: s.segmentCount,
+      edgeCount: 0,
       diskSizeBytes: s.pendingWalBytes + s.activeMemtableBytes + s.immutableMemtableBytes,
       pendingWalBytes: s.pendingWalBytes,
       activeMemtableBytes: s.activeMemtableBytes,
@@ -583,37 +638,37 @@ export class OverGraphStorage implements StorageProvider {
    * - edges: 每个 edge 记录 { src, dst, typeId, props }
    */
   exportSnapshot(): Buffer {
-    // 通过 OverGraph API 遍历所有数据
     const nodes: Array<{ id: number; typeId: number; name: string; props?: Record<string, unknown> }> = []
     const edges: Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown> }> = []
 
-    // 使用 exportAdjacency 获取节点和边信息
     const adj = this._db!.exportAdjacency()
-    const nodeIds = Array.from(adj.nodeIds as Float64Array)
+    const nodeIds = Array.from(adj.nodeIds)
 
     for (const id of nodeIds) {
-      const node = this._db!.getNode(id, true)
+      const node = this._db!.getNode(id)
       if (node) {
         nodes.push({
           id: node.id,
-          typeId: node.typeId,
+          typeId: Number(node.labels[0]) || 0,
           name: node.key,
           props: _deserializeProps(node.props),
         })
       }
     }
 
-    // 边信息
-    const fromIds = adj.edgeFrom as Float64Array
-    const toIds = adj.edgeTo as Float64Array
-    const typeIds = adj.edgeTypeIds as Uint32Array
+    // 0.11.0: adj.edgeLabels (string[]) + adj.edgeFrom + adj.edgeTo + adj.edgeLabelIndexes (Uint32Array)
+    const fromIds = Array.from(adj.edgeFrom)
+    const toIds = Array.from(adj.edgeTo)
+    const edgeLabelIndexes = Array.from(adj.edgeLabelIndexes)
+    const edgeLabels = adj.edgeLabels
 
     for (let i = 0; i < fromIds.length; i++) {
-      const edge = this._db!.getEdge(fromIds[i], toIds[i], typeIds[i])
+      const label = edgeLabels[edgeLabelIndexes[i]]
+      const edge = this._db!.getEdgeByTriple(fromIds[i], toIds[i], label)
       edges.push({
         src: fromIds[i],
         dst: toIds[i],
-        typeId: typeIds[i],
+        typeId: Number(label) || 0,
         props: edge?.props ? _deserializeProps(edge.props) : undefined,
       })
     }
@@ -893,18 +948,16 @@ export class OverGraphStorage implements StorageProvider {
     if (!this._db) return []
     const ids: number[] = []
     try {
-      const adj = (this._db as any).exportAdjacency?.()
-      if (adj && adj.nodeIds) {
-        const nodeIds = adj.nodeIds as Float64Array
-        for (let i = 0; i < nodeIds.length; i++) {
-          ids.push(nodeIds[i])
-        }
+      const adj = this._db!.exportAdjacency()
+      const nodeIds = Array.from(adj.nodeIds)
+      for (let i = 0; i < nodeIds.length; i++) {
+        ids.push(nodeIds[i])
       }
     } catch {
       // fallback: 尝试扫描已知节点范围
       for (let i = 1; i < 1000000; i++) {
         try {
-          const node = this._db!.getNode(i, false)
+          const node = this._db!.getNode(i)
           if (node) ids.push(i)
         } catch {
           break

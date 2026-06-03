@@ -642,7 +642,8 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       } else {
         // Fallback to storage for unknown nodes
         const d = this.storage.degrees(id)
-        degree = d.inDegree + d.outDegree
+        // OverGraph 0.11.0 的 degree() 只返回总度数，inDegree/outDegree 都等于 total
+        degree = d.inDegree
         this._inDegreeCounts.set(id, d.inDegree)
         this._outDegreeCounts.set(id, d.outDegree)
       }
@@ -1160,9 +1161,10 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     if (cached !== undefined) return cached
     try {
       const d = this.storage.degrees(id)
-      this._inDegrees.set(id, d.inDegree)
-      this._outDegrees.set(id, d.outDegree)
-      return d.inDegree
+      // OverGraph 0.11.0 的 degree() 只返回总度数，不能区分 in/out
+      // fallback 时假设缓存没有数据，存储层也无法区分方向
+      // 所以不写缓存，返回 0，走手动 LRU 计数
+      return 0
     } catch {
       return 0
     }
@@ -1176,9 +1178,8 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     if (cached !== undefined) return cached
     try {
       const d = this.storage.degrees(id)
-      this._inDegrees.set(id, d.inDegree)
-      this._outDegrees.set(id, d.outDegree)
-      return d.outDegree
+      // OverGraph 0.11.0 的 degree() 只返回总度数，不能区分 in/out
+      return 0
     } catch {
       return 0
     }

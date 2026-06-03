@@ -125,6 +125,7 @@ export class AuditLog {
   /** 清空内存中的审计条目 */
   clear(): void {
     this.entries = []
+    this.lastHash = undefined
   }
 
   /** 返回当前条目数 */

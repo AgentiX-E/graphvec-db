@@ -139,10 +139,10 @@ export class WAL {
    * 启用 Group Commit 时，条目会先加入 _pendingBatch，由定时器批量落盘
    * 禁用 Group Commit 时，立即写入并 fsync
    */
-   * 格式：[4 bytes: index][4 bytes: term][4 bytes: data length][data bytes][4 bytes: CRC32]
-   *
-   * CRC32 校验和覆盖 index, term, data 三个字段。
-   */
+   // 格式：[4 bytes: index][4 bytes: term][4 bytes: data length][data bytes][4 bytes: CRC32]
+   // 
+   // CRC32 校验和覆盖 index, term, data 三个字段。
+   // /
   async append(term: number, data: Uint8Array): Promise<LogEntry> {
     if (!this._opened) {
       throw new Error('WAL not opened')

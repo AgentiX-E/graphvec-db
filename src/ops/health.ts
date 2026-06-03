@@ -33,12 +33,12 @@ export class Health {
    * 只需要确认引擎不崩溃即可。
    * K8s 如果此探针失败会重启 Pod。
    */
-  async liveness(): Promise<{ alive: boolean; error?: string }> {
+  async liveness(): Promise<{ alive: boolean; error?: string; timestamp: number }> {
     try {
       this.engine.stats()
-      return { alive: true }
+      return { alive: true, timestamp: Date.now() }
     } catch (err) {
-      return { alive: false, error: (err as Error).message }
+      return { alive: false, error: (err as Error).message, timestamp: Date.now() }
     }
   }
 
@@ -72,6 +72,7 @@ export class Health {
     if (!hasLeader) errors.push('no raft leader')
     if (!engineOk) errors.push('engine not responding')
     if (!diskOk) errors.push('disk space low')
+    if (totalShards > 0 && healthyShards < totalShards) errors.push(`only ${healthyShards}/${totalShards} shards healthy`)
 
     const ready = hasLeader && engineOk && (totalShards === 0 || healthyShards >= totalShards) && diskOk
 
@@ -80,7 +81,8 @@ export class Health {
       error: errors.length > 0 ? errors.join('; ') : undefined,
       details: {
         hasLeader,
-        shards: `${healthyShards}/${totalShards}`,
+        healthyShards,
+        totalShards,
         engineOk,
         diskOk,
         diskFree,
