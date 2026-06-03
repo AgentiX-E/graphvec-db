@@ -387,6 +387,20 @@ describe('GraphEngine', () => {
   // ──────────────────────────────────────────
 
   describe('Query set operations (UNION / INTERSECT / SUBTRACT)', () => {
+    beforeAll(async () => {
+      // Ensure data exists when running this block in isolation via -t filter
+      // These match the Cypher-lite query block + agg block nodes
+      try {
+        await engine.upsertNode(1, 'query-alice', { props: { name: 'Alice', age: 30, city: 'NYC' } })
+        await engine.upsertNode(2, 'query-bob', { props: { name: 'Bob', age: 25, city: 'LA' } })
+        await engine.upsertNode(2, 'query-carol', { props: { name: 'Carol', age: 35, city: 'SF' } })
+        await engine.upsertNode(1, 'agg-alice', { props: { name: 'Alice', age: 30, score: 85 } })
+        await engine.upsertNode(2, 'agg-bob',   { props: { name: 'Bob', age: 25, score: 92 } })
+        await engine.upsertNode(1, 'agg-carol', { props: { name: 'Carol', age: 35, score: 78 } })
+        await engine.upsertNode(2, 'agg-dave',  { props: { name: 'Dave', age: 28, score: 95 } })
+      } catch { /* data may already exist */ }
+    })
+
     test('UNION — deduplicates nodes by ID', () => {
       // query-alice (age=30) + agg-alice (age=30) + query-carol (age=35) + agg-carol (age=35)
       // = 4 distinct nodes with ages 30 or 35

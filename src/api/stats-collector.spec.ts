@@ -49,10 +49,12 @@ describe('StatsCollector', () => {
   })
 
   test('collectNow handles engine errors gracefully', async () => {
-    mockEngine.stats = vi.fn().mockImplementation(() => { throw new Error('DB down') })
+    mockEngine.stats = vi.fn().mockReturnValue({ nodeCount: 0, edgeCount: 0 })
+    mockEngine.getAllNodes = vi.fn().mockRejectedValue(new Error('scan failed'))
     collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
     const s = await collector.collectNow()
     expect(s.totalNodes).toBe(0)
+    expect(s.totalEdges).toBe(0)
   })
 
   test('start/stop periodic collection', () => {
@@ -62,9 +64,10 @@ describe('StatsCollector', () => {
     collector.stopPeriodicCollection() // safe to call twice
   })
 
-  test('estimateSelectivity returns number between 0 and 1', () => {
+  test('estimateSelectivity returns number between 0 and 1', async () => {
     collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
-    const sel = collector.estimateSelectivity('Person', 'age', 'EQ')
+    await collector.collectNow()
+    const sel = collector.estimateSelectivity(1, { field: 'age', op: 'eq' })
     expect(sel).toBeGreaterThanOrEqual(0)
     expect(sel).toBeLessThanOrEqual(1)
   })

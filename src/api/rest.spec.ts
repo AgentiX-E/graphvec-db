@@ -154,6 +154,16 @@ class MockShardManager {
     return this.edgeStore.delete(key)
   }
 
+  async batchUpsertEdges(
+    _inputs: Array<{ src: number; dst: number; typeId: number; opts?: { props?: Record<string, unknown>; weight?: number } }>
+  ): Promise<void> {
+    for (const input of _inputs) {
+      this.edgeStore.set(`${input.src}-${input.dst}-${input.typeId}`, {
+        src: input.src, dst: input.dst, type: input.typeId,
+      })
+    }
+  }
+
   async batchUpsertNodes(
     inputs: Array<{ typeId: number; name: string }>
   ): Promise<number[]> {
@@ -1528,7 +1538,7 @@ describe('RestApiServer', () => {
         ],
       })
       expect(res.statusCode).toBe(200)
-      expect((res.body as any).successCount).toBe(2)
+      expect((res.body as any).count).toBe(2)
     })
 
     test('/api/status should work in multi-db mode', async () => {

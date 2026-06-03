@@ -1721,13 +1721,13 @@ export function createRestApiServer(
             weight: item.weight !== undefined ? Number(item.weight) : undefined,
           })
         }
-        let ids: Float64Array | undefined
+        let count = 0
         if (validItems.length > 0) {
-          ids = await sm.batchUpsertEdges(validItems)
+          const result = await sm.batchUpsertEdges(validItems)
+          count = validItems.length
         }
         jsonResponse(res, 200, {
-          ids: ids ? Array.from(ids) : [],
-          count: ids?.length ?? 0,
+          count,
           errorCount: errors.length,
           errors: errors.length > 0 ? errors : undefined,
         })
