@@ -27,12 +27,20 @@
  */
 
 Start
-  = _ stmt:DMLStatement _ { return stmt }
+  = _ stmt:UseStatement _ { return stmt }
+  / _ stmt:DMLStatement _ { return stmt }
   / _ stmt:CallProcedureStatement _ { return stmt }
   / _ stmt:CallStatement _ { return stmt }
   / _ stmt:MatchStatement _ { return stmt }
   / _ stmt:UnwindStatement _ { return stmt }
   / _ stmt:WithStatement _ { return stmt }
+
+// ── USE 语句 ────────────────────────────────────────────
+
+UseStatement
+  = "USE"i _ name:Identifier {
+      return { type: 'USE', name }
+    }
 
 // ── 顶级语句 ───────────────────────────────────────────
 

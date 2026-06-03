@@ -213,6 +213,25 @@ export class HnswIndex {
     return this.efConstruction
   }
 
+  /**
+   * Set efSearch value at runtime.
+   * efSearch controls the size of the dynamic candidate list during search.
+   * Higher values improve recall at the cost of slower search.
+   * Default is typically 100 (hnswlib-node default).
+   */
+  setEfSearch(ef: number): void {
+    this.ensureInitialized()
+    this.nativeIndex!.setEf(ef)
+  }
+
+  /**
+   * Get current efSearch value.
+   */
+  getEfSearch(): number {
+    this.ensureInitialized()
+    return this.nativeIndex!.getEf()
+  }
+
   // ──────────────────────────────────────
   // Internal
   // ──────────────────────────────────────

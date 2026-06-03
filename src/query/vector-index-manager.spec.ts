@@ -331,3 +331,32 @@ describe('SEARCH clause integration', () => {
     expect(result[0].id).toBe(2)
   })
 })
+
+// ── VectorIndexManager 新增 HNSW 参数测试 ──────────────
+
+describe('VectorIndexManager — HNSW Parameters', () => {
+  let mgr: VectorIndexManager
+
+  beforeEach(() => {
+    mgr = new VectorIndexManager()
+  })
+
+  it('TC-19: 使用对象参数创建索引并设置 M 和 efConstruction', () => {
+    mgr.createIndex({ label: 'Test', property: 'vec', dimension: 4, M: 32, efConstruction: 400 })
+    expect(mgr.hasIndex('Test', 'vec')).toBe(true)
+    expect(mgr.getM('Test', 'vec')).toBe(32)
+    expect(mgr.getEfConstruction('Test', 'vec')).toBe(400)
+  })
+
+  it('TC-20: 不传 M/efConstruction 时使用默认值', () => {
+    mgr.createIndex({ label: 'Default', property: 'vec', dimension: 4 })
+    expect(mgr.getM('Default', 'vec')).toBe(16)
+    expect(mgr.getEfConstruction('Default', 'vec')).toBe(200)
+  })
+
+  it('TC-21: 使用 legacy 签名仍能正常工作', () => {
+    mgr.createIndex('Legacy', 'vec', 4, 500)
+    expect(mgr.hasIndex('Legacy', 'vec')).toBe(true)
+    expect(mgr.getDimension('Legacy', 'vec')).toBe(4)
+  })
+})

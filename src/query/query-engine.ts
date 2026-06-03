@@ -198,7 +198,9 @@ export interface AggregateClause {
 
 export interface QueryPlan {
   /** 操作类型 */
-  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL'
+  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL' | 'USE'
+  /** USE 的图名称（用于 multi-graph 命名空间切换） */
+  useGraph?: string
   /** EXPLAIN: 展示执行计划但不执行 */
   explain?: boolean
   /** PROFILE: 执行并收集每步统计信息 */
@@ -1698,9 +1700,23 @@ export function parseQueryCached(
  * @param schema - optional schema for lightweight type validation
  */
 export function planFromAST(
-  ast: QueryAST,
+  ast: any,
   schema?: import('../schema/schema-types').SchemaDef,
 ): QueryPlan {
+  // ── USE 语句处理 ──────────────────────────────────────────
+  if (ast.type === 'USE') {
+    return {
+      type: 'USE',
+      useGraph: ast.name,
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      filters: [],
+      returnColumns: [],
+      orderBy: [],
+    }
+  }
+
   const plan: QueryPlan = {
     type: 'QUERY',
     scanLabel: null,
@@ -2789,10 +2805,30 @@ function _resolveDeleteTarget(candidate: Record<string, unknown>, alias: string)
   return undefined
 }
 
+/**
+ * 执行 USE graph_name — 切换图命名空间上下文。
+ *
+ * 在多图场景下，data 可以按图组织（如 { graph1: [...], graph2: [...] }），
+ * USE 用于切换到指定图的数据。当前实现返回当前数据作为上下文切换确认，
+ * 真正的图存储切换由 multi-engine 层处理。
+ *
+ * @param name - 图名称
+ * @param data - 当前节点数据
+ * @returns 当前数据（执行成功）
+ */
+function _executeUse(name: string, data: Array<Record<string, unknown>>): QueryResult {
+  return data
+}
+
 export function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
 ): QueryResult {
+  // Step -1: Handle USE — 命名空间切换，返回当前数据作为上下文
+  if (plan.type === 'USE' && plan.useGraph) {
+    return _executeUse(plan.useGraph, nodes)
+  }
+
   // Step 0: Handle UNION — 分别执行左右两侧再合并结果
   if (plan.unionType && plan.rightPlan) {
     const leftResult = _executeQuery(plan, nodes)

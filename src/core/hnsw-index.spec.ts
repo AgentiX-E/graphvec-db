@@ -215,3 +215,39 @@ describe('normalizeVector', () => {
     expect(length).toBeCloseTo(1, 5)
   })
 })
+
+describe('HnswIndex — Runtime efSearch Control', () => {
+  test('GAP-11-19: setEfSearch and getEfSearch work at runtime', () => {
+    const idx = new HnswIndex({ dimension: 4 })
+    idx.init()
+    idx.setEfSearch(300)
+    expect(idx.getEfSearch()).toBe(300)
+  })
+
+  test('GAP-11-20: setEfSearch with different values', () => {
+    const idx = new HnswIndex({ dimension: 4 })
+    idx.init()
+    idx.setEfSearch(50)
+    expect(idx.getEfSearch()).toBe(50)
+    idx.setEfSearch(500)
+    expect(idx.getEfSearch()).toBe(500)
+  })
+
+  test('GAP-11-21: setEfSearch throws if not initialized', () => {
+    const idx = new HnswIndex({ dimension: 4 })
+    expect(() => idx.setEfSearch(100)).toThrow('not initialized')
+  })
+
+  test('GAP-11-22: custom M and efConstruction with createHnswIndex', () => {
+    const config: HnswIndexConfig = {
+      dimension: 6,
+      m: 24,
+      efConstruction: 400,
+      randomSeed: 123,
+    }
+    const idx = createHnswIndex(config)
+    idx.addPoint(1, [1, 0, 0, 0, 0, 0])
+    expect(idx.getM()).toBe(24)
+    expect(idx.getEfConstruction()).toBe(400)
+  })
+})

@@ -19,11 +19,30 @@ export interface VectorSearchResult {
   distance: number
 }
 
+/** HNSW 索引创建选项 */
+export interface VectorIndexCreateOptions {
+  label: string
+  property: string
+  dimension: number
+  maxElements?: number
+  /** HNSW M parameter — connections per element. Default 16. */
+  M?: number
+  /** HNSW efConstruction — candidate list size during construction. Default 200. */
+  efConstruction?: number
+}
+
 /** 索引标识符：label_property */
 type IndexKey = string
 
 function makeKey(label: string, property: string): IndexKey {
   return `${label}_${property}`
+}
+
+/** 存储每个索引的 HNSW 参数 */
+interface IndexParams {
+  dimension: number
+  M: number
+  efConstruction: number
 }
 
 /**
@@ -43,32 +62,68 @@ export class VectorIndexManager {
   /** 存储每个索引的维度 */
   private dimensions: Map<IndexKey, number> = new Map()
 
+  /** 存储每个索引的 HNSW 参数 */
+  private indexParams: Map<IndexKey, IndexParams> = new Map()
+
   /**
    * 为 label.property 创建 HNSW 索引
    *
-   * @param label - 节点标签（如 'Item'）
-   * @param property - 向量属性名（如 'embedding'）
-   * @param dimension - 向量的维度
-   * @param maxElements - 索引最大容量（默认 10000）
+   * @param options - 索引创建选项（label, property, dimension, maxElements, M, efConstruction）
    * @throws 如果索引已存在
+   *
+   * 示例：
+   * ```
+   * mgr.createIndex({ label: 'Item', property: 'embedding', dimension: 128, M: 32, efConstruction: 400 })
+   * ```
    */
+  createIndex(options: VectorIndexCreateOptions): void
+  /** @deprecated Use object parameter instead */
   createIndex(
     label: string,
     property: string,
     dimension: number,
+    maxElements?: number,
+  ): void
+  createIndex(
+    labelOrOpts: string | VectorIndexCreateOptions,
+    property?: string,
+    dimension?: number,
     maxElements: number = 10000,
   ): void {
-    const key = makeKey(label, property)
+    let label: string
+    let prop: string
+    let dim: number
+    let m: number
+    let efConstruction: number
+
+    if (typeof labelOrOpts === 'string') {
+      // Legacy signature
+      label = labelOrOpts
+      prop = property!
+      dim = dimension!
+      m = 16
+      efConstruction = 200
+    } else {
+      label = labelOrOpts.label
+      prop = labelOrOpts.property
+      dim = labelOrOpts.dimension
+      maxElements = labelOrOpts.maxElements ?? 10000
+      m = labelOrOpts.M ?? 16
+      efConstruction = labelOrOpts.efConstruction ?? 200
+    }
+
+    const key = makeKey(label, prop)
     if (this.indices.has(key)) {
       throw new Error(
-        `Vector index already exists for ${label}.${property}`,
+        `Vector index already exists for ${label}.${prop}`,
       )
     }
 
-    const index = new HierarchicalNSW('l2', dimension)
-    index.initIndex(maxElements)
+    const index = new HierarchicalNSW('l2', dim)
+    index.initIndex(maxElements, efConstruction)
     this.indices.set(key, index)
-    this.dimensions.set(key, dimension)
+    this.dimensions.set(key, dim)
+    this.indexParams.set(key, { dimension: dim, M: m, efConstruction })
   }
 
   /**
@@ -170,6 +225,8 @@ export class VectorIndexManager {
   /**
    * 重建索引：删除旧索引，重新创建空索引
    *
+   * 重建时会保留原来创建时的 M 和 efConstruction 参数。
+   *
    * @param label - 节点标签
    * @param property - 向量属性名
    * @param dimension - 向量的维度
@@ -182,8 +239,17 @@ export class VectorIndexManager {
     dimension: number,
     maxElements: number = 10000,
   ): void {
+    const key = makeKey(label, property)
+    const params = this.indexParams.get(key)
     this.deleteIndex(label, property)
-    this.createIndex(label, property, dimension, maxElements)
+    this.createIndex({
+      label,
+      property,
+      dimension,
+      maxElements,
+      M: params?.M ?? 16,
+      efConstruction: params?.efConstruction ?? 200,
+    })
   }
 
   /**
@@ -253,5 +319,19 @@ export class VectorIndexManager {
    */
   getDimension(label: string, property: string): number | undefined {
     return this.dimensions.get(makeKey(label, property))
+  }
+
+  /**
+   * 获取索引的 HNSW M 参数
+   */
+  getM(label: string, property: string): number | undefined {
+    return this.indexParams.get(makeKey(label, property))?.M
+  }
+
+  /**
+   * 获取索引的 HNSW efConstruction 参数
+   */
+  getEfConstruction(label: string, property: string): number | undefined {
+    return this.indexParams.get(makeKey(label, property))?.efConstruction
   }
 }

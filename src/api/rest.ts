@@ -97,14 +97,17 @@ export function jsonResponse(
   statusCode: number,
   data: unknown,
 ): void {
-  // 对于错误响应，自动附加 errorCode 字段
+  // For error responses, normalize to unified format:
+  // { error: string, code: number, errorCode: string, details?: any }
   let bodyData = data
   if (statusCode >= 400) {
     const existing = data as Record<string, unknown>
-    if (typeof data === 'object' && data !== null && !existing.errorCode) {
+    if (typeof data === 'object' && data !== null) {
       bodyData = {
-        ...existing,
+        error: existing.error ?? inferErrorMessage(statusCode),
+        code: statusCode,
         errorCode: existing.errorCode ?? inferErrorCode(statusCode),
+        ...(existing.details !== undefined ? { details: existing.details } : {}),
       }
     }
   }
@@ -114,6 +117,32 @@ export function jsonResponse(
     'Content-Length': Buffer.byteLength(body),
   })
   res.end(body)
+}
+
+/** Infer a human-readable error message from status code. */
+function inferErrorMessage(statusCode: number): string {
+  switch (statusCode) {
+    case 400:
+      return 'Bad Request'
+    case 401:
+      return 'Unauthorized'
+    case 403:
+      return 'Forbidden'
+    case 404:
+      return 'Not Found'
+    case 409:
+      return 'Conflict'
+    case 413:
+      return 'Payload Too Large'
+    case 429:
+      return 'Too Many Requests'
+    case 500:
+      return 'Internal Server Error'
+    case 503:
+      return 'Service Unavailable'
+    default:
+      return `HTTP ${statusCode}`
+  }
 }
 
 type RouteHandler = (
