@@ -281,3 +281,215 @@ describe('_executeForeach 单元测试', () => {
     expect(result).toHaveLength(2)
   })
 })
+
+// =============================================================
+// 嵌套 FOREACH 执行测试
+// =============================================================
+
+describe('嵌套 FOREACH', () => {
+  // — 测试 1：解析嵌套 FOREACH —
+  it('解析嵌套 FOREACH: FOREACH(x IN [1,2] | FOREACH(y IN [3,4] | CREATE ...))', () => {
+    const plan = parseQuery(
+      'FOREACH (x IN [1,2] | FOREACH (y IN [3,4] | CREATE (n:Node {id: x + y}))) RETURN n'
+    )
+    expect(plan.forEach).toBeDefined()
+    expect(plan.forEach!.variable).toBe('x')
+    expect(plan.forEach!.isVarRef).toBe(false)
+    expect(plan.forEach!.list).toEqual([1, 2])
+    // 内层 FOREACH
+    expect(plan.forEach!.operation.type).toBe('FOREACH')
+    expect(plan.forEach!.operation.foreach).toBeDefined()
+    expect(plan.forEach!.operation.foreach!.variable).toBe('y')
+    expect(plan.forEach!.operation.foreach!.isVarRef).toBe(false)
+    expect(plan.forEach!.operation.foreach!.list).toEqual([3, 4])
+    expect(plan.forEach!.operation.foreach!.operation.type).toBe('CREATE')
+  })
+
+  // — 测试 2：嵌套 FOREACH 执行（笛卡尔积） —
+  it('嵌套 FOREACH CREATE 产生笛卡尔积', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1, 2],
+      isVarRef: false,
+      operation: {
+        type: 'FOREACH',
+        foreach: {
+          variable: 'y',
+          list: [3, 4],
+          isVarRef: false,
+          operation: { type: 'CREATE' },
+        },
+      },
+    }
+    const result = _executeForeach([{}], foreachClause)
+    // 外层 2 个元素 × 内层 2 个元素 = 4 个结果
+    expect(result).toHaveLength(4)
+    // 外层变量 x 应正确绑定
+    const xVals = result.map(r => r.x)
+    expect(xVals.filter(v => v === 1)).toHaveLength(2)
+    expect(xVals.filter(v => v === 2)).toHaveLength(2)
+    // 内层变量 y 应正确绑定
+    const yVals = result.map(r => r.y)
+    expect(yVals.filter(v => v === 3)).toHaveLength(2)
+    expect(yVals.filter(v => v === 4)).toHaveLength(2)
+    // 验证笛卡尔积: (1,3), (1,4), (2,3), (2,4)
+    const pairs = result.map(r => `${r.x},${r.y}`).sort()
+    expect(pairs).toEqual(['1,3', '1,4', '2,3', '2,4'])
+  })
+
+  // — 测试 3：嵌套 FOREACH 内层可读外层变量 —
+  it('嵌套 FOREACH 内层可读外层变量', () => {
+    // 外层 FOREACH: x IN [1,2]
+    // 内层 FOREACH: 使用字面量列表 [10, 20]
+    // 内层可以从上下文读取外层变量 x
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1, 2],
+      isVarRef: false,
+      operation: {
+        type: 'FOREACH',
+        foreach: {
+          variable: 'y',
+          list: [10, 20],
+          isVarRef: false,
+          operation: { type: 'CREATE' },
+        },
+      },
+    }
+    const result = _executeForeach([{}], foreachClause)
+    // 2 × 2 = 4 个结果
+    expect(result).toHaveLength(4)
+    // 内层应可见外层变量 x
+    const xVals = result.map(r => r.x).sort()
+    expect(xVals).toEqual([1, 1, 2, 2])
+    // 内层变量 y 也应正确绑定
+    const yVals = result.map(r => r.y).sort()
+    expect(yVals).toEqual([10, 10, 20, 20])
+    // 笛卡尔积验证
+    const pairs = result.map(r => `${r.x},${r.y}`).sort()
+    expect(pairs).toEqual(['1,10', '1,20', '2,10', '2,20'])
+  })
+
+  // — 测试 4：深层嵌套（3 层） —
+  it('三层嵌套 FOREACH 全部执行', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1],
+      isVarRef: false,
+      operation: {
+        type: 'FOREACH',
+        foreach: {
+          variable: 'y',
+          list: [2],
+          isVarRef: false,
+          operation: {
+            type: 'FOREACH',
+            foreach: {
+              variable: 'z',
+              list: [3],
+              isVarRef: false,
+              operation: { type: 'CREATE' },
+            },
+          },
+        },
+      },
+    }
+    const result = _executeForeach([{}], foreachClause)
+    // 1 × 1 × 1 = 1 个结果
+    expect(result).toHaveLength(1)
+    expect(result[0].x).toBe(1)
+    expect(result[0].y).toBe(2)
+    expect(result[0].z).toBe(3)
+  })
+
+  // — 测试 5：空内层列表 → 不创建节点 —
+  it('空内层列表: FOREACH(x IN [1,2] | FOREACH(y IN [] | CREATE ...))', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1, 2],
+      isVarRef: false,
+      operation: {
+        type: 'FOREACH',
+        foreach: {
+          variable: 'y',
+          list: [],
+          isVarRef: false,
+          operation: { type: 'CREATE' },
+        },
+      },
+    }
+    const result = _executeForeach([{}], foreachClause)
+    // 内层空列表：外层不展开输出，因为没有内层行可产出
+    // 当所有内层都为空时，_executeForeach 的 allItems 来自外层
+    // 外层有 2 个元素，内层 FOREACH 对每个元素递归调用
+    // 由于内层列表为空，_executeForeach 返回原始候选行
+    // 所以每个外层元素生成 1 行（原始候选行）
+    // 总共 2 行
+    expect(result).toHaveLength(2)
+  })
+
+  // — 测试 6：嵌套 FOREACH 集成测试（_executeQuery） —
+  it('嵌套 FOREACH CREATE 集成测试 (_executeQuery)', () => {
+    const plan = parseQuery(
+      'FOREACH (x IN [1,2] | FOREACH (y IN [3,4] | CREATE (n:Node {id: x + y}))) RETURN n'
+    )
+    expect(plan.forEach).toBeDefined()
+    const result = _executeQuery(plan, [])
+    // 笛卡尔积: 2 × 2 = 4 行
+    expect(result).toHaveLength(4)
+    // 每行应有 n 键
+    for (const row of result) {
+      expect(row).toHaveProperty('n')
+    }
+  })
+
+  // — 测试 7：FOREACH + WITH 数据流（通过 _executeForeach 模拟 WITH 上下文） —
+  it('FOREACH + WITH 数据流: 从上下文读变量', () => {
+    // 模拟 WITH [1,2] AS data 产生的上下文
+    const withContext = [{ data: [1, 2] }]
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: ['data'], // 引用 WITH 变量 "data"
+      isVarRef: true,
+      operation: { type: 'CREATE' },
+    }
+    const result = _executeForeach(withContext, foreachClause)
+    // WITH 产生 1 行 {data: [1,2]}, FOREACH 展开 data → 2 行
+    expect(result).toHaveLength(2)
+    expect(result[0].x).toBe(1)
+    expect(result[1].x).toBe(2)
+    // 原始 WITH 上下文应保留
+    expect(result[0].data).toEqual([1, 2])
+    expect(result[1].data).toEqual([1, 2])
+  })
+
+  // — 测试 8：MATCH + FOREACH 条件执行，不破坏 MATCH 结果 —
+  it('FOREACH after MATCH 不破坏原 MATCH 结果', () => {
+    const nodes = [
+      { name: 'Alice', age: 30 },
+      { name: 'Bob', age: 25 },
+    ]
+    const plan = parseQuery(
+      'MATCH (n) FOREACH (x IN [1,2] | CREATE (m:Log {val: x})) RETURN n'
+    )
+    expect(plan.forEach).toBeDefined()
+    const result = _executeQuery(plan, nodes)
+    // 2 个 MATCH 候选 × 2 个 FOREACH 元素 = 4 行 FOREACH 输出
+    // RETURN n 从每行提取 n 属性
+    expect(result).toHaveLength(4)
+  })
+
+  // — 测试 9：解析嵌套 FOREACH + WITH（parseQuery 层面验证） —
+  it('解析嵌套 FOREACH + WITH: WITH [1,2] AS data FOREACH(...)', () => {
+    const plan = parseQuery(
+      'WITH [1,2] AS data FOREACH (x IN data | CREATE (n:Node {id: x})) RETURN n'
+    )
+    expect(plan.forEach).toBeDefined()
+    expect(plan.forEach!.isVarRef).toBe(true) // data 是变量引用
+    expect(plan.forEach!.list).toEqual(['data'])
+    expect(plan.forEach!.variable).toBe('x')
+    // WITH 数据应在 plan 中保留
+    expect(plan.with).toBeDefined()
+    expect(plan.with!.columns).toBeDefined()
+  })
+})

@@ -252,6 +252,79 @@ export async function* readChunksFromFile(filePath: string): AsyncGenerator<Buff
 
 
 // ═══════════════════════════════════════════════
+// Edge write cache (workaround for Rust read-your-write inconsistency)
+//
+// OverGraph Rust 原生 getEdgeByTriple 在 upsertEdge 后存在缓存未刷新问题：
+// - upsertEdge → getEdgeByTriple 返回旧 props
+// - getEdgeByTriple 可能忽略 typeId 参数，返回错误 label 的 edge
+// - node 操作无此问题
+//
+// 方案：在 JS 层维护一个写入缓存，upsertEdge 后写缓存，getEdge 先查缓存
+// ═══════════════════════════════════════════════
+
+/** 缓存的最大条目数 */
+const EDGE_CACHE_MAX = 1000
+
+/** 缓存的 edge 条目 */
+interface CachedEdge {
+  from: number
+  to: number
+  typeId: number
+  props?: Record<string, unknown>
+  createdAt: number
+}
+
+/**
+ * 简单的 LRU Map：最近读取的条目保持在末尾，
+ * 超过容量时淘汰 Map 迭代的第一个条目（最久未访问）。
+ */
+class LRUMap<K, V> {
+  private _map = new Map<K, V>()
+  private _capacity: number
+
+  constructor(capacity: number) {
+    this._capacity = capacity
+  }
+
+  get size(): number { return this._map.size }
+
+  get(key: K): V | undefined {
+    const val = this._map.get(key)
+    if (val !== undefined) {
+      // 移到末尾（最近使用）
+      this._map.delete(key)
+      this._map.set(key, val)
+    }
+    return val
+  }
+
+  set(key: K, value: V): void {
+    if (this._map.has(key)) {
+      this._map.delete(key)
+    } else if (this._map.size >= this._capacity) {
+      // 淘汰最久未访问的（Map 迭代的第一个）
+      const firstKey = this._map.keys().next().value
+      if (firstKey !== undefined) {
+        this._map.delete(firstKey)
+      }
+    }
+    this._map.set(key, value)
+  }
+
+  delete(key: K): boolean {
+    return this._map.delete(key)
+  }
+
+  has(key: K): boolean {
+    return this._map.has(key)
+  }
+
+  clear(): void {
+    this._map.clear()
+  }
+}
+
+// ═══════════════════════════════════════════════
 // OverGraphStorage
 // ═══════════════════════════════════════════════
 
@@ -327,12 +400,29 @@ export class OverGraphStorage implements StorageProvider {
   /** 列式索引 */
   private _colIndex: ColumnarIndex | null = null
 
+  /** 边写入缓存 — workaround for Rust read-your-write inconsistency */
+  private _edgeCache: LRUMap<string, CachedEdge> = new LRUMap(EDGE_CACHE_MAX)
+
+  /** 缓存统计 */
+  private _edgeCacheHits = 0
+  private _edgeCacheMisses = 0
+
   get isOpen(): boolean { return this._isOpen }
   get compressionEnabled(): boolean { return this._compress }
   /** Get the EncryptionAtRest instance (null if not configured) */
   get cipher(): EncryptionAtRest | null { return this._cipher }
   /** Get the ColumnarIndex instance (null if not configured) */
   get colIndex(): ColumnarIndex | null { return this._colIndex }
+
+  /** 缓存命中率统计 */
+  get edgeCacheStats(): { hits: number; misses: number; size: number; maxSize: number } {
+    return {
+      hits: this._edgeCacheHits,
+      misses: this._edgeCacheMisses,
+      size: this._edgeCache.size,
+      maxSize: EDGE_CACHE_MAX,
+    }
+  }
 
   constructor(cipher?: EncryptionAtRest) {
     this._cipher = cipher ?? null
@@ -394,6 +484,10 @@ export class OverGraphStorage implements StorageProvider {
     this._db.close()
     this._db = null
     this._isOpen = false
+    // 清理缓存
+    this._edgeCache.clear()
+    this._edgeCacheHits = 0
+    this._edgeCacheMisses = 0
   }
 
   // ── 节点操作 ──────────────────────────────
@@ -516,10 +610,20 @@ export class OverGraphStorage implements StorageProvider {
     const props = this._compress && this._compressionStrategy === 'msgpack'
       ? _serializeProps(opts?.props)
       : opts?.props
-    return this._db!.upsertEdge(src, dst, String(typeId), {
+    const rawProps = opts?.props
+    const id = this._db!.upsertEdge(src, dst, String(typeId), {
       props,
       weight: opts?.weight,
     })
+    // 写入缓存（用 deserialized props 存储，保持 getEdge 返回格式一致）
+    this._edgeCache.set(`${src}:${dst}:${typeId}`, {
+      from: src,
+      to: dst,
+      typeId,
+      props: rawProps,
+      createdAt: Date.now(),
+    })
+    return id
   }
 
   batchUpsertEdges(inputs: Array<{
@@ -549,6 +653,18 @@ export class OverGraphStorage implements StorageProvider {
       processChunk(inputs.slice(i, i + chunkSize))
     }
 
+    // 批量写入后更新缓存
+    for (const input of inputs) {
+      const key = `${input.src}:${input.dst}:${input.typeId}`
+      this._edgeCache.set(key, {
+        from: input.src,
+        to: input.dst,
+        typeId: input.typeId,
+        props: input.props,
+        createdAt: Date.now(),
+      })
+    }
+
     return new Float64Array(results)
   }
 
@@ -556,6 +672,21 @@ export class OverGraphStorage implements StorageProvider {
     from: NodeId; to: NodeId; typeId: number
     props?: Record<string, unknown>; createdAt: number
   } | null {
+    // 先查写入缓存（workaround for Rust read-your-write inconsistency）
+    const cacheKey = `${src}:${dst}:${typeId}`
+    const cached = this._edgeCache.get(cacheKey)
+    if (cached) {
+      this._edgeCacheHits++
+      return {
+        from: cached.from,
+        to: cached.to,
+        typeId: cached.typeId,
+        props: cached.props,
+        createdAt: cached.createdAt,
+      }
+    }
+    this._edgeCacheMisses++
+
     const raw = this._db!.getEdgeByTriple(src, dst, String(typeId))
     if (!raw) return null
     return {
@@ -568,6 +699,9 @@ export class OverGraphStorage implements StorageProvider {
   }
 
   deleteEdge(src: NodeId, dst: NodeId, typeId: number): boolean {
+    // 从缓存中删除
+    this._edgeCache.delete(`${src}:${dst}:${typeId}`)
+
     const raw = this._db!.getEdgeByTriple(src, dst, String(typeId))
     if (!raw) return false
     this._db!.deleteEdge(raw.id)

@@ -548,35 +548,107 @@ export function _preprocessQuery(query: string): {
   cleanQuery = query
   const result: _QueryExtracts = { optionalMatches: [], withClause: null }
 
-  // ── Step 0: 提取 FOREACH ──
+  // ── Step 0: 提取 FOREACH — 支持嵌套（从内向外递归提取） ──
   // FOREACH ( var IN list | operation )
-  // 提取后从 query 中移除，在 postProcess 中重建
-  // 使用手动括号匹配提取完整的 FOREACH 子句
-  let foreachIdx = cleanQuery.search(/FOREACH\s*\(/i)
+  // 提取后从 query 中移除，在 parseQuery 中重建。
+  // 支持嵌套：递归解析整个 FOREACH 结构，返回嵌套 tree。
+  // 策略：从最外层 FIND 完整的 FOREACH(...)，然后递归解析 inner pipe 内容。
+  let foreachIdx = cleanQuery.search(/\bFOREACH\s*\(/i)
   if (foreachIdx !== -1) {
-    const beforeFOREACH = cleanQuery.slice(0, foreachIdx)
-    let startParen = cleanQuery.indexOf('(', foreachIdx)
-    let depth = 0
-    let endIdx = -1
-    for (let i = startParen; i < cleanQuery.length; i++) {
-      if (cleanQuery[i] === '(') depth++
-      else if (cleanQuery[i] === ')') {
-        depth--
-        if (depth === 0) { endIdx = i + 1; break }
+    // 辅助函数：给定一个 FOREACH 子句字符串（不含外层前后文），
+    // 递归解析为 foreachExtract 结构
+    const parseForeachRecursive = (foreachText: string): _QueryExtracts['foreachExtract'] | null => {
+      // 取出 pipe 之前的 header 部分和之后的 operation 部分
+      // 注意：pipe 可能出现在嵌套 FOREACH 内，所以需要找最外层 pipe
+      // 策略：根据括号深度找到最外层的 pipe
+      const feText = foreachText.trim()
+      // 提取 header: FOREACH( var IN listExpr
+      const headerMatch = feText.match(/^FOREACH\s*\(\s*(\w+)\s+IN\s+/i)
+      if (!headerMatch) return null
+      const variable = headerMatch[1]
+      const afterHeader = feText.slice(headerMatch[0].length)
+
+      // 扫描直到找到最外层 pipe (深度=0 时)
+      let depth = 0
+      let pipePos = -1
+      let inStr = false
+      let strCh = ''
+      for (let i = 0; i < afterHeader.length; i++) {
+        const ch = afterHeader[i]
+        if (inStr) {
+          if (ch === strCh) inStr = false
+          continue
+        }
+        if (ch === "'" || ch === '"') { inStr = true; strCh = ch; continue }
+        if (ch === '(') { depth++; continue }
+        if (ch === ')') { depth--; continue }
+        if (ch === '[') { depth++; continue }
+        if (ch === ']') { depth--; continue }
+        if (ch === '|' && depth === 0) { pipePos = i; break }
       }
-    }
-    if (endIdx !== -1) {
-      const foreachClause = cleanQuery.slice(foreachIdx, endIdx)
-      // 提取内部内容: FOREACH( var IN listExpr | operation )
-      const innerMatch = foreachClause.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*([\s\S]+?)\s*\)/i)
-      if (innerMatch) {
-        result.foreachExtract = {
-          variable: innerMatch[1],
-          listExpr: innerMatch[2].trim(),
-          operation: innerMatch[3].trim(),
+      if (pipePos === -1) return null
+      const listExpr = afterHeader.slice(0, pipePos).trim()
+      // operation 部分到最后一个 ) 之前
+      const rest = afterHeader.slice(pipePos + 1).trimEnd()
+      let operation: string
+      if (rest.endsWith(')')) {
+        operation = rest.slice(0, -1).trim()
+      } else {
+        operation = rest
+      }
+
+      // 检查 operation 是否也是一个 FOREACH（嵌套）
+      const childRE = /^FOREACH\s*\(/i
+      if (childRE.test(operation)) {
+        const child = parseForeachRecursive(operation)
+        if (child) {
+          return {
+            variable,
+            listExpr,
+            operation: '', // 外层 operation 不是文本，而是 children
+            children: [child],
+          }
         }
       }
-      cleanQuery = (beforeFOREACH + cleanQuery.slice(endIdx)).trim()
+
+      return {
+        variable,
+        listExpr,
+        operation,
+      }
+    }
+
+    // 从原始 query 中找到最外层 FOREACH 的起止位置
+    const findOuterForeach = (q: string): [number, number] | null => {
+      const feIdx = q.search(/\bFOREACH\s*\(/i)
+      if (feIdx === -1) return null
+      const sp = q.indexOf('(', feIdx)
+      if (sp === -1) return null
+      let depth = 0
+      let endIdx = -1
+      for (let i = sp; i < q.length; i++) {
+        if (q[i] === '(') depth++
+        else if (q[i] === ')') {
+          depth--
+          if (depth === 0) { endIdx = i + 1; break }
+        }
+      }
+      if (endIdx === -1) return null
+      return [feIdx, endIdx]
+    }
+
+    const outerBounds = findOuterForeach(cleanQuery)
+    if (outerBounds) {
+      const [feStart, feEnd] = outerBounds
+      const foreachFullText = cleanQuery.slice(feStart, feEnd)
+      const extracted = parseForeachRecursive(foreachFullText)
+      if (extracted) {
+        result.foreachExtract = extracted
+        // 从 cleanQuery 中移除 FOREACH 子句（包括嵌套全部移除）
+        const beforeForeach = cleanQuery.slice(0, feStart)
+        const afterForeach = cleanQuery.slice(feEnd)
+        cleanQuery = beforeForeach + afterForeach
+      }
     }
   }
 
@@ -837,11 +909,13 @@ export interface _QueryExtracts {
   withClause: null
   havingRaw?: string
   orderByAggReplacements?: Array<{ placeholder: string; original: string }>
-  /** FOREACH 提取 */
+  /** FOREACH 提取（支持嵌套） */
   foreachExtract?: {
     variable: string
     listExpr: string
     operation: string
+    /** 内层 FOREACH 提取（嵌套时） */
+    children?: _QueryExtracts['foreachExtract'][]
   }
   /** REDUCE 提取 */
   reduceExtract?: {
@@ -1089,58 +1163,9 @@ export function parseQuery(query: string): QueryPlan {
 
   const plan = planFromAST(ast)
 
-  // Step 4: Attach FOREACH if extracted
+  // Step 4: Attach FOREACH if extracted（支持嵌套递归构建）
   if (extracts.foreachExtract) {
-    plan.forEach = {
-      variable: extracts.foreachExtract.variable,
-      list: [],
-      isVarRef: true, // 默认视为变量引用
-      operation: { type: 'CREATE' }, // 默认类型，实际由 parser 确定
-    }
-    // 解析 listExpr：是字面量数组（[1,2,3]）还是变量名
-    const listExpr = extracts.foreachExtract.listExpr.trim()
-    if (listExpr.startsWith('[') && listExpr.endsWith(']')) {
-      plan.forEach.isVarRef = false
-      try {
-        plan.forEach.list = JSON.parse(listExpr.replace(/'/g, '"'))
-      } catch {
-        plan.forEach.list = []
-      }
-    } else {
-      // 变量引用：存储列表变量名到 list 中
-      plan.forEach.list = [listExpr]
-    }
-    // 解析 operation 类型和参数
-    const opText = extracts.foreachExtract.operation.trim()
-    if (/^CREATE\b/i.test(opText)) {
-      plan.forEach.operation.type = 'CREATE'
-      // 提取 CREATE 的节点信息（简化处理）
-      const nodeMatch = opText.match(/CREATE\s*(?:\((\w+):?(\w*))\s*{([^}]*)}|CREATE\s*(?:\((\w+):?(\w*))/)
-      if (nodeMatch) {
-        plan.forEach.operation.createNodes = [{
-          alias: nodeMatch[1] || nodeMatch[4] || 'n',
-          label: nodeMatch[2] || nodeMatch[5] || null,
-          props: null,
-        }]
-      }
-    } else if (/^SET\b/i.test(opText)) {
-      plan.forEach.operation.type = 'SET'
-      // 提取 SET 子句：SET n.prop = val
-      const setMatch = opText.match(/SET\s+(\w+(?:\.\w+)?)\s*=\s*(\S+)/i)
-      if (setMatch) {
-        plan.forEach.operation.setClauses = [{
-          property: setMatch[1].trim(),
-          value: setMatch[2].trim(),
-        }]
-      }
-    } else if (/^DELETE\b/i.test(opText)) {
-      plan.forEach.operation.type = 'DELETE'
-      // 提取 DELETE 目标
-      const delMatch = opText.match(/DELETE\s+(\w+)/i)
-      if (delMatch) {
-        plan.forEach.operation.targets = [delMatch[1].trim()]
-      }
-    }
+    plan.forEach = _buildForEachFromExtract(extracts.foreachExtract)
   }
 
   // Step 5: Attach REDUCE if extracted
@@ -2736,6 +2761,34 @@ export function _executeForeach(
       return []
     }
 
+    case 'FOREACH': {
+      // FOREACH 嵌套：对每个迭代元素递归执行内层 FOREACH
+      // allItems 是外层迭代的 (row, item) 对
+      // 内层 FOREACH 的列表从 operation.foreach 获取
+      const innerForeach = operation.foreach
+      if (!innerForeach) return allItems.map(({ row, item }) => ({
+        ...row,
+        [variable]: item,
+      }))
+
+      let resultRows: Array<Record<string, unknown>> = []
+      for (const { row, item } of allItems) {
+        // 构建含外层变量的上下文行
+        const ctxRow: Record<string, unknown> = {
+          ...row,
+          [variable]: item,
+        }
+        // 将内层 FOREACH 的列表绑定到上下文
+        // 如果内层 FOREACH 的列表是变量引用（即引用外层变量），
+        // 我们需要在 _executeForeach 的上下文中传递 ctxRow
+        // 策略：构造单元素候选数组，递归调用 _executeForeach
+        const innerCandidates = [ctxRow]
+        const innerResult = _executeForeach(innerCandidates, innerForeach)
+        resultRows.push(...innerResult)
+      }
+      return resultRows
+    }
+
     default:
       return candidates
   }
@@ -2753,6 +2806,75 @@ export function _executeForeach(
  * @param listHint - 列表线索（可能是变量名列表）
  * @returns 解析后的数组，或 null（表示无法解析）
  */
+/**
+ * 从 _QueryExtracts 中的 foreachExtract 递归构建 ForEachClause。
+ * 支持嵌套 FOREACH：如果 extract 包含 children，则 operation 递归构建。
+ */
+function _buildForEachFromExtract(
+  extract: NonNullable<_QueryExtracts['foreachExtract']>,
+): ForEachClause {
+  const forEach: ForEachClause = {
+    variable: extract.variable,
+    list: [],
+    isVarRef: true,
+    operation: { type: 'CREATE' },
+  }
+
+  // 解析 listExpr：是字面量数组（[1,2,3]）还是变量名
+  const listExpr = extract.listExpr.trim()
+  if (listExpr.startsWith('[') && listExpr.endsWith(']')) {
+    forEach.isVarRef = false
+    try {
+      forEach.list = JSON.parse(listExpr.replace(/'/g, '"'))
+    } catch {
+      forEach.list = []
+    }
+  } else {
+    forEach.list = [listExpr]
+  }
+
+  // 检查是否有嵌套 FOREACH children
+  if (extract.children && extract.children.length > 0) {
+    // 外层 FOREACH 的操作就是子 FOREACH
+    forEach.operation.type = 'FOREACH'
+    // 如果有多个 children，应该是链式的（内层最深）
+    // 实际只会有一个 children
+    forEach.operation.foreach = _buildForEachFromExtract(extract.children[0])
+    return forEach
+  }
+
+  // 解析 operation 类型和参数
+  const opText = extract.operation.trim()
+  if (/^CREATE\b/i.test(opText)) {
+    forEach.operation.type = 'CREATE'
+    const nodeMatch = opText.match(/CREATE\s*(?:\((\w+):?(\w*))\s*{([^}]*)}|CREATE\s*(?:\((\w+):?(\w*))/)
+    if (nodeMatch) {
+      forEach.operation.createNodes = [{
+        alias: nodeMatch[1] || nodeMatch[4] || 'n',
+        label: nodeMatch[2] || nodeMatch[5] || null,
+        props: null,
+      }]
+    }
+  } else if (/^SET\b/i.test(opText)) {
+    forEach.operation.type = 'SET'
+    const setMatch = opText.match(/SET\s+(\w+(?:\.\w+)?)\s*=\s*(\S+)/i)
+    if (setMatch) {
+      forEach.operation.setClauses = [{
+        property: setMatch[1].trim(),
+        value: setMatch[2].trim(),
+      }]
+    }
+  } else if (/^DELETE\b/i.test(opText)) {
+    forEach.operation.type = 'DELETE'
+    const delMatch = opText.match(/DELETE\s+(\w+)/i)
+    if (delMatch) {
+      forEach.operation.targets = [delMatch[1].trim()]
+    }
+  }
+
+  return forEach
+}
+
 function _resolveForeachList(
   row: Record<string, unknown>,
   listHint: string[],
@@ -2761,8 +2883,6 @@ function _resolveForeachList(
   for (const hint of listHint) {
     const val = row[hint]
     if (Array.isArray(val)) return val
-    const val2 = row[variable]  // 尝试直接用列表名查找
-    if (Array.isArray(val2)) return val2
   }
   // 检查 row 中是否有数组类型的值
   for (const [key, val] of Object.entries(row)) {
@@ -3731,11 +3851,13 @@ export interface ForEachClause {
   isVarRef: boolean
   /** 每次迭代执行的操作 */
   operation: {
-    type: 'CREATE' | 'SET' | 'DELETE'
+    type: 'CREATE' | 'SET' | 'DELETE' | 'FOREACH'
     targets?: string[]
     createNodes?: QueryPlan['createNodes']
     createEdges?: QueryPlan['createEdges']
     setClauses?: QueryPlan['setClauses']
+    /** 嵌套 FOREACH 子句（当 type='FOREACH' 时） */
+    foreach?: ForEachClause
   }
 }
 
