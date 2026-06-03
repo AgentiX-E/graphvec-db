@@ -199,7 +199,19 @@ export class LmdbWal {
 
   private async _deleteBefore(index: number): Promise<void> {
     const eDb = this.entriesDb as any
-    for (const { key } of eDb.getRange({ end: index - 1, start: -Infinity }).asArray ?? []) {
+    // LMDB getRange end is inclusive; use end: index-1 to get keys < index
+    // If that doesn't work, fall back to scanning all
+    const entries = eDb.getRange({ end: index - 1, start: 0 }).asArray ?? []
+    if (entries.length === 0) {
+      // LMDB version may not support range filtering; delete all keys < index manually
+      for (const entry of (eDb.getRange({}).asArray ?? [])) {
+        if (entry.key < index) {
+          await eDb.remove(entry.key as number)
+        }
+      }
+      return
+    }
+    for (const { key } of entries) {
       await eDb.remove(key as number)
     }
   }
