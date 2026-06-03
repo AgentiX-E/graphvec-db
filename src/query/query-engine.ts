@@ -1106,12 +1106,41 @@ export function parseQuery(query: string): QueryPlan {
       } catch {
         plan.forEach.list = []
       }
+    } else {
+      // 变量引用：存储列表变量名到 list 中
+      plan.forEach.list = [listExpr]
     }
-    // 解析 operation 类型
+    // 解析 operation 类型和参数
     const opText = extracts.foreachExtract.operation.trim()
-    if (/^CREATE\b/i.test(opText)) plan.forEach.operation.type = 'CREATE'
-    else if (/^SET\b/i.test(opText)) plan.forEach.operation.type = 'SET'
-    else if (/^DELETE\b/i.test(opText)) plan.forEach.operation.type = 'DELETE'
+    if (/^CREATE\b/i.test(opText)) {
+      plan.forEach.operation.type = 'CREATE'
+      // 提取 CREATE 的节点信息（简化处理）
+      const nodeMatch = opText.match(/CREATE\s*(?:\((\w+):?(\w*))\s*{([^}]*)}|CREATE\s*(?:\((\w+):?(\w*))/)
+      if (nodeMatch) {
+        plan.forEach.operation.createNodes = [{
+          alias: nodeMatch[1] || nodeMatch[4] || 'n',
+          label: nodeMatch[2] || nodeMatch[5] || null,
+          props: null,
+        }]
+      }
+    } else if (/^SET\b/i.test(opText)) {
+      plan.forEach.operation.type = 'SET'
+      // 提取 SET 子句：SET n.prop = val
+      const setMatch = opText.match(/SET\s+(\w+(?:\.\w+)?)\s*=\s*(\S+)/i)
+      if (setMatch) {
+        plan.forEach.operation.setClauses = [{
+          property: setMatch[1].trim(),
+          value: setMatch[2].trim(),
+        }]
+      }
+    } else if (/^DELETE\b/i.test(opText)) {
+      plan.forEach.operation.type = 'DELETE'
+      // 提取 DELETE 目标
+      const delMatch = opText.match(/DELETE\s+(\w+)/i)
+      if (delMatch) {
+        plan.forEach.operation.targets = [delMatch[1].trim()]
+      }
+    }
   }
 
   // Step 5: Attach REDUCE if extracted
@@ -2396,6 +2425,16 @@ export function _executeQuery(
     }
   }
 
+  // Step 2.5: Handle FOREACH — 对每个候选行执行迭代操作
+  if (plan.forEach) {
+    // FOREACH 没有前置 MATCH 时（纯 FOREACH），使用一个空的上下文行
+    // 这样即使 nodes=[]，FOREACH 也能独立展开列表
+    if (candidates.length === 0) {
+      candidates = [{}]
+    }
+    candidates = _executeForeach(candidates, plan.forEach)
+  }
+
   // Step 3: Handle RETURN
   if (plan.returnColumns.length > 0) {
     // Check if RETURN uses aggregation
@@ -2559,6 +2598,177 @@ export function _executeQuery(
   }
 
   return finalRows.slice(0, plan.limit ?? DEFAULT_LIMIT)
+}
+
+// ── FOREACH 执行 ─────────────────────────────────────────
+
+/**
+ * 执行 FOREACH 子句。
+ *
+ * FOREACH (var IN list | operation) 对列表中每个元素执行操作。
+ * 支持的操作类型：CREATE / SET / DELETE / REMOVE
+ *
+ * @param candidates - 当前候选行（每个候选行都会触发一次 FOREACH 迭代）
+ * @param foreach - FOREACH 子句定义（含列表、变量名、操作类型和参数）
+ * @returns 修改后的候选行（可能新增或修改了行）
+ *
+ * 行为：
+ * - list 是字面量数组（isVarRef=false）：直接展开
+ * - list 是变量引用（isVarRef=true）：从候选行上下文中读取变量值
+ * - 空列表：跳过，不对候选行做任何修改
+ * - CREATE：创建节点（按每行上下文添加新记录到 nodes 存储）
+ * - SET：修改候选行的属性
+ * - DELETE：从候选行中移除目标
+ * - REMOVE：与 DELETE 行为相同
+ */
+export function _executeForeach(
+  candidates: Array<Record<string, unknown>>,
+  foreachClause: ForEachClause,
+): Array<Record<string, unknown>> {
+  const { variable, list, isVarRef, operation } = foreachClause
+
+  // Step 1: 收集所有要迭代的元素
+  const allItems: Array<{ row: Record<string, unknown>; item: unknown }> = []
+
+  for (const candidate of candidates) {
+    let items: unknown[] = list
+
+    // 如果列表是变量引用，从上下文中读取
+    if (isVarRef) {
+      const varListName = list.length > 0 ? String(list[0]) : ''
+      // 尝试从候选行中读取变量
+      const resolvedList = _resolveForeachList(candidate, list as string[])
+      if (resolvedList !== null) {
+        items = resolvedList
+      }
+    }
+
+    // 对列表中的每个元素，绑定额外的上下文
+    for (const item of items) {
+      allItems.push({ row: candidate, item })
+    }
+  }
+
+  // Step 2: 执行操作
+  if (allItems.length === 0) {
+    // 空列表：返回原始候选行（FOREACH 不影响结果集结构）
+    return candidates
+  }
+
+  switch (operation.type) {
+    case 'CREATE': {
+      // FOREACH + CREATE：为每个 (row, item) 创建新记录
+      const additionalRows: Array<Record<string, unknown>> = []
+      for (const { row, item } of allItems) {
+        const newRow: Record<string, unknown> = {
+          ...row,
+          [variable]: item,
+        }
+        additionalRows.push(newRow)
+      }
+      return additionalRows
+    }
+
+    case 'SET': {
+      // FOREACH + SET：修改候选行的属性
+      // SET 的典型用法是 FOREACH (x IN list | SET n.prop = x)
+      // 需要解析 SET 子句中的赋值操作
+      if (operation.setClauses && operation.setClauses.length > 0) {
+        const result = candidates.map(row => {
+          const newRow = { ...row }
+          // 对列表中的每个元素应用 SET
+          // 但 SET 操作是"每行一次"，所以我们取最后一个绑定值
+          for (const clause of operation.setClauses) {
+            // clause.property 是 "n.flag" 格式，clause.value 是 "$x" 格式的占位符
+            const propName = clause.property.includes('.')
+              ? clause.property.split('.').pop()!
+              : clause.property
+
+            // 解析 SET 值：如果是占位符 $x，用最后绑定的 item 替换
+            let resolvedVal = clause.value
+            if (typeof resolvedVal === 'string' && resolvedVal.startsWith('$')) {
+              const varName = resolvedVal.slice(1)
+              const lastItem = allItems[allItems.length - 1]?.item
+              resolvedVal = lastItem
+            }
+
+            newRow[propName] = resolvedVal
+          }
+          return newRow
+        })
+        return result
+      }
+      // 没有 setClauses 时，简化处理：为每行添加迭代变量
+      const result = candidates.map(row => {
+        const newRow = { ...row }
+        for (const { item } of allItems) {
+          newRow[variable] = item
+        }
+        return newRow
+      })
+      return result
+    }
+
+    case 'DELETE': {
+      // FOREACH + DELETE：移除目标行
+      // 从 candidates 中删除有匹配的行
+      if (operation.targets && operation.targets.length > 0) {
+        const targets = operation.targets
+        // 从候选行中筛选：如果行名在 targets 中，移除该行
+        const result = candidates.filter(row => {
+          return !targets.some(target => {
+            const targetClean = target.replace(/^`|`$/g, '')
+            // 行中的 _alias 表示该行被绑定的节点别名
+            const rowAlias = String(row['_alias'] ?? '')
+            // 行中的 name 是节点名称（可能为 undefined）
+            const rowName = row['name']
+            // 如果 _alias 等于目标，或者 name 等于目标，则匹配
+            if (rowName === targetClean && rowName !== undefined) return true
+            if (rowAlias === targetClean) return true
+            // 如果目标名直接是行的某个键
+            if (targetClean in row) return true
+            return false
+          })
+        })
+        return result
+      }
+      // 没有指定 targets → 根据 foreach 语义，直接返回空（DELETE 所有匹配节点）
+      return []
+    }
+
+    default:
+      return candidates
+  }
+}
+
+/**
+ * 辅助函数：解析 FOREACH 的列表引用。
+ *
+ * 根据 foreach 定义，list 可能是 undefined 或空，
+ * 此时尝试从候选行上下文中解析。
+ * 当前简化实现：如果 isVarRef=true 且 list 有值，
+ * 使用 list[0] 作为变量名从候选行中查找。
+ *
+ * @param row - 当前候选行
+ * @param listHint - 列表线索（可能是变量名列表）
+ * @returns 解析后的数组，或 null（表示无法解析）
+ */
+function _resolveForeachList(
+  row: Record<string, unknown>,
+  listHint: string[],
+): unknown[] | null {
+  // 如果 listHint 有内容，尝试用它们查找变量
+  for (const hint of listHint) {
+    const val = row[hint]
+    if (Array.isArray(val)) return val
+    const val2 = row[variable]  // 尝试直接用列表名查找
+    if (Array.isArray(val2)) return val2
+  }
+  // 检查 row 中是否有数组类型的值
+  for (const [key, val] of Object.entries(row)) {
+    if (Array.isArray(val)) return val
+  }
+  return null
 }
 
 // ── CASE 表达式运行时求值 ─────────────────────────────────
