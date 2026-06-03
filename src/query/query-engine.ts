@@ -2222,6 +2222,44 @@ export function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
 ): QueryResult {
+  // Step 0: Handle UNION — 分别执行左右两侧再合并结果
+  if (plan.unionType && plan.rightPlan) {
+    const leftResult = _executeQuery(plan, nodes)
+    const rightResult = _executeQuery(plan.rightPlan, nodes)
+
+    // 只考虑 rows（忽略 metadata）
+    const leftRows = leftResult as QueryRow[]
+    const rightRows = rightResult as QueryRow[]
+
+    switch (plan.unionType) {
+      case 'union':
+        // UNION: 合并去重（基于 JSON 序列化比较）
+        const seen = new Set<string>()
+        const merged: QueryRow[] = []
+        for (const row of [...leftRows, ...rightRows]) {
+          const key = JSON.stringify(row)
+          if (!seen.has(key)) {
+            seen.add(key)
+            merged.push(row)
+          }
+        }
+        return merged
+      case 'union_all':
+        // UNION ALL: 直接拼接
+        return [...leftRows, ...rightRows]
+      case 'intersect':
+        // INTERSECT: 取左右交集
+        const rightKeys = new Set(rightRows.map(r => JSON.stringify(r)))
+        return leftRows.filter(r => rightKeys.has(JSON.stringify(r)))
+      case 'subtract':
+        // SUBTRACT（EXCEPT）: 左减右
+        const exceptKeys = new Set(rightRows.map(r => JSON.stringify(r)))
+        return leftRows.filter(r => !exceptKeys.has(JSON.stringify(r)))
+      default:
+        return [...leftRows, ...rightRows]
+    }
+  }
+
   // Step 1: Filter nodes by MATCH criteria
   let candidates = [...nodes]
 
@@ -2495,6 +2533,11 @@ export function _executeQuery(
       rows = _applyCaseColumns(rows, plan.caseColumns)
     }
 
+    // Apply SKIP（在 LIMIT 之前，符合 Cypher 语义）
+    if (plan.skip !== undefined && plan.skip > 0) {
+      rows = rows.slice(plan.skip)
+    }
+
     // Apply LIMIT（若未显式指定则使用默认限制）
     rows = rows.slice(0, plan.limit ?? DEFAULT_LIMIT)
 
@@ -2503,7 +2546,14 @@ export function _executeQuery(
 
   // No RETURN — return candidates as rows
   const noReturnRows = candidates.map(c => ({ ...c }))
-  return noReturnRows.slice(0, plan.limit ?? DEFAULT_LIMIT)
+
+  // Apply SKIP（无 RETURN 路径）
+  let finalRows = noReturnRows
+  if (plan.skip !== undefined && plan.skip > 0) {
+    finalRows = finalRows.slice(plan.skip)
+  }
+
+  return finalRows.slice(0, plan.limit ?? DEFAULT_LIMIT)
 }
 
 // ── CASE 表达式运行时求值 ─────────────────────────────────
