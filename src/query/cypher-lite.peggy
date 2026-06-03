@@ -12,6 +12,12 @@
  *   CREATE (a)-[:KNOWS]->(b)
  *   MATCH (n) DELETE n
  *   MATCH (n) SET n.name = "val"
+ *   MATCH (n) SET n.name = "val", n.age = 30
+ *   MATCH (n) REMOVE n.name
+ *   MATCH (n) REMOVE n:Person
+ *   MATCH (n) SET n.name = "val" REMOVE n.label
+ *   WHERE n.name IS NULL
+ *   WHERE n.age IS NOT NULL
  *   MERGE (n:Label {id: 1})
  *   CREATE (n) RETURN n
  *   变长路径: MATCH (a)-[:TYPE*1..5]->(b) RETURN b
@@ -27,13 +33,64 @@
  */
 
 Start
-  = _ stmt:UseStatement _ { return stmt }
-  / _ stmt:DMLStatement _ { return stmt }
-  / _ stmt:CallProcedureStatement _ { return stmt }
-  / _ stmt:CallStatement _ { return stmt }
-  / _ stmt:MatchStatement _ { return stmt }
-  / _ stmt:UnwindStatement _ { return stmt }
-  / _ stmt:WithStatement _ { return stmt }
+  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement) _ {
+      if (hint) {
+        stmt.periodicCommitHint = hint
+      }
+      return stmt
+    }
+
+// ── PERIODIC COMMIT 提示 ──────────────────────────────
+
+PeriodicCommitHint
+  = "USING"i _ "PERIODIC"i _ "COMMIT"i _ size:Integer {
+      return { type: 'PERIODIC_COMMIT_HINT', batchSize: size }
+    }
+  / "USING"i _ "PERIODIC"i _ "COMMIT"i {
+      return { type: 'PERIODIC_COMMIT_HINT', batchSize: undefined }
+    }
+
+// ── SHOW 元数据 ──────────────────────────────────────────
+
+ShowStatement
+  = "SHOW"i _ kind:ShowKind {
+      return { type: 'SHOW', show: kind }
+    }
+
+ShowKind
+  = "CONSTRAINTS"i { return 'constraints' }
+  / "INDEXES"i { return 'indexes' }
+  / "PROCEDURES"i { return 'procedures' }
+  / "FUNCTIONS"i { return 'functions' }
+  / "LABELS"i { return 'labels' }
+  / "RELATIONSHIPTYPES"i { return 'relationshiptypes' }
+
+// ── EXPLAIN / PROFILE / DESCRIBE ────────────────────────────
+
+ExplainStatement
+  = ("EXPLAIN"i / "PROFILE"i / "DESCRIBE"i) _ query:Start {
+      return {
+        type: 'EXPLAIN',
+        explainMode: text().match(/^EXPLAIN/i) ? 'text' :
+                     text().match(/^PROFILE/i) ? 'profile' :
+                     text().match(/^DESCRIBE/i) ? 'describe' : 'text',
+        innerStatement: query,
+      }
+    }
+
+// ── DROP CONSTRAINT ──────────────────────────────────────────
+
+DropConstraintStatement
+  = "DROP"i _ "CONSTRAINT"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ASSERT"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+      return { type: 'DROP_CONSTRAINT', label: label, property: prop.property }
+    }
+
+// ── CREATE CONSTRAINT ──────────────────────────────────
+
+ConstraintRule
+  = "CREATE"i _ "CONSTRAINT"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ASSERT"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+      return { type: 'CREATE_CONSTRAINT', label: label, property: prop.property }
+    }
 
 // ── USE 语句 ────────────────────────────────────────────
 
@@ -54,6 +111,19 @@ DMLStatement
     }
   / matchClause:MatchClause deleteClause:DeleteClause returnClause:ReturnClause? {
       const stmt = { type: 'QUERY', match: matchClause, delete: deleteClause }
+      if (returnClause) {
+        stmt.return = returnClause
+      }
+      return stmt
+    }
+  / matchClause:MatchClause setClause:SetClause removeClause:RemoveClause? returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', match: matchClause, set: setClause }
+      if (removeClause) stmt.remove = removeClause
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
+  / matchClause:MatchClause removeClause:RemoveClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', match: matchClause, remove: removeClause }
       if (returnClause) {
         stmt.return = returnClause
       }
@@ -388,6 +458,22 @@ SetItem
       return { type: 'SET_ITEM', property: ref, value: val }
     }
 
+// ── REMOVE ─────────────────────────────────────────────────
+
+RemoveClause
+  = _ "REMOVE"i _ items:RemoveItemList {
+      return { type: 'REMOVE', items }
+    }
+
+RemoveItemList
+  = head:RemoveItem tail:(_ "," _ RemoveItem)* {
+      return [head, ...tail.map(t => t[3])]
+    }
+
+RemoveItem
+  = prop:PropertyRef { return { type: 'REMOVE_PROP', property: prop.name, name: prop.property } }
+  / ref:Identifier ":" label:LabelName { return { type: 'REMOVE_LABEL', ref: ref, label: label } }
+
 // ── MERGE ──────────────────────────────────────────────────
 
 MergeClause
@@ -694,6 +780,9 @@ AndExpression
 
 Comparison
   = "NOT"i _ expr:Comparison { return { type: 'NOT', expr } }
+  / expr:Additive _ "IS"i _ nullNot:("NOT"i)? _ "NULL"i {
+      return { type: 'NULL_PREDICATE', expr: expr, not: nullNot ? true : false }
+    }
   / lhs:Additive _ op:ComparisonOp _ rhs:Additive {
       return { type: 'COMPARISON', operator: op, left: lhs, right: rhs }
     }

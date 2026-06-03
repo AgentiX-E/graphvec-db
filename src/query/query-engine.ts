@@ -63,7 +63,19 @@ export interface QueryAST {
   create?: CreateClauseAST
   delete?: DeleteClauseAST
   set?: SetClauseAST
+  remove?: RemoveClauseAST
   merge?: MergeClauseAST
+  /** Periodic commit hint: USING PERIODIC COMMIT [batchSize] */
+  periodicCommitHint?: {
+    type: 'PERIODIC_COMMIT_HINT'
+    batchSize?: number
+  }
+}
+
+export interface ConstraintClauseAST {
+  type: 'CREATE_CONSTRAINT'
+  label: string
+  property: string
 }
 
 /** WITH clause: WITH expr1 AS alias1, expr2 AS alias2 [WHERE condition] [ORDER BY ...] [LIMIT n] */
@@ -102,6 +114,19 @@ export interface SetItemAST {
   type: 'SET_ITEM'
   property: PrimaryAST
   value: PrimaryAST
+}
+
+export interface RemoveClauseAST {
+  type: 'REMOVE'
+  items: RemoveItemAST[]
+}
+
+export interface RemoveItemAST {
+  type: 'REMOVE_PROP' | 'REMOVE_LABEL'
+  property?: string
+  name?: string
+  ref?: string
+  label?: string
 }
 
 export interface MergeClauseAST {
@@ -149,6 +174,7 @@ export type ExpressionAST =
   | { type: 'OR'; left: ExpressionAST; right: ExpressionAST | ExpressionAST[] }
   | { type: 'AND'; left: ExpressionAST; right: ExpressionAST | ExpressionAST[] }
   | { type: 'COMPARISON'; operator: string; left: PrimaryAST; right: PrimaryAST }
+  | { type: 'NULL_PREDICATE'; expr: PrimaryAST; not: boolean }
   | PrimaryAST
 
 export type PrimaryAST =
@@ -198,7 +224,7 @@ export interface AggregateClause {
 
 export interface QueryPlan {
   /** 操作类型 */
-  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL' | 'USE'
+  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT'
   /** USE 的图名称（用于 multi-graph 命名空间切换） */
   useGraph?: string
   /** EXPLAIN: 展示执行计划但不执行 */
@@ -327,6 +353,8 @@ export interface QueryPlan {
     partitionBy: string[]
     orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }>
   }>
+  /** SHOW 元数据查询 */
+  show?: string
   /** SEARCH 向量搜索子句（ANN / 近似最近邻） */
   search?: {
     /** 搜索的目标属性（如 'n.embedding'） */
@@ -359,6 +387,13 @@ export interface QueryPlan {
     property: string
     value: unknown
   }>
+  /** REMOVE 子句 */
+  removeClauses?: Array<{
+    type: 'REMOVE_PROP' | 'REMOVE_LABEL'
+    property?: string
+    ref?: string
+    label?: string
+  }>
   /** MERGE 节点 */
   mergeNodes?: Array<{
     alias: string
@@ -381,6 +416,15 @@ export interface QueryPlan {
     property: string
     value: unknown
   }>
+  /** USING PERIODIC COMMIT 提示 — 分批提交批次大小 */
+  periodicCommit?: {
+    batchSize?: number
+  }
+  /** CREATE CONSTRAINT 约束信息 */
+  constraint?: {
+    label: string
+    property: string
+  }
 }
 
 export interface TraverseStep {
@@ -397,7 +441,7 @@ export interface TraverseStep {
 export interface FilterClause {
   source: string
   property: string
-  operator: 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'IN' | 'STARTS_WITH' | 'ENDS_WITH' | 'CONTAINS'
+  operator: 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'IN' | 'STARTS_WITH' | 'ENDS_WITH' | 'CONTAINS' | 'IS_NULL' | 'IS_NOT_NULL'
   value: unknown
   /** NOT 否定标记 */
   negated?: boolean
@@ -1385,7 +1429,56 @@ function _stripExplainProfile(query: string): { stripped: string; explain: boole
 }
 
 export function parseQuery(query: string): QueryPlan {
-  // Step 0a: Detect EXPLAIN / PROFILE prefix
+  // Step 0: Try direct PEG parse first — handles SHOW, DESCRIBE, DROP CONSTRAINT, EXPLAIN etc.
+  // If PEG parses it as a non-QUERY type, handle it directly.
+  let directAst: any = null
+  try {
+    directAst = parser.parse(query.trim())
+  } catch (_directErr) {
+    // Not directly parseable — fall through to preprocessing path
+  }
+
+  if (directAst) {
+    // SHOW CONSTRAINTS / INDEXES / PROCEDURES / FUNCTIONS / LABELS / RELATIONSHIPTYPES
+    if (directAst.type === 'SHOW') {
+      return {
+        type: 'QUERY' as const,
+        show: directAst.show,
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+      }
+    }
+    // DROP CONSTRAINT (parse only, execution is a no-op)
+    if (directAst.type === 'DROP_CONSTRAINT') {
+      return {
+        type: 'QUERY' as const,
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+      }
+    }
+    // EXPLAIN / PROFILE / DESCRIBE — innerStatement is a parsed AST object
+    if (directAst.type === 'EXPLAIN') {
+      // innerStatement is already a parsed AST object from PEG's recursive rule
+      const plan = planFromAST(directAst.innerStatement)
+      if (directAst.explainMode === 'describe' || directAst.explainMode === 'text') {
+        plan.explain = true
+      } else if (directAst.explainMode === 'profile') {
+        plan.profile = true
+      }
+      return plan
+    }
+    // Anything else that PEG parsed (e.g. regular MATCH queries) — continue to preprocess
+  }
+
+  // Step 0a: Detect EXPLAIN / PROFILE prefix (backward compat for old-style text stripping)
   const { stripped, explain, profile } = _stripExplainProfile(query)
 
   // Step 1: Preprocess to extract OPTIONAL MATCH and WITH
@@ -1458,6 +1551,14 @@ export function parseQuery(query: string): QueryPlan {
   // Step 8: Attach SEARCH clause if extracted
   if (extracts.searchExtract) {
     plan.search = extracts.searchExtract
+  }
+
+  // Step 9: Attach periodic commit hint from parsed AST
+  if (ast && (ast as any).periodicCommitHint) {
+    const hint = (ast as any).periodicCommitHint
+    plan.periodicCommit = {
+      batchSize: hint.batchSize,
+    }
   }
 
   return plan
@@ -1717,6 +1818,23 @@ export function planFromAST(
     }
   }
 
+  // ── CREATE CONSTRAINT 处理 ──────────────────────────────────
+  if (ast.type === 'CREATE_CONSTRAINT') {
+    return {
+      type: 'CREATE_CONSTRAINT',
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      filters: [],
+      returnColumns: [],
+      orderBy: [],
+      constraint: {
+        label: ast.label,
+        property: ast.property,
+      },
+    }
+  }
+
   const plan: QueryPlan = {
     type: 'QUERY',
     scanLabel: null,
@@ -1753,6 +1871,13 @@ export function planFromAST(
   if (ast.set) {
     plan.type = 'SET'
     plan.setClauses = planFromSetClause(ast.set)
+  }
+
+  if (ast.remove) {
+    if (!plan.type) {
+      plan.type = 'SET'   // reuse SET type since REMOVE is also a mutation
+    }
+    plan.removeClauses = planFromRemoveClause(ast.remove)
   }
 
   if (ast.merge) {
@@ -2164,6 +2289,15 @@ function planFromSetClause(setClause: SetClauseAST): QueryPlan['setClauses'] {
     property: formatColumn(item.property),
     value: resolvePrimary(item.value),
   }))
+}
+
+function planFromRemoveClause(removeClause: RemoveClauseAST): QueryPlan['removeClauses'] {
+  return removeClause.items.map(item => {
+    if (item.type === 'REMOVE_PROP') {
+      return { type: 'REMOVE_PROP' as const, property: item.name }
+    }
+    return { type: 'REMOVE_LABEL' as const, ref: item.ref, label: item.label }
+  })
 }
 
 // ── 聚合函数 ─────────────────────────────────────────────────
@@ -4688,6 +4822,15 @@ function _applyWhereFilters(
 ): Array<Record<string, unknown>> {
   return records.filter(rec => {
     return filters.every(f => {
+      // Handle IS_NULL / IS_NOT_NULL specially
+      if (f.operator === 'IS_NULL') {
+        const val = _getPropValue(rec, f.property)
+        return val === undefined || val === null
+      }
+      if (f.operator === 'IS_NOT_NULL') {
+        const val = _getPropValue(rec, f.property)
+        return val !== undefined && val !== null
+      }
       const val = _getPropValue(rec, f.property)
       if (val === undefined) return f.negated ? true : false
       const matched = _compareValues(val, f.operator, f.value)
@@ -4705,6 +4848,15 @@ function _applyWhereFiltersOnRows(
 ): QueryRow[] {
   return rows.filter(row => {
     return filters.every(f => {
+      // Handle IS_NULL / IS_NOT_NULL specially
+      if (f.operator === 'IS_NULL') {
+        const val = row[f.property] ?? row[f.source]
+        return val === undefined || val === null
+      }
+      if (f.operator === 'IS_NOT_NULL') {
+        const val = row[f.property] ?? row[f.source]
+        return val !== undefined && val !== null
+      }
       const val = row[f.property] ?? row[f.source]
       if (val === undefined) return f.negated ? true : false
       const matched = _compareValues(val, f.operator, f.value)
@@ -4869,6 +5021,8 @@ function _compareValues(val: unknown, operator: string, target: unknown): boolea
     case 'ENDS_WITH': return typeof val === 'string' && typeof target === 'string' && val.endsWith(target)
     case 'CONTAINS': return typeof val === 'string' && typeof target === 'string' && val.includes(target)
     case 'IN': return Array.isArray(target) && target.includes(val)
+    case 'IS_NULL': return val === undefined || val === null
+    case 'IS_NOT_NULL': return val !== undefined && val !== null
     default: return true
   }
 }
@@ -5243,6 +5397,17 @@ function extractFilters(expr: ExpressionAST, steps: TraverseStep[]): FilterClaus
       property: left.property,
       operator: expr.operator as FilterClause['operator'],
       value,
+    }]
+  }
+
+  if (expr.type === 'NULL_PREDICATE') {
+    const primary = expr.expr
+    if (primary.type !== 'PROP_REF') return []
+    return [{
+      source: primary.name,
+      property: primary.property,
+      operator: expr.not ? 'IS_NOT_NULL' : 'IS_NULL',
+      value: null,
     }]
   }
 
@@ -6043,6 +6208,21 @@ export function _generatePlanTree(plan: QueryPlan): PlanNode {
     }
     current.children = [setNode]
     current = setNode
+  }
+
+  // ── REMOVE ──
+  if (plan.removeClauses && plan.removeClauses.length > 0) {
+    const removeNode: PlanNode = {
+      operator: 'REMOVE',
+      args: {
+        removes: plan.removeClauses.map(r =>
+          r.type === 'REMOVE_PROP' ? r.property : `${r.ref}:${r.label}`
+        ),
+      },
+      estimatedRows: 1,
+    }
+    current.children = [removeNode]
+    current = removeNode
   }
 
   // ── DELETE ──
