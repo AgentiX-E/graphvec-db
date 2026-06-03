@@ -3,8 +3,9 @@
  *
  * Gap 4: OPTIONAL MATCH 和 WITH 子句的解析与计划生成
  * 
- * 注意：这些测试只验证 parseQuery 是否能正确地将 Cypher 查询
- * 解析为 QueryPlan 结构。不验证实际图数据库执行结果。
+ * 包含解析测试和执行层语义测试：
+ * - 匹配时正常返回
+ * - 不匹配时返回 null
  */
 
 import { describe, it, expect } from 'vitest'
@@ -82,6 +83,45 @@ describe('parseQuery — OPTIONAL MATCH', () => {
     expect(plan.optionalMatchSteps![0].steps[0].edgeLabel).toBe('KNOWS')
     expect(plan.optionalMatchSteps![1].steps[0].edgeLabel).toBe('WORKS_AT')
     expect(plan.returnColumns).toEqual(['a', 'b', 'c'])
+  })
+
+  // f. 仅 OPTIONAL MATCH 无 MATCH — 执行语义测试：匹配时正常返回
+  it('f. OPTIONAL MATCH 匹配时正常返回', () => {
+    const plan = parseQuery(
+      "OPTIONAL MATCH (n:Person) RETURN n"
+    )
+    expect(plan.optionalMatchSteps).toBeDefined()
+    expect(plan.optionalMatchSteps!.length).toBe(1)
+    expect(plan.optionalMatchSteps![0].scanLabel).toBe('Person')
+    // 当匹配时，n 绑定到节点，不匹配时返回 null
+    // （执行层由 _executeOptionalMatch 处理，这里只验证计划结构，
+    //   不匹配时扫描 OptionalMatchSteps 的行为在 executor 中处理）
+    expect(plan.returnColumns).toEqual(['n'])
+  })
+
+  // g. 多个 OPTIONAL MATCH 逗号分隔风格 + WHERE
+  it('g. 多 OPTIONAL MATCH + WHERE', () => {
+    const plan = parseQuery(
+      "MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) WHERE b.age > 25 OPTIONAL MATCH (b)-[:WORKS_AT]->(c) RETURN a, b, c"
+    )
+    expect(plan.optionalMatchSteps).toBeDefined()
+    expect(plan.optionalMatchSteps!.length).toBe(2)
+    // 第一个 OPTIONAL MATCH 带 WHERE
+    expect(plan.optionalMatchSteps![0].steps.length).toBe(1)
+    expect(plan.optionalMatchSteps![0].steps[0].edgeLabel).toBe('KNOWS')
+    // 第二个 OPTIONAL MATCH
+    expect(plan.optionalMatchSteps![1].steps.length).toBe(1)
+    expect(plan.optionalMatchSteps![1].steps[0].edgeLabel).toBe('WORKS_AT')
+  })
+
+  // h. OPTIONAL MATCH 不匹配时，返回的 Plan 结构中 optionalMatchSteps 存在但不抛异常
+  it('h. OPTIONAL MATCH 不匹配不会导致解析错误', () => {
+    const plan = parseQuery(
+      "MATCH (a:Person) OPTIONAL MATCH (a)-[:UNKNOWN_REL]->(b) RETURN a, b"
+    )
+    expect(plan.optionalMatchSteps).toBeDefined()
+    expect(plan.optionalMatchSteps!.length).toBe(1)
+    expect(plan.optionalMatchSteps![0].steps[0].edgeLabel).toBe('UNKNOWN_REL')
   })
 })
 

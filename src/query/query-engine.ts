@@ -224,13 +224,19 @@ export interface AggregateClause {
 
 export interface QueryPlan {
   /** 操作类型 */
-  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT'
+  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT' | 'BEGIN' | 'COMMIT' | 'ROLLBACK'
   /** USE 的图名称（用于 multi-graph 命名空间切换） */
   useGraph?: string
   /** EXPLAIN: 展示执行计划但不执行 */
   explain?: boolean
   /** PROFILE: 执行并收集每步统计信息 */
   profile?: boolean
+  /** INDEX 操作：'CREATE' 或 'DROP' */
+  indexOp?: 'CREATE' | 'DROP'
+  /** INDEX 目标标签 */
+  indexLabel?: string
+  /** INDEX 目标属性 */
+  indexProperty?: string
   /** 起始节点标签扫描（如果 MATCH 节点指定了 label） */
   scanLabel: string | null
   /** 标签表达式（如 Person|Animal, !Person 等） */
@@ -1464,6 +1470,36 @@ export function parseQuery(query: string): QueryPlan {
         orderBy: [],
       }
     }
+    // CREATE INDEX (parse only, execution is a no-op)
+    if (directAst.type === 'CREATE_INDEX') {
+      return {
+        type: 'QUERY' as const,
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+        indexOp: 'CREATE' as const,
+        indexLabel: directAst.label,
+        indexProperty: directAst.property,
+      }
+    }
+    // DROP INDEX (parse only, execution is a no-op)
+    if (directAst.type === 'DROP_INDEX') {
+      return {
+        type: 'QUERY' as const,
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+        indexOp: 'DROP' as const,
+        indexLabel: directAst.label,
+        indexProperty: directAst.property,
+      }
+    }
     // EXPLAIN / PROFILE / DESCRIBE — innerStatement is a parsed AST object
     if (directAst.type === 'EXPLAIN') {
       // innerStatement is already a parsed AST object from PEG's recursive rule
@@ -1473,6 +1509,24 @@ export function parseQuery(query: string): QueryPlan {
       } else if (directAst.explainMode === 'profile') {
         plan.profile = true
       }
+      return plan
+    }
+    // BEGIN / COMMIT / ROLLBACK 事务语句 — 解析即可，执行留空
+    if (directAst.type === 'BEGIN' || directAst.type === 'COMMIT' || directAst.type === 'ROLLBACK') {
+      return {
+        type: directAst.type as 'BEGIN' | 'COMMIT' | 'ROLLBACK',
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+      }
+    }
+    // Compound queries (MATCH + WHERE + CREATE/SET/REMOVE + RETURN) — 
+    // already parsed directly by PEG. Route through planFromAST directly.
+    if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete)) {
+      const plan = planFromAST(directAst)
       return plan
     }
     // Anything else that PEG parsed (e.g. regular MATCH queries) — continue to preprocess

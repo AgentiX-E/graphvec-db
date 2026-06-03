@@ -33,7 +33,7 @@
  */
 
 Start
-  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement) _ {
+  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionStatement / CreateIndexStatement / DropIndexStatement) _ {
       if (hint) {
         stmt.periodicCommitHint = hint
       }
@@ -97,6 +97,18 @@ ConstraintRule
 UseStatement
   = "USE"i _ name:Identifier {
       return { type: 'USE', name }
+    }
+
+// ── CREATE INDEX / DROP INDEX ──────────────────────────
+
+CreateIndexStatement
+  = "CREATE"i _ "INDEX"i _ "ON"i _ ":" label:LabelName "(" prop:PropertyName ")" {
+      return { type: 'CREATE_INDEX', label, property: prop }
+    }
+
+DropIndexStatement
+  = "DROP"i _ "INDEX"i _ "ON"i _ ":" label:LabelName "(" prop:PropertyName ")" {
+      return { type: 'DROP_INDEX', label, property: prop }
     }
 
 // ── 顶级语句 ───────────────────────────────────────────
@@ -251,6 +263,82 @@ MatchStatement
       }
       return stmt
     }
+  // ── 复合 MATCH + CREATE + SET + REMOVE + RETURN ─────
+  / matchClause:MatchClause where:WhereClause? createClause:CreateClause setClause:SetClause removeClause:RemoveClause? returnClause:ReturnClause? {
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: where,
+        create: createClause,
+        set: setClause,
+      }
+      if (removeClause) {
+        stmt.remove = removeClause
+      }
+      if (returnClause) {
+        stmt.return = returnClause
+      }
+      return stmt
+    }
+  // ── 复合 MATCH + CREATE + REMOVE + RETURN ────────────
+  / matchClause:MatchClause where:WhereClause? createClause:CreateClause removeClause:RemoveClause returnClause:ReturnClause? {
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: where,
+        create: createClause,
+        remove: removeClause,
+      }
+      if (returnClause) {
+        stmt.return = returnClause
+      }
+      return stmt
+    }
+  // ── 复合 MATCH + SET + REMOVE + RETURN ───────────────
+  / matchClause:MatchClause where:WhereClause? setClause:SetClause removeClause:RemoveClause? returnClause:ReturnClause? {
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: where,
+        set: setClause,
+      }
+      if (removeClause) {
+        stmt.remove = removeClause
+      }
+      if (returnClause) {
+        stmt.return = returnClause
+      }
+      return stmt
+    }
+  // ── 复合 MATCH + WHERE + DELETE + RETURN ─────────────
+  / matchClause:MatchClause where:WhereClause? deleteClause:DeleteClause returnClause:ReturnClause? {
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: where,
+        delete: deleteClause,
+      }
+      if (returnClause) {
+        stmt.return = returnClause
+      }
+      return stmt
+    }
+  // ── 复合 MATCH + WHERE + CREATE + RETURN ─────────────
+  / matchClause:MatchClause where:WhereClause? optionalClauses:OptionalMatchClauseList? createClause:CreateClause returnClause:ReturnClause? {
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: where,
+        create: createClause,
+      }
+      if (optionalClauses && optionalClauses.length > 0) {
+        stmt.optionalMatches = optionalClauses
+      }
+      if (returnClause) {
+        stmt.return = returnClause
+      }
+      return stmt
+    }
 
 // ── OPTIONAL MATCH ─────────────────────────────────────────
 
@@ -345,6 +433,13 @@ UnwindStatement
       }
       return result
     }
+
+// ── 事务语句 (BEGIN / COMMIT / ROLLBACK) ───────────────────
+
+TransactionStatement
+  = _ "BEGIN"i _ { return { type: 'BEGIN' } }
+  / _ "COMMIT"i _ { return { type: 'COMMIT' } }
+  / _ "ROLLBACK"i _ { return { type: 'ROLLBACK' } }
 
 WithStatement
   = w:WithClause u:UnwindClause? r:ReturnClause? {
@@ -894,6 +989,9 @@ LabelPart
   = excl:"!"? label:LabelName { return { exclude: !!excl, name: label } }
 
 LabelName
+  = [A-Za-z_][A-Za-z0-9_]* { return text() }
+
+PropertyName
   = [A-Za-z_][A-Za-z0-9_]* { return text() }
 
 Identifier
