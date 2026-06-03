@@ -168,6 +168,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <span>Edges: <strong id="topo-edge-count">0</strong></span>
         <span>WS: <span id="topo-ws-status" style="color:#eab308;">pending</span></span>
         <span>Last event: <span id="topo-last-event">—</span></span>
+        <span id="topo-sampled-badge" style="display:none;color:#f59e0b;background:#1e293b;padding:2px 8px;border-radius:4px;font-size:12px;">📊 Sampled</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+        <button onclick="topoSearch()" style="background:#475569;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;">🔍 Search</button>
+        <button onclick="topoResetZoom()" style="background:#475569;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;">⊞ Reset Zoom</button>
+        <button onclick="loadTopoSnapshot()" style="background:#0ea5e9;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;">↻ Reload</button>
       </div>
       <div id="topo-cy"></div>
       <div class="topo-tooltip" id="topo-tooltip"></div>
@@ -329,13 +335,55 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       cy.on('zoom', function() { tooltip.style.display = 'none' })
     }
 
+    function topoSearch() {
+      const q = prompt('Search node by ID or label:')
+      if (!q) return
+      if (!cy) return
+      // 先用 id 精确匹配
+      let target = cy.getElementById(q)
+      if (target.length === 0) {
+        // 再用 label 包含匹配
+        const all = cy.nodes()
+        for (let i = 0; i < all.length; i++) {
+          const label = String(all[i].data('label') || '')
+          if (label.toLowerCase().includes(q.toLowerCase())) {
+            target = all[i]
+            break
+          }
+        }
+      }
+      if (target.length > 0) {
+        cy.fit(target, 50)       // 缩放到选中节点
+        target.addClass('highlighted')
+        setTimeout(() => target.removeClass('highlighted'), 3000)
+      } else {
+        alert('No node found matching: ' + q)
+      }
+    }
+
+    function topoResetZoom() {
+      if (cy) {
+        cy.fit(undefined, 30)
+        cy.reset()
+      }
+    }
+
     function loadTopoSnapshot() {
-      fetch('/api/admin/graph-live')
+      fetch('/api/admin/graph-live?maxNodes=200')
+        .then(r => r.json())
         .then(r => r.json())
         .then(data => {
           const elements = data.elements || []
           document.getElementById('topo-node-count').textContent = elements.filter(e => e.group === 'nodes').length
           document.getElementById('topo-edge-count').textContent = elements.filter(e => e.group === 'edges').length
+          // sampled badge
+          const badge = document.getElementById('topo-sampled-badge')
+          if (data.sampled) {
+            badge.textContent = '📊 Sampled (total ' + (data.total || '?') + ' elements)'
+            badge.style.display = 'inline'
+          } else {
+            badge.style.display = 'none'
+          }
 
           if (cy) {
             cy.elements().remove()
@@ -842,12 +890,51 @@ export async function startAdminUI(
 
   // Graph Live endpoint — returns full topology snapshot
   app.get('/api/admin/graph-live', async (req: FastifyRequest, reply: FastifyReply) => {
-    const topology = graph.getTopology ? graph.getTopology() : []
+    const maxNodes = parseInt((req.query as Record<string, string>)?.['maxNodes'] ?? '200', 10)
+    let topology = graph.getTopology ? graph.getTopology() : []
+
+    // 大图采样：超过 maxNodes 时只返回部分节点
+    let sampled = false
+    if (topology.length > maxNodes && maxNodes > 0) {
+      const nodes = topology.filter((el: any) => el.group === 'nodes')
+      const edges = topology.filter((el: any) => el.group === 'edges')
+      // 按 typeId 分层采样
+      const byType = new Map<string, any[]>()
+      for (const n of nodes) {
+        const typeId = String(n.data?.typeId ?? '0')
+        if (!byType.has(typeId)) byType.set(typeId, [])
+        byType.get(typeId)!.push(n)
+      }
+      // 每层等比例采样
+      const targetNodeCount = Math.max(50, maxNodes)
+      const sampledNodes: any[] = []
+      const nodeIds = new Set<string>()
+      for (const [, group] of byType) {
+        const ratio = targetNodeCount / nodes.length
+        const take = Math.max(1, Math.floor(group.length * ratio))
+        for (let i = 0; i < take && sampledNodes.length < targetNodeCount; i++) {
+          const n = group[i % group.length]
+          if (!nodeIds.has(n.data.id)) {
+            nodeIds.add(n.data.id)
+            sampledNodes.push(n)
+          }
+        }
+      }
+      // 只保留连接采样节点的边
+      const sampledEdges = edges.filter((e: any) =>
+        nodeIds.has(String(e.data?.source)) && nodeIds.has(String(e.data?.target))
+      )
+      topology = [...sampledNodes, ...sampledEdges]
+      sampled = true
+    }
+
     const elements = topology.length > 0
       ? topology
       : [{ group: 'nodes', data: { id: 'placeholder', label: 'No Data' } }]
     return {
       elements,
+      total: graph.getTopology ? (graph.getTopology() as any[]).length : elements.length,
+      sampled,
       timestamp: Date.now(),
     }
   })

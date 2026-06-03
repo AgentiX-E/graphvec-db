@@ -42,3 +42,4 @@ export {
 export { evaluateLinkPrediction, cosineSimilarity as embedCosineSimilarity, cosineSimilarityMatrix } from './embed-eval'
 export { reduceWithPCA, getPCALoadings, reduceWithTSNE, forceDirectedLayout } from './embed-viz'
 export { GnnInferenceEngine } from './gnn-engine'
+export { LinkPredictor } from './link-prediction'

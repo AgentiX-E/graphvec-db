@@ -27,6 +27,7 @@ import { closeness } from '../algorithms/closeness'
 import { kCore, coreDecomposition } from '../algorithms/k-core'
 import { leidenCommunity } from '../algorithms/leiden'
 import { egoNet } from '../algorithms/ego-net'
+import { LinkPredictor } from '../algorithms/link-prediction'
 import { getEventBus } from './event-bus'
 import { EventStream } from './event-stream'
 import { MultiLeaderReplication } from './multi-leader-replication'
@@ -3343,6 +3344,25 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       target: e.dst, edge: { src: nid, dst: e.dst, typeId: e.typeId },
     }))
     return egoNet(center, getNeighbors, radius)
+  }
+
+  // ── Link Prediction ──
+
+  /**
+   * 创建 LinkPredictor 实例，用于链接预测离线评估
+   *
+   * 支持四种相似度方法 + GNN 推理
+   *
+   * @param seed 可选随机种子（用于可复现的负采样和划分）
+   */
+  createLinkPredictor(seed?: number): LinkPredictor {
+    this._ensureOpen()
+    const allNodes = Array.from(this._nodeIds)
+    const adjacency = new Map<NodeId, Set<NodeId>>()
+    for (const nid of this._nodeIds) {
+      adjacency.set(nid, new Set(this.neighbors(nid).edges.map(e => e.dst)))
+    }
+    return new LinkPredictor(allNodes, adjacency, seed)
   }
 }
 
