@@ -424,15 +424,15 @@ Range
 // ── 节点模式 ─────────────────────────────────────────────
 
 NodePattern
-  = "(" _ name:Identifier _ ")" { return { type: 'NODE', name, label: null, props: null } }
-  / "(" _ name:Identifier _ ":" _ label:Label _ ")" {
-      return { type: 'NODE', name, label, props: null }
+  = "(" _ name:Identifier _ ")" { return { type: 'NODE', name, label: null, labelExpr: null, props: null } }
+  / "(" _ name:Identifier _ expr:LabelExpression _ ")" {
+      return { type: 'NODE', name, label: null, labelExpr: expr, props: null }
     }
   / "(" _ name:Identifier _ props:PropertyMap _ ")" {
-      return { type: 'NODE', name, label: null, props }
+      return { type: 'NODE', name, label: null, labelExpr: null, props }
     }
-  / "(" _ name:Identifier _ ":" _ label:Label _ props:PropertyMap _ ")" {
-      return { type: 'NODE', name, label, props }
+  / "(" _ name:Identifier _ expr:LabelExpression _ props:PropertyMap _ ")" {
+      return { type: 'NODE', name, label: null, labelExpr: expr, props }
     }
 
 // ── 边模式 ─────────────────────────────────────────────
@@ -448,6 +448,9 @@ EdgePattern
   / "-[" _ ":" _ type:Label _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in' } }
   / "-->" { return { type: 'EDGE', name: null, label: null, direction: 'out' } }
   / "-" _ name:Identifier _ "->" { return { type: 'EDGE', name: null, label: null, direction: 'out' } }
+  / "-[" _ name:Identifier _ "]-" { return { type: 'EDGE', name, label: null, direction: 'any' } }
+  / "-[]-" { return { type: 'EDGE', name: null, label: null, direction: 'any' } }
+  / "--" { return { type: 'EDGE', name: null, label: null, direction: 'any' } }
 
 // ── WHERE ──────────────────────────────────────────────────
 
@@ -571,7 +574,7 @@ Column
         alias: alias,
       }
     }
-  / expr:PropertyRef alias:AsClause? {
+  / expr:Additive alias:AsClause? {
       return {
         type: 'COLUMN',
         expression: expr,
@@ -589,13 +592,6 @@ Column
       return {
         type: 'COLUMN',
         expression: expr,
-        alias: alias,
-      }
-    }
-  / name:Identifier alias:AsClause? {
-      return {
-        type: 'COLUMN',
-        expression: { type: 'IDENTIFIER', name },
         alias: alias,
       }
     }
@@ -689,15 +685,35 @@ AndExpression
     }
 
 Comparison
-  = lhs:Primary _ op:ComparisonOp _ rhs:Primary {
+  = "NOT"i _ expr:Comparison { return { type: 'NOT', expr } }
+  / lhs:Additive _ op:ComparisonOp _ rhs:Additive {
       return { type: 'COMPARISON', operator: op, left: lhs, right: rhs }
     }
-  / lhs:Primary _ "IN"i _ rhs:(ListLiteral / Primary) {
+  / lhs:Additive _ "IN"i _ rhs:(ListLiteral / Additive) {
       return { type: 'IN_EXPRESSION', left: lhs, list: rhs }
     }
-  / lhs:Primary _ op:StringPredicateOp _ rhs:(StringLiteral / PropertyRef) {
+  / lhs:Additive _ op:StringPredicateOp _ rhs:(Additive) {
       return { type: 'STRING_PREDICATE', operator: op, left: lhs, right: rhs }
     }
+  / Additive
+
+// ── 加法 / 列表拼接 ────────────────────────────────────────
+
+Additive
+  = head:ListSubscript tail:(_ "+" _ ListSubscript)* {
+      if (tail.length === 0) return head
+      let result = head
+      for (const t of tail) {
+        result = { type: 'ADD', left: result, right: t[3] }
+      }
+      return result
+    }
+
+// ── 列表下标 & 切片 ────────────────────────────────────────
+
+ListSubscript
+  = expr:Primary "[" _ index:OrExpression _ "]" { return { type: 'SUBSCRIPT', expr, index } }
+  / expr:Primary "[" _ start:OrExpression _ ".." _ end:OrExpression _ "]" { return { type: 'SLICE', expr, start, end } }
   / Primary
 
 ComparisonOp
@@ -716,7 +732,6 @@ StringPredicateOp
 
 Primary
   = PatternComprehension
-  / FunctionCall
   / ExistsExpression
   / CaseExpression
   / ParameterRef
@@ -724,6 +739,8 @@ Primary
   / StringLiteral
   / NumberLiteral
   / BooleanLiteral
+  / ListLiteral
+  / FunctionCall
   / Identifier
   / "(" _ expr:OrExpression _ ")" { return expr }
 
@@ -767,6 +784,20 @@ FunctionArgList
 
 Label
   = chars:[_a-zA-Z0-9]+ { return text() }
+
+// ── 标签表达式 ──────────────────────────────────────────
+// 支持: :Person|Animal, :!Person, :Person|!Animal, :Person
+LabelExpression
+  = ":" head:LabelPart rest:("|" part:LabelPart)* {
+      const items = [head].concat(rest.map(r => r[1]))
+      return { type: 'LABEL_EXPR', items }
+    }
+
+LabelPart
+  = excl:"!"? label:LabelName { return { exclude: !!excl, name: label } }
+
+LabelName
+  = [A-Za-z_][A-Za-z0-9_]* { return text() }
 
 Identifier
   = chars:[_a-zA-Z][_a-zA-Z0-9]* { return text() }

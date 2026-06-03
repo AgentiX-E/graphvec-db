@@ -121,6 +121,10 @@ export interface NodePatternAST {
   type: 'NODE'
   name: string
   label: string | null
+  labelExpr: {
+    type: 'LABEL_EXPR'
+    items: Array<{ exclude: boolean; name: string }>
+  } | null
   props: Record<string, unknown> | null
 }
 
@@ -141,12 +145,14 @@ export interface WhereClauseAST {
 }
 
 export type ExpressionAST =
+  | { type: 'NOT'; expr: ExpressionAST }
   | { type: 'OR'; left: ExpressionAST; right: ExpressionAST | ExpressionAST[] }
   | { type: 'AND'; left: ExpressionAST; right: ExpressionAST | ExpressionAST[] }
   | { type: 'COMPARISON'; operator: string; left: PrimaryAST; right: PrimaryAST }
   | PrimaryAST
 
 export type PrimaryAST =
+  | { type: 'NOT' } // placeholder - not matched as Primary
   | { type: 'PROP_REF'; name: string; property: string }
   | { type: 'STRING'; value: string }
   | { type: 'NUMBER'; value: number }
@@ -199,12 +205,27 @@ export interface QueryPlan {
   profile?: boolean
   /** 起始节点标签扫描（如果 MATCH 节点指定了 label） */
   scanLabel: string | null
+  /** 标签表达式（如 Person|Animal, !Person 等） */
+  labelExpr: {
+    type: 'LABEL_EXPR'
+    items: Array<{ exclude: boolean; name: string }>
+  } | null
   /** 遍历步骤 */
   steps: TraverseStep[]
   /** WHERE 过滤器 */
   filters: FilterClause[]
   /** RETURN 列 */
   returnColumns: string[]
+  /** 计算列（字符串拼接、表达式等，运行时求值） */
+  expressionColumns?: Array<{
+    expression: any
+    alias: string
+  }>
+  /** 编译期常数列（纯字面量表达式折叠后的值） */
+  constColumns?: Array<{
+    alias: string
+    value: unknown
+  }>
   /** ORDER BY */
   orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
   /** LIMIT */
@@ -259,6 +280,11 @@ export interface QueryPlan {
   }>
   /** EXISTS 子查询过滤器 */
   existsFilters?: Array<{
+  /** 列表表达式列（LIST / SUBSCRIPT / SLICE / ADD 等需要运行时求值的表达式） */
+  listColumns?: Array<{
+    expression: any
+    alias: string
+  }>
     source: string
     edgeLabel: string | null
     direction: 'out' | 'in' | 'any'
@@ -371,6 +397,8 @@ export interface FilterClause {
   property: string
   operator: 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'IN' | 'STARTS_WITH' | 'ENDS_WITH' | 'CONTAINS'
   value: unknown
+  /** NOT 否定标记 */
+  negated?: boolean
 }
 
 // ── 参数化查询 ──────────────────────────────────────────────
@@ -1676,6 +1704,7 @@ export function planFromAST(
   const plan: QueryPlan = {
     type: 'QUERY',
     scanLabel: null,
+    labelExpr: null,
     steps: [],
     filters: [],
     returnColumns: [],
@@ -1810,6 +1839,7 @@ export function planFromAST(
         const tempPlan: QueryPlan = {
           type: 'QUERY',
           scanLabel: null,
+          labelExpr: null,
           steps: [],
           filters: [],
           returnColumns: [],
@@ -1898,6 +1928,24 @@ export function planFromAST(
               alias,
             })
             regularCols.push(alias)
+          } else if (col.type === 'COLUMN' && (col.expression?.type === 'ADD' || col.expression?.type === 'LIST' || col.expression?.type === 'SUBSCRIPT' || col.expression?.type === 'SLICE')) {
+            // 列表/下标/切片/加法表达式列 — 尝试编译时常量折叠
+            const folded = foldConstantExpression(col.expression)
+            if (folded && typeof folded === 'object' && folded.type) {
+              // 不可折叠，存为运行时求值列
+              const alias = col.alias ?? '_expr_' + regularCols.length
+              if (!plan.expressionColumns) plan.expressionColumns = []
+              plan.expressionColumns.push({ expression: col.expression, alias })
+              regularCols.push(alias)
+            } else if (typeof folded === 'string' || typeof folded === 'number' || typeof folded === 'boolean') {
+              // 编译时可折叠的纯字面量 — 存为预计算值列
+              const alias = col.alias ?? String(folded)
+              if (!plan.constColumns) plan.constColumns = []
+              plan.constColumns.push({ alias, value: folded })
+              regularCols.push(alias)
+            } else {
+              regularCols.push(String(folded))
+            }
           } else {
             regularCols.push(col.alias ?? formatColumn(col.expression))
           }
@@ -1965,7 +2013,11 @@ function _applyPatternToPlan(
   pattern: PatternAST,
   where: WhereClauseAST | null,
 ): void {
-  plan.scanLabel = pattern.node.label
+  // Handle both legacy .label and modern .labelExpr
+  plan.scanLabel = pattern.node.label ?? (pattern.node.labelExpr?.items?.[0]?.name ?? null)
+  plan.labelExpr = pattern.node.labelExpr
+    ? { type: 'LABEL_EXPR', items: pattern.node.labelExpr.items }
+    : null
 
   // 处理遍历步骤
   for (const step of pattern.edges) {
@@ -1974,7 +2026,7 @@ function _applyPatternToPlan(
       direction: step.edge.direction,
       edgeLabel: step.edge.label,
       targetAlias: step.node.name,
-      targetLabel: step.node.label,
+      targetLabel: step.node.label ?? (step.node.labelExpr?.items?.[0]?.name ?? null),
       targetProps: step.node.props,
     }
     // 如果边模式包含 range，添加到 traverseStep
@@ -2061,21 +2113,21 @@ function planFromCreateClause(createClause: CreateClauseAST): {
     if (item.type === 'CREATE_NODE') {
       createNodes.push({
         alias: item.node.name,
-        label: item.node.label,
+        label: item.node.label ?? (item.node.labelExpr?.items?.[0]?.name ?? null),
         props: item.node.props,
       })
     } else if (item.type === 'CREATE_PATH') {
       // 添加起始节点
       createNodes.push({
         alias: item.node.name,
-        label: item.node.label,
+        label: item.node.label ?? (item.node.labelExpr?.items?.[0]?.name ?? null),
         props: item.node.props,
       })
       // 添加边和后续节点
       for (const step of (item.edges || [])) {
         createNodes.push({
           alias: step.node.name,
-          label: step.node.label,
+          label: step.node.label ?? (step.node.labelExpr?.items?.[0]?.name ?? null),
           props: step.node.props,
         })
         createEdges.push({
@@ -2785,17 +2837,36 @@ export function _executeQuery(
   }
   let candidates = [...nodes]
 
-  // Filter by scan label (MATCH (n:Label))
-  // Only filter if the data actually contains _label fields (graph metadata);
-  // if no nodes have _label, assume the data is flat and skip label filtering.
-  if (plan.scanLabel) {
-    var hasLabels = nodes.some(function(n) { return n['_label'] !== undefined })
-    if (hasLabels) {
+  // Filter by scan label / label expression (MATCH (n:Label) / MATCH (n:Person|Animal))
+  var hasLabels = nodes.some(function(n) { return n['_label'] !== undefined })
+  if (hasLabels) {
+    if (plan.labelExpr) {
+      plan.labelExpr.items
+      // Label expression mode: union, exclude, or mixed
+      candidates = candidates.filter(function(n) {
+        var nodeLabel = n['_label']
+        // Fallback: also check direct label property
+        if (!nodeLabel) nodeLabel = n['label']
+        if (!nodeLabel) return false
+        var hasInclude = plan.labelExpr!.items.some(function(i) { return !i.exclude })
+        var match = hasInclude ? false : true
+        for (var i = 0; i < plan.labelExpr!.items.length; i++) {
+          var item = plan.labelExpr!.items[i]
+          if (item.exclude) {
+            // Exclude: if node label matches excluded name, FAIL
+            if (nodeLabel === item.name) { match = false; break }
+          } else {
+            // Include: if node label matches, PASS
+            if (nodeLabel === item.name) { match = true }
+          }
+        }
+        return match
+      })
+    } else if (plan.scanLabel) {
       var label = plan.scanLabel
       candidates = candidates.filter(function(n) {
         var nodeLabel = n['_label']
         if (nodeLabel === label) return true
-        // Also check direct label property
         if (n['label'] === label) return true
         return false
       })
@@ -3269,19 +3340,37 @@ export function _executeQuery(
     }
 
     // No aggregation — project columns from candidates
-    let rows: QueryRow[] = candidates.map(c => {
-      const row: QueryRow = {}
-      for (const col of plan.returnColumns) {
-        const val = _resolveProperty(c, col)
-        if (val !== undefined) {
-          row[col] = val
+    let rows: QueryRow[]
+
+    if (candidates.length === 0 &&
+        !plan.hasMatch &&
+        !plan.unwind &&
+        !plan.forEach &&
+        plan.type !== 'CALL' &&
+        ((plan.expressionColumns && plan.expressionColumns.length > 0) || plan.returnColumns.length > 0)) {
+      // 纯字面量表达式（无 MATCH / 无 UNWIND），创建合成行
+      rows = [{}]
+    } else {
+      rows = candidates.map(c => {
+        const row: QueryRow = {}
+        for (const col of plan.returnColumns) {
+          const val = _resolveProperty(c, col)
+          if (val !== undefined) {
+            row[col] = val
+          }
         }
-      }
-      return row
-    })
+        return row
+      })
+    }
 
     // Apply RETURN filters (if any)
-    if (plan.filters.length > 0 && plan.with === undefined) {
+    // 注意：CANDIDATES 层（_applyWhereFilters）已经应用了 WHERE 过滤器。
+    // 第二次应用只应在 WITH 子句存在时执行（WITH 改变了行结构/聚合），
+    // 或当 filters 包含 expression-based（非 property-based）过滤器时。
+    // 对于简单的 MATCH → RETURN 查询，第二次应用会导致 projected 行中
+    // 缺少 property 而错误过滤，因此跳过。
+    // 这里的 plan.type 为 'QUERY' 表示简单 MATCH → RETURN 模式。
+    if (plan.filters.length > 0 && plan.with !== undefined) {
       rows = _applyWhereFiltersOnRows(rows, plan.filters)
     }
 
@@ -3298,6 +3387,28 @@ export function _executeQuery(
     // Apply Pattern Comprehension columns (runtime evaluation)
     if (plan.comprehensionColumns && plan.comprehensionColumns.length > 0) {
       rows = _applyComprehensionColumns(rows, plan.comprehensionColumns)
+    }
+
+    // Apply expression columns (runtime evaluation of ADD expressions)
+    if (plan.expressionColumns && plan.expressionColumns.length > 0) {
+      rows = rows.map(row => {
+        const result = { ...row }
+        for (const ec of plan.expressionColumns!) {
+          result[ec.alias] = _evaluateAddExpression(ec.expression, row)
+        }
+        return result
+      })
+    }
+
+    // Apply const columns (compile-time folded values)
+    if (plan.constColumns && plan.constColumns.length > 0) {
+      rows = rows.map(row => {
+        const result = { ...row }
+        for (const cc of plan.constColumns!) {
+          result[cc.alias] = cc.value
+        }
+        return result
+      })
     }
 
     // Apply SKIP（在 LIMIT 之前，符合 Cypher 语义）
@@ -3712,6 +3823,18 @@ export function _evalForeachCondition(
   item: unknown,
 ): boolean {
   const trimmed = where.trim()
+
+  // 支持 NOT 否定
+  const notMatch = trimmed.match(/^NOT\s+(.+)$/i)
+  if (notMatch) {
+    let innerExpr = notMatch[1].trim()
+    // 去掉外层括号 NOT (x > 1) → x > 1
+    if (innerExpr.startsWith('(') && innerExpr.endsWith(')')) {
+      innerExpr = innerExpr.slice(1, -1).trim()
+    }
+    // 递归计算内层条件，结果取反
+    return !_evalForeachCondition(innerExpr, varName, item)
+  }
 
   // 匹配 IN 操作: x IN [1,2,3]
   const inMatch = trimmed.match(
@@ -4419,6 +4542,12 @@ function _evalSimpleExpr(node: any, row: QueryRow): unknown {
     return _isTruthy(left) || _isTruthy(_evalSimpleExpr(right, row))
   }
 
+  // NOT negation: negate the inner expression
+  if (node.type === 'NOT') {
+    const inner = _evalSimpleExpr(node.expr, row)
+    return !_isTruthy(inner)
+  }
+
   // Variable reference (just a name)
   if (node.type === 'VARIABLE_REF') {
     return row[node.name] ?? null
@@ -4524,8 +4653,9 @@ function _applyWhereFilters(
   return records.filter(rec => {
     return filters.every(f => {
       const val = _getPropValue(rec, f.property)
-      if (val === undefined) return false
-      return _compareValues(val, f.operator, f.value)
+      if (val === undefined) return f.negated ? true : false
+      const matched = _compareValues(val, f.operator, f.value)
+      return f.negated ? !matched : matched
     })
   })
 }
@@ -4540,8 +4670,9 @@ function _applyWhereFiltersOnRows(
   return rows.filter(row => {
     return filters.every(f => {
       const val = row[f.property] ?? row[f.source]
-      if (val === undefined) return false
-      return _compareValues(val, f.operator, f.value)
+      if (val === undefined) return f.negated ? true : false
+      const matched = _compareValues(val, f.operator, f.value)
+      return f.negated ? !matched : matched
     })
   })
 }
@@ -4575,6 +4706,76 @@ function _applyOrderByOnRows(
     }
     return 0
   })
+}
+
+/**
+ * Evaluate an ADD expression (string concatenation or numeric addition).
+ */
+function _evaluateAddExpression(expr: any, row: Record<string, unknown>): unknown {
+  if (!expr || typeof expr !== 'object') return expr
+  if (expr.type === 'ADD') {
+    const left = _evaluateAddExpression(expr.left, row)
+    const right = _evaluateAddExpression(expr.right, row)
+    // 数组拼接：两边都是数组 → [...a, ...b]
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return [...left, ...right]
+    }
+    if (typeof left === 'string' || typeof right === 'string') {
+      return String(left) + String(right)
+    }
+    if (typeof left === 'number' && typeof right === 'number') {
+      return left + right
+    }
+    if (left === null || right === null) {
+      return null
+    }
+    return (left as number) + (right as number)
+  }
+  if (expr.type === 'LIST') {
+    return (expr.items ?? []).map((item: any) => _evaluateAddExpression(item, row))
+  }
+  if (expr.type === 'SUBSCRIPT') {
+    const arr = _evaluateAddExpression(expr.expr, row)
+    const index = _evaluateAddExpression(expr.index, row)
+    if (Array.isArray(arr) && typeof index === 'number') {
+      return index >= 0 && index < arr.length ? arr[index] : null
+    }
+    return null
+  }
+  if (expr.type === 'SLICE') {
+    const arr = _evaluateAddExpression(expr.expr, row)
+    const start = _evaluateAddExpression(expr.start, row)
+    const end = _evaluateAddExpression(expr.end, row)
+    if (Array.isArray(arr) && typeof start === 'number' && typeof end === 'number') {
+      return arr.slice(start, end)
+    }
+    return []
+  }
+  if (expr.type === 'STRING') return expr.value
+  if (expr.type === 'NUMBER') return expr.value
+  if (expr.type === 'BOOLEAN') return expr.value
+  if (expr.type === 'PROP_REF') {
+    // 先尝试直接获取属性（expr.property 直接作为 key）
+    const direct = _getPropValue(row, expr.property)
+    if (direct !== undefined) return direct
+    // 回退到 expr.name 变量解析
+    if (expr.name && row[expr.name] && typeof row[expr.name] === 'object') {
+      const val = (row[expr.name] as any)[expr.property]
+      if (val !== undefined) return val
+    }
+    // 最终回退：遍历所有 row 值查找包含该 property 的对象
+    for (const key of Object.keys(row)) {
+      const val = row[key]
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        if (expr.property in (val as any)) return (val as any)[expr.property]
+      }
+    }
+    return undefined
+  }
+  if (expr.type === 'IDENTIFIER') {
+    return row[expr.name]
+  }
+  return null
 }
 
 /**
@@ -4628,6 +4829,10 @@ function _compareValues(val: unknown, operator: string, target: unknown): boolea
     case 'GTE': return typeof val === 'number' && typeof target === 'number' && val >= target
     case 'LT': return typeof val === 'number' && typeof target === 'number' && val < target
     case 'LTE': return typeof val === 'number' && typeof target === 'number' && val <= target
+    case 'STARTS_WITH': return typeof val === 'string' && typeof target === 'string' && val.startsWith(target)
+    case 'ENDS_WITH': return typeof val === 'string' && typeof target === 'string' && val.endsWith(target)
+    case 'CONTAINS': return typeof val === 'string' && typeof target === 'string' && val.includes(target)
+    case 'IN': return Array.isArray(target) && target.includes(val)
     default: return true
   }
 }
@@ -4934,6 +5139,12 @@ export const planCache = new QueryPlanCache()
 // ── 帮助函数 ─────────────────────────────────────────────────
 
 function extractFilters(expr: ExpressionAST, steps: TraverseStep[]): FilterClause[] {
+  if (expr.type === 'NOT') {
+    // NOT 否定：提取内层 filter 并标记为否定
+    const inner = extractFilters(expr.expr, steps)
+    return inner.map(f => ({ ...f, negated: true }))
+  }
+
   if (expr.type === 'AND') {
     const left = extractFilters(expr.left, steps)
     const right = extractFilters(
@@ -5008,8 +5219,42 @@ function resolvePrimary(p: PrimaryAST): unknown {
     case 'NUMBER': return p.value
     case 'BOOLEAN': return p.value
     case 'IDENTIFIER': return p.name
+    case 'LIST': return (p.items || []).map((item: any) => resolvePrimary(item))
     default: return null
   }
+}
+
+/**
+ * Fold constant ADD expressions at plan-build time.
+ * e.g. { type: 'ADD', left: { type: 'STRING', value: 'Hello ' }, right: { type: 'STRING', value: 'World' } }
+ * → "Hello World"
+ * If not foldable, returns the original expression.
+ */
+function foldConstantExpression(expr: any): any {
+  if (expr.type === 'ADD') {
+    const left = foldConstantExpression(expr.left)
+    const right = foldConstantExpression(expr.right)
+    if (left && typeof left === 'object' && left.type) return expr // still an AST node
+    if (right && typeof right === 'object' && right.type) return expr
+    if (typeof left === 'string' || typeof right === 'string') {
+      return String(left) + String(right)
+    }
+    if (typeof left === 'number' && typeof right === 'number') {
+      return left + right
+    }
+    if (Array.isArray(left) && Array.isArray(right)) {
+      return [...left, ...right]
+    }
+    return expr // can't fold
+  }
+  if (expr.type === 'LIST' || expr.type === 'SUBSCRIPT' || expr.type === 'SLICE') {
+    // 列表表达式需要运行时求值
+    return expr
+  }
+  if (expr.type === 'STRING') return expr.value
+  if (expr.type === 'NUMBER') return expr.value
+  if (expr.type === 'BOOLEAN') return expr.value
+  return expr
 }
 
 function formatColumn(expr: PrimaryAST): string {
@@ -5020,6 +5265,7 @@ function formatColumn(expr: PrimaryAST): string {
   if (expr.type === 'LIST') return 'list'
   if (expr.type === 'AGGREGATE') return String(expr.func ?? '')
   if (expr.type === 'FUNCTION_CALL') return expr.name
+  if (expr.type === 'ADD') return 'concat'
   return String(expr)
 }
 
@@ -5448,10 +5694,11 @@ export function _generatePlanTree(plan: QueryPlan): PlanNode {
   current.estimatedRows = 100
 
   // ── 标签过滤 ──
-  if (plan.scanLabel) {
+  if (plan.scanLabel || plan.labelExpr) {
+    const label = plan.labelExpr ? plan.labelExpr.items.map(i => `${i.exclude ? '!' : ''}${i.name}`).join('|') : plan.scanLabel!
     const labelFilter: PlanNode = {
       operator: 'LABEL_FILTER',
-      args: { label: plan.scanLabel },
+      args: { label },
       estimatedRows: 30,
     }
     current.children = [labelFilter]
@@ -5971,13 +6218,30 @@ export function _profileQuery(
   }
 
   // 标签过滤阶段
-  if (plan.scanLabel) {
+  const filterLabel = plan.labelExpr
+    ? (l: string) => {
+        const hasInclude = plan.labelExpr!.items.some(i => !i.exclude)
+        let match = hasInclude ? false : true
+        for (const item of plan.labelExpr!.items) {
+          if (item.exclude) {
+            if (l === item.name) { match = false; break }
+          } else {
+            if (l === item.name) { match = true }
+          }
+        }
+        return match
+      }
+    : plan.scanLabel
+      ? (l: string) => l === plan.scanLabel!
+      : null
+
+  if (filterLabel) {
     const start = Date.now()
     let labelRows = 0
     try {
       labelRows = nodes.filter(n => {
-        const l = n['_label']
-        return l === plan.scanLabel || n['label'] === plan.scanLabel
+        const l = (n['_label'] as string) ?? ''
+        return filterLabel(l)
       }).length
     } catch { labelRows = 0 }
     stages.push({

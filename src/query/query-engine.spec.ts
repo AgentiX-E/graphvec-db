@@ -85,8 +85,13 @@ describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
     expect(() => parseQuery('SELECT * FROM users')).toThrow('Query parse error')
   })
 
-  it('无 MATCH 抛出错误', () => {
-    expect(() => parseQuery('RETURN 1')).toThrow('Query parse error')
+  it('RETURN 1 纯字面量表达式（无 MATCH）', () => {
+    const plan = parseQuery('RETURN 1')
+    expect(plan.returnColumns).toContain('1')
+    // 无 MATCH 时，执行结果使用合成行
+    const result = _executeQuery(plan, [])
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBe(1)
   })
 
   it('字符串值正确解析', () => {
@@ -201,24 +206,35 @@ describe('execQuery — 参数化查询（Cypher-lite 注入防护）', () => {
   })
 
   // TC-10.3: 数组参数 — 序列化为数组字面值后传入解析器
-  it('数组参数 — 数字数组（解析器暂不支持数组字面值）', () => {
-    // Cypher-lite 解析器暂不支持 `[25, 30, 35]` 数组字面值语法，
-    // 但 execQuery 能安全序列化（不会注入），解析器会抛出格式错误
-    expect(() => {
-      execQuery(
-        "MATCH (n) WHERE n.age = $1 RETURN n",
-        [[25, 30, 35]]
-      )
-    }).toThrow('Query parse error')
+  it('数组参数 — 数字数组正常解析（新解析器支持数组字面值）', () => {
+    const plan = parseQuery("MATCH (n) WHERE n.age = [25, 30, 35] RETURN n")
+    expect(plan.type).toBe('QUERY')
   })
 
-  it('数组参数 — 字符串数组（解析器暂不支持数组字面值）', () => {
-    expect(() => {
-      execQuery(
-        "MATCH (n) WHERE n.status = $1 RETURN n",
-        [['active', 'pending']]
-      )
-    }).toThrow('Query parse error')
+  it('数组参数 — 字符串数组正常解析', () => {
+    const plan = parseQuery("MATCH (n) WHERE n.status IN ['active', 'pending'] RETURN n")
+    expect(plan.type).toBe('QUERY')
+  })
+
+  it('数组参数 — 数字数组（现在支持解析）', () => {
+    const plan = execQuery(
+      "MATCH (n) WHERE n.age = $1 RETURN n",
+      [[25, 30, 35]]
+    )
+    expect(plan.filters.length).toBe(1)
+    expect(plan.filters[0].value).toEqual([25, 30, 35])
+  })
+
+  it('数组参数 — 字符串数组（现在支持解析）', () => {
+    const plan = execQuery(
+      "MATCH (n) WHERE n.status = $1 RETURN n",
+      [['active', 'pending']]
+    )
+    expect(plan.filters.length).toBe(1)
+    const filter = plan.filters[0]
+    expect(Array.isArray(filter.value)).toBe(true)
+    expect(filter.value).toContain('active')
+    expect(filter.value).toContain('pending')
   })
 
   // TC-10.4: 参数数量不匹配
