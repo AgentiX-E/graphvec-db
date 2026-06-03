@@ -1089,11 +1089,16 @@ export function limitPushdown(plan: PlanNode): PlanNode {
     // 如果有 skip，下推 limit + skip 的合值，使 SCAN 返回足够数据供 skip 使用
     const pushLimit = (skipValue ?? 0) + limitValue
 
-    // Walk down through SORT, FILTER to find SCAN/NEIGHBORS
+    // Walk down through FILTER to find SCAN/NEIGHBORS
+    // 不越过 SORT 节点，因为 ORDER BY + LIMIT 必须在排序后取前 N 条
     const walkDown = (node: PlanNode): boolean => {
       if (node.type === PlanNodeType.SCAN || node.type === PlanNodeType.NEIGHBORS) {
         node.details['pushedLimit'] = pushLimit
         return true
+      }
+      // 如果遇到 SORT 节点，停止下推（排序后 LIMIT 语义不同）
+      if (node.type === PlanNodeType.SORT) {
+        return false
       }
       // Recurse through single-child intermediate nodes
       if (node.children.length === 1) {

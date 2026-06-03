@@ -2268,6 +2268,11 @@ export function _executeQuery(
     candidates = _applyWhereFilters(candidates, plan.filters)
   }
 
+  // Step 1.5: Handle UNWIND — 展开列表为多行
+  if (plan.unwind) {
+    candidates = _executeUnwind(candidates, plan.unwind)
+  }
+
   // Step 2: Handle WITH clause (mid-query projection + aggregation)
   if (plan.with) {
     const hasWithAgg = plan.with.aggregate !== undefined
@@ -2694,6 +2699,47 @@ function _isTruthy(val: unknown): boolean {
   if (typeof val === 'number') return val !== 0
   if (typeof val === 'string') return val.length > 0
   return true
+}
+
+/**
+ * 执行 UNWIND 展开。
+ *
+ * 对当前候选行集，对每行展开 plan.unwind 的列表，
+ * 将列表中的每个元素作为新行加入结果。
+ *
+ * 支持两种输入模式：
+ * 1. unwind.list 是字面量数组 → 直接展开
+ * 2. unwind.var 是变量名 → 从候选行上下文中读取该变量
+ *
+ * 没有 MATCH 时（纯 UNWIND），使用初始空行展开。
+ */
+function _executeUnwind(
+  candidates: Array<Record<string, unknown>>,
+  unwind: NonNullable<QueryPlan['unwind']>,
+): Array<Record<string, unknown>> {
+  // 如果没有候选行（纯 UNWIND），创建一个空上下文作为基准
+  const baseRows = candidates.length === 0 ? [{}] : candidates
+  const result: Array<Record<string, unknown>> = []
+
+  for (const row of baseRows) {
+    let list: any[] | null = null
+
+    if (unwind.var && unwind.var in row) {
+      list = row[unwind.var] as any[]
+    }
+    if (list === null && Array.isArray(unwind.list)) {
+      list = unwind.list
+    }
+    if (list === null) {
+      continue
+    }
+
+    for (const item of list) {
+      result.push({ ...row, [unwind.name]: item })
+    }
+  }
+
+  return result
 }
 
 /**
