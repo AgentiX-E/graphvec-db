@@ -2457,6 +2457,11 @@ export function _executeQuery(
         resultRows = _applyOrderByOnRows(resultRows, plan.orderBy)
       }
 
+      // Apply CASE columns on aggregated result
+      if (plan.caseColumns && plan.caseColumns.length > 0) {
+        resultRows = _applyCaseColumns(resultRows, plan.caseColumns)
+      }
+
       // Apply LIMIT（若未显式指定则使用默认限制）
       resultRows = resultRows.slice(0, plan.limit ?? DEFAULT_LIMIT)
 
@@ -2485,6 +2490,11 @@ export function _executeQuery(
       rows = _applyOrderByOnRows(rows, plan.orderBy)
     }
 
+    // Apply CASE columns (runtime evaluation of CASE WHEN expressions)
+    if (plan.caseColumns && plan.caseColumns.length > 0) {
+      rows = _applyCaseColumns(rows, plan.caseColumns)
+    }
+
     // Apply LIMIT（若未显式指定则使用默认限制）
     rows = rows.slice(0, plan.limit ?? DEFAULT_LIMIT)
 
@@ -2494,6 +2504,146 @@ export function _executeQuery(
   // No RETURN — return candidates as rows
   const noReturnRows = candidates.map(c => ({ ...c }))
   return noReturnRows.slice(0, plan.limit ?? DEFAULT_LIMIT)
+}
+
+// ── CASE 表达式运行时求值 ─────────────────────────────────
+
+/**
+ * Apply CASE WHEN expression evaluation on result rows.
+ * For each caseColumn, compute the CASE expression for each row
+ * and add the result as a new column.
+ */
+export function _applyCaseColumns(
+  rows: QueryRow[],
+  caseColumns: NonNullable<QueryPlan['caseColumns']>,
+): QueryRow[] {
+  return rows.map(row => {
+    const newRow = { ...row }
+    for (const cc of caseColumns) {
+      newRow[cc.alias] = _evalCaseExprOnRow(cc.expression, row)
+    }
+    return newRow
+  })
+}
+
+/**
+ * Evaluate a CASE AST node against a single row.
+ *
+ * Supports:
+ * - Simple CASE: CASE expr WHEN val THEN result ... ELSE default END
+ *   → evaluates: if expr === val then result
+ * - Searched CASE: CASE WHEN condition THEN result ... ELSE default END
+ *   → evaluates: if condition is truthy then result
+ *
+ * Condition expression can be a comparison chain or a bare value.
+ * Supports operators: =, !=, <>, <, >, <=, >=
+ */
+export function _evalCaseExprOnRow(expr: any, row: QueryRow): unknown {
+  if (!expr || expr.type !== 'CASE') return null
+
+  const whens: Array<{ condition: any; result: any }> = expr.whens || []
+  const elseExpr = expr.elseExpr
+
+  if (expr.caseExpr) {
+    // Simple CASE: CASE expr WHEN val THEN result
+    const caseVal = _evalSimpleExpr(expr.caseExpr, row)
+    for (const w of whens) {
+      const whenVal = _evalSimpleExpr(w.condition, row)
+      if (caseVal === whenVal) {
+        return _evalSimpleExpr(w.result, row)
+      }
+    }
+  } else {
+    // Searched CASE: CASE WHEN condition THEN result
+    for (const w of whens) {
+      const condVal = _evalSimpleExpr(w.condition, row)
+      if (_isTruthy(condVal)) {
+        return _evalSimpleExpr(w.result, row)
+      }
+    }
+  }
+
+  // No WHEN matched → ELSE or null
+  return elseExpr != null ? _evalSimpleExpr(elseExpr, row) : null
+}
+
+/**
+ * Evaluate a single expression node against a row.
+ * Handles: literals, property refs (n.prop), numbers, strings, booleans,
+ * binary comparisons (a = b, a > b, etc.)
+ */
+function _evalSimpleExpr(node: any, row: QueryRow): unknown {
+  if (node == null) return null
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return node
+  if (typeof node === 'boolean') return node
+
+  // Literal value wrappers
+  if (node.type === 'LITERAL') return node.value
+  if (node.type === 'STRING') return node.value
+  if (node.type === 'NUMBER') return node.value
+  if (node.type === 'BOOL') return node.value
+  if (node.type === 'NULL') return null
+
+  // Property reference: e.g. n.age or just age
+  if (node.type === 'PROPERTY_REF') {
+    const key = node.name ?? node.value
+    return row[key] ?? null
+  }
+
+  // Array literal: [val1, val2, ...]
+  if (node.type === 'ARRAY' && Array.isArray(node.elements)) {
+    return node.elements.map((el: any) => _evalSimpleExpr(el, row))
+  }
+
+  // Binary operation: a OP b (used in comparison chains)
+  if (node.type === 'BINARY' || (node.left !== undefined && node.right !== undefined && node.operator)) {
+    const left = _evalSimpleExpr(node.left ?? node.leftExpr, row)
+    const right = _evalSimpleExpr(node.right ?? node.rightExpr, row)
+    const op = node.operator ?? node.op
+    return _compareSimpleValues(left, op, right)
+  }
+
+  // Variable reference (just a name)
+  if (node.type === 'VARIABLE_REF') {
+    return row[node.name] ?? null
+  }
+
+  // Fallback: try direct named access
+  if (typeof node.name === 'string') {
+    return row[node.name] ?? null
+  }
+
+  return null
+}
+
+/**
+ * Compare two values with an operator (used in CASE WHEN conditions).
+ */
+function _compareSimpleValues(left: unknown, op: string, right: unknown): boolean {
+  const ops: Record<string, (a: unknown, b: unknown) => boolean> = {
+    '=':  (a, b) => a === b,
+    '==': (a, b) => a === b,
+    '!=': (a, b) => a !== b,
+    '<>': (a, b) => a !== b,
+    '<':  (a, b) => Number(a) < Number(b),
+    '>':  (a, b) => Number(a) > Number(b),
+    '<=': (a, b) => Number(a) <= Number(b),
+    '>=': (a, b) => Number(a) >= Number(b),
+  }
+  const fn = ops[op]
+  return fn ? fn(left, right) : false
+}
+
+/**
+ * Check if a value is truthy (for searched CASE conditions).
+ */
+function _isTruthy(val: unknown): boolean {
+  if (val === null || val === undefined) return false
+  if (typeof val === 'boolean') return val
+  if (typeof val === 'number') return val !== 0
+  if (typeof val === 'string') return val.length > 0
+  return true
 }
 
 /**

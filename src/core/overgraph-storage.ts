@@ -458,21 +458,47 @@ export class OverGraphStorage implements StorageProvider {
     return true
   }
 
+  // ── 批量写入配置 ──────────────────────────────────
+
+  /**
+   * 批量分块大小。分批提交以防止大 transaction OOM。
+   * - 节点：默认每批 2000
+   * - 边：默认每批 5000
+   * 可通过环境变量 OVERGRAPH_BATCH_NODE_CHUNK 和 OVERGRAPH_BATCH_EDGE_CHUNK 覆盖
+   */
+  private _chunkSizeNodes = parseInt(process.env.OVERGRAPH_BATCH_NODE_CHUNK ?? '2000', 10)
+  private _chunkSizeEdges = parseInt(process.env.OVERGRAPH_BATCH_EDGE_CHUNK ?? '5000', 10)
+
+  // ── 节点操作 ──────────────────────────────
+
   batchUpsertNodes(inputs: Array<{
     typeId: number; name: string; key: string
     props?: Record<string, unknown>
     denseVector?: Float32Array
     temporalValidity?: { start?: number; end?: number }
   }>): NodeId[] {
-    const mapped = inputs.map(i => ({
-      labels: [String(i.typeId)],
-      key: i.name,
-      props: this._compress && this._compressionStrategy === 'msgpack'
-        ? _serializeProps(i.props)
-        : i.props,
-    }))
-    const result = this._db!.batchUpsertNodes(mapped)
-    return Array.from(result)
+    const results: NodeId[] = []
+    const chunkSize = Math.max(1, this._chunkSizeNodes)
+    const _db = this._db!
+
+    const processChunk = (chunk: typeof inputs) => {
+      const mapped = chunk.map(i => ({
+        labels: [String(i.typeId)],
+        key: i.name,
+        props: this._compress && this._compressionStrategy === 'msgpack'
+          ? _serializeProps(i.props)
+          : i.props,
+      }))
+      const batchResult = _db.batchUpsertNodes(mapped)
+      results.push(...Array.from(batchResult))
+    }
+
+    // 分块处理
+    for (let i = 0; i < inputs.length; i += chunkSize) {
+      processChunk(inputs.slice(i, i + chunkSize))
+    }
+
+    return results
   }
 
   degrees(id: NodeId): { inDegree: number; outDegree: number } {
