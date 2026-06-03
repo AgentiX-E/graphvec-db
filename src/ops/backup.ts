@@ -182,7 +182,7 @@ export class Backup {
    * 从备份恢复
    * @param backupPath 备份路径
    * @param restorePath 恢复目标路径（默认为原数据目录）
-   * @param onProgress 进度回调（phase = 'preparation'|'backup_current'|'extraction'|'finalization'）
+   * @param onProgress 进度回调（phase = 'analyze'|'close_engine'|'backup_current'|'restore_data'|'reopen_engine'|'done'）
    * 
    * 在恢复过程中记录详细日志并报告进度。
    */
@@ -194,7 +194,7 @@ export class Backup {
     const target = restorePath || process.env.DATA_DIR || './data'
 
     this.logger.info('Restore started', { source: backupPath, target })
-    onProgress?.('preparation', 5)
+    onProgress?.('analyze', 0)
 
     // 先验证备份源存在，避免在验证之前就修改目标
     if (!fs.existsSync(backupPath)) {
@@ -203,15 +203,16 @@ export class Backup {
       throw new Error(errMsg)
     }
 
-    onProgress?.('preparation', 10)
+    onProgress?.('analyze', 10)
     this.logger.info('Restore - backup source verified', { backupPath })
 
     // 关闭当前引擎
     this.logger.info('Restore - closing engine')
+    onProgress?.('close_engine', 15)
     this.engine.close()
     this.logger.info('Restore - engine closed')
 
-    onProgress?.('backup_current', 20)
+    onProgress?.('backup_current', 25)
     this.logger.info('Restore - preparing rollback safety copy')
 
     try {
@@ -224,7 +225,7 @@ export class Backup {
         fs.renameSync(target, currentBackup)
       }
 
-      onProgress?.('extraction', 35)
+      onProgress?.('restore_data', 35)
 
       // 自动检测压缩格式（GZip magic bytes: 0x1f 0x8b）
       const isGzip = this._isGzipped(backupPath)
@@ -233,25 +234,25 @@ export class Backup {
       })
 
       if (isGzip) {
-        onProgress?.('extraction', 40)
+        onProgress?.('restore_data', 40)
         this.logger.info('Restore - detected gzip via magic bytes, extracting tar.gz')
         await this._extractTarGz(backupPath, target)
-        onProgress?.('extraction', 80)
+        onProgress?.('restore_data', 80)
       } else if (backupPath.endsWith('.tar.gz') || backupPath.endsWith('.tgz')) {
-        onProgress?.('extraction', 40)
+        onProgress?.('restore_data', 40)
         this.logger.info('Restore - extracting tar.gz by extension')
         await this._extractTarGz(backupPath, target)
-        onProgress?.('extraction', 80)
+        onProgress?.('restore_data', 80)
       } else {
         // 复制备份数据（裸目录）
-        onProgress?.('extraction', 50)
+        onProgress?.('restore_data', 50)
         this.logger.info('Restore - copying raw directory')
         fs.mkdirSync(target, { recursive: true })
         this._copyDirSync(backupPath, target)
-        onProgress?.('extraction', 80)
+        onProgress?.('restore_data', 80)
       }
 
-      onProgress?.('finalization', 90)
+      onProgress?.('reopen_engine', 90)
       this.logger.info('Restore - extraction complete, verifying consistency marker')
     } catch (err) {
       // 恢复失败时尝试回滚
@@ -261,10 +262,35 @@ export class Backup {
 
     // 重新打开引擎
     this.logger.info('Restore - re-opening engine')
-    this.engine.open()
+    try {
+      this.engine.open()
+    } catch (err: any) {
+      // overgraph 0.11.0 需要 label-token schema manifest
+      // 如果备份目录是旧版格式，写入最小兼容 manifest 后重试
+      const manifest = path.join(target, 'manifest.current')
+      if (!fs.existsSync(manifest) || (err as Error)?.message?.includes('manifest')) {
+        this.logger.warn('Restore - writing compatibility manifest for overgraph 0.11.0')
+        const compatManifest = {
+          version: 1,
+          label_token_schema_version: 1,
+          node_label_tokens: {},
+          edge_label_tokens: {},
+          next_node_label_id: 1,
+          next_edge_label_id: 1,
+          segments: [],
+          next_node_id: 0,
+          next_edge_id: 0,
+        }
+        fs.writeFileSync(manifest, JSON.stringify(compatManifest))
+        this.engine.close()
+        this.engine.open()
+      } else {
+        throw err
+      }
+    }
     this.logger.info('Restore - engine opened successfully')
 
-    onProgress?.('finalization', 100)
+    onProgress?.('done', 100)
     this.logger.info('Restore completed', { target })
   }
 

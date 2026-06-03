@@ -290,11 +290,11 @@ describe('Backup - Consistency', () => {
 
     // Verify progress was reported
     expect(progressCalls.length).toBeGreaterThanOrEqual(4)
-    // Should cover key phases
+    // Should cover key phases (updated for overgraph 0.11.0)
     const phases = progressCalls.map(p => p.phase)
-    expect(new Set(phases)).toContain('preparation')
-    expect(new Set(phases)).toContain('extraction')
-    expect(new Set(phases)).toContain('finalization')
+    expect(new Set(phases)).toContain('analyze')
+    expect(new Set(phases)).toContain('restore_data')
+    expect(new Set(phases)).toContain('reopen_engine')
     // Percent should be monotonic
     expect(progressCalls[0].percent).toBeLessThanOrEqual(progressCalls[progressCalls.length - 1].percent)
 
