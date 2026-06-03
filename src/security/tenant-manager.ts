@@ -140,9 +140,9 @@ export class TenantManager {
     }
     if (request.active !== undefined) {
       tenant.active = request.active
-      // If deactivating, remove subgraph ACLs
+      // If deactivating, remove ALL subgraph ACLs for this tenant
       if (!request.active) {
-        RBAC.removeAcl('*', 'subgraph', name)
+        _removeAllTenantAcls(name)
       }
     }
     if (request.metadata !== undefined) {
@@ -163,8 +163,8 @@ export class TenantManager {
       return false
     }
     this.tenants.delete(name)
-    // Remove all subgraph ACLs for this tenant
-    RBAC.removeAcl('*', 'subgraph', name)
+    // Remove ALL subgraph ACLs for this tenant (regardless of role)
+    _removeAllTenantAcls(name)
     return true
   }
 
@@ -228,11 +228,27 @@ export class TenantManager {
    * Reset all tenants (for testing)
    */
   reset(): void {
-    // Remove all subgraph ACLs
-    for (const name of this.tenants.keys()) {
-      RBAC.removeAcl('*', 'subgraph', name)
+    // Remove ALL subgraph ACLs (iterate to handle any role)
+    const acls = RBAC.getAcls()
+    for (const entry of acls) {
+      if (entry.resource === 'subgraph') {
+        RBAC.removeAcl(entry.role, 'subgraph', entry.resourceId)
+      }
     }
     this.tenants.clear()
+  }
+}
+
+/**
+ * 移除指定租户的所有 ACL（遍历所有角色）。
+ * 由于 ACL 创建角色可能是任意值，不能只按 '*' 删除。
+ */
+function _removeAllTenantAcls(tenantName: string): void {
+  const acls = RBAC.getAcls()
+  for (const entry of acls) {
+    if (entry.resource === 'subgraph' && entry.resourceId === tenantName) {
+      RBAC.removeAcl(entry.role, 'subgraph', tenantName)
+    }
   }
 }
 
