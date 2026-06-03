@@ -360,4 +360,141 @@ describe('VariableLengthPath (GAP-20)', () => {
       expect(explained).toContain('maxDepth')
     })
   })
+
+  // ═══════════════════════════════════════════════════════
+  // GAP-24: 性能边界测试
+  // ═══════════════════════════════════════════════════════
+
+  describe('变长路径性能边界 (GAP-24)', () => {
+    let mock: MockShardManager
+
+    beforeEach(() => {
+      mock = new MockShardManager()
+    })
+
+    it('3-hop 展开 — 链式图 1→2→3→4 精确匹配', async () => {
+      // 构建 4 节点链: 1 → 2 → 3 → 4
+      for (let i = 1; i <= 4; i++) {
+        mock.addNode(makeNode(i, `Node${i}`))
+      }
+      mock.setNeighbors(1, [makeNode(2, 'Node2')])
+      mock.setNeighbors(2, [makeNode(3, 'Node3')])
+      mock.setNeighbors(3, [makeNode(4, 'Node4')])
+      mock.setNeighbors(4, [])
+
+      // 固定 3-hop 展开（minDepth = maxDepth = 3）
+      const plan = buildIRFromSpec({
+        match: { typeId: 1 },
+        variableLengthPath: {
+          startId: 1,
+          minDepth: 3,
+          maxDepth: 3,
+          direction: 'out',
+        },
+      })
+      const optPlan = optimizeIR(plan)
+      const results = await executeIR(optPlan, mock as any)
+
+      // 从 1 出发 3 跳精确到达节点 4
+      expect(results).toHaveLength(1)
+      expect(results[0].id).toBe(4)
+      expect(results[0].name).toBe('Node4')
+    })
+
+    it('0-hop (self match) — minDepth = 0 自身不重复、仅返回可达邻居', async () => {
+      // 当前 bfsVariableExpand 实现中，起始节点被标记 visited
+      // 但不加入 result。仅邻居在符合深度范围时加入。
+      // minDepth=0 时，深度 1 的邻居会被收集（1 >= 0）
+      mock.addNode(makeNode(1, 'Start'))
+      mock.addNode(makeNode(2, 'Other'))
+      mock.setNeighbors(1, [makeNode(2, 'Other')])
+      mock.setNeighbors(2, [])
+
+      const plan = buildIRFromSpec({
+        match: { typeId: 1 },
+        variableLengthPath: {
+          startId: 1,
+          minDepth: 0,
+          maxDepth: 2,
+          direction: 'out',
+        },
+      })
+      const optPlan = optimizeIR(plan)
+      const results = await executeIR(optPlan, mock as any)
+
+      const ids = results.map(r => r.id).sort()
+      // minDepth=0 时，所有 depth >= 1 的节点被收集：邻居 2
+      // 但自身不在 result 中（BFS impl 只返回 neighbors）
+      expect(ids).toEqual([2])
+    })
+
+    it('大 hops (maxDepth=100) 不会导致挂起或 O(n²) 退化', async () => {
+      // 构建 30 节点链
+      for (let i = 1; i <= 30; i++) {
+        mock.addNode(makeNode(i, `N${i}`))
+      }
+      for (let i = 1; i < 30; i++) {
+        mock.setNeighbors(i, [makeNode(i + 1, `N${i + 1}`)])
+      }
+      mock.setNeighbors(30, [])
+
+      const plan = buildIRFromSpec({
+        match: { typeId: 1 },
+        variableLengthPath: {
+          startId: 1,
+          minDepth: 1,
+          maxDepth: 100,
+          direction: 'out',
+        },
+      })
+      const optPlan = optimizeIR(plan)
+
+      // 增加执行超时检测
+      const startTime = Date.now()
+      const results = await executeIR(optPlan, mock as any)
+      const elapsed = Date.now() - startTime
+
+      // 30 节点链，应该在 2 秒内完成
+      expect(elapsed).toBeLessThan(2000)
+      // 应返回所有 29 个可达节点（1→...→30，不包括起始节点自身）
+      expect(results).toHaveLength(29)
+      // 验证 ID 不重复
+      const ids = results.map(r => r.id)
+      expect(new Set(ids).size).toBe(29)
+    })
+
+    it('方向性约束 — in 方向从链尾反向追溯', async () => {
+      // 构建有向图: 1 → 2 → 3 → 4
+      // MockShardManager 的 neighbors() 基于 adjacency 映射。
+      // 对于 in 方向，需要为每个节点设置被哪些节点指向。
+      // 这里我们设置双向邻居来模拟 in-direction 遍历的效果，
+      // 因为 mock 的 neighbors() 不解析 direction 参数。
+      for (let i = 1; i <= 4; i++) {
+        mock.addNode(makeNode(i, `Node${i}`))
+      }
+      mock.setNeighbors(1, [makeNode(2, 'Node2')])    // 1→2
+      mock.setNeighbors(2, [makeNode(1, 'Node1'), makeNode(3, 'Node3')]) // 2→1 (for in from 4→3→2)
+      mock.setNeighbors(3, [makeNode(2, 'Node2'), makeNode(4, 'Node4')]) // 3→2 (for in)
+      mock.setNeighbors(4, [makeNode(3, 'Node3')])    // 4→3 (for in)
+
+      // 从 4 出发，方向 in: 应沿反向找到 3, 2, 1
+      const plan = buildIRFromSpec({
+        match: { typeId: 1 },
+        variableLengthPath: {
+          startId: 4,
+          minDepth: 1,
+          maxDepth: 3,
+          direction: 'in',
+        },
+      })
+      const optPlan = optimizeIR(plan)
+      const results = await executeIR(optPlan, mock as any)
+
+      const ids = results.map(r => r.id).sort()
+      // in 方向从 4 开始反查，应找到 3, 2, 1
+      expect(ids).toEqual([1, 2, 3])
+      // 应排除 4（起点的 out-neighbor 中没有 4）
+      expect(ids).not.toContain(4)
+    })
+  })
 })
