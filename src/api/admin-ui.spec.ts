@@ -245,4 +245,47 @@ describe('Admin UI', () => {
       }
     })
   })
+
+  // ── Admin Dashboard tests ────────────────────────────
+
+  describe('Admin Dashboard', () => {
+    it('GET /admin returns 200 with HTML content', async () => {
+      const res = await fetch(`${baseUrl}/admin`)
+      expect(res.ok).toBe(true)
+      expect(res.status).toBe(200)
+      const text = await res.text()
+      expect(text).toContain('AgentiX GraphVec')
+      expect(text).toContain('Admin')
+    })
+
+    it('GET /admin contains inline CSS and JS', async () => {
+      const res = await fetch(`${baseUrl}/admin`)
+      const text = await res.text()
+      // Verify inline <style> exists
+      expect(text).toContain('<style>')
+      expect(text).toContain('</style>')
+      // Verify inline <script> exists
+      expect(text).toContain('<script>')
+      expect(text).toContain('</script>')
+      // Verify dashboard cards
+      expect(text).toContain('Nodes')
+      expect(text).toContain('Edges')
+      expect(text).toContain('Shard Information')
+    })
+
+    it('GET /admin/stats returns JSON statistics', async () => {
+      const res = await fetch(`${baseUrl}/admin/stats`)
+      expect(res.ok).toBe(true)
+      expect(res.status).toBe(200)
+      const data = await res.json()
+      expect(data).toHaveProperty('nodeCount')
+      expect(data.nodeCount).toBe(42)
+      expect(data).toHaveProperty('edgeCount')
+      expect(data.edgeCount).toBe(137)
+      expect(data).toHaveProperty('nodeTypeCount')
+      expect(data).toHaveProperty('shardCount')
+      expect(data).toHaveProperty('uptime')
+      expect(data).toHaveProperty('timestamp')
+    })
+  })
 })

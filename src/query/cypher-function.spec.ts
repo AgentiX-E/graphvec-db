@@ -70,11 +70,15 @@ describe('C-04: BUILTIN_FUNCTIONS', () => {
   })
 
   // TC7: BUILTIN_FUNCTIONS map verification
-  it('BUILTIN_FUNCTIONS has all 7 functions', () => {
+  it('BUILTIN_FUNCTIONS has all functions', () => {
     const keys = Object.keys(BUILTIN_FUNCTIONS)
-    expect(keys.sort()).toEqual([
-      'abs', 'coalesce', 'round', 'substring', 'timestamp', 'toLower', 'toUpper',
-    ])
+    const expected = [
+      'abs', 'coalesce', 'datetime', 'lTrim', 'labels',
+      'replace', 'reverse', 'round', 'rTrim', 'split',
+      'substring', 'timestamp', 'toFloat', 'toInteger',
+      'toLower', 'toString', 'toUpper', 'trim', 'type',
+    ]
+    expect(keys.sort()).toEqual(expected.sort())
   })
 
   // TC8: 未知函数抛出错误

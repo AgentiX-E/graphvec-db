@@ -465,7 +465,21 @@ ReturnClause
   / _ "RETURN"i _ cols:ColumnList _ { return { type: 'RETURN', columns: cols } }
 
 AggregateFunc
-  = func:(CountFunc / SumFunc / AvgFunc / MaxFunc / MinFunc) { return func }
+  = func:(CountFunc / SumFunc / AvgFunc / MaxFunc / MinFunc / CollectFunc) { return func }
+
+CollectFunc
+  = "collect"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
+      return { func: 'collect', field: [name, prop], alias }
+    }
+  / "collect"i _ "(" _ "DISTINCT"i _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
+      return { func: 'collect', field: [name, prop], alias, distinct: true }
+    }
+  / "collect"i _ "(" _ name:Identifier _ ")" alias:AsClause? {
+      return { func: 'collect', field: [name], alias }
+    }
+  / "collect"i _ "(" _ "DISTINCT"i _ name:Identifier _ ")" alias:AsClause? {
+      return { func: 'collect', field: [name], alias, distinct: true }
+    }
 
 CountFunc
   = "count"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
@@ -872,10 +886,16 @@ PropertyEntry
 // ── CALL 子查询 ──────────────────────────────────────────
 
 CallStatement
-  = "CALL"i _ "{" _ subq:MatchStatement _ "}" _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
+  = "CALL"i _ "{" _ subq:MatchStatement _ "}" _ tx:InTransactionsClause? _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
       const stmt = {
         type: 'CALL',
         query: subq,
+      }
+      if (tx) {
+        stmt.inTransactions = true
+        if (tx.batchSize !== undefined) {
+          stmt.inTransactionsBatchSize = tx.batchSize
+        }
       }
       if (rc) stmt.return = rc
       if (ob) stmt.orderBy = ob
@@ -884,6 +904,14 @@ CallStatement
         stmt.skip = ls.skip
       }
       return stmt
+    }
+
+InTransactionsClause
+  = "IN"i _ "TRANSACTIONS"i _ "OF"i _ size:Integer _ "ROWS"i {
+      return { batchSize: size }
+    }
+  / "IN"i _ "TRANSACTIONS"i {
+      return { batchSize: undefined }
     }
 
 // ── CALL 过程调用 ────────────────────────────────────────

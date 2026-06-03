@@ -939,6 +939,129 @@ export async function startAdminUI(
     }
   })
 
+  // ── Admin Dashboard routes ───────────────────────────
+
+  // GET /admin/stats — JSON statistics (same data as /api/admin/stats)
+  app.get('/admin/stats', async (req: FastifyRequest, reply: FastifyReply) => {
+    return {
+      nodeCount: graph.getNodeCount ? graph.getNodeCount() : 0,
+      edgeCount: graph.getEdgeCount ? graph.getEdgeCount() : 0,
+      nodeTypeCount: 0, // simplified — can be extended
+      shardCount: 1,     // simplified
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    }
+  })
+
+  // GET /admin — HTML dashboard page with inline CSS/JS
+  app.get('/admin', async (req: FastifyRequest, reply: FastifyReply) => {
+    const nodeCount = graph.getNodeCount ? graph.getNodeCount() : 0
+    const edgeCount = graph.getEdgeCount ? graph.getEdgeCount() : 0
+
+    const adminHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentiX Admin Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; }
+    h1 { font-size: 24px; margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
+    h1 .badge { background: #3b82f6; color: #fff; font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 20px; }
+    .card h3 { font-size: 14px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+    .card .value { font-size: 28px; font-weight: 700; }
+    .card .value.blue { color: #3b82f6; }
+    .card .value.green { color: #22c55e; }
+    .card .value.yellow { color: #eab308; }
+    .section { margin-bottom: 24px; }
+    .section h2 { font-size: 18px; margin-bottom: 12px; color: #94a3b8; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #334155; font-size: 14px; }
+    th { color: #94a3b8; font-weight: 500; text-transform: uppercase; letter-spacing: .5px; }
+    code { background: #0f172a; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+    .loading { opacity: .5; }
+    .nav { display: flex; gap: 8px; margin-bottom: 24px; }
+    .nav a { color: #94a3b8; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-size: 14px; }
+    .nav a.active { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
+    .nav a:hover { color: #e2e8f0; }
+  </style>
+</head>
+<body>
+  <h1>AgentiX GraphVec <span class="badge">Admin</span></h1>
+
+  <div class="nav">
+    <a href="/admin" class="active">Dashboard</a>
+    <a href="/">Topology</a>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Nodes</h3>
+      <div class="value blue" id="stat-nodes">${nodeCount}</div>
+    </div>
+    <div class="card">
+      <h3>Edges</h3>
+      <div class="value blue" id="stat-edges">${edgeCount}</div>
+    </div>
+    <div class="card">
+      <h3>Node Types</h3>
+      <div class="value yellow" id="stat-types">—</div>
+    </div>
+    <div class="card">
+      <h3>Shards</h3>
+      <div class="value green" id="stat-shards">—</div>
+    </div>
+    <div class="card">
+      <h3>Uptime</h3>
+      <div class="value" id="stat-uptime">${Math.round(process.uptime())}s</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Recent Queries</h2>
+    <table>
+      <thead><tr><th>#</th><th>Query</th><th>Time</th></tr></thead>
+      <tbody id="query-history">
+        <tr><td colspan="3" style="color:#64748b;text-align:center;">No query history available</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>Shard Information</h2>
+    <table>
+      <thead><tr><th>Shard ID</th><th>Status</th><th>Nodes</th><th>Edges</th></tr></thead>
+      <tbody>
+        <tr><td><code>0</code></td><td style="color:#22c55e;">Active</td><td>${nodeCount}</td><td>${edgeCount}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    async function refreshStats() {
+      try {
+        const res = await fetch('/admin/stats')
+        const data = await res.json()
+        document.getElementById('stat-nodes').textContent = data.nodeCount ?? '—'
+        document.getElementById('stat-edges').textContent = data.edgeCount ?? '—'
+        document.getElementById('stat-types').textContent = data.nodeTypeCount ?? '—'
+        document.getElementById('stat-shards').textContent = data.shardCount ?? '—'
+        document.getElementById('stat-uptime').textContent = Math.round(data.uptime) + 's'
+      } catch (e) {
+        console.error('Stats refresh failed:', e)
+      }
+    }
+    setInterval(refreshStats, 5000)
+  </script>
+</body>
+</html>`
+
+    reply.type('text/html').send(adminHtml)
+  })
+
   // Index route — serve the dashboard HTML
   app.get('/', async (req: FastifyRequest, reply: FastifyReply) => {
     reply.type('text/html').send(DASHBOARD_HTML)

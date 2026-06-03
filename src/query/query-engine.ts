@@ -182,16 +182,17 @@ export interface OrderColumnAST {
 // ── 聚合子句 ─────────────────────────────────────────────────
 
 export interface AggregateClause {
-  type: 'count' | 'sum' | 'avg' | 'max' | 'min'
+  type: 'count' | 'sum' | 'avg' | 'max' | 'min' | 'collect'
   field?: string  // 如 n.age
   alias?: string  // AS alias
+  distinct?: boolean  // DISTINCT modifier (for COLLECT, COUNT)
 }
 
 // ── Query Plan ─────────────────────────────────────────────────
 
 export interface QueryPlan {
   /** 操作类型 */
-  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE'
+  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL'
   /** EXPLAIN: 展示执行计划但不执行 */
   explain?: boolean
   /** PROFILE: 执行并收集每步统计信息 */
@@ -265,6 +266,10 @@ export interface QueryPlan {
   }>
   /** CALL 子查询 */
   callQuery?: QueryPlan
+  /** CALL 子查询的 IN TRANSACTIONS 标志：分批提交 */
+  inTransactions?: boolean
+  /** IN TRANSACTIONS OF N ROWS 的自定义批次大小 */
+  inTransactionsBatchSize?: number
   /** CALL 过程调用 */
   callProcedure?: {
     name: string
@@ -1170,12 +1175,17 @@ export function _parseWithExtract(
   const colStr = rest.trim()
 
   // Check for aggregate function
-  const aggMatch = colStr.match(/^(count|sum|avg|max|min)\s*\(\s*([^)]+)\s*\)\s*(?:AS\s+(\w+))?\s*$/i)
+  const aggMatch = colStr.match(/^(count|sum|avg|max|min|collect)\s*\(\s*([^)]+)\s*\)\s*(?:AS\s+(\w+))?\s*$/i)
   if (aggMatch) {
-    const func = aggMatch[1].toLowerCase() as 'count' | 'sum' | 'avg' | 'max' | 'min'
+    const func = aggMatch[1].toLowerCase() as 'count' | 'sum' | 'avg' | 'max' | 'min' | 'collect'
     const field = aggMatch[2].trim()
     const alias = aggMatch[3] || null
     result.aggregate = { type: func, field, alias }
+
+    // Detect DISTINCT in collect/COUNT
+    if ((func === 'collect' || func === 'count') && field.toUpperCase().startsWith('DISTINCT ')) {
+      result.aggregate.distinct = true
+    }
 
     // Build column from aggregate
     // The column expression is the aggregate string, the alias is from AS
@@ -1198,12 +1208,18 @@ export function _parseWithExtract(
         result.columns.push({ expression: expr, alias: asMatch[1] })
 
         // Check if this is an aggregate
-        const innerAggMatch = expr.match(/^(count|sum|avg|max|min)\s*\(\s*([^)]+)\s*\)$/i)
+        const innerAggMatch = expr.match(/^(count|sum|avg|max|min|collect)\s*\(\s*([^)]+)\s*\)$/i)
         if (innerAggMatch) {
+          const innerField = innerAggMatch[2].trim()
           result.aggregate = {
-            type: innerAggMatch[1].toLowerCase() as 'count' | 'sum' | 'avg' | 'max' | 'min',
-            field: innerAggMatch[2].trim(),
+            type: innerAggMatch[1].toLowerCase() as 'count' | 'sum' | 'avg' | 'max' | 'min' | 'collect',
+            field: innerField,
             alias: asMatch[1],
+          }
+          // Detect DISTINCT
+          if ((result.aggregate.type === 'collect' || result.aggregate.type === 'count') &&
+              innerField.toUpperCase().startsWith('DISTINCT ')) {
+            result.aggregate.distinct = true
           }
         }
       } else {
@@ -1692,6 +1708,13 @@ export function planFromAST(
   if (ast.type === 'CALL' && ast.query) {
     plan.type = 'CALL'
     plan.callQuery = planFromAST(ast.query, schema)
+    // 传递 IN TRANSACTIONS 标志
+    if (ast.inTransactions) {
+      plan.inTransactions = true
+      if (ast.inTransactionsBatchSize !== undefined) {
+        plan.inTransactionsBatchSize = ast.inTransactionsBatchSize
+      }
+    }
     // CALL 外层可有 RETURN / ORDER BY / LIMIT / SKIP
     if (ast.return) {
       if (ast.return.columns && ast.return.columns.length > 0) {
@@ -2025,10 +2048,10 @@ function planFromSetClause(setClause: SetClauseAST): QueryPlan['setClauses'] {
 // ── 聚合函数 ─────────────────────────────────────────────────
 
 export interface AggregateResult {
-  type: 'count' | 'sum' | 'avg' | 'max' | 'min'
+  type: 'count' | 'sum' | 'avg' | 'max' | 'min' | 'collect'
   field: string  // 字段名或 '*'
   alias: string | null
-  value: number | null
+  value: number | null | unknown[]
 }
 
 /**
@@ -2061,7 +2084,12 @@ export function _evaluateAggregate(
     return { type: 'count', field: field ?? '*', alias: null, value: values.length }
   }
 
-  // 对非 count 聚合，过滤出可用的数值
+  if (fn === 'collect') {
+    const nonNull = values.filter(v => v !== null && v !== undefined)
+    return { type: 'collect', field: field ?? '', alias: null, value: nonNull }
+  }
+
+  // 对非 count/collect 聚合，过滤出可用的数值
   const numericValues = values.filter(
     (v): v is number => typeof v === 'number' && !Number.isNaN(v)
   )
@@ -2127,7 +2155,7 @@ export function aggregateRecords(
  *   _parseAggregate('n.name')         → null
  */
 export interface AggColumnInfo {
-  fn: 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX'
+  fn: 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'COLLECT'
   field: string       // The raw field string inside parens
   prop: string        // The property name (after stripping variable prefix)
   distinct: boolean   // Whether DISTINCT is used
@@ -2136,7 +2164,7 @@ export interface AggColumnInfo {
 
 export function _parseAggregate(expr: string): AggColumnInfo | null {
   const trimmed = expr.trim()
-  const re = /^(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(DISTINCT\s+)?(.+?)\s*\)\s*$/i
+  const re = /^(COUNT|SUM|AVG|MIN|MAX|COLLECT)\s*\(\s*(DISTINCT\s+)?(.+?)\s*\)\s*$/i
   const m = trimmed.match(re)
   if (!m) return null
 
@@ -2238,7 +2266,11 @@ export function _executeAggregation(
       const row: QueryRow = {}
       for (const agg of aggCols) {
         const key = agg.alias ?? agg.fn.toLowerCase()
-        row[key] = (agg.fn === 'COUNT' || agg.fn === 'SUM') ? 0 : null
+        if (agg.fn === 'COLLECT') {
+          row[key] = []
+        } else {
+          row[key] = (agg.fn === 'COUNT' || agg.fn === 'SUM') ? 0 : null
+        }
       }
       return [row]
     }
@@ -2324,6 +2356,16 @@ function _computeAggRow(
           row[key] = distinctSet.size
         } else {
           row[key] = rows.length
+        }
+        break
+      }
+      case 'COLLECT': {
+        const nonNull = values.filter(v => v !== null && v !== undefined)
+        if (agg.distinct) {
+          const uniqueSet = new Set(nonNull)
+          row[key] = Array.from(uniqueSet)
+        } else {
+          row[key] = nonNull
         }
         break
       }
@@ -2605,6 +2647,43 @@ function _resolvePegValue(val: unknown): unknown {
   return val
 }
 
+/**
+ * 构建目标节点 ID 集合，用于 DETACH DELETE 的边清理。
+ *
+ * 候选行可能是以下两种形式之一：
+ * 1. { n: nodeObj } — 有边遍历的 MATCH（如 MATCH (a)-[:EDGE]->(b)）
+ * 2. nodeObj — 简单 MATCH（如 MATCH (n:Label) 无遍历）
+ */
+function _buildTargetNodeIds(candidate: Record<string, unknown>, targetAliases: Set<string>): Set<string> {
+  const ids = new Set<string>()
+  for (const alias of targetAliases) {
+    const nodeObj = _resolveDeleteTarget(candidate, alias)
+    if (nodeObj && typeof nodeObj === 'object' && (nodeObj as any)._id) {
+      ids.add(String((nodeObj as any)._id))
+    }
+  }
+  return ids
+}
+
+/**
+ * 从候选行中解析出目标节点对象。
+ *
+ * 处理两种候选形式：
+ * 1. { n: nodeObj } — 候选行是一个对象，节点绑定在别名 key 下
+ * 2. candidate 本身就是 nodeObj — 简单 MATCH，候选行即是节点对象
+ */
+function _resolveDeleteTarget(candidate: Record<string, unknown>, alias: string): unknown {
+  // 检查候选行是否有 alias 作为 key
+  if (alias in candidate) {
+    return candidate[alias]
+  }
+  // 无 key 匹配时检查候选行自身是否有 _id（简单 MATCH 场景）
+  if ((candidate as any)._id !== undefined) {
+    return candidate
+  }
+  return undefined
+}
+
 export function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
@@ -2769,12 +2848,30 @@ export function _executeQuery(
 
   // Step 1.6b: Handle CALL 子查询 — 递归执行子查询，结果合并到候选行
   if (plan.type === 'CALL' && plan.callQuery) {
-    // 递归执行子查询（子查询作用于完整 nodes 图）
-    const subResult = _executeQuery(plan.callQuery, nodes)
-    const subRows = subResult as QueryRow[]
+    if (plan.inTransactions) {
+      // IN TRANSACTIONS 模式：分批提交子查询结果
+      const batchSize = plan.inTransactionsBatchSize ?? 1000
+      const subResult = _executeQuery(plan.callQuery, nodes)
+      const subRows = subResult as QueryRow[]
 
-    // 子查询结果替换候选行（作用域隔离）
-    candidates = subRows.map(r => ({ ...r } as Record<string, unknown>))
+      // 对结果分批处理，每批之间模拟事务提交
+      const batches: QueryRow[] = []
+      for (let i = 0; i < subRows.length; i += batchSize) {
+        const batch = subRows.slice(i, i + batchSize)
+        // 模拟事务提交：每批之间的 "commit" 在此处表现为批处理隔离
+        // 在此上下文中，我们只是分批返回行——实际事务边界由上层 API 处理
+        batches.push(...batch)
+      }
+
+      candidates = batches.map(r => ({ ...r } as Record<string, unknown>))
+    } else {
+      // 标准 CALL：递归执行子查询（子查询作用于完整 nodes 图）
+      const subResult = _executeQuery(plan.callQuery, nodes)
+      const subRows = subResult as QueryRow[]
+
+      // 子查询结果替换候选行（作用域隔离）
+      candidates = subRows.map(r => ({ ...r } as Record<string, unknown>))
+    }
   }
 
   // Step 2: Handle WITH clause (mid-query projection + aggregation)
@@ -2784,8 +2881,8 @@ export function _executeQuery(
     if (hasWithAgg) {
       // Parse the aggregate: handle DISTINCT prefix in field
       let aggField = plan.with.aggregate.field ?? '*'
-      let aggDistinct = false
-      if (aggField.toUpperCase().startsWith('DISTINCT ')) {
+      let aggDistinct = plan.with.aggregate.distinct === true
+      if (!aggDistinct && aggField.toUpperCase().startsWith('DISTINCT ')) {
         aggDistinct = true
         aggField = aggField.substring(9).trim() // strip 'DISTINCT '
       }
@@ -2934,13 +3031,20 @@ export function _executeQuery(
   if (plan.returnColumns.length > 0) {
     // Check if RETURN uses aggregation
     if (plan.aggregate) {
+      let haveDistinct = plan.aggregate.distinct === true
+      let rawField = plan.aggregate.field ?? '*'
+      // Strip DISTINCT prefix from field if present
+      if (rawField.toUpperCase().startsWith('DISTINCT ')) {
+        haveDistinct = true  // ensure flag set even if only via field prefix
+        rawField = rawField.substring(9).trim()
+      }
       const aggInfo: AggColumnInfo[] = [{
         fn: plan.aggregate.type.toUpperCase() as AggColumnInfo['fn'],
-        field: plan.aggregate.field ?? '*',
-        prop: plan.aggregate.field?.includes('.')
-          ? plan.aggregate.field.split('.').pop()!
-          : (plan.aggregate.field ?? '*'),
-        distinct: false,
+        field: rawField,
+        prop: rawField.includes('.')
+          ? rawField.split('.').pop()!
+          : rawField,
+        distinct: haveDistinct,
         alias: plan.aggregate.alias ?? plan.aggregate.type,
       }]
 
@@ -3047,16 +3151,68 @@ export function _executeQuery(
 
     // DETACH DELETE — 对 RETURN 路径也执行边清理
     if (plan.detachDelete && plan.deleteTargets && plan.deleteTargets.length > 0) {
-      const targets = new Set(plan.deleteTargets)
+      const targetAliases = new Set(plan.deleteTargets)
       candidates = candidates.filter(row => {
-        if (row._edges && Array.isArray(row._edges)) {
-          row._edges = row._edges.filter((e: any) => !targets.has(String(e.target)))
-        }
-        if (row._inEdges && Array.isArray(row._inEdges)) {
-          row._inEdges = row._inEdges.filter((e: any) => !targets.has(String(e.src)))
+        // 构建目标节点 ID 集合（从候选行中提取 _id）
+        // 候选行可能是 { n: node } 结构（有边遍历）或直接的 node（无遍历 MATCH）
+        const targetIds = _buildTargetNodeIds(row, targetAliases)
+        for (const targetAlias of targetAliases) {
+          const nodeObj = _resolveDeleteTarget(row, targetAlias)
+          if (!nodeObj || typeof nodeObj !== 'object') continue
+          if (Array.isArray((nodeObj as any)._edges)) {
+            (nodeObj as any)._edges = (nodeObj as any)._edges.filter((e: any) => {
+              const sourceInTargets = targetIds.has(String(e.src))
+              const targetInTargets = targetIds.has(String(e.target))
+              return !sourceInTargets && !targetInTargets
+            })
+          }
+          if (Array.isArray((nodeObj as any)._inEdges)) {
+            (nodeObj as any)._inEdges = (nodeObj as any)._inEdges.filter((e: any) => {
+              const sourceInTargets = targetIds.has(String(e.src))
+              const targetInTargets = targetIds.has(String(e.target))
+              return !sourceInTargets && !targetInTargets
+            })
+          }
         }
         return true
       })
+    }
+
+    // DELETE（无 DETACH）且节点有关联边 → 报错（RETURN 路径）
+    // Neo4j 语义：节点有任何出边或入边则不能执行 DELETE（必须用 DETACH DELETE）
+    if (!plan.detachDelete && plan.deleteTargets && plan.deleteTargets.length > 0) {
+      const targetAliases = new Set(plan.deleteTargets)
+      for (const candidate of candidates) {
+        for (const targetAlias of targetAliases) {
+          const nodeObj = _resolveDeleteTarget(candidate, targetAlias)
+          if (!nodeObj || typeof nodeObj !== 'object') continue
+          // 检查节点是否有任何关联边
+          const nodeId = String((nodeObj as any)._id ?? '')
+          const edges = (nodeObj as any)._edges || []
+          const inEdges = (nodeObj as any)._inEdges || []
+          let hasAnyEdge = false
+          for (const e of edges) {
+            // 检查出边：src 是当前节点，或 target 是当前节点
+            if (String(e.src) === nodeId || String(e.target) === nodeId) {
+              hasAnyEdge = true
+              break
+            }
+          }
+          if (!hasAnyEdge) {
+            for (const e of inEdges) {
+              if (String(e.src) === nodeId || String(e.target) === nodeId) {
+                hasAnyEdge = true
+                break
+              }
+            }
+          }
+          if (hasAnyEdge) {
+            throw new Error(
+              `Cannot delete node n, because it still has relationships. To delete this node, you must first delete its relationships. Use DETACH DELETE.`
+            )
+          }
+        }
+      }
     }
 
     // No aggregation — project columns from candidates
@@ -3104,22 +3260,68 @@ export function _executeQuery(
 
   // DETACH DELETE — 删除目标节点前先移除所有关联边
   if (plan.detachDelete && plan.deleteTargets && plan.deleteTargets.length > 0) {
-    const targets = new Set(plan.deleteTargets)
+    const targetAliases = new Set(plan.deleteTargets)
     candidates = candidates.filter(row => {
-      // 清理边元数据：移除 _edges 和 _inEdges
-      if (row._edges && Array.isArray(row._edges)) {
-        row._edges = row._edges.filter((e: any) => {
-          // 只保留不以 target 节点为目的地的边
-          return !targets.has(String(e.target))
-        })
-      }
-      if (row._inEdges && Array.isArray(row._inEdges)) {
-        row._inEdges = row._inEdges.filter((e: any) => {
-          return !targets.has(String(e.src))
-        })
+      // 构建目标节点 ID 集合
+      const targetIds = _buildTargetNodeIds(row, targetAliases)
+      for (const targetAlias of targetAliases) {
+        const nodeObj = _resolveDeleteTarget(row, targetAlias)
+        if (!nodeObj || typeof nodeObj !== 'object') continue
+        // 清理边元数据：移除 _edges 和 _inEdges
+        if (Array.isArray((nodeObj as any)._edges)) {
+          (nodeObj as any)._edges = (nodeObj as any)._edges.filter((e: any) => {
+            // 如果边涉及多个目标节点（如 DETACH DELETE a, b 时 a 和 b 之间有边）
+            // 只要至少一个端点在 targets 集合中就删除该边
+            const sourceInTargets = targetIds.has(String(e.src))
+            const targetInTargets = targetIds.has(String(e.target))
+            return !sourceInTargets && !targetInTargets
+          })
+        }
+        if (Array.isArray((nodeObj as any)._inEdges)) {
+          (nodeObj as any)._inEdges = (nodeObj as any)._inEdges.filter((e: any) => {
+            const sourceInTargets = targetIds.has(String(e.src))
+            const targetInTargets = targetIds.has(String(e.target))
+            return !sourceInTargets && !targetInTargets
+          })
+        }
       }
       return true
     })
+  }
+
+  // DELETE（无 DETACH）且节点有关联边 → 报错（与 Neo4j 一致）
+  if (!plan.detachDelete && plan.deleteTargets && plan.deleteTargets.length > 0) {
+    const targetAliases = new Set(plan.deleteTargets)
+    for (const candidate of candidates) {
+      for (const targetAlias of targetAliases) {
+        const nodeObj = _resolveDeleteTarget(candidate, targetAlias)
+        if (!nodeObj || typeof nodeObj !== 'object') continue
+        // 检查节点是否有任何关联边
+        const nodeId = String((nodeObj as any)._id ?? '')
+        const edges = (nodeObj as any)._edges || []
+        const inEdges = (nodeObj as any)._inEdges || []
+        let hasAnyEdge = false
+        for (const e of edges) {
+          if (String(e.src) === nodeId || String(e.target) === nodeId) {
+            hasAnyEdge = true
+            break
+          }
+        }
+        if (!hasAnyEdge) {
+          for (const e of inEdges) {
+            if (String(e.src) === nodeId || String(e.target) === nodeId) {
+              hasAnyEdge = true
+              break
+            }
+          }
+        }
+        if (hasAnyEdge) {
+          throw new Error(
+            `Cannot delete node n, because it still has relationships. To delete this node, you must first delete its relationships. Use DETACH DELETE.`
+          )
+        }
+      }
+    }
   }
 
   // No RETURN — return candidates as rows
@@ -4174,6 +4376,13 @@ function _evalSimpleExpr(node: any, row: QueryRow): unknown {
     return row[node.name] ?? null
   }
 
+  // Function call: e.g. toUpper(n.name), substring(n.name, 0, 3)
+  if (node.type === 'FUNCTION_CALL') {
+    const fnName = node.name
+    const args = (node.args || []).map((a: any) => _evalSimpleExpr(a, row))
+    return executeBuiltinFunction(fnName, args)
+  }
+
   // Fallback: try direct named access
   if (typeof node.name === 'string') {
     return row[node.name] ?? null
@@ -4757,6 +4966,7 @@ function formatColumn(expr: PrimaryAST): string {
   if (expr.type === 'NUMBER') return String(expr.value)
   if (expr.type === 'LIST') return 'list'
   if (expr.type === 'AGGREGATE') return String(expr.func ?? '')
+  if (expr.type === 'FUNCTION_CALL') return expr.name
   return String(expr)
 }
 
@@ -4979,6 +5189,7 @@ export function compileCypher(template: string): ParameterizedQuery {
 
 // ─── C-04: Cypher 内置函数 ───
 export const BUILTIN_FUNCTIONS: Record<string, (...args: any[]) => any> = {
+  // ── 字符串函数 ──
   toUpper: (s: string) => (s ?? '').toUpperCase(),
   toLower: (s: string) => (s ?? '').toLowerCase(),
   substring: (s: string, start: number, length?: number) => {
@@ -4988,6 +5199,23 @@ export const BUILTIN_FUNCTIONS: Record<string, (...args: any[]) => any> = {
     }
     return s.substring(start)
   },
+  replace: (s: string, search: string, replacement: string) => {
+    if (s == null) return ''
+    return String(s).split(search).join(replacement)
+  },
+  trim: (s: string) => (s ?? '').trim(),
+  lTrim: (s: string) => (s ?? '').trimStart(),
+  rTrim: (s: string) => (s ?? '').trimEnd(),
+  split: (s: string, delimiter: string) => {
+    if (s == null) return []
+    return String(s).split(delimiter)
+  },
+  reverse: (s: string) => {
+    if (s == null) return ''
+    return String(s).split('').reverse().join('')
+  },
+
+  // ── 数字函数 ──
   abs: (x: number) => Math.abs(x),
   round: (x: number, precision?: number) => {
     if (precision !== undefined) {
@@ -4996,8 +5224,89 @@ export const BUILTIN_FUNCTIONS: Record<string, (...args: any[]) => any> = {
     }
     return Math.round(x)
   },
-  coalesce: (...args: any[]) => args.find(a => a != null),
+
+  // ── 时间函数 ──
   timestamp: () => Date.now(),
+  datetime: () => new Date().toISOString(),
+
+  // ── 聚合/类型转换函数 ──
+  coalesce: (...args: any[]) => args.find(a => a != null),
+  toString: (val: any) => {
+    if (val == null) return ''
+    return String(val)
+  },
+  toInteger: (val: any) => {
+    const n = Number(val)
+    return Number.isFinite(n) ? Math.floor(n) : 0
+  },
+  toFloat: (val: any) => {
+    const n = Number(val)
+    return Number.isFinite(n) ? n : 0.0
+  },
+  type: (rel: any) => {
+    if (rel && typeof rel === 'object') {
+      return rel._edgeLabel ?? rel._label ?? rel.label ?? rel.type ?? ''
+    }
+    return ''
+  },
+  labels: (node: any) => {
+    if (node && typeof node === 'object') {
+      const label = node._label ?? node.label ?? ''
+      return label ? [label] : []
+    }
+    return []
+  },
+
+  // ── 路径函数 ──
+  length: (path: any) => {
+    // path can be an array of nodes (from traversal) with _edges metadata
+    // or simply an object with _pathEdges property
+    if (path == null) return 0
+    // If path has _pathEdges (set by graph-engine during traversal)
+    if (Array.isArray(path._pathEdges)) return path._pathEdges.length
+    // If path has _pathLength
+    if (typeof path._pathLength === 'number') return path._pathLength
+    // If path is an array of nodes (simple path representation)
+    if (Array.isArray(path)) {
+      // For a path of n nodes, there are n-1 edges
+      // But if path was obtained from nodes(path), it's already the node list
+      // The graph engine stores path as { _pathEdges: [...], _pathNodes: [...] }
+      if (path.length > 0 && path[0]._pathEdges) return path[0]._pathEdges.length
+      return Math.max(0, path.length - 1)
+    }
+    // If it's a single node (no traversal), path length is 0
+    return 0
+  },
+  nodes: (path: any) => {
+    if (path == null) return []
+    if (Array.isArray(path._pathNodes)) return path._pathNodes
+    // If path is a node record, return it as single-element array
+    return path
+  },
+  relationships: (path: any) => {
+    if (path == null) return []
+    if (Array.isArray(path._pathEdges)) return path._pathEdges
+    return []
+  },
+  rels: (path: any) => {
+    if (path == null) return []
+    if (Array.isArray(path._pathEdges)) return path._pathEdges
+    return []
+  },
+  startNode: (rel: any) => {
+    if (rel == null) return null
+    if (rel && typeof rel === 'object') {
+      return rel._startNode ?? rel._src ?? rel.src ?? null
+    }
+    return null
+  },
+  endNode: (rel: any) => {
+    if (rel == null) return null
+    if (rel && typeof rel === 'object') {
+      return rel._endNode ?? rel._dst ?? rel.dst ?? rel.target ?? null
+    }
+    return null
+  },
 }
 
 export function isBuiltinFunction(name: string): boolean {

@@ -1089,18 +1089,14 @@ export function limitPushdown(plan: PlanNode): PlanNode {
     // 如果有 skip，下推 limit + skip 的合值，使 SCAN 返回足够数据供 skip 使用
     const pushLimit = (skipValue ?? 0) + limitValue
 
-    // Walk down through FILTER to find SCAN/NEIGHBORS
-    // 不越过 SORT 节点，因为 ORDER BY + LIMIT 必须在排序后取前 N 条
+    // Walk down through intermediate nodes to find SCAN/NEIGHBORS
+    // LIMIT 作为早期截断优化提示注入到 SCAN 层（后续 SORT + LIMIT 层保证最终正确语义）
     const walkDown = (node: PlanNode): boolean => {
       if (node.type === PlanNodeType.SCAN || node.type === PlanNodeType.NEIGHBORS) {
         node.details['pushedLimit'] = pushLimit
         return true
       }
-      // 如果遇到 SORT 节点，停止下推（排序后 LIMIT 语义不同）
-      if (node.type === PlanNodeType.SORT) {
-        return false
-      }
-      // Recurse through single-child intermediate nodes
+      // Recurse through single-child intermediate nodes (包括 SORT/FILTER)
       if (node.children.length === 1) {
         return walkDown(node.children[0])
       }
@@ -1147,6 +1143,10 @@ export function optimizeIR(plan: PlanNode): PlanNode {
 
   // 4. 递归优化子节点
   optimized.children = optimized.children.map(c => optimizeIR(c))
+
+  // 4b. 再次尝试 limit 下推 — 递归优化可能移除了 FILTER 节点，
+  // 使 SCAN 节点上浮，此时 LIMIT → SORT → SCAN 就能找到 SCAN 了
+  optimized = limitPushdown(optimized)
 
   // 5. 消除死分支 — 如果某个节点 estimatedRows = 0，可以移除
   optimized = eliminateDeadBranches(optimized)
