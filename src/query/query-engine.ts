@@ -28,6 +28,7 @@ import https from 'https'
 import { parser } from './cypher-lite-parser'
 import { LRUCache } from 'lru-cache'
 import { planCache as plannerPlanCache, makePlanCacheKey } from '../api/query-planner'
+import { globalRegistry as procRegistry, type ProcedureContext } from './procedure-registry'
 
 /** 默认查询 LIMIT，当查询没有显式 LIMIT 子句时使用 */
 export const DEFAULT_LIMIT = 1000
@@ -106,6 +107,8 @@ export interface SetItemAST {
 export interface MergeClauseAST {
   type: 'MERGE'
   patterns: CreateNodeItemAST[]
+  onCreate?: SetClauseAST
+  onMatch?: SetClauseAST
 }
 
 export interface PatternAST {
@@ -253,6 +256,12 @@ export interface QueryPlan {
   }>
   /** CALL 子查询 */
   callQuery?: QueryPlan
+  /** CALL 过程调用 */
+  callProcedure?: {
+    name: string
+    args: any[]
+    yieldItems?: Array<{ name: string; alias: string | null }>
+  }
   /** FOREACH 子句：列表迭代执行子查询 */
   forEach?: ForEachClause
   /** REDUCE 表达式：列表累积归约 */
@@ -308,6 +317,16 @@ export interface QueryPlan {
     target: string
     label: string | null
     direction: 'out' | 'in' | 'any'
+  }>
+  /** MERGE ON CREATE 子句 */
+  mergeOnCreate?: Array<{
+    property: string
+    value: unknown
+  }>
+  /** MERGE ON MATCH 子句 */
+  mergeOnMatch?: Array<{
+    property: string
+    value: unknown
   }>
 }
 
@@ -1508,6 +1527,45 @@ export function planFromAST(
     const { createNodes: mergeNodes, createEdges: mergeEdges } = planFromCreateClause(ast.merge)
     plan.mergeNodes = mergeNodes
     plan.mergeEdges = mergeEdges
+    if (ast.merge.onCreate) {
+      plan.mergeOnCreate = planFromSetClause(ast.merge.onCreate)
+    }
+    if (ast.merge.onMatch) {
+      plan.mergeOnMatch = planFromSetClause(ast.merge.onMatch)
+    }
+  }
+
+  // ── CALL 过程调用处理 ──────────────────────────────────
+
+  if (ast.type === 'CALL_PROCEDURE' && ast.procedureName) {
+    plan.type = 'CALL_PROCEDURE'
+    plan.callProcedure = {
+      name: ast.procedureName,
+      args: (ast.arguments ?? []).map((arg: any) => {
+        // 处理各种字面量类型
+        if (arg.type === 'STRING') return arg.value
+        if (arg.type === 'NUMBER') return arg.value
+        if (arg.type === 'BOOLEAN') return arg.value
+        if (arg.type === 'LIST') return (arg.items ?? []).map((item: any) => item.value ?? item)
+        if (arg.type === 'IDENTIFIER') return arg.name
+        return arg
+      }),
+    }
+    if (ast.yield) {
+      plan.callProcedure.yieldItems = ast.yield.items.map((item: any) => ({
+        name: item.name,
+        alias: item.alias ?? null,
+      }))
+    }
+    if (ast.orderBy) {
+      plan.orderBy = ast.orderBy.columns.map((col: any) => ({
+        property: formatColumn(col.expression),
+        direction: col.direction as 'ASC' | 'DESC',
+      }))
+    }
+    if (ast.limit !== undefined) plan.limit = ast.limit
+    if (ast.skip !== undefined) plan.skip = ast.skip
+    return plan
   }
 
   // ── CALL 子查询处理 ──────────────────────────────────────
@@ -2302,6 +2360,122 @@ function _resolveProperty(node: Record<string, unknown>, expr: string): unknown 
   return undefined
 }
 
+/**
+ * 执行 MERGE 操作，支持 ON CREATE SET 和 ON MATCH SET 条件写。
+ *
+ * MERGE 语义：
+ * 1. 尝试匹配现有节点（按 label + props）
+ * 2. 匹配成功 → 执行 ON MATCH SET（如果提供）
+ * 3. 匹配失败 → 创建新节点并执行 ON CREATE SET（如果提供）
+ *
+ * @param plan - MERGE QueryPlan
+ * @param nodes - 现存节点列表（会被修改：匹配时更新，未匹配时追加新节点）
+ * @returns 匹配或创建后的节点行
+ */
+function _executeMerge(
+  plan: QueryPlan,
+  nodes: Array<Record<string, unknown>>,
+): QueryResult {
+  const mergeNodes = plan.mergeNodes!
+  const rows: QueryRow[] = []
+
+  for (const mergeNode of mergeNodes) {
+    // Resolve props from PEG AST to plain values
+    const resolvedProps: Record<string, unknown> = {}
+    if (mergeNode.props) {
+      for (const [key, val] of Object.entries(mergeNode.props)) {
+        resolvedProps[key] = _resolvePegValue(val)
+      }
+    }
+
+    // Step 1: Try to match existing node by label + props
+    let matched: Record<string, unknown> | null = null
+    let matchedIndex = -1
+
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i]
+      let matches = true
+
+      // Check label
+      if (mergeNode.label) {
+        const nodeLabel = node['_label'] as string | undefined
+        if (nodeLabel !== undefined && nodeLabel !== mergeNode.label) {
+          matches = false
+        }
+      }
+
+      // Check properties (all must match)
+      if (matches && mergeNode.props) {
+        for (const [key, val] of Object.entries(resolvedProps)) {
+          const nodeVal = node[key]
+          if (nodeVal !== val) {
+            matches = false
+            break
+          }
+        }
+      }
+
+      if (matches) {
+        matched = node
+        matchedIndex = i
+        break
+      }
+    }
+
+    if (matched) {
+      // MATCHED — apply ON MATCH SET
+      if (plan.mergeOnMatch && plan.mergeOnMatch.length > 0) {
+        for (const clause of plan.mergeOnMatch) {
+          // clause.property is just the property name (e.g., 'x'), not 'n.x'
+          nodes[matchedIndex][clause.property] = clause.value
+        }
+      }
+      rows.push({ ...nodes[matchedIndex] })
+    } else {
+      // NOT MATCHED — create new node
+      const newNode: Record<string, unknown> = {}
+
+      // Set type/label
+      if (mergeNode.label) {
+        newNode['_label'] = mergeNode.label
+      }
+
+      // Set merge props (resolved)
+      if (mergeNode.props) {
+        for (const [key, val] of Object.entries(resolvedProps)) {
+          newNode[key] = val
+        }
+      }
+
+      // Apply ON CREATE SET
+      if (plan.mergeOnCreate && plan.mergeOnCreate.length > 0) {
+        for (const clause of plan.mergeOnCreate) {
+          // clause.property is just the property name
+          newNode[clause.property] = clause.value
+        }
+      }
+
+      nodes.push(newNode)
+      rows.push({ ...newNode })
+    }
+  }
+
+  return rows
+}
+
+/**
+ * 将 PEG AST 值格式解析为普通 JavaScript 值。
+ * PEG AST: { type: 'NUMBER', value: 1 } → 1
+ * 如果是普通值则原样返回。
+ */
+function _resolvePegValue(val: unknown): unknown {
+  if (val && typeof val === 'object' && 'type' in (val as object) && 'value' in (val as object)) {
+    const astVal = val as { type: string; value: unknown }
+    return astVal.value
+  }
+  return val
+}
+
 export function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
@@ -2344,7 +2518,10 @@ export function _executeQuery(
     }
   }
 
-  // Step 1: Filter nodes by MATCH criteria
+  // Step 0.5: Handle MERGE — match or create with ON CREATE / ON MATCH
+  if (plan.type === 'MERGE' && plan.mergeNodes && plan.mergeNodes.length > 0) {
+    return _executeMerge(plan, nodes)
+  }
   let candidates = [...nodes]
 
   // Filter by scan label (MATCH (n:Label))
@@ -2374,7 +2551,87 @@ export function _executeQuery(
     candidates = _executeUnwind(candidates, plan.unwind)
   }
 
-  // Step 1.6: Handle CALL 子查询 — 递归执行子查询，结果合并到候选行
+  // Step 1.6a: Handle CALL 过程调用 — 从注册表获取并执行
+  if (plan.type === 'CALL_PROCEDURE' && plan.callProcedure) {
+    const { name, args, yieldItems } = plan.callProcedure
+    const proc = procRegistry.get(name)
+
+    if (!proc) {
+      throw new Error(`Unknown procedure: ${name}`)
+    }
+
+    // Build context from the graph engine / nodes
+    const ctx: ProcedureContext = {
+      getAllNodes: () => nodes,
+      getNodeCount: () => nodes.length,
+      getEdgeCount: () => {
+        // Count edges from nodes with connected property
+        let count = 0
+        for (const n of nodes) {
+          if (Array.isArray((n as any)._edges)) count += (n as any)._edges.length
+          if (Array.isArray((n as any)._inEdges)) count += (n as any)._inEdges.length
+        }
+        return count
+      },
+      getLabels: () => {
+        const labels = new Set<string>()
+        for (const n of nodes) {
+          if (n._label || n.label || n.typeName) {
+            labels.add(n._label || n.label || n.typeName)
+          }
+        }
+        return Array.from(labels).sort()
+      },
+      getTypeNameById: (typeId: number) => {
+        // Try to resolve a typeId from the first matching node
+        for (const n of nodes) {
+          if (n.type === typeId || n.typeId === typeId) {
+            return n._label || n.label || n.typeName || String(typeId)
+          }
+        }
+        return String(typeId)
+      },
+      getConfig: () => ({}),
+      getStats: () => ({
+        nodeCount: nodes.length,
+      }),
+      fulltextQueryNodes: () => [],
+      fulltextQueryRelationshipIndexes: () => [],
+    }
+
+    const rawResult = proc.execute(ctx, args)
+    let resultRows = rawResult as any[]
+
+    // Apply YIELD filtering if specified
+    if (yieldItems && yieldItems.length > 0) {
+      const validFields = new Set(yieldItems.map(y => y.name))
+      const availableFields = new Set(
+        resultRows.length > 0 ? Object.keys(resultRows[0]) : [],
+      )
+
+      // Check for invalid yield fields
+      for (const y of yieldItems) {
+        if (!availableFields.has(y.name)) {
+          throw new Error(
+            `Invalid YIELD field '${y.name}' for procedure '${name}'. Available fields: ${Array.from(availableFields).join(', ')}`,
+          )
+        }
+      }
+
+      resultRows = resultRows.map(row => {
+        const filtered: Record<string, unknown> = {}
+        for (const y of yieldItems) {
+          const key = y.alias ?? y.name
+          filtered[key] = row[y.name]
+        }
+        return filtered
+      })
+    }
+
+    candidates = resultRows.map(r => ({ ...r } as Record<string, unknown>))
+  }
+
+  // Step 1.6b: Handle CALL 子查询 — 递归执行子查询，结果合并到候选行
   if (plan.type === 'CALL' && plan.callQuery) {
     // 递归执行子查询（子查询作用于完整 nodes 图）
     const subResult = _executeQuery(plan.callQuery, nodes)

@@ -1109,6 +1109,72 @@ export function createRestApiServer(
         }]
       : []),
 
+    // POST /api/v1/gnn/node-classify — 节点分类
+    ...(config.gnnEngine
+      ? [{
+          method: 'POST' as const,
+          path: '/api/v1/gnn/node-classify',
+          requireAuth: true as const,
+          requiredPermission: 'read' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            if (!engine.isLoaded) {
+              jsonResponse(res, 400, { error: 'No model loaded. Call POST /api/v1/gnn/load-model first' })
+              return
+            }
+            const body = await parseBody(req) as Record<string, unknown>
+            const nodeIds = body.nodeIds as number[] | undefined
+            const labels = body.labels as string[] | undefined
+            if (!Array.isArray(nodeIds) || !Array.isArray(labels) || labels.length === 0) {
+              jsonResponse(res, 400, { error: 'nodeIds (array) and labels (non-empty array) are required' })
+              return
+            }
+            try {
+              const results = await engine.classifyNodes(nodeIds, labels)
+              jsonResponse(res, 200, { results })
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Node classification failed'
+              jsonResponse(res, 500, { error: msg })
+            }
+          },
+        }]
+      : []),
+
+    // POST /api/v1/gnn/graph-classify — 图分类
+    ...(config.gnnEngine
+      ? [{
+          method: 'POST' as const,
+          path: '/api/v1/gnn/graph-classify',
+          requireAuth: true as const,
+          requiredPermission: 'read' as const,
+          handler: async (req: http.IncomingMessage, res: http.ServerResponse, _parsed: URL, _params: Record<string, string>, _auth: AuthResult) => {
+            const engine = config.gnnEngine!
+            if (!engine.isLoaded) {
+              jsonResponse(res, 400, { error: 'No model loaded. Call POST /api/v1/gnn/load-model first' })
+              return
+            }
+            const body = await parseBody(req) as Record<string, unknown>
+            const aggregation = (body.aggregation as string) || 'mean'
+            if (!['mean', 'max', 'sum'].includes(aggregation)) {
+              jsonResponse(res, 400, { error: 'aggregation must be one of: mean, max, sum' })
+              return
+            }
+            const labels = body.labels as string[] | undefined
+            if (!Array.isArray(labels) || labels.length === 0) {
+              jsonResponse(res, 400, { error: 'labels (non-empty array) is required' })
+              return
+            }
+            try {
+              const result = await engine.classifyGraph(aggregation as 'mean' | 'max' | 'sum', labels)
+              jsonResponse(res, 200, result)
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Graph classification failed'
+              jsonResponse(res, 500, { error: msg })
+            }
+          },
+        }]
+      : []),
+
     // ── 慢查询日志端点（GAP-53）──────────────
 
     // GET /api/v1/ops/slow-queries — 获取慢查询列表

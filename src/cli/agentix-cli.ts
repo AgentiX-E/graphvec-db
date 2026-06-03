@@ -10,8 +10,9 @@
 import { Command } from 'commander'
 import * as fs from 'fs'
 import * as path from 'path'
-import { generateSdk, SdkGeneratorOptions, SdkGenerationResult } from '../api/sdk-generator'
+import { generateSdk } from '../api/sdk-generator'
 import { generateOpenAPIDocument } from '../api/openapi-docs'
+import { createImportCommand } from './import-command'
 
 // ──────────────────────────────────────────
 // CLI 入口
@@ -25,114 +26,10 @@ program
   .version('0.1.0')
 
 // ──────────────────────────────────────────
-// import — 从文件导入图数据
+// import — 批量导入子命令（增强版）
 // ──────────────────────────────────────────
 
-interface ImportOptions {
-  format: string
-  database: string
-  endpoint?: string
-  batch?: number
-  token?: string
-}
-
-program
-  .command('import')
-  .description('Import graph data from a file (CSV/JSON/GraphML)')
-  .argument('<file>', 'Input file path')
-  .option('-f, --format <format>', 'Input format (csv, json, graphml)', 'json')
-  .option('-d, --database <db>', 'Target database name', 'default')
-  .option('-e, --endpoint <url>', 'AgentiX server endpoint')
-  .option('--batch <size>', 'Batch size for bulk import', '1000')
-  .option('-t, --token <token>', 'API token for authentication')
-  .action(async (file: string, options: ImportOptions) => {
-    try {
-      const filePath = path.resolve(file)
-      if (!fs.existsSync(filePath)) {
-        console.error(`Error: File not found: ${filePath}`)
-        process.exit(1)
-      }
-
-      const format = options.format || path.extname(file).slice(1) || 'json'
-      const db = options.database || 'default'
-      const batchSize = parseInt(options.batch || '1000', 10)
-      const endpoint = options.endpoint
-
-      console.log(`Importing ${format} data from: ${file}`)
-      console.log(`Database: ${db}`)
-      console.log(`Batch size: ${batchSize}`)
-
-      if (endpoint) {
-        console.log(`Server: ${endpoint}`)
-        // In a real implementation, we'd stream data to the server here
-        await importFromServer(filePath, format, db, batchSize, endpoint, options.token)
-      } else {
-        // Offline mode: parse and validate
-        const result = await parseImportFile(filePath, format)
-        console.log('Import validation passed:')
-        console.log(`  Nodes: ${result.nodes}`)
-        console.log(`  Edges: ${result.edges}`)
-        console.log('Use --endpoint to submit to a running AgentiX server')
-      }
-    } catch (err) {
-      console.error(`Import failed: ${(err as Error).message}`)
-      process.exit(1)
-    }
-  })
-
-/**
- * 解析导入文件并返回统计信息
- */
-async function parseImportFile(filePath: string, format: string): Promise<{ nodes: number; edges: number }> {
-  const content = fs.readFileSync(filePath, 'utf-8')
-
-  if (format === 'json') {
-    const data = JSON.parse(content)
-    const nodes = Array.isArray(data.nodes) ? data.nodes.length : 0
-    const edges = Array.isArray(data.edges) ? data.edges.length : 0
-    return { nodes, edges }
-  }
-
-  if (format === 'csv' || format === 'tsv') {
-    const lines = content.split('\n').filter(l => l.trim().length > 0)
-    const header = lines[0].toLowerCase()
-    const dataLines = lines.slice(1)
-
-    if (header.includes('src') && header.includes('dst')) {
-      // Edge CSV
-      return { nodes: 0, edges: dataLines.length }
-    } else {
-      // Node CSV
-      return { nodes: dataLines.length, edges: 0 }
-    }
-  }
-
-  if (format === 'graphml') {
-    const nodeMatches = content.match(/<node[ >]/g) || []
-    const edgeMatches = content.match(/<edge[ >]/g) || []
-    return { nodes: nodeMatches.length, edges: edgeMatches.length }
-  }
-
-  throw new Error(`Unsupported import format: ${format}`)
-}
-
-/**
- * 导入到远程服务器（stub 实现）
- */
-async function importFromServer(
-  filePath: string,
-  format: string,
-  db: string,
-  batchSize: number,
-  endpoint: string,
-  token?: string,
-): Promise<void> {
-  // In production, this would stream data to the server API
-  // Parsing + PUT /api/v1/{db}/import in batches
-  const content = fs.readFileSync(filePath, 'utf-8')
-  console.log(`Read ${content.length} bytes from ${filePath}`)
-  console.log(`Server import not yet implemented — use offline parse with --endpoint`)
-}
+program.addCommand(createImportCommand())
 
 // ──────────────────────────────────────────
 // export — 导出图数据到文件
@@ -390,6 +287,54 @@ program
       }
     } catch (err) {
       console.error(`SDK generation failed: ${(err as Error).message}`)
+      process.exit(1)
+    }
+  })
+
+// ──────────────────────────────────────────
+// cypher — 启动交互式 Cypher Shell 或单次执行
+// ──────────────────────────────────────────
+
+interface CypherOptions {
+  query?: string
+  verbose?: boolean
+  path?: string
+}
+
+/**
+ * 创建 GraphEngine 实例，用于 cypher 命令。
+ * 导出以方便测试。
+ */
+export function createEngineForRepl(path: string = './test-data/repl-data'): import('../core/graph-engine').GraphEngine {
+  // 使用动态 require 避免顶层循环依赖
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { GraphEngine } = require('../core/graph-engine')
+  const engine = new GraphEngine({ path })
+  engine.open()
+  return engine
+}
+
+program
+  .command('cypher')
+  .description('Start interactive Cypher shell or execute a single query')
+  .option('-q, --query <query>', 'Execute a single Cypher query and exit')
+  .option('--verbose', 'Show execution plan information')
+  .option('--path <path>', 'Graph data directory path', './test-data/repl-data')
+  .action(async (options: CypherOptions) => {
+    try {
+      const dataPath = options.path || './test-data/repl-data'
+      const engine = createEngineForRepl(dataPath)
+
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { runCypherShell } = require('./repl')
+      await runCypherShell(engine, { query: options.query, verbose: options.verbose })
+
+      if (options.query) {
+        engine.close()
+        process.exit(0)
+      }
+    } catch (err) {
+      console.error(`Cypher shell error: ${(err as Error).message}`)
       process.exit(1)
     }
   })

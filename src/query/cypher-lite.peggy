@@ -28,6 +28,7 @@
 
 Start
   = _ stmt:DMLStatement _ { return stmt }
+  / _ stmt:CallProcedureStatement _ { return stmt }
   / _ stmt:CallStatement _ { return stmt }
   / _ stmt:MatchStatement _ { return stmt }
   / _ stmt:UnwindStatement _ { return stmt }
@@ -379,8 +380,21 @@ SetItem
 // ── MERGE ──────────────────────────────────────────────────
 
 MergeClause
-  = _ "MERGE"i _ patterns:CreatePatternList {
-      return { type: 'MERGE', patterns: patterns }
+  = _ "MERGE"i _ patterns:CreatePatternList onCreate:OnCreateSetClause? onMatch:OnMatchSetClause? {
+      const result = { type: 'MERGE', patterns: patterns }
+      if (onCreate) result.onCreate = onCreate
+      if (onMatch) result.onMatch = onMatch
+      return result
+    }
+
+OnCreateSetClause
+  = _ "ON"i _ "CREATE"i _ "SET"i _ items:SetItemList {
+      return { type: 'ON_CREATE', items }
+    }
+
+OnMatchSetClause
+  = _ "ON"i _ "MATCH"i _ "SET"i _ items:SetItemList {
+      return { type: 'ON_MATCH', items }
     }
 
 // ── MATCH ──────────────────────────────────────────────────
@@ -845,6 +859,61 @@ CallStatement
         stmt.skip = ls.skip
       }
       return stmt
+    }
+
+// ── CALL 过程调用 ────────────────────────────────────────
+// 例如: CALL db.labels() YIELD label
+// 例如: CALL db.index.fulltext.queryNodes("idx_name", "search_term") YIELD node, score
+
+CallProcedureStatement
+  = "CALL"i _ name:ProcedureName _ "(" _ args:ProcedureArgList? _ ")" _ yc:YieldClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
+      const stmt = {
+        type: 'CALL_PROCEDURE',
+        procedureName: name,
+        arguments: args ?? [],
+      }
+      if (yc) stmt.yield = yc
+      if (ob) stmt.orderBy = ob
+      if (ls) {
+        stmt.limit = ls.limit
+        stmt.skip = ls.skip
+      }
+      return stmt
+    }
+
+ProcedureName
+  = head:Identifier tail:(_ "." _ Identifier)* {
+      return [head, ...tail.map(t => t[3])].join('.')
+    }
+
+ProcedureArgList
+  = head:ProcedureArg tail:(_ "," _ ProcedureArg)* {
+      return [head, ...tail.map(t => t[3])]
+    }
+
+ProcedureArg
+  = StringLiteral
+  / NumberLiteral
+  / BooleanLiteral
+  / ListLiteral
+  / Identifier { return { type: 'IDENTIFIER', name: text() } }
+
+YieldClause
+  = _ "YIELD"i _ items:YieldItemList _ ob:OrderByClause? _ ls:LimitSkipClause? {
+      const result = { type: 'YIELD', items: items }
+      if (ob) result.orderBy = ob
+      if (ls) { result.limit = ls.limit; result.skip = ls.skip }
+      return result
+    }
+
+YieldItemList
+  = head:YieldItem tail:(_ "," _ YieldItem)* {
+      return [head, ...tail.map(t => t[3])]
+    }
+
+YieldItem
+  = name:Identifier _ alias:(_ "AS"i _ Identifier)? {
+      return { name: name, alias: alias ? alias[3] : null }
     }
 
 // ── 空白与注释 ──────────────────────────────────────────

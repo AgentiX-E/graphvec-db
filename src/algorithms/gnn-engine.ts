@@ -40,6 +40,17 @@ export interface EmbeddingResult {
   embedding: Float32Array
 }
 
+export interface NodeClassificationResult {
+  nodeId: number
+  predictLabel: string
+  confidences: Record<string, number>
+}
+
+export interface GraphClassificationResult {
+  predictLabel: string
+  confidences: Record<string, number>
+}
+
 // ── Constants ─────────────────────────────
 
 const DEFAULT_EMBEDDING_DIM = 128
@@ -402,6 +413,141 @@ export class GnnInferenceEngine {
   }
 
   /**
+   * 设置图数据访问器（用于获取所有节点 ID）
+   * @param getAllNodeIds 返回图中所有节点 ID 的函数
+   */
+  setGraphAccessor(getAllNodeIds: () => number[]): void {
+    this._getAllNodeIds = getAllNodeIds
+  }
+
+  private _getAllNodeIds: (() => number[]) | null = null
+
+  /**
+   * 批量节点分类
+   *
+   * 对每个 nodeId 提取特征，运行 ONNX 推理，将 softmax 输出 argmax 映射到 label 名。
+   *
+   * @param nodeIds 节点 ID 列表
+   * @param labelNames 标签名称列表（顺序与模型输出类对应）
+   * @returns 节点分类结果列表（不存在的节点被跳过）
+   */
+  async classifyNodes(
+    nodeIds: number[],
+    labelNames: string[],
+  ): Promise<NodeClassificationResult[]> {
+    this.ensureLoaded()
+
+    if (nodeIds.length === 0) {
+      return []
+    }
+
+    if (labelNames.length === 0) {
+      throw new Error('labelNames must not be empty')
+    }
+
+    const results: NodeClassificationResult[] = []
+
+    for (const nodeId of nodeIds) {
+      try {
+        const features = this.encodeNodeFeatures(nodeId)
+        const confidences = await this._runMultiClassInference(features, labelNames)
+        results.push({
+          nodeId,
+          predictLabel: confidences[0].label,
+          confidences: Object.fromEntries(confidences.map(c => [c.label, c.confidence])),
+        })
+      } catch {
+        // 节点不存在或无法编码 — 跳过
+        continue
+      }
+    }
+
+    return results
+  }
+
+  /**
+   * 图分类
+   *
+   * 获取图中所有节点的特征，按指定聚合方式（mean | max | sum）合并为全局嵌入，
+   * 运行 ONNX 推理得到图级分类结果。
+   *
+   * @param aggregation 聚合方式：'mean' | 'max' | 'sum'
+   * @param labelNames 标签名称列表
+   * @returns 图分类结果
+   */
+  async classifyGraph(
+    aggregation: 'mean' | 'max' | 'sum',
+    labelNames: string[],
+  ): Promise<GraphClassificationResult> {
+    this.ensureLoaded()
+
+    if (!labelNames || labelNames.length === 0) {
+      throw new Error('labelNames must not be empty')
+    }
+
+    // 获取所有节点 ID
+    const getAllNodeIds = this._getAllNodeIds
+    if (!getAllNodeIds) {
+      throw new Error('Graph accessor not set. Call setGraphAccessor() first.')
+    }
+
+    const allNodeIds = getAllNodeIds()
+    if (allNodeIds.length === 0) {
+      // 无节点时，返回全零 confidence
+      const zeroConfidences = Object.fromEntries(labelNames.map(l => [l, 0]))
+      return { predictLabel: labelNames[0], confidences: zeroConfidences }
+    }
+
+    // 收集所有节点特征
+    const embeddings: Float32Array[] = []
+    for (const nodeId of allNodeIds) {
+      try {
+        const features = this.encodeNodeFeatures(nodeId)
+        embeddings.push(features)
+      } catch {
+        // 跳过无法编码的节点
+        continue
+      }
+    }
+
+    if (embeddings.length === 0) {
+      const zeroConfidences = Object.fromEntries(labelNames.map(l => [l, 0]))
+      return { predictLabel: labelNames[0], confidences: zeroConfidences }
+    }
+
+    // 聚合
+    const dim = this.config.featureDimension
+    const aggregated = new Float32Array(dim)
+    if (aggregation === 'mean' || aggregation === 'sum') {
+      for (const emb of embeddings) {
+        for (let i = 0; i < dim; i++) {
+          aggregated[i] += emb[i]
+        }
+      }
+      if (aggregation === 'mean' && embeddings.length > 0) {
+        for (let i = 0; i < dim; i++) {
+          aggregated[i] /= embeddings.length
+        }
+      }
+    } else if (aggregation === 'max') {
+      for (let i = 0; i < dim; i++) {
+        let maxVal = -Infinity
+        for (const emb of embeddings) {
+          if (emb[i] > maxVal) maxVal = emb[i]
+        }
+        aggregated[i] = maxVal === -Infinity ? 0 : maxVal
+      }
+    }
+
+    // 运行 ONNX 推理获取预测
+    const confidences = await this._runMultiClassInference(aggregated, labelNames)
+    return {
+      predictLabel: confidences[0].label,
+      confidences: Object.fromEntries(confidences.map(c => [c.label, c.confidence])),
+    }
+  }
+
+  /**
    * 获取配置信息
    */
   getConfig(): GnnEngineConfig {
@@ -534,6 +680,73 @@ export class GnnInferenceEngine {
       logit,
     }
   }
+
+  /**
+   * 执行多分类 ONNX 推理
+   *
+   * 输入: [1, featureDimension] 特征向量
+   * 输出: [1, numClasses] softmax 概率
+   *
+   * @param features 特征向量
+   * @param labelNames 标签名称列表
+   * @returns 按置信度降序排列的标签-置信度对
+   */
+  private async _runMultiClassInference(
+    features: Float32Array,
+    labelNames: string[],
+  ): Promise<Array<{ label: string; confidence: number }>> {
+    const session = this.activeSession!
+    const inputNames = session.inputNames
+
+    // 构建输入 feeds
+    const feeds: Record<string, ort.Tensor> = {}
+
+    // 如果模型有多个输入，尝试匹配特征输入
+    if (inputNames.length === 1) {
+      feeds[inputNames[0]] = new ort.Tensor(
+        'float32',
+        features,
+        [1, features.length],
+      )
+    } else {
+      const featureInput = inputNames.find(
+        (n) =>
+          n.toLowerCase().includes('feature') ||
+          n.toLowerCase().includes('input') ||
+          n.toLowerCase().includes('data'),
+      ) ?? inputNames[0]
+      feeds[featureInput] = new ort.Tensor('float32', features, [
+        1,
+        features.length,
+      ])
+    }
+
+    // 运行推理
+    const results = await session.run(feeds)
+    const outputName = session.outputNames[0]
+    const outputTensor = results[outputName]
+
+    if (!outputTensor) {
+      throw new Error(`Expected output "${outputName}" not found in model outputs`)
+    }
+
+    const data = outputTensor.data as Float32Array
+    const numClasses = Math.min(labelNames.length, data.length)
+
+    // 对输出应用 softmax 得到概率分布
+    const probabilities = softmax(Array.from(data).slice(0, numClasses))
+
+    // 构造 label -> confidence 映射
+    const labelConfidences = labelNames.slice(0, numClasses).map((label, i) => ({
+      label,
+      confidence: probabilities[i],
+    }))
+
+    // 按置信度降序排列
+    labelConfidences.sort((a, b) => b.confidence - a.confidence)
+
+    return labelConfidences
+  }
 }
 
 // ── 工具函数 ──────────────────────────────
@@ -555,4 +768,12 @@ function logistic(x: number): number {
  */
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
+}
+
+/** Softmax 函数 */
+function softmax(logits: number[]): number[] {
+  const maxLogit = Math.max(...logits)
+  const exps = logits.map((l) => Math.exp(l - maxLogit))
+  const sumExps = exps.reduce((a, b) => a + b, 0)
+  return exps.map((e) => (sumExps > 0 ? e / sumExps : 0))
 }

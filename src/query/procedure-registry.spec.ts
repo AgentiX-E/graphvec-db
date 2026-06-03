@@ -1,267 +1,218 @@
-/**
- * procedure-registry.spec.ts — Tests for APOC-style procedure registry
- */
+// ============================================================
+// procedure-registry.spec.ts — Cypher Procedure Registry Tests
+// ============================================================
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { ProcedureRegistry, type ProcedureContext, type ProcedureArg } from './procedure-registry'
+import { ProcedureRegistry, globalRegistry, toAsyncIterable } from './procedure-registry'
+import { parseQuery, _executeQuery } from './query-engine'
 
-// ── Mock GraphEngine ──────────────────────────────────────
+// ── 测试用图数据 ──────────────────────────────────────────
 
-function createMockGraph() {
-  const nodes = new Map<string, Record<string, unknown>>()
-  const outEdges = new Map<string, Array<{ target: string; source: string; type: string }>>()
-  const inEdges = new Map<string, Array<{ target: string; source: string; type: string }>>()
+const testGraph = [
+  { _id: 'p1', _label: 'Person', name: 'Alice', age: 30 },
+  { _id: 'p2', _label: 'Person', name: 'Bob', age: 25 },
+  { _id: 'p3', _label: 'Pet', name: 'Whiskers', type: 'cat' },
+  { _id: 'p4', _label: 'Pet', name: 'Buddy', type: 'dog' },
+]
 
-  const graph = {
-    getAllNodes: () => Array.from(nodes.values()),
-    getOutEdges: (id: string) => outEdges.get(id) ?? [],
-    getInEdges: (id: string) => inEdges.get(id) ?? [],
-  }
+// ── 1. Registry 基础 API ──────────────────────────────────
 
-  function addNode(id: string, props: Record<string, unknown> = {}): void {
-    nodes.set(id, { id, ...props })
-  }
+describe('ProcedureRegistry', function() {
+  it('register — 注册和获取过程', function() {
+    const registry = new ProcedureRegistry()
+    const proc = {
+      name: 'my.test',
+      signature: 'my.test() :: (x :: INTEGER?)',
+      execute() { return [] },
+    }
+    registry.register(proc)
 
-  function addEdge(source: string, target: string, type = 'RELATED'): void {
-    const edge = { source, target, type }
-    if (!outEdges.has(source)) outEdges.set(source, [])
-    outEdges.get(source)!.push(edge)
-    if (!inEdges.has(target)) inEdges.set(target, [])
-    inEdges.get(target)!.push(edge)
-  }
-
-  return { graph, addNode, addEdge }
-}
-
-// ── Tests ─────────────────────────────────────────────────
-
-describe('ProcedureRegistry', () => {
-  let registry: ProcedureRegistry
-
-  beforeEach(() => {
-    registry = new ProcedureRegistry()
+    expect(registry.has('my.test')).toBe(true)
+    expect(registry.has('MY.TEST')).toBe(true) // case insensitive
+    expect(registry.get('my.test')).toBe(proc)
+    expect(registry.get('my.test')).toBeDefined()
   })
 
-  describe('register / has / list', () => {
-    it('registers and checks a procedure', () => {
-      registry.registerProcedure('test.echo', (args) => ({ result: args }))
-      expect(registry.hasProcedure('test.echo')).toBe(true)
-      expect(registry.hasProcedure('nonexistent')).toBe(false)
-    })
-
-    it('lists all registered procedures', () => {
-      const list = registry.listProcedures()
-      expect(list).toBeInstanceOf(Array)
-      // Built-in procedures
-      const names = list.map(p => p.name)
-      expect(names).toContain('algo.pageRank')
-      expect(names).toContain('algo.shortestPath')
-      expect(names).toContain('algo.connectedComponents')
-      expect(names).toContain('algo.kCore')
-    })
-
-    it('throws on duplicate registration', () => {
-      registry.registerProcedure('test.dup', () => [])
-      expect(() => registry.registerProcedure('test.dup', () => []))
-        .toThrow('already registered')
-    })
-
-    it('throws on unknown procedure call', async () => {
-      const ctx: ProcedureContext = { graph: {} as any }
-      await expect(registry.callProcedure('nonexistent', [], ctx))
-        .rejects.toThrow('Unknown procedure')
-    })
+  it('get — 不存在的返回 undefined', function() {
+    const registry = new ProcedureRegistry()
+    expect(registry.get('nonexistent')).toBeUndefined()
+    expect(registry.has('nonexistent')).toBe(false)
   })
 
-  describe('callProcedure', () => {
-    it('calls a custom procedure and returns result', async () => {
-      registry.registerProcedure('custom.fn', (args) => {
-        return { args, length: args.length }
-      })
-
-      const ctx: ProcedureContext = { graph: {} as any }
-      const result = await registry.callProcedure('custom.fn', ['hello', 42], ctx)
-      expect(result).toEqual({ args: ['hello', 42], length: 2 })
+  it('list — 列出所有已注册过程', function() {
+    const registry = new ProcedureRegistry()
+    registry.register({
+      name: 'a.proc',
+      signature: 'a.proc() :: (x :: ANY?)',
+      execute() { return [] },
     })
-
-    it('supports async procedures', async () => {
-      registry.registerProcedure('custom.async', async (args) => {
-        return { processed: true, count: args.length }
-      })
-
-      const ctx: ProcedureContext = { graph: {} as any }
-      const result = await registry.callProcedure('custom.async', [1, 2, 3], ctx)
-      expect(result).toEqual({ processed: true, count: 3 })
+    registry.register({
+      name: 'b.proc',
+      signature: 'b.proc() :: (y :: ANY?)',
+      execute() { return [] },
     })
+    const list = registry.list()
+    expect(list.length).toBe(2)
+    expect(list.map(p => p.name).sort()).toEqual(['a.proc', 'b.proc'])
+  })
+})
 
-    it('calling an unregistered procedure throws', async () => {
-      const ctx: ProcedureContext = { graph: {} as any }
-      await expect(registry.callProcedure('unknown.proc', [], ctx))
-        .rejects.toThrow('Unknown')
-    })
+// ── 2. 内置过程 — 全局注册 ────────────────────────────────
+
+describe('内置 Procedure — globalRegistry', function() {
+  it('globalRegistry 包含所有 8+ 个内置过程', function() {
+    const list = globalRegistry.list()
+    const names = list.map(p => p.name)
+
+    expect(names).toContain('db.labels')
+    expect(names).toContain('db.relationshipTypes')
+    expect(names).toContain('db.propertyKeys')
+    expect(names).toContain('db.schema.nodeTypeProperties')
+    expect(names).toContain('db.schema.visualization')
+    expect(names).toContain('dbms.listConfig')
+    expect(names).toContain('db.stats.retrieve')
+    expect(names).toContain('db.index.fulltext.queryNodes')
+    expect(names).toContain('db.index.fulltext.queryRelationshipIndexes')
+
+    // 至少 9 个
+    expect(list.length).toBeGreaterThanOrEqual(9)
+  })
+})
+
+// ── 3. 解析和执行 ──────────────────────────────────────────
+
+describe('CALL procedure — 解析与执行', function() {
+  it('解析 CALL db.labels()', function() {
+    const plan = parseQuery('CALL db.labels()')
+    expect(plan.type).toBe('CALL_PROCEDURE')
+    expect(plan.callProcedure).toBeDefined()
+    if (plan.callProcedure) {
+      expect(plan.callProcedure.name).toBe('db.labels')
+      expect(plan.callProcedure.args).toEqual([])
+    }
   })
 
-  describe('built-in procedures - algo.pageRank', () => {
-    it('returns empty for empty graph', async () => {
-      const { graph } = createMockGraph()
-      const result = await registry.callProcedure('algo.pageRank', [], { graph } as any)
-      expect(result).toEqual([])
-    })
-
-    it('computes PageRank scores for a simple graph', async () => {
-      const { graph, addNode, addEdge } = createMockGraph()
-      addNode('A')
-      addNode('B')
-      addNode('C')
-      addEdge('A', 'B')
-      addEdge('A', 'C')
-      addEdge('B', 'C')
-
-      const result = await registry.callProcedure('algo.pageRank', [100], { graph } as any) as Array<{ node: string; score: number }>
-      expect(result).toHaveLength(3)
-      expect(result.map(r => r.node).sort()).toEqual(['A', 'B', 'C'])
-      // A (source) should have lower score than C (sink)
-      const scoreA = result.find(r => r.node === 'A')!.score
-      const scoreC = result.find(r => r.node === 'C')!.score
-      expect(scoreA).toBeGreaterThan(0)
-      expect(scoreC).toBeGreaterThan(scoreA)
-    })
+  it('解析 CALL db.labels() YIELD label', function() {
+    const plan = parseQuery('CALL db.labels() YIELD label')
+    expect(plan.type).toBe('CALL_PROCEDURE')
+    expect(plan.callProcedure).toBeDefined()
+    if (plan.callProcedure) {
+      expect(plan.callProcedure.yieldItems).toBeDefined()
+      expect(plan.callProcedure.yieldItems!.length).toBe(1)
+      expect(plan.callProcedure.yieldItems![0].name).toBe('label')
+    }
   })
 
-  describe('built-in procedures - algo.shortestPath', () => {
-    it('returns path between two connected nodes', async () => {
-      const { graph, addNode, addEdge } = createMockGraph()
-      addNode('A')
-      addNode('B')
-      addNode('C')
-      addEdge('A', 'B')
-      addEdge('B', 'C')
+  it('解析 CALL db.index.fulltext.queryNodes()', function() {
+    const plan = parseQuery('CALL db.index.fulltext.queryNodes("idx", "term") YIELD node, score')
+    expect(plan.type).toBe('CALL_PROCEDURE')
+    if (plan.callProcedure) {
+      expect(plan.callProcedure.name).toBe('db.index.fulltext.queryNodes')
+      expect(plan.callProcedure.args).toEqual(['idx', 'term'])
+      expect(plan.callProcedure.yieldItems!.map((y: { name: string }) => y.name)).toEqual(['node', 'score'])
+    }
+  })
 
-      const result = await registry.callProcedure(
-        'algo.shortestPath',
-        ['A', 'C'],
-        { graph } as any,
-      ) as Array<{ node: string; edge: Record<string, unknown> | null }>
+  it('执行 CALL db.labels() — 返回 label 列表', function() {
+    const result = _executeQuery(
+      parseQuery('CALL db.labels()'),
+      testGraph,
+    ) as any[]
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBeGreaterThanOrEqual(2)
+    const labels = result.map((r: { label: string }) => r.label).sort()
+    expect(labels).toContain('Person')
+    expect(labels).toContain('Pet')
+  })
 
-      expect(result.length).toBeGreaterThanOrEqual(2)
-      expect(result[0].node).toBe('A')
-      expect(result[result.length - 1].node).toBe('C')
-    })
+  it('执行 CALL db.labels() YIELD label — 返回 label 列', function() {
+    const result = _executeQuery(
+      parseQuery('CALL db.labels() YIELD label'),
+      testGraph,
+    ) as any[]
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBeGreaterThanOrEqual(2)
+    // 只应该有 label 字段
+    for (const row of result) {
+      expect(Object.keys(row)).toEqual(['label'])
+    }
+  })
 
-    it('returns empty array when no path exists', async () => {
-      const { graph, addNode } = createMockGraph()
-      addNode('A')
-      addNode('B')
-
-      const result = await registry.callProcedure(
-        'algo.shortestPath',
-        ['A', 'B'],
-        { graph } as any,
+  it('YIELD 过滤不存在的列 — 报错', function() {
+    expect(() => {
+      _executeQuery(
+        parseQuery('CALL db.labels() YIELD nonExistentColumn'),
+        testGraph,
       )
-      expect(result).toEqual([])
-    })
-
-    it('throws when start/end node are missing', async () => {
-      const { graph } = createMockGraph()
-      await expect(registry.callProcedure(
-        'algo.shortestPath',
-        ['', 'B'],
-        { graph } as any,
-      )).rejects.toThrow('requires startNode')
-    })
+    }).toThrow(/Invalid YIELD field/)
   })
 
-  describe('built-in procedures - algo.connectedComponents', () => {
-    it('finds connected components', async () => {
-      const { graph, addNode, addEdge } = createMockGraph()
-      addNode('A')
-      addNode('B')
-      addNode('C')
-      addNode('D')
-      addEdge('A', 'B') // component 0
-      addEdge('C', 'D') // component 1
-
-      const result = await registry.callProcedure(
-        'algo.connectedComponents',
-        [],
-        { graph } as any,
-      ) as Array<{ component: number; nodes: string[]; size: number }>
-
-      expect(result).toHaveLength(2)
-      expect(result[0].size).toBe(2)
-      expect(result[1].size).toBe(2)
-    })
-
-    it('returns empty for empty graph', async () => {
-      const { graph } = createMockGraph()
-      const result = await registry.callProcedure(
-        'algo.connectedComponents',
-        [],
-        { graph } as any,
+  it('调用不存在的 procedure — 报错', function() {
+    expect(() => {
+      _executeQuery(
+        parseQuery('CALL some.nonexistent.procedure()'),
+        testGraph,
       )
-      expect(result).toEqual([])
-    })
+    }).toThrow(/Unknown procedure/)
+  })
+})
+
+// ── 4. 高级 YIELD 测试 ────────────────────────────────────
+
+describe('CALL procedure — YIELD 高级场景', function() {
+  it('YIELD label AS lbl — 别名', function() {
+    const result = _executeQuery(
+      parseQuery('CALL db.labels() YIELD label AS lbl'),
+      testGraph,
+    ) as any[]
+    expect(result.length).toBeGreaterThanOrEqual(2)
+    for (const row of result) {
+      expect(Object.keys(row)).toEqual(['lbl'])
+      expect(typeof row.lbl).toBe('string')
+    }
+  })
+})
+
+// ── 5. 更多内置过程 ──────────────────────────────────────
+
+describe('其他内置 Procedure', function() {
+  it('db.stats.retrieve() — 返回统计信息', function() {
+    const result = _executeQuery(
+      parseQuery('CALL db.stats.retrieve()'),
+      testGraph,
+    ) as any[]
+    expect(result.length).toBe(1)
+    expect(result[0].section).toBe('graph')
+    expect(result[0].stat).toBeDefined()
+    expect(result[0].stat.nodeCount).toBe(4)
   })
 
-  describe('built-in procedures - algo.kCore', () => {
-    it('finds k-core in a graph', async () => {
-      const { graph, addNode, addEdge } = createMockGraph()
-      addNode('A')
-      addNode('B')
-      addNode('C')
-      addNode('D')
-      addEdge('A', 'B')
-      addEdge('B', 'C')
-      addEdge('C', 'A') // triangle A-B-C
-      addEdge('D', 'A') // D connected to A only
-
-      const result = await registry.callProcedure(
-        'algo.kCore',
-        [2],
-        { graph } as any,
-      ) as Array<{ k: number; coreSize: number; coreNodes: string[] }>
-
-      expect(result).toHaveLength(1)
-      expect(result[0].k).toBe(2)
-      expect(result[0].coreSize).toBe(3) // A, B, C are in 2-core
-    })
-
-    it('returns nodes for default k=2', async () => {
-      const { graph, addNode, addEdge } = createMockGraph()
-      addNode('A')
-      addNode('B')
-      addNode('C')
-      addEdge('A', 'B')
-      addEdge('B', 'C')
-      addEdge('C', 'A')
-
-      const result = await registry.callProcedure(
-        'algo.kCore',
-        [],
-        { graph } as any,
-      ) as Array<{ k: number; coreSize: number }>
-
-      expect(result[0].k).toBe(2)
-      expect(result[0].coreSize).toBe(3)
-    })
+  it('db.schema.visualization() — 返回拓扑信息', function() {
+    const result = _executeQuery(
+      parseQuery('CALL db.schema.visualization()'),
+      testGraph,
+    ) as any[]
+    expect(result.length).toBe(1)
+    expect(typeof result[0].nodes).toBe('number')
+    expect(typeof result[0].edges).toBe('number')
+    expect(result[0].degreeDistribution).toBeDefined()
   })
 
-  describe('invoke shorthand', () => {
-    it('invoke with context', async () => {
-      const { graph } = createMockGraph()
-      const result = await registry.invoke('algo.pageRank', [], { graph } as any)
-      expect(result).toEqual([])
-    })
+  it('dbms.listConfig() — 返回配置信息', function() {
+    const result = _executeQuery(
+      parseQuery('CALL dbms.listConfig()'),
+      testGraph,
+    ) as any[]
+    expect(result.length).toBeGreaterThanOrEqual(1)
+    expect(result[0].name).toBeDefined()
+    expect(result[0].description).toBeDefined()
+    expect(result[0].value).toBeDefined()
+  })
 
-    it('invoke without context works for registered procs', async () => {
-      // This calls pageRank with empty args and empty graph - should return empty
-      const result = await registry.invoke('algo.pageRank', [])
-      expect(result).toEqual([])
-    })
-
-    it('invoke throws for unknown procedure', async () => {
-      await expect(registry.invoke('unknown.proc', []))
-        .rejects.toThrow('Unknown')
-    })
+  it('db.index.fulltext.queryNodes() — 空结果', function() {
+    const result = _executeQuery(
+      parseQuery('CALL db.index.fulltext.queryNodes("idx", "term")'),
+      testGraph,
+    ) as any[]
+    expect(result).toEqual([])
   })
 })

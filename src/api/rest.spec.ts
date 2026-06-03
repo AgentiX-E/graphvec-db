@@ -1936,6 +1936,7 @@ describe('RestApiServer inline TLS (config.tls)', () => {
 class MockGnnEngine {
   isLoaded = false
   private config = { featureDimension: 16, embeddingDimension: 128, batchSize: 64 }
+  private _getAllNodeIds: (() => number[]) | null = null
 
   getConfig() { return { ...this.config } }
 
@@ -1967,6 +1968,48 @@ class MockGnnEngine {
       nodeId: c,
       score: 1 - i * 0.1,
     }))
+  }
+
+  setGraphAccessor(fn: () => number[]): void {
+    this._getAllNodeIds = fn
+  }
+
+  async classifyNodes(nodeIds: number[], labelNames: string[]): Promise<any[]> {
+    if (!this.isLoaded) throw new Error('GNN model not loaded')
+    const results: any[] = []
+    for (const nodeId of nodeIds) {
+      // Simulate feature extraction failing for unknown nodes
+      if (nodeId > 100) continue // skip non-existent
+      const confidences: Record<string, number> = {}
+      for (let i = 0; i < labelNames.length; i++) {
+        confidences[labelNames[i]] = Math.max(0, 1 - Math.abs(nodeId - i) * 0.1)
+      }
+      // Normalize to sum=1
+      const total = Object.values(confidences).reduce((a, b) => a + b, 0)
+      for (const k of Object.keys(confidences)) {
+        confidences[k] = total > 0 ? confidences[k] / total : 0
+      }
+      const sorted = Object.entries(confidences).sort((a, b) => b[1] - a[1])
+      results.push({
+        nodeId,
+        predictLabel: sorted[0][0],
+        confidences,
+      })
+    }
+    return results
+  }
+
+  async classifyGraph(aggregation: string, labelNames: string[]): Promise<any> {
+    if (!this.isLoaded) throw new Error('GNN model not loaded')
+    const confidences: Record<string, number> = {}
+    for (let i = 0; i < labelNames.length; i++) {
+      confidences[labelNames[i]] = i === 0 ? 0.85 : (0.15 / (labelNames.length - 1))
+    }
+    const sorted = Object.entries(confidences).sort((a, b) => b[1] - a[1])
+    return {
+      predictLabel: sorted[0][0],
+      confidences,
+    }
   }
 }
 
@@ -2262,6 +2305,167 @@ describe('GAP-51: GNN REST API Endpoints', () => {
       candidates: [10, 11],
     })
     expect(res.statusCode).toBe(500)
+  })
+
+  // ──────────────────────────────────────────
+  // GNN 节点分类 端点测试
+  // ──────────────────────────────────────────
+
+  test('POST /api/v1/gnn/node-classify with 2 nodes should return 2 results', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/node-classify', {
+      nodeIds: [1, 2],
+      labels: ['Person', 'Company', 'City', 'Product'],
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.body as any
+    expect(body.results).toBeInstanceOf(Array)
+    expect(body.results.length).toBe(2)
+    expect(body.results[0].nodeId).toBe(1)
+    expect(typeof body.results[0].predictLabel).toBe('string')
+    expect(body.results[0].confidences).toBeInstanceOf(Object)
+    expect(Object.keys(body.results[0].confidences).length).toBe(4)
+  })
+
+  test('POST /api/v1/gnn/node-classify should skip non-existent nodes', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    // nodeId 101 is > 100, so MockGnnEngine skips it
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/node-classify', {
+      nodeIds: [1, 101, 2],
+      labels: ['Person', 'Company', 'City', 'Product'],
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.body as any
+    expect(body.results).toBeInstanceOf(Array)
+    expect(body.results.length).toBe(2)
+    expect(body.results[0].nodeId).toBe(1)
+    expect(body.results[1].nodeId).toBe(2)
+  })
+
+  test('POST /api/v1/gnn/node-classify before loading model should return 400', async () => {
+    mockGnnEngine.isLoaded = false
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/node-classify', {
+      nodeIds: [1],
+      labels: ['Person', 'Company'],
+    })
+    expect(res.statusCode).toBe(400)
+    expect((res.body as any).error).toContain('No model loaded')
+  })
+
+  test('POST /api/v1/gnn/node-classify with empty nodeIds should return empty results', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/node-classify', {
+      nodeIds: [],
+      labels: ['Person', 'Company'],
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).results).toEqual([])
+  })
+
+  test('POST /api/v1/gnn/node-classify missing fields should return 400', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/node-classify', {
+      nodeIds: [1],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  // ──────────────────────────────────────────
+  // GNN 图分类 端点测试
+  // ──────────────────────────────────────────
+
+  test('POST /api/v1/gnn/graph-classify should return graph-level prediction', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/graph-classify', {
+      aggregation: 'mean',
+      labels: ['SocialNetwork', 'KnowledgeGraph', 'ECommerce'],
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.body as any
+    expect(body.predictLabel).toBeDefined()
+    expect(typeof body.predictLabel).toBe('string')
+    expect(body.confidences).toBeInstanceOf(Object)
+    expect(Object.keys(body.confidences).length).toBe(3)
+  })
+
+  test('POST /api/v1/gnn/graph-classify before loading model should return 400', async () => {
+    mockGnnEngine.isLoaded = false
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/graph-classify', {
+      aggregation: 'mean',
+      labels: ['SocialNetwork', 'KnowledgeGraph'],
+    })
+    expect(res.statusCode).toBe(400)
+    expect((res.body as any).error).toContain('No model loaded')
+  })
+
+  test('POST /api/v1/gnn/graph-classify missing labels should return 400', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/graph-classify', {
+      aggregation: 'mean',
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/graph-classify invalid aggregation should return 400', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/graph-classify', {
+      aggregation: 'invalid',
+      labels: ['A', 'B'],
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  test('POST /api/v1/gnn/graph-classify with max aggregation should work', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/graph-classify', {
+      aggregation: 'max',
+      labels: ['CategoryA', 'CategoryB'],
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).predictLabel).toBeDefined()
+  })
+
+  test('POST /api/v1/gnn/graph-classify with sum aggregation should work', async () => {
+    mockGnnEngine.isLoaded = true
+    server = createGnnServer()
+    await server.start()
+
+    const res = await makeRequest(server, 'POST', '/api/v1/gnn/graph-classify', {
+      aggregation: 'sum',
+      labels: ['CategoryA', 'CategoryB'],
+    })
+    expect(res.statusCode).toBe(200)
+    expect((res.body as any).predictLabel).toBeDefined()
   })
 })
 

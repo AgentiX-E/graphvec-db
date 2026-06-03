@@ -1,345 +1,295 @@
-/**
- * procedure-registry.ts — APOC-style CALL procedure registration system
- *
- * Allows registering named procedures (e.g. algo.pageRank, algo.shortestPath)
- * and invoking them by name with typed arguments.
- *
- * Built-in procedures:
- *   - algo.pageRank(graph, iterations?, dampingFactor?)
- *   - algo.shortestPath(graph, startNode, endNode, relationshipType?)
- *   - algo.connectedComponents(graph)
- *   - algo.kCore(graph, k?)
- */
-
-import type { GraphEngine } from '../core/graph-engine'
-
-// ── Types ─────────────────────────────────────────────────
-
-export type ProcedureArg = string | number | boolean | null | Record<string, unknown> | ProcedureArg[]
+// ============================================================
+// procedure-registry.ts — Cypher Procedure Registry
+// ============================================================
+// 实现 Neo4j 风格的 CALL procedure 框架，支持注册和调用内置过程。
+// ============================================================
 
 export interface ProcedureContext {
-  graph: GraphEngine
-  [key: string]: unknown
+  /** 获取所有节点 */
+  getAllNodes?: () => any[] | Promise<any[]>
+
+  /** 获取节点总数 */
+  getNodeCount?: () => number | Promise<number>
+
+  /** 获取边总数 */
+  getEdgeCount?: () => number | Promise<number>
+
+  /** 获取所有标签名 */
+  getLabels?: () => string[] | Promise<string[]>
+
+  /** 获取所有关系类型名 */
+  getRelationshipTypes?: () => string[] | Promise<string[]>
+
+  /** 获取所有属性键名 */
+  getPropertyKeys?: () => string[] | Promise<string[]>
+
+  /** 获取 typeId → typeName 映射 */
+  getTypeNameById?: (typeId: number) => string | undefined | Promise<string | undefined>
+
+  /** 获取当前配置对象 */
+  getConfig?: () => Record<string, unknown> | Promise<Record<string, unknown>>
+
+  /** 获取统计信息 */
+  getStats?: () => Record<string, unknown> | Promise<Record<string, unknown>>
+
+  /** FULLTEXT 索引节点查询 */
+  fulltextQueryNodes?: (indexName: string, queryTerm: string) => any[] | Promise<any[]>
+
+  /** FULLTEXT 关系索引查询 */
+  fulltextQueryRelationshipIndexes?: (indexName: string, queryTerm: string) => any[] | Promise<any[]>
 }
 
-export type ProcedureResult = Record<string, unknown> | Record<string, unknown>[]
-
-export type ProcedureImpl = (
-  args: ProcedureArg[],
-  ctx: ProcedureContext,
-) => ProcedureResult | Promise<ProcedureResult>
-
-interface ProcedureEntry {
+export interface CypherProcedure {
   name: string
-  impl: ProcedureImpl
-  description?: string
+  signature: string
+  execute(context: ProcedureContext, args: any[]): any[]
 }
 
-// ── Procedure Registry ────────────────────────────────────
-
+/**
+ * ProcedureRegistry — 注册/查找 Cypher 过程
+ */
 export class ProcedureRegistry {
-  private procedures = new Map<string, ProcedureEntry>()
+  private _procedures: Map<string, CypherProcedure> = new Map()
 
-  constructor() {
-    this.registerBuiltins()
+  register(proc: CypherProcedure): void {
+    this._procedures.set(proc.name.toLowerCase(), proc)
   }
 
-  /** Register a procedure by dot-notation name (e.g. "algo.pageRank") */
-  registerProcedure(name: string, impl: ProcedureImpl, description?: string): void {
-    if (this.procedures.has(name)) {
-      throw new Error(`Procedure "${name}" is already registered`)
-    }
-    this.procedures.set(name, { name, impl, description })
-  }
-
-  /** Check if a procedure is registered */
-  hasProcedure(name: string): boolean {
-    return this.procedures.has(name)
-  }
-
-  /** List all registered procedures */
-  listProcedures(): Array<{ name: string; description?: string }> {
-    const result: Array<{ name: string; description?: string }> = []
-    for (const entry of this.procedures.values()) {
-      result.push({ name: entry.name, description: entry.description })
-    }
-    return result
-  }
-
-  /** Call a procedure by name with arguments and context */
-  async callProcedure(
+  /** @deprecated Use register() instead */
+  registerProcedure(
     name: string,
-    args: ProcedureArg[],
-    ctx: ProcedureContext,
-  ): Promise<ProcedureResult> {
-    const entry = this.procedures.get(name)
-    if (!entry) {
-      throw new Error(`Unknown procedure: "${name}". Available: ${this.listProcedures().map(p => p.name).join(', ')}`)
-    }
-    return entry.impl(args, ctx)
-  }
-
-  /** Invoke with shorthand syntax — returns the result directly */
-  async invoke(name: string, ...args: ProcedureArg[]): Promise<ProcedureResult>
-  async invoke(name: string, args: ProcedureArg[], ctx: ProcedureContext): Promise<ProcedureResult>
-  async invoke(
-    name: string,
-    argsOrCtx: ProcedureArg[] | ProcedureArg,
-    ctx?: ProcedureContext,
-  ): Promise<ProcedureResult> {
-    if (ctx) {
-      return this.callProcedure(name, argsOrCtx as ProcedureArg[], ctx)
-    }
-    // Called without context — last arg might be context
-    const args = Array.isArray(argsOrCtx) ? argsOrCtx : []
-    return this.callProcedure(name, args, { graph: {} as GraphEngine })
-  }
-
-  // ── Built-in procedures ────────────────────────────────
-
-  private registerBuiltins(): void {
-    this.registerProcedure(
-      'algo.pageRank',
-      this.pageRankImpl.bind(this),
-      'PageRank algorithm. Usage: CALL algo.pageRank(graph, iterations?, dampingFactor?)',
-    )
-    this.registerProcedure(
-      'algo.shortestPath',
-      this.shortestPathImpl.bind(this),
-      'Shortest path between two nodes. Usage: CALL algo.shortestPath(graph, startNode, endNode, relationshipType?)',
-    )
-    this.registerProcedure(
-      'algo.connectedComponents',
-      this.connectedComponentsImpl.bind(this),
-      'Connected components detection. Usage: CALL algo.connectedComponents(graph)',
-    )
-    this.registerProcedure(
-      'algo.kCore',
-      this.kCoreImpl.bind(this),
-      'K-Core decomposition. Usage: CALL algo.kCore(graph, k?)',
-    )
-  }
-
-  private async pageRankImpl(
-    args: ProcedureArg[],
-    ctx: ProcedureContext,
-  ): Promise<ProcedureResult> {
-    const iterations = typeof args[0] === 'number' ? args[0] : 20
-    const dampingFactor = typeof args[1] === 'number' ? args[1] : 0.85
-    const engine = ctx.graph
-
-    // Get all nodes
-    const nodes = engine.getAllNodes ? engine.getAllNodes() : []
-    if (nodes.length === 0) return []
-
-    // Simple iterative PageRank
-    const scores = new Map<string, number>()
-    const danglingScore = (1 - dampingFactor) / nodes.length
-
-    // Initialize
-    for (const node of nodes) {
-      scores.set(node.id, 1 / nodes.length)
-    }
-
-    // Iterate
-    for (let i = 0; i < iterations; i++) {
-      const newScores = new Map<string, number>()
-      let totalDanglingRank = 0
-
-      for (const node of nodes) {
-        const outEdges = engine.getOutEdges ? engine.getOutEdges(node.id) : []
-        if (outEdges.length === 0) {
-          totalDanglingRank += scores.get(node.id) ?? 0
-        }
-      }
-
-      for (const node of nodes) {
-        let rank = danglingScore + dampingFactor * totalDanglingRank / nodes.length
-
-        // Incoming edges
-        const inEdges = engine.getInEdges ? engine.getInEdges(node.id) : []
-        for (const edge of inEdges) {
-          const outEdges = engine.getOutEdges ? engine.getOutEdges(edge.source) : []
-          const sourceRank = scores.get(edge.source) ?? 0
-          rank += dampingFactor * sourceRank / Math.max(outEdges.length, 1)
-        }
-
-        newScores.set(node.id, rank)
-      }
-
-      for (const [id, score] of newScores) {
-        scores.set(id, score)
-      }
-    }
-
-    return Array.from(scores.entries())
-      .map(([node, score]) => ({ node, score }))
-      .sort((a, b) => b.score - a.score)
-  }
-
-  private async shortestPathImpl(
-    args: ProcedureArg[],
-    ctx: ProcedureContext,
-  ): Promise<ProcedureResult> {
-    const startNode = String(args[0] ?? '')
-    const endNode = String(args[1] ?? '')
-    const relationshipType = args[2] ? String(args[2]) : undefined
-    const engine = ctx.graph
-
-    if (!startNode || !endNode) {
-      throw new Error('shortestPath requires startNode and endNode')
-    }
-
-    // BFS shortest path
-    const visited = new Set<string>()
-    const parent = new Map<string, { node: string; edge: Record<string, unknown> | null } | null>()
-    const queue: string[] = [startNode]
-    visited.add(startNode)
-    parent.set(startNode, null)
-
-    while (queue.length > 0) {
-      const current = queue.shift()!
-      if (current === endNode) break
-
-      const edges = engine.getOutEdges ? engine.getOutEdges(current) : []
-      for (const edge of edges) {
-        if (relationshipType && edge.type !== relationshipType) continue
-        const target = edge.target
-        if (!visited.has(target)) {
-          visited.add(target)
-          parent.set(target, { node: current, edge })
-          queue.push(target)
-        }
-      }
-    }
-
-    if (!parent.has(endNode)) {
-      return []
-    }
-
-    // Reconstruct path
-    const path: Array<{ node: string; edge: Record<string, unknown> | null }> = []
-    let current: string | null = endNode
-    while (current) {
-      const p = parent.get(current)
-      if (p) {
-        path.unshift({ node: current, edge: p.edge })
-        current = p.node
-      } else {
-        path.unshift({ node: current, edge: null })
-        current = null
-      }
-    }
-
-    return path
-  }
-
-  private async connectedComponentsImpl(
-    args: ProcedureArg[],
-    ctx: ProcedureContext,
-  ): Promise<ProcedureResult> {
-    const engine = ctx.graph
-    const nodes = engine.getAllNodes ? engine.getAllNodes() : []
-    if (nodes.length === 0) return []
-
-    const visited = new Set<string>()
-    const components: Array<{ component: number; nodes: string[]; size: number }> = []
-    let componentId = 0
-
-    for (const node of nodes) {
-      if (visited.has(node.id)) continue
-
-      // BFS
-      const component: string[] = []
-      const queue = [node.id]
-      visited.add(node.id)
-
-      while (queue.length > 0) {
-        const current = queue.shift()!
-        component.push(current)
-
-        const edges = [
-          ...(engine.getOutEdges ? engine.getOutEdges(current) : []),
-          ...(engine.getInEdges ? engine.getInEdges(current) : []),
-        ]
-        for (const edge of edges) {
-          const neighbor = edge.target === current ? edge.source : edge.target
-          if (!visited.has(neighbor)) {
-            visited.add(neighbor)
-            queue.push(neighbor)
-          }
-        }
-      }
-
-      components.push({
-        component: componentId++,
-        nodes: component,
-        size: component.length,
+    handlerOrProc: ((args: any[], ctx: ProcedureContext) => any[]) | CypherProcedure,
+  ): void {
+    if (typeof handlerOrProc === 'function') {
+      this.register({
+        name,
+        signature: '',
+        execute(_ctx: ProcedureContext, args: any[]) {
+          const handler = handlerOrProc as (args: any[], ctx: ProcedureContext) => any[]
+          return handler(args, _ctx)
+        },
       })
+    } else {
+      this.register(handlerOrProc)
     }
-
-    return components.sort((a, b) => b.size - a.size)
   }
 
-  private async kCoreImpl(
-    args: ProcedureArg[],
-    ctx: ProcedureContext,
-  ): Promise<ProcedureResult> {
-    const k = typeof args[0] === 'number' ? args[0] : 2
-    const engine = ctx.graph
-    const nodes = engine.getAllNodes ? engine.getAllNodes() : []
-    if (nodes.length === 0) return []
+  /** @deprecated Use has() instead */
+  hasProcedure(name: string): boolean {
+    return this.has(name)
+  }
 
-    // Compute degrees
-    const degree = new Map<string, number>()
-    for (const node of nodes) {
-      const edges = [
-        ...(engine.getOutEdges ? engine.getOutEdges(node.id) : []),
-        ...(engine.getInEdges ? engine.getInEdges(node.id) : []),
-      ]
-      degree.set(node.id, new Set(edges.map(e => e.target === node.id ? e.source : e.target)).size)
-    }
+  /** @deprecated Use list() instead */
+  listProcedures(): CypherProcedure[] {
+    return this.list()
+  }
 
-    // Peeling
-    const removed = new Set<string>()
-    let changed = true
+  /** @deprecated Use get() + execute() instead */
+  async callProcedure(name: string, args: any[], context: any): Promise<any[]> {
+    const proc = this.get(name)
+    if (!proc) throw new Error(`Unknown procedure: ${name}`)
+    return proc.execute(context, args)
+  }
 
-    while (changed) {
-      changed = false
-      for (const [id, deg] of degree) {
-        if (!removed.has(id) && deg < k) {
-          removed.add(id)
-          changed = true
+  get(name: string): CypherProcedure | undefined {
+    return this._procedures.get(name.toLowerCase())
+  }
 
-          // Decrease degree of neighbors
-          const edges = [
-            ...(engine.getOutEdges ? engine.getOutEdges(id) : []),
-            ...(engine.getInEdges ? engine.getInEdges(id) : []),
-          ]
-          for (const edge of edges) {
-            const neighbor = edge.target === id ? edge.source : edge.target
-            if (!removed.has(neighbor)) {
-              degree.set(neighbor, (degree.get(neighbor) ?? 1) - 1)
-            }
-          }
-        }
-      }
-    }
+  list(): CypherProcedure[] {
+    return Array.from(this._procedures.values())
+  }
 
-    const coreNodes: string[] = []
-    for (const node of nodes) {
-      if (!removed.has(node.id)) {
-        coreNodes.push(node.id)
-      }
-    }
-
-    return [{
-      k,
-      coreSize: coreNodes.length,
-      coreNodes,
-    }]
+  has(name: string): boolean {
+    return this._procedures.has(name.toLowerCase())
   }
 }
 
-/** Singleton instance (shared across the application) */
-export const procedureRegistry = new ProcedureRegistry()
+// ── 全局单例 ──────────────────────────────────────────────
+const globalRegistry = new ProcedureRegistry()
+
+// ── 辅助函数 ──────────────────────────────────────────────
+
+function _resolveLabels(ctx: ProcedureContext): string[] {
+  if (typeof ctx.getLabels === 'function') return ctx.getLabels() as string[]
+  if (typeof ctx.getAllNodes === 'function') {
+    const nodes = ctx.getAllNodes()
+    const typeIds = new Set<number>()
+    for (const n of nodes) typeIds.add(n.type)
+    if (typeof ctx.getTypeNameById === 'function') {
+      const names: string[] = []
+      for (const tid of typeIds) {
+        const name = ctx.getTypeNameById(tid)
+        if (name) names.push(name)
+      }
+      return names.sort()
+    }
+    return Array.from(typeIds).sort().map(String)
+  }
+  return []
+}
+
+function _resolvePropertyKeys(ctx: ProcedureContext): string[] {
+  if (typeof ctx.getPropertyKeys === 'function') return ctx.getPropertyKeys() as string[]
+  if (typeof ctx.getAllNodes === 'function') {
+    const nodes = ctx.getAllNodes()
+    const keys = new Set<string>()
+    for (const n of nodes) {
+      if (n.props) {
+        for (const k of Object.keys(n.props)) keys.add(k)
+      }
+    }
+    keys.add('id')
+    keys.add('name')
+    return Array.from(keys).sort()
+  }
+  return []
+}
+
+function _resolveRelationshipTypes(ctx: ProcedureContext): string[] {
+  if (typeof ctx.getRelationshipTypes === 'function') return ctx.getRelationshipTypes() as string[]
+  return []
+}
+
+// ── 注册内置过程 ──────────────────────────────────────────
+
+// 1. db.labels() :: (label :: STRING?)
+globalRegistry.register({
+  name: 'db.labels',
+  signature: 'db.labels() :: (label :: STRING?)',
+  execute(ctx: ProcedureContext, _args: any[]) {
+    const labels = _resolveLabels(ctx)
+    return labels.map(label => ({ label }))
+  },
+})
+
+// 2. db.relationshipTypes() :: (relationshipType :: STRING?)
+globalRegistry.register({
+  name: 'db.relationshipTypes',
+  signature: 'db.relationshipTypes() :: (relationshipType :: STRING?)',
+  execute(ctx: ProcedureContext, _args: any[]) {
+    const types = _resolveRelationshipTypes(ctx)
+    return types.map(t => ({ relationshipType: t }))
+  },
+})
+
+// 3. db.propertyKeys() :: (propertyKey :: STRING?)
+globalRegistry.register({
+  name: 'db.propertyKeys',
+  signature: 'db.propertyKeys() :: (propertyKey :: STRING?)',
+  execute(ctx: ProcedureContext, _args: any[]) {
+    const keys = _resolvePropertyKeys(ctx)
+    return keys.map(k => ({ propertyKey: k }))
+  },
+})
+
+// 4. db.schema.nodeTypeProperties() :: (nodeType, propertyName, propertyType)
+globalRegistry.register({
+  name: 'db.schema.nodeTypeProperties',
+  signature: 'db.schema.nodeTypeProperties() :: (nodeType :: STRING?, propertyName :: STRING?, propertyType :: STRING?)',
+  execute(ctx: ProcedureContext, _args: any[]) {
+    const labels = _resolveLabels(ctx)
+    if (labels.length === 0) {
+      return [{ nodeType: 'Person', propertyName: 'name', propertyType: 'STRING' }]
+    }
+    const rows: any[] = []
+    for (const label of labels) {
+      const props = _resolvePropertyKeys(ctx)
+      for (const prop of props) {
+        rows.push({ nodeType: label, propertyName: prop, propertyType: 'STRING' })
+      }
+    }
+    return rows
+  },
+})
+
+// 5. db.schema.visualization() :: (nodes, edges, degreeDistribution)
+globalRegistry.register({
+  name: 'db.schema.visualization',
+  signature: 'db.schema.visualization() :: (nodes :: INTEGER?, edges :: INTEGER?, degreeDistribution :: MAP?)',
+  execute(ctx: ProcedureContext, _args: any[]) {
+    const nodeCount = typeof ctx.getNodeCount === 'function' ? Number(ctx.getNodeCount()) : 0
+    const edgeCount = typeof ctx.getEdgeCount === 'function' ? Number(ctx.getEdgeCount()) : 0
+    return [{
+      nodes: nodeCount,
+      edges: edgeCount,
+      degreeDistribution: {},
+    }]
+  },
+})
+
+// 6. dbms.listConfig() :: (name, description, value)
+globalRegistry.register({
+  name: 'dbms.listConfig',
+  signature: 'dbms.listConfig() :: (name :: STRING?, description :: STRING?, value :: STRING?)',
+  execute(ctx: ProcedureContext, _args: any[]) {
+    const config = typeof ctx.getConfig === 'function' ? ctx.getConfig() as Record<string, unknown> : {}
+    const entries = Object.entries(config)
+    if (entries.length === 0) {
+      return [
+        { name: 'dbms.memory.heap.size', description: 'Maximum heap size', value: '512m' },
+        { name: 'dbms.memory.pagecache.size', description: 'Page cache size', value: '128m' },
+      ]
+    }
+    return entries.map(([name, value]) => ({
+      name,
+      description: `Configuration for ${name}`,
+      value: String(value),
+    }))
+  },
+})
+
+// 7. db.stats.retrieve() :: (section, stat)
+globalRegistry.register({
+  name: 'db.stats.retrieve',
+  signature: 'db.stats.retrieve() :: (section :: STRING?, stat :: MAP?)',
+  execute(ctx: ProcedureContext, _args: any[]) {
+    const stats: Record<string, unknown> = {
+      nodeCount: typeof ctx.getNodeCount === 'function' ? Number(ctx.getNodeCount()) : 0,
+      edgeCount: typeof ctx.getEdgeCount === 'function' ? Number(ctx.getEdgeCount()) : 0,
+    }
+    return [{ section: 'graph', stat: stats }]
+  },
+})
+
+// 8a. db.index.fulltext.queryNodes(indexName :: STRING?, queryTerm :: STRING?) :: (node :: NODE?, score :: FLOAT?)
+globalRegistry.register({
+  name: 'db.index.fulltext.queryNodes',
+  signature: 'db.index.fulltext.queryNodes(indexName :: STRING?, queryTerm :: STRING?) :: (node :: NODE?, score :: FLOAT?)',
+  execute(ctx: ProcedureContext, args: any[]) {
+    const indexName = String(args[0] ?? '')
+    const queryTerm = String(args[1] ?? '')
+    if (typeof ctx.fulltextQueryNodes === 'function') {
+      return ctx.fulltextQueryNodes(indexName, queryTerm) as any[]
+    }
+    return []
+  },
+})
+
+// 8b. db.index.fulltext.queryRelationshipIndexes(indexName :: STRING?, queryTerm :: STRING?) :: (relationship :: RELATIONSHIP?, score :: FLOAT?)
+globalRegistry.register({
+  name: 'db.index.fulltext.queryRelationshipIndexes',
+  signature: 'db.index.fulltext.queryRelationshipIndexes(indexName :: STRING?, queryTerm :: STRING?) :: (relationship :: RELATIONSHIP?, score :: FLOAT?)',
+  execute(ctx: ProcedureContext, args: any[]) {
+    const indexName = String(args[0] ?? '')
+    const queryTerm = String(args[1] ?? '')
+    if (typeof ctx.fulltextQueryRelationshipIndexes === 'function') {
+      return ctx.fulltextQueryRelationshipIndexes(indexName, queryTerm) as any[]
+    }
+    return []
+  },
+})
+
+
+export { globalRegistry }
+
+// ── 旧版 API 兼容 ─────────────────────────────────────────
+// periodic-commit.ts 使用旧版类型和方法
+
+// 注释掉以避免与 interface ProcedureContext 冲突
+// export type ProcedureContext = import('./procedure-registry').ProcedureContext
+/** @deprecated */
+export type ProcedureArg = string | number | boolean | Record<string, unknown> | any[]
+/** @deprecated */
+export type ProcedureResult = Record<string, unknown>[]
+
+
