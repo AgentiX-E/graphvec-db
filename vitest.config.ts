@@ -4,8 +4,7 @@ import path from 'path'
 export default defineConfig({
   test: {
     environment: 'node',
-    root: path.resolve(__dirname, 'src'),
-    include: ['**/*.spec.ts'],
+    include: ['src/**/*.spec.ts'],
     exclude: ['**/node_modules/**', '**/benchmark/**'],
     testTimeout: 1200000,
     hookTimeout: 1200000,
