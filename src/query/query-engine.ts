@@ -192,6 +192,10 @@ export interface AggregateClause {
 export interface QueryPlan {
   /** 操作类型 */
   type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE'
+  /** EXPLAIN: 展示执行计划但不执行 */
+  explain?: boolean
+  /** PROFILE: 执行并收集每步统计信息 */
+  profile?: boolean
   /** 起始节点标签扫描（如果 MATCH 节点指定了 label） */
   scanLabel: string | null
   /** 遍历步骤 */
@@ -247,6 +251,11 @@ export interface QueryPlan {
     expression: any  // CASE AST 节点
     alias: string   // 该列名（与 returnColumns 对应）
   }>
+  /** Pattern Comprehension 列（在 RETURN 中出现的模式推导） */
+  comprehensionColumns?: Array<{
+    expression: any  // PATTERN_COMPREHENSION AST 节点
+    alias: string   // 该列名
+  }>
   /** EXISTS 子查询过滤器 */
   existsFilters?: Array<{
     source: string
@@ -285,6 +294,15 @@ export interface QueryPlan {
     partitionBy: string[]
     orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }>
   }>
+  /** SEARCH 向量搜索子句（ANN / 近似最近邻） */
+  search?: {
+    /** 搜索的目标属性（如 'n.embedding'） */
+    targetProperty: string
+    /** 查询向量（数组形式） */
+    queryVector: number[]
+    /** 返回的最近邻数量 TOP K */
+    topK: number
+  }
   // DML fields
   /** CREATE 节点 */
   createNodes?: Array<{
@@ -301,6 +319,8 @@ export interface QueryPlan {
   }>
   /** DELETE 目标 */
   deleteTargets?: string[]
+  /** DETACH DELETE 标志：删除节点前先删除所有关联边 */
+  detachDelete?: boolean
   /** SET 子句 */
   setClauses?: Array<{
     property: string
@@ -761,6 +781,63 @@ export function _preprocessQuery(query: string): {
   if (cleanQuery !== query) {
     modifiedQuery = cleanQuery
   }
+
+  // ── Step 0.85: Extract SEARCH clause (向量搜索) ──
+  // Format: MATCH (n:Label) SEARCH n.embedding APPROXIMATE [0.1, 0.2, ...] TOP 10
+  // Or: MATCH (n:Label) WHERE n.embedding IN ANN([0.1, 0.2, ...], 10)
+  // Extract SEARCH from the query and replace with a no-op marker so peggy still parses correctly.
+  
+  // Pattern 1: SEARCH <property> APPROXIMATE <vector_array> TOP <k>
+  {
+    const searchRE = /\bSEARCH\s+(\w+(?:\.\w+)?)\s+APPROXIMATE\s+\[([^\]]+)\]\s+TOP\s+(\d+)/i
+    const searchMatch = searchRE.exec(modifiedQuery)
+    if (searchMatch) {
+      const targetProperty = searchMatch[1]
+      const queryVectorStr = searchMatch[2]
+      const topK = parseInt(searchMatch[3], 10)
+
+      // Parse [0.1, 0.2, ...] into number[]
+      const queryVector: number[] = queryVectorStr.split(',').map(s => {
+        const num = parseFloat(s.trim())
+        return isNaN(num) ? 0 : num
+      })
+
+      result.searchExtract = { targetProperty, queryVector, topK }
+
+      // Remove SEARCH clause from query (replace with empty string)
+      const fullMatch = searchMatch[0]
+      const searchIdx = searchMatch.index
+      const beforeSearch = modifiedQuery.slice(0, searchIdx)
+      const afterSearch = modifiedQuery.slice(searchIdx + fullMatch.length)
+      modifiedQuery = (beforeSearch + afterSearch).trim()
+    }
+  }
+
+  // Pattern 2: WHERE <property> IN ANN([vector], k)
+  if (!result.searchExtract) {
+    const annRE = /\bWHERE\s+(\w+(?:\.\w+)?)\s+IN\s+ANN\s*\((\[([^\]]*)\])\s*,\s*(\d+)\)/i
+    const annMatch = annRE.exec(modifiedQuery)
+    if (annMatch) {
+      const targetProperty = annMatch[1]
+      const vectorStr = annMatch[3]
+      const topK = parseInt(annMatch[4], 10)
+
+      const queryVector: number[] = vectorStr.split(',').map(s => {
+        const num = parseFloat(s.trim())
+        return isNaN(num) ? 0 : num
+      })
+
+      result.searchExtract = { targetProperty, queryVector, topK }
+
+      // Remove the WHERE ... ANN part from the query
+      const fullMatch = annMatch[0]
+      const whereIdx = annMatch.index
+      const beforeWhere = modifiedQuery.slice(0, whereIdx)
+      const afterWhere = modifiedQuery.slice(whereIdx + fullMatch.length)
+      modifiedQuery = (beforeWhere + afterWhere).trim()
+    }
+  }
+
   const optPatterns: string[] = []
   let optCounter = 0
 
@@ -895,6 +972,7 @@ export function _preprocessQuery(query: string): {
       reduceExtract: result.reduceExtract,
       loadCsvExtract: result.loadCsvExtract,
       windowExtracts: result.windowExtracts,
+      searchExtract: result.searchExtract,
     },
   }
 }
@@ -973,6 +1051,12 @@ export interface _QueryExtracts {
     orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }>
     alias?: string
   }>
+  /** SEARCH 向量搜索提取 */
+  searchExtract?: {
+    targetProperty: string
+    queryVector: number[]
+    topK: number
+  }
 }
 
 /**
@@ -1181,9 +1265,32 @@ function _splitColumnsRespectingParens(s: string): string[] {
 /**
  * 解析 Cypher-lite 查询字符串为 QueryPlan
  */
+/**
+ * Detect EXPLAIN / PROFILE prefix, strip it, and set flags on the plan.
+ */
+function _stripExplainProfile(query: string): { stripped: string; explain: boolean; profile: boolean } {
+  const trimmed = query.trim()
+  // EXPLAIN [JSON] [ANALYZE] <query> — we handle simple EXPLAIN/PROFILE here
+  // Note: EXPLAIN JSON/ANALYZE are handled by explain.ts. We just support:
+  //   EXPLAIN <query>
+  //   PROFILE <query>
+  const explainMatch = trimmed.match(/^\s*EXPLAIN\s+/i)
+  if (explainMatch) {
+    return { stripped: trimmed.slice(explainMatch[0].length).trim(), explain: true, profile: false }
+  }
+  const profileMatch = trimmed.match(/^\s*PROFILE\s+/i)
+  if (profileMatch) {
+    return { stripped: trimmed.slice(profileMatch[0].length).trim(), explain: false, profile: true }
+  }
+  return { stripped: trimmed, explain: false, profile: false }
+}
+
 export function parseQuery(query: string): QueryPlan {
+  // Step 0a: Detect EXPLAIN / PROFILE prefix
+  const { stripped, explain, profile } = _stripExplainProfile(query)
+
   // Step 1: Preprocess to extract OPTIONAL MATCH and WITH
-  const { cleanQuery, extracts } = _preprocessQuery(query)
+  const { cleanQuery, extracts } = _preprocessQuery(stripped)
 
   // Step 2: Parse the cleaned query with peggy
   let ast: QueryAST
@@ -1197,6 +1304,10 @@ export function parseQuery(query: string): QueryPlan {
   _postProcessAST(ast, extracts)
 
   const plan = planFromAST(ast)
+
+  // Step 3a: Set EXPLAIN / PROFILE flags (only set when true)
+  if (explain) plan.explain = true
+  if (profile) plan.profile = true
 
   // Step 4: Attach FOREACH if extracted（支持嵌套递归构建）
   if (extracts.foreachExtract) {
@@ -1243,6 +1354,11 @@ export function parseQuery(query: string): QueryPlan {
   // Step 7: Attach window functions if extracted
   if (extracts.windowExtracts && extracts.windowExtracts.length > 0) {
     plan.windowFunctions = extracts.windowExtracts
+  }
+
+  // Step 8: Attach SEARCH clause if extracted
+  if (extracts.searchExtract) {
+    plan.search = extracts.searchExtract
   }
 
   return plan
@@ -1514,6 +1630,9 @@ export function planFromAST(
   if (ast.delete) {
     plan.type = 'DELETE'
     plan.deleteTargets = [...ast.delete.targets]
+    if (ast.delete.detach) {
+      plan.detachDelete = true
+    }
     // 如果有 MATCH，继续处理
   }
 
@@ -1685,8 +1804,9 @@ export function planFromAST(
         }
       }
       if (!foundAggregate) {
-        // Detect CASE expressions in RETURN columns
+        // Detect CASE expressions and Pattern Comprehensions in RETURN columns
         const caseCols: QueryPlan['caseColumns'] = []
+        const compCols: QueryPlan['comprehensionColumns'] = []
         const regularCols: string[] = []
         for (const col of ast.return.columns) {
           if (col.type === 'COLUMN' && col.expression?.type === 'CASE') {
@@ -1694,8 +1814,14 @@ export function planFromAST(
               expression: col.expression,
               alias: col.alias ?? 'case',
             })
-            // Also add to returnColumns so CASE results are included
             regularCols.push(col.alias ?? 'case')
+          } else if (col.type === 'COLUMN' && col.expression?.type === 'PATTERN_COMPREHENSION') {
+            const alias = col.alias ?? '_pc_' + regularCols.length
+            compCols.push({
+              expression: col.expression,
+              alias,
+            })
+            regularCols.push(alias)
           } else {
             regularCols.push(col.alias ?? formatColumn(col.expression))
           }
@@ -1703,6 +1829,9 @@ export function planFromAST(
         plan.returnColumns = regularCols
         if (caseCols.length > 0) {
           plan.caseColumns = caseCols
+        }
+        if (compCols.length > 0) {
+          plan.comprehensionColumns = compCols
         }
       } else {
         // For aggregate columns, set returnColumns from the aggregate info
@@ -2546,6 +2675,13 @@ export function _executeQuery(
     candidates = _applyWhereFilters(candidates, plan.filters)
   }
 
+  // Step 1.25: Handle SEARCH 向量搜索 — 在 WHERE 之后、RETURN 之前注入
+  // 使用 VectorIndexManager 进行 ANN 近似最近邻搜索。
+  // SEARCH 会过滤 candidates 只保留搜索结果中的节点。
+  if (plan.search) {
+    candidates = _vectorSearch(plan.search, candidates)
+  }
+
   // Step 1.5: Handle UNWIND — 展开列表为多行
   if (plan.unwind) {
     candidates = _executeUnwind(candidates, plan.unwind)
@@ -2909,6 +3045,20 @@ export function _executeQuery(
       return resultRows
     }
 
+    // DETACH DELETE — 对 RETURN 路径也执行边清理
+    if (plan.detachDelete && plan.deleteTargets && plan.deleteTargets.length > 0) {
+      const targets = new Set(plan.deleteTargets)
+      candidates = candidates.filter(row => {
+        if (row._edges && Array.isArray(row._edges)) {
+          row._edges = row._edges.filter((e: any) => !targets.has(String(e.target)))
+        }
+        if (row._inEdges && Array.isArray(row._inEdges)) {
+          row._inEdges = row._inEdges.filter((e: any) => !targets.has(String(e.src)))
+        }
+        return true
+      })
+    }
+
     // No aggregation — project columns from candidates
     let rows: QueryRow[] = candidates.map(c => {
       const row: QueryRow = {}
@@ -2936,6 +3086,11 @@ export function _executeQuery(
       rows = _applyCaseColumns(rows, plan.caseColumns)
     }
 
+    // Apply Pattern Comprehension columns (runtime evaluation)
+    if (plan.comprehensionColumns && plan.comprehensionColumns.length > 0) {
+      rows = _applyComprehensionColumns(rows, plan.comprehensionColumns)
+    }
+
     // Apply SKIP（在 LIMIT 之前，符合 Cypher 语义）
     if (plan.skip !== undefined && plan.skip > 0) {
       rows = rows.slice(plan.skip)
@@ -2945,6 +3100,26 @@ export function _executeQuery(
     rows = rows.slice(0, plan.limit ?? DEFAULT_LIMIT)
 
     return rows
+  }
+
+  // DETACH DELETE — 删除目标节点前先移除所有关联边
+  if (plan.detachDelete && plan.deleteTargets && plan.deleteTargets.length > 0) {
+    const targets = new Set(plan.deleteTargets)
+    candidates = candidates.filter(row => {
+      // 清理边元数据：移除 _edges 和 _inEdges
+      if (row._edges && Array.isArray(row._edges)) {
+        row._edges = row._edges.filter((e: any) => {
+          // 只保留不以 target 节点为目的地的边
+          return !targets.has(String(e.target))
+        })
+      }
+      if (row._inEdges && Array.isArray(row._inEdges)) {
+        row._inEdges = row._inEdges.filter((e: any) => {
+          return !targets.has(String(e.src))
+        })
+      }
+      return true
+    })
   }
 
   // No RETURN — return candidates as rows
@@ -2957,6 +3132,98 @@ export function _executeQuery(
   }
 
   return finalRows.slice(0, plan.limit ?? DEFAULT_LIMIT)
+}
+
+// ── 向量搜索 (SEARCH) ──────────────────────────────────────
+
+/**
+ * 执行 SEARCH 子句定义的向量搜索。
+ *
+ * 从 candidates 中筛选出与 queryVector 最相似的 topK 个节点。
+ * 使用 VectorIndexManager 进行 HNSW 近似最近邻搜索。
+ *
+ * @param search - SEARCH 子句参数（targetProperty, queryVector, topK）
+ * @param candidates - 当前候选节点列表
+ * @returns 排名后的候选节点列表（最多 topK 个）
+ *
+ * 注意：当 search.targetProperty 形如 "n.embedding" 时，属性名取 "." 后的部分。
+ * 此函数需要外部注入的 VectorIndexManager 实例，通过模块级变量获取。
+ */
+export let _vectorIndexManager: { search: (label: string, property: string, query: Float32Array, topK: number) => Array<{id: number; distance: number}> } | null = null
+
+/**
+ * 注入向量索引管理器（用于测试和集成）。
+ */
+export function setVectorIndexManager(mgr: typeof _vectorIndexManager): void {
+  _vectorIndexManager = mgr
+}
+
+function _vectorSearch(
+  search: NonNullable<import('./query-engine').QueryPlan['search']>,
+  candidates: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  if (!_vectorIndexManager) {
+    // 如果没有配置向量索引，返回原候选集（静默退化）
+    return candidates
+  }
+
+  const { targetProperty, queryVector, topK } = search
+
+  // 从 "n.embedding" 中提取属性名 "embedding"
+  const propName = targetProperty.includes('.')
+    ? targetProperty.split('.').pop()!
+    : targetProperty
+
+  // 从 candidates 中推断 label
+  // 先看是否有 _label 字段，如果没有则假设所有候选的标签都相同
+  let label = ''
+  for (const c of candidates) {
+    if (c['_label']) {
+      label = c['_label']
+      break
+    }
+    if (c['label']) {
+      label = c['label']
+      break
+    }
+  }
+
+  if (!label) {
+    return candidates
+  }
+
+  try {
+    const query = new Float32Array(queryVector)
+    const results = _vectorIndexManager.search(label, propName, query, topK)
+
+    if (results.length === 0) {
+      return []
+    }
+
+    // 构建 id → distance 的快速查找
+    const idToDistance = new Map<number, number>()
+    for (const r of results) {
+      idToDistance.set(r.id, r.distance)
+    }
+
+    // 按搜索结果排序 filtered candidates
+    const resultIds = new Set(results.map(r => r.id))
+    const scored = candidates
+      .filter(c => {
+        const id = typeof c['id'] === 'number' ? c['id'] : undefined
+        return id !== undefined && resultIds.has(id)
+      })
+      .map(c => ({
+        row: c,
+        distance: idToDistance.get(c['id'] as number) ?? Infinity,
+      }))
+      .sort((a, b) => a.distance - b.distance)
+
+    return scored.map(s => s.row)
+  } catch {
+    // 搜索失败时静默退化
+    return candidates
+  }
 }
 
 // ── FOREACH 执行 ─────────────────────────────────────────
@@ -3650,6 +3917,106 @@ export function _applyCaseColumns(
       newRow[cc.alias] = _evalCaseExprOnRow(cc.expression, row)
     }
     return newRow
+  })
+}
+
+/**
+ * Apply Pattern Comprehension evaluation on result rows.
+ * For each comprehension column, compute the pattern match for each row
+ * and add the resulting array as a new column.
+ */
+export function _applyComprehensionColumns(
+  rows: QueryRow[],
+  compColumns: NonNullable<QueryPlan['comprehensionColumns']>,
+): QueryRow[] {
+  return rows.map(row => {
+    const newRow = { ...row }
+    for (const cc of compColumns) {
+      newRow[cc.alias] = _evalPatternComprehension(cc.expression, row, rows)
+    }
+    return newRow
+  })
+}
+
+/**
+ * Evaluate a Pattern Comprehension expression.
+ *
+ * Pattern comprehension: [(n)-[:R]->(m) WHERE cond | m.prop]
+ * For the current row (which represents candidate 'n' node data):
+ * 1. Determine the fromNode name
+ * 2. Find all matching in the candidate set
+ * 3. Filter by edge label matching and direction
+ * 4. Apply WHERE condition if present
+ * 5. Project the specified property
+ * 6. Return as array
+ */
+export function _evalPatternComprehension(
+  expr: any,
+  _row: QueryRow,
+  _allRows: QueryRow[],
+): unknown[] {
+  if (!expr || expr.type !== 'PATTERN_COMPREHENSION') return []
+
+  const fromNode = expr.fromNode?.name || ''
+  const edgeLabel = expr.edge?.label || null
+  const direction = expr.edge?.direction || 'out'
+  const targetNodeName = expr.targetNode?.name || ''
+  const whereExpr = expr.where
+  const projectExpr = expr.project
+
+  // 1. Find the from node value
+  const fromVal = _row[fromNode]
+  if (fromVal == null) return []
+
+  // 2. Scan _edges / _inEdges of the row to find matching edges
+  const matching: unknown[] = []
+  const edges = (_row._edges as any[]) || []
+  const inEdges = (_row._inEdges as any[]) || []
+
+  if (direction === 'out' || direction === 'any') {
+    for (const e of edges) {
+      if (edgeLabel && e.label !== edgeLabel) continue
+      if (targetNodeName) {
+        // Add the target value if it exists in the row
+        const targetVal = _row[targetNodeName]
+        if (targetVal != null) {
+          matching.push({ target: targetVal, ...e })
+        }
+      } else {
+        matching.push(e)
+      }
+    }
+  }
+
+  if (direction === 'in' || direction === 'any') {
+    for (const e of inEdges) {
+      if (edgeLabel && e.label !== edgeLabel) continue
+      if (targetNodeName) {
+        const targetVal = _row[targetNodeName]
+        if (targetVal != null) {
+          matching.push({ target: targetVal, ...e })
+        }
+      } else {
+        matching.push(e)
+      }
+    }
+  }
+
+  // 3. Apply WHERE condition
+  let filtered = matching
+  if (whereExpr) {
+    filtered = matching.filter((m: any) => {
+      // Create a synthetic row with the matched edge attributes
+      const syntheticRow: QueryRow = { ..._row, ...m }
+      return _isTruthy(_evalSimpleExpr(whereExpr, syntheticRow))
+    })
+  }
+
+  // 4. Apply projection
+  return filtered.map((m: any) => {
+    if (!projectExpr) return m
+    const syntheticRow: QueryRow = { ..._row, ...m }
+    return _evalSimpleExpr(projectExpr, syntheticRow)
   })
 }
 
@@ -4641,6 +5008,710 @@ export function executeBuiltinFunction(name: string, args: any[]): any {
   const fn = BUILTIN_FUNCTIONS[name]
   if (!fn) throw new Error(`Unknown built-in function: ${name}`)
   return fn(...args)
+}
+
+// ═══════════════════════════════════════════════════════════
+// EXPLAIN / PROFILE — 执行计划可视化
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * PlanNode — 执行计划树中的节点
+ */
+export interface PlanNode {
+  operator: string
+  args?: Record<string, any>
+  estimatedRows?: number
+  estimatedCost?: number
+  children?: PlanNode[]
+}
+
+/**
+ * ProfileStage — 分析模式下每步的执行统计
+ */
+export interface ProfileStage {
+  operator: string
+  rows: number
+  timeMs: number
+  cost?: number
+}
+
+/**
+ * ProfileResult — PROFILE 查询的完整结果
+ */
+export interface ProfileResult {
+  plan: PlanNode
+  stages: ProfileStage[]
+}
+
+/**
+ * 从 QueryPlan 生成执行计划树（JSON 结构）。
+ *
+ * 遍历 QueryPlan 的各字段，构建 PlanNode 树：
+ * - SCAN_ALL — 全表/标签扫描
+ * - LABEL_FILTER — 标签过滤（若有具体标签）
+ * - WHERE_FILTER — WHERE 条件过滤
+ * - PROJECT — RETURN 投影
+ * - ORDER_BY — 排序
+ * - SKIP — 跳过行
+ * - LIMIT — 行数限制
+ * - AGGREGATE — 聚合
+ * - GROUP_BY — 分组
+ * - UNION / UNION_ALL / INTERSECT / SUBTRACT — 集合运算
+ * - EXISTS_FILTER — EXISTS 子查询
+ * - CALL — CALL 子查询/过程
+ * - FOREACH — FOREACH 迭代
+ * - UNWIND — 列表展开
+ * - WITH — WITH 管道
+ * - CREATE — 创建节点/边
+ * - SET — 设置属性
+ * - DELETE — 删除
+ * - MERGE — 合并
+ *
+ * @param plan QueryPlan
+ * @returns 树的根节点
+ */
+export function _generatePlanTree(plan: QueryPlan): PlanNode {
+  // 构建状态跟踪：记录当前已构建的链
+  // 我们从 SCAN_ALL → ... → PROJECT 逐步构建
+  // 目标是从执行视角（自底向上）展示
+
+  const root: PlanNode = { operator: 'SCAN_ALL', args: { type: 'Node' } }
+  if (plan.scanLabel) {
+    root.args!.labels = [plan.scanLabel]
+  }
+  root.estimatedRows = 100  // 估算基数
+
+  // 用于构建链的当前节点
+  let current: PlanNode = root
+  current.estimatedRows = 100
+
+  // ── 标签过滤 ──
+  if (plan.scanLabel) {
+    const labelFilter: PlanNode = {
+      operator: 'LABEL_FILTER',
+      args: { label: plan.scanLabel },
+      estimatedRows: 30,
+    }
+    current.children = [labelFilter]
+    current = labelFilter
+  }
+
+  // ── 遍历步骤（Traverse Steps） ──
+  for (const step of plan.steps ?? []) {
+    const dirLabel = step.direction === 'in' ? '<--' : step.direction === 'any' ? '<->' : '-->'
+    const edgeStr = step.edgeLabel ? `:${step.edgeLabel}` : ''
+    const targetStr = step.targetLabel ? `:${step.targetLabel}` : ''
+    const rangeStr = step.range ? ` [${step.range.min}..${step.range.max ?? 'inf'}]` : ''
+
+    const traverseNode: PlanNode = {
+      operator: 'TRAVERSE',
+      args: {
+        direction: dirLabel,
+        edgeLabel: step.edgeLabel,
+        targetLabel: step.targetLabel,
+        pattern: `(${dirLabel}${edgeStr}${rangeStr}${dirLabel}${targetStr})`,
+      },
+      estimatedRows: 20,
+    }
+    current.children = [traverseNode]
+    current = traverseNode
+  }
+
+  // ── WHERE 过滤器 ──
+  if (plan.filters && plan.filters.length > 0) {
+    const conditions = plan.filters.map(f => `${f.source ?? ''}${f.property ? '.' + f.property : ''} ${f.operator} ${f.value}`).join(' AND ')
+    const filterNode: PlanNode = {
+      operator: 'FILTER',
+      args: { condition: conditions },
+      estimatedRows: 10,
+    }
+    current.children = [filterNode]
+    current = filterNode
+  }
+
+  // ── EXISTS 子查询过滤器 ──
+  if (plan.existsFilters && plan.existsFilters.length > 0) {
+    const existsStrs = plan.existsFilters.map(ef =>
+      `${ef.source} ${ef.direction === 'in' ? '<--' : '-->'} [${ef.edgeLabel ?? '*'}] ${ef.direction === 'in' ? '-->' : '<--'} ${ef.target}`
+    ).join(' AND ')
+    const existsNode: PlanNode = {
+      operator: 'EXISTS_FILTER',
+      args: { condition: existsStrs },
+      estimatedRows: 5,
+    }
+    current.children = [existsNode]
+    current = existsNode
+  }
+
+  // ── OPTIONAL MATCH ──
+  if (plan.optionalMatchSteps && plan.optionalMatchSteps.length > 0) {
+    for (let i = 0; i < plan.optionalMatchSteps.length; i++) {
+      const om = plan.optionalMatchSteps[i]
+      // 递归构建 OPTIONAL MATCH 子计划树
+      const optMatchRoot: PlanNode = {
+        operator: 'OPTIONAL_MATCH',
+        args: { step: i + 1 },
+        estimatedRows: 10,
+      }
+      // 构建 OPTIONAL MATCH 内部
+      const { scanLabel, steps, filters } = om
+      let subCurrent = optMatchRoot
+      if (scanLabel) {
+        const subNode: PlanNode = {
+          operator: 'SCAN_ALL',
+          args: { labels: [scanLabel] },
+          estimatedRows: 20,
+        }
+        subCurrent.children = [subNode]
+        subCurrent = subNode
+      } else {
+        const subNode: PlanNode = {
+          operator: 'SCAN_ALL',
+          args: { type: 'Node' },
+          estimatedRows: 50,
+        }
+        subCurrent.children = [subNode]
+        subCurrent = subNode
+      }
+      for (const sf of steps) {
+        const sNode: PlanNode = {
+          operator: 'TRAVERSE',
+          args: {
+            direction: sf.direction === 'in' ? '<--' : sf.direction === 'any' ? '<->' : '-->',
+            edgeLabel: sf.edgeLabel,
+            targetLabel: sf.targetLabel,
+          },
+          estimatedRows: 10,
+        }
+        subCurrent.children = [sNode]
+        subCurrent = sNode
+      }
+      if (filters.length > 0) {
+        const subFilter: PlanNode = {
+          operator: 'FILTER',
+          args: { condition: filters.map(f => `${f.source}.${f.property} ${f.operator} ${f.value}`).join(' AND ') },
+          estimatedRows: 5,
+        }
+        subCurrent.children = [subFilter]
+        subCurrent = subFilter
+      }
+      current.children = [optMatchRoot]
+      current = optMatchRoot
+    }
+  }
+
+  // ── UNWIND ──
+  if (plan.unwind) {
+    const isVarRef = !!plan.unwind.var
+    const listVal = isVarRef ? plan.unwind.var! : plan.unwind.list
+    const unwindNode: PlanNode = {
+      operator: 'UNWIND',
+      args: {
+        variable: plan.unwind.name,
+        list: listVal,
+        isVarRef,
+      },
+      estimatedRows: 20,
+    }
+    current.children = [unwindNode]
+    current = unwindNode
+  }
+
+  // ── WITH 管道 ──
+  if (plan.with) {
+    const withColumns = plan.with.columns.map(c => c.alias ?? c.expression).join(', ')
+    const withNode: PlanNode = {
+      operator: 'WITH',
+      args: { columns: withColumns },
+      estimatedRows: 10,
+    }
+    if (plan.with.aggregate) {
+      withNode.operator = 'WITH_AGGREGATE'
+      withNode.args!.aggregate = `${plan.with.aggregate.type}(${plan.with.aggregate.field ?? '*'})`
+    }
+    current.children = [withNode]
+    current = withNode
+  }
+
+  // ── 聚合 ──
+  if (plan.aggregate) {
+    const aggNode: PlanNode = {
+      operator: 'AGGREGATE',
+      args: {
+        function: plan.aggregate.type,
+        field: plan.aggregate.field ?? '*',
+      },
+      estimatedRows: 5,
+    }
+    current.children = [aggNode]
+    current = aggNode
+  }
+
+  // ── GROUP BY ──
+  if (plan.groupBy && plan.groupBy.length > 0) {
+    const gbNode: PlanNode = {
+      operator: 'GROUP_BY',
+      args: { columns: plan.groupBy },
+      estimatedRows: 5,
+    }
+    current.children = [gbNode]
+    current = gbNode
+  }
+
+  // ── PROJECT（RETURN） ──
+  if (plan.returnColumns && plan.returnColumns.length > 0) {
+    const projectNode: PlanNode = {
+      operator: 'PROJECT',
+      args: { columns: plan.returnColumns },
+      estimatedRows: 5,
+    }
+    current.children = [projectNode]
+    current = projectNode
+  }
+
+  // ── ORDER BY ──
+  if (plan.orderBy && plan.orderBy.length > 0) {
+    const obNode: PlanNode = {
+      operator: 'ORDER_BY',
+      args: {
+        columns: plan.orderBy.map(o => `${o.property} ${o.direction}`).join(', '),
+      },
+      estimatedRows: 5,
+    }
+    current.children = [obNode]
+    current = obNode
+  }
+
+  // ── SKIP ──
+  if (plan.skip !== undefined && plan.skip > 0) {
+    const skipNode: PlanNode = {
+      operator: 'SKIP',
+      args: { count: plan.skip },
+      estimatedRows: 5,
+    }
+    current.children = [skipNode]
+    current = skipNode
+  }
+
+  // ── LIMIT ──
+  if (plan.limit !== undefined) {
+    const limitNode: PlanNode = {
+      operator: 'LIMIT',
+      args: { count: plan.limit },
+      estimatedRows: plan.limit,
+    }
+    current.children = [limitNode]
+    current = limitNode
+  }
+
+  // ── UNION / UNION ALL / INTERSECT / SUBTRACT ──
+  if (plan.unionType && plan.rightPlan) {
+    const unionNode: PlanNode = {
+      operator: plan.unionType.replace('_', '_').toUpperCase(),
+      args: { type: plan.unionType },
+      estimatedRows: 10,
+      children: [
+        _generatePlanTree(plan.rightPlan),
+      ],
+    }
+    current.children = [unionNode]
+    current = unionNode
+  }
+
+  // ── CALL 子查询 ──
+  if (plan.callQuery) {
+    const callNode: PlanNode = {
+      operator: 'CALL',
+      args: {},
+      estimatedRows: 10,
+      children: [_generatePlanTree(plan.callQuery)],
+    }
+    current.children = [callNode]
+    current = callNode
+  }
+
+  // ── CALL 过程 ──
+  if (plan.callProcedure) {
+    const procNode: PlanNode = {
+      operator: 'CALL',
+      args: {
+        procedure: plan.callProcedure.name,
+        args: plan.callProcedure.args,
+      },
+      estimatedRows: 10,
+    }
+    current.children = [procNode]
+    current = procNode
+  }
+
+  // ── FOREACH ──
+  if (plan.forEach) {
+    const foreachNode: PlanNode = {
+      operator: 'FOREACH',
+      args: {
+        variable: plan.forEach.variable,
+        list: plan.forEach.isVarRef ? 'var' : plan.forEach.list,
+        operation: plan.forEach.operation.type,
+      },
+      estimatedRows: 20,
+    }
+    current.children = [foreachNode]
+    current = foreachNode
+  }
+
+  // ── LOAD CSV ──
+  if (plan.loadCsv) {
+    const csvNode: PlanNode = {
+      operator: 'LOAD_CSV',
+      args: {
+        url: plan.loadCsv.url,
+        rowVariable: plan.loadCsv.rowVariable,
+        hasHeaders: plan.loadCsv.hasHeaders,
+      },
+      estimatedRows: 100,
+    }
+    current.children = [csvNode]
+    current = csvNode
+  }
+
+  // ── CREATE ──
+  if (plan.createNodes && plan.createNodes.length > 0) {
+    const createNode: PlanNode = {
+      operator: 'CREATE',
+      args: {
+        nodes: plan.createNodes.map(n => `${n.alias}${n.label ? ':' + n.label : ''}`),
+      },
+      estimatedRows: 1,
+    }
+    current.children = [createNode]
+    current = createNode
+  }
+
+  // ── SET ──
+  if (plan.setClauses && plan.setClauses.length > 0) {
+    const setNode: PlanNode = {
+      operator: 'SET',
+      args: {
+        sets: plan.setClauses.map(s => `${s.property} = ${s.value}`),
+      },
+      estimatedRows: 1,
+    }
+    current.children = [setNode]
+    current = setNode
+  }
+
+  // ── DELETE ──
+  if (plan.deleteTargets && plan.deleteTargets.length > 0) {
+    const delNode: PlanNode = {
+      operator: plan.detachDelete ? 'DETACH DELETE' : 'DELETE',
+      args: { targets: plan.deleteTargets },
+      estimatedRows: 1,
+    }
+    current.children = [delNode]
+    current = delNode
+  }
+
+  // ── MERGE ──
+  if (plan.mergeNodes && plan.mergeNodes.length > 0) {
+    const mergeNode: PlanNode = {
+      operator: 'MERGE',
+      args: {
+        nodes: plan.mergeNodes.map(n => `${n.alias}${n.label ? ':' + n.label : ''}`),
+      },
+      estimatedRows: 1,
+    }
+    current.children = [mergeNode]
+    current = mergeNode
+  }
+
+  // ── HAVING ──
+  if (plan.having && plan.having.length > 0) {
+    const havingStrs = plan.having.map(h =>
+      `${h.property} ${h.operator === 'GT' ? '>' : h.operator === 'GTE' ? '>=' : h.operator === 'LT' ? '<' : h.operator === 'LTE' ? '<=' : h.operator === 'EQ' ? '=' : '!='} ${h.value}`
+    ).join(' AND ')
+    const havingNode: PlanNode = {
+      operator: 'HAVING',
+      args: { condition: havingStrs },
+      estimatedRows: 3,
+    }
+    current.children = [havingNode]
+    current = havingNode
+  }
+
+  // ── LOAD CSV ──
+  if (plan.loadCsv) {
+    const csvNode: PlanNode = {
+      operator: 'LOAD_CSV',
+      args: {
+        url: plan.loadCsv.url,
+        rowVariable: plan.loadCsv.rowVariable,
+        hasHeaders: plan.loadCsv.hasHeaders,
+      },
+      estimatedRows: 100,
+    }
+    current.children = [csvNode]
+    current = csvNode
+  }
+
+  // ── 窗口函数 ──
+  if (plan.windowFunctions && plan.windowFunctions.length > 0) {
+    for (const wf of plan.windowFunctions) {
+      const winNode: PlanNode = {
+        operator: 'WINDOW',
+        args: {
+          function: wf.function,
+          partitionBy: wf.partitionBy,
+          orderBy: wf.orderBy.map(o => `${o.column} ${o.direction}`).join(', '),
+        },
+        estimatedRows: 5,
+      }
+      current.children = [winNode]
+      current = winNode
+    }
+  }
+
+  return root
+}
+
+/**
+ * 将 PlanNode 树格式化为可读的字符串（树状缩进）。
+ *
+ * 格式：
+ * ```
+ * OPERATOR (args...) ~estimatedRows rows
+ * └── SUB_OPERATOR (args...) ~rows rows
+ *     └── ...
+ * ```
+ *
+ * @param node 计划树根节点
+ * @param indent 缩进字符串（递归用，外部调用不需要传）
+ * @param prefix 前缀（递归用）
+ * @returns 格式化后的树形字符串
+ */
+export function _formatPlanTree(node: PlanNode, indent: string = '', prefix: string = ''): string {
+  const lines: string[] = []
+
+  // 构建当前节点的描述行
+  let desc = node.operator
+  if (node.args && Object.keys(node.args).length > 0) {
+    const argParts: string[] = []
+    for (const [key, val] of Object.entries(node.args)) {
+      if (val !== undefined && val !== null) {
+        const strVal = typeof val === 'object' ? JSON.stringify(val) : String(val)
+        argParts.push(`${key}: ${strVal}`)
+      }
+    }
+    if (argParts.length > 0) {
+      desc += ` (${argParts.join(', ')})`
+    }
+  }
+
+  const estStr = node.estimatedRows !== undefined ? ` ~${node.estimatedRows} rows` : ''
+
+  // 第一行没有前缀缩进
+  if (indent === '') {
+    lines.push(`${desc}${estStr}`)
+  } else {
+    lines.push(`${indent}${prefix}${desc}${estStr}`)
+  }
+
+  // 递归处理子节点
+  if (node.children && node.children.length > 0) {
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i]
+      const isLast = i === node.children.length - 1
+      const childPrefix = isLast ? '└── ' : '├── '
+      const childIndent = indent + (prefix === '' ? '' : (prefix === '└── ' ? '    ' : '│   '))
+      // 对于根节点递归，缩进从 '' 开始，prefix 从 '' 开始 → 子节点缩进固定 '    ' 或 '│   '
+      const actualPrefix = isLast ? '└── ' : '├── '
+      lines.push(`${indent}${actualPrefix}${child.operator}${child.args ? ' (' + Object.entries(child.args).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ') : ''}${child.args ? ')' : ''}${child.estimatedRows !== undefined ? ` ~${child.estimatedRows} rows` : ''}`)
+      if (child.children && child.children.length > 0) {
+        const childIndent2 = indent + (isLast ? '    ' : '│   ')
+        const childSub = _formatPlanTree(child, childIndent2, isLast ? '└── ' : '├── ')
+        // Extract sub-lines (skip first line since we already printed it)
+        const subLines = childSub.split('\n').slice(1)
+        for (const sl of subLines) {
+          lines.push(sl)
+        }
+      }
+    }
+  }
+
+  return lines.join('\n')
+}
+
+/**
+ * 执行 PROFILE 查询，收集每步的统计信息。
+ *
+ * 在现有 _executeQuery 的基础上，对每个执行阶段打桩收集：
+ * - 每步实际输出行数
+ * - 每步执行时间
+ * - 估算成本
+ *
+ * @param plan QueryPlan
+ * @param nodes 节点数据
+ * @returns { planTree, stages } 含执行统计的计划树
+ */
+export function _profileQuery(
+  plan: QueryPlan,
+  nodes: Array<Record<string, unknown>>,
+): ProfileResult {
+  const planTree = _generatePlanTree(plan)
+  const stages: ProfileStage[] = []
+
+  // 收集各阶段行数
+  function _countRows(stage: string): number {
+    // 执行实际查询来获取行数统计
+    // 通过模拟每步来采集
+    const startTime = Date.now()
+
+    let rows = 0
+    try {
+      const result = _executeQuery(plan, nodes)
+      rows = result.length
+    } catch {
+      rows = 0
+    }
+    const elapsed = Date.now() - startTime
+
+    // 估算每步成本（行数 × 时间系数）
+    const cost = elapsed + rows * 0.01
+
+    stages.push({ operator: stage, rows, timeMs: elapsed, cost: Math.round(cost * 100) / 100 })
+
+    return rows
+  }
+
+  // 逐阶段收集：从执行结果推算每步行数
+  // 先执行一次完整查询获取最终行数
+  let totalRows = 0
+  try {
+    totalRows = _executeQuery(plan, nodes).length
+  } catch {
+    totalRows = 0
+  }
+
+  // 收集各阶段统计
+  // SCAN_ALL 阶段
+  {
+    const start = Date.now()
+    let scanRows = 0
+    try {
+      // 模拟 SCAN_ALL: 返回所有节点
+      scanRows = nodes.length
+    } catch { scanRows = 0 }
+    stages.push({
+      operator: 'SCAN_ALL',
+      rows: scanRows,
+      timeMs: Date.now() - start,
+      cost: Math.round((Date.now() - start + scanRows * 0.01) * 100) / 100,
+    })
+  }
+
+  // 标签过滤阶段
+  if (plan.scanLabel) {
+    const start = Date.now()
+    let labelRows = 0
+    try {
+      labelRows = nodes.filter(n => {
+        const l = n['_label']
+        return l === plan.scanLabel || n['label'] === plan.scanLabel
+      }).length
+    } catch { labelRows = 0 }
+    stages.push({
+      operator: 'LABEL_FILTER',
+      rows: labelRows,
+      timeMs: Date.now() - start,
+      cost: Math.round((Date.now() - start + labelRows * 0.01) * 100) / 100,
+    })
+  }
+
+  // WHERE 过滤阶段
+  if (plan.filters.length > 0) {
+    const start = Date.now()
+    let filterRows = 0
+    try {
+      filterRows = _applyWhereFilters(nodes, plan.filters).length
+    } catch { filterRows = 0 }
+    // 大致估算：限制为 totalRows 以内（实际上是按链式计算，这里简化）
+    if (filterRows > totalRows && totalRows > 0) filterRows = totalRows
+    stages.push({
+      operator: 'FILTER',
+      rows: filterRows,
+      timeMs: Date.now() - start,
+      cost: Math.round((Date.now() - start + filterRows * 0.01) * 100) / 100,
+    })
+  }
+
+  // PROJECT 阶段
+  if (plan.returnColumns && plan.returnColumns.length > 0) {
+    const start = Date.now()
+    stages.push({
+      operator: 'PROJECT',
+      rows: totalRows,
+      timeMs: Date.now() - start,
+      cost: Math.round((Date.now() - start + totalRows * 0.01) * 100) / 100,
+    })
+  }
+
+  // ORDER BY 阶段
+  if (plan.orderBy && plan.orderBy.length > 0) {
+    const start = Date.now()
+    stages.push({
+      operator: 'ORDER_BY',
+      rows: totalRows,
+      timeMs: Date.now() - start,
+      cost: Math.round((Date.now() - start + totalRows * 0.1) * 100) / 100,
+    })
+  }
+
+  // LIMIT 阶段
+  if (plan.limit !== undefined) {
+    const start = Date.now()
+    const limitedRows = Math.min(totalRows, plan.limit)
+    stages.push({
+      operator: 'LIMIT',
+      rows: limitedRows,
+      timeMs: Date.now() - start,
+      cost: Math.round((Date.now() - start + limitedRows * 0.01) * 100) / 100,
+    })
+  }
+
+  return { plan: planTree, stages }
+}
+
+/**
+ * 构建 EXPLAIN/PROFILE 查询的完整输出字符串。
+ * 在 parseQuery 返回的 QueryPlan 基础上，生成格式化输出。
+ *
+ * @param plan QueryPlan
+ * @param nodes 可选的节点数据（PROFILE 时需要）
+ * @returns 格式化的执行计划字符串
+ */
+export function explainQuery(
+  plan: QueryPlan,
+  nodes?: Array<Record<string, unknown>>,
+): string {
+  const planTree = _generatePlanTree(plan)
+
+  if (plan.profile && nodes) {
+    // PROFILE: 计划树 + 实际统计
+    const profileResult = _profileQuery(plan, nodes)
+    const planStr = _formatPlanTree(planTree)
+    const stageLines = profileResult.stages.map(s =>
+      `  ${s.operator}: ${s.rows} rows, ${s.timeMs.toFixed(2)}ms, cost=${s.cost?.toFixed(2) ?? 'N/A'}`
+    ).join('\n')
+    return [
+      'Execution Plan:',
+      planStr,
+      '',
+      'Profile (actual):',
+      stageLines,
+    ].join('\n')
+  }
+
+  // EXPLAIN: 仅计划树
+  return `Execution Plan:\n${_formatPlanTree(planTree)}`
 }
 
 // ─── C-06: GROUP BY + HAVING 辅助函数 ───

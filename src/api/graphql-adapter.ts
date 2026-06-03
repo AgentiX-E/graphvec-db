@@ -26,6 +26,124 @@
  */
 
 import { NodeRecord, EdgeRecord } from '../types'
+import type { GraphEngine } from '../core/graph-engine'
+
+// ── Schema 自省 API ───────────────────────────────────────
+
+/**
+ * 将 FieldType 映射为 GraphQL SDL 类型
+ */
+function _fieldTypeToGraphQL(fieldType: string): string {
+  switch (fieldType) {
+    case 'string':
+      return 'String'
+    case 'number':
+      return 'Int'
+    case 'boolean':
+      return 'Boolean'
+    case 'timestamp':
+      return 'String'
+    case 'string[]':
+      return '[String]'
+    case 'number[]':
+      return '[Int]'
+    default:
+      return 'String'
+  }
+}
+
+/**
+ * 从 GraphEngine 的 SchemaDef 自动生成 GraphQL SDL。
+ *
+ * 生成内容：
+ *   - 每个 NodeTypeDef 对应一个 GraphQL type
+ *   - 每个 type 包含 _id(ID!) + 所有 fields + 关联边字段
+ *   - Query 根类型包含按类型查询的字段
+ *
+ * @example
+ * ```graphql
+ * type Person {
+ *   _id: ID!
+ *   name: String
+ *   age: Int
+ *   knows: [Person] @relationship(type: "KNOWS", direction: OUT)
+ * }
+ * ```
+ */
+export function generateGraphQLSchema(engine: GraphEngine): string {
+  const schemaDef = engine.getSchema()
+  if (!schemaDef) {
+    // 没有 schema 定义时，返回基础 schema
+    return `
+type Query {
+  node(id: ID!): Node
+  nodes(label: String, limit: Int): [Node]
+  edges(type: String): [Edge]
+  query(cypher: String): JSON
+}
+
+type Node {
+  _id: ID!
+  name: String!
+  props: JSON
+}
+
+type Edge {
+  _id: ID!
+  src: ID!
+  dst: ID!
+  type: Int!
+  props: JSON
+}
+
+scalar JSON
+`
+  }
+
+  const lines: string[] = ['# Auto-generated GraphQL Schema']
+
+  // 为每个节点类型生成 type 定义
+  for (const nt of schemaDef.nodeTypes) {
+    lines.push('')
+    lines.push(`type ${nt.name} {`)
+    lines.push(`  _id: ID!`)
+
+    // 基础属性字段
+    if (nt.fields) {
+      for (const field of nt.fields) {
+        const required = field.required ? '!' : ''
+        lines.push(`  ${field.name}: ${_fieldTypeToGraphQL(field.type)}${required}`)
+      }
+    }
+
+    // 关联边 (根据 edgeTypes 生成)
+    for (const et of schemaDef.edgeTypes) {
+      // 检查哪两个 node 类型之间有边
+      const edgeName = et.name
+      const camelCase = edgeName.charAt(0).toLowerCase() + edgeName.slice(1)
+      lines.push(
+        `  ${camelCase}(label: String, limit: Int): [JSON] @relationship(type: "${edgeName}", direction: OUT)`,
+      )
+    }
+
+    lines.push('}')
+  }
+
+  // Query 根类型
+  lines.push('')
+  lines.push('type Query {')
+  for (const nt of schemaDef.nodeTypes) {
+    lines.push(`  ${nt.name.toLowerCase()}(id: ID): ${nt.name}`)
+    lines.push(`  ${nt.name.toLowerCase()}s(limit: Int): [${nt.name}]`)
+  }
+  lines.push('  query(cypher: String): JSON')
+  lines.push('}')
+
+  lines.push('')
+  lines.push('scalar JSON')
+
+  return lines.join('\n')
+}
 
 // ── Schema 类型定义 ────────────────────────────────────────
 

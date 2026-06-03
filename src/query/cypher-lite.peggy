@@ -351,7 +351,10 @@ CreatePathPattern
 // ── DELETE ────────────────────────────────────────────────
 
 DeleteClause
-  = _ "DELETE"i _ targets:IdentifierList {
+  = _ "DETACH"i _ "DELETE"i _ targets:IdentifierList {
+      return { type: 'DELETE', targets, detach: true }
+    }
+  / _ "DELETE"i _ targets:IdentifierList {
       return { type: 'DELETE', targets }
     }
 
@@ -568,6 +571,13 @@ Column
         alias: alias,
       }
     }
+  / expr:PatternComprehension alias:AsClause? {
+      return {
+        type: 'COLUMN',
+        expression: expr,
+        alias: alias,
+      }
+    }
   / name:Identifier alias:AsClause? {
       return {
         type: 'COLUMN',
@@ -691,7 +701,8 @@ StringPredicateOp
   / "CONTAINS"i  { return 'CONTAINS' }
 
 Primary
-  = FunctionCall
+  = PatternComprehension
+  / FunctionCall
   / ExistsExpression
   / CaseExpression
   / PropertyRef
@@ -700,6 +711,20 @@ Primary
   / BooleanLiteral
   / Identifier
   / "(" _ expr:OrExpression _ ")" { return expr }
+
+// ── 模式推导 / Pattern Comprehension ──────────────────────
+
+PatternComprehension
+  = "[" _ fromNode:NodePattern _ edge:EdgePattern _ targetNode:NodePattern _ where:(_ "WHERE"i _ cond:OrExpression { return { type: 'WHERE', expression: cond } })? _ "|" _ project:Primary _ "]" {
+      return {
+        type: 'PATTERN_COMPREHENSION',
+        fromNode,
+        edge,
+        targetNode,
+        where: where ? where.expression : null,
+        project,
+      }
+    }
 
 // ── 内置函数调用 ──────────────────────────────────────────
 

@@ -12,7 +12,14 @@
  */
 import { describe, test, expect, vi } from 'vitest'
 import { ExplainFormatter, ExplainNode, parseExplainNode, formatExplainNode, AnalyzeTiming } from './explain'
-import { parseQuery, QueryPlan } from './query-engine'
+import {
+  parseQuery,
+  QueryPlan,
+  _generatePlanTree,
+  _formatPlanTree,
+  _profileQuery,
+  explainQuery,
+} from './query-engine'
 
 describe('ExplainFormatter', () => {
   describe('GAP-30: isExplainQuery', () => {
@@ -312,3 +319,187 @@ describe('ExplainFormatter', () => {
     })
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════
+// EXPLAIN / PROFILE — query-engine.ts 层集成测试
+// ═══════════════════════════════════════════════════════════════════
+describe('EXPLAIN / PROFILE 集成 (query-engine.ts)', () => {
+  describe('parseQuery 解析 EXPLAIN / PROFILE 前缀', () => {
+    test('EXPLAIN MATCH (n) RETURN n → plan.explain = true', () => {
+      const plan = parseQuery('EXPLAIN MATCH (n) RETURN n')
+      expect(plan.explain).toBe(true)
+      expect(plan.profile).toBeFalsy()
+    })
+
+    test('PROFILE MATCH (n) RETURN n → plan.profile = true', () => {
+      const plan = parseQuery('PROFILE MATCH (n) RETURN n')
+      expect(plan.profile).toBe(true)
+      expect(plan.explain).toBeFalsy()
+    })
+
+    test('普通查询 (无 EXPLAIN/PROFILE) 不应设置标志', () => {
+      const plan = parseQuery('MATCH (n) RETURN n')
+      expect(plan.explain).toBeUndefined()
+      expect(plan.profile).toBeUndefined()
+    })
+
+    test('EXPLAIN 大小写不敏感', () => {
+      const plan = parseQuery('explain match (n:Person) where n.age > 18 return n.name')
+      expect(plan.explain).toBe(true)
+    })
+  })
+
+  describe('_generatePlanTree — 生成执行计划树', () => {
+    test('简单的 MATCH + WHERE + RETURN 生成完整树', () => {
+      const plan = parseQuery('EXPLAIN MATCH (n:Person) WHERE n.age > 18 RETURN n.name')
+      const tree = _generatePlanTree(plan)
+
+      expect(tree).toBeDefined()
+      expect(tree.operator).toBe('SCAN_ALL')
+      expect(tree.children).toBeDefined()
+      const ops = collectOperators(tree)
+      expect(ops).toContain('SCAN_ALL')
+      expect(ops).toContain('LABEL_FILTER')
+      expect(ops).toContain('FILTER')
+      expect(ops).toContain('PROJECT')
+    })
+
+    test('MATCH + RETURN 的基本树结构', () => {
+      const plan: QueryPlan = {
+        scanLabel: null,
+        steps: [],
+        filters: [],
+        returnColumns: ['n.name'],
+      }
+      const tree = _generatePlanTree(plan)
+      expect(tree.operator).toBe('SCAN_ALL')
+      expect(tree.children).toHaveLength(1)
+      expect(tree.children![0].operator).toBe('PROJECT')
+    })
+
+    test('ORDER BY + LIMIT 生成排序和限制节点', () => {
+      const plan: QueryPlan = {
+        scanLabel: 'Person',
+        steps: [],
+        filters: [],
+        returnColumns: ['n.name', 'n.age'],
+        orderBy: [{ property: 'n.age', direction: 'DESC' }],
+        limit: 5,
+      }
+      const tree = _generatePlanTree(plan)
+      const ops = collectOperators(tree)
+      expect(ops).toContain('ORDER_BY')
+      expect(ops).toContain('LIMIT')
+    })
+  })
+
+  describe('_formatPlanTree — 格式化计划树为可读字符串', () => {
+    test('生成带树状缩进的字符串', () => {
+      const plan: QueryPlan = {
+        scanLabel: null,
+        steps: [],
+        filters: [],
+        returnColumns: ['n.name'],
+      }
+      const tree = _generatePlanTree(plan)
+      const output = _formatPlanTree(tree)
+      expect(output).toContain('SCAN_ALL')
+      expect(output).toContain('PROJECT')
+      expect(output).toContain('└──')
+    })
+
+    test('多阶段计划输出包含所有阶段', () => {
+      const plan: QueryPlan = {
+        scanLabel: 'Person',
+        steps: [],
+        filters: [{ source: 'n', property: 'age', operator: 'GT', value: 18 }],
+        returnColumns: ['n.name'],
+        orderBy: [{ property: 'n.name', direction: 'ASC' }],
+      }
+      const tree = _generatePlanTree(plan)
+      const output = _formatPlanTree(tree)
+      expect(output).toContain('SCAN_ALL')
+      expect(output).toContain('LABEL_FILTER')
+      expect(output).toContain('FILTER')
+      expect(output).toContain('PROJECT')
+      expect(output).toContain('ORDER_BY')
+    })
+  })
+
+  describe('_profileQuery — 收集每步执行统计', () => {
+    test('PROFILE 收集阶段统计信息', () => {
+      const plan: QueryPlan = {
+        scanLabel: 'Person',
+        steps: [],
+        filters: [{ source: 'n', property: 'age', operator: 'GT', value: 18 }],
+        returnColumns: ['n.name'],
+      }
+      const nodes: Array<Record<string, unknown>> = [
+        { _label: 'Person', name: 'Alice', age: 25 },
+        { _label: 'Person', name: 'Bob', age: 30 },
+      ]
+      const result = _profileQuery(plan, nodes)
+
+      expect(result.plan).toBeDefined()
+      expect(result.stages).toBeInstanceOf(Array)
+      expect(result.stages.length).toBeGreaterThanOrEqual(2)
+      for (const stage of result.stages) {
+        expect(stage).toHaveProperty('operator')
+        expect(stage).toHaveProperty('rows')
+        expect(stage).toHaveProperty('timeMs')
+      }
+    })
+  })
+
+  describe('explainQuery — 完整输出', () => {
+    test('EXPLAIN 生成完整执行计划字符串', () => {
+      const plan: QueryPlan = {
+        explain: true,
+        scanLabel: null,
+        steps: [],
+        filters: [],
+        returnColumns: ['n.name'],
+      }
+      const output = explainQuery(plan)
+      expect(output).toContain('Execution Plan')
+      expect(output).toContain('SCAN_ALL')
+    })
+
+    test('PROFILE 添加执行统计', () => {
+      const plan: QueryPlan = {
+        profile: true,
+        scanLabel: 'Person',
+        steps: [],
+        filters: [{ source: 'n', property: 'age', operator: 'GT', value: 18 }],
+        returnColumns: ['n.name'],
+      }
+      const nodes: Array<Record<string, unknown>> = [
+        { _label: 'Person', name: 'Alice', age: 25 },
+      ]
+      const output = explainQuery(plan, nodes)
+      expect(output).toContain('Execution Plan')
+      expect(output).toContain('Profile')
+      expect(output).toContain('rows')
+      expect(output).toContain('cost')
+    })
+  })
+
+  // 辅助测试函数
+})
+
+/** 收集 PlanNode 树中的所有操作符名 */
+function collectOperators(node: any): string[] {
+  const ops: string[] = []
+  function walk(n: any) {
+    if (n && n.operator) {
+      ops.push(n.operator)
+      if (n.children) {
+        for (const c of n.children) {
+          walk(c)
+        }
+      }
+    }
+  }
+  walk(node)
+  return ops
+}
