@@ -587,7 +587,16 @@ export function _preprocessQuery(query: string): {
         if (ch === '|' && depth === 0) { pipePos = i; break }
       }
       if (pipePos === -1) return null
-      const listExpr = afterHeader.slice(0, pipePos).trim()
+      let listExpr = afterHeader.slice(0, pipePos).trim()
+
+      // 提取 WHERE 子句（如果存在）：FOREACH (x IN list WHERE condition | ...)
+      let whereClause: string | undefined
+      const whereMatch = listExpr.match(/\bWHERE\s+(.+)$/i)
+      if (whereMatch) {
+        whereClause = whereMatch[1].trim()
+        listExpr = listExpr.slice(0, whereMatch.index).trim()
+      }
+
       // operation 部分到最后一个 ) 之前
       const rest = afterHeader.slice(pipePos + 1).trimEnd()
       let operation: string
@@ -605,6 +614,7 @@ export function _preprocessQuery(query: string): {
           return {
             variable,
             listExpr,
+            where: whereClause,
             operation: '', // 外层 operation 不是文本，而是 children
             children: [child],
           }
@@ -614,6 +624,7 @@ export function _preprocessQuery(query: string): {
       return {
         variable,
         listExpr,
+        where: whereClause,
         operation,
       }
     }
@@ -913,6 +924,7 @@ export interface _QueryExtracts {
   foreachExtract?: {
     variable: string
     listExpr: string
+    where?: string
     operation: string
     /** 内层 FOREACH 提取（嵌套时） */
     children?: _QueryExtracts['foreachExtract'][]
@@ -2653,7 +2665,7 @@ export function _executeForeach(
   const { variable, list, isVarRef, operation } = foreachClause
 
   // Step 1: 收集所有要迭代的元素
-  const allItems: Array<{ row: Record<string, unknown>; item: unknown }> = []
+  let allItems: Array<{ row: Record<string, unknown>; item: unknown }> = []
 
   for (const candidate of candidates) {
     let items: unknown[] = list
@@ -2672,6 +2684,13 @@ export function _executeForeach(
     for (const item of items) {
       allItems.push({ row: candidate, item })
     }
+  }
+
+  // Step 1.5: WHERE 过滤
+  if (operation.where) {
+    allItems = allItems.filter(({ item }) => {
+      return _evalForeachCondition(operation.where!, variable, item)
+    })
   }
 
   // Step 2: 执行操作
@@ -2789,9 +2808,139 @@ export function _executeForeach(
       return resultRows
     }
 
+    case 'MULTI': {
+      // 混合操作：对每个候选行依次执行多个操作
+      if (!operation.operations || operation.operations.length === 0) {
+        return candidates
+      }
+      let result = candidates
+      for (const subOp of operation.operations) {
+        const subClause: ForEachClause = {
+          variable,
+          list,
+          isVarRef,
+          operation: subOp,
+        }
+        result = _executeForeach(result, subClause)
+      }
+      return result
+    }
+
+    case 'REMOVE': {
+      // REMOVE：从节点 props 中移除指定属性
+      if (operation.targets && operation.targets.length > 0) {
+        const result = candidates.map(row => {
+          const newRow = { ...row }
+          for (const target of operation.targets) {
+            // target 格式: n.prop 或直接 prop 名
+            const propName = target.includes('.')
+              ? target.split('.').pop()!
+              : target
+            const cleanName = propName.replace(/^`|`$/g, '')
+            delete newRow[cleanName]
+          }
+          return newRow
+        })
+        return result
+      }
+      return candidates
+    }
+
     default:
       return candidates
   }
+}
+
+/**
+ * 评估 FOREACH WHERE 条件。
+ *
+ * 支持简单操作符:
+ *   x > 1, x < 1, x >= 1, x <= 1, x = 1, x != 1, x IN [1,2,3]
+ *
+ * @param where - WHERE 条件字符串（如 "x > 1"）
+ * @param varName - FOREACH 的循环变量名（如 "x"）
+ * @param item - 当前迭代元素值
+ * @returns 条件是否通过
+ */
+export function _evalForeachCondition(
+  where: string,
+  varName: string,
+  item: unknown,
+): boolean {
+  const trimmed = where.trim()
+
+  // 匹配 IN 操作: x IN [1,2,3]
+  const inMatch = trimmed.match(
+    new RegExp(`^${escapeRegex(varName)}\\s+IN\\s+\\[(.+)\\]$`, 'i'),
+  )
+  if (inMatch) {
+    const listStr = inMatch[1]
+    const listValues = listStr
+      .split(',')
+      .map(v => v.trim())
+      .map(v => {
+        // 解析数字或字符串
+        if (v === 'null') return null
+        if (v === 'true') return true
+        if (v === 'false') return false
+        const num = Number(v)
+        if (!isNaN(num) && v !== '') return num
+        // 去掉引号
+        return v.replace(/^['"]|['"]$/g, '')
+      })
+    return listValues.some(v => {
+      if (v === item) return true
+      // 宽松比较：数字 "1" == 1
+      if (typeof v === 'number' && typeof item === 'string') {
+        const n = Number(item)
+        if (!isNaN(n)) return v === n
+      }
+      if (typeof v === 'string' && typeof item === 'number') {
+        const n = Number(v)
+        if (!isNaN(n)) return n === item
+      }
+      return false
+    })
+  }
+
+  // 匹配比较操作: x > 1, x < 1, x >= 1, x <= 1, x = 1, x != 1
+  const opMatch = trimmed.match(
+    new RegExp(
+      `^${escapeRegex(varName)}\\s*(>=|<=|!=|>|<|=)\\s*(.+)$`,
+    ),
+  )
+  if (opMatch) {
+    const op = opMatch[1]
+    const rhsStr = opMatch[2].trim()
+    const rhs = _parseForeachValue(rhsStr)
+    const lhs = item
+
+    switch (op) {
+      case '>':  return Number(lhs) > Number(rhs)
+      case '<':  return Number(lhs) < Number(rhs)
+      case '>=': return Number(lhs) >= Number(rhs)
+      case '<=': return Number(lhs) <= Number(rhs)
+      case '=':  return lhs === rhs
+      case '!=': return lhs !== rhs
+    }
+  }
+
+  return false
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function _parseForeachValue(str: string): unknown {
+  if (str === 'null') return null
+  if (str === 'true') return true
+  if (str === 'false') return false
+  // 尝试数字
+  const num = Number(str)
+  if (!isNaN(num) && str.length > 0) return num
+  // 去掉引号
+  return str.replace(/^['"]|['"]$/g, '')
 }
 
 /**
@@ -2818,6 +2967,11 @@ function _buildForEachFromExtract(
     list: [],
     isVarRef: true,
     operation: { type: 'CREATE' },
+  }
+
+  // 传递 WHERE 子句
+  if (extract.where) {
+    forEach.operation.where = extract.where
   }
 
   // 解析 listExpr：是字面量数组（[1,2,3]）还是变量名
@@ -2870,9 +3024,122 @@ function _buildForEachFromExtract(
     if (delMatch) {
       forEach.operation.targets = [delMatch[1].trim()]
     }
+  } else if (/^REMOVE\b/i.test(opText)) {
+    forEach.operation.type = 'REMOVE'
+    // REMOVE n.prop 或 REMOVE n.prop, m.prop
+    const remMatch = opText.match(/REMOVE\s+(.+)/i)
+    if (remMatch) {
+      const targets = remMatch[1].split(',').map(t => t.trim()).filter(Boolean)
+      forEach.operation.targets = targets
+    }
+  }
+
+  // 检查混合操作: 多个 CREATE/SET/DELETE/REMOVE 用空格或逗号分隔
+  // 格式: CREATE (n {id: x}) SET n.label = x
+  // 我们在 opText 中查找多个操作模式
+  if (forEach.operation.type !== 'FOREACH') {
+    const multiParts = _splitForeachOperations(opText)
+    if (multiParts.length > 1) {
+      // 多个操作 → MULTI 类型
+      const subOps: ForEachClause['operation'][] = []
+      for (const part of multiParts) {
+        const subOp = _parseForeachSingleOperation(part)
+        if (subOp) subOps.push(subOp)
+      }
+      if (subOps.length > 1) {
+        forEach.operation.type = 'MULTI'
+        forEach.operation.operations = subOps
+      }
+    }
   }
 
   return forEach
+}
+
+/**
+ * 将混合操作文本拆分为单个操作。
+ * 例如: "CREATE (n {id: x}) SET n.label = x" → ["CREATE (n {id: x})", "SET n.label = x"]
+ */
+function _splitForeachOperations(opText: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let depth = 0
+  let inStr = false
+  let strCh = ''
+
+  const flush = (trimmed: string) => {
+    const t = trimmed.trim()
+    if (t) parts.push(t)
+  }
+
+  for (let i = 0; i < opText.length; i++) {
+    const ch = opText[i]
+    if (inStr) {
+      current += ch
+      if (ch === strCh) inStr = false
+      continue
+    }
+    if (ch === "'" || ch === '"') { inStr = true; strCh = ch; current += ch; continue }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; current += ch; continue }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; current += ch; continue }
+
+    if (ch === ' ' && depth === 0 && current.trim().length > 0) {
+      // 检查空格后面是否是新操作的关键字
+      const remaining = opText.slice(i).trim()
+      if (/^(CREATE|SET|DELETE|REMOVE)\b/i.test(remaining)) {
+        flush(current)
+        current = ''
+        continue
+      }
+    }
+    current += ch
+  }
+  flush(current)
+  return parts
+}
+
+/**
+ * 解析单个 FOREACH 操作字符串为 ForEachOperation。
+ */
+function _parseForeachSingleOperation(opText: string): ForEachClause['operation'] | null {
+  const trimmed = opText.trim()
+  if (/^CREATE\b/i.test(trimmed)) {
+    const op: ForEachClause['operation'] = { type: 'CREATE' }
+    const nodeMatch = trimmed.match(/CREATE\s*(?:\((\w+):?(\w*))\s*{([^}]*)}|CREATE\s*(?:\((\w+):?(\w*))/)
+    if (nodeMatch) {
+      op.createNodes = [{
+        alias: nodeMatch[1] || nodeMatch[4] || 'n',
+        label: nodeMatch[2] || nodeMatch[5] || null,
+        props: null,
+      }]
+    }
+    return op
+  }
+  if (/^SET\b/i.test(trimmed)) {
+    const op: ForEachClause['operation'] = { type: 'SET' }
+    const setMatch = trimmed.match(/SET\s+(\w+(?:\.\w+)?)\s*=\s*(\S+)/i)
+    if (setMatch) {
+      op.setClauses = [{ property: setMatch[1].trim(), value: setMatch[2].trim() }]
+    }
+    return op
+  }
+  if (/^DELETE\b/i.test(trimmed)) {
+    const op: ForEachClause['operation'] = { type: 'DELETE' }
+    const delMatch = trimmed.match(/DELETE\s+(\w+)/i)
+    if (delMatch) {
+      op.targets = [delMatch[1].trim()]
+    }
+    return op
+  }
+  if (/^REMOVE\b/i.test(trimmed)) {
+    const op: ForEachClause['operation'] = { type: 'REMOVE' }
+    const remMatch = trimmed.match(/REMOVE\s+(.+)/i)
+    if (remMatch) {
+      op.targets = remMatch[1].split(',').map(t => t.trim()).filter(Boolean)
+    }
+    return op
+  }
+  return null
 }
 
 function _resolveForeachList(
@@ -3851,13 +4118,16 @@ export interface ForEachClause {
   isVarRef: boolean
   /** 每次迭代执行的操作 */
   operation: {
-    type: 'CREATE' | 'SET' | 'DELETE' | 'FOREACH'
+    type: 'CREATE' | 'SET' | 'DELETE' | 'FOREACH' | 'REMOVE' | 'MULTI'
+    where?: string
     targets?: string[]
     createNodes?: QueryPlan['createNodes']
     createEdges?: QueryPlan['createEdges']
     setClauses?: QueryPlan['setClauses']
     /** 嵌套 FOREACH 子句（当 type='FOREACH' 时） */
     foreach?: ForEachClause
+    /** 组合的子操作（当 type='MULTI' 时） */
+    operations?: ForEachClause['operation'][]
   }
 }
 

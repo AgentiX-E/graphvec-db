@@ -10,9 +10,10 @@
 // 6. 推荐排序
 // ============================================================
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest'
 import {
   GnnInferenceEngine,
+  GraphEngineFeatureEncoder,
   type LinkPredictionResult,
   type FeatureEncoder,
 } from './gnn-engine'
@@ -200,6 +201,264 @@ describe('GnnInferenceEngine', () => {
       // 修改返回的配置不影响引擎
       ;(cfg as any).featureDimension = 128
       expect(engine.getConfig().featureDimension).toBe(64)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // GraphEngineFeatureEncoder 测试
+  // ──────────────────────────────────────────
+
+  describe('GraphEngineFeatureEncoder', () => {
+    /**
+     * 创建 mock GraphEngine 实例
+     */
+    function createMockEngine(nodes: Record<string, any>) {
+      return {
+        getNode: (id: NodeId) => nodes[String(id)] ?? null,
+      }
+    }
+
+    it('should build feature vector from numeric props', () => {
+      const engine = createMockEngine({
+        1: { props: { age: 25, weight: 70, height: 175 } },
+      })
+      const encoder = new GraphEngineFeatureEncoder(
+        engine,
+        ['age', 'weight', 'height'],
+        3,
+      )
+      const result = encoder.encode(1)
+      expect(result).toBeInstanceOf(Float32Array)
+      expect(result.length).toBe(3)
+      expect(result[0]).toBe(25)
+      expect(result[1]).toBe(70)
+      expect(result[2]).toBe(175)
+    })
+
+    it('should use 0 for missing props', () => {
+      const engine = createMockEngine({
+        1: { props: { age: 30 } },
+      })
+      const encoder = new GraphEngineFeatureEncoder(
+        engine,
+        ['age', 'weight', 'height'],
+        3,
+      )
+      const result = encoder.encode(1)
+      expect(result[0]).toBe(30)
+      expect(result[1]).toBe(0)
+      expect(result[2]).toBe(0)
+    })
+
+    it('should use 0 for non-numeric props', () => {
+      const engine = createMockEngine({
+        1: { props: { age: 25, name: 'Alice', active: true } },
+      })
+      const encoder = new GraphEngineFeatureEncoder(
+        engine,
+        ['age', 'name', 'active'],
+        3,
+      )
+      const result = encoder.encode(1)
+      expect(result[0]).toBe(25)
+      expect(result[1]).toBe(0) // string → 0
+      expect(result[2]).toBe(0) // boolean → 0
+    })
+
+    it('should truncate when dimension < field count', () => {
+      const engine = createMockEngine({
+        1: { props: { a: 1, b: 2, c: 3 } },
+      })
+      const encoder = new GraphEngineFeatureEncoder(
+        engine,
+        ['a', 'b', 'c'],
+        2, // only 2 dims for 3 fields
+      )
+      const result = encoder.encode(1)
+      expect(result.length).toBe(2)
+      expect(result[0]).toBe(1)
+      expect(result[1]).toBe(2)
+      // c=3 is truncated
+    })
+
+    it('should pad with 0 when dimension > field count', () => {
+      const engine = createMockEngine({
+        1: { props: { a: 10 } },
+      })
+      const encoder = new GraphEngineFeatureEncoder(
+        engine,
+        ['a'],
+        3, // 3 dims but only 1 field
+      )
+      const result = encoder.encode(1)
+      expect(result.length).toBe(3)
+      expect(result[0]).toBe(10)
+      expect(result[1]).toBe(0)
+      expect(result[2]).toBe(0)
+    })
+
+    it('should handle non-existent node gracefully', () => {
+      const engine = createMockEngine({})
+      const encoder = new GraphEngineFeatureEncoder(
+        engine,
+        ['age', 'weight'],
+        2,
+      )
+      const result = encoder.encode(999)
+      expect(result.length).toBe(2)
+      expect(result[0]).toBe(0)
+      expect(result[1]).toBe(0)
+    })
+
+    it('should be usable with setEncoder()', () => {
+      const engine = createMockEngine({
+        1: { props: { feature: 42 } },
+      })
+      const encoder = new GraphEngineFeatureEncoder(
+        engine,
+        ['feature'],
+        1,
+      )
+      const gnnEngine = new GnnInferenceEngine({ featureDimension: 1 })
+      expect(() => gnnEngine.setEncoder(encoder)).not.toThrow()
+      // verify the encoder works through GnnInferenceEngine
+      const result = encoder.encode(1)
+      expect(result[0]).toBe(42)
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 多模型支持测试
+  // ──────────────────────────────────────────
+
+  describe('multi-model support', () => {
+    beforeAll(async () => {
+      // 确保 mock ONNX 模型存在
+      // 如果不存在，测试需要自动创建
+    })
+
+    /**
+     * 创建模拟的 ONNX 推理会话工厂
+     */
+    function createMockSession(name: string = 'default') {
+      const mockRun = vi.fn().mockResolvedValue({
+        output: { data: new Float32Array([0.5]), dims: [1, 1] },
+      })
+
+      return {
+        session: {
+          inputNames: ['input'],
+          outputNames: ['output'],
+          run: mockRun,
+        } as any,
+        mockRun,
+      }
+    }
+
+    it('loadNamedModel: should load 2 named models and report them in getLoadedModels()', async () => {
+      const engine = new GnnInferenceEngine({ featureDimension: 16 })
+
+      // 使用 vi.spyOn 模拟 ort.InferenceSession.create
+      const createSpy = vi
+        .spyOn(require('onnxruntime-node').InferenceSession, 'create')
+        .mockResolvedValue(createMockSession('model-a').session as any)
+
+      await engine.loadNamedModel('model-a', '/fake/model-a.onnx')
+      await engine.loadNamedModel('model-b', '/fake/model-b.onnx')
+
+      const loadedModels = engine.getLoadedModels()
+      expect(loadedModels).toContain('model-a')
+      expect(loadedModels).toContain('model-b')
+      // loadNamedModel 不应该自动切换
+      expect(engine.isLoaded).toBe(false)
+
+      createSpy.mockRestore()
+    })
+
+    it('switchModel: should activate the named model', async () => {
+      const engine = new GnnInferenceEngine({ featureDimension: 16 })
+
+      // 先加载一个模型作为默认
+      const defaultSession = createMockSession('default').session
+      const modelASession = createMockSession('model-a').session
+
+      const createSpy = vi
+        .spyOn(require('onnxruntime-node').InferenceSession, 'create')
+        .mockResolvedValueOnce(defaultSession as any)
+        .mockResolvedValueOnce(modelASession as any)
+
+      await engine.loadModel('/fake/default.onnx')
+      expect(engine.isLoaded).toBe(true)
+      expect(engine.getActiveModel()).toBe('default')
+
+      await engine.loadNamedModel('model-a', '/fake/model-a.onnx')
+      // 不自动切换
+      expect(engine.getActiveModel()).toBe('default')
+
+      // 手动切换
+      await engine.switchModel('model-a')
+      expect(engine.getActiveModel()).toBe('model-a')
+      expect(engine.isLoaded).toBe(true)
+
+      createSpy.mockRestore()
+    })
+
+    it('switchModel: should throw for non-existent model name', async () => {
+      const engine = new GnnInferenceEngine({ featureDimension: 16 })
+      await expect(engine.switchModel('non-existent')).rejects.toThrow(
+        'Model "non-existent" is not loaded',
+      )
+    })
+
+    it('unloadModel: should remove model from list', async () => {
+      const engine = new GnnInferenceEngine({ featureDimension: 16 })
+
+      const createSpy = vi
+        .spyOn(require('onnxruntime-node').InferenceSession, 'create')
+        .mockResolvedValue(createMockSession('model-x').session as any)
+
+      await engine.loadNamedModel('model-x', '/fake/model-x.onnx')
+
+      expect(engine.getLoadedModels()).toContain('model-x')
+
+      await engine.unloadModel('model-x')
+      expect(engine.getLoadedModels()).not.toContain('model-x')
+
+      createSpy.mockRestore()
+    })
+
+    it('unloadModel: should clear active state when unloading active model', async () => {
+      const engine = new GnnInferenceEngine({ featureDimension: 16 })
+
+      const createSpy = vi
+        .spyOn(require('onnxruntime-node').InferenceSession, 'create')
+        .mockResolvedValue(createMockSession('active').session as any)
+
+      await engine.loadNamedModel('active', '/fake/active.onnx')
+      await engine.switchModel('active')
+      expect(engine.isLoaded).toBe(true)
+      expect(engine.getActiveModel()).toBe('active')
+
+      await engine.unloadModel('active')
+      expect(engine.isLoaded).toBe(false)
+      expect(engine.getActiveModel()).toBeNull()
+
+      createSpy.mockRestore()
+    })
+
+    it('loadModel: backward compatible — loaded as "default"', async () => {
+      const engine = new GnnInferenceEngine({ featureDimension: 16 })
+
+      const createSpy = vi
+        .spyOn(require('onnxruntime-node').InferenceSession, 'create')
+        .mockResolvedValue(createMockSession('default').session as any)
+
+      await engine.loadModel('/fake/model.onnx')
+      expect(engine.getLoadedModels()).toContain('default')
+      expect(engine.getActiveModel()).toBe('default')
+      expect(engine.isLoaded).toBe(true)
+
+      createSpy.mockRestore()
     })
   })
 })

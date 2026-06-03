@@ -52,6 +52,48 @@ const DEFAULT_BATCH_SIZE = 64
 export type FeatureEncoder = (nodeId: NodeId) => Float32Array
 
 /**
+ * GraphEngineFeatureEncoder — 从 GraphEngine 读取节点属性构建特征向量
+ *
+ * 用法：
+ * ```ts
+ * const encoder = new GraphEngineFeatureEncoder(engine, ['age', 'weight'], 2)
+ * engine.setEncoder(encoder)
+ * ```
+ */
+export class GraphEngineFeatureEncoder {
+  /**
+   * @param engine - GraphEngine 实例
+   * @param featureFields - 要作为特征的属性字段名列表
+   * @param dimension - 特征向量总维度（必须 = 字段数）
+   */
+  constructor(
+    private engine: any,
+    private featureFields: string[],
+    private dimension: number,
+  ) {}
+
+  /**
+   * 将节点 ID 编码为特征向量
+   * - 从 GraphEngine 读取节点 props
+   * - 只取数值类型的 prop 值
+   * - null/undefined/非数值 → 0
+   * - dimension > field 数 → 剩余位置补 0
+   * - dimension < field 数 → 截断
+   */
+  encode(nodeId: NodeId): Float32Array {
+    const node = this.engine.getNode(nodeId)
+    const result = new Float32Array(this.dimension)
+    const limit = Math.min(this.featureFields.length, this.dimension)
+    for (let i = 0; i < limit; i++) {
+      const field = this.featureFields[i]
+      const val = node?.props?.[field]
+      result[i] = typeof val === 'number' ? val : 0
+    }
+    return result
+  }
+}
+
+/**
  * GnnInferenceEngine — ONNX 驱动的 GNN 推理引擎
  *
  * 用法：
@@ -63,7 +105,9 @@ export type FeatureEncoder = (nodeId: NodeId) => Float32Array
  * ```
  */
 export class GnnInferenceEngine {
-  private session: ort.InferenceSession | null = null
+  private sessions: Map<string, ort.InferenceSession> = new Map()
+  private activeSession: ort.InferenceSession | null = null
+  private activeModelName: string | null = null
   private config: Required<GnnEngineConfig>
   private encoder: FeatureEncoder | null = null
   private modelLoaded = false
@@ -86,7 +130,7 @@ export class GnnInferenceEngine {
   }
 
   /**
-   * 加载 ONNX 模型
+   * 加载 ONNX 模型（向后兼容，命名为 'default'）
    * @param modelPath ONNX 模型文件路径
    */
   async loadModel(modelPath: string): Promise<void> {
@@ -95,10 +139,13 @@ export class GnnInferenceEngine {
     }
 
     try {
-      this.session = await ort.InferenceSession.create(modelPath, {
+      const session = await ort.InferenceSession.create(modelPath, {
         executionProviders: ['cpu'],
         graphOptimizationLevel: 'all',
       })
+      this.sessions.set('default', session)
+      this.activeSession = session
+      this.activeModelName = 'default'
       this.modelLoaded = true
     } catch (err) {
       this.modelLoaded = false
@@ -109,10 +156,85 @@ export class GnnInferenceEngine {
   }
 
   /**
+   * 加载命名模型，与原有 loadModel 互不干扰
+   * @param name 模型名称
+   * @param modelPath ONNX 模型文件路径
+   */
+  async loadNamedModel(name: string, modelPath: string): Promise<void> {
+    if (!name) {
+      throw new Error('Model name is required')
+    }
+    if (!modelPath) {
+      throw new Error('modelPath is required')
+    }
+    if (name === 'default') {
+      // 'default' 名称由 loadModel 管理，但允许通过 loadNamedModel 覆盖
+    }
+
+    try {
+      const session = await ort.InferenceSession.create(modelPath, {
+        executionProviders: ['cpu'],
+        graphOptimizationLevel: 'all',
+      })
+      this.sessions.set(name, session)
+      // 不自动切换激活
+    } catch (err) {
+      throw new Error(
+        `Failed to load ONNX model "${name}" from "${modelPath}": ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  /**
+   * 切换到已加载的命名模型
+   * @param name 模型名称
+   */
+  async switchModel(name: string): Promise<void> {
+    const session = this.sessions.get(name)
+    if (!session) {
+      throw new Error(`Model "${name}" is not loaded. Call loadNamedModel() first.`)
+    }
+    this.activeSession = session
+    this.activeModelName = name
+    this.modelLoaded = true
+  }
+
+  /**
+   * 卸载模型
+   * @param name 模型名称
+   */
+  async unloadModel(name: string): Promise<void> {
+    if (!this.sessions.has(name)) {
+      throw new Error(`Model "${name}" is not loaded.`)
+    }
+    // 如果卸载的是当前激活的模型，清除激活状态
+    if (this.activeModelName === name) {
+      this.activeSession = null
+      this.activeModelName = null
+      this.modelLoaded = false
+    }
+    this.sessions.delete(name)
+  }
+
+  /**
+   * 返回已加载的模型名字列表
+   */
+  getLoadedModels(): string[] {
+    return Array.from(this.sessions.keys())
+  }
+
+  /**
+   * 返回当前激活的模型名
+   */
+  getActiveModel(): string | null {
+    return this.activeModelName
+  }
+
+  /**
    * 检查模型是否已加载
    */
   get isLoaded(): boolean {
-    return this.modelLoaded
+    return this.modelLoaded && this.activeSession !== null
   }
 
   /**
@@ -156,7 +278,7 @@ export class GnnInferenceEngine {
     const feeds: Record<string, ort.Tensor> = {}
 
     // 尝试推断模型输入名称
-    const inputNames = this.session!.inputNames
+    const inputNames = this.activeSession!.inputNames
 
     if (inputNames.length === 0) {
       throw new Error('Model has no input nodes')
@@ -192,8 +314,8 @@ export class GnnInferenceEngine {
       }
     }
 
-    const results = await this.session!.run(feeds)
-    const outputNames = this.session!.outputNames
+    const results = await this.activeSession!.run(feeds)
+    const outputNames = this.activeSession!.outputNames
     const embeddingOutput = outputNames.find(
       (n) =>
         n.toLowerCase().includes('embed') ||
@@ -297,18 +419,18 @@ export class GnnInferenceEngine {
    * 释放模型资源
    */
   async dispose(): Promise<void> {
-    if (this.session) {
-      // onnxruntime-node InferenceSession 没有显式的 dispose 方法
-      // 但清除引用可以触发 GC
-      this.session = null
+    if (this.activeSession) {
+      this.activeSession = null
+      this.activeModelName = null
       this.modelLoaded = false
+      this.sessions.clear()
     }
   }
 
   // ── Private Helpers ──────────────────────
 
   private ensureLoaded(): void {
-    if (!this.modelLoaded || !this.session) {
+    if (!this.modelLoaded || !this.activeSession) {
       throw new Error(
         'GNN model not loaded. Call loadModel() first with a valid ONNX model path.',
       )
@@ -336,7 +458,7 @@ export class GnnInferenceEngine {
     sourceEmb: Float32Array,
     targetEmb: Float32Array,
   ): Promise<LinkPredictionResult> {
-    const session = this.session!
+    const session = this.activeSession!
     const inputNames = session.inputNames
 
     // 拼接源和目标特征作为模型输入

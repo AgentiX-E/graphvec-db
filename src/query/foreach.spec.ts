@@ -16,6 +16,7 @@ import {
   parseQuery,
   _executeQuery,
   _executeForeach,
+  _evalForeachCondition,
   ForEachClause,
   QueryPlan,
 } from './query-engine'
@@ -491,5 +492,211 @@ describe('嵌套 FOREACH', () => {
     // WITH 数据应在 plan 中保留
     expect(plan.with).toBeDefined()
     expect(plan.with!.columns).toBeDefined()
+  })
+})
+
+// =============================================================
+// FOREACH WHERE 过滤测试（新增 V18）
+// =============================================================
+
+describe('FOREACH WHERE 过滤', () => {
+  it('FOREACH WHERE x > 1: 过滤列表元素', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1, 2, 3],
+      isVarRef: false,
+      operation: { type: 'CREATE', where: 'x > 1' },
+    }
+    const result = _executeForeach([{}], foreachClause)
+    expect(result).toHaveLength(2) // [2, 3] 通过过滤
+    expect(result[0].x).toBe(2)
+    expect(result[1].x).toBe(3)
+  })
+
+  it('FOREACH WHERE x IN [1,2]: IN 过滤', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1, 2, 3, 4],
+      isVarRef: false,
+      operation: { type: 'CREATE', where: 'x IN [1,2]' },
+    }
+    const result = _executeForeach([{}], foreachClause)
+    expect(result).toHaveLength(2)
+    expect(result[0].x).toBe(1)
+    expect(result[1].x).toBe(2)
+  })
+
+  it('FOREACH WHERE 过滤掉全部元素: 空列表处理', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1, 2, 3],
+      isVarRef: false,
+      operation: { type: 'CREATE', where: 'x > 100' },
+    }
+    const result = _executeForeach([{}], foreachClause)
+    // 所有元素被过滤掉 → allItems 为空 → 返回原始候选行
+    expect(result).toHaveLength(1) // 原始候选行不变
+    expect(result[0]).toEqual({}) // 没有 x 属性
+  })
+
+  it('FOREACH WHERE >=, <=, != 操作符', () => {
+    const clauseGE: ForEachClause = {
+      variable: 'x', list: [1, 2, 3], isVarRef: false,
+      operation: { type: 'CREATE', where: 'x >= 2' },
+    }
+    const resultGE = _executeForeach([{}], clauseGE)
+    expect(resultGE).toHaveLength(2)
+    expect(resultGE[0].x).toBe(2)
+
+    const clauseLE: ForEachClause = {
+      variable: 'x', list: [1, 2, 3], isVarRef: false,
+      operation: { type: 'CREATE', where: 'x <= 2' },
+    }
+    const resultLE = _executeForeach([{}], clauseLE)
+    expect(resultLE).toHaveLength(2)
+    expect(resultLE[0].x).toBe(1)
+
+    const clauseNE: ForEachClause = {
+      variable: 'x', list: [1, 2, 3], isVarRef: false,
+      operation: { type: 'CREATE', where: 'x != 2' },
+    }
+    const resultNE = _executeForeach([{}], clauseNE)
+    expect(resultNE).toHaveLength(2)
+    expect(resultNE[0].x).toBe(1)
+    expect(resultNE[1].x).toBe(3)
+  })
+
+  it('解析: FOREACH WHERE 子句被正确解析', () => {
+    const plan = parseQuery('FOREACH (x IN [1,2,3] WHERE x > 1 | CREATE (n:Node {id: x})) RETURN n')
+    expect(plan.forEach).toBeDefined()
+    expect(plan.forEach!.operation.where).toBe('x > 1')
+  })
+})
+
+// =============================================================
+// FOREACH REMOVE 测试（新增 V18）
+// =============================================================
+
+describe('FOREACH REMOVE', () => {
+  it('FOREACH REMOVE: 移除节点属性', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1],
+      isVarRef: false,
+      operation: { type: 'REMOVE', targets: ['n.flag'] },
+    }
+    const candidates = [{ name: 'Alice', flag: true }]
+    const result = _executeForeach(candidates, foreachClause)
+    expect(result).toHaveLength(1)
+    expect(result[0]).not.toHaveProperty('flag')
+    expect(result[0]).toHaveProperty('name', 'Alice')
+  })
+})
+
+// =============================================================
+// FOREACH 混合操作测试（新增 V18）
+// =============================================================
+
+describe('FOREACH 混合操作', () => {
+  it('混合操作 CREATE + SET: 同时创建节点并设属性', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [10, 20],
+      isVarRef: false,
+      operation: {
+        type: 'MULTI',
+        operations: [
+          { type: 'CREATE' },
+          { type: 'SET', setClauses: [{ property: 'n.flag', value: '$x' }] },
+        ],
+      },
+    }
+    const result = _executeForeach([{}], foreachClause)
+    // CREATE 展开 2 行，然后 SET 设 flag=x
+    // 注意: SET 在 MULTI 中是对每个候选行应用（取最后一个 item 值）
+    expect(result).toHaveLength(2)
+    // 每行应有 x 变量
+    expect(result[0].x).toBe(10)
+    expect(result[1].x).toBe(20)
+  })
+
+  it('混合操作 CREATE + DELETE: 先创建再删除', () => {
+    const foreachClause: ForEachClause = {
+      variable: 'x',
+      list: [1, 2],
+      isVarRef: false,
+      operation: {
+        type: 'MULTI',
+        operations: [
+          { type: 'CREATE' },
+          { type: 'DELETE', targets: ['n'] },
+        ],
+      },
+    }
+    const candidates = [
+      { name: 'Alice', _alias: 'n' },
+      { name: 'Bob', _alias: 'm' },
+    ]
+    const result = _executeForeach(candidates, foreachClause)
+    // MULTI 先执行 CREATE → 展开 (2 items × 2 rows = 4 rows with x)
+    // 然后 DELETE n → 移除 _alias=n 的行
+    // Alice 的 _alias='n' 被移除 → Alice 的 2 行被删
+    // Bob 的 _alias='m' 保留 → Bob 的 2 行保留
+    expect(result).toHaveLength(2)
+    // Bob 的行应保留
+    const bobRows = result.filter(r => r.name === 'Bob')
+    expect(bobRows).toHaveLength(2)
+    // Alice 的行应被删除
+    const aliceRows = result.filter(r => r.name === 'Alice')
+    expect(aliceRows).toHaveLength(0)
+  })
+})
+
+// =============================================================
+// _evalForeachCondition 单元测试（新增 V18）
+// =============================================================
+
+describe('_evalForeachCondition 单元测试', () => {
+  it('x > 1: 数值大于', () => {
+    expect(_evalForeachCondition('x > 1', 'x', 2)).toBe(true)
+    expect(_evalForeachCondition('x > 1', 'x', 1)).toBe(false)
+    expect(_evalForeachCondition('x > 1', 'x', 0)).toBe(false)
+  })
+
+  it('x < 3: 数值小于', () => {
+    expect(_evalForeachCondition('x < 3', 'x', 2)).toBe(true)
+    expect(_evalForeachCondition('x < 3', 'x', 3)).toBe(false)
+    expect(_evalForeachCondition('x < 3', 'x', 4)).toBe(false)
+  })
+
+  it('x >= 2: 大于等于', () => {
+    expect(_evalForeachCondition('x >= 2', 'x', 2)).toBe(true)
+    expect(_evalForeachCondition('x >= 2', 'x', 3)).toBe(true)
+    expect(_evalForeachCondition('x >= 2', 'x', 1)).toBe(false)
+  })
+
+  it('x <= 2: 小于等于', () => {
+    expect(_evalForeachCondition('x <= 2', 'x', 2)).toBe(true)
+    expect(_evalForeachCondition('x <= 2', 'x', 1)).toBe(true)
+    expect(_evalForeachCondition('x <= 2', 'x', 3)).toBe(false)
+  })
+
+  it('x = 5: 等于（数字）', () => {
+    expect(_evalForeachCondition('x = 5', 'x', 5)).toBe(true)
+    expect(_evalForeachCondition('x = 5', 'x', 4)).toBe(false)
+  })
+
+  it('x != 5: 不等于', () => {
+    expect(_evalForeachCondition('x != 5', 'x', 4)).toBe(true)
+    expect(_evalForeachCondition('x != 5', 'x', 5)).toBe(false)
+  })
+
+  it('x IN [1,2,3]: IN 操作（数字列表）', () => {
+    expect(_evalForeachCondition('x IN [1,2,3]', 'x', 2)).toBe(true)
+    expect(_evalForeachCondition('x IN [1,2,3]', 'x', 4)).toBe(false)
+  })
+
+  it('x IN [1,2]: 字符串 IN 匹配', () => {
+    expect(_evalForeachCondition('x IN [1,2]', 'x', '1')).toBe(true)
   })
 })
