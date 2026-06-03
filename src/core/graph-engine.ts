@@ -23,6 +23,10 @@ import { triangleCount as triangleCountAlgo } from '../algorithms/triangle-count
 import { labelPropagation as labelPropagationAlgo } from '../algorithms/label-propagation'
 import { degreeCentrality as degreeCentralityAlgo } from '../algorithms/degree-centrality'
 import { astar as astarAlgo, HeuristicFn } from '../algorithms/astar'
+import { closeness } from '../algorithms/closeness'
+import { kCore, coreDecomposition } from '../algorithms/k-core'
+import { leidenCommunity } from '../algorithms/leiden'
+import { egoNet } from '../algorithms/ego-net'
 import { getEventBus } from './event-bus'
 import { EventStream } from './event-stream'
 import { MultiLeaderReplication } from './multi-leader-replication'
@@ -3280,6 +3284,65 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       return (this.storage as OverGraphStorage).geoKnn(lat, lng, k, maxRadiusKm)
     }
     throw new Error('Geo queries require OverGraphStorage')
+  }
+
+  // ── Centrality & Community Algorithms ──
+
+  /**
+   * Closeness centrality — measures by average shortest path length
+   * @param options - Optional { normalized }
+   * @returns Map<nodeId, closenessScore>
+   */
+  async closeness(options?: { normalized?: boolean }): Promise<Map<NodeId, number>> {
+    this._ensureOpen()
+    const allNodes = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    return closeness(allNodes, getNeighbors, options)
+  }
+
+  /**
+   * k-Core decomposition — find maximal subgraph where each node has degree >= k
+   * @param k - Minimum degree
+   * @returns Set of node IDs in the k-core
+   */
+  async kCore(k: number): Promise<Set<NodeId>> {
+    this._ensureOpen()
+    const allNodes = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    const { shell } = coreDecomposition(allNodes, getNeighbors)
+    const result = new Set<NodeId>()
+    for (const [nodeId, shellNum] of shell) {
+      if (shellNum >= k) result.add(nodeId)
+    }
+    return result
+  }
+
+  /**
+   * Leiden community detection — fast, high-quality community detection
+   * @param options - Optional { resolution, seed }
+   * @returns Map<nodeId, communityId>
+   */
+  async leidenCommunity(options?: { resolution?: number; seed?: number }): Promise<Map<NodeId, number>> {
+    this._ensureOpen()
+    const allNodes = Array.from(this._nodeIds)
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => ({ target: e.dst }))
+    const result = leidenCommunity(allNodes, getNeighbors, options?.resolution, options?.seed)
+    return result
+  }
+
+  /**
+   * Ego-network extraction — get the subgraph centered on a node
+   * @param center - Center node ID
+   * @param radius - Ego network radius (default: 1 = immediate neighbors)
+   */
+  async egoNet(center: NodeId, radius: number = 1): Promise<{
+    nodes: Set<NodeId>; edges: Array<{ src: NodeId; dst: NodeId; typeId: number }>
+  }> {
+    this._ensureOpen()
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => ({
+      target: e.dst, edge: { src: nid, dst: e.dst, typeId: e.typeId },
+    }))
+    return egoNet(center, getNeighbors, radius)
   }
 }
 

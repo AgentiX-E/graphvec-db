@@ -28,3 +28,17 @@ export { StreamingPageRank } from './streaming-pagerank'
 export { yenKSP } from './yenksp'
 export { approxBetweenness } from './approx-betweenness'
 export { egoNet } from './ego-net'
+export { kCore, coreDecomposition, allKCores } from './k-core'
+export { leidenCommunity } from './leiden'
+export { randomWalk, randomWalks } from './random-walk'
+export { node2vec, cosineSimilarity, jaccardSimilarity as node2vecJaccard, allPairsJaccard } from './node2vec'
+export {
+  jaccardSimilarity,
+  cosineSimilarity as algoCosineSimilarity,
+  adamicAdar,
+  preferentialAttachment,
+  resourceAllocation,
+} from './similarity'
+export { evaluateLinkPrediction, cosineSimilarity as embedCosineSimilarity, cosineSimilarityMatrix } from './embed-eval'
+export { reduceWithPCA, getPCALoadings, reduceWithTSNE, forceDirectedLayout } from './embed-viz'
+export { GnnInferenceEngine } from './gnn-engine'
