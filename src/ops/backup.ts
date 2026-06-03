@@ -36,11 +36,64 @@ export class Backup {
   private pitrConfig: PITRConfig | null = null
   private walArchiver: WalArchiver = new WalArchiver()
 
+  /** 写入冻结标志 */
+  private _frozen: boolean = false
+  /** 冻结时间戳（毫秒） */
+  private _frozenAt: number = 0
+
   constructor(engine: GraphEngine, clock?: HlcClock) {
     this.engine = engine
     this.config = { path: '' }
     this.logger = new Logger('backup')
     this.clock = clock || new HlcClock()
+  }
+
+  // ─────────── 写入冻结 / 解冻 ───────────
+
+  /**
+   * 冻结所有写入操作。
+   * 设置 _frozen = true，调用 engine.flush() 确保缓存写入，
+   * 记录冻结时间戳。
+   * 如果已冻结则不重复执行。
+   */
+  freezeWrites(): void {
+    if (this._frozen) return // double freeze 不报错
+    this._frozen = true
+    this._frozenAt = Date.now()
+
+    // flush 引擎缓存（兼容已有的 flush 调用）
+    const engineAny = this.engine as any
+    if (typeof engineAny.flush === 'function') {
+      engineAny.flush()
+    }
+    if (typeof engineAny.saveIndexes === 'function') {
+      engineAny.saveIndexes()
+    }
+    if (typeof engineAny.sync === 'function') {
+      engineAny.sync()
+    }
+
+    this.logger.info('Writes frozen for backup', { frozenAt: this._frozenAt })
+  }
+
+  /**
+   * 解除写入冻结。
+   * 设置 _frozen = false，记录解除时间戳。
+   * 如果已解冻则不重复执行。
+   */
+  unfreezeWrites(): void {
+    if (!this._frozen) return
+    this._frozen = false
+    this.logger.info('Writes unfrozen after backup', {
+      frozenDurationMs: Date.now() - this._frozenAt,
+    })
+  }
+
+  /**
+   * 返回当前的写入冻结状态
+   */
+  isFrozen(): boolean {
+    return this._frozen
   }
 
   /**
@@ -56,7 +109,8 @@ export class Backup {
     this.snapshotId++
     let unpauseWrites: (() => void) | null = null
     try {
-      // 1. 暂停写入，确保备份一致性
+      // 1. 冻结写入，确保备份一致性
+      this.freezeWrites()
       unpauseWrites = await this.engine.pauseWrites()
 
       // 2. 记录 HLC 时间戳（建立一致性快照参考点）
@@ -159,6 +213,26 @@ export class Backup {
     } finally {
       this.inProgress = false
       if (unpauseWrites) unpauseWrites()
+      this.unfreezeWrites()
+    }
+  }
+
+  /**
+   * 备份到指定目标路径（使用 freeze/unfreeze 保护一致性）
+   * @param backupDir 备份目标目录
+   * @returns 备份结果（路径和字节数）
+   */
+  async backupTo(backupDir: string): Promise<{ path: string; sizeBytes: number }> {
+    let unpauseWrites: (() => void) | null = null
+    try {
+      this.freezeWrites()
+      unpauseWrites = await this.engine.pauseWrites()
+      const result = await this.backup(backupDir)
+      return result
+    } finally {
+      if (unpauseWrites) unpauseWrites()
+      this.unfreezeWrites()
+      this.inProgress = false
     }
   }
 

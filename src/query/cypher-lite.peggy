@@ -719,12 +719,19 @@ Primary
   / FunctionCall
   / ExistsExpression
   / CaseExpression
+  / ParameterRef
   / PropertyRef
   / StringLiteral
   / NumberLiteral
   / BooleanLiteral
   / Identifier
   / "(" _ expr:OrExpression _ ")" { return expr }
+
+// ── 参数引用 ──────────────────────────────────────────────
+
+ParameterRef
+  = "$" name:Identifier { return { type: 'PARAM', name: name } }
+  / "$" digits:[0-9]+ { return { type: 'PARAM', name: digits.join('') } }
 
 // ── 模式推导 / Pattern Comprehension ──────────────────────
 

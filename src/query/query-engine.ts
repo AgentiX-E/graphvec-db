@@ -431,22 +431,44 @@ function serializeParamValue(val: unknown): string {
  * 解析 Cypher-lite 查询字符串为 QueryPlan，支持参数化查询
  * 以防注入风险。
  *
- * 参数占位符格式：$1, $2, ..., $N
+ * 支持两种参数模式：
+ * - 位置参数（数组）：$1, $2, ..., $N
+ * - 命名参数（对象）：$name, $age, ...
+ *
  * 参数会被安全地序列化并替换到查询语句中。
  *
- * @param query - 查询字符串（可包含 $N 占位符）
- * @param params - 可选参数数组
+ * @param query - 查询字符串（可包含 $N 或 $name 占位符）
+ * @param params - 可选参数数组或对象
  * @returns QueryPlan
  *
  * @example
  *   execQuery('MATCH (n:Person) WHERE n.name = $1', ['Alice'])
+ *   execQuery('MATCH (n:Person) WHERE n.name = $name', { name: 'Alice' })
  *   execQuery('MATCH (n:Person) WHERE n.age IN $1', [[25, 30, 35]])
  */
-export function execQuery(query: string, params?: unknown[]): QueryPlan {
-  if (!params || params.length === 0) {
+export function execQuery(
+  query: string,
+  params?: Record<string, unknown> | unknown[]
+): QueryPlan {
+  // 无参数
+  if (!params || (Array.isArray(params) && params.length === 0) ||
+      (!Array.isArray(params) && typeof params === 'object' && Object.keys(params).length === 0)) {
     return parseQuery(query)
   }
 
+  // ── 自动检测：数组 → 位置参数 ──
+  if (Array.isArray(params)) {
+    return _execQueryPositional(query, params)
+  }
+
+  // ── 对象 → 命名参数 ──
+  return _execQueryNamed(query, params as Record<string, unknown>)
+}
+
+/**
+ * 位置参数替换：$1, $2, ..., $N
+ */
+function _execQueryPositional(query: string, params: unknown[]): QueryPlan {
   // 1. 统计占位符数量
   const placeholderMatches = query.match(/\$(\d+)/g)
   const placeholderCount = placeholderMatches
@@ -476,8 +498,39 @@ export function execQuery(query: string, params?: unknown[]): QueryPlan {
   for (let i = 0; i < params.length; i++) {
     const placeholder = `\\$${i + 1}`
     const serialized = serializeParamValue(params[i])
-    // 使用全局替换（RegExp），同个占位符可能出现在查询中多次
     const re = new RegExp(placeholder, 'g')
+    result = result.replace(re, serialized)
+  }
+
+  return parseQuery(result)
+}
+
+/**
+ * 命名参数替换：$name, $age, ...
+ */
+function _execQueryNamed(query: string, params: Record<string, unknown>): QueryPlan {
+  // 1. 提取所有 $identifier 占位符
+  const namedParamRegex = /\$([a-zA-Z_]\w*)/g
+  const names = new Set<string>()
+  let match: RegExpExecArray | null
+  while ((match = namedParamRegex.exec(query)) !== null) {
+    names.add(match[1])
+  }
+
+  // 2. 验证所有命名参数都有提供
+  for (const name of names) {
+    if (!(name in params)) {
+      throw new Error(
+        `Parameter $${name} was not provided. Available params: ${Object.keys(params).join(', ')}`
+      )
+    }
+  }
+
+  // 3. 替换占位符
+  let result = query
+  for (const name of names) {
+    const serialized = serializeParamValue(params[name])
+    const re = new RegExp(`\\$${name}\\b`, 'g')
     result = result.replace(re, serialized)
   }
 

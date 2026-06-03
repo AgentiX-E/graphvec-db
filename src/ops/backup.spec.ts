@@ -443,6 +443,124 @@ function cleanDir(dir: string): void {
   } catch { /* ignore */ }
 }
 
+// ─────────── P0-1/P0-8: 备份冻结 + 显式事务 ───────────
+
+describe('Backup - Write Freeze / Unfreeze', () => {
+  const BACKUP_DIR = './test-data/backup-freeze-test'
+  const DATA_DIR = './test-data/backup-freeze-data'
+
+  let engine: GraphEngine
+  let backupInst: Backup
+
+  beforeAll(() => {
+    cleanDir(BACKUP_DIR)
+    cleanDir(DATA_DIR)
+    process.env.DATA_DIR = DATA_DIR
+    const config = { ...testEngineConfig, path: DATA_DIR }
+    engine = new GraphEngine(config)
+    engine.open()
+    backupInst = new Backup(engine)
+  })
+
+  afterAll(() => {
+    engine.close()
+    cleanDir(BACKUP_DIR)
+    cleanDir(DATA_DIR)
+  })
+
+  it('isFrozen should return false initially', () => {
+    expect(backupInst.isFrozen()).toBe(false)
+  })
+
+  it('freezeWrites should set _frozen to true', () => {
+    expect(backupInst.isFrozen()).toBe(false)
+    backupInst.freezeWrites()
+    expect(backupInst.isFrozen()).toBe(true)
+    // Cleanup
+    backupInst.unfreezeWrites()
+    expect(backupInst.isFrozen()).toBe(false)
+  })
+
+  it('unfreezeWrites should set _frozen to false', () => {
+    backupInst.freezeWrites()
+    expect(backupInst.isFrozen()).toBe(true)
+    backupInst.unfreezeWrites()
+    expect(backupInst.isFrozen()).toBe(false)
+  })
+
+  it('backup should automatically call freeze and unfreeze', async () => {
+    // Verify the backup method wraps with freeze/unfreeze by checking
+    // that _frozen is properly managed through a try/finally pattern
+    const originalFreeze = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(backupInst), 'freezeWrites'
+    )
+    const originalUnfreeze = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(backupInst), 'unfreezeWrites'
+    )
+
+    let freezeCalled = false
+    let unfreezeCalled = false
+
+    // Spy on freezeWrites
+    Object.defineProperty(Object.getPrototypeOf(backupInst), 'freezeWrites', {
+      value: () => { freezeCalled = true; originalFreeze!.value.call(backupInst) },
+      writable: true,
+    })
+    // Spy on unfreezeWrites
+    Object.defineProperty(Object.getPrototypeOf(backupInst), 'unfreezeWrites', {
+      value: () => { unfreezeCalled = true; originalUnfreeze!.value.call(backupInst) },
+      writable: true,
+    })
+
+    // Write some data
+    await engine.upsertNode(1, 'freeze-test-a')
+    await engine.upsertNode(1, 'freeze-test-b')
+
+    if (!fs.existsSync(BACKUP_DIR)) {
+      fs.mkdirSync(BACKUP_DIR, { recursive: true })
+    }
+
+    // Run backup (will fail on archiver but freeze/unfreeze run in try/finally)
+    try {
+      await backupInst.backup(BACKUP_DIR)
+    } catch {
+      // Expected: archiver is not a function in test env
+    }
+
+    // Verify freeze and unfreeze were called
+    expect(freezeCalled).toBe(true)
+    expect(unfreezeCalled).toBe(true)
+
+    // frozen state should be reset regardless of backup success/failure
+    expect(backupInst.isFrozen()).toBe(false)
+
+    // Restore original methods
+    Object.defineProperty(Object.getPrototypeOf(backupInst), 'freezeWrites', originalFreeze!)
+    Object.defineProperty(Object.getPrototypeOf(backupInst), 'unfreezeWrites', originalUnfreeze!)
+  }, 30000)
+
+  it('double freeze should not throw', () => {
+    expect(backupInst.isFrozen()).toBe(false)
+    backupInst.freezeWrites()
+    expect(backupInst.isFrozen()).toBe(true)
+    // Second freeze should not throw
+    expect(() => backupInst.freezeWrites()).not.toThrow()
+    expect(backupInst.isFrozen()).toBe(true)
+    backupInst.unfreezeWrites()
+    expect(backupInst.isFrozen()).toBe(false)
+  })
+
+  it('double unfreeze should not throw', () => {
+    backupInst.freezeWrites()
+    expect(backupInst.isFrozen()).toBe(true)
+    backupInst.unfreezeWrites()
+    expect(backupInst.isFrozen()).toBe(false)
+    // Second unfreeze should not throw
+    expect(() => backupInst.unfreezeWrites()).not.toThrow()
+    expect(backupInst.isFrozen()).toBe(false)
+  })
+})
+
 describe('D-13 — 恢复可观测性（onProgress 回调）', () => {
   const BACKUP_DIR = './test-data/backup-obs-test'
   const DATA_DIR = './test-data/backup-obs-data'

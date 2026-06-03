@@ -1,4 +1,9 @@
 /**
+ * @deprecated 从 V14 起已废弃，使用 `lmdb-wal.ts` (LmdbWal) 替代。
+ * WAL 保留以向后兼容 RaftCore，
+ * RaftCore 的 walPath 指向的是旧版 WAL 文件。
+ * 后续应迁移 RaftCore 使用 LmdbWal。
+ *
  * wal.ts — Write-Ahead Log 持久化
  *
  * 二进制格式的 WAL，用于 Raft 日志的持久化存储。
