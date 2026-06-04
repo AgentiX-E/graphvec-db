@@ -265,7 +265,7 @@ export class OptimizerBridge {
       // ── 排序 ──
       case PlanNodeType.SORT: {
         const field = details['field'] as string
-        const dir = details['dir'] as string
+        const dir = (details['dir'] ?? details['direction']) as string
 
         return [..._inputData].sort((a, b) => {
           const valA = this._resolveNodeField(a, field)

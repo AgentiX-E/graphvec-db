@@ -1091,12 +1091,15 @@ export function limitPushdown(plan: PlanNode): PlanNode {
 
     // Walk down through intermediate nodes to find SCAN/NEIGHBORS
     // LIMIT 作为早期截断优化提示注入到 SCAN 层（后续 SORT + LIMIT 层保证最终正确语义）
+    // WARNING: 不能穿越 SORT 节点 — 否则 LIMIT 会在排序前截断，导致排序结果错误
     const walkDown = (node: PlanNode): boolean => {
       if (node.type === PlanNodeType.SCAN || node.type === PlanNodeType.NEIGHBORS) {
         node.details['pushedLimit'] = pushLimit
         return true
       }
-      // Recurse through single-child intermediate nodes (包括 SORT/FILTER)
+      // 不能穿越 SORT 节点：排序前截断会丢失全局 top N
+      if (node.type === PlanNodeType.SORT) return false
+      // Recurse through single-child intermediate nodes (排除 SORT)
       if (node.children.length === 1) {
         return walkDown(node.children[0])
       }

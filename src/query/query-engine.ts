@@ -1500,6 +1500,22 @@ export function parseQuery(query: string): QueryPlan {
         indexProperty: directAst.property,
       }
     }
+    // CREATE — attach periodicCommitHint if present
+    if (directAst.type === 'CREATE') {
+      const plan: QueryPlan = {
+        type: 'CREATE' as const,
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+      }
+      if ((directAst as any).periodicCommitHint) {
+        plan.periodicCommit = { batchSize: (directAst as any).periodicCommitHint.batchSize }
+      }
+      return plan
+    }
     // EXPLAIN / PROFILE / DESCRIBE — innerStatement is a parsed AST object
     if (directAst.type === 'EXPLAIN') {
       // innerStatement is already a parsed AST object from PEG's recursive rule
@@ -1527,6 +1543,10 @@ export function parseQuery(query: string): QueryPlan {
     // already parsed directly by PEG. Route through planFromAST directly.
     if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete)) {
       const plan = planFromAST(directAst)
+      if (!plan.periodicCommit && (directAst as any).periodicCommitHint) {
+        // TEMP FIX: Ensure periodic commit hint is propagated even if planFromAST misses it
+        plan.periodicCommit = { batchSize: (directAst as any).periodicCommitHint.batchSize }
+      }
       return plan
     }
     // Anything else that PEG parsed (e.g. regular MATCH queries) — continue to preprocess
@@ -1614,6 +1634,7 @@ export function parseQuery(query: string): QueryPlan {
       batchSize: hint.batchSize,
     }
   }
+
 
   return plan
 }
@@ -1858,6 +1879,12 @@ export function planFromAST(
   ast: any,
   schema?: import('../schema/schema-types').SchemaDef,
 ): QueryPlan {
+  // TEMP DEBUG: force periodicCommit for CREATE queries
+  if (ast.create && (ast as any).periodicCommitHint) {
+    const tmpHint = (ast as any).periodicCommitHint
+    console.log('[DEBUG planFromAST] periodicCommitHint found, batchSize:', tmpHint.batchSize)
+  }
+
   // ── USE 语句处理 ──────────────────────────────────────────
   if (ast.type === 'USE') {
     return {

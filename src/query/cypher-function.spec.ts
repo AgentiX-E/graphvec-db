@@ -73,9 +73,10 @@ describe('C-04: BUILTIN_FUNCTIONS', () => {
   it('BUILTIN_FUNCTIONS has all functions', () => {
     const keys = Object.keys(BUILTIN_FUNCTIONS)
     const expected = [
-      'abs', 'coalesce', 'datetime', 'lTrim', 'labels',
+      'abs', 'coalesce', 'datetime', 'endNode', 'lTrim', 'labels',
+      'length', 'nodes', 'relationships', 'rels',
       'replace', 'reverse', 'round', 'rTrim', 'split',
-      'substring', 'timestamp', 'toFloat', 'toInteger',
+      'startNode', 'substring', 'timestamp', 'toFloat', 'toInteger',
       'toLower', 'toString', 'toUpper', 'trim', 'type',
     ]
     expect(keys.sort()).toEqual(expected.sort())
