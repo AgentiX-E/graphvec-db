@@ -223,7 +223,11 @@ describe('QueryIR', () => {
       }
 
       const optimized = limitPushdown(plan)
-      expect(optimized.children[0].children[0].details['pushedLimit']).toBe(10)
+      // SORT 阻止 LIMIT 下推（先排序再取 TopN 语义正确）
+      // LIMIT 保留在 SORT 上方
+      expect(optimized.type).toBe(PlanNodeType.LIMIT)
+      expect(optimized.children[0].type).toBe(PlanNodeType.SORT)
+      expect(optimized.children[0].details['pushedLimit']).toBeUndefined()
     })
 
     it('should push LIMIT into NEIGHBORS', () => {
@@ -282,11 +286,14 @@ describe('QueryIR', () => {
 
       // After pushDownFilter, FILTER is merged into SCAN.
       // So LMIT → SORT → SCAN (with pushedFilters)
-      // SCAN now has pushedFilters and pushedLimit
-      const scanNode = optimized.children[0].children[0] // SORT's child
+      // SORT + LIMIT 共存时，LIMIT 不过 SORT（先排序再取 TopN）
+      // 因此 SCAN 有 pushedFilters 但没有 pushedLimit
+      const sortNode = optimized.children[0] // SORT
+      expect(sortNode.type).toBe(PlanNodeType.SORT)
+      const scanNode = sortNode.children[0]
       expect(scanNode.type).toBe(PlanNodeType.SCAN)
       expect(scanNode.details['pushedFilters']).toBeDefined()
-      expect(scanNode.details['pushedLimit']).toBe(10)
+      expect(scanNode.details['pushedLimit']).toBeUndefined()
     })
 
     it('should handle empty where spec', () => {
