@@ -1,16 +1,17 @@
 # ============================================================
 # CI/CD: Continuous Integration Workflow
 # File: .github/workflows/ci.yml
-# Description: 自动化测试、Lint 检查、安全审计、覆盖率报告
+# Description: Automated testing, linting, type checking,
+#              and coverage reporting using Vitest
 # ============================================================
 
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,16 +22,16 @@ env:
 
 jobs:
   # ============================================================
-  # Job 1: Test — 运行 Jest 全量测试
+  # Job 1: Test — Vitest 全量单元测试
   # ============================================================
   test:
     name: Test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x]
+        node-version: [20.x, 22.x]
       fail-fast: false
 
     steps:
@@ -46,16 +47,48 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run full test suite
-        run: npm run test:all
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
+      - name: Run unit tests (vitest)
+        run: npx vitest run --config vitest.config.ts --root .
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.node-version }}
+          path: |
+            test-results/
+            **/__snapshots__/
+          retention-days: 7
 
   # ============================================================
-  # Job 2: Lint — TypeScript 类型检查
+  # Job 2: Lint — ESLint 代码风格检查
   # ============================================================
   lint:
-    name: Lint (TypeScript Check)
+    name: Lint (ESLint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint check
+        run: npm run lint
+
+  # ============================================================
+  # Job 3: TypeScript Type Check
+  # ============================================================
+  typecheck:
+    name: TypeScript Check
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -76,7 +109,7 @@ jobs:
         run: npx tsc --noEmit
 
   # ============================================================
-  # Job 3: Security — npm audit + lockfile 校验
+  # Job 4: Security — npm audit + 依赖完整性校验
   # ============================================================
   security:
     name: Security Audit
@@ -100,16 +133,16 @@ jobs:
         run: npm audit --audit-level=high
         continue-on-error: true
 
-      - name: Lockfile integrity verification
-        run: node scripts/verify-deps.mjs
+      - name: Verify dependency integrity
+        run: npm run verify-deps
 
   # ============================================================
-  # Job 4: Coverage — 覆盖率报告生成
+  # Job 5: Coverage — Vitest 覆盖率报告
   # ============================================================
   coverage:
     name: Coverage Report
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -124,8 +157,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests with coverage (jest.no-coverage.config.ts)
-        run: npx jest --config jest.no-coverage.config.ts --coverage --coverageDirectory coverage --forceExit
+      - name: Run tests with coverage (vitest)
+        run: npx vitest run --config vitest.config.ts --root . --coverage
         env:
           NODE_OPTIONS: --max-old-space-size=4096
 
@@ -135,3 +168,10 @@ jobs:
           name: coverage-report
           path: coverage/
           retention-days: 30
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage/coverage-final.json
+          flags: unittests
+          fail_ci_if_error: false

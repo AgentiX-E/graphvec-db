@@ -1,0 +1,43 @@
+# CODEOWNERS — Automatic review assignment
+# Each line is a file pattern followed by one or more owners.
+# For more: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository-about-code-owners
+
+# Default owners for everything
+* @agentiX-core
+
+# Core graph engine
+/src/core/          @agentiX-core
+
+# Consensus & Raft
+/src/consensus/     @agentiX-core @agentiX-distributed
+
+# Sharding & Distribution
+/src/shard/         @agentiX-distributed
+/src/replication/   @agentiX-distributed
+/src/reshard/       @agentiX-distributed
+
+# Graph Algorithms
+/src/algorithms/    @agentiX-algorithms
+
+# Security
+/src/security/      @agentiX-security
+
+# API / SDK
+/src/api/           @agentiX-core
+/sdk/               @agentiX-core
+
+# Ops & Infrastructure
+/src/ops/           @agentiX-ops
+/Dockerfile         @agentiX-ops
+/.github/           @agentiX-ops
+
+# Documentation
+/README.md          @agentiX-core
+/CONTRIBUTING.md    @agentiX-core
+/docs/              @agentiX-core
+
+# Configuration & Build
+/package.json       @agentiX-core
+/tsconfig.json      @agentiX-core
+/.eslintrc.js       @agentiX-core
+/vitest.config.ts   @agentiX-core

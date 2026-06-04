@@ -1491,3 +1491,274 @@ export interface RefreshTokenResult {
   }
   return Buffer.from(content)
 }
+
+// ──────────────────────────────────────────
+// ForceReview — 强制多人审批机制
+// ──────────────────────────────────────────
+
+/**
+ * 审批请求状态
+ */
+export type ReviewStatus = 'pending' | 'approved' | 'rejected' | 'expired'
+
+/**
+ * 审批请求
+ */
+export interface ForceReviewRequest {
+  /** 唯一标识 */
+  id: string
+  /** 审批的操作描述 */
+  operation: string
+  /** 发起人 */
+  requestor: string
+  /** 必审人员列表（至少一人通过才能通过） */
+  requiredReviewers: string[]
+  /** 已审批人员 */
+  approvedBy: string[]
+  /** 已拒绝人员 */
+  rejectedBy: string[]
+  /** 当前状态 */
+  status: ReviewStatus
+  /** 创建时间（ms） */
+  createdAt: number
+  /** 超时时间（ms），默认 30 分钟 */
+  expiresAt: number
+  /** 审批需要的通过人数（默认 = requiredReviewers.length，即全员通过） */
+  requiredApprovals: number
+}
+
+/**
+ * ForceReviewManager — 强制审批管理器
+ *
+ * 要求指定操作必须经过多名审阅者批准才能通过。
+ * 核心规则：
+ * - 发起人不得审批自己的请求（自审批拒绝）
+ * - 必须达到 requiredApprovals 数量才能通过
+ * - 超过 expiresAt 后自动过期
+ * - 只要有一人拒绝则整个请求被拒绝
+ */
+export class ForceReviewManager {
+  private requests: Map<string, ForceReviewRequest> = new Map()
+  private idCounter = 0
+
+  /**
+   * 创建审批请求
+   *
+   * @param operation 操作描述
+   * @param requestor 发起人
+   * @param requiredReviewers 必审人员列表
+   * @param requiredApprovals 需要通过的审批人数（默认 = requiredReviewers.length）
+   * @param ttlMs 超时时间（毫秒，默认 30 分钟）
+   * @returns 创建好的审批请求
+   */
+  createRequest(
+    operation: string,
+    requestor: string,
+    requiredReviewers: string[],
+    requiredApprovals?: number,
+    ttlMs: number = 30 * 60 * 1000,
+  ): ForceReviewRequest {
+    if (!operation || !requestor || requiredReviewers.length === 0) {
+      throw new AuthError('Operation, requestor, and at least one reviewer are required', 400)
+    }
+    if (requiredReviewers.includes(requestor)) {
+      throw new AuthError('Requestor cannot be in the required reviewers list', 400)
+    }
+
+    const now = Date.now()
+    const id = `fr_${++this.idCounter}_${now}`
+    const approvals = requiredApprovals ?? requiredReviewers.length
+
+    if (approvals < 1) {
+      throw new AuthError('At least 1 approval is required', 400)
+    }
+    if (approvals > requiredReviewers.length) {
+      throw new AuthError('Required approvals cannot exceed reviewer count', 400)
+    }
+
+    const request: ForceReviewRequest = {
+      id,
+      operation,
+      requestor,
+      requiredReviewers,
+      approvedBy: [],
+      rejectedBy: [],
+      status: 'pending',
+      createdAt: now,
+      expiresAt: now + ttlMs,
+      requiredApprovals: approvals,
+    }
+
+    this.requests.set(id, request)
+    return { ...request }
+  }
+
+  /**
+   * 审批通过
+   *
+   * @param requestId 审批请求 ID
+   * @param reviewer 审阅者
+   * @returns 更新后的审批状态
+   * @throws AuthError 如果审阅者不在列表中、自审批、已超时等
+   */
+  approve(requestId: string, reviewer: string): ForceReviewRequest {
+    const request = this.requests.get(requestId)
+    if (!request) {
+      throw new AuthError(`Review request ${requestId} not found`, 404)
+    }
+
+    // 检查超时
+    if (Date.now() > request.expiresAt) {
+      request.status = 'expired'
+      return { ...request }
+    }
+
+    // 检查状态
+    if (request.status === 'approved') {
+      return { ...request }
+    }
+    if (request.status === 'rejected') {
+      throw new AuthError(`Review request ${requestId} has already been rejected`, 400)
+    }
+
+    // 自审批拒绝
+    if (reviewer === request.requestor) {
+      throw new AuthError('Self-approval is not allowed', 403)
+    }
+
+    // 检查审阅者身份
+    if (!request.requiredReviewers.includes(reviewer)) {
+      throw new AuthError(`Reviewer ${reviewer} is not in the required reviewers list`, 403)
+    }
+
+    // 不能重复审批
+    if (request.approvedBy.includes(reviewer)) {
+      return { ...request }
+    }
+
+    // 如果已经拒绝过，跳过
+    if (request.rejectedBy.includes(reviewer)) {
+      throw new AuthError(`Reviewer ${reviewer} has already rejected this request`, 400)
+    }
+
+    request.approvedBy.push(reviewer)
+
+    // 检查是否达到通过阈值
+    if (request.approvedBy.length >= request.requiredApprovals) {
+      request.status = 'approved'
+    }
+
+    return { ...request }
+  }
+
+  /**
+   * 审批拒绝
+   *
+   * @param requestId 审批请求 ID
+   * @param reviewer 审阅者
+   * @returns 更新后的审批状态
+   * @throws AuthError 如果审阅者不在列表中、已超时等
+   */
+  reject(requestId: string, reviewer: string): ForceReviewRequest {
+    const request = this.requests.get(requestId)
+    if (!request) {
+      throw new AuthError(`Review request ${requestId} not found`, 404)
+    }
+
+    // 检查超时
+    if (Date.now() > request.expiresAt) {
+      request.status = 'expired'
+      return { ...request }
+    }
+
+    if (request.status === 'rejected') {
+      return { ...request }
+    }
+    if (request.status === 'approved') {
+      throw new AuthError(`Review request ${requestId} has already been approved`, 400)
+    }
+
+    // 检查审阅者身份
+    if (!request.requiredReviewers.includes(reviewer)) {
+      throw new AuthError(`Reviewer ${reviewer} is not in the required reviewers list`, 403)
+    }
+
+    // 已经拒绝过，幂等
+    if (request.rejectedBy.includes(reviewer)) {
+      return { ...request }
+    }
+
+    request.rejectedBy.push(reviewer)
+
+    // 有人拒绝 → 整个请求被拒绝
+    request.status = 'rejected'
+
+    return { ...request }
+  }
+
+  /**
+   * 获取审批状态
+   */
+  getStatus(requestId: string): ForceReviewRequest | null {
+    const request = this.requests.get(requestId)
+    if (!request) return null
+
+    // 自动检查超时
+    if (request.status === 'pending' && Date.now() > request.expiresAt) {
+      request.status = 'expired'
+    }
+
+    return { ...request }
+  }
+
+  /**
+   * 列出所有审批请求（可按状态过滤）
+   */
+  listRequests(status?: ReviewStatus): ForceReviewRequest[] {
+    const result: ForceReviewRequest[] = []
+
+    for (const request of this.requests.values()) {
+      // 自动检查超时
+      if (request.status === 'pending' && Date.now() > request.expiresAt) {
+        request.status = 'expired'
+      }
+
+      if (!status || request.status === status) {
+        result.push({ ...request })
+      }
+    }
+
+    return result
+  }
+
+  /**
+   * 清理过期的审批请求
+   */
+  cleanupExpired(): number {
+    let count = 0
+    for (const [id, request] of this.requests) {
+      if (request.status === 'pending' && Date.now() > request.expiresAt) {
+        request.status = 'expired'
+        count++
+      }
+    }
+    return count
+  }
+
+  /**
+   * 获取指定用户的待审批请求
+   */
+  getPendingForUser(userId: string): ForceReviewRequest[] {
+    const result: ForceReviewRequest[] = []
+    for (const request of this.requests.values()) {
+      if (
+        request.status === 'pending' &&
+        Date.now() <= request.expiresAt &&
+        request.requiredReviewers.includes(userId)
+      ) {
+        result.push({ ...request })
+      }
+    }
+    return result
+  }
+}
