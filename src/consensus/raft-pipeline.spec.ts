@@ -147,4 +147,36 @@ describe('B-01 Raft Pipeline 复制', () => {
 
     for (const n of nodes) await n.stop()
   })
+
+  // ── TC5: 分支测试：pipeline 连接成功建立后的状态验证 ──
+  test('TC5: leader can still replicate after follower restart', async () => {
+    tmp = makeTmpDir()
+    const nodes: RaftCore[] = []
+    for (const id of ['n1', 'n2', 'n3']) {
+      const t = new MockTransport(id)
+      const peers = ['n1', 'n2', 'n3'].filter(x => x !== id)
+      nodes.push(new RaftCore(makeCfg(id, peers, tmp), t))
+    }
+
+    for (const n of nodes) await n.start()
+    await new Promise(r => setTimeout(r, 2000))
+
+    let leader = nodes.find(n => n.role === 'leader')
+    if (!leader) {
+      await new Promise(r => setTimeout(r, 1500))
+      leader = nodes.find(n => n.role === 'leader')
+    }
+    expect(leader).toBeDefined()
+
+    // Propose some entries
+    for (let i = 0; i < 5; i++) {
+      await leader!.propose(new TextEncoder().encode(`e-${i}`))
+    }
+    await new Promise(r => setTimeout(r, 500))
+
+    // Pipeline setup should have occurred
+    expect((leader as any)._inFlight).toBeDefined()
+
+    for (const n of nodes) await n.stop()
+  })
 })

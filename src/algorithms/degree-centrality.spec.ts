@@ -76,4 +76,82 @@ describe('degreeCentrality', () => {
     expect(result.scores.get(1 as NodeId)).toBe(1)
     expect(result.scores.get(2 as NodeId)).toBe(1)
   })
+
+  // ── 新增测试 ──
+
+  test('empty graph returns empty scores map', () => {
+    const result = degreeCentrality([], () => [])
+    expect(result.scores.size).toBe(0)
+  })
+
+  test('directed in-degree centrality', () => {
+    // Directed graph: 0→1, 0→2, 1→2
+    const outNeighbors: Record<number, number[]> = {
+      0: [1, 2],
+      1: [2],
+      2: [],
+    }
+    const inNeighbors: Record<number, number[]> = {
+      0: [],
+      1: [0],
+      2: [0, 1],
+    }
+    const result = degreeCentrality(
+      [0, 1, 2] as NodeId[],
+      (nid) => outNeighbors[nid] ?? [],
+      (nid) => inNeighbors[nid] ?? [],
+      { direction: 'in' },
+    )
+    // Node 2 has in-degree 2, normalized: 2/2 = 1
+    // Node 0 has in-degree 0, normalized: 0/2 = 0
+    expect(result.scores.get(2 as NodeId)).toBe(1)
+    expect(result.scores.get(0 as NodeId)).toBe(0)
+    expect(result.scores.get(1 as NodeId)).toBeCloseTo(0.5, 5)
+  })
+
+  test('directed out-degree centrality', () => {
+    const outNeighbors: Record<number, number[]> = {
+      0: [1, 2],
+      1: [2],
+      2: [],
+    }
+    const result = degreeCentrality(
+      [0, 1, 2] as NodeId[],
+      (nid) => outNeighbors[nid] ?? [],
+      undefined,
+      { direction: 'out', normalized: false },
+    )
+    expect(result.scores.get(0 as NodeId)).toBe(2)
+    expect(result.scores.get(1 as NodeId)).toBe(1)
+    expect(result.scores.get(2 as NodeId)).toBe(0)
+  })
+
+  test('isolated nodes have 0 centrality', () => {
+    const result = degreeCentrality(
+      [0, 1, 2] as NodeId[],
+      () => [],
+      undefined,
+      { normalized: false },
+    )
+    expect(result.scores.get(0 as NodeId)).toBe(0)
+    expect(result.scores.get(1 as NodeId)).toBe(0)
+    expect(result.scores.get(2 as NodeId)).toBe(0)
+  })
+
+  test('non-consecutive node IDs', () => {
+    const neighbors: Record<number, number[]> = {
+      10: [20],
+      20: [10, 30],
+      30: [20],
+    }
+    const result = degreeCentrality(
+      [10, 20, 30] as NodeId[],
+      (nid) => neighbors[nid] ?? [],
+      undefined,
+      { normalized: false },
+    )
+    expect(result.scores.get(10 as NodeId)).toBe(1)
+    expect(result.scores.get(20 as NodeId)).toBe(2)
+    expect(result.scores.get(30 as NodeId)).toBe(1)
+  })
 })

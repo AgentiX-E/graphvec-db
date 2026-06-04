@@ -86,4 +86,87 @@ describe('generateGraphQLSchema', () => {
     expect(schema).toContain('scalar JSON')
     expect(schema).toContain('type Query')
   })
+
+  it('schema contains sort and filter arguments for node queries', () => {
+    const engine = new GraphEngine({ path: './test-data/graphql-with-schema' })
+    const schemaDef: SchemaDef = {
+      nodeTypes: [
+        {
+          typeId: 1,
+          name: 'Person',
+          fields: [
+            { name: 'name', type: 'string' },
+          ],
+        },
+      ],
+      edgeTypes: [],
+    }
+    engine.setSchema(schemaDef)
+    const schema = generateGraphQLSchema(engine)
+    expect(schema).toContain('person(id: ID): Person')
+    expect(schema).toContain('persons(limit: Int): [Person]')
+  })
+
+  it('handles empty nodeTypes in SchemaDef', () => {
+    const engine = new GraphEngine({ path: './test-data/graphql-no-schema' })
+    const schemaDef: SchemaDef = { nodeTypes: [], edgeTypes: [] }
+    engine.setSchema(schemaDef)
+    const schema = generateGraphQLSchema(engine)
+    expect(schema).toContain('type Query')
+    expect(schema).toBeDefined()
+  })
+
+  it('handles edge type with fields', () => {
+    const engine = new GraphEngine({ path: './test-data/graphql-with-edges' })
+    const schemaDef: SchemaDef = {
+      nodeTypes: [
+        {
+          typeId: 1,
+          name: 'Person',
+          fields: [{ name: 'name', type: 'string' }],
+        },
+      ],
+      edgeTypes: [
+        { typeId: 101, name: 'REVIEWED', fields: [{ name: 'rating', type: 'number' }, { name: 'text', type: 'string' }] },
+      ],
+    }
+    engine.setSchema(schemaDef)
+    const schema = generateGraphQLSchema(engine)
+    expect(schema).toContain('REVIEWED')
+  })
+
+  it('generates schema with uppercase type names', () => {
+    const engine = new GraphEngine({ path: './test-data/graphql-with-schema' })
+    const schemaDef: SchemaDef = {
+      nodeTypes: [
+        {
+          typeId: 3,
+          name: 'Product',
+          fields: [{ name: 'price', type: 'number' }],
+        },
+      ],
+      edgeTypes: [],
+    }
+    engine.setSchema(schemaDef)
+    const schema = generateGraphQLSchema(engine)
+    expect(schema).toContain('type Product')
+    expect(schema).toContain('price')
+    expect(schema).toContain('product(id: ID): Product')
+  })
+
+  it('handles multiple node types with overlapping field names', () => {
+    const engine = new GraphEngine({ path: './test-data/graphql-with-schema' })
+    const schemaDef: SchemaDef = {
+      nodeTypes: [
+        { typeId: 1, name: 'User', fields: [{ name: 'email', type: 'string' }] },
+        { typeId: 2, name: 'Admin', fields: [{ name: 'email', type: 'string' }, { name: 'role', type: 'string' }] },
+      ],
+      edgeTypes: [],
+    }
+    engine.setSchema(schemaDef)
+    const schema = generateGraphQLSchema(engine)
+    expect(schema).toContain('type User')
+    expect(schema).toContain('type Admin')
+    expect(schema).toContain('email')
+  })
 })

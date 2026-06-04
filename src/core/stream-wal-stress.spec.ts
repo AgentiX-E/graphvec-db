@@ -112,4 +112,50 @@ describe('SegmentStreamWal 压力测试', () => {
     })
     wal2.close()
   })
+
+  test('empty WAL replay returns empty array', () => {
+    const wal = new SegmentStreamWal(path.join(TEST_DIR, 'empty-wal'))
+    wal.open()
+    const entries = wal.replay(0)
+    expect(entries).toEqual([])
+    wal.close()
+  })
+
+  test('large batch replay with varying data sizes', () => {
+    const wal = new SegmentStreamWal(path.join(TEST_DIR, 'mixed-sizes'))
+    wal.open()
+    const sizes = [10, 100, 500, 1000, 50]
+    for (let i = 0; i < 5; i++) {
+      wal.append({
+        msgId: `s-${i}`,
+        seq: i,
+        nodeId: 'test',
+        timestamp: Date.now(),
+        type: 'test:mixed',
+        data: { payload: 'x'.repeat(sizes[i]) },
+      })
+    }
+    const entries = wal.replay(0)
+    expect(entries.length).toBe(5)
+    wal.close()
+  })
+
+  test('replay with offset skips earlier entries', () => {
+    const wal = new SegmentStreamWal(path.join(TEST_DIR, 'offset-test'))
+    wal.open()
+    for (let i = 0; i < 100; i++) {
+      wal.append({
+        msgId: `off-${i}`,
+        seq: i,
+        nodeId: 'test',
+        timestamp: Date.now(),
+        type: 'test:offset',
+        data: { i },
+      })
+    }
+    const entries = wal.replay(50)
+    expect(entries.length).toBe(50)
+    expect(entries[0].seq).toBe(50)
+    wal.close()
+  })
 })

@@ -80,4 +80,19 @@ describe('MembershipRouteTable', () => {
     table.setRoute('node-2', 'tcp://h2:7001')
     expect(snap.has('node-2')).toBe(false)
   })
+
+  test('getAddr returns undefined for unknown node', () => {
+    table.initialize([])
+    expect(table.getAddr('unknown-node')).toBeUndefined()
+  })
+
+  test('removeRoute on non-existent node does not throw', () => {
+    table.initialize([])
+    expect(() => table.removeRoute('ghost')).not.toThrow()
+  })
+
+  test('setHealth on non-existent node does not throw', () => {
+    table.initialize([])
+    expect(() => table.setHealth('ghost', true)).not.toThrow()
+  })
 })

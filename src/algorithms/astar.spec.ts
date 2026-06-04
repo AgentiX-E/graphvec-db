@@ -38,7 +38,6 @@ describe('astar', () => {
   })
 
   test('returns null when no path exists', () => {
-    // Two disconnected nodes
     const result = astar(
       () => [],
       0 as NodeId,
@@ -48,8 +47,6 @@ describe('astar', () => {
   })
 
   test('uses heuristic to find goal faster', () => {
-    // Grid-like: nodes arranged in 1D
-    // 0 -- 1 -- 2 -- 3 -- 4
     const neighbors: Record<number, Array<{ nodeId: number; weight: number }>> = {
       0: [{ nodeId: 1, weight: 1 }],
       1: [{ nodeId: 0, weight: 1 }, { nodeId: 2, weight: 1 }],
@@ -57,9 +54,7 @@ describe('astar', () => {
       3: [{ nodeId: 2, weight: 1 }, { nodeId: 4, weight: 1 }],
       4: [{ nodeId: 3, weight: 1 }],
     }
-    // Manhattan-like heuristic: |goal - node|
     const heuristic: HeuristicFn = (node, goal) => Math.abs(node - goal)
-
     const result = astar(
       (nid) => neighbors[nid] ?? [],
       0 as NodeId,
@@ -72,7 +67,6 @@ describe('astar', () => {
   })
 
   test('prefers cheaper path with heuristic', () => {
-    // Two paths from 0 to 3: 0-1-2-3 (cost 3) or 0-3(direct, cost 10)
     const neighbors: Record<number, Array<{ nodeId: number; weight: number }>> = {
       0: [{ nodeId: 1, weight: 1 }, { nodeId: 3, weight: 10 }],
       1: [{ nodeId: 2, weight: 1 }],
@@ -99,5 +93,73 @@ describe('astar', () => {
     expect(result).not.toBeNull()
     expect(result!.path).toEqual([42])
     expect(result!.cost).toBe(0)
+  })
+
+  // ── 新增测试 ──
+
+  test('graph with self-loop edge — should not cause infinite loop', () => {
+    const neighbors: Record<number, Array<{ nodeId: number; weight: number }>> = {
+      0: [{ nodeId: 0, weight: 0 }, { nodeId: 1, weight: 1 }],
+      1: [{ nodeId: 0, weight: 1 }],
+    }
+    const result = astar(
+      (nid) => neighbors[nid] ?? [],
+      0 as NodeId,
+      1 as NodeId,
+    )
+    expect(result).not.toBeNull()
+    expect(result!.cost).toBe(1)
+    expect(result!.path).toEqual([0, 1])
+  })
+
+  test('multiple parallel edges — picks lowest weight', () => {
+    const neighbors: Record<number, Array<{ nodeId: number; weight: number }>> = {
+      0: [{ nodeId: 1, weight: 100 }, { nodeId: 1, weight: 1 }],
+      1: [],
+    }
+    const result = astar(
+      (nid) => neighbors[nid] ?? [],
+      0 as NodeId,
+      1 as NodeId,
+    )
+    // Should pick cheapest weight 1
+    expect(result).not.toBeNull()
+    expect(result!.cost).toBe(1)
+  })
+
+  test('heuristic is admissible — finds optimal path when tie-breaking works', () => {
+    // Graph where heuristic guides correctly
+    const neighbors: Record<number, Array<{ nodeId: number; weight: number }>> = {
+      0: [{ nodeId: 1, weight: 2 }, { nodeId: 2, weight: 1 }],
+      1: [{ nodeId: 3, weight: 1 }],
+      2: [{ nodeId: 3, weight: 5 }],
+      3: [],
+    }
+    const result = astar(
+      (nid) => neighbors[nid] ?? [],
+      0 as NodeId,
+      3 as NodeId,
+      (n, _g) => Math.abs(n - 3),
+    )
+    // Optimal: 0→1→3 = 3   vs   0→2→3 = 6
+    expect(result).not.toBeNull()
+    expect(result!.cost).toBe(3)
+    expect(result!.path).toEqual([0, 1, 3])
+  })
+
+  test('complex graph with no path — returns null', () => {
+    const neighbors: Record<number, Array<{ nodeId: number; weight: number }>> = {
+      0: [{ nodeId: 1, weight: 1 }, { nodeId: 2, weight: 1 }],
+      1: [{ nodeId: 2, weight: 1 }],
+      2: [{ nodeId: 0, weight: 1 }],
+      3: [],
+    }
+    // Component {0,1,2} is cyclic, but 3 is disconnected from it
+    const result = astar(
+      (nid) => neighbors[nid] ?? [],
+      0 as NodeId,
+      3 as NodeId,
+    )
+    expect(result).toBeNull()
   })
 })

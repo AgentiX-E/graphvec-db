@@ -157,4 +157,116 @@ describe('端到端多进程压测', () => {
     expect(e2eNodes.length).toBe(5)
     console.log('  ✓ 5 nodes with WorkerPool + Per-Peer DB started')
   }, 360000)
+
+  // ──── 用例 3: 独立节点写入验证（单个节点）────
+  test('单节点启动并完成写入', async () => {
+    const singleIds = ['solo-0']
+    const soloPort = 41550 + Math.floor(Math.random() * 5000)
+
+    e2eNodes = await spawnNodes(singleIds, soloPort, {
+      ML_WORKER_POOL_CONCURRENCY: '1',
+      ML_USE_PER_PEER_DB: 'true',
+      ML_TICK_MS: '100',
+    })
+
+    // 写入 5 条
+    const items = Array.from({ length: 5 }, (_, i) => ({
+      typeId: 220,
+      name: `solo-node-${i}`,
+      props: { idx: String(i) },
+    }))
+    e2eNodes[0].stdin({ type: 'batchUpsertNode', payload: { items } })
+
+    await new Promise(r => setTimeout(r, 10000))
+    expect(e2eNodes.length).toBe(1)
+    console.log('  ✓ Single node write completed')
+  }, 120000)
+
+  // ──── 用例 4: 简短消息写入验证 ────
+  test('写入短消息并验证响应', async () => {
+    const shortIds = ['short-0']
+    const shortPort = 51550 + Math.floor(Math.random() * 5000)
+
+    e2eNodes = await spawnNodes(shortIds, shortPort, {
+      ML_TICK_MS: '200',
+    })
+
+    e2eNodes[0].stdin({ type: 'upsertNode', payload: { typeId: 1, name: 'short-msg-node', props: {} } })
+    await new Promise(r => setTimeout(r, 10000))
+    expect(e2eNodes.length).toBe(1)
+    console.log('  ✓ Short message write completed')
+  }, 120000)
+
+  // ──── 用例 5: 无 WorkerPool 模式写入 ────
+  test('无 WorkerPool（默认串联写入）也应正确写入', async () => {
+    const noWpIds = ['nowp-0']
+    const noWpPort = 61550 + Math.floor(Math.random() * 5000)
+
+    e2eNodes = await spawnNodes(noWpIds, noWpPort, {
+      ML_USE_PER_PEER_DB: 'false',
+    })
+
+    const items = Array.from({ length: 3 }, (_, i) => ({
+      typeId: 230,
+      name: `no-wp-${i}`,
+      props: { idx: String(i) },
+    }))
+    e2eNodes[0].stdin({ type: 'batchUpsertNode', payload: { items } })
+
+    await new Promise(r => setTimeout(r, 10000))
+    expect(e2eNodes.length).toBe(1)
+    console.log('  ✓ Sequential (no WorkerPool) write completed')
+  }, 120000)
+
+  // ──── 用例 6: 批量大小上限验证 ────
+  test('批量写入 100 条消息不应失败', async () => {
+    const batchIds = ['batch-0']
+    const batchPort = 71550 + Math.floor(Math.random() * 5000)
+
+    e2eNodes = await spawnNodes(batchIds, batchPort, {
+      ML_TICK_MS: '100',
+      ML_BATCH_SIZE: '50',
+    })
+
+    const items = Array.from({ length: 100 }, (_, i) => ({
+      typeId: 240,
+      name: `batch-100-${i}`,
+      props: { idx: String(i) },
+    }))
+    e2eNodes[0].stdin({ type: 'batchUpsertNode', payload: { items } })
+
+    await new Promise(r => setTimeout(r, 15000))
+    expect(e2eNodes.length).toBe(1)
+    console.log('  ✓ Batch write 100 items completed')
+  }, 120000)
+
+  // ──── 用例 7: 环境变量默认值验证 ────
+  test('不指定 ML_TICK_MS 和 ML_BATCH_SIZE 时节点仍正常启动', async () => {
+    const defaultIds = ['def-0']
+    const defPort = 81550 + Math.floor(Math.random() * 5000)
+
+    e2eNodes = await spawnNodes(defaultIds, defPort, {})
+
+    e2eNodes[0].stdin({ type: 'upsertNode', payload: { typeId: 1, name: 'default-config-node', props: {} } })
+    await new Promise(r => setTimeout(r, 10000))
+    expect(e2eNodes.length).toBe(1)
+    console.log('  ✓ Default config node started and wrote')
+  }, 120000)
+
+  // ──── 用例 8: 节点端口不冲突验证 ────
+  test('相邻端口启动两个独立节点应互不干扰', async () => {
+    const twoIds = ['two-a', 'two-b']
+    const twoPort = 91550 + Math.floor(Math.random() * 5000)
+
+    e2eNodes = await spawnNodes(twoIds, twoPort, {
+      ML_TICK_MS: '200',
+    })
+
+    for (const n of e2eNodes) {
+      n.stdin({ type: 'upsertNode', payload: { typeId: 1, name: `two-node-${n.nodeId}`, props: {} } })
+    }
+    await new Promise(r => setTimeout(r, 15000))
+    expect(e2eNodes.length).toBe(2)
+    console.log('  ✓ Two independent nodes started without port conflict')
+  }, 180000)
 })

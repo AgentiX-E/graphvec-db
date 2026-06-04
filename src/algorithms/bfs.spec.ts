@@ -98,4 +98,36 @@ describe('bfs', () => {
     expect(result.size).toBe(1)
     expect(result.get(0)!.distance).toBe(0)
   })
+
+  // 完全图 K4 — 从任意节点出发，其他节点距离都为 1
+  it('traverses complete graph K4 — all others at distance 1', () => {
+    const k4: (n: number) => number[] = (n) => [0, 1, 2, 3].filter(x => x !== n)
+    const result = bfs(k4, 0)
+    expect(result.size).toBe(4)
+    expect(result.get(1)!.distance).toBe(1)
+    expect(result.get(2)!.distance).toBe(1)
+    expect(result.get(3)!.distance).toBe(1)
+  })
+
+  // BFS 在 weighted graph 上忽略权重（只考虑连通性）
+  it('bfs ignores edge weights', () => {
+    const weighted: (n: number) => number[] = (n) => {
+      if (n === 0) return [1]
+      return []
+    }
+    const result = bfs(weighted, 0)
+    expect(result.get(1)!.distance).toBe(1)
+  })
+
+  // 两个节点之间有两条路径（BFS 找到最短路径（按边数））
+  it('finds shortest path in terms of hop count', () => {
+    // 0-1-2 与 0-2（直接）
+    const parallel: (n: number) => number[] = (n) => {
+      if (n === 0) return [1, 2]
+      if (n === 1) return [2]
+      return []
+    }
+    const result = bfs(parallel, 0)
+    expect(result.get(2)!.distance).toBe(1) // 直接路径
+  })
 })

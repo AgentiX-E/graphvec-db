@@ -118,4 +118,40 @@ describe('REST API — 标准错误响应格式', () => {
     const ct = (cap.headers['Content-Type'] || cap.headers['content-type'] || '').toLowerCase()
     expect(ct).toContain('application/json')
   })
+
+  test('502 响应包含正确字段', () => {
+    const [res, cap] = makeFakeRes()
+    jsonResponse(res, 502, { error: 'Bad gateway' })
+
+    const body = JSON.parse(cap.bodyStr)
+    expect(body).toMatchObject({
+      error: 'Bad gateway',
+      code: 502,
+    })
+    expect(body.errorCode).toBeDefined()
+  })
+
+  test('409 冲突响应包含正确字段', () => {
+    const [res, cap] = makeFakeRes()
+    jsonResponse(res, 409, { error: 'Conflict' })
+
+    const body = JSON.parse(cap.bodyStr)
+    expect(body).toEqual({
+      error: 'Conflict',
+      code: 409,
+      errorCode: ErrorCode.DUPLICATE_ENTRY,
+    })
+  })
+
+  test('401 未经授权响应', () => {
+    const [res, cap] = makeFakeRes()
+    jsonResponse(res, 401, { error: 'Unauthorized' })
+
+    const body = JSON.parse(cap.bodyStr)
+    expect(body).toMatchObject({
+      error: 'Unauthorized',
+      code: 401,
+    })
+    expect(body.errorCode).toBe(ErrorCode.PERMISSION_DENIED)
+  })
 })

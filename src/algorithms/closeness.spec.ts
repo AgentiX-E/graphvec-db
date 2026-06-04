@@ -86,4 +86,28 @@ describe('closeness', () => {
     // center: 1/(1+1+1) = 1/3; leaf: 1/(1+2) = 1/3
     expect(scores.get(0)!).toBeCloseTo(1 / 3, 4)
   })
+
+  // 二节点图
+  it('two-node graph — closeness symmetric', () => {
+    const twoNode = (n: number) => n === 0 ? [1] : [0]
+    const scores = closeness(twoNode, [0, 1])
+    // 0: reachable=2, sumDist=0+1=1 → 2/1=2 → normalized: 2/1/(2-1) = 2 vs normalized
+    // normalized: (2-1)/(1) = 1
+    expect(scores.get(0)).toBe(1)
+    expect(scores.get(1)).toBe(1)
+  })
+
+  // 空节点列表
+  it('empty node list returns empty map', () => {
+    const scores = closeness(() => [], [])
+    expect(scores.size).toBe(0)
+  })
+
+  // 有大权重差异 — 但 closeness 只考虑 hop，不是 sumWeight
+  it('closeness ignores edge weights (only hop count)', () => {
+    const largeWeight: (n: number) => number[] = (n) => n === 0 ? [1] : []
+    const scores = closeness(largeWeight, [0, 1])
+    expect(scores.get(0)).toBeGreaterThan(0)
+    // 0→1: reachable=2, sumDist=1 → 2/2=1 (normalized to 1)
+  })
 })

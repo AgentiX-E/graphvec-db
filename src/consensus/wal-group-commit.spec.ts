@@ -127,4 +127,154 @@ describe('B-03 WAL Group Commit 共识层', () => {
     try { fs.rmSync(path.dirname(wal1['walPath'] ?? walPath + '.gc'), { recursive: true, force: true }) } catch {}
     try { fs.rmSync(path.dirname(wal2Path), { recursive: true, force: true }) } catch {}
   })
+
+  // ── TC4: Group Commit 批量写入不同 term ──
+  test('TC4: group commit with mixed terms', async () => {
+    const wal = new WAL(walPath)
+    await wal.open()
+
+    const results: number[] = []
+    // 混合不同 term 的条目
+    const promises = [
+      wal.append(1, new Uint8Array([1])),
+      wal.append(2, new Uint8Array([2])),
+      wal.append(1, new Uint8Array([3])),
+      wal.append(3, new Uint8Array([4])),
+    ]
+    for (const p of promises) {
+      const e = await p
+      results.push(e.index)
+    }
+
+    expect(results).toEqual([1, 2, 3, 4])
+
+    await wal.close()
+    await wal.open()
+    const all = wal.readAll()
+    expect(all[0].term).toBe(1)
+    expect(all[1].term).toBe(2)
+    expect(all[3].term).toBe(3)
+    await wal.close()
+  })
+
+  // ── TC5: Group Commit 空数据条 ──
+  test('TC5: append with empty data', async () => {
+    const wal = new WAL(walPath)
+    await wal.open()
+
+    const e = await wal.append(1, new Uint8Array(0))
+    expect(e.index).toBe(1)
+
+    await wal.close()
+    await wal.open()
+    const all = wal.readAll()
+    expect(all.length).toBe(1)
+    expect(all[0].data.length).toBe(0)
+    await wal.close()
+  })
+
+  // ── TC6: Group Commit 大条目混合小条目 ──
+  test('TC6: mixed large and small entries in group commit', async () => {
+    const wal = new WAL(walPath)
+    await wal.open()
+
+    const promises = [
+      wal.append(1, new Uint8Array(10000)),
+      wal.append(1, new Uint8Array([1])),
+      wal.append(1, new Uint8Array(50000)),
+      wal.append(1, new Uint8Array([2])),
+    ]
+    const entries = await Promise.all(promises)
+    expect(entries.map(e => e.index)).toEqual([1, 2, 3, 4])
+
+    await wal.close()
+    await wal.open()
+    const all = wal.readAll()
+    expect(all.length).toBe(4)
+    expect(all[0].data.length).toBe(10000)
+    expect(all[2].data.length).toBe(50000)
+    await wal.close()
+  })
+
+  // ── TC7: 多次 open/close 不损坏数据 ──
+  test('TC7: multiple open/close cycles preserve data integrity', async () => {
+    const wal = new WAL(walPath)
+    await wal.open()
+
+    // 第一轮写入
+    await wal.append(1, new Uint8Array([10]))
+    await wal.append(1, new Uint8Array([20]))
+    await wal.close()
+
+    // 重新打开并追加
+    await wal.open()
+    await wal.append(2, new Uint8Array([30]))
+    await wal.close()
+
+    // 再打开
+    await wal.open()
+    await wal.append(2, new Uint8Array([40]))
+    await wal.close()
+
+    // 最终验证
+    await wal.open()
+    const all = wal.readAll()
+    expect(all.length).toBe(4)
+    expect(all[0].data[0]).toBe(10)
+    expect(all[1].data[0]).toBe(20)
+    expect(all[2].data[0]).toBe(30)
+    expect(all[3].data[0]).toBe(40)
+    await wal.close()
+  })
+
+  // ── TC8: setGroupCommit 中途切换 ──
+  test('TC8: toggling group commit mid-way', async () => {
+    const wal = new WAL(walPath)
+    await wal.open()
+
+    // GC 模式写入 3 条
+    for (let i = 0; i < 3; i++) {
+      await wal.append(1, new Uint8Array([i]))
+    }
+
+    // 切换到 non-GC
+    wal.setGroupCommit(false)
+    await wal.append(1, new Uint8Array([99]))
+
+    // 切回 GC
+    wal.setGroupCommit(true)
+    await wal.append(1, new Uint8Array([100]))
+
+    await wal.close()
+    await wal.open()
+    const all = wal.readAll()
+    expect(all.length).toBe(5)
+    await wal.close()
+  })
+
+  // ── TC9: 当前待提交的 pending 计数 ──
+  test('TC9: pending batch count is zero after flush', async () => {
+    const wal = new WAL(walPath)
+    await wal.open()
+
+    // 使用 GC append 几条，然后 close（会 flush）后重新打开
+    const promises = [
+      wal.append(1, new Uint8Array([1])),
+      wal.append(1, new Uint8Array([2])),
+    ]
+    await Promise.all(promises)
+    await wal.close()
+
+    // 重新打开确认
+    await wal.open()
+    const all = wal.readAll()
+    expect(all.length).toBe(2)
+    await wal.close()
+  })
+
+  // ── TC10: setGroupCommit 默认启用 ──
+  test('TC10: group commit is enabled by default', () => {
+    const wal = new WAL(walPath)
+    expect(wal['_groupCommitEnabled']).toBe(true)
+  })
 })

@@ -198,4 +198,101 @@ describe('Raft 跨进程集成测试', () => {
     expect(resp.ok).toBe(false)
     console.log(`  Follower propose 返回 ok=false（预期）`)
   }, 15000)
+
+  // ── 新增：连续多次 propose 验证 ──
+  test('连续 3 次 propose 全部成功', async () => {
+    let leader: RaftNodeProc | null = null
+    for (const n of nodes) {
+      n.stdin({ type: 'getRole' })
+      const resp = await waitForMsg(n, 'roleResult', 5000)
+      if (resp.role === 'leader') { leader = n; break }
+    }
+    expect(leader).not.toBeNull()
+    for (let i = 0; i < 3; i++) {
+      leader!.stdin({ type: 'propose', payload: { data: `seq-${i}`, timeout: 5000 } })
+      const resp = await waitForMsg(leader!, 'proposeResult', 10000)
+      expect(resp.ok).toBe(true)
+    }
+    console.log('  ✓ 连续 3 次 propose 全部成功')
+  }, 30000)
+
+  // ── 新增：大消息 propose ──
+  test('大消息 propose 应成功', async () => {
+    let leader: RaftNodeProc | null = null
+    for (const n of nodes) {
+      n.stdin({ type: 'getRole' })
+      const resp = await waitForMsg(n, 'roleResult', 5000)
+      if (resp.role === 'leader') { leader = n; break }
+    }
+    expect(leader).not.toBeNull()
+    const largeData = 'x'.repeat(10240) // 10KB
+    leader!.stdin({ type: 'propose', payload: { data: largeData, timeout: 10000 } })
+    const resp = await waitForMsg(leader!, 'proposeResult', 15000)
+    expect(resp.ok).toBe(true)
+    console.log('  ✓ 10KB 消息 propose 成功')
+  }, 30000)
+
+  // ── 新增：所有节点 role 不冲突 ──
+  test('在任何时刻只有一个 leader', async () => {
+    const roles = await Promise.all(nodes.map(async (n) => {
+      n.stdin({ type: 'getRole' })
+      return waitForMsg(n, 'roleResult', 5000).then(r => r.role)
+    }))
+    const leaderCount = roles.filter(r => r === 'leader').length
+    expect(leaderCount).toBeLessThanOrEqual(1)
+    console.log(`  ✓ 集群中 leader 数: ${leaderCount}（期望 0 或 1）`)
+  }, 20000)
+
+  // ── 新增：term 单调递增 ──
+  test('所有节点 term 值应为合理范围', async () => {
+    const terms = await Promise.all(nodes.map(async (n) => {
+      n.stdin({ type: 'getRole' })
+      return waitForMsg(n, 'roleResult', 5000).then(r => r.term)
+    }))
+    for (const term of terms) {
+      expect(typeof term).toBe('number')
+      expect(term).toBeGreaterThanOrEqual(0)
+    }
+    console.log(`  ✓ terms: ${terms}`)
+  }, 15000)
+
+  // ── 新增：通过 leader 获取状态 ──
+  test('通过 getStatus 获取节点状态', async () => {
+    for (const n of nodes) {
+      n.stdin({ type: 'getStatus' })
+      const resp = await waitForMsg(n, 'statusResult', 5000)
+      expect(resp).toBeDefined()
+      expect(resp.nodeId).toBe(n.nodeId)
+      expect(typeof resp.term).toBe('number')
+      expect(typeof resp.commitIndex).toBe('number')
+    }
+    console.log('  ✓ 所有节点 status 正常')
+  }, 15000)
+
+  // ── 新增：ledger/commit index 增长 ──
+  test('propose 后 commitIndex 应增长', async () => {
+    let leader: RaftNodeProc | null = null
+    for (const n of nodes) {
+      n.stdin({ type: 'getStatus' })
+      const resp = await waitForMsg(n, 'statusResult', 5000)
+      if (resp.role === 'leader') { leader = n; break }
+    }
+    expect(leader).not.toBeNull()
+
+    // 先获取当前 commitIndex
+    leader!.stdin({ type: 'getStatus' })
+    const before = await waitForMsg(leader!, 'statusResult', 5000)
+    const beforeIdx = before.commitIndex
+
+    // propose 一条
+    leader!.stdin({ type: 'propose', payload: { data: 'ci-inc-test', timeout: 5000 } })
+    await waitForMsg(leader!, 'proposeResult', 10000)
+
+    // 再获取新的 commitIndex
+    await sleep(2000)
+    leader!.stdin({ type: 'getStatus' })
+    const after = await waitForMsg(leader!, 'statusResult', 5000)
+    expect(after.commitIndex).toBeGreaterThanOrEqual(beforeIdx + 1)
+    console.log(`  ✓ commitIndex: ${beforeIdx} → ${after.commitIndex}`)
+  }, 30000)
 })

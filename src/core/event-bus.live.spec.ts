@@ -159,4 +159,92 @@ describe('EventBus NAS dynamic monitoring (real ZMQ)', () => {
     const result2 = await bus1._recoverDealerByNodeId('node-999')
     expect(result2).toBe(false)
   })
+
+  // ── 新增 tests ──
+
+  it('should start with empty curve dir and have no peers', async () => {
+    const node1 = await createRealBus({
+      nodeId: 'empty-peer',
+      port: allocPort(),
+      curveDir: dirs.curve,
+    })
+
+    // NAS monitor 200ms 间隔，等一轮确保没扫描到 peer
+    await new Promise(r => setTimeout(r, 500))
+    expect(node1.bus.getPeerNodeIds()).toEqual([])
+
+    await node1.bus.stop()
+  })
+
+  it('should handle multiple peer key files simultaneously', async () => {
+    const node1 = await createRealBus({
+      nodeId: 'multi-a',
+      port: allocPort(),
+      curveDir: dirs.curve,
+    })
+
+    // 写入三个 peer 公钥
+    for (let i = 0; i < 3; i++) {
+      const kp = EventBus.generateCurveKeys()
+      EventBus.writePublicKeyToDir(dirs.curve, `peer-${i}`, 16100 + i, kp.publicKey)
+    }
+
+    // 等所有 peer 被发现
+    const allFound = await waitForPeers(node1.bus, 3, 5000)
+    expect(allFound).toBe(3)
+    expect(node1.bus.getPeerNodeIds().length).toBe(3)
+
+    await node1.bus.stop()
+  })
+
+  it('should not create duplicate dealers for same peer', async () => {
+    const node1 = await createRealBus({
+      nodeId: 'no-dup',
+      port: allocPort(),
+      curveDir: dirs.curve,
+    })
+
+    const kp = EventBus.generateCurveKeys()
+    EventBus.writePublicKeyToDir(dirs.curve, 'unique-peer', 16200, kp.publicKey)
+
+    await waitForPeer(node1.bus, 'unique-peer', 5000)
+
+    // Same key file still present — monitoring should not add duplicate
+    const dealersBefore = node1.bus.getPeerNodeIds().length
+    await new Promise(r => setTimeout(r, 800))
+
+    expect(node1.bus.getPeerNodeIds().length).toBe(dealersBefore)
+
+    await node1.bus.stop()
+  })
+
+  it('should handle bus stop when no peers exist (cleanup)', async () => {
+    // Verify multiple stop calls don't throw
+    const node1 = await createRealBus({
+      nodeId: 'clean-stop',
+      port: allocPort(),
+      curveDir: dirs.curve,
+    })
+
+    await expect(node1.bus.stop()).resolves.toBeUndefined()
+  })
+
+  it('should handle bus restart after stop', async () => {
+    // start → stop → start 应该正常工作
+    const node1 = await createRealBus({
+      nodeId: 'restart-node',
+      port: allocPort(),
+      curveDir: dirs.curve,
+    })
+
+    await node1.bus.stop()
+
+    // 重新启动
+    await expect(node1.bus.start()).resolves.toBeUndefined()
+
+    // check NAS monitor restarted
+    expect((node1.bus as any)._nasMonitorTimer).not.toBeNull()
+
+    await node1.bus.stop()
+  }, 10000)
 })

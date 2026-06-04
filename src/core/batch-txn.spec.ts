@@ -147,4 +147,45 @@ describe('C-03: Batch Operations & Transaction', () => {
       engine.close()
     }
   })
+
+  // TC7: 事务开启但未提交就回滚
+  it('rollback before commit discards all ops', async () => {
+    const { engine } = createEngine(dir)
+    const txnMgr = new SimpleTxnManager()
+
+    try {
+      const txId = txnMgr.begin('rollback-test')
+      txnMgr.addOp(txId, { type: 'upsertNode', args: [100, 'Rollo', { props: {} }] })
+      txnMgr.addOp(txId, { type: 'upsertNode', args: [200, 'Back', { props: {} }] })
+
+      txnMgr.rollback(txId)
+      expect(txnMgr.hasTxn(txId)).toBe(false)
+
+      // Should not find the nodes
+      const results = engine.query('MATCH (n) WHERE n.id IN [100, 200] RETURN n.name')
+      expect(results.length).toBe(0)
+    } finally {
+      engine.close()
+    }
+  })
+
+  // TC8: 分批提交
+  it('multiple sequential transactions', async () => {
+    const { engine } = createEngine(dir)
+    const txnMgr = new SimpleTxnManager()
+
+    try {
+      for (let i = 0; i < 5; i++) {
+        const txId = txnMgr.begin(`seq-${i}`)
+        txnMgr.addOp(txId, { type: 'upsertNode', args: [i, `Node-${i}`, { props: { seq: i } }] })
+        const committed = await txnMgr.commit(txId, engine)
+        expect(committed).toBe(1)
+      }
+
+      const results = engine.query('MATCH (n) RETURN n.id ORDER BY n.id')
+      expect(results.length).toBe(5)
+    } finally {
+      engine.close()
+    }
+  })
 })

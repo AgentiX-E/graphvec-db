@@ -112,4 +112,37 @@ describe('pagerankStream', () => {
     const sum = Array.from(result.values()).reduce((a, b) => a + b, 0)
     expect(sum).toBeCloseTo(1, 2)
   })
+
+  // 星形图
+  it('handles star graph — center gets highest rank', async () => {
+    const star = (n: number): number[] => {
+      if (n === 0) return [1, 2, 3]
+      if (n >= 1 && n <= 3) return [0]
+      return []
+    }
+    const records = [0, 1, 2, 3].map(id => ({
+      id, type: 1, name: '', props: {},
+    }))
+    const result = await pagerankStream(star, toAsyncIterable([records]))
+    expect(result.size).toBe(4)
+    // Center (0) should have highest PageRank in a star graph
+    const prCenter = result.get(0)!
+    for (let i = 1; i <= 3; i++) {
+      expect(prCenter).toBeGreaterThanOrEqual(result.get(i)!)
+    }
+  })
+
+  // 环图 — 所有节点 PageRank 接近相等
+  it('cycle graph — all nodes have near-equal PageRank', async () => {
+    const cycle = (n: number): number[] => [(n + 1) % 4, (n + 3) % 4]
+    const records = [0, 1, 2, 3].map(id => ({
+      id, type: 1, name: '', props: {},
+    }))
+    const result = await pagerankStream(cycle, toAsyncIterable([records]))
+    expect(result.size).toBe(4)
+    const prValues = Array.from(result.values())
+    for (let i = 1; i < prValues.length; i++) {
+      expect(Math.abs(prValues[0] - prValues[i])).toBeLessThan(0.1)
+    }
+  })
 })

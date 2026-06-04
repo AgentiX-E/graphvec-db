@@ -97,4 +97,29 @@ describe('dfs', () => {
     expect(result.pre).toEqual([0])
     expect(result.post).toEqual([0])
   })
+
+  // 完全图 K4 — 遍历所有节点
+  it('traverses complete graph K4', () => {
+    const k4: (n: number) => number[] = (n) => [0, 1, 2, 3].filter(x => x !== n)
+    const result = dfs(k4, 0)
+    expect(result.pre).toHaveLength(4)
+    expect(result.post).toHaveLength(4)
+    expect(new Set(result.pre).size).toBe(4)
+  })
+
+  // 两个节点重复边 — 不倒环
+  it('handles parallel edges without issue', () => {
+    const parallel: (n: number) => number[] = (n) =>
+      n === 0 ? [1, 1] : n === 1 ? [0, 0] : []
+    const result = dfs(parallel, 0)
+    expect(result.pre).toHaveLength(2)
+    expect(result.post).toHaveLength(2)
+  })
+
+  // 空邻居（无起始节点的邻居）
+  it('start node with no neighbors', () => {
+    const result = dfs(() => [], 0)
+    expect(result.pre).toEqual([0])
+    expect(result.post).toEqual([0])
+  })
 })

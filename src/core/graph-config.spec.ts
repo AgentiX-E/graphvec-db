@@ -34,4 +34,25 @@ describe('GraphConfig', () => {
     expect(cfg.path).toBe('/tmp/config-values')
     expect(typeof cfg.denseVector?.dimension).toBe('number')
   })
+
+  test('should apply partial overrides without losing defaults', () => {
+    const config = new GraphConfig({ path: '/tmp/partial', walEnabled: false })
+    const cfg = config.getConfig()
+    expect(cfg.path).toBe('/tmp/partial')
+    expect(cfg.walEnabled).toBe(false)
+    // Should still have defaults for unspecified fields
+    expect(cfg.denseVector?.dimension).toBe(384)
+  })
+
+  test('should create config for in-memory graph', () => {
+    const config = new GraphConfig({ path: ':memory:' })
+    const cfg = config.getConfig()
+    expect(cfg.path).toBe(':memory:')
+  })
+
+  test('should handle maxNodeCacheSize override', () => {
+    const config = new GraphConfig({ path: '/tmp/cache-test', maxNodeCacheSize: 10000 })
+    const cfg = config.getConfig()
+    expect(cfg.maxNodeCacheSize).toBe(10000)
+  })
 })

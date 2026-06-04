@@ -1,5 +1,5 @@
 /**
- * WCC algorithm unit tests
+ * WCC algorithm unit tests — Weakly Connected Components
  */
 
 import { describe, test, expect } from 'vitest'
@@ -7,7 +7,7 @@ import { NodeId } from '../types'
 import { wcc } from './wcc'
 
 describe('wcc', () => {
-  function createLinearGraph() {
+  test('should find connected components in disconnected graph', () => {
     // 0 - 1 - 2, 3 - 4 (disconnected)
     const neighbors: Record<number, number[]> = {
       0: [1],
@@ -16,18 +16,9 @@ describe('wcc', () => {
       3: [4],
       4: [3],
     }
-    return {
-      nodeIds: [0, 1, 2, 3, 4] as NodeId[],
-      getNeighbors: (nid: NodeId) => neighbors[nid] ?? [],
-    }
-  }
-
-  test('should find connected components in disconnected graph', () => {
-    const { nodeIds, getNeighbors } = createLinearGraph()
-    const result = wcc(nodeIds, getNeighbors)
+    const result = wcc([0, 1, 2, 3, 4] as NodeId[], (nid) => neighbors[nid] ?? [])
     expect(result.count).toBe(2)
     expect(result.components.length).toBe(2)
-    // Find component with 0
     const comp0 = result.components.find(c => c.includes(0 as NodeId))!
     expect(comp0).toContain(0)
     expect(comp0).toContain(1)
@@ -71,5 +62,87 @@ describe('wcc', () => {
     const result = wcc([0, 1, 2] as NodeId[], () => [])
     expect(result.count).toBe(3)
     expect(result.components.length).toBe(3)
+  })
+
+  // ── 新增测试 ──
+
+  test('star graph is one component', () => {
+    // Center 0 connected to 1,2,3
+    const neighbors: Record<number, number[]> = {
+      0: [1, 2, 3],
+      1: [0],
+      2: [0],
+      3: [0],
+    }
+    const result = wcc([0, 1, 2, 3] as NodeId[], (nid) => neighbors[nid] ?? [])
+    expect(result.count).toBe(1)
+    expect(result.components[0].length).toBe(4)
+  })
+
+  test('two separate stars', () => {
+    // Star A: center 0 with leaves 1,2
+    // Star B: center 3 with leaves 4,5
+    const neighbors: Record<number, number[]> = {
+      0: [1, 2],
+      1: [0],
+      2: [0],
+      3: [4, 5],
+      4: [3],
+      5: [3],
+    }
+    const result = wcc([0, 1, 2, 3, 4, 5] as NodeId[], (nid) => neighbors[nid] ?? [])
+    expect(result.count).toBe(2)
+    const compA = result.components.find(c => c.includes(0 as NodeId))!
+    const compB = result.components.find(c => c.includes(3 as NodeId))!
+    expect(compA.length).toBe(3)
+    expect(compB.length).toBe(3)
+  })
+
+  test('cycle graph is one component', () => {
+    // 0-1-2-3-0
+    const neighbors: Record<number, number[]> = {
+      0: [1, 3],
+      1: [0, 2],
+      2: [1, 3],
+      3: [0, 2],
+    }
+    const result = wcc([0, 1, 2, 3] as NodeId[], (nid) => neighbors[nid] ?? [])
+    expect(result.count).toBe(1)
+  })
+
+  test('chain graph is one component', () => {
+    // 0-1-2-3-4
+    const neighbors: Record<number, number[]> = {
+      0: [1],
+      1: [0, 2],
+      2: [1, 3],
+      3: [2, 4],
+      4: [3],
+    }
+    const result = wcc([0, 1, 2, 3, 4] as NodeId[], (nid) => neighbors[nid] ?? [])
+    expect(result.count).toBe(1)
+    expect(result.components[0].length).toBe(5)
+  })
+
+  test('non-consecutive node IDs', () => {
+    const neighbors: Record<number, number[]> = {
+      10: [20],
+      20: [10],
+      30: [],
+    }
+    const result = wcc([10, 20, 30] as NodeId[], (nid) => neighbors[nid] ?? [])
+    expect(result.count).toBe(2)
+  })
+
+  test('directed edges treated as undirected for WCC', () => {
+    // Directed edges: 0->1->2 (should be one component in undirected sense)
+    const neighbors: Record<number, number[]> = {
+      0: [1],
+      1: [2],
+      2: [],
+    }
+    const result = wcc([0, 1, 2] as NodeId[], (nid) => neighbors[nid] ?? [])
+    expect(result.count).toBe(1)
+    expect(result.components[0].length).toBe(3)
   })
 })

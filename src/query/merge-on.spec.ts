@@ -153,4 +153,78 @@ describe('MERGE ON CREATE / ON MATCH', () => {
     expect(nodesB.length).toBe(1)
     expect(nodesB[0]['x']).toBe(100) // 未改变
   })
+
+  // ── 新增 tests ──
+
+  // TC-6: MERGE ON CREATE SET 多属性 + ON MATCH SET 多属性
+  it('TC-6: MERGE ON CREATE 和 ON MATCH 各两个 SET 项', () => {
+    const query = "MERGE (n:Label {id: 5}) ON CREATE SET n.x = 10, n.y = 20 ON MATCH SET n.x = 99, n.z = 88"
+    const plan = parseQuery(query)
+
+    expect(plan.type).toBe('MERGE')
+    expect(plan.mergeOnCreate).toBeDefined()
+    expect(plan.mergeOnCreate!.length).toBe(2)
+    expect(plan.mergeOnMatch).toBeDefined()
+    expect(plan.mergeOnMatch!.length).toBe(2)
+
+    // 场景 A: 不存在 → ON CREATE
+    const nodesA: Array<Record<string, unknown>> = []
+    _executeQuery(plan, nodesA)
+    expect(nodesA.length).toBe(1)
+    expect(nodesA[0]['id']).toBe(5)
+    expect(nodesA[0]['x']).toBe(10)
+    expect(nodesA[0]['y']).toBe(20)
+
+    // 场景 B: 已存在 → ON MATCH
+    const existingNode: Record<string, unknown> = { id: 5, x: 0, y: 0, _label: 'Label' }
+    const nodesB = [existingNode]
+    _executeQuery(plan, nodesB)
+    expect(nodesB.length).toBe(1)
+    expect(nodesB[0]['x']).toBe(99)
+    expect(nodesB[0]['z']).toBe(88)
+  })
+
+  // TC-7: MERGE ON CREATE 字符串属性
+  it('TC-7: MERGE ON CREATE SET 字符串属性值', () => {
+    const query = 'MERGE (n:Label {id: 6}) ON CREATE SET n.name = "created"'
+    const plan = parseQuery(query)
+
+    expect(plan.mergeOnCreate![0].property).toBe('name')
+    expect(plan.mergeOnCreate![0].value).toBe('created')
+
+    const nodes: Array<Record<string, unknown>> = []
+    _executeQuery(plan, nodes)
+    expect(nodes[0]['name']).toBe('created')
+  })
+
+  // TC-8: MERGE ON CREATE + ON MATCH 值不同
+  it('TC-8: MERGE ON CREATE SET x=1 ON MATCH SET x=2 按条件正确应用', () => {
+    const query = "MERGE (n:Label {id: 7}) ON CREATE SET n.status = 'new' ON MATCH SET n.status = 'existing'"
+    const plan = parseQuery(query)
+
+    // 不存在 → ON CREATE
+    const nodesA: Array<Record<string, unknown>> = []
+    _executeQuery(plan, nodesA)
+    expect(nodesA[0]['status']).toBe('new')
+
+    // 已存在 → ON MATCH
+    const existingNode: Record<string, unknown> = { id: 7, status: 'unknown', _label: 'Label' }
+    const nodesB = [existingNode]
+    _executeQuery(plan, nodesB)
+    expect(nodesB[0]['status']).toBe('existing')
+  })
+
+  // TC-9: MERGE 带多个 match key
+  it('TC-9: MERGE 匹配多个属性 key', () => {
+    const query = "MERGE (n:Label {id: 8, name: 'test'}) ON CREATE SET n.x = 1"
+    const plan = parseQuery(query)
+
+    expect(plan.type).toBe('MERGE')
+    expect(plan.mergeNodes).toBeDefined()
+    expect(plan.mergeNodes![0].props).toBeDefined()
+    expect(plan.mergeNodes![0].props.id).toBeDefined()
+    expect(plan.mergeNodes![0].props.name).toBeDefined()
+    expect((plan.mergeNodes![0].props as Record<string, any>).id.value).toBe(8)
+    expect((plan.mergeNodes![0].props as Record<string, any>).name.value).toBe('test')
+  })
 })

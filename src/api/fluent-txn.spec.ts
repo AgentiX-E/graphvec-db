@@ -121,4 +121,27 @@ describe('C-14: Fluent API Transaction Binding', () => {
     expect(count).toBe(1)
     expect(txnMgr.hasTxn(txId)).toBe(false)
   })
+
+  // TC8: 重复调用 withinTxn 覆盖旧的 txId
+  it('calling withinTxn twice replaces old transaction', () => {
+    const txnMgr = manager.getSimpleTxnManager()
+    const txId1 = txnMgr.begin('old')
+    const txId2 = txnMgr.begin('new')
+
+    query.withinTxn(txId1)
+    query.withinTxn(txId2)
+    expect((query as any)._txId).toBe(txId2)
+  })
+
+  // TC9: 清除事务绑定后回到直接操作
+  it('calling withinTxn(null) clears transaction binding', () => {
+    const txnMgr = manager.getSimpleTxnManager()
+    const txId = txnMgr.begin('fluent-clear')
+
+    query.withinTxn(txId)
+    expect((query as any)._txId).toBe(txId)
+
+    query.withinTxn(null as any)
+    expect((query as any)._txId).toBeNull()
+  })
 })

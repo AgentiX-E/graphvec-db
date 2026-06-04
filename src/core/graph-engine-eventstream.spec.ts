@@ -170,4 +170,121 @@ describe('GraphEngine + EventStream 集成', () => {
     ge.close()
     es.close()
   })
+
+  // ── 新增 tests ──
+
+  it('should update existing node and emit event', async () => {
+    const es = new EventStream(createES())
+    es.open()
+    const ge = makeEngine(es)
+
+    const id = await ge.upsertNode(1, 'update-me', { props: { v: 1 } })
+    expect(typeof id).toBe('number')
+
+    // Update the same node
+    await ge.upsertNode(1, 'update-me', { props: { v: 2 } })
+
+    // WAL should have 2 pending entries (create + update)
+    const pending = es['wal'].readPending(Date.now() + 60000) as any[]
+    expect(pending.length).toBe(2)
+
+    ge.close()
+    es.close()
+  })
+
+  it('should handle multiple nodes simultaneously with EventStream', async () => {
+    const es = new EventStream(createES())
+    es.open()
+    const ge = makeEngine(es)
+
+    // Create 5 nodes in parallel
+    const ids = await Promise.all([
+      ge.upsertNode(1, 'parallel-1', { props: { idx: 1 } }),
+      ge.upsertNode(1, 'parallel-2', { props: { idx: 2 } }),
+      ge.upsertNode(1, 'parallel-3', { props: { idx: 3 } }),
+      ge.upsertNode(1, 'parallel-4', { props: { idx: 4 } }),
+      ge.upsertNode(1, 'parallel-5', { props: { idx: 5 } }),
+    ])
+    expect(ids.every(id => typeof id === 'number')).toBe(true)
+
+    // All should be in WAL
+    const pending = es['wal'].readPending(Date.now() + 60000) as any[]
+    expect(pending.length).toBeGreaterThanOrEqual(5)
+
+    ge.close()
+    es.close()
+  })
+
+  it('should generate unique WAL entries for node and edge events', async () => {
+    const es = new EventStream(createES())
+    es.open()
+    const ge = makeEngine(es)
+
+    const src = await ge.upsertNode(1, 'node-src')
+    const dst = await ge.upsertNode(1, 'node-dst')
+
+    // Edge creation
+    await ge.upsertEdge(src, dst, 42, { props: { label: 'connects' } })
+
+    const pending = es['wal'].readPending(Date.now() + 60000) as any[]
+    // Should have node create events (type=node:created), and edge create event (type=edge:created)
+    const nodeEvents = pending.filter((m: any) => m.type === 'node:created')
+    const edgeEvents = pending.filter((m: any) => m.type === 'edge:created')
+    expect(nodeEvents.length).toBeGreaterThanOrEqual(2)
+    expect(edgeEvents.length).toBeGreaterThanOrEqual(1)
+
+    ge.close()
+    es.close()
+  })
+
+  it('should handle EventStream with no peers gracefully', async () => {
+    const es = new EventStream(createES())
+    es.open()
+    const ge = makeEngine(es)
+
+    // Bus has peer 'remote' but no actual connection — should not crash
+    const id = await ge.upsertNode(1, 'no-peers-node')
+    expect(typeof id).toBe('number')
+
+    // Pending entries should accumulate (no ACKs expected)
+    const pending = es['wal'].readPending(Date.now() + 60000) as any[]
+    expect(pending.length).toBeGreaterThanOrEqual(1)
+
+    ge.close()
+    es.close()
+  })
+
+  it('should call close without errors when EventStream is provided', async () => {
+    const es = new EventStream(createES())
+    es.open()
+    const ge = makeEngine(es)
+
+    await ge.upsertNode(1, 'close-test')
+    await ge.upsertNode(1, 'close-test-2')
+
+    // Clean close
+    expect(() => { ge.close(); es.close() }).not.toThrow()
+  })
+
+  it('should preserve data after reopen with EventStream', async () => {
+    // First session
+    const es1 = new EventStream(createES())
+    es1.open()
+    const ge1 = makeEngine(es1)
+    const id = await ge1.upsertNode(1, 'reopen-node', { props: { persistent: true } })
+    ge1.close()
+    es1.close()
+
+    // Second session — same dirs
+    const es2 = new EventStream(createES())
+    es2.open()
+    const ge2 = makeEngine(es2)
+
+    // WAL should restore pending
+    const pending2 = es2['wal'].readPending(Date.now() + 60000) as any[]
+    expect(pending2.length).toBeGreaterThanOrEqual(1)
+
+    ge2.close()
+    es2.close()
+  }, 10000)
 })

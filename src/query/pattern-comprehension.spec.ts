@@ -66,4 +66,76 @@ describe('Pattern Comprehension 解析', () => {
     expect(plan.comprehensionColumns).toBeDefined()
     expect(plan.comprehensionColumns!.length).toBe(1)
   })
+
+  // ── 新增 tests ──
+
+  it('带 WHERE 过滤的模式推导', () => {
+    const plan = parseQuery(
+      'MATCH (n) RETURN [(n)-[:KNOWS]->(m) WHERE m.age > 18 | m.name] AS friends_adults',
+    )
+    const compCol = plan.comprehensionColumns
+    expect(compCol).toBeDefined()
+    expect(compCol!.length).toBe(1)
+    const expr = compCol![0].expression
+    expect(expr.type).toBe('PATTERN_COMPREHENSION')
+    expect(expr.where).toBeDefined()
+  })
+
+  it('多个模式推导在同一个查询中分别注册', () => {
+    // Two comprehension columns in one query
+    const plan = parseQuery(
+      'MATCH (n) RETURN [(n)-[:FRIENDS]->(f) | f.name] AS friends, [(n)-[:KNOWS]->(k) | k.age] AS known_ages',
+    )
+    expect(plan.comprehensionColumns).toBeDefined()
+    expect(plan.comprehensionColumns!.length).toBe(2)
+    expect(plan.comprehensionColumns![0].alias).toBe('friends')
+    expect(plan.comprehensionColumns![1].alias).toBe('known_ages')
+  })
+
+  it('空匹配时模式推导正确解析', () => {
+    // This checks parse doesn't crash
+    const plan = parseQuery(
+      'MATCH (n) RETURN [(n)-[:UNKNOWN]->(x) | x.name] AS empty_list',
+    )
+    expect(plan.comprehensionColumns).toBeDefined()
+    expect(plan.comprehensionColumns!.length).toBe(1)
+    expect(plan.comprehensionColumns![0].alias).toBe('empty_list')
+  })
+
+  it('模式推导带 alias 时正确注册到 returnColumns', () => {
+    const plan = parseQuery(
+      'MATCH (n) RETURN n.name, [(n)-[:KNOWS]->(f) | f.name] AS friend_names, n.age',
+    )
+    expect(plan.comprehensionColumns).toBeDefined()
+    expect(plan.comprehensionColumns!.length).toBe(1)
+    expect(plan.returnColumns).toContain('friend_names')
+    expect(plan.returnColumns).toContain('name')
+  })
+
+  it('反向关系（m → n）的模式推导', () => {
+    const plan = parseQuery(
+      'MATCH (n) RETURN [(m)-[:KNOWS]->(n) | m.name]',
+    )
+    const compCol = plan.comprehensionColumns
+    expect(compCol).toBeDefined()
+    expect(compCol!.length).toBe(1)
+    const expr = compCol![0].expression
+    expect(expr.type).toBe('PATTERN_COMPREHENSION')
+    expect(expr.fromNode.name).toBe('m')
+    expect(expr.edge.label).toBe('KNOWS')
+    expect(expr.edge.direction).toBe('out')
+    expect(expr.targetNode.name).toBe('n')
+  })
+
+  it('多 WHERE 条件的模式推导', () => {
+    const plan = parseQuery(
+      'MATCH (n) RETURN [(n)-[:KNOWS]->(m) WHERE m.age > 18 AND m.city = "NYC" | m.name] AS friends_nyc',
+    )
+    const compCol = plan.comprehensionColumns
+    expect(compCol).toBeDefined()
+    expect(compCol!.length).toBe(1)
+    const expr = compCol![0].expression
+    expect(expr.type).toBe('PATTERN_COMPREHENSION')
+    expect(expr.where).toBeDefined()
+  })
 })

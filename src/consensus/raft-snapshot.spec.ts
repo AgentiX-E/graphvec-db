@@ -248,4 +248,24 @@ describe('B-05 快照自动压缩', () => {
 
     await node2.stop()
   })
+
+  // ── TC5: 快照阈值未达到时不应触发 ──
+  test('TC5: snapshot is NOT triggered when entries below threshold', async () => {
+    const cfg3 = makeCfg('n1', [], tmp)
+    const transport3 = new MockTransport('n1')
+    const node = new RaftCore(cfg3, transport3)
+    await node.start()
+    await node.waitForLeader(2000).catch(() => {})
+
+    // 只追加 2 条日志（阈值=5）
+    for (let i = 0; i < 2; i++) {
+      await node.propose(new Uint8Array([i]))
+    }
+    await new Promise(r => setTimeout(r, 300))
+
+    // 应尚未触发快照
+    expect(fs.existsSync(cfg3.snapshotPath!)).toBe(false)
+
+    await node.stop()
+  })
 })

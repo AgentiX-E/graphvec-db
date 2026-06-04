@@ -321,4 +321,59 @@ describe('Multi-Leader 边际场景', () => {
       expect(pending).toBeGreaterThanOrEqual(0)
     }, 60000)
   })
+
+  // ================================================================
+  // 4. 小消息批量写入验证
+  // ================================================================
+  describe('小消息批量', () => {
+    test('100 条微小消息（~10 字节）写入', async () => {
+      // 微小消息，验证 Outbox 的批量打包
+      const items = Array.from({ length: 100 }, (_, i) => ({
+        typeId: 40,
+        name: `tiny-${i}`,
+        props: { v: String(i) },
+      }))
+      const result = await batchWriteOn(nodes[0], items)
+      expect(result.ids).toHaveLength(100)
+      console.log('  ✓ tiny messages written')
+    }, 60000)
+  })
+
+  // ================================================================
+  // 5. 节点编号状态检查
+  // ================================================================
+  describe('节点状态验证', () => {
+    test('所有节点应有 nodeId', async () => {
+      for (const n of nodes) {
+        expect(n.nodeId).toBeTruthy()
+      }
+    })
+  })
+
+  // ================================================================
+  // 6. 空属性节点写入
+  // ================================================================
+  describe('空属性节点', () => {
+    test('写入无属性节点', async () => {
+      const id = await writeOn(nodes[0], 50, 'empty-prop-node')
+      expect(id).toBeTruthy()
+      console.log('  ✓ empty-prop node created')
+    }, 30000)
+  })
+
+  // ================================================================
+  // 7. 多条简单写入（不验证跨节点一致性）
+  // ================================================================
+  describe('简单多写入', () => {
+    test('连续 5 条写入单节点', async () => {
+      const ids: string[] = []
+      for (let i = 0; i < 5; i++) {
+        const id = await writeOn(nodes[0], 60, `simple-${i}`, { key: String(i) })
+        expect(id).toBeTruthy()
+        ids.push(id)
+      }
+      expect(ids.length).toBe(5)
+      console.log('  ✓ 5 sequential writes done')
+    }, 120000)
+  })
 })

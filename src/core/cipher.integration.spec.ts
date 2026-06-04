@@ -191,4 +191,82 @@ describe('EncryptionAtRest — GraphEngine integration', () => {
 
     engine2.close()
   })
+
+  // ── 新增 tests ──
+
+  it('should handle export/import with multiple nodes and edges encrypted', () => {
+    const storage = new OverGraphStorage(cipher)
+    storage.open({ path: path.join(TEST_DIR, 'encrypted-complex') })
+
+    const n1 = storage.upsertNode(1, 'A', { props: { x: 10 } })
+    const n2 = storage.upsertNode(2, 'B', { props: { y: 20 } })
+    const n3 = storage.upsertNode(3, 'C', { props: { z: 30 } })
+    storage.upsertEdge(n1, n2, 5)
+    storage.upsertEdge(n2, n3, 5)
+
+    const snapshot = storage.exportSnapshot()
+    expect(snapshot[0]).toBe(0x01) // encrypted
+
+    const storage2 = new OverGraphStorage(cipher)
+    storage2.open({ path: path.join(TEST_DIR, 'encrypted-complex-restore') })
+    storage2.importSnapshot(snapshot)
+
+    expect(storage2.getNode(n1, true)?.key).toBe('A')
+    expect(storage2.getNode(n2, true)?.key).toBe('B')
+    expect(storage2.getNode(n3, true)?.key).toBe('C')
+
+    storage.close()
+    storage2.close()
+  })
+
+  it('should handle empty snapshot export/import', () => {
+    const storage = new OverGraphStorage(cipher)
+    storage.open({ path: path.join(TEST_DIR, 'encrypted-empty') })
+
+    const snapshot = storage.exportSnapshot()
+    expect(snapshot[0]).toBe(0x01)
+
+    const storage2 = new OverGraphStorage(cipher)
+    storage2.open({ path: path.join(TEST_DIR, 'encrypted-empty-restore') })
+    // Should not throw
+    expect(() => storage2.importSnapshot(snapshot)).not.toThrow()
+
+    storage.close()
+    storage2.close()
+  })
+
+  it('should fail import with truncated encrypted snapshot', () => {
+    const storage = new OverGraphStorage(cipher)
+    storage.open({ path: path.join(TEST_DIR, 'encrypted-truncate') })
+
+    storage.upsertNode(1, 'Test')
+    const snapshot = storage.exportSnapshot()
+    const truncated = snapshot.subarray(0, 10) // too short
+
+    const storage2 = new OverGraphStorage(cipher)
+    storage2.open({ path: path.join(TEST_DIR, 'encrypted-truncate-restore') })
+    expect(() => storage2.importSnapshot(truncated)).toThrow()
+
+    storage.close()
+    storage2.close()
+  })
+
+  it('should produce different snapshots on different runs', () => {
+    const storage = new OverGraphStorage(cipher)
+    storage.open({ path: path.join(TEST_DIR, 'encrypted-diff') })
+
+    storage.upsertNode(1, 'SameData')
+    const snap1 = storage.exportSnapshot()
+
+    const storage2 = new OverGraphStorage(cipher)
+    storage2.open({ path: path.join(TEST_DIR, 'encrypted-diff2') })
+    storage2.upsertNode(1, 'SameData')
+    const snap2 = storage2.exportSnapshot()
+
+    // Different nonce → different data even with same content
+    expect(snap1.toString('hex')).not.toBe(snap2.toString('hex'))
+
+    storage.close()
+    storage2.close()
+  })
 })

@@ -114,4 +114,41 @@ describe('bfsStream', () => {
     )
     expect(result.size).toBe(4)
   })
+
+  // 环形图
+  it('traverses a cycle graph', async () => {
+    const cycle = (n: number): number[] => [(n + 1) % 4, (n + 3) % 4]
+    const records = [0, 1, 2, 3].map(id => ({
+      id, type: 1, name: '', props: {},
+    }))
+    const result = await bfsStream(cycle, 0, toAsyncIterable([records]))
+    expect(result.size).toBe(4)
+    expect(result.get(1)!.distance).toBe(1)
+    expect(result.get(2)!.distance).toBe(2)
+  })
+
+  // 有向无环图
+  it('traverses a DAG correctly', async () => {
+    const dag = (n: number): number[] =>
+      n === 0 ? [1, 2] : n === 1 ? [3] : n === 2 ? [3] : []
+    const records = [0, 1, 2, 3].map(id => ({
+      id, type: 1, name: '', props: {},
+    }))
+    const result = await bfsStream(dag, 0, toAsyncIterable([records]))
+    expect(result.size).toBe(4)
+    expect(result.get(1)!.distance).toBe(1)
+    expect(result.get(2)!.distance).toBe(1)
+    expect(result.get(3)!.distance).toBe(2)
+  })
+
+  // 只处理入边中出现的节点
+  it('ignores nodes not in input records', async () => {
+    const result = await bfsStream(
+      () => [999], // neighbor 999 not in records
+      0,
+      toAsyncIterable([[{ id: 0, type: 1, name: '', props: {} }]]),
+    )
+    expect(result.size).toBe(1)
+    expect(result.has(999)).toBe(false)
+  })
 })
