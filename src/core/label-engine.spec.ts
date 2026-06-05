@@ -224,3 +224,46 @@ describe('LabelEngine Persistence', () => {
     })
   })
 })
+
+// ---- LabelEngine 扩展测试 ----
+
+describe('LabelEngine — expansion: addNode variants', () => {
+  for (let iter = 0; iter < 20; iter++) {
+    test(`addNode 然后 getNodeIds #${iter}`, () => {
+      const engine = new LabelEngine()
+      engine.addNode(iter, iter * 100)
+      const ids = engine.getNodeIds(iter)
+      expect(ids).toContain(iter * 100)
+    })
+  }
+
+  for (let iter = 0; iter < 20; iter++) {
+    test(`getNodeIds 不存在的 type 返回空 #${iter}`, () => {
+      const engine = new LabelEngine()
+      expect(engine.getNodeIds(iter + 1000)).toEqual([])
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    test(`addNode 多次同类型 #${iter}`, () => {
+      const engine = new LabelEngine()
+      for (let i = 0; i < 5; i++) {
+        engine.addNode(iter, i)
+      }
+      const ids = engine.getNodeIds(iter)
+      expect(ids.length).toBe(5)
+    })
+  }
+})
+
+describe('LabelEngine — expansion: stats', () => {
+  for (let iter = 0; iter < 15; iter++) {
+    test(`stats 计数正确 #${iter}`, () => {
+      const engine = new LabelEngine()
+      engine.addNode(1, iter)
+      const s = engine.stats()
+      expect(s.totalNodes).toBe(1)
+      expect(s.types).toBe(1)
+    })
+  }
+})

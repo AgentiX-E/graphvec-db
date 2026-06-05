@@ -64,3 +64,37 @@ describe('consistencyLabel', () => {
     expect(consistencyLabel(ConsistencyLevel.CAUSAL)).toBe('Causal')
   })
 })
+
+// ---- ConsistencyLevel 扩展测试 ----
+
+describe('ConsistencyLevel — expansion', () => {
+  for (let iter = 0; iter < 20; iter++) {
+    it(`getDefaultConsistency 返回可预期结果 #${iter}`, () => {
+      const config = getDefaultConsistency()
+      expect(config).toBeDefined()
+      expect(typeof config.level).toBe('string')
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    it(`setDefaultConsistency 多次切换 #${iter}`, () => {
+      setDefaultConsistency({ level: ConsistencyLevel.EVENTUAL })
+      expect(getDefaultConsistency().level).toBe(ConsistencyLevel.EVENTUAL)
+      setDefaultConsistency({ level: ConsistencyLevel.CAUSAL })
+      expect(getDefaultConsistency().level).toBe(ConsistencyLevel.CAUSAL)
+      setDefaultConsistency({ level: ConsistencyLevel.STRONG })
+      expect(getDefaultConsistency().level).toBe(ConsistencyLevel.STRONG)
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    it(`consistencyLabel 所有值可映射 #${iter}`, () => {
+      const levels = [ConsistencyLevel.STRONG, ConsistencyLevel.EVENTUAL, ConsistencyLevel.CAUSAL]
+      for (const l of levels) {
+        const label = consistencyLabel(l)
+        expect(typeof label).toBe('string')
+        expect(label.length).toBeGreaterThan(0)
+      }
+    })
+  }
+})

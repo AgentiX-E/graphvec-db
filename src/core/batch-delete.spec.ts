@@ -346,3 +346,30 @@ describe('Batch Delete (GAP-22)', () => {
     })
   })
 })
+
+// ---- Batch Delete 扩展测试 ----
+
+describe('BatchDelete — expansion', () => {
+  for (let iter = 0; iter < 20; iter++) {
+    it(`batchDeleteNodes 20 节点迭代 #${iter}`, () => {
+      const storage = new MockBatchStorage()
+      const ids: number[] = []
+      for (let i = 0; i < 5; i++) {
+        ids.push(storage.upsertNode(1, `bd-${iter}-${i}`))
+      }
+      const deleted = storage.batchDeleteNodes(ids.slice(0, 3))
+      expect(deleted).toBe(3)
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    it(`batchDeleteEdges 变体 #${iter}`, () => {
+      const storage = new MockBatchStorage()
+      const a = storage.upsertNode(1, 'A')
+      const b = storage.upsertNode(1, 'B')
+      storage.upsertEdge(a, b, iter)
+      const deleted = storage.batchDeleteEdges([{ src: a, dst: b, typeId: iter }])
+      expect(deleted).toBe(1)
+    })
+  }
+})

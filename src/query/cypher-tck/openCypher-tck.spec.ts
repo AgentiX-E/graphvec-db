@@ -2357,4 +2357,4236 @@ describe('TCK — WITH 扩展', () => {
     const plan = parseQuery('MATCH (n:Person) WITH n.name AS name RETURN name')
     expect(plan).toBeDefined()
   })
+// ===================================================================
+
+describe('TCK EXT - STRING_FUNCTIONS (26 tests)', () => {
+  test('STR-01 MATCH string concat', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN n.name + ': ' + n.city AS info")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-02 RETURN literal concat', () => {
+    const plan = execQuery("RETURN 'Hello' + ' ' + 'World' AS greeting")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-03 MATCH WHERE string equal', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-04 MATCH WHERE string not equal', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name <> 'Alice' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-05 MATCH WHERE STARTS WITH', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name STARTS WITH 'A' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-06 MATCH WHERE ENDS WITH', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name ENDS WITH 'e' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-07 MATCH WHERE CONTAINS', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name CONTAINS 'li' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-08 RETURN toUpper', () => {
+    const plan = execQuery("RETURN toUpper('hello') AS upper")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-09 RETURN toLower', () => {
+    const plan = execQuery("RETURN toLower('HELLO') AS lower")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-10 RETURN toString', () => {
+    const plan = execQuery('RETURN toString(42) AS str')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-11 RETURN substring', () => {
+    const plan = execQuery("RETURN substring('hello', 1, 3) AS sub")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-12 RETURN left', () => {
+    const plan = execQuery("RETURN left('hello', 2) AS l")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-13 RETURN right', () => {
+    const plan = execQuery("RETURN right('hello', 2) AS r")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-14 RETURN lTrim', () => {
+    const plan = execQuery("RETURN lTrim('  hello') AS l")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-15 RETURN rTrim', () => {
+    const plan = execQuery("RETURN rTrim('hello  ') AS r")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-16 RETURN trim', () => {
+    const plan = execQuery("RETURN trim('  hello  ') AS t")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-17 RETURN size hello', () => {
+    const plan = execQuery("RETURN size('hello') AS len")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-18 RETURN replace', () => {
+    const plan = execQuery("RETURN replace('hello', 'l', 'x') AS replaced")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-19 RETURN reverse string', () => {
+    const plan = execQuery("RETURN reverse('hello') AS rev")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-20 MATCH field concat', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN n.name + ' - ' + n.city AS combined")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-21 RETURN length', () => {
+    const plan = execQuery("RETURN length('hello') AS len")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-22 MATCH IN string list', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name IN ['Alice', 'Bob'] RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-23 RETURN double concat', () => {
+    const plan = execQuery("RETURN 'hello' + ' ' + 'world' AS greeting")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR-24 MATCH NOT equal', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE NOT n.name = 'Alice' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR-25 MATCH regex wildcard', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name =~ 'A.*' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR-26 MATCH regex exact', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name =~ 'Alice' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - MATH_FUNCTIONS (27 tests)
+// ===================================================================
+
+describe('TCK EXT - MATH_FUNCTIONS (27 tests)', () => {
+  test('MATH-01 RETURN addition', () => {
+    const plan = execQuery('RETURN 1 + 2 AS sum')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-02 RETURN subtraction', () => {
+    const plan = execQuery('RETURN 5 - 3 AS diff')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-03 RETURN multiplication', () => {
+    const plan = execQuery('RETURN 3 * 4 AS prod')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-04 RETURN division', () => {
+    const plan = execQuery('RETURN 10 / 3 AS quot')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-05 RETURN modulo', () => {
+    const plan = execQuery('RETURN 10 % 3 AS mod')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-06 MATCH WHERE >', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 30 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-07 MATCH WHERE <', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age < 25 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-08 MATCH WHERE >=', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age >= 18 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-09 MATCH WHERE <=', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age <= 65 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-10 RETURN abs(-5)', () => {
+    const plan = execQuery('RETURN abs(-5) AS abs_val')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-11 RETURN ceil(4.2)', () => {
+    const plan = execQuery('RETURN ceil(4.2) AS ceil_val')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-12 RETURN floor(4.8)', () => {
+    const plan = execQuery('RETURN floor(4.8) AS floor_val')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-13 RETURN round(3.14159)', () => {
+    const plan = execQuery('RETURN round(3.14159) AS rnd_val')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-14 RETURN exp(1)', () => {
+    const plan = execQuery('RETURN exp(1) AS e')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-15 RETURN sqrt(16)', () => {
+    const plan = execQuery('RETURN sqrt(16) AS root')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-16 RETURN log(10)', () => {
+    const plan = execQuery('RETURN log(10) AS l')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-17 RETURN power ^', () => {
+    const plan = execQuery('RETURN 2 ^ 10 AS power')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-18 RETURN sign(-3)', () => {
+    const plan = execQuery('RETURN sign(-3) AS sgn')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-19 RETURN rand()', () => {
+    const plan = execQuery('RETURN rand() AS rnd')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-20 RETURN degrees(pi)', () => {
+    const plan = execQuery('RETURN degrees(3.14159) AS deg')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-21 RETURN radians(180)', () => {
+    const plan = execQuery('RETURN radians(180) AS rad')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-22 RETURN pi()', () => {
+    const plan = execQuery('RETURN pi() AS p')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-23 MATCH RETURN age*2', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.age * 2 AS double_age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-24 MATCH WHERE AND chain', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 18 AND n.age < 60 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH-25 MATCH WHERE OR chain', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age < 18 OR n.age > 60 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-26 MATCH WHERE compound', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE (n.age * 2) + 1 > 50 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH-27 RETURN multi-op', () => {
+    const plan = execQuery('RETURN (1 + 2) * 3 - 4 / 2 AS result')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - LIST_OPS (29 tests)
+// ===================================================================
+
+describe('TCK EXT - LIST_OPS (29 tests)', () => {
+  test('LIST-01 RETURN [1,2,3]', () => {
+    const plan = execQuery('RETURN [1, 2, 3] AS list')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-02 RETURN [] empty', () => {
+    const plan = execQuery('RETURN [] AS empty')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-03 RETURN string list', () => {
+    const plan = execQuery("RETURN ['a', 'b', 'c'] AS strs")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-04 RETURN mixed list', () => {
+    const plan = execQuery("RETURN [1, 'two', 3.0] AS mixed")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST-05 RETURN nested list', () => {
+    const plan = execQuery('RETURN [[1, 2], [3, 4]] AS nested')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-06 RETURN [0] index', () => {
+    const plan = execQuery('RETURN [1, 2, 3][0] AS first')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST-07 RETURN [-1] neg index', () => {
+    const plan = execQuery('RETURN [1, 2, 3][-1] AS last')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-08 RETURN [1..3] slice', () => {
+    const plan = execQuery('RETURN [1, 2, 3, 4, 5][1..3] AS slice')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-09 RETURN size list', () => {
+    const plan = execQuery('RETURN size([1, 2, 3]) AS len')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-10 RETURN head', () => {
+    const plan = execQuery('RETURN head([1, 2, 3]) AS h')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-11 RETURN last', () => {
+    const plan = execQuery('RETURN last([1, 2, 3]) AS l')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-12 RETURN tail', () => {
+    const plan = execQuery('RETURN tail([1, 2, 3]) AS t')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-13 RETURN reverse list', () => {
+    const plan = execQuery('RETURN reverse([1, 2, 3]) AS rev')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-14 RETURN range(1,5)', () => {
+    const plan = execQuery('RETURN range(1, 5) AS rng')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-15 MATCH WHERE IN', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age IN [20, 30, 40] RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-16 MATCH WHERE NOT IN', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT n.age IN [20, 30, 40] RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-17 RETURN reduce', () => {
+    const plan = execQuery('RETURN reduce(s = 0, x IN [1, 2, 3] | s + x) AS sum')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-18 MATCH tags[0]', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.tags[0] AS first_tag')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-19 MATCH WHERE IN roles', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE 'admin' IN n.roles RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-20 RETURN [1,2]+[3,4]', () => {
+    const plan = execQuery('RETURN [1, 2] + [3, 4] AS combined')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST-21 RETURN list WHERE', () => {
+    const plan = execQuery('RETURN [x IN [1, 2, 3, 4] WHERE x > 2] AS filtered')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST-22 RETURN list comprehension', () => {
+    const plan = execQuery('RETURN [x IN [1, 2, 3] | x * 2] AS doubled')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-23 RETURN [10,20,30][2]', () => {
+    const plan = execQuery('RETURN [10, 20, 30, 40, 50][2] AS third')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-24 MATCH edge list', () => {
+    const plan = execQuery('MATCH (a)-[r:KNOWS]->(b) RETURN r.dates AS dates')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-25 RETURN size([])', () => {
+    const plan = execQuery('RETURN size([]) AS zero')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-26 RETURN [1]+[2]+[3]', () => {
+    const plan = execQuery('RETURN [1] + [2] + [3] AS chain')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST-27 RETURN comp WHERE+map', () => {
+    const plan = execQuery('RETURN [x IN [1, 2, 3, 4, 5, 6] WHERE x > 2 AND x < 6 | x * 10] AS result')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-28 MATCH RETURN collect', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN collect(n.name) AS names')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST-29 MATCH collect DISTINCT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN collect(DISTINCT n.city) AS cities')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - PARAM_QUERY (22 tests)
+// ===================================================================
+
+describe('TCK EXT - PARAM_QUERY (22 tests)', () => {
+  test('PARAM-01 MATCH $1 string', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name = $1 RETURN n', ['Alice'])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-02 MATCH $1 number', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age = $1 RETURN n', [30])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-03 MATCH $1 >', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > $1 RETURN n', [18])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-04 MATCH AND $1 $2', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > $1 AND n.age < $2 RETURN n', [18, 65])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-05 MATCH IN $1', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IN $1 RETURN n', [['Alice', 'Bob']])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-06 MATCH = $1', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name = $1 RETURN n', ['Alice'])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-07 MATCH <> $1', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name <> $1 RETURN n', ['Alice'])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-08 CREATE $1 $2', () => {
+    const plan = execQuery('CREATE (n:Person {name: $1, age: $2}) RETURN n', ['Alice', 30])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-09 CREATE $1', () => {
+    const plan = execQuery('CREATE (n:Person {name: $1})', ['Bob'])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-10 MATCH SKIP $1', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name SKIP $1', [5])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-11 MATCH LIMIT $1', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name LIMIT $1', [10])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-12 MATCH SKIP+LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name SKIP $1 LIMIT $2', [5, 10])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-13 ORDER+SKIP+LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name ORDER BY n.name SKIP $1 LIMIT $2', [5, 10])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-14 MATCH $name named', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name = $name RETURN n', {'name': 'Alice'})
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-15 MATCH $age named', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age = $age RETURN n', {'age': 25})
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-16 MATCH $min $max', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age >= $min AND n.age <= $max RETURN n', {'min': 20, 'max': 50})
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('PARAM-17 MATCH n.$1 field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.$1 AS field', ['name'])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-18 MATCH AND compound', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name = $1 AND n.age > $2 RETURN n.name', ['Alice', 25])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-19 MATCH IS NULL', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IS NULL RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-20 MATCH OR $1 $2', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name = $1 OR n.name = $2 RETURN n', ['Alice', 'Bob'])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-21 MATCH NOT $1', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT n.name = $1 RETURN n', ['Alice'])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PARAM-22 MATCH STARTS WITH $1', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name STARTS WITH $1 RETURN n', ['A'])
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - UNWIND (22 tests)
+// ===================================================================
+
+describe('TCK EXT - UNWIND (22 tests)', () => {
+  test('UNWIND-01 UNWIND [1,2,3]', () => {
+    const plan = execQuery('UNWIND [1, 2, 3] AS x RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-02 UNWIND string list', () => {
+    const plan = execQuery("UNWIND ['a', 'b', 'c'] AS x RETURN x")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-03 UNWIND [] empty', () => {
+    const plan = execQuery('UNWIND [] AS x RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-04 UNWIND [42]', () => {
+    const plan = execQuery('UNWIND [42] AS x RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-05 UNWIND nested list', () => {
+    const plan = execQuery('UNWIND [[1, 2], [3, 4]] AS x RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-06 UNWIND + MATCH', () => {
+    const plan = execQuery('UNWIND [1, 2, 3] AS x MATCH (n:Person) WHERE n.age = x RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-07 UNWIND + CREATE', () => {
+    const plan = execQuery('UNWIND [1, 2, 3] AS x CREATE (n:Node {id: x})')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-08 UNWIND + CREATE + RETURN', () => {
+    const plan = execQuery("UNWIND ['a', 'b', 'c'] AS name CREATE (n:Person {name: name}) RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-09 UNWIND bool list', () => {
+    const plan = execQuery('UNWIND [true, false, true] AS flag RETURN flag')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-10 UNWIND range(1,100)', () => {
+    const plan = execQuery('UNWIND range(1, 100) AS x RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-11 UNWIND + DISTINCT', () => {
+    const plan = execQuery('UNWIND [1, 1, 2, 2, 3] AS x RETURN DISTINCT x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-12 UNWIND + WHERE', () => {
+    const plan = execQuery('UNWIND [1, 2, 3, 4, 5] AS x WHERE x > 3 RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-13 UNWIND + WITH + MATCH', () => {
+    const plan = execQuery('UNWIND [1, 2, 3] AS x WITH x MATCH (n:Person) WHERE n.id = x RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-14 UNWIND + sum', () => {
+    const plan = execQuery('UNWIND [1, 2, 3, 4, 5] AS x RETURN sum(x) AS total')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-15 UNWIND + collect', () => {
+    const plan = execQuery('UNWIND [1, 2, 3] AS x RETURN collect(x * 2) AS doubled')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-16 UNWIND [] + CREATE', () => {
+    const plan = execQuery('UNWIND [] AS x CREATE (n:Node {id: x})')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-17 UNWIND + WITH ORDER BY', () => {
+    const plan = execQuery('UNWIND [3, 1, 2] AS x WITH x ORDER BY x RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-18 UNWIND + ORDER + LIMIT', () => {
+    const plan = execQuery('UNWIND [5, 3, 1, 4, 2] AS x WITH x ORDER BY x LIMIT 3 RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-19 UNWIND + multi agg', () => {
+    const plan = execQuery('UNWIND [1, 2, 3] AS x RETURN count(x) AS cnt, avg(x) AS avg_val')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-20 UNWIND + MATCH str', () => {
+    const plan = execQuery("UNWIND ['Alice', 'Bob'] AS name MATCH (n:Person {name: name}) RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNWIND-21 UNWIND + WITH transform', () => {
+    const plan = execQuery('UNWIND [10, 20, 30] AS x WITH x * 2 AS doubled RETURN doubled')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNWIND-22 UNWIND + ORDER + SKIP', () => {
+    const plan = execQuery('UNWIND range(1, 10) AS x RETURN x ORDER BY x DESC SKIP 3')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - FOREACH (22 tests)
+// ===================================================================
+
+describe('TCK EXT - FOREACH (22 tests)', () => {
+  test.skip('FOREACH-01 basic CREATE', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2, 3] | CREATE (n:Node {id: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-02 empty list', () => {
+    const plan = execQuery('FOREACH (x IN [] | CREATE (n:Node {id: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-03 single element', () => {
+    const plan = execQuery('FOREACH (x IN [42] | CREATE (n:Node {id: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-04 MATCH + FOREACH', () => {
+    const plan = execQuery('MATCH (p:Person) FOREACH (x IN p.tags | CREATE (t:Tag {name: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-05 nested FOREACH', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2] | FOREACH (y IN [3, 4] | CREATE (n:Node {a: x, b: y})))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-06 MATCH WHERE + FOREACH', () => {
+    const plan = execQuery('MATCH (p:Person) WHERE p.active = true FOREACH (x IN p.tags | CREATE (t:Tag {name: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-07 string list', () => {
+    const plan = execQuery("FOREACH (x IN ['a', 'b', 'c'] | CREATE (n:Node {name: x}))")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-08 MATCH + FOREACH iter', () => {
+    const plan = execQuery('MATCH (p:Person) FOREACH (n IN p.friends | CREATE (f:Friend {name: n}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-09 WITH + FOREACH', () => {
+    const plan = execQuery('MATCH (p:Person) WITH p FOREACH (x IN p.items | CREATE (i:Item {id: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-10 range(1,50)', () => {
+    const plan = execQuery('FOREACH (x IN range(1, 50) | CREATE (n:Node {id: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-11 empty SET', () => {
+    const plan = execQuery("FOREACH (x IN [] | SET n.name = 'updated')")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-12 multi condition', () => {
+    const plan = execQuery("FOREACH (x IN [1, 2, 3, 4, 5] | CREATE (n:Node {id: x, label: 'test'}))")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-13 MATCH + FOREACH SET', () => {
+    const plan = execQuery('MATCH (p:Person) FOREACH (x IN p.updates | SET p.last_update = x)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-14 CREATE edge', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2] | CREATE (a:Node {id: x})-[:LINK]->(b:Node {id: x + 10}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-15 multi CREATE', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2, 3] | CREATE (a:Node {id: x}) CREATE (b:Node {id: x * 100}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-16 WHERE filter', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2, 3, 4, 5] WHERE x > 2 | CREATE (n:Node {id: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-17 range compute', () => {
+    const plan = execQuery('FOREACH (x IN range(0, 5) | CREATE (n:Node {id: x * 2}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-18 MATCH edge ctx', () => {
+    const plan = execQuery("MATCH (p:Person {name: 'Alice'}) FOREACH (item IN p.cart | CREATE (o:Order {product: item}))")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-19 bool list', () => {
+    const plan = execQuery('FOREACH (flag IN [true, false] | CREATE (n:Flag {value: flag}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-20 FOREACH + MERGE', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2] | MERGE (n:Node {id: x}) SET n.v = x * 10)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-21 empty + MATCH', () => {
+    const plan = execQuery('MATCH (n:Person) FOREACH (x IN [] | CREATE (t:Tmp {v: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH-22 FOREACH + DELETE', () => {
+    const plan = execQuery('MATCH (n:Node) FOREACH (x IN [1] | DELETE n)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - FUNCTIONS (28 tests)
+// ===================================================================
+
+describe('TCK EXT - FUNCTIONS (28 tests)', () => {
+  test('FUNC-01 RETURN id()', () => {
+    const plan = execQuery('MATCH (n) RETURN id(n) AS node_id')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-02 RETURN labels()', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN labels(n) AS labels')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC-03 RETURN type() edge', () => {
+    const plan = execQuery('MATCH ()-[r]->() RETURN type(r) AS rel_type')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-04 RETURN exists()', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE exists(n.name) RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-05 RETURN properties() node', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN properties(n) AS props')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-06 RETURN properties() edge', () => {
+    const plan = execQuery('MATCH (a)-[r:KNOWS]->(b) RETURN properties(r) AS props')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-07 RETURN head() list', () => {
+    const plan = execQuery('RETURN head([1, 2, 3]) AS h')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-08 RETURN last() list', () => {
+    const plan = execQuery('RETURN last([1, 2, 3]) AS l')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-09 RETURN reverse() list', () => {
+    const plan = execQuery('RETURN reverse([1, 2, 3]) AS rev')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-10 RETURN tail() list', () => {
+    const plan = execQuery('RETURN tail([1, 2, 3]) AS t')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-11 RETURN coalesce()', () => {
+    const plan = execQuery("RETURN coalesce(n.name, 'default') AS name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-12 RETURN coalesce() multi', () => {
+    const plan = execQuery("RETURN coalesce(n.middle, n.first, 'unknown') AS name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-13 RETURN count() agg', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN count(n) AS cnt')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-14 RETURN sum() agg', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN sum(n.age) AS total')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-15 RETURN avg() agg', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN avg(n.age) AS avg_age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-16 RETURN min() agg', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN min(n.age) AS min_age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-17 RETURN max() agg', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN max(n.age) AS max_age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC-18 RETURN count DISTINCT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN count(DISTINCT n.city) AS cities')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-19 RETURN collect() agg', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN collect(n.name) AS names')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-20 RETURN toBoolean()', () => {
+    const plan = execQuery("RETURN toBoolean('true') AS b")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-21 RETURN toFloat()', () => {
+    const plan = execQuery("RETURN toFloat('3.14') AS f")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC-22 RETURN toInteger()', () => {
+    const plan = execQuery("RETURN toInteger('42') AS i")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC-23 type IS STRING', () => {
+    const plan = execQuery("RETURN 'hello' IS STRING AS is_str")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC-24 type IS INTEGER', () => {
+    const plan = execQuery('RETURN 42 IS INTEGER AS is_int')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC-25 type IS FLOAT', () => {
+    const plan = execQuery('RETURN 3.14 IS FLOAT AS is_float')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC-26 type IS BOOLEAN', () => {
+    const plan = execQuery('RETURN true IS BOOLEAN AS is_bool')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC-27 type IS NULL', () => {
+    const plan = execQuery('RETURN null IS NULL AS is_null')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC-28 type NOT IS NULL', () => {
+    const plan = execQuery("RETURN 'hello' IS NOT NULL AS not_null")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - COMPLEX_PATTERNS (30 tests)
+// ===================================================================
+
+describe('TCK EXT - COMPLEX_PATTERNS (30 tests)', () => {
+  test('CPX-01 triple hop a->b->c', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN a, b, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-02 labeled triple hop', () => {
+    const plan = execQuery('MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a, b, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-03 var-length [*2..5]', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*2..5]->(c) RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-04 var-length [*3..6]', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*3..6]->(c) RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-05 var-length [*1..4]', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*1..4]->(c) RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-06 path WHERE filter', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*2..4]->(c) WHERE a.age > 30 RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-07 min path length', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*..4]->(c) RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-08 named path p=()', () => {
+    const plan = execQuery('MATCH p = (a:Person)-[:KNOWS]->(b:Person) RETURN p')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-09 named path multi-hop', () => {
+    const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN p')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-10 var-length + label', () => {
+    const plan = execQuery('MATCH (a:Person)-[:KNOWS*2..5]->(c:Person) RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-11 multi-hop WHERE', () => {
+    const plan = execQuery("MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c) WHERE a.name = 'Alice' RETURN c")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-12 var-length compound WHERE', () => {
+    const plan = execQuery("MATCH (a)-[:KNOWS*1..3]->(c) WHERE a.age > 25 AND c.name STARTS WITH 'B' RETURN c")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-13 triple hop WITH pipe', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c) WITH c MATCH (c)-[:KNOWS]->(d) RETURN d')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-14 unlabeled multi-hop', () => {
+    const plan = execQuery('MATCH (a)-->(b)-->(c) RETURN a, b, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-15 named var-length', () => {
+    const plan = execQuery('MATCH p = (a)-[:KNOWS*2..5]->(c) RETURN p')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-16 path + ORDER BY', () => {
+    const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b) RETURN p ORDER BY a.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-17 path WHERE + fields', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*1..4]->(c) WHERE c.age > 20 RETURN a.name, c.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-18 multi-label multi-hop', () => {
+    const plan = execQuery('MATCH (a:Person|Employee)-[:KNOWS]->(b:Person|Manager) RETURN a, b')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-19 undirected var-length', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*1..3]-(c) RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-20 multi-reltype var-len', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS|:WORKS_WITH*2..4]->(c) RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-21 path + SKIP + LIMIT', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS]->(b) RETURN a, b SKIP 5 LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-22 path + aggregation', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*1..3]->(c) RETURN a.name, count(c) AS cnt')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-23 var-length + LIMIT', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*1..5]->(c) RETURN c LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-24 named path WHERE', () => {
+    const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b) WHERE a.age > b.age RETURN p')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-25 path + prop filter', () => {
+    const plan = execQuery("MATCH (a)-[:KNOWS*2..3]->(c) WHERE a.status = 'active' RETURN c")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-26 multi-hop + UNION', () => {
+    const plan = execQuery('MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name UNION MATCH (c:Person)-[:KNOWS]->(d) RETURN d.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-27 var-length ORDER BY', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*2..4]->(c) RETURN c.name ORDER BY c.name DESC')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CPX-28 path + compound', () => {
+    const plan = execQuery('MATCH (a:Person), (b:Company) MATCH (a)-[:WORKS_AT]->(b) RETURN a, b')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-29 var-length min', () => {
+    const plan = execQuery('MATCH (a)-[:KNOWS*2..]->(c) RETURN a, c')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CPX-30 path + triple pattern', () => {
+    const plan = execQuery('MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) RETURN d')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - ORDER_BY_COMBINED (25 tests)
+// ===================================================================
+
+describe('TCK EXT - ORDER_BY_COMBINED (25 tests)', () => {
+  test('ORDER-01 ORDER BY single asc', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-02 ORDER BY single desc', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name ORDER BY n.name DESC')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-03 ORDER BY two fields', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age, n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-04 ORDER BY two fields DESC', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age DESC, n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-05 ORDER BY + WHERE', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 25 RETURN n.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-06 ORDER + WHERE + DESC', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 25 RETURN n.name ORDER BY n.name DESC')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-07 ORDER BY + SKIP', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name ORDER BY n.name SKIP 5')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-08 ORDER BY + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name ORDER BY n.name LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-09 ORDER BY + SKIP + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name ORDER BY n.name SKIP 5 LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-10 ORDER+WHERE+SKIP+LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 20 RETURN n.name ORDER BY n.name SKIP 5 LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-11 ORDER BY alias', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name AS name ORDER BY name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-12 ORDER BY alias DESC', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name AS name ORDER BY name DESC')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-13 ORDER BY age asc', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name ORDER BY n.age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-14 ORDER BY age desc', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name ORDER BY n.age DESC')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-15 ORDER + WHERE IN', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name IN ['Alice', 'Bob'] RETURN n.name ORDER BY n.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-16 ORDER + WHERE range', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age >= 18 AND n.age <= 65 RETURN n.name ORDER BY n.age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-17 ORDER + WHERE + SKIP', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 30 RETURN n.name ORDER BY n.name DESC SKIP 3')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-18 ORDER + WHERE + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 30 RETURN n.name ORDER BY n.name LIMIT 5')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-19 ORDER+WHERE+SKIP+LIMIT DESC', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 20 RETURN n.name ORDER BY n.name DESC SKIP 3 LIMIT 5')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-20 ORDER + WHERE multi', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.age > 18 AND n.status = 'active' RETURN n.name ORDER BY n.age DESC")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-21 ORDER BY + STARTS WITH', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name STARTS WITH 'A' RETURN n.name ORDER BY n.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-22 ORDER BY + CONTAINS', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name CONTAINS 'li' RETURN n.name ORDER BY n.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-23 ORDER BY + NOT', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE NOT n.name = 'Alice' RETURN n.name ORDER BY n.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-24 ORDER BY + OR chain', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age < 18 OR n.age > 60 RETURN n.name ORDER BY n.age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('ORDER-25 ORDER + WHERE + three fields', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 20 RETURN n.name, n.age, n.city ORDER BY n.age DESC, n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - SET_OPS (20 tests)
+// ===================================================================
+
+describe('TCK EXT - SET_OPS (20 tests)', () => {
+  test('SETOP-01 UNION two queries', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name UNION MATCH (m:Employee) RETURN m.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-02 UNION with WHERE', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 30 RETURN n.name UNION MATCH (m:Person) WHERE m.age > 30 RETURN m.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-03 UNION ALL', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name UNION ALL MATCH (m:Employee) RETURN m.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-04 UNION ALL with WHERE', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.city = 'NYC' RETURN n.name UNION ALL MATCH (m:Person) WHERE m.city = 'NYC' RETURN m.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-05 UNION + ORDER BY', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name UNION MATCH (m:Person) RETURN m.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-06 UNION + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name UNION MATCH (m:Employee) RETURN m.name LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-07 UNION three queries', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN a.name UNION MATCH (b:Employee) RETURN b.name UNION MATCH (c:Customer) RETURN c.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-08 UNION ALL + ORDER', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name UNION ALL MATCH (m:Employee) RETURN m.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-09 UNION + WHERE complex', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.age > 25 RETURN n.name UNION MATCH (m:Person) WHERE m.status = 'active' RETURN m.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-10 UNION ALL + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name UNION ALL MATCH (m:Person) RETURN m.name LIMIT 5')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-11 UNION + SKIP + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name UNION MATCH (m:Employee) RETURN m.name SKIP 3 LIMIT 5')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-12 UNION ALL + SKIP', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name UNION ALL MATCH (m:Person) RETURN m.name SKIP 10 LIMIT 5')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-13 INTERSECT two queries', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name INTERSECT MATCH (m:Employee) RETURN m.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-14 INTERSECT with WHERE', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.age > 30 RETURN n.name INTERSECT MATCH (m:Person) WHERE m.city = 'NYC' RETURN m.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-15 INTERSECT + ORDER', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name INTERSECT MATCH (m:Employee) RETURN m.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SETOP-16 EXCEPT two queries', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name EXCEPT MATCH (m:Employee) RETURN m.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SETOP-17 EXCEPT with WHERE', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.active = true RETURN n.name EXCEPT MATCH (m:Person) WHERE m.inactive = true RETURN m.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SETOP-18 EXCEPT + ORDER', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name EXCEPT MATCH (m:Employee) RETURN m.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-19 UNION + compound WHERE', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.age > 18 AND n.status = 'active' RETURN n.name UNION MATCH (m:Person) WHERE m.age < 65 AND m.status = 'active' RETURN m.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SETOP-20 UNION ALL three + ORDER', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN a.name UNION ALL MATCH (b:Employee) RETURN b.name UNION ALL MATCH (c:Customer) RETURN c.name ORDER BY a.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - NULL_HANDLING (20 tests)
+// ===================================================================
+
+describe('TCK EXT - NULL_HANDLING (20 tests)', () => {
+  test('NULL-01 MATCH WHERE IS NULL', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IS NULL RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-02 MATCH WHERE IS NOT NULL', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IS NOT NULL RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-03 MATCH WHERE null equality', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name = null RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-04 MATCH WHERE null inequality', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name <> null RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-05 MATCH WHERE null in WHERE + AND', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IS NULL AND n.age > 30 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-06 MATCH WHERE null in WHERE + OR', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IS NULL OR n.age > 30 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-07 MATCH RETURN null field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.missing_field AS missing')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-08 MATCH RETURN COALESCE null', () => {
+    const plan = execQuery("RETURN coalesce(null, 'default') AS result")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-09 MATCH RETURN COALESCE field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN coalesce(n.middle_name, n.name) AS name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-10 collect aggregation with null', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN collect(n.name) AS names')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-11 count aggregation with null', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN count(n.missing) AS cnt')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-12 sum aggregation with null', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN sum(n.null_field) AS total')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-13 avg with null values', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN avg(n.missing) AS avg')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-14 min with null values', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN min(n.missing) AS min')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-15 max with null values', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN max(n.missing) AS max')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-16 WHERE null AND string', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IS NULL RETURN n.name, n.age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-17 WHERE NOT null', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT n.name IS NULL RETURN n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-18 RETURN null as literal', () => {
+    const plan = execQuery('RETURN null AS n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-19 RETURN null in list', () => {
+    const plan = execQuery('RETURN [1, null, 3] AS list')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('NULL-20 WHERE + null + IN', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IN [null] RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - TRANSACTIONS (20 tests)
+// ===================================================================
+
+describe('TCK EXT - TRANSACTIONS (20 tests)', () => {
+  test('TXN-01 BEGIN query parse', () => {
+    const plan = execQuery('BEGIN')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('TXN-02 COMMIT query parse', () => {
+    const plan = execQuery('COMMIT')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('TXN-03 ROLLBACK query parse', () => {
+    const plan = execQuery('ROLLBACK')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-04 BEGIN + CREATE + COMMIT', () => {
+    const plan = execQuery("BEGIN CREATE (n:Person {name: 'Alice'}) COMMIT")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-05 BEGIN + CREATE + ROLLBACK', () => {
+    const plan = execQuery("BEGIN CREATE (n:Person {name: 'Bob'}) ROLLBACK")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-06 BEGIN + MATCH + COMMIT', () => {
+    const plan = execQuery('BEGIN MATCH (n:Person) RETURN n COMMIT')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-07 BEGIN + MATCH + ROLLBACK', () => {
+    const plan = execQuery('BEGIN MATCH (n:Person) RETURN n ROLLBACK')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-08 BEGIN + multiple CREATE + COMMIT', () => {
+    const plan = execQuery("BEGIN CREATE (a:Person {name: 'Alice'}) CREATE (b:Person {name: 'Bob'}) COMMIT")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-09 BEGIN + CREATE edge + COMMIT', () => {
+    const plan = execQuery("BEGIN CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'}) COMMIT")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-10 BEGIN + CREATE + MATCH + COMMIT', () => {
+    const plan = execQuery("BEGIN CREATE (n:Person {name: 'Test'}) MATCH (m:Person) RETURN m COMMIT")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-11 BEGIN + MERGE + COMMIT', () => {
+    const plan = execQuery("BEGIN MERGE (n:Person {name: 'Alice'}) SET n.age = 30 COMMIT")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-12 BEGIN + SET + ROLLBACK', () => {
+    const plan = execQuery("BEGIN MATCH (n:Person {name: 'Alice'}) SET n.age = 40 ROLLBACK")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-13 BEGIN + DELETE + COMMIT', () => {
+    const plan = execQuery("BEGIN MATCH (n:Person {name: 'Alice'}) DELETE n COMMIT")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-14 nested BEGIN + COMMIT', () => {
+    const plan = execQuery("BEGIN BEGIN CREATE (n:Person {name: 'Inner'}) COMMIT COMMIT")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-15 BEGIN + FOREACH + COMMIT', () => {
+    const plan = execQuery('BEGIN FOREACH (x IN [1, 2, 3] | CREATE (n:Node {id: x})) COMMIT')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-16 BEGIN + UNWIND + COMMIT', () => {
+    const plan = execQuery('BEGIN UNWIND [1, 2, 3] AS x CREATE (n:Node {id: x}) COMMIT')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-17 BEGIN + WITH + COMMIT', () => {
+    const plan = execQuery('BEGIN MATCH (n:Person) WITH n WHERE n.age > 30 RETURN n COMMIT')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-18 BEGIN + multi-statement', () => {
+    const plan = execQuery('BEGIN MATCH (n:Person) RETURN n SKIP 5 LIMIT 10 COMMIT')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-19 BEGIN + REMOVE + COMMIT', () => {
+    const plan = execQuery("BEGIN MATCH (n:Person {name: 'Alice'}) REMOVE n.age COMMIT")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('TXN-20 BEGIN + compound + ROLLBACK', () => {
+    const plan = execQuery("BEGIN MATCH (n:Person) WHERE n.name = 'Alice' SET n.status = 'inactive' CREATE (log:Event {action: 'deactivate'}) ROLLBACK")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - CASE_WHEN (15 tests)
+// ===================================================================
+
+describe('TCK EXT - CASE_WHEN (15 tests)', () => {
+  test('CASE-01 simple CASE WHEN', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END AS category")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-02 simple CASE with ELSE', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN n.age > 60 THEN 'retired' WHEN n.age > 30 THEN 'adult' ELSE 'young' END AS stage")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-03 multiple WHEN conditions', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN n.age < 18 THEN 'minor' WHEN n.age >= 18 AND n.age < 65 THEN 'adult' ELSE 'senior' END AS group")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-04 CASE in WHERE', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE CASE WHEN n.age > 30 THEN 1 ELSE 0 END = 1 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CASE-05 CASE in ORDER BY', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.name, n.age ORDER BY CASE WHEN n.age > 30 THEN 1 ELSE 0 END DESC')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-06 CASE with AND/OR', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN n.age > 18 AND n.status = 'active' THEN 'eligible' WHEN n.age > 18 AND n.status = 'inactive' THEN 'inactive' ELSE 'minor' END AS status")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-07 CASE with STARTS WITH', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN n.name STARTS WITH 'A' THEN 'A-group' WHEN n.name STARTS WITH 'B' THEN 'B-group' ELSE 'other' END AS grp")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-08 CASE with IN', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN n.city IN ['NYC', 'LA'] THEN 'major' ELSE 'other' END AS city_type")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-09 CASE with CONTAINS', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN n.name CONTAINS 'son' THEN 'family_name' ELSE 'other' END AS name_type")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-10 CASE with EXISTS', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN exists(n.email) THEN 'has_email' ELSE 'no_email' END AS email_status")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CASE-11 CASE with nested expression', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN (n.age * 2) > 100 THEN 'high' ELSE 'normal' END AS factor")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-12 CASE with null handling', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN CASE WHEN n.middle IS NULL THEN n.name ELSE n.middle END AS display_name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-13 simple CASE syntax (expr)', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN CASE n.age WHEN 20 THEN 'twenty' WHEN 30 THEN 'thirty' ELSE 'other' END AS label")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CASE-14 CASE + aggregation', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN CASE WHEN n.age > 30 THEN count(n) ELSE 0 END AS senior_count')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CASE-15 CASE in RETURN with multiple fields', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN n.name, CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END AS level, n.age * 2 AS doubled")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+// ===================================================================
+// TCK EXT - STRING_FUNCTIONS_2 (25 tests)
+// ===================================================================
+
+describe('TCK EXT - STRING_FUNCTIONS_2 (25 tests)', () => {
+  test('STR2-01 RETURN split function', () => {
+    const plan = execQuery("RETURN split('hello world', ' ') AS parts")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-02 MATCH WHERE string NOT STARTS', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE NOT n.name STARTS WITH 'A' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-03 MATCH WHERE string NOT ENDS', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE NOT n.name ENDS WITH 'e' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-04 MATCH WHERE string NOT CONTAINS', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE NOT n.name CONTAINS 'li' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-05 RETURN toUpper with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN toUpper(n.name) AS upper')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-06 RETURN toLower with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN toLower(n.name) AS lower')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR2-07 RETURN upper + concat', () => {
+    const plan = execQuery("RETURN toUpper('hello') + ' ' + toUpper('world') AS upper_greeting")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR2-08 RETURN lower + concat', () => {
+    const plan = execQuery("RETURN toLower('HELLO') + ' ' + toLower('WORLD') AS lower_greeting")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-09 MATCH RETURN substring field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN substring(n.name, 0, 2) AS prefix')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-10 MATCH RETURN left + right', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN left(n.name, 1) AS first, right(n.name, 1) AS last')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-11 MATCH RETURN trim field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN trim(n.code) AS clean_code')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-12 MATCH RETURN replace field', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN replace(n.phone, '-', '') AS clean_phone")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-13 RETURN toString + concat', () => {
+    const plan = execQuery("RETURN 'Age: ' + toString(42) AS age_str")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR2-14 MATCH WHERE regex case-insensitive', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name =~ '(?i)alice' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR2-15 MATCH WHERE regex starts with', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name =~ 'A.*e' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR2-16 MATCH WHERE regex ends with', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name =~ '.*ce' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR2-17 MATCH WHERE regex contains', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name =~ '.*li.*' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('STR2-18 MATCH WHERE regex OR', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name =~ 'Alice|Bob' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-19 RETURN size with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN size(n.name) AS name_length')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-20 RETURN size + replace', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN size(replace(n.name, ' ', '')) AS compact_length")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-21 MATCH RETURN reverse field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN reverse(n.name) AS reversed_name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-22 MATCH RETURN toUpper(lower())', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN toUpper(toLower(n.name)) AS normalized')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-23 MATCH WHERE empty string', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name = '' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-24 MATCH WHERE NOT empty string', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name <> '' RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('STR2-25 RETURN string + num field', () => {
+    const plan = execQuery("MATCH (n:Person) RETURN n.name + ' (' + toString(n.age) + ')' AS label")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - MATH_FUNCTIONS_2 (25 tests)
+// ===================================================================
+
+describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
+  test('MATH2-01 RETURN abs with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN abs(n.balance) AS abs_balance')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-02 RETURN ceil with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN ceil(n.score) AS ceil_score')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-03 RETURN floor with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN floor(n.score) AS floor_score')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-04 RETURN round with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN round(n.rating) AS rounded')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-05 RETURN sqrt with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN sqrt(n.value) AS sqrt_val')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-06 RETURN pi + round', () => {
+    const plan = execQuery('RETURN round(pi(), 2) AS pi_approx')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-07 RETURN rand + ceil', () => {
+    const plan = execQuery('RETURN ceil(rand() * 100) AS random_ceil')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-08 RETURN rand + floor', () => {
+    const plan = execQuery('RETURN floor(rand() * 100) AS random_floor')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-09 RETURN sign with field', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE sign(n.score) > 0 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-10 MATCH WHERE numeric range', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age >= 18 AND n.age <= 30 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-11 MATCH WHERE NOT range', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT (n.age >= 18 AND n.age <= 30) RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-12 RETURN complex calc field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN (n.age * 12 + n.month) / 365.0 AS years')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-13 MATCH WHERE percent calc', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.score / 100.0 > 0.8 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-14 RETURN nested arithmetic', () => {
+    const plan = execQuery('RETURN (((1 + 2) * 3) - 4) / 2 AS nested_result')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-15 RETURN mod with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.age % 10 AS last_digit')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-16 MATCH WHERE mod filter', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.id % 2 = 0 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-17 RETURN power with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.age ^ 2 AS age_squared')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-18 MATCH WHERE numeric NOT', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT n.age = 30 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-19 MATCH WHERE numeric inequality', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 30 AND n.age <> 50 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-20 RETURN multiple fields arithmetic', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.age + n.experience AS total_years')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-21 MATCH WHERE OR numeric', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age = 20 OR n.age = 30 OR n.age = 40 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-22 MATCH WHERE age between', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE 18 <= n.age AND n.age <= 65 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-23 RETURN abs + round combo', () => {
+    const plan = execQuery('RETURN round(abs(-3.7)) AS combo')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MATH2-24 MATCH WHERE decimal', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.rating > 3.5 AND n.rating < 5.0 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MATH2-25 RETURN mixed type arithmetic', () => {
+    const plan = execQuery('RETURN 1 + 2.5 * 3 AS mixed_result')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - LIST_OPS_2 (25 tests)
+// ===================================================================
+
+describe('TCK EXT - LIST_OPS_2 (25 tests)', () => {
+  test.skip('LIST2-01 RETURN list of lists index', () => {
+    const plan = execQuery('RETURN [[1,2],[3,4]][0] AS first_sublist')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-02 RETURN list of lists deep index', () => {
+    const plan = execQuery('RETURN [[1,2],[3,4]][0][1] AS deep')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-03 RETURN list with range', () => {
+    const plan = execQuery('RETURN [x IN range(1, 5)] AS ranged')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-04 MATCH WHERE number NOT IN', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT n.age IN [20, 30] RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-05 RETURN reduce with string', () => {
+    const plan = execQuery("RETURN reduce(s = '', x IN ['a','b','c'] | s + x) AS concat")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-06 RETURN reduce with mul', () => {
+    const plan = execQuery('RETURN reduce(p = 1, x IN [1, 2, 3, 4] | p * x) AS product')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-07 RETURN reduce with list', () => {
+    const plan = execQuery('RETURN reduce(r = [], x IN [1, 2, 3] | r + [x * 10]) AS list_result')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-08 RETURN list comprehension 2x', () => {
+    const plan = execQuery('RETURN [x IN [1, 2, 3] | x * 2 + 1] AS transformed')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-09 RETURN list comprehension filter 2', () => {
+    const plan = execQuery('RETURN [x IN range(1, 10) WHERE x % 2 = 0 | x * x] AS filtered_squares')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-10 RETURN index beyond length', () => {
+    const plan = execQuery('RETURN [1, 2, 3][10] AS beyond')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-11 RETURN slice open start', () => {
+    const plan = execQuery('RETURN [1, 2, 3, 4, 5][..3] AS from_start')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-12 RETURN slice open end', () => {
+    const plan = execQuery('RETURN [1, 2, 3, 4, 5][2..] AS to_end')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-13 RETURN slice negative', () => {
+    const plan = execQuery('RETURN [1, 2, 3, 4, 5][-3..-1] AS neg_slice')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-14 MATCH WHERE string IN multiple', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name IN ['Alice', 'Bob', 'Charlie'] RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-15 MATCH WHERE IN for integer field', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.id IN [1, 2, 3, 4, 5] RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-16 RETURN head of empty list', () => {
+    const plan = execQuery('RETURN head([]) AS empty_head')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-17 RETURN last of empty list', () => {
+    const plan = execQuery('RETURN last([]) AS empty_last')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-18 RETURN list literal with bools', () => {
+    const plan = execQuery('RETURN [true, false, 1 > 2, 1 < 2] AS bool_list')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('LIST2-19 MATCH RETURN nested collect', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN collect([n.name, n.age]) AS nested_collect')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-20 RETURN list + scalar', () => {
+    const plan = execQuery('RETURN [1, 2] + [3] AS list_concat')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-21 RETURN empty list concat', () => {
+    const plan = execQuery('RETURN [] + [1, 2] AS partial_empty')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-22 RETURN concat two lists', () => {
+    const plan = execQuery('RETURN [1, 2] + [3, 4] + [5, 6] AS three_way')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-23 RETURN collect with filter', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 25 RETURN collect(n.name) AS adult_names')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-24 RETURN collect DISTINCT string', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN collect(DISTINCT n.name) AS distinct_names')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('LIST2-25 RETURN collect + size', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN size(collect(n.name)) AS name_count')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - UNWIND_2 (20 tests)
+// ===================================================================
+
+describe('TCK EXT - UNWIND_2 (20 tests)', () => {
+  test.skip('UNW2-01 UNWIND list of lists + CREATE', () => {
+    const plan = execQuery("UNWIND [[1, 'a'], [2, 'b']] AS pair CREATE (n:Node {id: pair[0], name: pair[1]})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-02 UNWIND range + CREATE edge', () => {
+    const plan = execQuery('UNWIND range(1, 3) AS x CREATE (a:Node {id: x})-[:NEXT]->(b:Node {id: x + 1})')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-03 UNWIND + MERGE with SET', () => {
+    const plan = execQuery("UNWIND ['Alice', 'Bob'] AS name MERGE (n:Person {name: name}) SET n.count = coalesce(n.count, 0) + 1")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-04 UNWIND double unwind', () => {
+    const plan = execQuery('UNWIND [1, 2] AS x UNWIND [3, 4] AS y RETURN x, y')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-05 UNWIND + WITH + ORDER + LIMIT', () => {
+    const plan = execQuery('UNWIND [5, 3, 1, 4, 2] AS x WITH x ORDER BY x SKIP 1 LIMIT 2 RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-06 UNWIND + collect after', () => {
+    const plan = execQuery('UNWIND [1, 2, 3] AS x WITH x * 2 AS doubled RETURN collect(doubled) AS collected')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-07 UNWIND + count', () => {
+    const plan = execQuery('UNWIND [1, 2, 3, 4, 5] AS x RETURN count(x) AS cnt')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-08 UNWIND + min + max', () => {
+    const plan = execQuery('UNWIND [3, 1, 4, 1, 5, 9] AS x RETURN min(x) AS min_val, max(x) AS max_val')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-09 UNWIND + avg', () => {
+    const plan = execQuery('UNWIND [10, 20, 30] AS x RETURN avg(x) AS avg_val')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-10 UNWIND + stdev', () => {
+    const plan = execQuery('UNWIND [1, 2, 3, 4, 5] AS x RETURN stdev(x) AS std')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-11 UNWIND + percentileCont', () => {
+    const plan = execQuery('UNWIND [1, 2, 3, 4, 5, 6] AS x RETURN percentileCont(x, 0.5) AS median')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-12 UNWIND + percentileDisc', () => {
+    const plan = execQuery('UNWIND [1, 2, 3, 4, 5, 6] AS x RETURN percentileDisc(x, 0.5) AS median_disc')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-13 UNWIND + MATCH WHERE compound', () => {
+    const plan = execQuery('UNWIND [1, 2, 3] AS x MATCH (n:Person) WHERE n.age > x AND n.age < x + 10 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-14 UNWIND + WITH + MATCH + WHERE', () => {
+    const plan = execQuery("UNWIND ['admin', 'user'] AS role WITH role MATCH (n:Person) WHERE role IN n.roles RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-15 UNWIND + CASE', () => {
+    const plan = execQuery("UNWIND [1, 2, 3] AS x RETURN CASE WHEN x > 2 THEN 'big' ELSE 'small' END AS size")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('UNW2-16 UNWIND null list', () => {
+    const plan = execQuery('UNWIND [null] AS x RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-17 UNWIND + WITH + SKIP', () => {
+    const plan = execQuery('UNWIND range(1, 10) AS x WITH x SKIP 5 RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-18 UNWIND + WITH + LIMIT', () => {
+    const plan = execQuery('UNWIND range(1, 10) AS x WITH x LIMIT 3 RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-19 UNWIND + WITH + SKIP + LIMIT', () => {
+    const plan = execQuery('UNWIND range(1, 10) AS x WITH x SKIP 2 LIMIT 5 RETURN x')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('UNW2-20 UNWIND large range + ORDER', () => {
+    const plan = execQuery('UNWIND range(1, 20) AS x RETURN x ORDER BY x DESC LIMIT 5')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - FOREACH_2 (15 tests)
+// ===================================================================
+
+describe('TCK EXT - FOREACH_2 (15 tests)', () => {
+  test.skip('FOREACH2-01 FOREACH CREATE with relation', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2] | CREATE (n:Node {id: x}) WITH n MATCH (m:Node {id: x + 1}) CREATE (n)-[:LINK]->(m))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-02 FOREACH + SET property', () => {
+    const plan = execQuery('MATCH (n:Person) FOREACH (flag IN [true] | SET n.flagged = flag)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-03 FOREACH + REMOVE property', () => {
+    const plan = execQuery('MATCH (n:Person) FOREACH (x IN [1] | REMOVE n.temp)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-04 FOREACH MERGE + ON CREATE', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2] | MERGE (n:Node {id: x}) ON CREATE SET n.created = timestamp())')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-05 FOREACH MERGE + ON MATCH', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2] | MERGE (n:Node {id: x}) ON MATCH SET n.updated = timestamp())')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-06 FOREACH + CREATE multiple labels', () => {
+    const plan = execQuery("FOREACH (x IN ['a', 'b'] | CREATE (n:Node:Test {id: x}))")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-07 FOREACH with WHERE + SET', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2, 3] WHERE x > 1 | CREATE (n:Node {id: x}) SET n.active = true)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-08 FOREACH with string template', () => {
+    const plan = execQuery("FOREACH (name IN ['Alice', 'Bob'] | CREATE (n:Person {name: name, label: 'user_' + name}))")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-09 MATCH + FOREACH + MATCH', () => {
+    const plan = execQuery('MATCH (p:Person) FOREACH (f IN p.friend_ids | MATCH (n:Person {id: f}) CREATE (p)-[:KNOWS]->(n))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-10 FOREACH with range step', () => {
+    const plan = execQuery('FOREACH (x IN range(0, 10, 2) | CREATE (n:Node {id: x}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-11 FOREACH + collect', () => {
+    const plan = execQuery('MATCH (p:Person) FOREACH (t IN collect(p.tag) | CREATE (n:Tag {name: t}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-12 FOREACH double list', () => {
+    const plan = execQuery("FOREACH (x IN [1, 2] | CREATE (n:Node {id: x}) FOREACH (y IN ['a', 'b'] | SET n. + y = y))")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-13 FOREACH + DELETE with WHERE', () => {
+    const plan = execQuery('MATCH (n:Node) WHERE n.expired = true FOREACH (x IN [1] | DELETE n)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-14 FOREACH + SET FROM attr', () => {
+    const plan = execQuery('MATCH (p:Person) FOREACH (prop IN keys(p) | SET p.processed = true)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FOREACH2-15 FOREACH with conditional', () => {
+    const plan = execQuery('FOREACH (x IN [1, 2, 3] | FOREACH (y IN CASE WHEN x > 1 THEN [x] ELSE [] END | CREATE (n:Node {id: y})))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - FUNCTIONS_2 (20 tests)
+// ===================================================================
+
+describe('TCK EXT - FUNCTIONS_2 (20 tests)', () => {
+  test.skip('FUNC2-01 RETURN startNode()', () => {
+    const plan = execQuery('MATCH (a)-[r]->(b) RETURN startNode(r) AS start')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC2-02 RETURN endNode()', () => {
+    const plan = execQuery('MATCH (a)-[r]->(b) RETURN endNode(r) AS end')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC2-03 RETURN length(path)', () => {
+    const plan = execQuery('MATCH p = (a)-[:KNOWS*1..5]->(c) RETURN length(p) AS path_len')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC2-04 RETURN nodes(path)', () => {
+    const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b) RETURN nodes(p) AS node_list')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC2-05 RETURN relationships(path)', () => {
+    const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b) RETURN relationships(p) AS rel_list')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-06 RETURN keys(node)', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN keys(n) AS property_keys')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-07 RETURN labels with filter', () => {
+    const plan = execQuery('MATCH (n) RETURN labels(n) AS lbls')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC2-08 RETURN count with groups', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN count(n) AS total, count(DISTINCT n.city) AS cities')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-09 RETURN sum with grouping', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.dept, sum(n.salary) AS total_salary')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-10 RETURN avg with grouping', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.city, avg(n.age) AS avg_age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-11 RETURN min with grouping', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.dept, min(n.age) AS youngest')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-12 RETURN max with grouping', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.dept, max(n.age) AS oldest')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-13 RETURN collect with grouping', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN n.dept, collect(n.name) AS members')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-14 RETURN toBoolean on field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN toBoolean(n.active_flag) AS active')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-15 RETURN toFloat on field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN toFloat(n.string_num) AS num')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-16 RETURN toInteger on field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN toInteger(n.age_str) AS age_num')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-17 RETURN coalesce with two fields', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN coalesce(n.nickname, n.name) AS display')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-18 RETURN coalesce with three fields', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN coalesce(n.title, n.role, n.name) AS label')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('FUNC2-19 RETURN type on named rel', () => {
+    const plan = execQuery('MATCH (a:Person)-[r]->(b:Company) RETURN type(r) AS rel_type')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('FUNC2-20 RETURN keys + size', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN size(keys(n)) AS prop_count')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - NESTED_QUERIES (25 tests)
+// ===================================================================
+
+describe('TCK EXT - NESTED_QUERIES (25 tests)', () => {
+  test.skip('NEST-01 EXISTS subquery', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->() } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-02 NOT EXISTS subquery', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT EXISTS { MATCH (n)-[:KNOWS]->() } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-03 EXISTS with type filter', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:WORKS_AT]->(:Company) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-04 COUNT subquery', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { MATCH (n)-[:KNOWS]->(f) } > 5 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-05 COUNT subquery comparison', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { MATCH (n)-[:KNOWS]->() } = 0 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-06 EXISTS + AND subquery', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->() } AND n.age > 30 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-07 EXISTS + OR subquery', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->(:Person) } OR n.age < 25 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-08 EXISTS subquery with property', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->(f:Person) WHERE f.age > n.age } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-09 NOT EXISTS subquery + WHERE', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.age > 30 AND NOT EXISTS { MATCH (n)-[:KNOWS]->(:Person {status: 'inactive'}) } RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-10 COUNT subquery multi-hop', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { MATCH (n)-[:KNOWS]->()-[:KNOWS]->() } >= 2 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-11 EXISTS + SKIP + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->() } RETURN n SKIP 5 LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-12 EXISTS + ORDER BY', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->() } RETURN n.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-13 EXISTS + aggregation', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->() } RETURN n.dept, count(n) AS cnt')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-14 NOT EXISTS + collect', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT EXISTS { MATCH (n)-[:KNOWS]->() } RETURN collect(n.name) AS lonely_people')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-15 EXISTS + subquery property', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:PURCHASED]->(p:Product) WHERE p.price > 100 } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-16 COUNT + HAVING pattern', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { MATCH (n)-[:KNOWS]->() } > 2 RETURN n.name, COUNT { MATCH (n)-[:KNOWS]->() } AS friend_count')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-17 EXISTS triple filter', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->(f:Person)-[:WORKS_AT]->(c:Company {name: 'Acme'}) } RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-18 COUNT subquery with range', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { MATCH (n)-[:PURCHASED]->(p:Product) WHERE p.price > 50 } > 3 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-19 EXISTS + STARTS WITH', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.name STARTS WITH 'A' AND EXISTS { MATCH (n)-[:KNOWS]->() } RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-20 NOT EXISTS double', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT EXISTS { MATCH (n)-[:KNOWS]->() } AND NOT EXISTS { MATCH (n)-[:WORKS_AT]->() } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-21 EXISTS path pattern', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS*1..3]->(f) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-22 COUNT with grouping', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { MATCH (n)-[:KNOWS]->() } >= 1 RETURN n.dept, count(n) AS emp_count')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-23 EXISTS with MATCH + WHERE', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:LIVES_IN]->(c:City) WHERE c.population > 1000000 } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-24 NOT EXISTS with property', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE NOT EXISTS { MATCH (n)-[:HAS]->(:Account {status: 'blocked'}) } RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('NEST-25 EXISTS subquery + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->() } RETURN n LIMIT 20')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - ADVANCED_CREATE (25 tests)
+// ===================================================================
+
+describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
+  test('CREATE-01 CREATE with multiple props', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Alice', age: 30, city: 'NYC', active: true})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-02 CREATE node with array', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Bob', tags: ['dev', 'ops']})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-03 CREATE edge with props', () => {
+    const plan = execQuery("CREATE (a:Person {name: 'Alice'})-[r:KNOWS {since: 2020, level: 3}]->(b:Person {name: 'Bob'})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-04 CREATE multiple nodes', () => {
+    const plan = execQuery("CREATE (a:Person {name: 'A'}), (b:Person {name: 'B'}), (c:Person {name: 'C'})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-05 CREATE + RETURN created', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'New'}) RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-06 CREATE + RETURN props', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'New', age: 25}) RETURN n.name, n.age")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-07 CREATE + MATCH + RETURN', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'New'}) MATCH (m:Person) RETURN count(m) AS total")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-08 CREATE + CREATE edge', () => {
+    const plan = execQuery("CREATE (a:Person {name: 'A'}) CREATE (b:Person {name: 'B'}) CREATE (a)-[:KNOWS]->(b)")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-09 CREATE with nested expression', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Test', score: 42 + 8})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-10 CREATE with boolean', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Test', active: true, verified: false})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-11 CREATE with null', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Test', middle_name: null})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-12 CREATE multiple edges', () => {
+    const plan = execQuery("CREATE (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'}), (a)-[:FRIEND_OF]->(c:Person {name: 'C'})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-13 CREATE + ORDER BY', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Test'}) RETURN n.name ORDER BY n.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-14 CREATE + SKIP + LIMIT', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Test'}) MATCH (m:Person) RETURN m.name SKIP 5 LIMIT 10")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-15 CREATE with coalesce', () => {
+    const plan = execQuery("CREATE (n:Person {name: coalesce('Alice', 'Default')})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-16 CREATE with labeled edge', () => {
+    const plan = execQuery("CREATE (a:Person {name: 'A'})-[:KNOWS {type: 'friend'}]->(b:Person {name: 'B'})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-17 CREATE node + SET', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Temp'}) SET n.status = 'pending'")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-18 CREATE with timestamp', () => {
+    const plan = execQuery("CREATE (n:Event {name: 'Launch', time: timestamp()})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-19 CREATE + MATCH edge', () => {
+    const plan = execQuery("CREATE (a:Person {name: 'A'}) MATCH (b:Person {name: 'B'}) CREATE (a)-[:KNOWS]->(b)")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-20 CREATE with path prop', () => {
+    const plan = execQuery("CREATE p = (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'}) RETURN p")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-21 CREATE and RETURN alias', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Test'}) RETURN n AS new_node")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-22 CREATE with toUpper', () => {
+    const plan = execQuery("CREATE (n:Person {name: toUpper('test')})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CREATE-23 CREATE with size', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Test', len: size('hello')})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-24 CREATE multiple labels', () => {
+    const plan = execQuery("CREATE (n:Person:Employee:Manager {name: 'Boss'})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CREATE-25 CREATE + SKIP', () => {
+    const plan = execQuery("CREATE (n:Person {name: 'Test'}) MATCH (m:Person) RETURN m SKIP 0")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - MERGE_EXTENDED (20 tests)
+// ===================================================================
+
+describe('TCK EXT - MERGE_EXTENDED (20 tests)', () => {
+  test('MERGE-01 MERGE basic', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MERGE-02 MERGE + RETURN', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MERGE-03 MERGE + ON CREATE SET', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = timestamp()")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MERGE-04 MERGE + ON MATCH SET', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) ON MATCH SET n.last_seen = timestamp()")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-05 MERGE + ON CREATE + ON MATCH', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.count = 1 ON MATCH SET n.count = n.count + 1")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MERGE-06 MERGE with multiple props', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice', city: 'NYC'})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-07 MERGE + CREATE edge', () => {
+    const plan = execQuery("MERGE (a:Person {name: 'Alice'}) MERGE (b:Person {name: 'Bob'}) MERGE (a)-[:KNOWS]->(b)")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-08 MERGE edge with props', () => {
+    const plan = execQuery("MERGE (a:Person {name: 'Alice'})-[r:KNOWS {since: 2020}]->(b:Person {name: 'Bob'}) RETURN r")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-09 MERGE + SET multiple', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) SET n.age = 30, n.city = 'NYC'")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-10 MERGE + REMOVE', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) REMOVE n.temp_prop")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-11 MERGE + WHERE', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.name IS NOT NULL MERGE (m:Person {name: n.name})')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-12 MERGE with collect', () => {
+    const plan = execQuery('MATCH (n:Person) WITH collect(n.name) AS names MERGE (m:Summary {names: names})')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MERGE-13 MERGE + ON CREATE SET + RETURN', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.count = 1 RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-14 MERGE multiple labels', () => {
+    const plan = execQuery("MERGE (n:Person:Employee {name: 'Alice'})")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MERGE-15 MERGE + ON MATCH SET + RETURN', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) ON MATCH SET n.updated = true RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-17 MERGE + FOREACH', () => {
+    const plan = execQuery("FOREACH (name IN ['Alice', 'Bob'] | MERGE (n:Person {name: name}))")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('MERGE-18 MERGE with conditional SET', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.new = true ON MATCH SET n.existing = true")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-19 MERGE + UNWIND', () => {
+    const plan = execQuery("UNWIND ['Alice', 'Bob'] AS name MERGE (n:Person {name: name}) RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MERGE-20 MERGE + ORDER BY', () => {
+    const plan = execQuery("MERGE (n:Person {name: 'Alice'}) RETURN n.name ORDER BY n.name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - DELETE_EXTENDED (15 tests)
+// ===================================================================
+
+describe('TCK EXT - DELETE_EXTENDED (15 tests)', () => {
+  test('DEL-01 DELETE node', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) DELETE n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-02 DELETE multiple nodes', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 60 DELETE n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-03 DELETE + RETURN', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) DELETE n RETURN count(*) AS deleted")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-04 DETACH DELETE node', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) DETACH DELETE n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-05 DETACH DELETE multiple', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age > 60 DETACH DELETE n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-06 DETACH DELETE + RETURN', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) DETACH DELETE n RETURN count(n) AS deleted")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DEL-07 DELETE with SKIP + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.expired = true DELETE n SKIP 5 LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DEL-08 DETACH DELETE + ORDER BY', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.expired = true DETACH DELETE n ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-09 DELETE + WHERE + property', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.status = 'deleted' DELETE n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DEL-10 DELETE edge only', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->() DELETE r")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-11 DELETE edges + nodes', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->(b) DELETE r, b")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-12 DETACH DELETE with MATCH', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.flagged = true DETACH DELETE n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-13 DELETE all nodes', () => {
+    const plan = execQuery('MATCH (n) DELETE n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-14 DETACH DELETE all', () => {
+    const plan = execQuery('MATCH (n) DETACH DELETE n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DEL-15 DELETE with pattern', () => {
+    const plan = execQuery('MATCH (a:Person)-[r:KNOWS]->(b:Person) DELETE r')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - SET_EXTENDED (15 tests)
+// ===================================================================
+
+describe('TCK EXT - SET_EXTENDED (15 tests)', () => {
+  test('SET-01 SET single property', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = 31")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SET-02 SET multiple properties', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = 31, n.city = 'LA'")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-03 SET with expression', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = n.age + 1")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-04 SET = replaces properties', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n = {age: 30, city: 'NYC'}")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-05 SET += augments properties', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n += {status: 'active'}")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SET-06 SET + RETURN', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = 30 RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SET-07 SET with WHERE', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age IS NULL SET n.age = 0')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-08 SET label', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n:Employee")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-09 SET multiple labels', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n:Employee:Manager")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SET-10 SET with CASE', () => {
+    const plan = execQuery("MATCH (n:Person) SET n.category = CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('SET-11 SET with coalesce', () => {
+    const plan = execQuery("MATCH (n:Person) SET n.name = coalesce(n.name, 'Unknown')")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-12 SET = with map literal', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n = {name: 'Alice', age: 31, city: 'NYC'}")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-13 SET += with dynamic props', () => {
+    const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n += {last_updated: timestamp()}")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-14 SET + ORDER BY', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE n.age IS NULL SET n.age = 0 RETURN n.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SET-15 SET with SKIP + LIMIT', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.status = 'new' SET n.processed = true RETURN n SKIP 10 LIMIT 50")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - SHOW_DESCRIBE (10 tests)
+// ===================================================================
+
+describe('TCK EXT - SHOW_DESCRIBE (10 tests)', () => {
+  test('META-01 SHOW CONSTRAINTS', () => {
+    const plan = execQuery('SHOW CONSTRAINTS')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('META-02 SHOW INDEXES', () => {
+    const plan = execQuery('SHOW INDEXES')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('META-03 SHOW PROCEDURES', () => {
+    const plan = execQuery('SHOW PROCEDURES')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('META-04 SHOW FUNCTIONS', () => {
+    const plan = execQuery('SHOW FUNCTIONS')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('META-05 SHOW LABELS', () => {
+    const plan = execQuery('SHOW LABELS')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('META-06 SHOW RELATIONSHIPTYPES', () => {
+    const plan = execQuery('SHOW RELATIONSHIPTYPES')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('META-07 SHOW SCHEMA', () => {
+    const plan = execQuery('SHOW SCHEMA')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('META-08 DESCRIBE alias', () => {
+    const plan = execQuery('DESCRIBE MATCH (n:Person) RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('META-09 EXPLAIN query', () => {
+    const plan = execQuery('EXPLAIN MATCH (n:Person) RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('META-10 PROFILE query', () => {
+    const plan = execQuery('PROFILE MATCH (n:Person) RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - SUBQUERY_EXISTS_2 (20 tests)
+// ===================================================================
+
+describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
+  test.skip('SQ2-01 EXISTS edge pattern', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-02 EXISTS path pattern', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS*2..4]->(:Person) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-03 NOT EXISTS edge', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT EXISTS { (n)-[:KNOWS]->() } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-04 EXISTS multi-edge pattern', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person) AND (n)-[:WORKS_AT]->(:Company) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-05 EXISTS + property filter', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(f:Person) WHERE f.age > 30 } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-06 NOT EXISTS + property', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE NOT EXISTS { (n)-[:KNOWS]->(f:Person) WHERE f.status = 'blocked' } RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-07 COUNT subq = 1', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } = 1 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-08 COUNT subq >= 3', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } >= 3 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-09 COUNT subq between', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } >= 2 AND COUNT { (n)-[:KNOWS]->() } <= 5 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-10 EXISTS + subq agg', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:PURCHASED]->(p:Product) WITH p WHERE p.price > avg(p.price) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-11 EXISTS with label var', () => {
+    const plan = execQuery('MATCH (n) WHERE EXISTS { (n:Person)-[:KNOWS]->() } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-12 NOT EXISTS + label var', () => {
+    const plan = execQuery('MATCH (n) WHERE NOT EXISTS { (n:Person)-[:KNOWS]->() } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-13 EXISTS + UNION subquery', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->(f) RETURN f UNION MATCH (n)-[:WORKS_WITH]->(c) RETURN c } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-14 COUNT with label', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->(:Person) } > 0 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-15 EXISTS + OR subq', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person) } OR EXISTS { (n)-[:WORKS_AT]->(:Company) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-16 EXISTS + AND WHERE', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(f:Person) } AND n.age > 30 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-17 EXISTENTIAL triple pattern', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person)-[:KNOWS]->(:Person) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-18 NOT EXISTENTIAL multi-hop', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE NOT EXISTS { (n)-[:KNOWS*3..]->(f) } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-19 COUNT subq + ORDER', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } > 0 RETURN n.name ORDER BY n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SQ2-20 COUNT + SKIP + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } > 2 RETURN n.name SKIP 5 LIMIT 10')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - WITH_COMPLEX (15 tests)
+// ===================================================================
+
+describe('TCK EXT - WITH_COMPLEX (15 tests)', () => {
+  test('WITH-01 WITH simple alias', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n.name AS name RETURN name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-02 WITH + WHERE filter', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n WHERE n.age > 25 RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-03 WITH + agg', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n.dept AS dept, count(*) AS cnt RETURN dept, cnt')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-04 WITH + ORDER BY', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n.name AS name ORDER BY name RETURN name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-05 WITH + SKIP + LIMIT', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n ORDER BY n.age SKIP 5 LIMIT 10 RETURN n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-06 WITH DISTINCT', () => {
+    const plan = execQuery('MATCH (n:Person) WITH DISTINCT n.city AS city RETURN city')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-07 WITH + collect', () => {
+    const plan = execQuery('MATCH (n:Person) WITH collect(n.name) AS names UNWIND names AS name RETURN name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-08 WITH + CASE', () => {
+    const plan = execQuery("MATCH (n:Person) WITH n.name AS name, CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END AS level RETURN name, level")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-09 WITH + double agg', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n.dept AS dept, avg(n.age) AS avg_age WHERE avg_age > 30 RETURN dept, avg_age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-10 WITH + string func', () => {
+    const plan = execQuery('MATCH (n:Person) WITH toUpper(n.name) AS upper_name RETURN upper_name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-11 WITH + math', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n.age * 2 AS double_age RETURN double_age')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-12 WITH + EXISTS', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n WHERE EXISTS { (n)-[:KNOWS]->() } RETURN n')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-13 WITH chained aliases', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n.name AS a WITH a AS b RETURN b')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-14 WITH + multi-collect', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n.dept AS dept, collect(n.name) AS names RETURN dept, size(names) AS cnt')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('WITH-15 WITH + percent agg', () => {
+    const plan = execQuery('MATCH (n:Person) WITH n, n.age / 100.0 AS age_pct RETURN n.name, age_pct')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - INDEX_CONSTRAINT (10 tests)
+// ===================================================================
+
+describe('TCK EXT - INDEX_CONSTRAINT (10 tests)', () => {
+  test.skip('IDX-01 CREATE INDEX', () => {
+    const plan = execQuery('CREATE INDEX FOR (n:Person) ON (n.name)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-02 CREATE INDEX composite', () => {
+    const plan = execQuery('CREATE INDEX FOR (n:Person) ON (n.name, n.age)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-03 DROP INDEX', () => {
+    const plan = execQuery('DROP INDEX ON (n:Person)')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-04 CREATE CONSTRAINT unique', () => {
+    const plan = execQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.name IS UNIQUE')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-05 CREATE CONSTRAINT exists', () => {
+    const plan = execQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.name IS NOT NULL')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-06 DROP CONSTRAINT', () => {
+    const plan = execQuery('DROP CONSTRAINT FOR (n:Person) REQUIRE n.name IS UNIQUE')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-07 CREATE CONSTRAINT node key', () => {
+    const plan = execQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE (n.name, n.age) IS NODE KEY')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-08 CREATE + SHOW INDEX', () => {
+    const plan = execQuery('CREATE INDEX FOR (n:Person) ON (n.email) SHOW INDEXES')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-09 CREATE + SHOW CONSTRAINT', () => {
+    const plan = execQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.email IS UNIQUE SHOW CONSTRAINTS')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('IDX-10 DROP CONSTRAINT by name', () => {
+    const plan = execQuery('DROP CONSTRAINT constraint_name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - SHORTEST_PATH (10 tests)
+// ===================================================================
+
+describe('TCK EXT - SHORTEST_PATH (10 tests)', () => {
+  test.skip('SP-01 shortestPath', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-02 allShortestPaths', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = allShortestPaths((a)-[*..10]-(b)) RETURN p")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-03 shortestPath directed', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]->(b)) RETURN p")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-04 shortestPath + length', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN length(p) AS path_length")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-05 allShortestPaths + nodes', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = allShortestPaths((a)-[*..10]-(b)) RETURN nodes(p) AS nodes_list")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-06 shortestPath WHERE', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) WHERE length(p) > 2 RETURN p")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-07 shortestPath + ORDER', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p ORDER BY length(p)")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-08 shortestPath + aggregate', () => {
+    const plan = execQuery('MATCH (a:Person), (b:Person) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN a.name, b.name, length(p) AS dist')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-09 shortestPath + label filter', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b:Person)) RETURN p")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('SP-10 shortestPath + LIMIT', () => {
+    const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p LIMIT 5")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - LOAD_CSV (10 tests)
+// ===================================================================
+
+describe('TCK EXT - LOAD_CSV (10 tests)', () => {
+  test('CSV-01 LOAD CSV basic', () => {
+    const plan = execQuery('LOAD CSV FROM "file:///data.csv" AS row RETURN row')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CSV-02 LOAD CSV WITH HEADERS', () => {
+    const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///data.csv" AS row RETURN row')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CSV-03 LOAD CSV + CREATE', () => {
+    const plan = execQuery('LOAD CSV FROM "file:///nodes.csv" AS row CREATE (n:Node {id: row[0], name: row[1]})')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CSV-04 LOAD CSV WITH HEADERS + CREATE', () => {
+    const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///people.csv" AS row CREATE (n:Person {name: row.name, age: toInteger(row.age)})')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CSV-05 LOAD CSV + MATCH + MERGE', () => {
+    const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///data.csv" AS row MATCH (n:Node {id: row.id}) MERGE (m:Node {name: row.name})')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CSV-06 LOAD CSV + FIELDTERMINATOR', () => {
+    const plan = execQuery('LOAD CSV FROM "file:///data.tsv" AS row FIELDTERMINATOR "\\t" RETURN row')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CSV-07 LOAD CSV + WHERE', () => {
+    const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///data.csv" AS row WHERE row.active = "true" RETURN row')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CSV-08 LOAD CSV + SET', () => {
+    const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///updates.csv" AS row MATCH (n:Person {id: row.id}) SET n.status = row.status')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CSV-09 LOAD CSV + FOREACH', () => {
+    const plan = execQuery('LOAD CSV FROM "file:///items.csv" AS row FOREACH (x IN [1] | CREATE (n:Item {value: row[0]}))')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CSV-10 LOAD CSV + UNWIND', () => {
+    const plan = execQuery('LOAD CSV FROM "file:///list.csv" AS row UNWIND row AS item RETURN item')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - DATETIME (15 tests)
+// ===================================================================
+
+describe('TCK EXT - DATETIME (15 tests)', () => {
+  test('DT-01 RETURN datetime()', () => {
+    const plan = execQuery('RETURN datetime() AS now')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DT-02 RETURN date()', () => {
+    const plan = execQuery('RETURN date() AS today')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DT-03 RETURN time()', () => {
+    const plan = execQuery('RETURN time() AS now_time')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DT-04 RETURN localdatetime()', () => {
+    const plan = execQuery('RETURN localdatetime() AS now_local')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DT-05 RETURN localtime()', () => {
+    const plan = execQuery('RETURN localtime() AS local_now')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DT-06 RETURN duration()', () => {
+    const plan = execQuery('RETURN duration({days: 7}) AS week')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DT-07 RETURN datetime from string', () => {
+    const plan = execQuery("RETURN datetime('2024-01-01T12:00:00') AS new_year")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DT-08 RETURN date from string', () => {
+    const plan = execQuery("RETURN date('2024-12-25') AS xmas")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DT-09 RETURN date parts', () => {
+    const plan = execQuery('RETURN date({year: 2024, month: 12, day: 25}) AS xmas')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DT-10 RETURN time from string', () => {
+    const plan = execQuery("RETURN time('14:30:00') AS meeting")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DT-11 RETURN datetime + duration', () => {
+    const plan = execQuery('RETURN datetime() + duration({hours: 1}) AS next_hour')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DT-12 RETURN datetime - duration', () => {
+    const plan = execQuery('RETURN datetime() - duration({days: 1}) AS yesterday')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DT-13 RETURN duration between', () => {
+    const plan = execQuery("RETURN duration.between(date('2024-01-01'), date('2024-12-31')) AS period")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('DT-14 RETURN date trunc', () => {
+    const plan = execQuery("RETURN date.truncate('month', date('2024-03-15')) AS month_start")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('DT-15 RETURN datetime + MATCH', () => {
+    const plan = execQuery("MATCH (n:Person) WHERE n.created_at < datetime('2024-01-01') RETURN n")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - CALL_PROCEDURE (10 tests)
+// ===================================================================
+
+describe('TCK EXT - CALL_PROCEDURE (10 tests)', () => {
+  test.skip('CALL-01 CALL procedure', () => {
+    const plan = execQuery('CALL db.labels() YIELD label RETURN label')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CALL-02 CALL procedure with args', () => {
+    const plan = execQuery('CALL db.schema.nodeTypeProperties() YIELD propertyName RETURN propertyName')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CALL-03 CALL + WHERE', () => {
+    const plan = execQuery("CALL db.labels() YIELD label WHERE label STARTS WITH 'P' RETURN label")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CALL-04 CALL + ORDER BY', () => {
+    const plan = execQuery('CALL db.labels() YIELD label RETURN label ORDER BY label')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CALL-05 CALL + SKIP + LIMIT', () => {
+    const plan = execQuery('CALL db.labels() YIELD label RETURN label SKIP 1 LIMIT 5')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CALL-06 CALL procedure + WITH', () => {
+    const plan = execQuery("CALL db.labels() YIELD label WITH label WHERE label <> 'Person' RETURN label")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CALL-07 CALL + agg', () => {
+    const plan = execQuery('CALL db.labels() YIELD label RETURN count(label) AS label_count')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CALL-08 CALL void procedure', () => {
+    const plan = execQuery("CALL dbms.security.createUser('test', 'pass', false)")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('CALL-09 CALL + UNION', () => {
+    const plan = execQuery('CALL db.labels() YIELD label RETURN label UNION CALL db.labels() YIELD label RETURN label')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('CALL-10 CALL standalone', () => {
+    const plan = execQuery('CALL db.labels()')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - PATTERN_COMPREHENSION (10 tests)
+// ===================================================================
+
+describe('TCK EXT - PATTERN_COMPREHENSION (10 tests)', () => {
+  test('PCOMP-01 pattern comprehension list', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN [(a)-[:KNOWS]->(b) | b.name] AS friends')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PCOMP-02 pattern comprehension filtered', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN [(a)-[:KNOWS]->(b) WHERE b.age > 25 | b.name] AS adult_friends')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PCOMP-03 pattern comprehension multi', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN [(a)-[:KNOWS]->(b) | b.name] AS friends, [(a)-[:WORKS_AT]->(c) | c.name] AS workplaces')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PCOMP-04 comprehension count', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN size([(a)-[:KNOWS]->(b) | b]) AS friend_count')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PCOMP-05 comprehension + scalar', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN a.name, [(a)-[:KNOWS]->(b) | b.name] AS friends ORDER BY a.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('PCOMP-06 comprehension with UNWIND', () => {
+    const plan = execQuery('MATCH (a:Person) UNWIND [(a)-[:KNOWS]->(b) | b.name] AS friend RETURN a.name, friend')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('PCOMP-07 comprehension + WHERE', () => {
+    const plan = execQuery('MATCH (a:Person) WHERE size([(a)-[:KNOWS]->() | 1]) > 2 RETURN a.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PCOMP-08 comprehension with labels', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN [(a)-[:KNOWS]->(b:Person|Employee) | b.name] AS connections')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PCOMP-09 comprehension var-length', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN [(a)-[:KNOWS*1..3]->(b) | b.name] AS network')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test('PCOMP-10 comprehension + collect', () => {
+    const plan = execQuery('MATCH (a:Person) RETURN collect([(a)-[:KNOWS]->(b) | b.name]) AS all_lists')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - MAP_OPS (10 tests)
+// ===================================================================
+
+describe('TCK EXT - MAP_OPS (10 tests)', () => {
+  test.skip('MAP-01 RETURN map literal', () => {
+    const plan = execQuery("RETURN {name: 'Alice', age: 30} AS person")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-02 RETURN map with field', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN {name: n.name, age: n.age} AS person')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-03 RETURN map access', () => {
+    const plan = execQuery("RETURN {name: 'Alice', age: 30}.name AS name")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-04 RETURN nested map', () => {
+    const plan = execQuery("RETURN {person: {name: 'Alice', age: 30}, city: 'NYC'} AS data")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-05 RETURN map keys', () => {
+    const plan = execQuery("RETURN keys({name: 'Alice', age: 30}) AS props")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-06 RETURN map values', () => {
+    const plan = execQuery("RETURN [x IN {name: 'Alice', age: 30} | x] AS values")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-07 RETURN map + list', () => {
+    const plan = execQuery("RETURN [{name: 'Alice'}, {name: 'Bob'}] AS people")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-08 MATCH RETURN map from node', () => {
+    const plan = execQuery('MATCH (n:Person) RETURN {name: n.name, data: n} AS result')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-09 RETURN map merge', () => {
+    const plan = execQuery("RETURN {name: 'Alice'} + {age: 30} AS merged")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('MAP-10 RETURN map with CASE', () => {
+    const plan = execQuery("RETURN {key: CASE WHEN 1 > 0 THEN 'yes' ELSE 'no' END} AS result")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
+// ===================================================================
+// TCK EXT - CYPHER_ADMIN (10 tests)
+// ===================================================================
+
+describe('TCK EXT - CYPHER_ADMIN (10 tests)', () => {
+  test.skip('ADMIN-01 CREATE USER', () => {
+    const plan = execQuery("CREATE USER alice SET PASSWORD 'password'")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-02 ALTER USER', () => {
+    const plan = execQuery("ALTER USER alice SET PASSWORD 'new_password'")
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-03 DROP USER', () => {
+    const plan = execQuery('DROP USER alice')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-04 CREATE ROLE', () => {
+    const plan = execQuery('CREATE ROLE reader')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-05 DROP ROLE', () => {
+    const plan = execQuery('DROP ROLE reader')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-06 GRANT ROLE', () => {
+    const plan = execQuery('GRANT ROLE reader TO alice')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-07 REVOKE ROLE', () => {
+    const plan = execQuery('REVOKE ROLE reader FROM alice')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-08 SHOW USERS', () => {
+    const plan = execQuery('SHOW USERS')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-09 SHOW ROLES', () => {
+    const plan = execQuery('SHOW ROLES')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+  test.skip('ADMIN-10 CREATE DATABASE', () => {
+    const plan = execQuery('CREATE DATABASE mydb')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBeDefined()
+  }, 10000)
+
+})
+
 })

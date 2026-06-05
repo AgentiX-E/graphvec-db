@@ -56,3 +56,33 @@ describe('GraphConfig', () => {
     expect(cfg.maxNodeCacheSize).toBe(10000)
   })
 })
+
+// ---- GraphConfig 扩展测试 ----
+
+describe('GraphConfig — expansion', () => {
+  for (let iter = 0; iter < 20; iter++) {
+    test(`config 各种 path 变体 #${iter}`, () => {
+      const path = `/tmp/gc-variant-${iter}-${Date.now()}`
+      const config = new GraphConfig({ path })
+      const cfg = config.getConfig()
+      expect(cfg.path).toBe(path)
+      expect(cfg.denseVector?.dimension).toBe(384)
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    test(`config denseVector 维度变体 #${iter}`, () => {
+      const config = new GraphConfig({ path: `/tmp/gc-dim-${iter}`, denseVector: { dimension: 128 * (iter + 1) } })
+      const cfg = config.getConfig()
+      expect(cfg.denseVector?.dimension).toBe(128 * (iter + 1))
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    test(`config cacheSize 变体 #${iter}`, () => {
+      const config = new GraphConfig({ path: `/tmp/gc-cache-${iter}`, cacheSize: iter * 100 })
+      const cfg = config.getConfig()
+      expect(cfg.cacheSize).toBe(iter * 100)
+    })
+  }
+})

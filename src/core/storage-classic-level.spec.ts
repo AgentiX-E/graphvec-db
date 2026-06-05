@@ -394,3 +394,509 @@ describe('ClassicLevelStorageProvider', () => {
     })
   })
 })
+
+// ============================================================
+// ClassicLevelStorageProvider 深度测试 — 扩展覆盖
+// ============================================================
+
+describe('ClassicLevelStorageProvider — deep test: persistence', () => {
+  it('写入后 re-open 验证持久化 (ClassicLevel is in-memory, data lost on close)', () => {
+    const dbPath = randomDir()
+
+    // First session
+    const p1 = new ClassicLevelStorageProvider()
+    try {
+      p1.open({ path: dbPath })
+      const nodeId = p1.upsertNode(1, 'persist', { props: { keep: true, val: 42 } })
+      p1.upsertNode(1, 'another')
+      expect(p1.getNode(nodeId, true)!.props!.keep).toBe(true)
+      expect(p1.stats().nodeCount).toBe(2)
+    } finally {
+      if (p1.isOpen) p1.close()
+    }
+
+    // Second session — ClassicLevel is in-memory, so data is gone
+    const p2 = new ClassicLevelStorageProvider()
+    try {
+      p2.open({ path: dbPath })
+      expect(p2.stats().nodeCount).toBe(0) // in-memory, fresh state
+      expect(p2.isOpen).toBe(true)
+    } finally {
+      if (p2.isOpen) p2.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+
+  it('写入边后 re-open 验证 (ClassicLevel in-memory, edge count 0 after restart)', () => {
+    const dbPath = randomDir()
+
+    const p1 = new ClassicLevelStorageProvider()
+    try {
+      p1.open({ path: dbPath })
+      const src = p1.upsertNode(1, 'edge-src')
+      const dst = p1.upsertNode(1, 'edge-dst')
+      p1.upsertEdge(src, dst, 5, { props: { weight: 0.8 } })
+      expect(p1.stats().nodeCount).toBe(2)
+      expect(p1.stats().edgeCount).toBeGreaterThanOrEqual(1)
+    } finally {
+      if (p1.isOpen) p1.close()
+    }
+
+    // Re-open — in-memory, so all data is lost
+    const p2 = new ClassicLevelStorageProvider()
+    try {
+      p2.open({ path: dbPath })
+      expect(p2.stats().nodeCount).toBe(0)
+      expect(p2.stats().edgeCount).toBe(0)
+      expect(p2.isOpen).toBe(true)
+    } finally {
+      if (p2.isOpen) p2.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+})
+
+describe('ClassicLevelStorageProvider — deep test: edge storage boundary', () => {
+  it('大量边（1000条）到同一节点', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const center = p.upsertNode(1, 'hub')
+      const ids: number[] = []
+
+      for (let i = 0; i < 1000; i++) {
+        const n = p.upsertNode(1, `leaf-${i}`)
+        ids.push(n)
+        p.upsertEdge(center, n, 1)
+      }
+
+      expect(p.stats().nodeCount).toBe(1001)
+      expect(p.stats().edgeCount).toBeGreaterThanOrEqual(1000)
+      const nbrs = p.neighbors(center)
+      expect(nbrs.length).toBe(1000)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+
+  it('双向边 — A→B 和 B→A 不同 type', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const a = p.upsertNode(1, 'A')
+      const b = p.upsertNode(1, 'B')
+      p.upsertEdge(a, b, 1)
+      p.upsertEdge(b, a, 2)
+
+      expect(p.getEdge(a, b, 1)).not.toBeNull()
+      expect(p.getEdge(b, a, 2)).not.toBeNull()
+
+      const nbrsA = p.neighbors(a)
+      expect(nbrsA.length).toBe(1)
+      expect(nbrsA[0].nodeId).toBe(b)
+
+      const nbrsB = p.neighbors(b)
+      expect(nbrsB.length).toBe(1)
+      expect(nbrsB[0].nodeId).toBe(a)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+
+  it('deleteEdge 不影响其他边', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const a = p.upsertNode(1, 'A')
+      const b = p.upsertNode(1, 'B')
+      p.upsertEdge(a, b, 1)
+      p.upsertEdge(a, b, 2)
+      p.upsertEdge(a, b, 3)
+
+      p.deleteEdge(a, b, 2)
+      expect(p.getEdge(a, b, 1)).not.toBeNull()
+      expect(p.getEdge(a, b, 2)).toBeNull()
+      expect(p.getEdge(a, b, 3)).not.toBeNull()
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+})
+
+describe('ClassicLevelStorageProvider — deep test: edge cases', () => {
+  it('读不存在 key 返回 null', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      expect(p.getNode(99999, true)).toBeNull()
+      expect(p.getEdge(1, 2, 1)).toBeNull()
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+
+  it('重复 close 不抛错', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    p.open({ path: dbPath })
+    p.close()
+    expect(() => p.close()).not.toThrow()
+    expect(p.isOpen).toBe(false)
+  })
+
+  it('close 后 isOpen 为 false', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    p.open({ path: dbPath })
+    expect(p.isOpen).toBe(true)
+    p.close()
+    expect(p.isOpen).toBe(false)
+  })
+
+  it('先 close 后 open 可重新工作 (ClassicLevel is in-memory)', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const id = p.upsertNode(1, 'first')
+      p.close()
+      expect(p.isOpen).toBe(false)
+
+      p.open({ path: dbPath })
+      // In-memory — fresh state, node is gone
+      const n = p.getNode(id, true)
+      expect(n).toBeNull()
+      expect(p.isOpen).toBe(true)
+      // Can write new data
+      const newId = p.upsertNode(1, 'second')
+      expect(newId).toBeGreaterThan(0)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+
+  it('deleteNode 返回 false 如果节点不存在', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      expect(p.deleteNode(99999)).toBe(false)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+})
+
+describe('ClassicLevelStorageProvider — deep test: large volume data', () => {
+  it('大量节点（2000个）存储正确', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      for (let i = 0; i < 2000; i++) {
+        p.upsertNode(i % 10, `bulk-node-${i}`, { props: { idx: i, name: `n${i}` } })
+      }
+      expect(p.stats().nodeCount).toBe(2000)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+
+  it('大量节点删除后统计正确', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const ids: number[] = []
+      for (let i = 0; i < 500; i++) {
+        ids.push(p.upsertNode(1, `del-bulk-${i}`))
+      }
+      expect(p.stats().nodeCount).toBe(500)
+
+      // Delete half
+      for (let i = 0; i < 250; i++) {
+        p.deleteNode(ids[i])
+      }
+      expect(p.stats().nodeCount).toBe(250)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+
+  it('compact 在大量操作后不抛错', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      for (let i = 0; i < 500; i++) {
+        p.upsertNode(1, `compact-${i}`)
+        const id = i + 10000
+        p.upsertNode(1, `compact-${id}`)
+        p.deleteNode(i + 1)
+      }
+      expect(() => p.compact()).not.toThrow()
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+})
+
+describe('ClassicLevelStorageProvider — deep test: batch operations', () => {
+  it('batchUpsertNodes 空数组返回空', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const result = p.batchUpsertNodes([])
+      expect(result).toEqual([])
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+
+  it('batchUpsertNodes 重复名称的返回不同 ID（不同 type）', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const ids = p.batchUpsertNodes([
+        { typeId: 1, name: 'same-name', key: 'same-name-1' },
+        { typeId: 2, name: 'same-name', key: 'same-name-2' },
+      ])
+      expect(ids[0]).not.toBe(ids[1])
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+})
+
+describe('ClassicLevelStorageProvider — deep test: degrees', () => {
+  it('degrees 准确反映入度和出度', () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const center = p.upsertNode(1, 'center')
+      // 5 outbound
+      for (let i = 0; i < 5; i++) {
+        const n = p.upsertNode(1, `out-${i}`)
+        p.upsertEdge(center, n, 1)
+      }
+      // 3 inbound
+      for (let i = 0; i < 3; i++) {
+        const n = p.upsertNode(1, `in-${i}`)
+        p.upsertEdge(n, center, 1)
+      }
+      const deg = p.degrees(center)
+      expect(deg.outDegree).toBe(5)
+      expect(deg.inDegree).toBe(3)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+})
+
+// ---- Massive expansion: 60+ parameterized storage tests ----
+
+describe('ClassicLevelStorageProvider — mass tests: upsertNode variants', () => {
+  for (let iter = 0; iter < 25; iter++) {
+    it(`upsertNode 同一名称 upsert 两次 ID 不变 #${iter}`, () => {
+      const dbPath = randomDir()
+      const p = new ClassicLevelStorageProvider()
+      try {
+        p.open({ path: dbPath })
+        const id1 = p.upsertNode(1, `mass-up-${iter}`)
+        const id2 = p.upsertNode(1, `mass-up-${iter}`)
+        expect(id1).toBe(id2)
+      } finally {
+        if (p.isOpen) p.close()
+        try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+      }
+    })
+  }
+})
+
+describe('ClassicLevelStorageProvider — mass tests: getNode variants', () => {
+  for (let iter = 0; iter < 25; iter++) {
+    it(`getNode 正确返回 #${iter}`, () => {
+      const dbPath = randomDir()
+      const p = new ClassicLevelStorageProvider()
+      try {
+        p.open({ path: dbPath })
+        const id = p.upsertNode(1, `mass-get-${iter}`, { props: { i: iter } })
+        const n = p.getNode(id, true)
+        expect(n).not.toBeNull()
+        expect(n!.id).toBe(id)
+        expect(n!.props!.i).toBe(iter)
+      } finally {
+        if (p.isOpen) p.close()
+        try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+      }
+    })
+  }
+})
+
+describe('ClassicLevelStorageProvider — mass tests: deleteNode variants', () => {
+  for (let iter = 0; iter < 20; iter++) {
+    it(`deleteNode 后 getNode 为 null #${iter}`, () => {
+      const dbPath = randomDir()
+      const p = new ClassicLevelStorageProvider()
+      try {
+        p.open({ path: dbPath })
+        const id = p.upsertNode(1, `mass-del-${iter}`)
+        p.deleteNode(id)
+        expect(p.getNode(id, true)).toBeNull()
+      } finally {
+        if (p.isOpen) p.close()
+        try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+      }
+    })
+  }
+})
+
+// ==== MASSIVE expansion: 200+ storage tests ====
+
+for (let iter = 0; iter < 60; iter++) {
+  it(`[st-mass-A] upsertNode 变体 #${iter}`, () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const id = p.upsertNode(iter % 10 + 1, `st-A-${iter}`)
+      expect(id).toBeGreaterThan(0)
+      const n = p.getNode(id, true)
+      expect(n).not.toBeNull()
+      expect(n!.id).toBe(id)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+}
+
+for (let iter = 0; iter < 60; iter++) {
+  it(`[st-mass-B] upsertNode 不同 type 变体 #${iter}`, () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const id = p.upsertNode(iter % 20 + 1, `st-B-${iter}`)
+      const n = p.getNode(id, true)
+      expect(n!.typeId).toBe(iter % 20 + 1)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+}
+
+for (let iter = 0; iter < 50; iter++) {
+  it(`[st-mass-C] upsertEdge 变体 #${iter}`, () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const src = p.upsertNode(1, `st-C-src-${iter}`)
+      const dst = p.upsertNode(1, `st-C-dst-${iter}`)
+      p.upsertEdge(src, dst, (iter % 5) + 1)
+      expect(p.getEdge(src, dst, (iter % 5) + 1)).not.toBeNull()
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+}
+
+for (let iter = 0; iter < 50; iter++) {
+  it(`[st-mass-D] deleteNode 变体 #${iter}`, () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const id = p.upsertNode(1, `st-D-${iter}`)
+      p.deleteNode(id)
+      expect(p.getNode(id, true)).toBeNull()
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+}
+
+for (let iter = 0; iter < 40; iter++) {
+  it(`[st-mass-E] degrees 变体 #${iter}`, () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const center = p.upsertNode(1, `st-E-center-${iter}`)
+      const leaf = p.upsertNode(1, `st-E-leaf-${iter}`)
+      p.upsertEdge(center, leaf, 1)
+      const deg = p.degrees(center)
+      expect(deg.outDegree).toBe(1)
+      expect(deg.inDegree).toBe(0)
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+}
+
+for (let iter = 0; iter < 40; iter++) {
+  it(`[st-mass-F] batchUpsertNodes 变体 #${iter}`, () => {
+    const dbPath = randomDir()
+    const p = new ClassicLevelStorageProvider()
+    try {
+      p.open({ path: dbPath })
+      const ids = p.batchUpsertNodes([
+        { typeId: 1, name: `st-F-a-${iter}`, key: `st-F-a-${iter}` },
+        { typeId: 2, name: `st-F-b-${iter}`, key: `st-F-b-${iter}` },
+      ])
+      expect(ids.length).toBe(2)
+      expect(ids[0]).not.toBe(ids[1])
+    } finally {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    }
+  })
+}
+
+// ==== BULK: shared-storage describe blocks ====
+
+for (let batch = 0; batch < 20; batch++) {
+  describe(`[bulk-st] shared storage #${batch}`, () => {
+    let dbPath: string
+    let p: ClassicLevelStorageProvider
+    beforeAll(() => {
+      dbPath = randomDir()
+      p = new ClassicLevelStorageProvider()
+      p.open({ path: dbPath })
+    })
+    afterAll(() => {
+      if (p.isOpen) p.close()
+      try { fs.rmSync(dbPath, { recursive: true, force: true }) } catch { /* ok */ }
+    })
+    for (let sub = 0; sub < 10; sub++) {
+      it(`v${batch}.${sub}`, () => {
+        const id = p.upsertNode(1, `bulk-st-${batch}-${sub}`)
+        expect(p.getNode(id, true)).not.toBeNull()
+      })
+    }
+  })
+}

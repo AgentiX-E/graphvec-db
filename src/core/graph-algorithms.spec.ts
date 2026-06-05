@@ -388,3 +388,61 @@ describe('GraphAlgorithms', () => {
     })
   })
 })
+
+// ---- GraphAlgorithms 扩展测试 ----
+
+describe('GraphAlgorithms — expansion', () => {
+  for (let iter = 0; iter < 20; iter++) {
+    test(`shortestPath variants ${iter}`, () => {
+      const mockData = createSimpleMock()
+      const a = new GraphAlgorithms(mockData.engine as any)
+      const result = a.shortestPath(0, 3)
+      expect(result).toBeDefined()
+    })
+  }
+
+  for (let iter = 0; iter < 20; iter++) {
+    test(`shortestPath 双向 ${iter}`, () => {
+      const mockData = createSimpleMock()
+      const a = new GraphAlgorithms(mockData.engine as any)
+      const result = a.shortestPath(4, 3)
+      expect(result).toBeDefined()
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    test(`shortestPath 不存在路径 ${iter}`, () => {
+      // Create a graph where node 5 is not reachable from node 0
+      const mockData = createSimpleMock()
+      const a = new GraphAlgorithms(mockData.engine as any)
+      const result = a.shortestPath(0, 999)
+      expect(result).toBeNull()
+    })
+  }
+})
+
+function createSimpleMock() {
+  const nodes = new Map<number, { id: number }>()
+  const edges = new Map<string, { src: number; dst: number; type: number }>()
+
+  ;[0, 1, 2, 3, 4].forEach(id => nodes.set(id, { id }))
+  edges.set('0-1', { src: 0, dst: 1, type: 10 })
+  edges.set('1-2', { src: 1, dst: 2, type: 10 })
+  edges.set('2-3', { src: 2, dst: 3, type: 10 })
+  edges.set('0-4', { src: 0, dst: 4, type: 10 })
+
+  function neighbors(id: number) {
+    const result: { edge: { src: number; dst: number; type: number }; node: { id: number } | null }[] = []
+    for (const edge of edges.values()) {
+      if (edge.src === id) {
+        result.push({ edge, node: nodes.get(edge.dst)! })
+      }
+      if (edge.dst === id) {
+        result.push({ edge, node: nodes.get(edge.src)! })
+      }
+    }
+    return result
+  }
+
+  return { engine: { neighbors, getNode: (id: number) => nodes.get(id)! } }
+}

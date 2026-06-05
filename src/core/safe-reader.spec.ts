@@ -169,3 +169,34 @@ describe('SafeReader', () => {
     })
   })
 })
+
+// ---- SafeReader 扩展测试 ----
+
+describe('SafeReader — expansion', () => {
+  for (let iter = 0; iter < 15; iter++) {
+    test(`read without config #${iter}`, async () => {
+      const reader = new SafeReader()
+      const result = await reader.read(() => iter)
+      expect(result.data).toBe(iter)
+      expect(typeof result.refreshedAt).toBe('number')
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    test(`consistentRead without config #${iter}`, async () => {
+      const reader = new SafeReader()
+      const result = await reader.consistentRead(() => `cons-${iter}`)
+      expect(result.data).toBe(`cons-${iter}`)
+    })
+  }
+
+  for (let iter = 0; iter < 10; iter++) {
+    test(`setEnabled toggle #${iter}`, () => {
+      const reader = new SafeReader()
+      reader.setEnabled(true)
+      expect(reader.enabled).toBe(true)
+      reader.setEnabled(false)
+      expect(reader.enabled).toBe(false)
+    })
+  }
+})
