@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.spec.ts'],
-    exclude: ['**/node_modules/**', '**/benchmark/**'],
+    exclude: ['**/node_modules/**'],
     testTimeout: 1200000,
     hookTimeout: 1200000,
     globals: true,
