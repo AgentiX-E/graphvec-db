@@ -19,7 +19,7 @@ export function makeEngine(name = 'test'): GraphEngine {
 /** Quick helper: create N nodes of type 1 */
 export async function seedNodes(e: GraphEngine, n: number, type = 1): Promise<number[]> {
   const ids: number[] = []
-  for (let i = 0; i < n; i++) ids.push(await e.upsertNode(type))
+  for (let i = 0; i < n; i++) ids.push(await e.upsertNode(type, `seed-${type}-${i}`))
   return ids
 }
 

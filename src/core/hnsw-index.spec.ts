@@ -690,3 +690,114 @@ describe('HnswIndex — Save/Load Edge Cases', () => {
     try { fs.unlinkSync(savePath) } catch { /* ignore */ }
   })
 })
+
+// ================================================================
+// Core 深度扩展：HNSW 向量索引边界与查询测试
+// ================================================================
+
+describe('Core 深度扩展 — 不同维度 Vector 插入', () => {
+  test('CORE-HNSW-001: 64 维向量插入与查询', () => {
+    const idx = new HnswIndex({ dimension: 64, m: 16, efConstruction: 200, maxElements: 100 })
+    idx.init()
+    for (let i = 0; i < 5; i++) {
+      idx.addPoint(i, randomNumberArray(64))
+    }
+    expect(idx.getCount()).toBe(5)
+    const result = idx.searchKnn(randomNumberArray(64), 3)
+    expect(result.neighbors.length).toBe(3)
+    expect(idx.getDimension()).toBe(64)
+  })
+
+  test('CORE-HNSW-002: 128 维向量插入与查询', () => {
+    const idx = new HnswIndex({ dimension: 128, m: 16, efConstruction: 200, maxElements: 50 })
+    idx.init()
+    for (let i = 0; i < 5; i++) {
+      idx.addPoint(i, randomNumberArray(128))
+    }
+    expect(idx.getCount()).toBe(5)
+    const result = idx.searchKnn(randomNumberArray(128), 3)
+    expect(result.neighbors.length).toBe(3)
+    expect(idx.getDimension()).toBe(128)
+  })
+
+  test('CORE-HNSW-003: 256 维向量插入与查询', () => {
+    const idx = new HnswIndex({ dimension: 256, m: 16, efConstruction: 200, maxElements: 50 })
+    idx.init()
+    for (let i = 0; i < 5; i++) {
+      idx.addPoint(i, randomNumberArray(256))
+    }
+    expect(idx.getCount()).toBe(5)
+    const result = idx.searchKnn(randomNumberArray(256), 3)
+    expect(result.neighbors.length).toBe(3)
+    expect(idx.getDimension()).toBe(256)
+  })
+})
+
+describe('Core 深度扩展 — 空索引与单向量查询', () => {
+  test('CORE-HNSW-004: 空索引查询空', () => {
+    const idx = new HnswIndex({ dimension: 8, m: 8 })
+    idx.init()
+    expect(idx.getCount()).toBe(0)
+    const result = idx.searchKnn([1, 0, 0, 0, 0, 0, 0, 0], 5)
+    expect(result.neighbors).toEqual([])
+    expect(result.distances).toEqual([])
+  })
+
+  test('CORE-HNSW-005: 单向量查询返回自身', () => {
+    const idx = new HnswIndex({ dimension: 4, m: 8, efConstruction: 100 })
+    idx.init()
+    idx.addPoint(42, [0.3, 0.3, 0.3, 0.3])
+    const result = idx.searchKnn([0.3, 0.3, 0.3, 0.3], 3)
+    expect(result.neighbors).toContain(42)
+  })
+})
+
+describe('Core 深度扩展 — 多向量最近邻查询', () => {
+  test('CORE-HNSW-006: 多向量查询返回最近邻', () => {
+    const idx = new HnswIndex({ dimension: 4, m: 8, efConstruction: 100 })
+    idx.init()
+    idx.addPoint(0, [0, 0, 0, 0])
+    idx.addPoint(1, [1, 1, 1, 1])
+    idx.addPoint(2, [5, 5, 5, 5])
+    idx.addPoint(3, [10, 10, 10, 10])
+
+    // Query near [0,0,0,0] — nearest should be 0
+    const result = idx.searchKnn([0.1, 0.1, 0.1, 0.1], 2)
+    expect(result.neighbors[0]).toBe(0)
+    // distance should be close to 0
+    expect(result.distances[0]).toBeLessThan(0.1)
+  })
+
+  test('CORE-HNSW-007: 删除向量后查询', () => {
+    const idx = new HnswIndex({ dimension: 4, m: 8, efConstruction: 100 })
+    idx.init()
+    idx.addPoint(1, [1, 1, 1, 1])
+    idx.addPoint(2, [2, 2, 2, 2])
+    idx.addPoint(3, [3, 3, 3, 3])
+
+    idx.deletePoint(2)
+
+    const result = idx.searchKnn([1.5, 1.5, 1.5, 1.5], 3)
+    // Deleted point 2 should not appear in results
+    expect(result.neighbors).not.toContain(2)
+  })
+
+  test('CORE-HNSW-008: 批量插入后查询精确结果', () => {
+    const idx = new HnswIndex({ dimension: 4, m: 8, efConstruction: 200 })
+    idx.init()
+    // Insert known points
+    idx.addPoint(10, [1, 0, 0, 0])
+    idx.addPoint(20, [0, 1, 0, 0])
+    idx.addPoint(30, [0, 0, 1, 0])
+    idx.addPoint(40, [0, 0, 0, 1])
+
+    // Query for [1,0,0,0] — exact match
+    const result = idx.searchKnn([1, 0, 0, 0], 4)
+    expect(result.neighbors[0]).toBe(10)
+    expect(result.neighbors.length).toBe(4)
+
+    // Verify the second nearest (cosine): [0,1,0,0] and [0,0,1,0] are equidistant from [1,0,0,0]
+    const sorted = result.neighbors.slice()
+    expect(sorted.length).toBe(4)
+  })
+})

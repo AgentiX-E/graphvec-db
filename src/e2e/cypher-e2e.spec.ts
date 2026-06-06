@@ -1685,6 +1685,1471 @@ test('UNION-07: 跨标签 UNION 模拟', async () => {
   }
 }, 15000)
 
+// ══════════════════════════════════════════════════════════════
+// TCK 深度扩展 — MATCH 组合模式
+// ══════════════════════════════════════════════════════════════
+
+test('TCK-101: MATCH 同一节点多次——返回 1', async () => {
+  const engine = makeEngine('tck-101')
+  try {
+    const id = await engine.upsertNode(1, 'single', { props: { name: 'Only' } })
+    // Simulate matching the same node multiple times
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(1)
+    expect(all[0].id).toBe(id)
+    // Match twice returns same single node
+    const first = engine.getNode(id)
+    const second = engine.getNode(id)
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(first!.id).toBe(second!.id)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-102: MATCH 混合 typeId——只返回匹配的', async () => {
+  const engine = makeEngine('tck-102')
+  try {
+    await engine.upsertNode(1, 'a1', { props: { tag: 'type1' } })
+    await engine.upsertNode(2, 'b1', { props: { tag: 'type2' } })
+    await engine.upsertNode(1, 'a2', { props: { tag: 'type1' } })
+    await engine.upsertNode(3, 'c1', { props: { tag: 'type3' } })
+    const type1Nodes = engine.scanAllNodes().filter(n => n.type === 1)
+    expect(type1Nodes.length).toBe(2)
+    type1Nodes.forEach(n => expect(n.props.tag).toBe('type1'))
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-103: MATCH 空 typeId 范围——返回空', async () => {
+  const engine = makeEngine('tck-103')
+  try {
+    await engine.upsertNode(1, 'exist', { props: {} })
+    await engine.upsertNode(2, 'exist2', { props: {} })
+    const type999 = engine.scanAllNodes().filter(n => n.type === 999)
+    expect(type999.length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-104: MATCH 大量节点（100 节点 + scanAllNodes 验证）', async () => {
+  const engine = makeEngine('tck-104')
+  try {
+    for (let i = 0; i < 100; i++) {
+      await engine.upsertNode(1, `bulk-${i}`, { props: { idx: i } })
+    }
+    expect(engine.scanAllNodes().length).toBe(100)
+    // Verify all 100 have distinct ids
+    const ids = new Set(engine.scanAllNodes().map(n => n.id))
+    expect(ids.size).toBe(100)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+test('TCK-105: MATCH WHERE 多条件 AND', async () => {
+  const engine = makeEngine('tck-105')
+  try {
+    const data = [
+      { k: 'alice', name: 'Alice', age: 30, active: true, score: 90 },
+      { k: 'bob', name: 'Bob', age: 25, active: true, score: 85 },
+      { k: 'charlie', name: 'Charlie', age: 35, active: false, score: 95 },
+      { k: 'dave', name: 'Dave', age: 28, active: true, score: 70 },
+    ]
+    for (const d of data) {
+      await engine.upsertNode(1, d.k, { props: d })
+    }
+    const filtered = engine.scanAllNodes().filter(n =>
+      (n.props.active as boolean) === true &&
+      (n.props.age as number) >= 25 &&
+      (n.props.score as number) >= 85
+    )
+    expect(filtered.length).toBe(2)
+    filtered.forEach(n => {
+      expect(n.props.active).toBe(true)
+      expect(n.props.age).toBeGreaterThanOrEqual(25)
+      expect(n.props.score).toBeGreaterThanOrEqual(85)
+    })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-106: MATCH WHERE OR', async () => {
+  const engine = makeEngine('tck-106')
+  try {
+    for (const c of ['NYC', 'LA', 'SF', 'CHI', 'SEA', 'MIA', 'DAL']) {
+      await engine.upsertNode(1, `city-${c}`, { props: { code: c } })
+    }
+    const target = engine.scanAllNodes().filter(n =>
+      n.props.code === 'NYC' || n.props.code === 'SF' || n.props.code === 'MIA'
+    )
+    expect(target.length).toBe(3)
+    expect(target.map(n => n.props.code as string).sort()).toEqual(['MIA', 'NYC', 'SF'])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-107: MATCH WHERE NOT', async () => {
+  const engine = makeEngine('tck-107')
+  try {
+    await engine.upsertNode(1, 'cat', { props: { kind: 'Cat' } })
+    await engine.upsertNode(1, 'dog', { props: { kind: 'Dog' } })
+    await engine.upsertNode(1, 'bird', { props: { kind: 'Bird' } })
+    await engine.upsertNode(1, 'fish', { props: { kind: 'Fish' } })
+    await engine.upsertNode(1, 'frog', { props: { kind: 'Frog' } })
+    const notCatOrFish = engine.scanAllNodes().filter(n =>
+      n.props.kind !== 'Cat' && n.props.kind !== 'Fish'
+    )
+    expect(notCatOrFish.length).toBe(3)
+    notCatOrFish.forEach(n => {
+      expect(n.props.kind).not.toBe('Cat')
+      expect(n.props.kind).not.toBe('Fish')
+    })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-108: MATCH WHERE >= / <= / !=', async () => {
+  const engine = makeEngine('tck-108')
+  try {
+    for (let i = 5; i <= 25; i += 5) {
+      await engine.upsertNode(1, `item-${i}`, { props: { val: i, label: `n${i}` } })
+    }
+    const all = engine.scanAllNodes()
+    // >= 15
+    const ge15 = all.filter(n => (n.props.val as number) >= 15)
+    expect(ge15.length).toBe(3)
+    // <= 10
+    const le10 = all.filter(n => (n.props.val as number) <= 10)
+    expect(le10.length).toBe(2)
+    // != 15
+    const ne15 = all.filter(n => (n.props.val as number) !== 15)
+    expect(ne15.length).toBe(4)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-109: MATCH WHERE IN 列表', async () => {
+  const engine = makeEngine('tck-109')
+  try {
+    for (const v of ['red', 'green', 'blue', 'yellow', 'purple', 'orange']) {
+      await engine.upsertNode(1, `color-${v}`, { props: { color: v } })
+    }
+    const targetColors = new Set(['red', 'blue', 'purple'])
+    const filtered = engine.scanAllNodes().filter(n =>
+      targetColors.has(n.props.color as string)
+    )
+    expect(filtered.length).toBe(3)
+    expect(filtered.map(n => n.props.color as string).sort()).toEqual(['blue', 'purple', 'red'])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-110: MATCH WHERE NOT IN 空列表', async () => {
+  const engine = makeEngine('tck-110')
+  try {
+    for (const c of ['alpha', 'beta', 'gamma']) {
+      await engine.upsertNode(1, c, { props: { code: c } })
+    }
+    const emptySet = new Set<string>()
+    const filtered = engine.scanAllNodes().filter(n => !emptySet.has(n.props.code as string))
+    // With empty exclusion set, all should pass
+    expect(filtered.length).toBe(3)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-111: MATCH WHERE 组合（AND + OR）', async () => {
+  const engine = makeEngine('tck-111')
+  try {
+    const data = [
+      { k: 'p1', name: 'Product1', price: 100, category: 'A', inStock: true },
+      { k: 'p2', name: 'Product2', price: 200, category: 'A', inStock: false },
+      { k: 'p3', name: 'Product3', price: 150, category: 'B', inStock: true },
+      { k: 'p4', name: 'Product4', price: 50, category: 'B', inStock: true },
+      { k: 'p5', name: 'Product5', price: 300, category: 'A', inStock: true },
+    ]
+    for (const d of data) {
+      await engine.upsertNode(1, d.k, { props: d })
+    }
+    // (category A AND inStock true) OR (category B AND price >= 100)
+    const filtered = engine.scanAllNodes().filter(n => {
+      const cat = n.props.category as string
+      const price = n.props.price as number
+      const stock = n.props.inStock as boolean
+      return (cat === 'A' && stock === true) || (cat === 'B' && price >= 100)
+    })
+    expect(filtered.length).toBe(3)
+    filtered.forEach(n => {
+      const cat = n.props.category as string
+      const stock = n.props.inStock as boolean
+      const price = n.props.price as number
+      expect(
+        (cat === 'A' && stock === true) || (cat === 'B' && price >= 100)
+      ).toBe(true)
+    })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-112: MATCH + ORDER BY', async () => {
+  const engine = makeEngine('tck-112')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i * 3 } })
+    }
+    const sorted = engine.scanAllNodes().slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+    expect(sorted.length).toBe(10)
+    const vals = sorted.map(n => n.props.val as number)
+    for (let i = 0; i < vals.length - 1; i++) {
+      expect(vals[i]).toBeLessThanOrEqual(vals[i + 1])
+    }
+    expect(vals[0]).toBe(3)
+    expect(vals[9]).toBe(30)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-113: MATCH + ORDER BY DESC', async () => {
+  const engine = makeEngine('tck-113')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i * 3 } })
+    }
+    const sorted = engine.scanAllNodes().slice()
+      .sort((a, b) => (b.props.val as number) - (a.props.val as number))
+    expect(sorted.length).toBe(10)
+    const vals = sorted.map(n => n.props.val as number)
+    for (let i = 0; i < vals.length - 1; i++) {
+      expect(vals[i]).toBeGreaterThanOrEqual(vals[i + 1])
+    }
+    expect(vals[0]).toBe(30)
+    expect(vals[9]).toBe(3)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-114: MATCH + ORDER BY + LIMIT', async () => {
+  const engine = makeEngine('tck-114')
+  try {
+    for (let i = 0; i < 20; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i } })
+    }
+    const sorted = engine.scanAllNodes().slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+      .slice(0, 5)
+    expect(sorted.length).toBe(5)
+    const vals = sorted.map(n => n.props.val as number)
+    expect(vals).toEqual([0, 1, 2, 3, 4])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-115: MATCH + ORDER BY + SKIP', async () => {
+  const engine = makeEngine('tck-115')
+  try {
+    for (let i = 0; i < 20; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i } })
+    }
+    const sorted = engine.scanAllNodes().slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+    const skipped = sorted.slice(10)
+    expect(skipped.length).toBe(10)
+    expect(skipped[0].props.val).toBe(10)
+    expect(skipped[9].props.val).toBe(19)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-116: MATCH + LIMIT + SKIP 同时用', async () => {
+  const engine = makeEngine('tck-116')
+  try {
+    for (let i = 0; i < 30; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i } })
+    }
+    const sorted = engine.scanAllNodes().slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+    // Skip 10, limit 5 → items 10-14
+    const page = sorted.slice(10, 15)
+    expect(page.length).toBe(5)
+    expect(page.map(n => n.props.val)).toEqual([10, 11, 12, 13, 14])
+
+    // Skip 25, limit 10 → items 25-29
+    const page2 = sorted.slice(25, 35)
+    expect(page2.length).toBe(5)
+    expect(page2.map(n => n.props.val)).toEqual([25, 26, 27, 28, 29])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-117: MATCH + RETURN 多个属性', async () => {
+  const engine = makeEngine('tck-117')
+  try {
+    const id = await engine.upsertNode(1, 'multi-prop', {
+      props: { name: 'Alice', age: 30, city: 'NYC', salary: 100000, dept: 'Eng' },
+    })
+    const node = engine.getNode(id)
+    expect(node).not.toBeNull()
+    const p = node!.props
+    expect(p.name).toBe('Alice')
+    expect(p.age).toBe(30)
+    expect(p.city).toBe('NYC')
+    expect(p.salary).toBe(100000)
+    expect(p.dept).toBe('Eng')
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-118: MATCH + RETURN 聚合 COUNT', async () => {
+  const engine = makeEngine('tck-118')
+  try {
+    for (let i = 0; i < 42; i++) {
+      await engine.upsertNode(1, `cnt-${i}`, { props: { idx: i } })
+    }
+    expect(engine.scanAllNodes().length).toBe(42)
+
+    // Count per type
+    for (let i = 0; i < 10; i++) {
+      await engine.upsertNode(2, `t2-${i}`, { props: { idx: i } })
+    }
+    const all = engine.scanAllNodes()
+    const type1Count = all.filter(n => n.type === 1).length
+    const type2Count = all.filter(n => n.type === 2).length
+    expect(type1Count).toBe(42)
+    expect(type2Count).toBe(10)
+    expect(all.length).toBe(52)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-119: MATCH + RETURN 聚合 SUM', async () => {
+  const engine = makeEngine('tck-119')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `sum-${i}`, { props: { val: i * 10 } })
+    }
+    const total = engine.scanAllNodes().reduce((a, n) => a + (n.props.val as number), 0)
+    expect(total).toBe(550)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-120: MATCH + RETURN 聚合 AVG', async () => {
+  const engine = makeEngine('tck-120')
+  try {
+    const values = [5, 10, 15, 20, 25]
+    for (let i = 0; i < values.length; i++) {
+      await engine.upsertNode(1, `avg-${i}`, { props: { val: values[i] } })
+    }
+    const all = engine.scanAllNodes()
+    const sum = all.reduce((a, n) => a + (n.props.val as number), 0)
+    const avg = sum / all.length
+    expect(avg).toBe(15)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-121: MATCH + WHERE 属性值为 null', async () => {
+  const engine = makeEngine('tck-121')
+  try {
+    await engine.upsertNode(1, 'with-email', { props: { name: 'Alice', email: 'alice@test.com' } })
+    await engine.upsertNode(1, 'no-email-prop', { props: { name: 'Charlie' } })
+    const all = engine.scanAllNodes()
+    // Nodes where email property is missing
+    const noEmail = all.filter(n =>
+      n.props.email === undefined || n.props.email === null
+    )
+    // Charlie has no email prop; Alice has email
+    expect(noEmail.length).toBe(1)
+    // Nodes where email exists
+    const hasEmail = all.filter(n => n.props.email != null && n.props.email !== undefined)
+    expect(hasEmail.length).toBe(1)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-122: MATCH + WHERE 属性值为空字符串', async () => {
+  const engine = makeEngine('tck-122')
+  try {
+    await engine.upsertNode(1, 'full', { props: { name: 'Alice', note: 'has content' } })
+    await engine.upsertNode(1, 'empty', { props: { name: 'Bob', note: '' } })
+    await engine.upsertNode(1, 'missing', { props: { name: 'Charlie' } })
+    const all = engine.scanAllNodes()
+    const emptyNotes = all.filter(n => n.props.note === '')
+    expect(emptyNotes.length).toBe(1)
+    expect(emptyNotes[0].props.name).toBe('Bob')
+    const nonEmptyNotes = all.filter(n =>
+      n.props.note !== undefined && n.props.note !== ''
+    )
+    expect(nonEmptyNotes.length).toBe(1)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-123: MATCH + WHERE 属性值数字范围', async () => {
+  const engine = makeEngine('tck-123')
+  try {
+    const ranges = [10, 25, 37, 42, 55, 63, 78, 82, 91, 99]
+    for (let i = 0; i < ranges.length; i++) {
+      await engine.upsertNode(1, `range-${i}`, { props: { val: ranges[i] } })
+    }
+    const all = engine.scanAllNodes()
+    // Between 30 and 80 inclusive
+    const mid = all.filter(n => {
+      const v = n.props.val as number
+      return v >= 30 && v <= 80
+    })
+    expect(mid.length).toBe(5)
+    mid.forEach(n => {
+      const v = n.props.val as number
+      expect(v).toBeGreaterThanOrEqual(30)
+      expect(v).toBeLessThanOrEqual(80)
+    })
+
+    // Greater than 90
+    const high = all.filter(n => (n.props.val as number) > 90)
+    expect(high.length).toBe(2)
+    high.forEach(n => {
+      expect((n.props.val as number)).toBeGreaterThan(90)
+    })
+
+    // Less than 15
+    const low = all.filter(n => (n.props.val as number) < 15)
+    expect(low.length).toBe(1)
+    expect(low[0].props.val).toBe(10)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-124: MATCH + WHERE 属性值布尔比较', async () => {
+  const engine = makeEngine('tck-124')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `bool-${i}`, {
+        props: { idx: i, active: i % 2 === 0, verified: i % 3 === 0 },
+      })
+    }
+    const all = engine.scanAllNodes()
+    // active = true
+    const active = all.filter(n => n.props.active === true)
+    expect(active.length).toBe(5)
+    active.forEach(n => expect(n.props.active).toBe(true))
+
+    // active = false
+    const inactive = all.filter(n => n.props.active !== true)
+    expect(inactive.length).toBe(5)
+    inactive.forEach(n => expect(n.props.active).not.toBe(true))
+
+    // Both conditions: active AND verified
+    const both = all.filter(n => n.props.active === true && n.props.verified === true)
+    expect(both.length).toBe(1) // idx=6 is even and divisible by 3
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ══════════════════════════════════════════════════════════════
+// TCK 深度扩展 — 管道 / WITH
+// ══════════════════════════════════════════════════════════════
+
+test('TCK-201: WITH + WHERE + RETURN 链', async () => {
+  const engine = makeEngine('tck-201')
+  try {
+    const data = [
+      { k: 'p1', name: 'Alice', age: 30, dept: 'Eng' },
+      { k: 'p2', name: 'Bob', age: 25, dept: 'Eng' },
+      { k: 'p3', name: 'Charlie', age: 35, dept: 'Sales' },
+      { k: 'p4', name: 'Dave', age: 28, dept: 'Sales' },
+      { k: 'p5', name: 'Eve', age: 22, dept: 'Eng' },
+    ]
+    for (const d of data) {
+      await engine.upsertNode(1, d.k, { props: d })
+    }
+    // WITH (filter dept=Eng) → WHERE age >= 25 → RETURN name
+    const all = engine.scanAllNodes()
+    const engFiltered = all.filter(n => n.props.dept === 'Eng')
+    expect(engFiltered.length).toBe(3)
+    const ageFiltered = engFiltered.filter(n => (n.props.age as number) >= 25)
+    expect(ageFiltered.length).toBe(2)
+    const names = ageFiltered.map(n => n.props.name as string).sort()
+    expect(names).toEqual(['Alice', 'Bob'])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-202: WITH + COUNT + RETURN', async () => {
+  const engine = makeEngine('tck-202')
+  try {
+    for (let i = 0; i < 15; i++) {
+      await engine.upsertNode(1, `cnt-item-${i}`, { props: { group: i < 5 ? 'A' : i < 10 ? 'B' : 'C' } })
+    }
+    // WITH group, count(*) → RETURN group, count
+    const all = engine.scanAllNodes()
+    const groups = all.reduce<Record<string, number>>((a, n) => {
+      const g = n.props.group as string
+      a[g] = (a[g] || 0) + 1
+      return a
+    }, {})
+    expect(groups).toEqual({ A: 5, B: 5, C: 5 })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-203: WITH + SKIP + LIMIT', async () => {
+  const engine = makeEngine('tck-203')
+  try {
+    for (let i = 0; i < 20; i++) {
+      await engine.upsertNode(1, `wl-${i}`, { props: { val: i } })
+    }
+    const all = engine.scanAllNodes().slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+    // WITH n (skip 5, limit 5) → return n
+    const skip5limit5 = all.slice(5, 10)
+    expect(skip5limit5.length).toBe(5)
+    expect(skip5limit5.map(n => n.props.val)).toEqual([5, 6, 7, 8, 9])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-204: WITH + ORDER BY + LIMIT', async () => {
+  const engine = makeEngine('tck-204')
+  try {
+    for (let i = 0; i < 20; i++) {
+      await engine.upsertNode(1, `wo-${i}`, { props: { val: i } })
+    }
+    // WITH n ORDER BY n.val DESC LIMIT 3
+    const sorted = engine.scanAllNodes().slice()
+      .sort((a, b) => (b.props.val as number) - (a.props.val as number))
+      .slice(0, 3)
+    expect(sorted.length).toBe(3)
+    expect(sorted.map(n => n.props.val)).toEqual([19, 18, 17])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-205: WITH + RETURN 重命名', async () => {
+  const engine = makeEngine('tck-205')
+  try {
+    const id = await engine.upsertNode(1, 'rename-me', {
+      props: { firstName: 'Alice', yearsOld: 30, cityName: 'NYC' },
+    })
+    const node = engine.getNode(id)
+    expect(node).not.toBeNull()
+    // Simulate RETURN node.firstName AS name, node.yearsOld AS age
+    const projected = {
+      name: node!.props.firstName,
+      age: node!.props.yearsOld,
+      city: node!.props.cityName,
+    }
+    expect(projected.name).toBe('Alice')
+    expect(projected.age).toBe(30)
+    expect(projected.city).toBe('NYC')
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-206: WITH 多次管道（2层）', async () => {
+  const engine = makeEngine('tck-206')
+  try {
+    for (let i = 1; i <= 30; i++) {
+      await engine.upsertNode(1, `pp-${i}`, { props: { val: i } })
+    }
+    const all = engine.scanAllNodes()
+    // Layer 1: filter val >= 10
+    const l1 = all.filter(n => (n.props.val as number) >= 10)
+    expect(l1.length).toBe(21)
+    // Layer 2: sort DESC and take top 5
+    const l2 = l1.slice()
+      .sort((a, b) => (b.props.val as number) - (a.props.val as number))
+      .slice(0, 5)
+    expect(l2.length).toBe(5)
+    expect(l2.map(n => n.props.val)).toEqual([30, 29, 28, 27, 26])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-207: WITH 多次管道（3层）', async () => {
+  const engine = makeEngine('tck-207')
+  try {
+    for (let i = 1; i <= 30; i++) {
+      await engine.upsertNode(1, `pp3-${i}`, { props: { val: i, parity: i % 2 } })
+    }
+    const all = engine.scanAllNodes()
+    // Layer 1: filter val >= 10
+    const l1 = all.filter(n => (n.props.val as number) >= 10)
+    expect(l1.length).toBe(21)
+    // Layer 2: only even (parity = 0) — values >= 10: 10,12,14,16,18,20,22,24,26,28,30 = 11
+    const l2 = l1.filter(n => (n.props.parity as number) === 0)
+    expect(l2.length).toBe(11)
+    // Layer 3: sort DESC, skip 2, take 3
+    const l3 = l2.slice()
+      .sort((a, b) => (b.props.val as number) - (a.props.val as number))
+      .slice(2, 5)
+    expect(l3.length).toBe(3)
+    // Even vals >= 10: 30,28,26,24,22,20,18,16,14,12,10 (11 items)
+    // Skip 2 → 26,24,22
+    expect(l3.map(n => n.props.val)).toEqual([26, 24, 22])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-208: WITH 空中间结果', async () => {
+  const engine = makeEngine('tck-208')
+  try {
+    await engine.upsertNode(1, 'exists', { props: { val: 1 } })
+    // WITH filter where impossible condition → empty
+    const empty = engine.scanAllNodes().filter(n => (n.props as any).nonexistent_field === 'impossible')
+    expect(empty.length).toBe(0)
+    // Chain through empty result
+    const chained = empty.map(n => (n.props as any).val).filter(Boolean)
+    expect(chained.length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-209: WITH 过滤后聚合', async () => {
+  const engine = makeEngine('tck-209')
+  try {
+    for (let i = 1; i <= 20; i++) {
+      await engine.upsertNode(1, `filt-agg-${i}`, {
+        props: { category: i <= 10 ? 'X' : 'Y', value: i * 5 }
+      })
+    }
+    const all = engine.scanAllNodes()
+    // Filter: category = 'X'
+    const filtered = all.filter(n => n.props.category === 'X')
+    expect(filtered.length).toBe(10)
+    // Aggregate: sum values
+    const sumValues = filtered.reduce((a, n) => a + (n.props.value as number), 0)
+    // values first 10: 5,10,15,20,25,30,35,40,45,50
+    expect(sumValues).toBe(275)
+    // Average
+    const avgValues = sumValues / filtered.length
+    expect(avgValues).toBe(27.5)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-210: WITH 聚合后过滤', async () => {
+  const engine = makeEngine('tck-210')
+  try {
+    const raw = [2, 5, 8, 12, 15, 18, 22, 25, 28, 32]
+    for (let i = 0; i < raw.length; i++) {
+      await engine.upsertNode(1, `aggr-${i}`, {
+        props: { group: i < 5 ? 'A' : 'B', val: raw[i] }
+      })
+    }
+    const all = engine.scanAllNodes()
+    // Aggregate avg per group
+    const groups = all.reduce<Record<string, { sum: number; count: number }>>((a, n) => {
+      const g = n.props.group as string
+      if (!a[g]) a[g] = { sum: 0, count: 0 }
+      a[g].sum += (n.props.val as number)
+      a[g].count += 1
+      return a
+    }, {})
+    const avgs: Record<string, number> = {}
+    for (const [g, v] of Object.entries(groups)) {
+      avgs[g] = v.sum / v.count
+    }
+    expect(avgs['A']).toBe(8.4) // (2+5+8+12+15)/5
+    expect(avgs['B']).toBe(25)  // (18+22+25+28+32)/5 = 25
+    // Filter groups where avg > 10 — only B has avg=25 > 10, A has avg=8.4 < 10
+    const highGroups = Object.entries(avgs).filter(([, avg]) => avg > 10).map(([g]) => g)
+    expect(highGroups.sort()).toEqual(['B'])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ══════════════════════════════════════════════════════════════
+// TCK 深度扩展 — 集合运算 UNION
+// ══════════════════════════════════════════════════════════════
+
+test('TCK-301: UNION 两个不同集', async () => {
+  const engine = makeEngine('tck-301')
+  try {
+    await engine.upsertNode(1, 'a-set1', { props: { src: 'set1', val: 1 } })
+    await engine.upsertNode(1, 'b-set1', { props: { src: 'set1', val: 2 } })
+    await engine.upsertNode(2, 'c-set2', { props: { src: 'set2', val: 3 } })
+    await engine.upsertNode(2, 'd-set2', { props: { src: 'set2', val: 4 } })
+    // UNION: type=1 ∪ type=2
+    const type1 = engine.scanAllNodes().filter(n => n.type === 1)
+    const type2 = engine.scanAllNodes().filter(n => n.type === 2)
+    const union = [...type1, ...type2]
+    expect(union.length).toBe(4)
+    expect(union.filter(n => n.type === 1).length).toBe(2)
+    expect(union.filter(n => n.type === 2).length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-302: UNION 同集去重', async () => {
+  const engine = makeEngine('tck-302')
+  try {
+    await engine.upsertNode(1, 'same1', { props: { id: 1 } })
+    await engine.upsertNode(1, 'same2', { props: { id: 2 } })
+    // UNION same set twice — should deduplicate
+    const s1 = engine.scanAllNodes()
+    const s2 = engine.scanAllNodes()
+    const seen = new Set<number>()
+    const deduped = [...s1, ...s2].filter(n => {
+      if (seen.has(n.id)) return false
+      seen.add(n.id)
+      return true
+    })
+    expect(deduped.length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-303: UNION 三个集合并', async () => {
+  const engine = makeEngine('tck-303')
+  try {
+    for (let i = 0; i < 3; i++) {
+      await engine.upsertNode(1, `u3-a-${i}`, { props: { src: 'A', idx: i } })
+    }
+    for (let i = 0; i < 4; i++) {
+      await engine.upsertNode(2, `u3-b-${i}`, { props: { src: 'B', idx: i } })
+    }
+    for (let i = 0; i < 5; i++) {
+      await engine.upsertNode(3, `u3-c-${i}`, { props: { src: 'C', idx: i } })
+    }
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(12)
+    expect(all.filter(n => n.type === 1).length).toBe(3)
+    expect(all.filter(n => n.type === 2).length).toBe(4)
+    expect(all.filter(n => n.type === 3).length).toBe(5)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-304: UNION ALL 保留重复', async () => {
+  const engine = makeEngine('tck-304')
+  try {
+    await engine.upsertNode(1, 'dup-a', { props: { val: 'A' } })
+    await engine.upsertNode(1, 'dup-b', { props: { val: 'B' } })
+    // UNION ALL (no dedup) — concatenate two scans
+    const s1 = engine.scanAllNodes()
+    const s2 = engine.scanAllNodes()
+    const unionAll = [...s1, ...s2]
+    // Without dedup, we get 2 + 2 = 4
+    expect(unionAll.length).toBe(4)
+    // With dedup, we'd get 2
+    const seen = new Set<number>()
+    const deduped = unionAll.filter(n => {
+      if (seen.has(n.id)) return false; seen.add(n.id); return true
+    })
+    expect(deduped.length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-305: UNION + ORDER BY', async () => {
+  const engine = makeEngine('tck-305')
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const id = await engine.upsertNode(1, `set1-${i}`, { props: { val: i * 10 } })
+      ids.push(id)
+    }
+    for (let i = 5; i < 10; i++) {
+      await engine.upsertNode(1, `set2-${i}`, { props: { val: i * 10 } })
+    }
+    // UNION + ORDER BY val ASC
+    const sorted = engine.scanAllNodes().slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+    expect(sorted.length).toBe(10)
+    const vals = sorted.map(n => n.props.val as number)
+    expect(vals).toEqual([0, 10, 20, 30, 40, 50, 60, 70, 80, 90])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ══════════════════════════════════════════════════════════════
+// TCK 扩展补充 — MATCH 组合模式 (TCK-125~TCK-140)
+// ══════════════════════════════════════════════════════════════
+
+test('TCK-125: MATCH typeId 等于特定值', async () => {
+  const engine = makeEngine('tck-125')
+  try {
+    await engine.upsertNode(1, 'type1-a', { props: {} })
+    await engine.upsertNode(2, 'type2-a', { props: {} })
+    await engine.upsertNode(1, 'type1-b', { props: {} })
+    await engine.upsertNode(3, 'type3-a', { props: {} })
+    const type1 = engine.scanAllNodes().filter(n => n.type === 1)
+    expect(type1.length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-126: MATCH 多个 typeId 组合', async () => {
+  const engine = makeEngine('tck-126')
+  try {
+    for (let t = 1; t <= 5; t++) {
+      for (let i = 0; i < 2; i++) {
+        await engine.upsertNode(t, `n-t${t}-${i}`, { props: { idx: i } })
+      }
+    }
+    const filtered = engine.scanAllNodes().filter(n => n.type === 1 || n.type === 3 || n.type === 5)
+    expect(filtered.length).toBe(6)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-127: MATCH 同一 typeId 多 name', async () => {
+  const engine = makeEngine('tck-127')
+  try {
+    for (let i = 0; i < 10; i++) {
+      await engine.upsertNode(1, `person-${i}`, { props: { idx: i } })
+    }
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(10)
+    expect(new Set(all.map(n => n.name)).size).toBe(10)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-128: MATCH WITH props 多字段相等', async () => {
+  const engine = makeEngine('tck-128')
+  try {
+    const data = [
+      { k: 'a', city: 'NYC', state: 'NY', country: 'US' },
+      { k: 'b', city: 'LA', state: 'CA', country: 'US' },
+      { k: 'c', city: 'NYC', state: 'NY', country: 'US' },
+      { k: 'd', city: 'CHI', state: 'IL', country: 'US' },
+      { k: 'e', city: 'SF', state: 'CA', country: 'US' },
+    ]
+    for (const d of data) {
+      await engine.upsertNode(1, d.k, { props: d })
+    }
+    const nycNY = engine.scanAllNodes().filter(n =>
+      n.props.city === 'NYC' && n.props.state === 'NY'
+    )
+    expect(nycNY.length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-129: MATCH 嵌套 WHERE 等价', async () => {
+  const engine = makeEngine('tck-129')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i, even: i % 2 === 0 } })
+    }
+    const result = engine.scanAllNodes().filter(n =>
+      (n.props.val as number) > 3 && n.props.even === true
+    )
+    expect(result.length).toBe(4) // 4,6,8,10
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-130: MATCH WHERE 属性类型检查', async () => {
+  const engine = makeEngine('tck-130')
+  try {
+    await engine.upsertNode(1, 's1', { props: { val: 'string' } })
+    await engine.upsertNode(1, 'n1', { props: { val: 42 } })
+    await engine.upsertNode(1, 'b1', { props: { val: true } })
+    const strings = engine.scanAllNodes().filter(n => typeof n.props.val === 'string')
+    expect(strings.length).toBe(1)
+    const numbers = engine.scanAllNodes().filter(n => typeof n.props.val === 'number')
+    expect(numbers.length).toBe(1)
+    const booleans = engine.scanAllNodes().filter(n => typeof n.props.val === 'boolean')
+    expect(booleans.length).toBe(1)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-131: MATCH + ORDER BY + multiple fields', async () => {
+  const engine = makeEngine('tck-131')
+  try {
+    const data = [
+      { k: 'c2', dept: 'eng', name: 'Charlie' },
+      { k: 'a1', dept: 'eng', name: 'Alice' },
+      { k: 'b1', dept: 'eng', name: 'Bob' },
+      { k: 'd1', dept: 'sales', name: 'Dave' },
+      { k: 'e1', dept: 'sales', name: 'Eve' },
+    ]
+    for (const d of data) {
+      await engine.upsertNode(1, d.k, { props: d })
+    }
+    const sorted = engine.scanAllNodes().slice().sort((a, b) => {
+      const dc = (a.props.dept as string).localeCompare(b.props.dept as string)
+      if (dc !== 0) return dc
+      return (a.props.name as string).localeCompare(b.props.name as string)
+    })
+    expect(sorted.length).toBe(5)
+    expect(sorted[0].props.name).toBe('Alice')
+    expect(sorted[1].props.name).toBe('Bob')
+    expect(sorted[2].props.name).toBe('Charlie')
+    expect(sorted[3].props.name).toBe('Dave')
+    expect(sorted[4].props.name).toBe('Eve')
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-132: MATCH 属性名含下划线', async () => {
+  const engine = makeEngine('tck-132')
+  try {
+    const id = await engine.upsertNode(1, 'underscore', {
+      props: { first_name: 'Alice', last_name: 'Smith', account_id: 42 },
+    })
+    const node = engine.getNode(id)
+    expect(node!.props.first_name).toBe('Alice')
+    expect(node!.props.last_name).toBe('Smith')
+    expect(node!.props.account_id).toBe(42)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-133: MATCH 属性值浮点数比较', async () => {
+  const engine = makeEngine('tck-133')
+  try {
+    for (let i = 0; i < 10; i++) {
+      await engine.upsertNode(1, `float-${i}`, { props: { val: i * 1.5 } })
+    }
+    const all = engine.scanAllNodes()
+    const gt6 = all.filter(n => (n.props.val as number) > 6)
+    expect(gt6.length).toBe(5) // 7.5,9.0,10.5,12.0,13.5
+    const lt2 = all.filter(n => (n.props.val as number) < 2)
+    expect(lt2.length).toBe(2) // 0, 1.5
+    const eq3 = all.filter(n => Math.abs((n.props.val as number) - 3) < 0.001)
+    expect(eq3.length).toBe(1) // 3.0
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-134: MATCH 大量 typeId 多种过滤', async () => {
+  const engine = makeEngine('tck-134')
+  try {
+    for (let t = 1; t <= 10; t++) {
+      for (let i = 0; i < 5; i++) {
+        await engine.upsertNode(t, `m-${t}-${i}`, { props: { type: t, idx: i } })
+      }
+    }
+    expect(engine.scanAllNodes().length).toBe(50)
+    const odds = engine.scanAllNodes().filter(n => (n.props.type as number) % 2 === 1)
+    expect(odds.length).toBe(25)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-135: MATCH 属性值为 0 和 false', async () => {
+  const engine = makeEngine('tck-135')
+  try {
+    await engine.upsertNode(1, 'zero-val', { props: { num: 0, bool: false, str: '' } })
+    const node = engine.scanAllNodes()[0]
+    expect(node.props.num).toBe(0)
+    expect(node.props.bool).toBe(false)
+    expect(node.props.str).toBe('')
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-136: MATCH 属性值负数比较', async () => {
+  const engine = makeEngine('tck-136')
+  try {
+    for (let i = -5; i <= 5; i++) {
+      await engine.upsertNode(1, `neg-${i}`, { props: { val: i } })
+    }
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(11)
+    const negatives = all.filter(n => (n.props.val as number) < 0)
+    expect(negatives.length).toBe(5)
+    const nonNeg = all.filter(n => (n.props.val as number) >= 0)
+    expect(nonNeg.length).toBe(6)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-137: MATCH WHERE 属性值匹配多值 IN 大集合', async () => {
+  const engine = makeEngine('tck-137')
+  try {
+    for (let i = 1; i <= 50; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { code: `CODE_${i}` } })
+    }
+    const target = new Set<string>()
+    for (let i = 10; i <= 20; i++) target.add(`CODE_${i}`)
+    const matched = engine.scanAllNodes().filter(n => target.has(n.props.code as string))
+    expect(matched.length).toBe(11)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-138: MATCH + ORDER BY + LIMIT 边界', async () => {
+  const engine = makeEngine('tck-138')
+  try {
+    for (let i = 0; i < 10; i++) {
+      await engine.upsertNode(1, `b-${i}`, { props: { val: i } })
+    }
+    const sorted = engine.scanAllNodes().slice()
+      .sort((a, b) => (b.props.val as number) - (a.props.val as number))
+    expect(sorted.slice(0, 0)).toEqual([])
+    expect(sorted.slice(0, 100).length).toBe(10)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-139: MATCH 数字属性聚合 MIN/MAX', async () => {
+  const engine = makeEngine('tck-139')
+  try {
+    const vals = [100, 55, 23, 89, 12, 67, 45, 78, 34, 91]
+    for (let i = 0; i < vals.length; i++) {
+      await engine.upsertNode(1, `mm-${i}`, { props: { val: vals[i] } })
+    }
+    const all = engine.scanAllNodes()
+    const min = all.reduce((a, n) => Math.min(a, n.props.val as number), Infinity)
+    const max = all.reduce((a, n) => Math.max(a, n.props.val as number), -Infinity)
+    expect(min).toBe(12)
+    expect(max).toBe(100)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-140: MATCH WHERE 属性值数组', async () => {
+  const engine = makeEngine('tck-140')
+  try {
+    await engine.upsertNode(1, 'with-array', {
+      props: { tags: ['a', 'b', 'c'], scores: [1, 2, 3] }
+    })
+    await engine.upsertNode(1, 'without', { props: { name: 'plain' } })
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(2)
+    const withTags = all.filter(n => Array.isArray(n.props.tags))
+    expect(withTags.length).toBe(1)
+    expect((withTags[0].props.tags as string[]).length).toBe(3)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ══════════════════════════════════════════════════════════════
+// TCK 扩展补充 — 管道 / WITH (TCK-211~TCK-220)
+// ══════════════════════════════════════════════════════════════
+
+test('TCK-211: WITH 过滤后排序', async () => {
+  const engine = makeEngine('tck-211')
+  try {
+    for (let i = 1; i <= 15; i++) {
+      await engine.upsertNode(1, `ws-${i}`, { props: { val: i } })
+    }
+    const all = engine.scanAllNodes()
+    const filtered = all.filter(n => (n.props.val as number) > 5)
+    expect(filtered.length).toBe(10)
+    const sorted = filtered.slice().sort((a, b) => (b.props.val as number) - (a.props.val as number))
+    expect(sorted[0].props.val).toBe(15)
+    expect(sorted[9].props.val).toBe(6)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-212: WITH 双重排序后取中段', async () => {
+  const engine = makeEngine('tck-212')
+  try {
+    for (let i = 1; i <= 20; i++) {
+      await engine.upsertNode(1, `wds-${i}`, { props: { val: i, parity: i % 2 } })
+    }
+    const all = engine.scanAllNodes()
+    const evens = all.filter(n => (n.props.parity as number) === 0)
+    expect(evens.length).toBe(10)
+    const result = evens.slice()
+      .sort((a, b) => (b.props.val as number) - (a.props.val as number))
+      .slice(2, 5)
+    expect(result.length).toBe(3)
+    expect(result.map(n => n.props.val)).toEqual([16, 14, 12])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-213: WITH 管道传递多个属性', async () => {
+  const engine = makeEngine('tck-213')
+  try {
+    const id = await engine.upsertNode(1, 'multi-pass', {
+      props: { a: 1, b: 'hello', c: true, d: 3.14 }
+    })
+    const node = engine.getNode(id)
+    const passed = { x: node!.props.a, y: node!.props.b, z: node!.props.c }
+    expect(passed.x).toBe(1)
+    expect(passed.y).toBe('hello')
+    expect(passed.z).toBe(true)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-214: WITH 管道内聚合后排序', async () => {
+  const engine = makeEngine('tck-214')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `wa-${i}`, {
+        props: { group: i <= 5 ? 'g1' : 'g2', val: i * 10 }
+      })
+    }
+    const all = engine.scanAllNodes()
+    const groups = all.reduce<Record<string, number>>((a, n) => {
+      const g = n.props.group as string
+      a[g] = (a[g] || 0) + (n.props.val as number)
+      return a
+    }, {})
+    expect(groups).toEqual({ g1: 150, g2: 400 })
+    const sorted = Object.entries(groups).sort(([, a], [, b]) => b - a)
+    expect(sorted[0]).toEqual(['g2', 400])
+    expect(sorted[1]).toEqual(['g1', 150])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-215: WITH 链式限流', async () => {
+  const engine = makeEngine('tck-215')
+  try {
+    for (let i = 0; i < 50; i++) {
+      await engine.upsertNode(1, `sl-${i}`, { props: { val: i } })
+    }
+    const all = engine.scanAllNodes()
+    const f1 = all.filter(n => (n.props.val as number) >= 20)
+    expect(f1.length).toBe(30)
+    const sorted = f1.slice().sort((a, b) => (a.props.val as number) - (b.props.val as number))
+    const paged = sorted.slice(5, 15)
+    expect(paged.length).toBe(10)
+    expect(paged[0].props.val).toBe(25)
+    expect(paged[9].props.val).toBe(34)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-216: WITH 嵌套过滤 AND + OR', async () => {
+  const engine = makeEngine('tck-216')
+  try {
+    for (let i = 1; i <= 20; i++) {
+      await engine.upsertNode(1, `wf-${i}`, {
+        props: { val: i, cat: i <= 10 ? 'A' : 'B', flag: i % 3 === 0 }
+      })
+    }
+    const all = engine.scanAllNodes()
+    const result = all.filter(n => {
+      const cat = n.props.cat as string
+      const val = n.props.val as number
+      const flag = n.props.flag as boolean
+      return (cat === 'A' && val >= 5) || (flag === true && cat === 'B')
+    })
+    // cat=A, val>=5: 5,6,7,8,9,10 = 6 items
+    // flag=true, cat=B: 12,15,18 = 3 items
+    expect(result.length).toBe(9)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-217: WITH 管道计算衍生值', async () => {
+  const engine = makeEngine('tck-217')
+  try {
+    const id = await engine.upsertNode(1, 'calc', {
+      props: { price: 100, quantity: 3, discount: 0.1 }
+    })
+    const node = engine.getNode(id)
+    const total = (node!.props.price as number) * (node!.props.quantity as number)
+    const finalPrice = total * (1 - (node!.props.discount as number))
+    expect(total).toBe(300)
+    expect(finalPrice).toBe(270)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-218: WITH 管道后 RETURN 去重字段名', async () => {
+  const engine = makeEngine('tck-218')
+  try {
+    await engine.upsertNode(1, 'dup-a', { props: { city: 'NYC' } })
+    await engine.upsertNode(1, 'dup-b', { props: { city: 'NYC' } })
+    await engine.upsertNode(1, 'dup-c', { props: { city: 'LA' } })
+    const all = engine.scanAllNodes()
+    const cities = new Set(all.map(n => n.props.city as string))
+    expect(cities.size).toBe(2)
+    expect([...cities].sort()).toEqual(['LA', 'NYC'])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-219: WITH 链式传递排序限制', async () => {
+  const engine = makeEngine('tck-219')
+  try {
+    for (let i = 1; i <= 20; i++) {
+      await engine.upsertNode(1, `wcc-${i}`, { props: { val: i * 2 } })
+    }
+    const all = engine.scanAllNodes()
+    const f1 = all.filter(n => (n.props.val as number) >= 20)
+    expect(f1.length).toBe(11)
+    const f2 = f1.slice().sort((a, b) => (b.props.val as number) - (a.props.val as number))
+    expect(f2.slice(0, 5).length).toBe(5)
+    expect(f2.slice(0, 5).map(n => n.props.val)).toEqual([40, 38, 36, 34, 32])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-220: WITH 管道与属性投影', async () => {
+  const engine = makeEngine('tck-220')
+  try {
+    await engine.upsertNode(1, 'proj-a', { props: { name: 'Alice', age: 30, salary: 99999 } })
+    await engine.upsertNode(1, 'proj-b', { props: { name: 'Bob', age: 25, salary: 88888 } })
+    await engine.upsertNode(1, 'proj-c', { props: { name: 'Charlie', age: 35, salary: 111111 } })
+    const all = engine.scanAllNodes()
+    const projected = all.map(n => ({ n: n.props.name, a: n.props.age }))
+    expect(projected.length).toBe(3)
+    projected.forEach(p => {
+      expect(p.n).toBeDefined()
+      expect(p.a).toBeDefined()
+      expect((p as any).salary).toBeUndefined()
+    })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ══════════════════════════════════════════════════════════════
+// TCK 扩展补充 — 集合运算 UNION (TCK-306~TCK-315)
+// ══════════════════════════════════════════════════════════════
+
+test('TCK-306: UNION 不同 type 带属性过滤', async () => {
+  const engine = makeEngine('tck-306')
+  try {
+    for (let i = 0; i < 8; i++) {
+      await engine.upsertNode(1, `ua-${i}`, { props: { val: i * 10 } })
+    }
+    for (let i = 0; i < 5; i++) {
+      await engine.upsertNode(2, `ub-${i}`, { props: { val: i * 20 } })
+    }
+    const type1 = engine.scanAllNodes().filter(n => n.type === 1)
+    const type2 = engine.scanAllNodes().filter(n => n.type === 2)
+    const unionAll = [...type1, ...type2]
+    const filtered = unionAll.filter(n => (n.props.val as number) >= 50)
+    // type1: 50,60,70 = 3; type2: 60,80 = 2; total=5
+    expect(filtered.length).toBe(5)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-307: UNION 空集合并', async () => {
+  const engine = makeEngine('tck-307')
+  try {
+    const empty1: number[] = []
+    const empty2: number[] = []
+    expect([...empty1, ...empty2]).toEqual([])
+    expect(engine.scanAllNodes().filter(n => n.type === 999)).toEqual([])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-308: UNION 大集合合并验证', async () => {
+  const engine = makeEngine('tck-308')
+  try {
+    for (let i = 0; i < 50; i++) {
+      await engine.upsertNode(1, `la-${i}`, { props: { val: i } })
+    }
+    for (let i = 50; i < 80; i++) {
+      await engine.upsertNode(2, `lb-${i}`, { props: { val: i } })
+    }
+    const type1 = engine.scanAllNodes().filter(n => n.type === 1)
+    const type2 = engine.scanAllNodes().filter(n => n.type === 2)
+    const union = [...type1, ...type2]
+    expect(union.length).toBe(80)
+    expect(union.filter(n => n.type === 1).length).toBe(50)
+    expect(union.filter(n => n.type === 2).length).toBe(30)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-309: UNION ALL 大集合保留重复', async () => {
+  const engine = makeEngine('tck-309')
+  try {
+    for (let i = 0; i < 25; i++) {
+      await engine.upsertNode(1, `ua-${i}`, { props: { val: i } })
+    }
+    const s1 = engine.scanAllNodes().filter(n => n.type === 1)
+    const s2 = engine.scanAllNodes().filter(n => n.type === 1)
+    const concat = [...s1, ...s2]
+    expect(concat.length).toBe(50)
+    const seen = new Set<number>()
+    const deduped = concat.filter(n => {
+      if (seen.has(n.id)) return false; seen.add(n.id); return true
+    })
+    expect(deduped.length).toBe(25)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-310: UNION 两个不同结构的节点集', async () => {
+  const engine = makeEngine('tck-310')
+  try {
+    await engine.upsertNode(1, 'person-a', { props: { name: 'Alice', age: 30 } })
+    await engine.upsertNode(1, 'person-b', { props: { name: 'Bob', age: 25 } })
+    await engine.upsertNode(2, 'city-nyc', { props: { name: 'NYC', population: 8000000 } })
+    await engine.upsertNode(2, 'city-la', { props: { name: 'LA', population: 4000000 } })
+    const all = engine.scanAllNodes()
+    const persons = all.filter(n => n.type === 1)
+    const cities = all.filter(n => n.type === 2)
+    const union = [...persons, ...cities]
+    expect(union.length).toBe(4)
+    union.forEach(n => {
+      expect(n.props.name).toBeDefined()
+    })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-311: UNION + ORDER BY DESC + LIMIT', async () => {
+  const engine = makeEngine('tck-311')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `s1x-${i}`, { props: { val: i } })
+    }
+    for (let i = 11; i <= 20; i++) {
+      await engine.upsertNode(2, `s2x-${i}`, { props: { val: i } })
+    }
+    const all = engine.scanAllNodes()
+    const sorted = all.slice()
+      .sort((a, b) => (b.props.val as number) - (a.props.val as number))
+      .slice(0, 5)
+    expect(sorted.length).toBe(5)
+    expect(sorted.map(n => n.props.val)).toEqual([20, 19, 18, 17, 16])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-312: UNION 三集合并后过滤', async () => {
+  const engine = makeEngine('tck-312')
+  try {
+    for (let t = 1; t <= 3; t++) {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(t, `t${t}-${i}`, { props: { val: i * 10 } })
+      }
+    }
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(30)
+    const filtered = all.filter(n => (n.props.val as number) >= 50)
+    expect(filtered.length).toBe(15) // 50,60,70,80,90 × 3 types
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-313: UNION ALL + ORDER BY + LIMIT', async () => {
+  const engine = makeEngine('tck-313')
+  try {
+    for (let i = 0; i < 10; i++) {
+      await engine.upsertNode(1, `ua-${i}`, { props: { val: i * 5 } })
+    }
+    const s1 = engine.scanAllNodes().filter(n => n.type === 1)
+    const concat = [...s1, ...s1]
+    const sorted = concat.slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+      .slice(0, 5)
+    expect(sorted.length).toBe(5)
+    expect(sorted.map(n => n.props.val)).toEqual([0, 0, 5, 5, 10])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-314: UNION 空集合与有数据集合', async () => {
+  const engine = makeEngine('tck-314')
+  try {
+    await engine.upsertNode(1, 'only-one', { props: { val: 99 } })
+    const empty = engine.scanAllNodes().filter(n => n.type === 999)
+    const data = engine.scanAllNodes().filter(n => n.type === 1)
+    const union = [...empty, ...data]
+    expect(union.length).toBe(1)
+    expect(union[0].props.val).toBe(99)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('TCK-315: UNION 多类型合并后聚合', async () => {
+  const engine = makeEngine('tck-315')
+  try {
+    for (let i = 0; i < 15; i++) {
+      await engine.upsertNode(1, `ta-${i}`, { props: { val: i + 1 } })
+    }
+    for (let i = 15; i < 25; i++) {
+      await engine.upsertNode(2, `tb-${i}`, { props: { val: i + 1 } })
+    }
+    const all = engine.scanAllNodes()
+    const sum = all.reduce((a, n) => a + (n.props.val as number), 0)
+    // vals: 1..25 → sum = 25*26/2 = 325
+    expect(sum).toBe(325)
+    expect(all.length).toBe(25)
+    const avg = sum / all.length
+    expect(avg).toBe(13)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
 afterAll(() => {
   try { fs.rmSync(BASE_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
 })

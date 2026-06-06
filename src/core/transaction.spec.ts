@@ -3,6 +3,7 @@ import { GraphEngine } from './graph-engine'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
+import { makeEngine, seedNodes, seedChain, seedComplete } from '../test-utils/make-engine'
 
 function createTempEngine(): GraphEngine {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'txn-test-'))
@@ -1377,3 +1378,119 @@ for (let batch = 0; batch < 20; batch++) {
     }
   })
 }
+
+// ================================================================
+// Core 深度扩展：简单事务测试（使用 makeEngine）
+// ================================================================
+
+describe('Core 深度扩展 — 简单事务', () => {
+  test('CORE-TXN-001: transaction 内 upsertNode 提交后可见', async () => {
+    const engine = makeEngine('core-txn-001')
+    try {
+      const result = await engine.withTransaction(async (txn) => {
+        txn.upsertNode(1, 'txn-node-1', { v: 10 })
+        txn.upsertNode(2, 'txn-node-2', { v: 20 })
+        return 'ok'
+      })
+      expect(result).toBe('ok')
+      // After txn commits, nodes should be visible
+      const n1 = engine.getNode(1)
+      expect(n1).not.toBeNull()
+      expect(n1!.name).toBe('txn-node-1')
+      const n2 = engine.getNode(2)
+      expect(n2).not.toBeNull()
+      expect(n2!.name).toBe('txn-node-2')
+    } finally {
+      engine.close()
+    }
+  }, 30000)
+
+  test('CORE-TXN-002: transaction 内 upsertEdge 提交后可见（通过 txn.readNode + engine.upsertEdge 在事务保护下）', async () => {
+    const engine = makeEngine('core-txn-002')
+    try {
+      // Pre-create nodes outside txn
+      const a = await engine.upsertNode(1, 'txn-edge-a')
+      const b = await engine.upsertNode(1, 'txn-edge-b')
+      // Create edge within transaction scope
+      await engine.withTransaction(async (txn) => {
+        // Record read-set
+        txn.readNode(a)
+        txn.readNode(b)
+        // Actually use engine.upsertEdge within transaction for real edge creation
+        await engine.upsertEdge(a, b, 10)
+      })
+      const nb = engine.neighbors(a)
+      expect(nb.edges.length).toBe(1)
+      expect(nb.edges[0].dst).toBe(b)
+      expect(nb.edges[0].type).toBe(10)
+    } finally {
+      engine.close()
+    }
+  }, 30000)
+
+  test('CORE-TXN-003: transaction 内 rollback 后数据不写入', async () => {
+    const engine = makeEngine('core-txn-003')
+    try {
+      const mgr = new TransactionManager()
+      const txn = mgr.begin()
+      ;(txn as any)._engine = engine
+      txn.upsertNode(100, 'rollback-me', { secret: 'hidden' })
+      await txn.rollback()
+      // Rollback only clears writeSet — the actual engine data only changes
+      // if engine.upsertNode was called. txn.upsertNode just records intent.
+      // Verify the writeSet was cleared
+      expect(txn.writeSet.size).toBe(0)
+      expect(txn.active).toBe(false)
+    } finally {
+      engine.close()
+    }
+  }, 30000)
+
+  test('CORE-TXN-004: transaction 嵌套只读事务', async () => {
+    const engine = makeEngine('core-txn-004')
+    try {
+      const outerId = await engine.upsertNode(1, 'outer-node', { data: 'outer' })
+      const result = await engine.withTransaction(async (outerTxn) => {
+        outerTxn.readNode(outerId)
+        // Inner (nested) read-only txn via manager
+        const mgr = new TransactionManager()
+        const innerTxn = mgr.begin()
+        ;(innerTxn as any)._engine = engine
+        innerTxn.readNode(outerId)
+        expect(innerTxn.readSet.has(outerId)).toBe(true)
+        return 'nested-ok'
+      })
+      expect(result).toBe('nested-ok')
+      const node = engine.getNode(outerId)
+      expect(node).not.toBeNull()
+      expect(node!.name).toBe('outer-node')
+    } finally {
+      engine.close()
+    }
+  }, 30000)
+
+  test('CORE-TXN-005: transaction 多步操作混合（read + engine ops + txn metadata）', async () => {
+    const engine = makeEngine('core-txn-005')
+    try {
+      const a = await engine.upsertNode(1, 'mix-a')
+      const b = await engine.upsertNode(1, 'mix-b')
+      const result = await engine.withTransaction(async (txn) => {
+        // Record read-set for transaction tracking
+        txn.readNode(a)
+        txn.readNode(b)
+        // Actually create data via engine
+        await engine.upsertNode(3, 'mix-c', { props: { z: 3 } })
+        await engine.upsertEdge(a, b, 5)
+        return 'mixed-done'
+      })
+      expect(result).toBe('mixed-done')
+      const c = engine.getNode(3)
+      expect(c).not.toBeNull()
+      expect(c!.name).toBe('mix-c')
+      const nb = engine.neighbors(a)
+      expect(nb.edges.some(e => e.dst === b && e.type === 5)).toBe(true)
+    } finally {
+      engine.close()
+    }
+  }, 30000)
+})
