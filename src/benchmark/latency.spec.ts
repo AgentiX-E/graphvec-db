@@ -13,6 +13,7 @@ import { GraphEngine } from '../core/graph-engine'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
+import { makeEngine } from '../test-utils/make-engine'
 
 function randomDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bm-latency-'))
@@ -542,4 +543,87 @@ describe('Latency Benchmarks', () => {
     console.log(`  Median: ${median.toFixed(3)} ms`)
     console.log(`  P95:   ${p95.toFixed(3)} ms`)
   }, 120000)
+
+    it('should measure upsertNode single latency (10 runs)', async () => {
+      const engine = makeEngine('bench-lt1')
+      try {
+        const timings: number[] = []
+        for (let r = 0; r < 10; r++) {
+          const t0 = performance.now()
+          await engine.upsertNode(1, `lt-${r}`, { props: { seq: r } })
+          timings.push(performance.now() - t0)
+        }
+        timings.sort((a, b) => a - b)
+        const median = timings[4]
+        console.log(`[BENCH][latency] upsertNode single (10 runs): min=${timings[0].toFixed(3)} median=${median.toFixed(3)} max=${timings[9].toFixed(3)} ms`)
+        expect(median).toBeGreaterThan(0)
+      } finally { engine.close() }
+    }, 30000)
+    it('should measure upsertEdge single latency (10 runs)', async () => {
+      const engine = makeEngine('bench-lt2')
+      try {
+        const src = await engine.upsertNode(1, 'lt-src', { props: {} })
+        const dst = await engine.upsertNode(1, 'lt-dst', { props: {} })
+        const timings: number[] = []
+        for (let r = 0; r < 10; r++) {
+          const t0 = performance.now()
+          await engine.upsertEdge(src, dst, r % 2, { props: {} })
+          timings.push(performance.now() - t0)
+        }
+        timings.sort((a, b) => a - b)
+        console.log(`[BENCH][latency] upsertEdge single: median=${timings[4].toFixed(3)} ms`)
+        expect(timings[4]).toBeGreaterThan(0)
+      } finally { engine.close() }
+    }, 30000)
+    it('should measure getNode single latency (20 runs)', async () => {
+      const engine = makeEngine('bench-lt3')
+      try {
+        const id = await engine.upsertNode(1, 'lt-get', { props: { val: 42 } })
+        const timings: number[] = []
+        for (let r = 0; r < 20; r++) {
+          const t0 = performance.now()
+          engine.getNode(id)
+          timings.push(performance.now() - t0)
+        }
+        timings.sort((a, b) => a - b)
+        console.log(`[BENCH][latency] getNode single (20 runs): min=${timings[0].toFixed(3)} median=${timings[9].toFixed(3)} max=${timings[19].toFixed(3)} ms`)
+        expect(timings[0]).toBeGreaterThanOrEqual(0)
+      } finally { engine.close() }
+    }, 30000)
+    it('should measure scanAllNodes latency at different sizes', async () => {
+      const engine = makeEngine('bench-lt4')
+      try {
+        for (let i = 0; i < 10; i++) await engine.upsertNode(1, `lt-scan-${i}`, { props: {} })
+        let t0 = performance.now()
+        let r1 = engine.scanAllNodes().length
+        let t1 = performance.now() - t0
+        for (let i = 10; i < 60; i++) await engine.upsertNode(1, `lt-scan-${i}`, { props: {} })
+        t0 = performance.now()
+        let r2 = engine.scanAllNodes().length
+        let t2 = performance.now() - t0
+        console.log(`[BENCH][latency] scanAllNodes: 10nodes=${t1.toFixed(3)}ms count=${r1}, 60nodes=${t2.toFixed(3)}ms count=${r2}`)
+        expect(r1).toBe(10)
+        expect(r2).toBe(60)
+      } finally { engine.close() }
+    }, 30000)
+    it('should measure neighbors latency at 20 edges', async () => {
+      const engine = makeEngine('bench-lt5')
+      try {
+        const src = await engine.upsertNode(1, 'lt-nb-src', { props: {} })
+        for (let i = 0; i < 20; i++) {
+          const dst = await engine.upsertNode(1, `lt-nb-${i}`, { props: {} })
+          await engine.upsertEdge(src, dst, 1, { props: {} })
+        }
+        const timings: number[] = []
+        for (let r = 0; r < 5; r++) {
+          const t0 = performance.now()
+          engine.neighbors(src)
+          timings.push(performance.now() - t0)
+        }
+        timings.sort((a, b) => a - b)
+        console.log(`[BENCH][latency] neighbors (20 edges, 5 runs): median=${timings[2].toFixed(3)} ms`)
+        expect(timings[0]).toBeGreaterThanOrEqual(0)
+      } finally { engine.close() }
+    }, 30000)
+
 })

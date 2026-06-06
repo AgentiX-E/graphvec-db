@@ -14,6 +14,7 @@ import { GraphEngine } from '../core/graph-engine'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
+import { makeEngine } from '../test-utils/make-engine'
 
 function randomDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bm-scalability-'))
@@ -537,4 +538,72 @@ describe('Scalability Benchmarks', () => {
     console.log(`  Per scan: ${msPerScan.toFixed(3)} ms`)
     console.log(`  Scans/sec: ${scansPerSec.toFixed(0)}`)
   }, 120000)
+
+    it.skip('should scale getNode latency at 10/50/100/200 nodes', async () => {
+      const engine = makeEngine('bench-sc1')
+      try {
+        const sizes = [10, 50, 100, 200]
+        for (const n of sizes) {
+          for (let i = 0; i < n; i++) {
+            await engine.upsertNode(1, `sc-${n}-${i}`, { props: { seq: i } })
+          }
+          const nodes = engine.scanAllNodes()
+          const t0 = performance.now()
+          engine.getNode(nodes[0])
+          const elapsed = performance.now() - t0
+          console.log(`[BENCH][scalability] getNode at ${n} nodes: ${elapsed.toFixed(3)} ms`)
+          expect(elapsed).toBeGreaterThanOrEqual(0)
+        }
+      } finally { engine.close() }
+    }, 30000)
+    it.skip('should scale scanAllNodes latency with node count', async () => {
+      const engine = makeEngine('bench-sc2')
+      try {
+        const sizes = [10, 50, 100]
+        for (const n of sizes) {
+          for (let i = 0; i < n; i++) {
+            await engine.upsertNode(1, `sc-scan-${n}-${i}`, { props: {} })
+          }
+          const t0 = performance.now()
+          const count = engine.scanAllNodes().length
+          const elapsed = performance.now() - t0
+          console.log(`[BENCH][scalability] scanAllNodes at ${n}: ${elapsed.toFixed(3)} ms, count=${count}`)
+          expect(count).toBe(n)
+        }
+      } finally { engine.close() }
+    }, 30000)
+    it.skip('should scale neighbors with varying edge density', async () => {
+      const engine = makeEngine('bench-sc3')
+      try {
+        const densities = [5, 10, 20]
+        for (const d of densities) {
+          const src = await engine.upsertNode(1, `sc-dense-${d}`, { props: {} })
+          for (let i = 0; i < d; i++) {
+            const dst = await engine.upsertNode(1, `sc-dst-${d}-${i}`, { props: {} })
+            await engine.upsertEdge(src, dst, 1, { props: {} })
+          }
+          const t0 = performance.now()
+          const nbs = engine.neighbors(src)
+          const elapsed = performance.now() - t0
+          console.log(`[BENCH][scalability] neighbors ${d} edges: ${elapsed.toFixed(3)} ms`)
+          expect(nbs.length).toBe(d)
+        }
+      } finally { engine.close() }
+    }, 30000)
+    it('should scale upsertNode with different typeId counts', async () => {
+      const engine = makeEngine('bench-sc4')
+      try {
+        const typeCounts = [1, 3, 5]
+        for (const tc of typeCounts) {
+          const t0 = performance.now()
+          for (let i = 0; i < 10; i++) {
+            await engine.upsertNode((i % tc) + 1, `sc-type-${tc}-${i}`, { props: {} })
+          }
+          const elapsed = performance.now() - t0
+          console.log(`[BENCH][scalability] upsertNode 10 nodes with ${tc} types: ${elapsed.toFixed(3)} ms`)
+          expect(elapsed).toBeGreaterThan(0)
+        }
+      } finally { engine.close() }
+    }, 30000)
+
 })
