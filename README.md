@@ -39,25 +39,35 @@ npm install agentix-graphvec
 ### Run Your First Graph Query
 
 ```typescript
-import { GraphEngine, GraphConfig, NodeType, EdgeType } from 'agentix-graphvec'
+import { GraphEngine } from 'agentix-graphvec'
 
-// 1. Create engine
-const engine = new GraphEngine(GraphConfig.default())
+async function main() {
+  // 1. Create engine and open
+  const engine = new GraphEngine({ path: '/tmp/my-graph' })
+  await engine.open()
 
-// 2. Upsert nodes
-engine.upsertNode(1, { type: NodeType.USER, props: { name: 'Alice', age: 30 } })
-engine.upsertNode(2, { type: NodeType.USER, props: { name: 'Bob', age: 25 } })
+  // 2. Upsert nodes (returns nodeId)
+  const aliceId = await engine.upsertNode(1, 'alice', { props: { name: 'Alice', age: 30 } })
+  const bobId   = await engine.upsertNode(1, 'bob',   { props: { name: 'Bob',   age: 25 } })
 
-// 3. Create edge
-engine.upsertEdge(1, 2, { type: EdgeType.RELATED, weight: 1.0 })
+  // 3. Create edge
+  await engine.upsertEdge(aliceId, bobId, 1, { props: { weight: 1.0 } })
 
-// 4. Query: find all friends of friends
-const neighbors = engine.getNeighbors(1, 1) // depth = 1
-console.log(neighbors) // [{ nodeId: 2, edgeType: 10, weight: 1.0 }]
+  // 4. Query neighbors
+  const neighborIds = engine.neighbors(aliceId)
+  for (const nid of neighborIds ?? []) {
+    const node = engine.getNode(nid)
+    console.log('Neighbor:', node)
+  }
 
-// 5. Run PageRank
-const scores = engine.pagerank({ dampingFactor: 0.85, maxIterations: 50 })
-console.log('PageRank scores:', scores)
+  // 5. Scan all nodes
+  const allNodes = engine.scanAllNodes()
+  console.log('Total nodes:', allNodes.length)
+
+  // 6. Clean up
+  engine.close()
+}
+main()
 ```
 
 ### Distributed Cluster (Quick Demo)
