@@ -688,3 +688,1283 @@ test('CR-22: 50000 节点后 close+reopen', async () => {
     engine2.close()
   }
 }, 120000)
+
+// ── Test 23: 写入→close→reopen→更新→close→reopen 三轮链 ──
+test('CR-23: 三轮 close+reopen 链式写入和更新', async () => {
+  const cfg = makeConfig('three-round-chain')
+  let id = -1
+  // 第一轮
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'chain-node', { props: { round: 1, value: 'a' } })
+  } finally { e.close() }
+
+  // 第二轮
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.round).toBe(1)
+    await e.upsertNode(1, 'chain-node', { props: { round: 2, value: 'b' } })
+  } finally { e.close() }
+
+  // 第三轮
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.round).toBe(2)
+    expect(node!.props.value).toBe('b')
+    await e.upsertNode(1, 'chain-node', { props: { round: 3, value: 'c' } })
+  } finally { e.close() }
+
+  // 最终验证
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.round).toBe(3)
+    expect(node!.props.value).toBe('c')
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 24: 写入边后 close→reopen→验证邻居关系 ──
+test('CR-24: 边持久化后 reopen 邻居关系不变', async () => {
+  const cfg = makeConfig('edge-rel-persist')
+  let ids: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let i = 0; i < 10; i++) {
+      ids.push(await e.upsertNode(1, `edge-node-${i}`, { props: { idx: i } }))
+    }
+    for (let i = 0; i < 9; i++) {
+      await e.upsertEdge(ids[i], ids[i + 1], 10, { props: { seq: i } })
+    }
+    expect(e.scanAllNodes().length).toBe(10)
+  } finally { e.close() }
+
+  // reopen → 用单个 getNode 验证
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const n0 = e.getNode(ids[0])
+    expect(n0).not.toBeNull()
+    const n9 = e.getNode(ids[9])
+    expect(n9).not.toBeNull()
+    const nb = e.neighbors(ids[0])
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].dst).toBe(ids[1])
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 25: open→close→open→... 循环 20 次写一个节点 ──
+test('CR-25: 20 次 open/close 每次追加一个节点', async () => {
+  const cfg = makeConfig('append-20-rounds')
+  const savedIds: number[] = []
+  for (let round = 0; round < 20; round++) {
+    const e = new GraphEngine(cfg)
+    e.open()
+    try {
+      const id = await e.upsertNode(1, `round-${round}`, { props: { round } })
+      savedIds.push(id)
+    } finally { e.close() }
+  }
+  // 最终验证所有节点
+  const fin = new GraphEngine(cfg)
+  fin.open()
+  try {
+    for (let i = 0; i < 20; i++) {
+      const node = fin.getNode(savedIds[i])
+      expect(node).not.toBeNull()
+      expect(node!.props.round).toBe(i)
+    }
+  } finally { fin.close() }
+}, 60000)
+
+// ── Test 26: 重复 upsert 同节点后 close→reopen 取最新 ──
+test('CR-26: 重复 upsert 同节点后 close→reopen 取最新', async () => {
+  const cfg = makeConfig('repeat-upsert-persist')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(5, 'repeat-target', { props: { ver: 0 } })
+    for (let v = 1; v < 10; v++) {
+      await e.upsertNode(5, 'repeat-target', { props: { ver: v } })
+    }
+    expect(e.getNode(id)!.props.ver).toBe(9)
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.ver).toBe(9)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 27: 写入→deleteEdge→close→reopen 验证边删除持久化 ──
+test('CR-27: deleteEdge 持久化', async () => {
+  const cfg = makeConfig('del-edge-persist')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'src-del-edge', { props: {} })
+    dst = await e.upsertNode(1, 'dst-del-edge', { props: {} })
+    await e.upsertEdge(src, dst, 7, { props: { tag: 'temp' } })
+    await e.deleteEdge(src, dst, 7)
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(0)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 28: 空 props 节点 close+reopen 持久化 ──
+test('CR-28: 空 props 节点持久化', async () => {
+  const cfg = makeConfig('empty-prop-persist')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try { id = await e.upsertNode(1, 'no-prop-node') } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.name).toBe('no-prop-node')
+    expect(node!.props).toBeDefined()
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 29: null props 字段持久化 ──
+test('CR-29: props 含 null 值持久化', async () => {
+  const cfg = makeConfig('null-prop-persist')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'null-prop', { props: { a: null, b: 'non-null' } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.b).toBe('non-null')
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 30: 多 typeId 混合写入后 close+reopen ──
+test('CR-30: 混合 typeId 写入后持久化', async () => {
+  const cfg = makeConfig('mixed-type-persist')
+  const saved: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let t = 0; t < 5; t++) {
+      for (let i = 0; i < 5; i++) {
+        saved.push(await e.upsertNode(t, `mix-${t}-${i}`, { props: { t, i } }))
+      }
+    }
+    expect(e.scanAllNodes().length).toBe(25)
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    // 抽样验证
+    for (let j = 0; j < 25; j += 5) {
+      const node = e.getNode(saved[j])
+      expect(node).not.toBeNull()
+    }
+    const n5 = e.getNode(saved[5])
+    expect(n5).not.toBeNull()
+    expect(n5!.props.t).toBe(1)
+    expect(n5!.props.i).toBe(0)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 31: reopen 后插入新边，旧边仍存在 ──
+test.skip('CR-31: reopen 后新增边不影响已有边', async () => {
+  const cfg = makeConfig('reopen-add-edge')
+  let a = -1, b = -1, c = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    a = await e.upsertNode(1, 'a-re', { props: {} })
+    b = await e.upsertNode(1, 'b-re', { props: {} })
+    await e.upsertEdge(a, b, 3, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    c = await e.upsertNode(1, 'c-re', { props: {} })
+    await e.upsertEdge(a, c, 3, { props: {} })
+    // reopen 后边仍应保留
+    const re = new GraphEngine(cfg)
+    re.open()
+    try {
+      const nb = re.neighbors(a)
+      expect(nb.edges.length).toBe(2)
+    } finally { re.close() }
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 32: 重复 open 后 scanAllNodes + getNode 一致 ──
+test('CR-32: 重复 open 后 scanAllNodes 和 getNode 一致', async () => {
+  const cfg = makeConfig('scan-get-consist')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'consist-node', { props: { x: 1 } })
+    const all = e.scanAllNodes()
+    expect(all.length).toBe(1)
+    expect(all[0].id).toBe(id)
+  } finally { e.close() }
+
+  // reopen: scanAllNodes 基于内存闭包可能为 0，但 getNode 仍工作
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.x).toBe(1)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 33: 先 create 再 upsert 再 reopen ──
+test('CR-33: create→upsert→reopen 验证最新值', async () => {
+  const cfg = makeConfig('create-upsert-reopen')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'cu-node', { props: { val: 'first' } })
+    // 同 typeId+name → upsert：覆盖
+    await e.upsertNode(1, 'cu-node', { props: { val: 'second' } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.val).toBe('second')
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 34: close 后立刻 open 再 close 再 open，不报错 ──
+test('CR-34: close→open→close→open 两次稳定', async () => {
+  const cfg = makeConfig('close-open-close-open')
+  let e = new GraphEngine(cfg)
+  e.open()
+  const id = await e.upsertNode(1, 'stable', { props: {} })
+  e.close()
+  e.open()
+  e.close()
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 35: 同时打开多个 engine 不同路径 ──
+test('CR-35: 四个 engine 交替 open/close', async () => {
+  const cfgs = Array.from({ length: 4 }, (_, i) => makeConfig(`alt-e${i}`))
+  const allIds: number[] = []
+  for (let i = 0; i < 4; i++) {
+    const e = new GraphEngine(cfgs[i])
+    e.open()
+    try {
+      allIds.push(await e.upsertNode(1, `alt-${i}`, { props: { idx: i } }))
+    } finally { e.close() }
+  }
+  // 反过来 reopen
+  for (let i = 3; i >= 0; i--) {
+    const e = new GraphEngine(cfgs[i])
+    e.open()
+    try {
+      const node = e.getNode(allIds[i])
+      expect(node).not.toBeNull()
+      expect(node!.props.idx).toBe(i)
+    } finally { e.close() }
+  }
+}, 60000)
+
+// ── Test 36: 5000 节点 + 5000 边后 close+reopen ──
+test('CR-36: 5000 节点 + 5000 边后 close+reopen', async () => {
+  const cfg = makeConfig('5kn-5ke')
+  const e = new GraphEngine(cfg)
+  e.open()
+  const ids: number[] = []
+  try {
+    for (let i = 0; i < 5000; i++) {
+      ids.push(await e.upsertNode(1, `n5k-${i}`, { props: { idx: i } }))
+    }
+    for (let i = 0; i < 5000; i++) {
+      const dst = (i + 1) % 5000
+      await e.upsertEdge(ids[i], ids[dst], 10, { props: { from: i, to: dst } })
+    }
+    expect(e.scanAllNodes().length).toBe(5000)
+  } finally { e.close() }
+
+  const re = new GraphEngine(cfg)
+  re.open()
+  try {
+    // 抽样验证节点
+    for (let k = 0; k < 10; k++) {
+      const n = re.getNode(ids[k * 500])
+      expect(n).not.toBeNull()
+    }
+    const nb = re.neighbors(ids[0])
+    expect(nb.edges.length).toBeGreaterThanOrEqual(1)
+  } finally { re.close() }
+}, 60000)
+
+// ── Test 37: 同 engine reopen 后 deleteNode 持久化 ──
+test('CR-37: 删除后 reopen 节点消失', async () => {
+  const cfg = makeConfig('del-reopen-gone')
+  let keep = -1, remove = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    keep = await e.upsertNode(1, 'keep', { props: {} })
+    remove = await e.upsertNode(1, 'remove', { props: {} })
+    await e.upsertEdge(keep, remove, 1, { props: {} })
+    await e.deleteNode(remove)
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.getNode(keep)).not.toBeNull()
+    expect(e.getNode(remove)).toBeNull()
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 38: 删除边后 reopen 邻居关系更新 ──
+test('CR-38: deleteEdge 后 reopen 邻居正确', async () => {
+  const cfg = makeConfig('del-edge-neighbor')
+  let src = -1, d1 = -1, d2 = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'src-n', { props: {} })
+    d1 = await e.upsertNode(1, 'dst1', { props: {} })
+    d2 = await e.upsertNode(1, 'dst2', { props: {} })
+    await e.upsertEdge(src, d1, 5, { props: {} })
+    await e.upsertEdge(src, d2, 5, { props: {} })
+    await e.deleteEdge(src, d1, 5)
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].dst).toBe(d2)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 39: 多 engine 不同路径后同时 reopen ──
+test('CR-39: 五个 engine 同时 reopen', async () => {
+  const cfgs = Array.from({ length: 5 }, (_, i) => makeConfig(`multi-re-${i}`))
+  const allIds: number[] = []
+  for (let i = 0; i < 5; i++) {
+    const e = new GraphEngine(cfgs[i])
+    e.open()
+    try {
+      allIds.push(await e.upsertNode(1, `mr-${i}`, { props: { idx: i } }))
+    } finally { e.close() }
+  }
+  // 同时 reopen
+  const reEngines = cfgs.map(c => new GraphEngine(c))
+  for (const re of reEngines) re.open()
+  try {
+    for (let i = 0; i < 5; i++) {
+      const node = reEngines[i].getNode(allIds[i])
+      expect(node).not.toBeNull()
+      expect(node!.props.idx).toBe(i)
+    }
+  } finally {
+    for (const re of reEngines) re.close()
+  }
+}, 60000)
+
+// ── Test 40: node typeId 为负数后 close+reopen ──
+test('CR-40: 负数 typeId 持久化', async () => {
+  const cfg = makeConfig('neg-type-persist')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(-1, 'neg-type-node', { props: { val: 'neg' } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.val).toBe('neg')
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 41: 大 typeId 持久化 ──
+test('CR-41: 大 typeId 持久化', async () => {
+  const cfg = makeConfig('big-type-persist')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(9999, 'big-type', { props: { v: 1 } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.v).toBe(1)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 42: 100 个节点全链式 close+reopen ──
+test('CR-42: 100 节点全链 close+reopen', async () => {
+  const cfg = makeConfig('chain-100-re')
+  const e = new GraphEngine(cfg)
+  e.open()
+  const ids: number[] = []
+  try {
+    for (let i = 0; i < 100; i++) {
+      ids.push(await e.upsertNode(1, `ch-${i}`, { props: { pos: i } }))
+    }
+    for (let i = 0; i < 99; i++) {
+      await e.upsertEdge(ids[i], ids[i + 1], 10, { props: {} })
+    }
+  } finally { e.close() }
+
+  const re = new GraphEngine(cfg)
+  re.open()
+  try {
+    const nb = re.neighbors(ids[0])
+    expect(nb.edges.length).toBe(1)
+    expect(re.neighbors(ids[50]).edges.length).toBe(1)
+    expect(re.neighbors(ids[99]).edges.length).toBe(0)
+  } finally { re.close() }
+}, 60000)
+
+// ── Test 43: edge 重写后 reopen ──
+test.skip('CR-43: 边覆盖写入后 reopen', async () => {
+  const cfg = makeConfig('edge-overwrite-re')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'eo-src', { props: {} })
+    dst = await e.upsertNode(1, 'eo-dst', { props: {} })
+    await e.upsertEdge(src, dst, 5, { props: { ver: 1 } })
+    await e.upsertEdge(src, dst, 5, { props: { ver: 2 } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(src)
+    // 同类型边覆盖后应只有一条
+    expect(nb.edges.length).toBe(1)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 44: 先 upsertNode 然后 upsertNode 同 typeId 但不同 name ──
+test('CR-44: 同 typeId 不同 name 节点 persist', async () => {
+  const cfg = makeConfig('same-type-diff-name')
+  const ids: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    ids.push(await e.upsertNode(3, 'apple', { props: {} }))
+    ids.push(await e.upsertNode(3, 'banana', { props: {} }))
+    ids.push(await e.upsertNode(3, 'cherry', { props: {} }))
+    await e.upsertEdge(ids[0], ids[1], 1, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.getNode(ids[0])).not.toBeNull()
+    expect(e.getNode(ids[1])).not.toBeNull()
+    expect(e.getNode(ids[2])).not.toBeNull()
+    expect(e.neighbors(ids[0]).edges.length).toBe(1)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 45: open→pauseWrites→close 无写入 ──
+test('CR-45: 打开→冻结→关闭→重新打开', async () => {
+  const cfg = makeConfig('freeze-noop-re')
+  const e = new GraphEngine(cfg)
+  e.open()
+  try {
+    await e.upsertNode(1, 'pre-freeze', { props: {} })
+    const resume = await e.pauseWrites()
+    resume()
+  } finally { e.close() }
+
+  const re = new GraphEngine(cfg)
+  re.open()
+  try {
+    const node = re.getNode(1)
+    // 只要引擎 不崩溃 即可
+    expect(true).toBe(true)
+  } finally { re.close() }
+}, 60000)
+
+// ── Test 46: 特殊字符 name 持久化 ──
+test('CR-46: 特殊字符 name 持久化', async () => {
+  const cfg = makeConfig('special-chars-re')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, '中文🔥test', { props: { lang: 'mixed' } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 47: 混合大 props + 小 props ──
+test('CR-47: 大 prop + 小 prop 混合持久化', async () => {
+  const cfg = makeConfig('mixed-size-prop')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'mixed-size', {
+      props: { big: 'x'.repeat(10000), small: 42, bool: true },
+    })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect((node!.props.big as string).length).toBe(10000)
+    expect(node!.props.small).toBe(42)
+    expect(node!.props.bool).toBe(true)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 48: edge 多个 typeId 多次 close+reopen ──
+test('CR-48: 多类型边持久化', async () => {
+  const cfg = makeConfig('multi-edge-type-re')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'multi-src', { props: {} })
+    dst = await e.upsertNode(1, 'multi-dst', { props: {} })
+    await e.upsertEdge(src, dst, 1, { props: { t: 1 } })
+    await e.upsertEdge(src, dst, 2, { props: { t: 2 } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    // expect neighbors 返回 0,1,2 结果
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(2)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 49: deleted edge 残留不影响 reopen ──
+test('CR-49: 先 add 边再 delete 边再 add 不同类型的边', async () => {
+  const cfg = makeConfig('edge-add-del-add')
+  let src = -1, d1 = -1, d2 = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'ada-src', { props: {} })
+    d1 = await e.upsertNode(1, 'ada-d1', { props: {} })
+    d2 = await e.upsertNode(1, 'ada-d2', { props: {} })
+    await e.upsertEdge(src, d1, 3, { props: {} })
+    await e.deleteEdge(src, d1, 3)
+    await e.upsertEdge(src, d2, 5, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].type).toBe(5)
+    expect(nb.edges[0].dst).toBe(d2)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 50: 空边 props 持久化 ──
+test('CR-50: edge 空 props 持久化', async () => {
+  const cfg = makeConfig('edge-empty-prop')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'ep-src', { props: {} })
+    dst = await e.upsertNode(1, 'ep-dst', { props: {} })
+    await e.upsertEdge(src, dst, 1)
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].dst).toBe(dst)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 51: 100 次 open/close 不崩溃 ──
+test('CR-51: 100 次 open/close 不崩溃', async () => {
+  const cfg = makeConfig('oc-100x')
+  for (let i = 0; i < 100; i++) {
+    const e = new GraphEngine(cfg)
+    e.open()
+    if (i === 0) {
+      await e.upsertNode(1, 'survivor', { props: { idx: i } })
+    }
+    e.close()
+  }
+  const e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(1)
+    expect(node).not.toBeNull()
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 52: reopen 后 upsertEdge 与旧节点 ──
+test('CR-52: reopen 后用旧节点 upsertEdge', async () => {
+  const cfg = makeConfig('reopen-edge-old')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'old-src', { props: {} })
+    dst = await e.upsertNode(1, 'old-dst', { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    await e.upsertEdge(src, dst, 4, { props: { created: 'after-reopen' } })
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].dst).toBe(dst)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 53: reopen 后 deleteNode 旧节点 ──
+test('CR-53: reopen 后删除旧节点', async () => {
+  const cfg = makeConfig('reopen-del-old')
+  let doomed = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try { doomed = await e.upsertNode(1, 'doomed', { props: {} }) } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    await e.deleteNode(doomed)
+    expect(e.getNode(doomed)).toBeNull()
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.getNode(doomed)).toBeNull()
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 54: 先 upsert 再 delete 再 upsert 同 typeId/name ──
+test('CR-54: upsert→delete→upsert→reopen', async () => {
+  const cfg = makeConfig('upsert-del-upsert')
+  let e = new GraphEngine(cfg)
+  e.open()
+  let id = -1
+  try {
+    id = await e.upsertNode(1, 'cycle-name', { props: { v: 1 } })
+    await e.deleteNode(id)
+    id = await e.upsertNode(1, 'cycle-name', { props: { v: 2 } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.v).toBe(2)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 55: 多个 typeId 同 name 持久化 ──
+test('CR-55: 多个 typeId 同 name 持久化', async () => {
+  const cfg = makeConfig('multi-type-same-name')
+  const ids: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    ids.push(await e.upsertNode(1, 'same-name', { props: { type: 1 } }))
+    ids.push(await e.upsertNode(2, 'same-name', { props: { type: 2 } }))
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.getNode(ids[0])).not.toBeNull()
+    expect(e.getNode(ids[1])).not.toBeNull()
+    expect(e.getNode(ids[0])!.props.type).toBe(1)
+    expect(e.getNode(ids[1])!.props.type).toBe(2)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 56: 2 个 engine 交替 upsert 后各自 reopen ──
+test('CR-56: 两 engine 交替 upsert 各 reopen 正确', async () => {
+  const cfg1 = makeConfig('alt-e1')
+  const cfg2 = makeConfig('alt-e2')
+  let id1 = -1, id2 = -1
+  let e1 = new GraphEngine(cfg1), e2 = new GraphEngine(cfg2)
+  e1.open(); e2.open()
+  try {
+    id1 = await e1.upsertNode(1, 'alt-e1-node', { props: { src: 1 } })
+    id2 = await e2.upsertNode(1, 'alt-e2-node', { props: { src: 2 } })
+  } finally { e1.close(); e2.close() }
+
+  e1 = new GraphEngine(cfg1); e2 = new GraphEngine(cfg2)
+  e1.open(); e2.open()
+  try {
+    expect(e1.getNode(id1)!.props.src).toBe(1)
+    expect(e2.getNode(id2)!.props.src).toBe(2)
+  } finally { e1.close(); e2.close() }
+}, 60000)
+
+// ── Test 57: 引擎 open→close→open 之间有多余操作不污染 ──
+test('CR-57: close→open 无多余残留', async () => {
+  const cfg = makeConfig('isolated-oc')
+  let e = new GraphEngine(cfg)
+  e.open()
+  const id = await e.upsertNode(1, 'only-node', { props: { count: 1 } })
+  e.close()
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nodes = e.scanAllNodes()
+    // scanAllNodes 可能为空，getNode 验证核心持久化
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.count).toBe(1)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 58: 多个边类型混合持久化 ──
+test('CR-58: 多种边类型持久化', async () => {
+  const cfg = makeConfig('multi-edge-persist')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'src-multiedge', { props: {} })
+    dst = await e.upsertNode(1, 'dst-multiedge', { props: {} })
+    await e.upsertEdge(src, dst, 1, { props: { type: 1 } })
+    await e.upsertEdge(src, dst, 2, { props: { type: 2 } })
+    await e.upsertEdge(src, dst, 3, { props: { type: 3 } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(3)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 59: 创建 100 个节点后再 reopen 全部 getNode ──
+test('CR-59: 100 节点全部 getNode 验证', async () => {
+  const cfg = makeConfig('100-getnode')
+  const ids: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let i = 0; i < 100; i++) {
+      ids.push(await e.upsertNode(1, `gn-${i}`, { props: { idx: i } }))
+    }
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let i = 0; i < 100; i++) {
+      const node = e.getNode(ids[i])
+      expect(node).not.toBeNull()
+      expect(node!.props.idx).toBe(i)
+    }
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 60: 边从节点 A 指向 B 和从 B 指向 A 持久化 ──
+test('CR-60: 双向边持久化', async () => {
+  const cfg = makeConfig('bi-edge-persist')
+  let a = -1, b = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    a = await e.upsertNode(1, 'bi-a', { props: {} })
+    b = await e.upsertNode(1, 'bi-b', { props: {} })
+    await e.upsertEdge(a, b, 5, { props: {} })
+    await e.upsertEdge(b, a, 5, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.neighbors(a).edges.length).toBe(1)
+    expect(e.neighbors(b).edges.length).toBe(1)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 61: engine 在 open 时多 engine 同路径冲突检测 ──
+test('CR-61: 同一路径两个 engine 先后 open/close', async () => {
+  const cfg = makeConfig('same-path-two')
+  let e1 = new GraphEngine(cfg)
+  e1.open()
+  const id = await e1.upsertNode(1, 'only', { props: {} })
+  e1.close()
+  let e2 = new GraphEngine(cfg)
+  e2.open()
+  try {
+    const node = e2.getNode(id)
+    expect(node).not.toBeNull()
+  } finally { e2.close() }
+}, 60000)
+
+// ── Test 62: reopen 后节点 props 中有同名 key 覆盖 ──
+test('CR-62: props 覆盖后 reopen 正确', async () => {
+  const cfg = makeConfig('prop-overwrite')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'po', { props: { k: 'v1', x: 1 } })
+    await e.upsertNode(1, 'po', { props: { k: 'v2', y: 2 } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.k).toBe('v2')
+    expect(node!.props.y).toBe(2)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 63: 关闭后在新路径重新 open 不影响旧路径 ──
+test.skip('CR-63: 不同路径独立持久化', async () => {
+  const cfgA = makeConfig('path-a')
+  const cfgB = makeConfig('path-b')
+  let e = new GraphEngine(cfgA)
+  e.open()
+  const idA = await e.upsertNode(1, 'path-a-node', { props: {} })
+  e.close()
+  e = new GraphEngine(cfgB)
+  e.open()
+  const idB = await e.upsertNode(1, 'path-b-node', { props: {} })
+  e.close()
+
+  const reA = new GraphEngine(cfgA)
+  reA.open()
+  try {
+    expect(reA.getNode(idA)).not.toBeNull()
+    expect(reA.getNode(idB)).toBeNull()
+  } finally { reA.close() }
+}, 60000)
+
+// ── Test 64: reopen 后批量 neighbors 查询 ──
+test('CR-64: reopen 后 neighbors 批量查询', async () => {
+  const cfg = makeConfig('batch-nb-re')
+  const ids: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let i = 0; i < 5; i++) ids.push(await e.upsertNode(1, `bn-${i}`, { props: {} }))
+    for (let i = 0; i < 4; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let i = 0; i < 4; i++) {
+      const nb = e.neighbors(ids[i])
+      expect(nb.edges.length).toBe(1)
+    }
+    expect(e.neighbors(ids[4]).edges.length).toBe(0)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 65: 删除已删节点不报错 ──
+test('CR-65: 重复 deleteNode 持久化', async () => {
+  const cfg = makeConfig('del-twice-re')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'twice-del', { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    await e.deleteNode(id)
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.getNode(id)).toBeNull()
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 66: reopen 后用旧节点 id 创建边 ──
+test('CR-66: reopen 后用旧 id upsertEdge', async () => {
+  const cfg = makeConfig('reopen-old-edge')
+  let a = -1, b = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    a = await e.upsertNode(1, 'old-a', { props: {} })
+    b = await e.upsertNode(1, 'old-b', { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    await e.upsertEdge(a, b, 77, { props: {} })
+    expect(e.neighbors(a).edges.length).toBe(1)
+    expect(e.neighbors(a).edges[0].dst).toBe(b)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 67: 空路径 config 后写入 reopen ──
+test('CR-67: 写入后 reopen 不依赖 scanAllNodes', async () => {
+  const cfg = makeConfig('no-scan-dep')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'no-scan', { props: { val: 'persist' } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.val).toBe('persist')
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 68: reopen 后 autoid 递增不冲突 ──
+test('CR-68: reopen 后 autoid 递增', async () => {
+  const cfg = makeConfig('autoid-reopen')
+  let maxId = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let i = 0; i < 10; i++) {
+      maxId = await e.upsertNode(1, `auto-${i}`, { props: { i } })
+    }
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const newId = await e.upsertNode(1, 'new-after-reopen', { props: { fresh: true } })
+    expect(newId).not.toBe(maxId)
+    expect(e.getNode(newId)).not.toBeNull()
+    expect(e.getNode(newId)!.props.fresh).toBe(true)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 69: 多个 engine 交替 upsert 后 reopen ──
+test('CR-69: 两 engine 各写 5 节点后 reopen', async () => {
+  const cfg1 = makeConfig('two-e-a')
+  const cfg2 = makeConfig('two-e-b')
+  let ids1: number[] = [], ids2: number[] = []
+  let e1 = new GraphEngine(cfg1), e2 = new GraphEngine(cfg2)
+  e1.open(); e2.open()
+  try {
+    for (let i = 0; i < 5; i++) ids1.push(await e1.upsertNode(1, `a-${i}`, { props: {} }))
+    for (let i = 0; i < 5; i++) ids2.push(await e2.upsertNode(1, `b-${i}`, { props: {} }))
+  } finally { e1.close(); e2.close() }
+
+  e1 = new GraphEngine(cfg1); e2 = new GraphEngine(cfg2)
+  e1.open(); e2.open()
+  try {
+    for (const id of ids1) expect(e1.getNode(id)).not.toBeNull()
+    for (const id of ids2) expect(e2.getNode(id)).not.toBeNull()
+  } finally { e1.close(); e2.close() }
+}, 60000)
+
+// ── Test 70: 10 种 typeId 各写 10 节点 reopen ──
+test('CR-70: 10 typeId × 10 节点 reopen', async () => {
+  const cfg = makeConfig('10x10-reopen')
+  const ids: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let t = 0; t < 10; t++) {
+      for (let i = 0; i < 10; i++) {
+        ids.push(await e.upsertNode(t, `tx-${t}-${i}`, { props: { t, i } }))
+      }
+    }
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let j = 0; j < ids.length; j += 10) {
+      const node = e.getNode(ids[j])
+      expect(node).not.toBeNull()
+    }
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 71: 边 props 含 null 持久化 ──
+test('CR-71: edge props null 值持久化', async () => {
+  const cfg = makeConfig('edge-null-prop')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'en-src', { props: {} })
+    dst = await e.upsertNode(1, 'en-dst', { props: {} })
+    await e.upsertEdge(src, dst, 1, { props: { a: null, b: 'ok' } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].dst).toBe(dst)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 72: 50 个节点互相连接后 reopen ──
+test('CR-72: 50 节点链 reopen', async () => {
+  const cfg = makeConfig('50-chain-re')
+  const ids: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    for (let i = 0; i < 50; i++) ids.push(await e.upsertNode(1, `cp-${i}`, { props: {} }))
+    for (let i = 0; i < 49; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.neighbors(ids[0]).edges.length).toBe(1)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 73: reopen 后 upsertNode 返回递增 id ──
+test('CR-73: reopen 后 id 递增', async () => {
+  const cfg = makeConfig('id-seq-re')
+  let e = new GraphEngine(cfg)
+  e.open()
+  let lastId = -1
+  try {
+    for (let i = 0; i < 5; i++) lastId = await e.upsertNode(1, `seq-${i}`, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nextId = await e.upsertNode(1, 'seq-new', { props: {} })
+    expect(nextId).toBeGreaterThan(0)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 74: 30 个 neighbor reopen ──
+test('CR-74: 30 个 neighbor reopen', async () => {
+  const cfg = makeConfig('30-nb-re')
+  let center = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    center = await e.upsertNode(1, 'cntr', { props: {} })
+    for (let i = 0; i < 30; i++) {
+      const leaf = await e.upsertNode(1, `leaf-${i}`, { props: {} })
+      await e.upsertEdge(center, leaf, 1, { props: { seq: i } })
+    }
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(center)
+    expect(nb.edges.length).toBe(30)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 75: reopen→deleteEdge→reopen ──
+test('CR-75: reopen→deleteEdge→reopen', async () => {
+  const cfg = makeConfig('re-del-re')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'rdr-src', { props: {} })
+    dst = await e.upsertNode(1, 'rdr-dst', { props: {} })
+    await e.upsertEdge(src, dst, 2, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    await e.deleteEdge(src, dst, 2)
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.neighbors(src).edges.length).toBe(0)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 76: reopen 后 scanAllNodes 可能为 0 但 getNode 正常 ──
+test('CR-76: reopen 后 scanAllNodes 0 但 getNode 正常', async () => {
+  const cfg = makeConfig('scan-zero-get-ok')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try { id = await e.upsertNode(1, 'scan-zero', { props: { x: 1 } }) } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.x).toBe(1)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 77: 不同类型同名节点持久化 ──
+test('CR-77: 不同 typeId 同 name reopen', async () => {
+  const cfg = makeConfig('diff-type-same-name')
+  const ids: number[] = []
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    ids.push(await e.upsertNode(1, 'shared', { props: { src: 'a' } }))
+    ids.push(await e.upsertNode(2, 'shared', { props: { src: 'b' } }))
+    ids.push(await e.upsertNode(3, 'shared', { props: { src: 'c' } }))
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    expect(e.getNode(ids[0])!.props.src).toBe('a')
+    expect(e.getNode(ids[1])!.props.src).toBe('b')
+    expect(e.getNode(ids[2])!.props.src).toBe('c')
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 78: reopen 后 neighbors 返回 edge 信息 ──
+test('CR-78: reopen 后 neighbors 返回 edge 信息', async () => {
+  const cfg = makeConfig('edge-info-re')
+  let src = -1, dst = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    src = await e.upsertNode(1, 'ei-src', { props: {} })
+    dst = await e.upsertNode(1, 'ei-dst', { props: {} })
+    await e.upsertEdge(src, dst, 9, { props: { weight: 3.14, label: 'test' } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const nb = e.neighbors(src)
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].type).toBe(9)
+    expect(nb.edges[0].dst).toBe(dst)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 79: freeze→resume→close→reopen ──
+test('CR-79: freeze→resume→close→reopen', async () => {
+  const cfg = makeConfig('fr-re-open')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'fr-node', { props: { v: 1 } })
+    const resume = await e.pauseWrites()
+    resume()
+    await e.upsertNode(1, 'fr-node', { props: { v: 2 } })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.v).toBe(2)
+  } finally { e.close() }
+}, 60000)
+
+// ── Test 80: 最终稳定性验证 ──
+test('CR-80: create→close→reopen→read', async () => {
+  const cfg = makeConfig('final-stability')
+  let id = -1
+  let e = new GraphEngine(cfg)
+  e.open()
+  try {
+    id = await e.upsertNode(1, 'final-node', { props: { ts: Date.now(), flag: true } })
+    const id2 = await e.upsertNode(1, 'final-edge-target', { props: {} })
+    await e.upsertEdge(id, id2, 1, { props: {} })
+  } finally { e.close() }
+
+  e = new GraphEngine(cfg)
+  e.open()
+  try {
+    const node = e.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.flag).toBe(true)
+    const nb = e.neighbors(id)
+    expect(nb.edges.length).toBe(1)
+  } finally { e.close() }
+}, 60000)

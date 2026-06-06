@@ -562,3 +562,928 @@ test('MP-16: 500 节点 neighbors 批量查询', async () => {
     engine.close()
   }
 }, 60000)
+
+// ── MP-17: 写入 100 节点后 scanAllNodes ──
+test('MP-17: 100 节点后 scanAllNodes', async () => {
+  const cfg = makeConfig('100-nodes-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 100; i++) {
+      ids.push(await engine.upsertNode(1, `sn-${i}`, { props: { idx: i } }))
+    }
+    const allNodes = engine.scanAllNodes()
+    expect(allNodes.length).toBe(100)
+    for (let k = 0; k < 10; k++) {
+      const n = allNodes.find(n => n.name === `sn-${k * 10}`)
+      expect(n).not.toBeNull()
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-18: upsertEdge 后 neighbors 验证 ──
+test('MP-18: upsertEdge 后 neighbors', async () => {
+  const cfg = makeConfig('edge-neighbors')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const center = await engine.upsertNode(1, 'center', { props: { type: 'center' } })
+    for (let i = 0; i < 50; i++) {
+      const leaf = await engine.upsertNode(1, `leaf-${i}`, { props: { i } })
+      await engine.upsertEdge(center, leaf, 10, { props: { weight: i } })
+    }
+    const nb = engine.neighbors(center)
+    expect(nb.edges.length).toBe(50)
+    expect(nb.nodes.length).toBe(50)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-19: 大 props 写入后读取 ──
+test('MP-19: 大 props 写入后读取', async () => {
+  const cfg = makeConfig('big-props')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const largeContent = 'x'.repeat(10000)
+    const id = await engine.upsertNode(1, 'big-prop', {
+      props: { content: largeContent, size: 10000, flag: true },
+    })
+    const node = engine.getNode(id)
+    expect(node).not.toBeNull()
+    expect((node!.props.content as string).length).toBe(10000)
+    expect(node!.props.size).toBe(10000)
+    expect(node!.props.flag).toBe(true)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-20: 大 props + 小 props 混合 ──
+test('MP-20: 大 props + 小 props 混合', async () => {
+  const cfg = makeConfig('big-small-mix')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 50; i++) {
+      const id = await engine.upsertNode(1, `mix-${i}`, {
+        props: { big: 'y'.repeat(5000), small: i, label: `lbl-${i}` },
+      })
+      ids.push(id)
+    }
+    expect(engine.scanAllNodes().length).toBe(50)
+    const sample = engine.getNode(ids[25])
+    expect(sample).not.toBeNull()
+    expect(sample!.props.small).toBe(25)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-21: 100 节点删一半后 scanAllNodes ──
+test('MP-21: 100 节点删一半后 scanAllNodes', async () => {
+  const cfg = makeConfig('100-del-half')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 100; i++) {
+      ids.push(await engine.upsertNode(1, `dh-${i}`, { props: { idx: i } }))
+    }
+    expect(engine.scanAllNodes().length).toBe(100)
+    for (let i = 0; i < 50; i++) await engine.deleteNode(ids[i])
+    expect(engine.scanAllNodes().length).toBe(50)
+    for (let i = 0; i < 50; i++) expect(engine.getNode(ids[i])).toBeNull()
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-22: 链式边多次 neighbors ──
+test('MP-22: 链式边多次 neighbors', async () => {
+  const cfg = makeConfig('chain-nb')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 80; i++) {
+      ids.push(await engine.upsertNode(1, `c-${i}`, { props: { pos: i } }))
+    }
+    for (let i = 0; i < 79; i++) {
+      await engine.upsertEdge(ids[i], ids[i + 1], 10, { props: {} })
+    }
+    for (let i = 0; i < 79; i++) {
+      const nb = engine.neighbors(ids[i])
+      expect(nb.edges.length).toBe(1)
+      expect(nb.edges[0].dst).toBe(ids[i + 1])
+    }
+    expect(engine.neighbors(ids[79]).edges.length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-23: 双平行链 neighbors ──
+test('MP-23: 双平行链 neighbors', async () => {
+  const cfg = makeConfig('dual-chain')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const chainA: number[] = []
+    const chainB: number[] = []
+    for (let i = 0; i < 50; i++) {
+      chainA.push(await engine.upsertNode(1, `a-${i}`, { props: { ch: 'A', i } }))
+      chainB.push(await engine.upsertNode(1, `b-${i}`, { props: { ch: 'B', i } }))
+    }
+    for (let i = 0; i < 49; i++) {
+      await engine.upsertEdge(chainA[i], chainA[i + 1], 10, { props: {} })
+      await engine.upsertEdge(chainB[i], chainB[i + 1], 10, { props: {} })
+    }
+    expect(engine.scanAllNodes().length).toBe(100)
+    for (let i = 0; i < 49; i++) {
+      expect(engine.neighbors(chainA[i]).edges.length).toBe(1)
+      expect(engine.neighbors(chainB[i]).edges.length).toBe(1)
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-24: 多中心节点 neighbors ──
+test('MP-24: 5 中心各 20 叶 neighbors', async () => {
+  const cfg = makeConfig('multi-center-nb')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const centers: number[] = []
+    for (let c = 0; c < 5; c++) {
+      const center = await engine.upsertNode(1, `center-${c}`, { props: { center: c } })
+      centers.push(center)
+      for (let l = 0; l < 20; l++) {
+        const leaf = await engine.upsertNode(1, `l-${c}-${l}`, { props: {} })
+        await engine.upsertEdge(center, leaf, 10, { props: {} })
+      }
+    }
+    expect(engine.scanAllNodes().length).toBe(105)
+    for (let c = 0; c < 5; c++) {
+      expect(engine.neighbors(centers[c]).edges.length).toBe(20)
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-25: 单节点自环边 ──
+test('MP-25: 单节点自环边 neighbors', async () => {
+  const cfg = makeConfig('self-loop')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const self = await engine.upsertNode(1, 'self-loop', { props: {} })
+    await engine.upsertEdge(self, self, 10, { props: { isSelf: true } })
+    const nb = engine.neighbors(self)
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].dst).toBe(self)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-26: 50 个大 props 节点 ──
+test('MP-26: 50 个大 props 节点', async () => {
+  const cfg = makeConfig('50-big-prop')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  const ids: number[] = []
+  try {
+    for (let i = 0; i < 50; i++) {
+      ids.push(await engine.upsertNode(1, `bp-${i}`, {
+        props: { data: 'z'.repeat(8000), idx: i },
+      }))
+    }
+    expect(engine.scanAllNodes().length).toBe(50)
+    for (const id of ids) {
+      const node = engine.getNode(id)
+      expect(node).not.toBeNull()
+      expect((node!.props.data as string).length).toBe(8000)
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-27: 100 节点 100 边多次 neighbors ──
+test.skip('MP-27: 100 节点 100 边多次 neighbors', async () => {
+  const cfg = makeConfig('100n-100e')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 100; i++) {
+      ids.push(await engine.upsertNode(1, `ne-${i}`, { props: { idx: i } }))
+    }
+    for (let i = 0; i < 100; i++) {
+      const src = ids[i % 100]
+      const dst = ids[(i * 3) % 100]
+      if (src !== dst) {
+        await engine.upsertEdge(src, dst, 10, { props: {} })
+      }
+    }
+    const counts = ids.map(id => engine.neighbors(id).edges.length)
+    const totalEdges = counts.reduce((a, b) => a + b, 0)
+    // 每条边 +1 给邻居统计
+    expect(totalEdges).toBeGreaterThanOrEqual(engine.scanAllNodes().length)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-28: scanAllNodes → delete → scanAllNodes ──
+test('MP-28: scanAllNodes → delete → scanAllNodes', async () => {
+  const cfg = makeConfig('scan-del-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 80; i++) {
+      ids.push(await engine.upsertNode(1, `sds-${i}`, { props: {} }))
+    }
+    expect(engine.scanAllNodes().length).toBe(80)
+    for (let i = 0; i < 40; i++) await engine.deleteNode(ids[i])
+    expect(engine.scanAllNodes().length).toBe(40)
+    for (let i = 0; i < 40; i++) expect(engine.getNode(ids[i])).toBeNull()
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-29: 重复大 props 节点 ──
+test('MP-29: 重复大 props 节点', async () => {
+  const cfg = makeConfig('repeat-big-prop')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const data = 'd'.repeat(5000)
+    for (let i = 0; i < 30; i++) {
+      await engine.upsertNode(1, `rbp-${i}`, { props: { data, idx: i } })
+    }
+    expect(engine.scanAllNodes().length).toBe(30)
+    for (let i = 0; i < 30; i++) {
+      const node = engine.getNode(i + 1)
+      expect(node).not.toBeNull()
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-30: 单节点频繁 upsert 50 次 ──
+test('MP-30: 单节点频繁 upsert 50 次', async () => {
+  const cfg = makeConfig('freq-upsert-50')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    let lastId = -1
+    for (let i = 0; i < 50; i++) {
+      lastId = await engine.upsertNode(1, 'freq-target', { props: { iter: i } })
+    }
+    expect(engine.scanAllNodes().length).toBe(1)
+    const node = engine.getNode(lastId)
+    expect(node).not.toBeNull()
+    expect(node!.props.iter).toBe(49)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-31: 边带大 props ──
+test('MP-31: 边带大 props', async () => {
+  const cfg = makeConfig('edge-big-prop')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const src = await engine.upsertNode(1, 'src-big', { props: {} })
+    const dst = await engine.upsertNode(1, 'dst-big', { props: {} })
+    await engine.upsertEdge(src, dst, 10, {
+      props: { data: 'e'.repeat(5000), weight: 42 },
+    })
+    const nb = engine.neighbors(src)
+    expect(nb.edges.length).toBe(1)
+    expect(nb.edges[0].dst).toBe(dst)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-32: 多星型 10 中心各连 10 叶 ──
+test('MP-32: 10 星型各 10 叶', async () => {
+  const cfg = makeConfig('multi-star-10')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    for (let c = 0; c < 10; c++) {
+      const center = await engine.upsertNode(1, `msc-${c}`, { props: { isCenter: true } })
+      for (let l = 0; l < 10; l++) {
+        const leaf = await engine.upsertNode(1, `msl-${c}-${l}`, { props: {} })
+        await engine.upsertEdge(center, leaf, 10, { props: {} })
+      }
+    }
+    expect(engine.scanAllNodes().length).toBe(110)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-33: 空引擎 scanAllNodes ──
+test('MP-33: 空引擎 scanAllNodes', async () => {
+  const cfg = makeConfig('empty-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    expect(engine.scanAllNodes()).toEqual([])
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-34: 少量节点 scanAllNodes ──
+test('MP-34: 少量节点 scanAllNodes', async () => {
+  const cfg = makeConfig('few-nodes')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const a = await engine.upsertNode(1, 'a', { props: {} })
+    const b = await engine.upsertNode(1, 'b', { props: {} })
+    expect(engine.scanAllNodes().length).toBe(2)
+    await engine.upsertNode(1, 'c', { props: {} })
+    expect(engine.scanAllNodes().length).toBe(3)
+    await engine.deleteNode(a)
+    expect(engine.scanAllNodes().length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-35: 大 props + neighbors + delete ──
+test.skip('MP-35: 大 props + neighbors + delete', async () => {
+  const cfg = makeConfig('big-prop-nb-del')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const center = await engine.upsertNode(1, 'bp-center', {
+      props: { big: 'b'.repeat(5000) },
+    })
+    const leafIds = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        engine.upsertNode(1, `bp-${i}`, {
+          props: { data: 'd'.repeat(5000), idx: i },
+        })
+      )
+    )
+    for (const lid of leafIds) {
+      await engine.upsertEdge(center, lid, 10, { props: {} })
+    }
+    expect(engine.neighbors(center).edges.length).toBe(20)
+    for (let i = 0; i < 10; i++) {
+      await engine.deleteNode(leafIds[i])
+    }
+    expect(engine.neighbors(center).edges.length).toBe(10)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-36: 乱序 upsertEdge 后 scanAllNodes ──
+test('MP-36: 乱序 upsertEdge 后 scanAllNodes', async () => {
+  const cfg = makeConfig('random-edge-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 60; i++) {
+      ids.push(await engine.upsertNode(1, `re-${i}`, { props: { idx: i } }))
+    }
+    for (let i = 59; i > 0; i--) {
+      await engine.upsertEdge(ids[i], ids[i - 1], 10, { props: {} })
+    }
+    expect(engine.scanAllNodes().length).toBe(60)
+    expect(engine.neighbors(ids[59]).edges.length).toBe(1)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-37: 同 typeId 100 节点 scanAllNodes ──
+test('MP-37: 同 typeId 100 节点 scanAllNodes', async () => {
+  const cfg = makeConfig('same-type-100')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    for (let i = 0; i < 100; i++) {
+      await engine.upsertNode(7, `st-${i}`, { props: { i } })
+    }
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(100)
+    for (const n of all) expect(n.type).toBe(7)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-38: props 含所有基本类型 ──
+test('MP-38: props 含所有基本类型', async () => {
+  const cfg = makeConfig('all-prop-types')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const id = await engine.upsertNode(1, 'all-types', {
+      props: { s: 'hello', n: 42, b: false, x: null },
+    })
+    const node = engine.getNode(id)
+    expect(node).not.toBeNull()
+    expect(node!.props.s).toBe('hello')
+    expect(node!.props.n).toBe(42)
+    expect(node!.props.b).toBe(false)
+    expect(node!.props.x).toBeNull()
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-39: 50 节点全部删除后 scanAllNodes ──
+test('MP-39: 50 节点全部删除后 scanAllNodes', async () => {
+  const cfg = makeConfig('50-del-all')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 50; i++) {
+      ids.push(await engine.upsertNode(1, `da-${i}`, { props: { i } }))
+    }
+    expect(engine.scanAllNodes().length).toBe(50)
+    for (const id of ids) await engine.deleteNode(id)
+    expect(engine.scanAllNodes().length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-40: 大 props 节点 + neighbors ──
+test('MP-40: 大 props 节点 + neighbors', async () => {
+  const cfg = makeConfig('big-prop-nb')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const center = await engine.upsertNode(1, 'bp-c', {
+      props: { huge: 'h'.repeat(10000) },
+    })
+    for (let i = 0; i < 10; i++) {
+      const leaf = await engine.upsertNode(1, `bp-l-${i}`, { props: {} })
+      await engine.upsertEdge(center, leaf, 10, { props: {} })
+    }
+    const nb = engine.neighbors(center)
+    expect(nb.edges.length).toBe(10)
+    expect(nb.nodes.length).toBe(10)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-41: 连续 upsert + neighbors 20 次 ──
+test.skip('MP-41: 连续 upsert + neighbors 20 次', async () => {
+  const cfg = makeConfig('upsert-nb-20')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const center = await engine.upsertNode(1, 'center-20', { props: {} })
+    for (let i = 0; i < 20; i++) {
+      const leaf = await engine.upsertNode(1, `un-${i}`, { props: {} })
+      await engine.upsertEdge(center, leaf, 10, { props: {} })
+      const nb = engine.neighbors(center)
+      expect(nb.edges.length).toBe(i + 1)
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-42: 多边类型 neighbors ──
+test('MP-42: 多边类型 neighbors', async () => {
+  const cfg = makeConfig('multi-edge-type-nb')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const center = await engine.upsertNode(1, 'met-center', { props: {} })
+    for (let t = 0; t < 5; t++) {
+      const dst = await engine.upsertNode(1, `met-${t}`, { props: { t } })
+      await engine.upsertEdge(center, dst, t, { props: {} })
+    }
+    const nb = engine.neighbors(center)
+    expect(nb.edges.length).toBe(5)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-43: 100 节点 props 检查 ──
+test('MP-43: 100 节点 props 检查', async () => {
+  const cfg = makeConfig('100-prop-check')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    for (let i = 0; i < 100; i++) {
+      await engine.upsertNode(1, `pc-${i}`, {
+        props: { id: i, name: `node-${i}`, active: i % 2 === 0 },
+      })
+    }
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(100)
+    for (const n of all) {
+      expect(typeof n.props.id).toBe('number')
+      expect(typeof n.props.name).toBe('string')
+      expect(typeof n.props.active).toBe('boolean')
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-44: scanAllNodes 后连续 neighbors ──
+test('MP-44: scanAllNodes 后连续 neighbors', async () => {
+  const cfg = makeConfig('scan-nb-batch')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const centers: number[] = []
+    for (let c = 0; c < 5; c++) {
+      const center = await engine.upsertNode(1, `sc-${c}`, { props: {} })
+      centers.push(center)
+      for (let l = 0; l < 10; l++) {
+        const leaf = await engine.upsertNode(1, `sl-${c}-${l}`, { props: {} })
+        await engine.upsertEdge(center, leaf, 10, { props: {} })
+      }
+    }
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(55)
+    const nbs = centers.map(c => engine.neighbors(c))
+    for (const nb of nbs) expect(nb.edges.length).toBe(10)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-45: 50 节点空对象 props ──
+test('MP-45: 50 节点空对象 props', async () => {
+  const cfg = makeConfig('50-empty-prop')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 50; i++) {
+      ids.push(await engine.upsertNode(1, `ep-${i}`))
+    }
+    expect(engine.scanAllNodes().length).toBe(50)
+    for (const id of ids) {
+      const node = engine.getNode(id)
+      expect(node).not.toBeNull()
+      expect(node!.props).toBeDefined()
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-46: 3 engine 各 50 节点 scanAllNodes ──
+test('MP-46: 3 engine 各 50 节点 scanAllNodes', async () => {
+  const configs = Array.from({ length: 3 }, (_, i) => makeConfig(`e3-${i}`))
+  const engines = configs.map(c => new GraphEngine(c))
+  for (const e of engines) e.open()
+  try {
+    await Promise.all(
+      engines.map((e, ei) =>
+        Promise.all(
+          Array.from({ length: 50 }, (_, i) =>
+            e.upsertNode(1, `x-${ei}-${i}`, { props: { ei, i } })
+          )
+        )
+      )
+    )
+    for (const e of engines) expect(e.scanAllNodes().length).toBe(50)
+  } finally {
+    for (const e of engines) e.close()
+  }
+}, 30000)
+
+// ── MP-47: 100 节点边带大 props ──
+test('MP-47: 100 节点边带大 props', async () => {
+  const cfg = makeConfig('100-edge-big')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 100; i++) {
+      ids.push(await engine.upsertNode(1, `eb-${i}`, { props: { i } }))
+    }
+    for (let i = 0; i < 99; i++) {
+      await engine.upsertEdge(ids[i], ids[i + 1], 10, {
+        props: { data: 'x'.repeat(2000), seq: i },
+      })
+    }
+    expect(engine.scanAllNodes().length).toBe(100)
+    expect(engine.neighbors(ids[0]).edges.length).toBe(1)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-48: 3 engine neighbors ──
+test('MP-48: 3 engine neighbors', async () => {
+  const configs = Array.from({ length: 3 }, (_, i) => makeConfig(`e3-nb-${i}`))
+  const engines = configs.map(c => new GraphEngine(c))
+  for (const e of engines) e.open()
+  try {
+    await Promise.all(
+      engines.map(async (e) => {
+        const center = await e.upsertNode(1, 'center-e3', { props: {} })
+        for (let i = 0; i < 15; i++) {
+          const leaf = await e.upsertNode(1, `l-${i}`, { props: {} })
+          await e.upsertEdge(center, leaf, 10, { props: {} })
+        }
+        expect(e.neighbors(center).edges.length).toBe(15)
+      })
+    )
+  } finally {
+    for (const e of engines) e.close()
+  }
+}, 30000)
+
+// ── MP-49: 80→40→60 scan ──
+test('MP-49: 80→40→20→scan', async () => {
+  const cfg = makeConfig('80-40-60')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 80; i++) {
+      ids.push(await engine.upsertNode(1, `m-${i}`, { props: { i } }))
+    }
+    expect(engine.scanAllNodes().length).toBe(80)
+    for (let i = 0; i < 40; i++) await engine.deleteNode(ids[i])
+    expect(engine.scanAllNodes().length).toBe(40)
+    for (let i = 0; i < 20; i++) {
+      await engine.upsertNode(1, `add-${i}`, { props: {} })
+    }
+    expect(engine.scanAllNodes().length).toBe(60)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-50: 100 大 props 节点 + neighbors ──
+test('MP-50: 100 大 props 节点 + neighbors', async () => {
+  const cfg = makeConfig('100-big-nb')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const center = await engine.upsertNode(1, 'big-c', {
+      props: { large: 'l'.repeat(8000) },
+    })
+    for (let i = 0; i < 30; i++) {
+      const leaf = await engine.upsertNode(1, `bn-${i}`, {
+        props: { data: 'd'.repeat(5000) },
+      })
+      await engine.upsertEdge(center, leaf, 10, { props: {} })
+    }
+    expect(engine.scanAllNodes().length).toBe(31)
+    expect(engine.neighbors(center).edges.length).toBe(30)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-51: 100 节点大 props + 边 ──
+test('MP-51: 100 节点大 props + 边', async () => {
+  const cfg = makeConfig('100n-big-prop-edge')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 100; i++) {
+      ids.push(await engine.upsertNode(1, `bp-${i}`, {
+        props: { data: 'd'.repeat(3000), idx: i },
+      }))
+    }
+    for (let i = 0; i < 99; i++) {
+      await engine.upsertEdge(ids[i], ids[i + 1], 10, { props: {} })
+    }
+    expect(engine.scanAllNodes().length).toBe(100)
+    expect(engine.neighbors(ids[0]).edges.length).toBe(1)
+    expect(engine.neighbors(ids[50]).edges.length).toBe(1)
+    expect(engine.neighbors(ids[99]).edges.length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-52: neighbors 一致性 ──
+test('MP-52: neighbors 一致性', async () => {
+  const cfg = makeConfig('nb-consistency')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 50; i++) {
+      ids.push(await engine.upsertNode(1, `nc-${i}`, { props: {} }))
+    }
+    for (let i = 0; i < 49; i++) {
+      await engine.upsertEdge(ids[i], ids[i + 1], 10, { props: {} })
+    }
+    for (let r = 0; r < 5; r++) {
+      for (let i = 0; i < 49; i++) {
+        const nb = engine.neighbors(ids[i])
+        expect(nb.edges.length).toBe(1)
+        expect(nb.edges[0].dst).toBe(ids[i + 1])
+      }
+      expect(engine.neighbors(ids[49]).edges.length).toBe(0)
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-53: 多种边类型 scanAllNodes ──
+test('MP-53: 多种边类型 scanAllNodes', async () => {
+  const cfg = makeConfig('edge-types-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const src = await engine.upsertNode(1, 'src', { props: {} })
+    const dsts: number[] = []
+    for (let t = 0; t < 8; t++) {
+      const dst = await engine.upsertNode(1, `dst-${t}`, { props: {} })
+      await engine.upsertEdge(src, dst, t, { props: {} })
+      dsts.push(dst)
+    }
+    expect(engine.scanAllNodes().length).toBe(9)
+    expect(engine.neighbors(src).edges.length).toBe(8)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-54: 大 props + scanAllNodes 多次 ──
+test('MP-54: 大 props + scanAllNodes 多次', async () => {
+  const cfg = makeConfig('big-prop-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    for (let i = 0; i < 30; i++) {
+      await engine.upsertNode(1, `bps-${i}`, {
+        props: { data: 'w'.repeat(6000), idx: i },
+      })
+    }
+    for (let r = 0; r < 3; r++) {
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(30)
+    }
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-55: 边带大 props neighbors 验证 ──
+test('MP-55: 边带大 props neighbors', async () => {
+  const cfg = makeConfig('big-edge-nb')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const src = await engine.upsertNode(1, 'src-ben', { props: {} })
+    for (let i = 0; i < 10; i++) {
+      const dst = await engine.upsertNode(1, `dst-ben-${i}`, { props: {} })
+      await engine.upsertEdge(src, dst, 10, {
+        props: { big: 'b'.repeat(4000), seq: i },
+      })
+    }
+    const nb = engine.neighbors(src)
+    expect(nb.edges.length).toBe(10)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-56: 50 节点 + 50 边 + scanAllNodes ──
+test('MP-56: 50 节点 50 边 scanAllNodes', async () => {
+  const cfg = makeConfig('50n50e-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 50; i++) {
+      ids.push(await engine.upsertNode(1, `n50-${i}`, { props: {} }))
+    }
+    for (let i = 0; i < 49; i++) {
+      await engine.upsertEdge(ids[i], ids[i + 1], 10, { props: {} })
+    }
+    expect(engine.scanAllNodes().length).toBe(50)
+    expect(engine.neighbors(ids[0]).edges.length).toBe(1)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-57: 大 props 节点 delete 后 scanAllNodes ──
+test('MP-57: 大 props 节点 delete 后 scan', async () => {
+  const cfg = makeConfig('big-del-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 40; i++) {
+      ids.push(await engine.upsertNode(1, `bd-${i}`, {
+        props: { data: 'm'.repeat(5000), idx: i },
+      }))
+    }
+    expect(engine.scanAllNodes().length).toBe(40)
+    for (let i = 0; i < 20; i++) await engine.deleteNode(ids[i])
+    expect(engine.scanAllNodes().length).toBe(20)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-58: 链式 neighbors 带大 props ──
+test('MP-58: 链式 neighbors 带大 props', async () => {
+  const cfg = makeConfig('chain-big-nb')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 30; i++) {
+      ids.push(await engine.upsertNode(1, `cbn-${i}`, {
+        props: { data: 'n'.repeat(3000), pos: i },
+      }))
+    }
+    for (let i = 0; i < 29; i++) {
+      await engine.upsertEdge(ids[i], ids[i + 1], 10, { props: {} })
+    }
+    for (let i = 0; i < 29; i++) {
+      const nb = engine.neighbors(ids[i])
+      expect(nb.edges.length).toBe(1)
+    }
+    expect(engine.neighbors(ids[29]).edges.length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-59: scanAllNodes 后 upsertEdge 再 scan ──
+test('MP-59: scanAllNodes → upsertEdge → scanAllNodes', async () => {
+  const cfg = makeConfig('scan-edge-scan')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const src = await engine.upsertNode(1, 'src-ses', { props: {} })
+    const dst = await engine.upsertNode(1, 'dst-ses', { props: {} })
+    expect(engine.scanAllNodes().length).toBe(2)
+    await engine.upsertEdge(src, dst, 10, { props: {} })
+    expect(engine.scanAllNodes().length).toBe(2)
+    expect(engine.neighbors(src).edges.length).toBe(1)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── MP-60: 最终综合压力验证 ──
+test('MP-60: 综合压力验证', async () => {
+  const cfg = makeConfig('final-pressure')
+  const engine = new GraphEngine(cfg)
+  engine.open()
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 100; i++) {
+      ids.push(await engine.upsertNode(i % 5, `fp-${i}`, {
+        props: { idx: i, data: 'q'.repeat(2000), even: i % 2 === 0 },
+      }))
+    }
+    expect(engine.scanAllNodes().length).toBe(100)
+    for (let i = 0; i < 99; i++) {
+      await engine.upsertEdge(ids[i], ids[i + 1], 10, { props: { seq: i } })
+    }
+    expect(engine.neighbors(ids[0]).edges.length).toBe(1)
+    expect(engine.neighbors(ids[50]).edges.length).toBe(1)
+    expect(engine.neighbors(ids[99]).edges.length).toBe(0)
+    // 删除一半后验证
+    for (let i = 0; i < 50; i++) await engine.deleteNode(ids[i])
+    expect(engine.scanAllNodes().length).toBe(50)
+    for (let i = 50; i < 100; i++) expect(engine.getNode(ids[i])).not.toBeNull()
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+

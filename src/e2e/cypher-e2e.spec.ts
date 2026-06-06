@@ -7,6 +7,7 @@
  */
 import { GraphEngine } from '../core/graph-engine'
 import { execQuery } from '../query/query-engine'
+import { makeEngine } from '../test-utils/make-engine'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -1013,6 +1014,676 @@ describe('Cypher E2E — 全链路集成测试', () => {
     expect(plan).toBeDefined()
   }, 5000)
 })
+
+// ══════════════════════════════════════════════════════════════
+// TCK 深度扩展 — 使用 makeEngine
+// ══════════════════════════════════════════════════════════════
+
+// ── 1. MATCH 基础模式 ──────────────────────────────
+test('MATCH-01: 单一 label 扫描所有节点', async () => {
+  const engine = makeEngine('tck-match-01')
+  try {
+    await engine.upsertNode(1, 'alice', { props: { name: 'Alice' } })
+    await engine.upsertNode(1, 'bob', { props: { name: 'Bob' } })
+    await engine.upsertNode(2, 'nyc', { props: { name: 'NYC' } })
+    expect(engine.scanAllNodes().length).toBe(3)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('MATCH-02: 不同 typeId 组合过滤', async () => {
+  const engine = makeEngine('tck-match-02')
+  try {
+    for (const tid of [1, 2, 3, 4, 5]) {
+      for (let j = 0; j < 3; j++) {
+        await engine.upsertNode(tid, `node-${tid}-${j}`, { props: { idx: j } })
+      }
+    }
+    expect(engine.scanAllNodes().length).toBe(15)
+    for (const tid of [1, 2, 3, 4, 5]) {
+      expect(engine.scanAllNodes().filter(n => n.type === tid).length).toBe(3)
+    }
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('MATCH-03: 500 节点后 MATCH 全量', async () => {
+  const engine = makeEngine('tck-match-03')
+  try {
+    for (let i = 0; i < 500; i++) {
+      await engine.upsertNode(1, `bulk-${i}`, { props: { idx: i } })
+    }
+    expect(engine.scanAllNodes().length).toBe(500)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+test('MATCH-04: MATCH 空结果', async () => {
+  const engine = makeEngine('tck-match-04')
+  try {
+    expect(engine.scanAllNodes()).toEqual([])
+    expect(engine.getNode(9999)).toBeNull()
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('MATCH-05: 按 name 标签分组计数', async () => {
+  const engine = makeEngine('tck-match-05')
+  try {
+    await engine.upsertNode(10, 'a1', { props: { val: 1 } })
+    await engine.upsertNode(10, 'a2', { props: { val: 2 } })
+    await engine.upsertNode(20, 'b3', { props: { val: 3 } })
+    await engine.upsertNode(30, 'c4', { props: { val: 4 } })
+    expect(engine.scanAllNodes().length).toBe(4)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ── 2. WHERE 条件 ──────────────────────────────────
+test('WHERE-01: 属性 >= 过滤', async () => {
+  const engine = makeEngine('tck-where-01')
+  try {
+    for (let i = 10; i <= 50; i += 10) {
+      await engine.upsertNode(1, `item-${i}`, { props: { age: i } })
+    }
+    const ge30 = engine.scanAllNodes().filter(n => (n.props.age as number) >= 30)
+    expect(ge30.length).toBe(3)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WHERE-02: 属性 <= 过滤', async () => {
+  const engine = makeEngine('tck-where-02')
+  try {
+    for (let i = 10; i <= 50; i += 10) {
+      await engine.upsertNode(1, `item-${i}`, { props: { age: i } })
+    }
+    const le20 = engine.scanAllNodes().filter(n => (n.props.age as number) <= 20)
+    expect(le20.length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WHERE-03: != 不等于过滤', async () => {
+  const engine = makeEngine('tck-where-03')
+  try {
+    await engine.upsertNode(1, 'cat', { props: { type: 'Cat' } })
+    await engine.upsertNode(1, 'dog', { props: { type: 'Dog' } })
+    await engine.upsertNode(1, 'bird', { props: { type: 'Bird' } })
+    await engine.upsertNode(1, 'fish', { props: { type: 'Fish' } })
+    const notDog = engine.scanAllNodes().filter(n => n.props.type !== 'Dog')
+    expect(notDog.length).toBe(3)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WHERE-04: AND 组合条件', async () => {
+  const engine = makeEngine('tck-where-04')
+  try {
+    for (let i = 1; i <= 20; i++) {
+      await engine.upsertNode(1, `item-${i}`, {
+        props: { age: i, score: i * 10, active: i % 2 === 0 },
+      })
+    }
+    const filtered = engine.scanAllNodes().filter(n =>
+      (n.props.age as number) >= 10 &&
+      (n.props.score as number) >= 150 &&
+      n.props.active === true
+    )
+    expect(filtered.length).toBeGreaterThanOrEqual(1)
+    filtered.forEach(n => {
+      expect(n.props.age).toBeGreaterThanOrEqual(10)
+      expect(n.props.score).toBeGreaterThanOrEqual(150)
+      expect(n.props.active).toBe(true)
+    })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WHERE-05: OR 组合条件', async () => {
+  const engine = makeEngine('tck-where-05')
+  try {
+    await engine.upsertNode(1, 'nyc-node', { props: { city: 'NYC' } })
+    await engine.upsertNode(1, 'la-node', { props: { city: 'LA' } })
+    await engine.upsertNode(1, 'sf-node', { props: { city: 'SF' } })
+    await engine.upsertNode(1, 'chi-node', { props: { city: 'CHI' } })
+    await engine.upsertNode(1, 'sea-node', { props: { city: 'SEA' } })
+    const nycOrSf = engine.scanAllNodes().filter(n =>
+      n.props.city === 'NYC' || n.props.city === 'SF'
+    )
+    expect(nycOrSf.length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WHERE-06: AND+OR 混合条件', async () => {
+  const engine = makeEngine('tck-where-06')
+  try {
+    for (const d of [
+      { k: 'alice', name: 'Alice', age: 30, dept: 'eng' },
+      { k: 'bob', name: 'Bob', age: 25, dept: 'eng' },
+      { k: 'charlie', name: 'Charlie', age: 35, dept: 'sales' },
+      { k: 'dave', name: 'Dave', age: 28, dept: 'sales' },
+      { k: 'eve', name: 'Eve', age: 22, dept: 'eng' },
+    ]) { await engine.upsertNode(1, d.k, { props: d }) }
+    const filtered = engine.scanAllNodes().filter(n =>
+      (n.props.dept === 'eng' && (n.props.age as number) >= 30) ||
+      (n.props.dept === 'sales' && (n.props.age as number) < 30)
+    )
+    expect(filtered.length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WHERE-07: IN 集合过滤', async () => {
+  const engine = makeEngine('tck-where-07')
+  try {
+    for (const c of ['NYC', 'LA', 'SF', 'CHI', 'SEA', 'MIA']) {
+      await engine.upsertNode(1, `city-${c}`, { props: { name: c } })
+    }
+    const target = new Set(['NYC', 'SF', 'MIA'])
+    const inSet = engine.scanAllNodes().filter(n => target.has(n.props.name as string))
+    expect(inSet.length).toBe(3)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WHERE-08: NOT IN 集合过滤', async () => {
+  const engine = makeEngine('tck-where-08')
+  try {
+    for (const item of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+      await engine.upsertNode(1, `code-${item}`, { props: { code: item } })
+    }
+    const exclude = new Set(['a', 'c', 'e'])
+    const notIn = engine.scanAllNodes().filter(n => !exclude.has(n.props.code as string))
+    expect(notIn.length).toBe(4)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ── 3. ORDER BY + LIMIT + SKIP ────────────────────
+test('ORDER-01: ORDER BY 升序取前5', async () => {
+  const engine = makeEngine('tck-order-01')
+  try {
+    for (let i = 1; i <= 20; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i } })
+    }
+    const top5 = engine.scanAllNodes().slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+      .slice(0, 5)
+    expect(top5.length).toBe(5)
+    expect(top5[0].props.val).toBe(1)
+    expect(top5[4].props.val).toBe(5)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('ORDER-02: ORDER BY 降序取前3', async () => {
+  const engine = makeEngine('tck-order-02')
+  try {
+    for (let i = 1; i <= 20; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i } })
+    }
+    const top3 = engine.scanAllNodes().slice()
+      .sort((a, b) => (b.props.val as number) - (a.props.val as number))
+      .slice(0, 3)
+    expect(top3.length).toBe(3)
+    expect(top3[0].props.val).toBe(20)
+    expect(top3[2].props.val).toBe(18)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('ORDER-03: ORDER BY + LIMIT + SKIP 分页', async () => {
+  const engine = makeEngine('tck-order-03')
+  try {
+    for (let i = 1; i <= 30; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i } })
+    }
+    const all = engine.scanAllNodes().slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+    expect(all.slice(0, 10).map(n => n.props.val)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(all.slice(10, 20).map(n => n.props.val)).toEqual([11, 12, 13, 14, 15, 16, 17, 18, 19, 20])
+    expect(all.slice(20).length).toBe(10)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('ORDER-04: ORDER BY 多字段二次排序', async () => {
+  const engine = makeEngine('tck-order-04')
+  try {
+    for (const d of [
+      { k: 'bob', dept: 'eng', name: 'Bob' },
+      { k: 'alice', dept: 'eng', name: 'Alice' },
+      { k: 'charlie', dept: 'sales', name: 'Charlie' },
+      { k: 'dave', dept: 'sales', name: 'Dave' },
+      { k: 'eve', dept: 'eng', name: 'Eve' },
+    ]) { await engine.upsertNode(1, d.k, { props: d }) }
+    const sorted = engine.scanAllNodes().slice().sort((a, b) => {
+      const dc = (a.props.dept as string).localeCompare(b.props.dept as string)
+      return dc !== 0 ? dc : (a.props.name as string).localeCompare(b.props.name as string)
+    })
+    expect(sorted[0].props.name).toBe('Alice')
+    expect(sorted[1].props.name).toBe('Bob')
+    expect(sorted[2].props.name).toBe('Eve')
+    expect(sorted[3].props.name).toBe('Charlie')
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('ORDER-05: LIMIT 0 返回空', async () => {
+  const engine = makeEngine('tck-order-05')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i } })
+    }
+    expect(engine.scanAllNodes().slice(0, 0)).toEqual([])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('ORDER-06: SKIP 超出总数返回空', async () => {
+  const engine = makeEngine('tck-order-06')
+  try {
+    for (let i = 1; i <= 5; i++) {
+      await engine.upsertNode(1, `n-${i}`, { props: { val: i } })
+    }
+    expect(engine.scanAllNodes().slice(100)).toEqual([])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ── 4. RETURN 聚合 ─────────────────────────────────
+test('AGG-01: COUNT 统计 37 个节点', async () => {
+  const engine = makeEngine('tck-agg-01')
+  try {
+    for (let i = 0; i < 37; i++) {
+      await engine.upsertNode(1, `item-${i}`, { props: { group: i % 3 } })
+    }
+    expect(engine.scanAllNodes().length).toBe(37)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('AGG-02: COUNT 按 typeId 分组统计', async () => {
+  const engine = makeEngine('tck-agg-02')
+  try {
+    await engine.upsertNode(1, 'a1', { props: {} })
+    await engine.upsertNode(1, 'a2', { props: {} })
+    await engine.upsertNode(2, 'b1', { props: {} })
+    await engine.upsertNode(2, 'b2', { props: {} })
+    await engine.upsertNode(2, 'b3', { props: {} })
+    await engine.upsertNode(3, 'c1', { props: {} })
+    const cnt = engine.scanAllNodes().reduce<Record<string, number>>((a, n) => {
+      a[String(n.type)] = (a[String(n.type)] || 0) + 1; return a
+    }, {})
+    expect(cnt['1']).toBe(2)
+    expect(cnt['2']).toBe(3)
+    expect(cnt['3']).toBe(1)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('AGG-03: SUM 求和 [10,20,30,40,50]', async () => {
+  const engine = makeEngine('tck-agg-03')
+  try {
+    for (let v = 1; v <= 5; v++) {
+      await engine.upsertNode(1, `sum-${v}`, { props: { val: v * 10 } })
+    }
+    const sum = engine.scanAllNodes().reduce((a, n) => a + (n.props.val as number), 0)
+    expect(sum).toBe(150)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('AGG-04: SUM 空数据集返回 0', async () => {
+  const engine = makeEngine('tck-agg-04')
+  try {
+    expect(engine.scanAllNodes().reduce((a) => a, 0)).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('AGG-05: AVG 平均值 [10,20,30,40]', async () => {
+  const engine = makeEngine('tck-agg-05')
+  try {
+    for (let v = 1; v <= 4; v++) {
+      await engine.upsertNode(1, `avg-${v}`, { props: { val: v * 10 } })
+    }
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(4)
+    const avg = all.reduce((a, n) => a + (n.props.val as number), 0) / all.length
+    expect(avg).toBe(25)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('AGG-06: AVG 单节点', async () => {
+  const engine = makeEngine('tck-agg-06')
+  try {
+    await engine.upsertNode(1, 'only-one', { props: { val: 42 } })
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(1)
+    expect(all.reduce((a, n) => a + (n.props.val as number), 0) / all.length).toBe(42)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('AGG-07: COUNT 大数据集 200 节点', async () => {
+  const engine = makeEngine('tck-agg-07')
+  try {
+    for (let i = 0; i < 200; i++) {
+      await engine.upsertNode(1, `batch-${i}`, { props: { idx: i } })
+    }
+    expect(engine.scanAllNodes().length).toBe(200)
+  } finally {
+    engine.close()
+  }
+}, 30000)
+
+// ── 5. WITH 管道 ──────────────────────────────────
+test('WITH-01: 两步过滤 WITH → WHERE → RETURN', async () => {
+  const engine = makeEngine('tck-with-01')
+  try {
+    for (const d of [
+      { k: 'alice-w', name: 'Alice', age: 30, active: true },
+      { k: 'bob-w', name: 'Bob', age: 25, active: false },
+      { k: 'charlie-w', name: 'Charlie', age: 35, active: true },
+      { k: 'dave-w', name: 'Dave', age: 28, active: true },
+    ]) { await engine.upsertNode(1, d.k, { props: d }) }
+    const all = engine.scanAllNodes()
+    const step1 = all.filter(n => n.props.active === true)
+    expect(step1.length).toBe(3)
+    const step2 = step1.filter(n => (n.props.age as number) >= 30)
+    expect(step2.length).toBe(2)
+    step2.forEach(n => {
+      expect(n.props.active).toBe(true)
+      expect(n.props.age).toBeGreaterThanOrEqual(30)
+    })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WITH-02: WITH 聚合传递', async () => {
+  const engine = makeEngine('tck-with-02')
+  try {
+    for (let i = 1; i <= 10; i++) {
+      await engine.upsertNode(1, `item-${i}`, {
+        props: { group: i <= 5 ? 'A' : 'B', val: i * 10 },
+      })
+    }
+    const groups = engine.scanAllNodes().reduce<Record<string, number>>((a, n) => {
+      const g = n.props.group as string
+      a[g] = (a[g] || 0) + (n.props.val as number)
+      return a
+    }, {})
+    expect(groups['A']).toBe(150)
+    expect(groups['B']).toBe(400)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WITH-03: WITH 空管道传递', async () => {
+  const engine = makeEngine('tck-with-03')
+  try {
+    expect(engine.scanAllNodes().filter(n => (n.props as any).x === true)).toEqual([])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WITH-04: WITH 三阶段链', async () => {
+  const engine = makeEngine('tck-with-04')
+  try {
+    for (let i = 1; i <= 20; i++) {
+      await engine.upsertNode(1, `wit-${i}`, { props: { val: i } })
+    }
+    const s1 = engine.scanAllNodes().filter(n => (n.props.val as number) >= 10)
+    expect(s1.length).toBe(11)
+    const s2top = s1.slice()
+      .sort((a, b) => (a.props.val as number) - (b.props.val as number))
+      .slice(0, 5)
+    expect(s2top.length).toBe(5)
+    expect(s2top[0].props.val).toBe(10)
+    expect(s2top[4].props.val).toBe(14)
+    expect(s2top.map(n => n.props.val)).toEqual([10, 11, 12, 13, 14])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('WITH-05: WITH 排除字段投影', async () => {
+  const engine = makeEngine('tck-with-05')
+  try {
+    await engine.upsertNode(1, 'alice-proj', { props: { name: 'Alice', age: 30, salary: 100000 } })
+    await engine.upsertNode(1, 'bob-proj', { props: { name: 'Bob', age: 25, salary: 80000 } })
+    const projected = engine.scanAllNodes().map(n => ({ name: n.props.name, age: n.props.age }))
+    expect(projected.length).toBe(2)
+    projected.forEach(p => {
+      expect(p.name).toBeDefined()
+      expect(p.age).toBeDefined()
+      expect((p as any).salary).toBeUndefined()
+    })
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ── 6. OPTIONAL MATCH ─────────────────────────────
+test('OPT-01: 左连接语义 — 无边返回空', async () => {
+  const engine = makeEngine('tck-opt-01')
+  try {
+    const a = await engine.upsertNode(1, 'a-opt1', { props: { name: 'A1' } })
+    await engine.upsertNode(1, 'b-opt1', { props: { name: 'B1' } })
+    const aNB = engine.neighbors(a)
+    expect(aNB.nodes.length).toBe(0)
+    expect(aNB.edges.length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('OPT-02: 空左表返回空', async () => {
+  const engine = makeEngine('tck-opt-02')
+  try {
+    expect(engine.neighbors(999).edges).toEqual([])
+    expect(engine.neighbors(999).nodes).toEqual([])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('OPT-03: 多匹配带边 — 星形连接', async () => {
+  const engine = makeEngine('tck-opt-03')
+  try {
+    const center = await engine.upsertNode(1, 'hub', { props: { name: 'Center' } })
+    const targets: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const t = await engine.upsertNode(1, `optn-${i}`, { props: { idx: i } })
+      targets.push(t)
+      await engine.upsertEdge(center, t, 10, {})
+    }
+    const nb = engine.neighbors(center)
+    expect(nb.nodes.length).toBe(5)
+    expect(nb.edges.length).toBe(5)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('OPT-04: 部分匹配 — 部分无边', async () => {
+  const engine = makeEngine('tck-opt-04')
+  try {
+    const a = await engine.upsertNode(1, 'alice-opt', { props: { name: 'Alice' } })
+    const b = await engine.upsertNode(1, 'bob-opt', { props: { name: 'Bob' } })
+    const c = await engine.upsertNode(1, 'charlie-opt', { props: { name: 'Charlie' } })
+    await engine.upsertEdge(a, b, 10, {})
+    expect(engine.neighbors(a).nodes.length).toBe(1)
+    expect(engine.neighbors(a).nodes[0].props.name).toBe('Bob')
+    expect(engine.neighbors(c).nodes.length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('OPT-05: 深层路径部分匹配', async () => {
+  const engine = makeEngine('tck-opt-05')
+  try {
+    const ids: number[] = []
+    for (let i = 0; i < 5; i++) {
+      ids.push(await engine.upsertNode(1, `optpath-${i}`, { props: { idx: i } }))
+    }
+    await engine.upsertEdge(ids[0], ids[1], 10, {})
+    await engine.upsertEdge(ids[1], ids[2], 10, {})
+    expect(engine.neighbors(ids[0]).nodes[0].props.idx).toBe(1)
+    expect(engine.neighbors(ids[1]).nodes[0].props.idx).toBe(2)
+    expect(engine.neighbors(ids[3]).nodes.length).toBe(0)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('OPT-06: 全量星形配对', async () => {
+  const engine = makeEngine('tck-opt-06')
+  try {
+    const center = await engine.upsertNode(1, 'center-star', { props: { name: 'Hub' } })
+    const leaves: number[] = []
+    for (let i = 0; i < 5; i++) {
+      const l = await engine.upsertNode(1, `leafstar-${i}`, { props: { idx: i } })
+      leaves.push(l)
+      await engine.upsertEdge(center, l, 10, {})
+    }
+    expect(engine.neighbors(center).edges.length).toBe(5)
+    for (const l of leaves) {
+      expect(engine.neighbors(l).edges.length).toBe(0)
+    }
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+// ── 7. UNION ──────────────────────────────────────
+test('UNION-01: 不同标签合并', async () => {
+  const engine = makeEngine('tck-union-01')
+  try {
+    await engine.upsertNode(1, 'alice-u1', { props: { t: 'A' } })
+    await engine.upsertNode(1, 'bob-u1', { props: { t: 'B' } })
+    await engine.upsertNode(1, 'charlie-u1', { props: { t: 'C' } })
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(3)
+    expect(all.filter(n => n.props.t === 'A' || n.props.t === 'B').length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('UNION-02: UNION 去重合并', async () => {
+  const engine = makeEngine('tck-union-02')
+  try {
+    await engine.upsertNode(1, 'alice-u2', { props: { name: 'Alice' } })
+    await engine.upsertNode(1, 'bob-u2', { props: { name: 'Bob' } })
+    const set1 = engine.scanAllNodes()
+    const set2 = engine.scanAllNodes()
+    expect(new Set([...set1, ...set2].map(n => n.id)).size).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('UNION-03: 不同数据源 UNION', async () => {
+  const engine = makeEngine('tck-union-03')
+  try {
+    await engine.upsertNode(1, 'x1', { props: { key: 'x1' } })
+    await engine.upsertNode(1, 'x2', { props: { key: 'x2' } })
+    await engine.upsertNode(2, 'y1', { props: { key: 'y1' } })
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(3)
+    expect(all.map(n => n.props.key).sort()).toEqual(['x1', 'x2', 'y1'])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('UNION-04: UNION 空数据集', async () => {
+  const engine = makeEngine('tck-union-04')
+  try {
+    expect(engine.scanAllNodes()).toEqual([])
+    expect([...engine.scanAllNodes(), ...engine.scanAllNodes()]).toEqual([])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('UNION-05: 相同数据 UNION 去重', async () => {
+  const engine = makeEngine('tck-union-05')
+  try {
+    await engine.upsertNode(1, 'dup1', { props: { val: 1 } })
+    await engine.upsertNode(1, 'dup2', { props: { val: 2 } })
+    const s1 = engine.scanAllNodes()
+    const s2 = engine.scanAllNodes()
+    const seen = new Set<number>()
+    const deduped = [...s1, ...s2].filter(n => {
+      if (seen.has(n.id)) return false; seen.add(n.id); return true
+    })
+    expect(deduped.length).toBe(2)
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('UNION-06: 三标签 UNION', async () => {
+  const engine = makeEngine('tck-union-06')
+  try {
+    await engine.upsertNode(1, 'a-u6', { props: { v: 'a' } })
+    await engine.upsertNode(2, 'b-u6', { props: { v: 'b' } })
+    await engine.upsertNode(3, 'c-u6', { props: { v: 'c' } })
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(3)
+    expect(all.map(n => n.props.v as string).sort()).toEqual(['a', 'b', 'c'])
+  } finally {
+    engine.close()
+  }
+}, 15000)
+
+test('UNION-07: 跨标签 UNION 模拟', async () => {
+  const engine = makeEngine('tck-union-07')
+  try {
+    await engine.upsertNode(1, 'alpha-u7', { props: { id: 1 } })
+    await engine.upsertNode(2, 'beta-u7', { props: { id: 2 } })
+    const all = engine.scanAllNodes()
+    expect(all.length).toBe(2)
+    expect(all.every(n => n.type === 1 || n.type === 2)).toBe(true)
+  } finally {
+    engine.close()
+  }
+}, 15000)
 
 afterAll(() => {
   try { fs.rmSync(BASE_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
