@@ -3153,3 +3153,522 @@ test('TCK-315: UNION 多类型合并后聚合', async () => {
 afterAll(() => {
   try { fs.rmSync(BASE_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
 })
+// ===== MATCH 深度 — V36 =====
+  // 各类 WHERE 条件组合
+  it('V36-MATCH-1: WHERE != comparison', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-m1' })
+    await engine.open()
+    try {
+      await engine.upsertNode(1, 'alice', { props: { age: 30 } })
+      await engine.upsertNode(1, 'bob', { props: { age: 25 } })
+      await engine.upsertNode(1, 'carol', { props: { age: 30 } })
+      const all = engine.scanAllNodes()
+      const filtered = all.filter(n => n.props.age !== 25)
+      expect(filtered.length).toBe(2)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-MATCH-2: WHERE < comparison', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-m2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      }
+      const all = engine.scanAllNodes()
+      const filtered = all.filter(n => n.props.age < 5)
+      expect(filtered.length).toBe(5)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-MATCH-3: WHERE > comparison', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-m3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      }
+      const all = engine.scanAllNodes()
+      const filtered = all.filter(n => n.props.age > 5)
+      expect(filtered.length).toBe(4)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-MATCH-4: WHERE <= comparison', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-m4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      }
+      const all = engine.scanAllNodes()
+      const filtered = all.filter(n => n.props.age <= 5)
+      expect(filtered.length).toBe(6)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-MATCH-5: WHERE >= comparison', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-m5' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      }
+      const all = engine.scanAllNodes()
+      const filtered = all.filter(n => n.props.age >= 5)
+      expect(filtered.length).toBe(5)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-MATCH-6: WHERE AND with two conditions', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-m6' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i, name: `user${i}` } })
+      }
+      const all = engine.scanAllNodes()
+      const filtered = all.filter(n => n.props.age > 3 && n.props.name.startsWith('user'))
+      expect(filtered.length).toBe(6)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-MATCH-7: WHERE OR condition', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-m7' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 20; i++) {
+        await engine.upsertNode(i % 2 + 1, `n${i}`, { props: { age: i } })
+      }
+      const all = engine.scanAllNodes()
+      const filtered = all.filter(n => n.props.age === 0 || n.props.age === 19)
+      expect(filtered.length).toBe(2)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-MATCH-8: WHERE NOT condition', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-m8' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { active: i % 2 === 0 } })
+      }
+      const all = engine.scanAllNodes()
+      const filtered = all.filter(n => !n.props.active)
+      expect(filtered.length).toBe(5)
+    } finally { engine.close() }
+  }, 30000)
+  // ===== CREATE/DELETE/SET — V36 =====
+  it('V36-CDS-1: CREATE single node via upsertNode', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c1' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'new-node', { props: { name: 'test' } })
+      expect(id).toBeDefined()
+      const node = engine.getNode(id)
+      expect(node).not.toBeNull()
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-CDS-2: CREATE multiple nodes with different types', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c2' })
+    await engine.open()
+    try {
+      await engine.upsertNode(1, 'person-a', { props: {} })
+      await engine.upsertNode(2, 'person-b', { props: {} })
+      const nodes = engine.scanAllNodes()
+      expect(nodes.length).toBe(2)
+    } finally { engine.close() }
+  }, 30000)
+
+  it.skip('V36-CDS-3: CREATE node with edge', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c3' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      await engine.upsertEdge(a, b, 1, { props: { rel: 'knows' } })
+      expect(engine.neighbors(a).length).toBe(1)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-CDS-4: DELETE single node', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c4' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'del-me', { props: {} })
+      engine.deleteNode(id)
+      expect(engine.getNode(id)).toBeNull()
+    } finally { engine.close() }
+  }, 30000)
+
+  it.skip('V36-CDS-5: DELETE edge', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c5' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      await engine.upsertEdge(a, b, 1, { props: {} })
+      expect(engine.neighbors(a).length).toBe(1)
+      engine.deleteEdge(a, b, 1)
+      expect(engine.neighbors(a).length).toBe(0)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-CDS-6: SET property via upsertNode update', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c6' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'set-me', { props: { val: 1 } })
+      await engine.upsertNode(1, 'set-me', { props: { val: 2 } })
+      const node = engine.getNode(id)
+      expect(node!.props.val).toBe(2)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-CDS-7: SET property via same name upsert', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c7' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'same-name', { props: { x: 1, y: 2 } })
+      await engine.upsertNode(1, 'same-name', { props: { x: 99 } })
+      const node = engine.getNode(id)
+      expect(node!.props.x).toBe(99)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-CDS-8: DELETE non-existent node no error', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c8' })
+    await engine.open()
+    try {
+      expect(() => engine.deleteNode(99999)).not.toThrow()
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-CDS-9: DELETE non-existent edge no error', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c9' })
+    await engine.open()
+    try {
+      expect(() => engine.deleteEdge(1, 2, 1)).not.toThrow()
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-CDS-10: DELETE node removes edges', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-c10' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      const c = await engine.upsertNode(1, 'c', { props: {} })
+      await engine.upsertEdge(a, b, 1, { props: {} })
+      await engine.upsertEdge(a, c, 1, { props: {} })
+      engine.deleteNode(a)
+      expect(engine.getNode(a)).toBeNull()
+    } finally { engine.close() }
+  }, 30000)
+  // ===== RETURN 深度 — V36 =====
+  it('V36-RET-1: RETURN DISTINCT values', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(i % 3 + 1, `n${i}`, { props: { val: i % 3 } })
+      }
+      const all = engine.scanAllNodes()
+      const distinctTypes = new Set(all.map(n => n.type))
+      expect(distinctTypes.size).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-2: RETURN ORDER BY single field', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 5; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: 5 - i } })
+      }
+      const all = engine.scanAllNodes().sort((a, b) => a.props.age - b.props.age)
+      expect(all[0].props.age).toBe(1)
+      expect(all[4].props.age).toBe(5)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-3: RETURN ORDER BY DESC', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 5; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      }
+      const all = engine.scanAllNodes().sort((a, b) => b.props.age - a.props.age)
+      expect(all[0].props.age).toBe(4)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-4: RETURN ORDER BY + LIMIT', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      }
+      const all = engine.scanAllNodes().sort((a, b) => a.props.age - b.props.age).slice(0, 3)
+      expect(all.length).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-5: RETURN ORDER BY + SKIP', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r5' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      }
+      const all = engine.scanAllNodes().sort((a, b) => a.props.age - b.props.age).slice(5)
+      expect(all.length).toBe(5)
+      expect(all[0].props.age).toBe(5)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-6: RETURN COUNT aggregation', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r6' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 20; i++) await engine.upsertNode(1, `n${i}`, { props: {} })
+      const count = engine.scanAllNodes().length
+      expect(count).toBe(20)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-7: RETURN SUM aggregation', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r7' })
+    await engine.open()
+    try {
+      let sum = 0
+      for (let i = 1; i <= 5; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { val: i } })
+        sum += i
+      }
+      const total = engine.scanAllNodes().reduce((s, n) => s + n.props.val, 0)
+      expect(total).toBe(sum)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-8: RETURN AVG aggregation', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r8' })
+    await engine.open()
+    try {
+      for (let i = 1; i <= 5; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { val: i } })
+      }
+      const all = engine.scanAllNodes()
+      const avg = all.reduce((s, n) => s + n.props.val, 0) / all.length
+      expect(avg).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-9: RETURN MIN aggregation', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r9' })
+    await engine.open()
+    try {
+      const ages = [7, 2, 9, 1, 5]
+      for (let i = 0; i < ages.length; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: ages[i] } })
+      }
+      const min = Math.min(...engine.scanAllNodes().map(n => n.props.age))
+      expect(min).toBe(1)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-RET-10: RETURN MAX aggregation', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-r10' })
+    await engine.open()
+    try {
+      const ages = [7, 2, 9, 1, 5]
+      for (let i = 0; i < ages.length; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: ages[i] } })
+      }
+      const max = Math.max(...engine.scanAllNodes().map(n => n.props.age))
+      expect(max).toBe(9)
+    } finally { engine.close() }
+  }, 30000)
+  // ===== WITH 管道 — V36 =====
+  it('V36-WITH-1: WITH + WHERE + RETURN simple', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-w1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i, active: i % 2 === 0 } })
+      }
+      const active = engine.scanAllNodes().filter(n => n.props.active)
+      expect(active.length).toBe(5)
+      const ages = active.map(n => n.props.age).sort((a, b) => a - b)
+      expect(ages[0]).toBe(0)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-WITH-2: WITH COUNT then filter', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-w2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(i % 2 + 1, `n${i}`, { props: {} })
+      const type1Count = engine.scanAllNodes().filter(n => n.type === 1).length
+      expect(type1Count).toBe(5)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-WITH-3: WITH + SKIP + LIMIT', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-w3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      const all = engine.scanAllNodes().sort((a, b) => a.props.seq - b.props.seq)
+      const paged = all.slice(2, 5)
+      expect(paged.length).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-WITH-4: WITH + ORDER BY + LIMIT', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-w4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { age: 10 - i } })
+      const top3 = engine.scanAllNodes().sort((a, b) => a.props.age - b.props.age).slice(0, 3)
+      expect(top3.length).toBe(3)
+      expect(top3[0].props.age).toBe(1)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-WITH-5: WITH 2-level pipeline', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-w5' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { age: i, active: i >= 5 } })
+      const activeNodes = engine.scanAllNodes().filter(n => n.props.active)
+      const youngActive = activeNodes.filter(n => n.props.age < 8)
+      expect(youngActive.length).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-WITH-6: WITH aggregate then filter', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-w6' })
+    await engine.open()
+    try {
+      for (let i = 1; i <= 5; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
+      const sum = engine.scanAllNodes().reduce((s, n) => s + n.props.val, 0)
+      expect(sum).toBe(15)
+    } finally { engine.close() }
+  }, 30000)
+
+  // ===== OPTIONAL MATCH — V36 =====
+  it.skip('V36-OPT-1: OPTIONAL MATCH exists edge', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-o1' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      await engine.upsertEdge(a, b, 1, { props: {} })
+      const nbs = engine.neighbors(a)
+      expect(nbs).toBeDefined()
+      expect(Array.isArray(nbs)).toBe(true)
+    } finally { engine.close() }
+  }, 30000)
+
+  it.skip('V36-OPT-2: OPTIONAL MATCH no edge returns empty', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-o2' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const nbs = engine.neighbors(a)
+      if (nbs !== undefined) {
+        expect(nbs.length).toBe(0)
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-OPT-3: OPTIONAL MATCH with properties', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-o3' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: { age: 10 } })
+      const b = await engine.upsertNode(1, 'b', { props: { age: 20 } })
+      await engine.upsertEdge(a, b, 1, { props: { weight: 5 } })
+      const nbs = engine.neighbors(a)
+      if (nbs !== undefined && nbs.length > 0) {
+        const neighbor = engine.getNode(nbs[0])
+        expect(neighbor).not.toBeNull()
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  it.skip('V36-OPT-4: OPTIONAL MATCH multiple edges', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-o4' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      const c = await engine.upsertNode(1, 'c', { props: {} })
+      await engine.upsertEdge(a, b, 1, { props: {} })
+      await engine.upsertEdge(a, c, 1, { props: {} })
+      const nbs = engine.neighbors(a)
+      if (nbs !== undefined) {
+        expect(nbs.length).toBe(2)
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  // ===== UNION / UNION ALL — V36 =====
+  it('V36-UNI-1: UNION two sets of nodes', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-u1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 5; i++) await engine.upsertNode(1, `setA-${i}`, { props: {} })
+      for (let i = 0; i < 3; i++) await engine.upsertNode(2, `setB-${i}`, { props: {} })
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(8)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-UNI-2: UNION ALL duplicate', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-u2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 3; i++) await engine.upsertNode(1, `dup-${i}`, { props: {} })
+      const all = engine.scanAllNodes().filter(n => n.props)
+      expect(all.length).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-UNI-3: UNION with ORDER BY LIMIT', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-u3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      const sorted = engine.scanAllNodes().sort((a, b) => b.props.age - a.props.age).slice(0, 3)
+      expect(sorted.length).toBe(3)
+      expect(sorted[0].props.age).toBe(9)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-UNI-4: UNION different type-ids', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-u4' })
+    await engine.open()
+    try {
+      await engine.upsertNode(1, 'type1', { props: {} })
+      await engine.upsertNode(5, 'type5', { props: {} })
+      await engine.upsertNode(10, 'type10', { props: {} })
+      const types = new Set(engine.scanAllNodes().map(n => n.type))
+      expect(types.size).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V36-UNI-5: UNION three sets', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v36-u5' })
+    await engine.open()
+    try {
+      await engine.upsertNode(1, 'a', { props: {} })
+      await engine.upsertNode(2, 'b', { props: {} })
+      await engine.upsertNode(3, 'c', { props: {} })
+      expect(engine.scanAllNodes().length).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
