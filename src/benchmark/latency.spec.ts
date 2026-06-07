@@ -851,3 +851,57 @@ describe('Latency Benchmarks', () => {
       console.log(`[BENCH] single edge: ${(performance.now() - start).toFixed(3)}ms`)
     } finally { e.close() }
   }, 30000)
+
+  // ── V39 latency ──
+  it('V39: upsert 40 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-l1' })
+    await e.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 40; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      console.log(`[BENCH] upsert 40: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39: upsert 100 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-l2' })
+    await e.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 100; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      console.log(`[BENCH] upsert 100: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V39: scan 40 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-l3' })
+    await e.open()
+    try {
+      for (let i = 0; i < 40; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      e.scanAllNodes()
+      console.log(`[BENCH] scan 40: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39: scan 100 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-l4' })
+    await e.open()
+    try {
+      for (let i = 0; i < 100; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      e.scanAllNodes()
+      console.log(`[BENCH] scan 100: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V39: scan 200 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-l5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      e.scanAllNodes()
+      console.log(`[BENCH] scan 200: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 120000)

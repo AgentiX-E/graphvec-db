@@ -818,3 +818,64 @@ describe('Scalability Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(50)
     } finally { e.close() }
   }, 30000)
+
+  // ── V39 scalability ──
+  it('V39: scan 200 after insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-s1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(200)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V39: scan 300 after insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-s2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 300; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(300)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V39: multi-type 10 types 50 each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-s3' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 10; t++)
+        for (let j = 0; j < 50; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(500)
+    } finally { e.close() }
+  }, 180000)
+
+  it('V39: multi-type 20 types 10 each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-s4' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 20; t++)
+        for (let j = 0; j < 10; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(200)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V39: delete half 200 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-s5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i } })
+      e.scanAllNodes().filter(n => n.props.idx % 2 === 0).forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(100)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V39: delete all 100 then reinsert-verify', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-s6' })
+    await e.open()
+    try {
+      for (let i = 0; i < 100; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      e.scanAllNodes().forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(0)
+      for (let i = 0; i < 100; i++) await e.upsertNode(1, `r${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(100)
+    } finally { e.close() }
+  }, 120000)

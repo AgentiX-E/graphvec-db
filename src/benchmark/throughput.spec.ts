@@ -1227,3 +1227,107 @@ describe('Throughput Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(10)
     } finally { e.close() }
   }, 30000)
+
+  // ── V39 throughput ──
+  it('V39: upsert 40 single type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 40; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(40)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39: upsert 60 single type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 60; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(60)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39: upsert 100 single type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-3' })
+    await e.open()
+    try {
+      for (let i = 0; i < 100; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(100)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V39: upsert 200 single type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-4' })
+    await e.open()
+    try {
+      for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(200)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V39: upsert 400 single type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 400; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(400)
+    } finally { e.close() }
+  }, 180000)
+
+  it('V39: upsert 10 types 1 node each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-6' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 10; t++) await e.upsertNode(t, `t${t}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(10)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39: upsert 10 types 5 nodes each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-7' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 10; t++)
+        for (let j = 0; j < 5; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(50)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39: edges 5 star pattern', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-8' })
+    await e.open()
+    try {
+      const hub = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 5; i++) {
+        const leaf = await e.upsertNode(1, `leaf${i}`, { props: {} })
+        await e.upsertEdge(hub, leaf, 1, { props: {} })
+      }
+      expect(e.scanAllNodes().length).toBe(6)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39: edges 10 star pattern', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-9' })
+    await e.open()
+    try {
+      const hub = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 10; i++) {
+        const leaf = await e.upsertNode(1, `leaf${i}`, { props: {} })
+        await e.upsertEdge(hub, leaf, 1, { props: {} })
+      }
+      expect(e.scanAllNodes().length).toBe(11)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39: edges 20 star pattern', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-10' })
+    await e.open()
+    try {
+      const hub = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 20; i++) {
+        const leaf = await e.upsertNode(1, `leaf${i}`, { props: {} })
+        await e.upsertEdge(hub, leaf, 1, { props: {} })
+      }
+      expect(e.scanAllNodes().length).toBe(21)
+    } finally { e.close() }
+  }, 60000)

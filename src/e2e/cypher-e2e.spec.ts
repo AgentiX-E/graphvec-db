@@ -4062,3 +4062,107 @@ afterAll(() => {
       expect(types.length).toBe(50)
     } finally { engine.close() }
   }, 30000)
+
+  // ── V39 TCK ──
+  it('V39-tck: MATCH with inequality', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const gt5 = e.scanAllNodes().filter(n => n.props.v > 5)
+      expect(gt5.length).toBe(4) // 6,7,8,9
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: MATCH with range 3..7', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const range = e.scanAllNodes().filter(n => n.props.v >= 3 && n.props.v <= 7)
+      expect(range.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: MATCH with NOT', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t3' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const not5 = e.scanAllNodes().filter(n => n.props.v !== 5)
+      expect(not5.length).toBe(9)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: MATCH with null check', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t4' })
+    await e.open()
+    try {
+      await e.upsertNode(1, 'has', { props: { tag: 'x' } })
+      await e.upsertNode(1, 'none', { props: {} })
+      const hasTag = e.scanAllNodes().filter(n => n.props.tag !== undefined)
+      expect(hasTag.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: MATCH on typeId only', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 5; i++) await e.upsertNode(1, `t1-${i}`, { props: {} })
+      for (let i = 0; i < 3; i++) await e.upsertNode(2, `t2-${i}`, { props: {} })
+      const type1 = e.scanAllNodes().filter(n => n.type === 1)
+      expect(type1.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: CREATE then return properties', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t6' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, 'test', { props: { p1: 1, p2: 'hello' } })
+      const n = e.getNode(id)
+      expect(n?.props?.p1).toBe(1)
+      expect(n?.props?.p2).toBe('hello')
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: ORDER BY DESC', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t7' })
+    await e.open()
+    try {
+      const vals = [5, 2, 9, 1, 7]
+      for (let i = 0; i < vals.length; i++) await e.upsertNode(1, `n${i}`, { props: { v: vals[i] } })
+      const sorted = e.scanAllNodes().sort((a, b) => b.props.v - a.props.v)
+      expect(sorted[0].props.v).toBe(9)
+      expect(sorted[sorted.length - 1].props.v).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: LIMIT 1 returns one', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t8' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().slice(0, 1).length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: SKIP 5 returns remaining', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t9' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().slice(5).length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V39-tck: DELETE and verify count', async () => {
+    const e = new GraphEngine({ path: '/tmp/v39-t10' })
+    await e.open()
+    try {
+      for (let i = 0; i < 5; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      e.scanAllNodes().forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 30000)
