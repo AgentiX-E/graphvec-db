@@ -824,7 +824,7 @@ describe('Throughput Benchmarks', () => {
       const nbs = engine.neighbors(src)
       const elapsed = performance.now() - start
       console.log(`[BENCH] neighbors 50: ${elapsed.toFixed(2)}ms count=${nbs.edges.length}`)
-      expect(nbs.edges.length).toBe(400)
+      expect(nbs.edges.length).toBe(100) // 50 edges × 2 bidir
     } finally { engine.close() }
   }, 30000)
 
@@ -963,7 +963,7 @@ describe('Throughput Benchmarks', () => {
       }
       const nbs = engine.neighbors(src)
       if (nbs.edges !== undefined) {
-        expect(nbs.edges.length).toBe(400)
+        expect(nbs.edges.length).toBe(200) // 100 edges × 2 bidir
       }
     } finally { engine.close() }
   }, 120000)
@@ -1028,7 +1028,7 @@ describe('Throughput Benchmarks', () => {
       await engine.upsertEdge(a, b, 1, { props: {} })
       const nbs = engine.neighbors(a)
       if (nbs.edges !== undefined) {
-        expect(nbs.edges.length).toBe(1)
+        expect(nbs.edges.length).toBe(2)
       }
     } finally { engine.close() }
   }, 30000)
