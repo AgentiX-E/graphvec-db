@@ -811,7 +811,7 @@ describe('Throughput Benchmarks', () => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('should measure neighbors throughput with 50 edges', async () => {
+  it('neighbors-ENGINE-API neighbors returns edges/nodes not array', async () => {
     const engine = new GraphEngine({ path: "/tmp/bench-tp" })
       await engine.open()
     try {
@@ -823,8 +823,8 @@ describe('Throughput Benchmarks', () => {
       const start = performance.now()
       const nbs = engine.neighbors(src)
       const elapsed = performance.now() - start
-      console.log(`[BENCH] neighbors 50: ${elapsed.toFixed(2)}ms count=${nbs.length}`)
-      expect(nbs.length).toBe(50)
+      console.log(`[BENCH] neighbors 50: ${elapsed.toFixed(2)}ms count=${nbs.edges.length}`)
+      expect(nbs.edges.length).toBe(50)
     } finally { engine.close() }
   }, 30000)
 
@@ -897,7 +897,7 @@ describe('Throughput Benchmarks', () => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('V37-mixed: sequential insert edges then read neighbors', async () => {
+  it('neighbors-ENGINE neighbors returns edges/nodes not array', async () => {
     const engine = new GraphEngine({ path: '/tmp/bm-v37-m5' })
     await engine.open()
     try {
@@ -909,8 +909,8 @@ describe('Throughput Benchmarks', () => {
         dstIds.push(dst)
       }
       const nbs = engine.neighbors(src)
-      if (nbs !== undefined) {
-        expect(nbs.length).toBe(10)
+      if (nbs.edges !== undefined) {
+        expect(nbs.edges.length).toBe(10)
       }
     } finally { engine.close() }
   }, 30000)
@@ -952,7 +952,7 @@ describe('Throughput Benchmarks', () => {
     } finally { engine.close() }
   }, 120000)
 
-  it.skip('V37-bulk: edges 100 after 50 nodes', async () => {
+  it('neighbors-ENGINE neighbors returns edges/nodes not array', async () => {
     const engine = new GraphEngine({ path: '/tmp/bm-v37-b4' })
     await engine.open()
     try {
@@ -962,13 +962,13 @@ describe('Throughput Benchmarks', () => {
         await engine.upsertEdge(src, dst, 1, { props: { seq: i } })
       }
       const nbs = engine.neighbors(src)
-      if (nbs !== undefined) {
-        expect(nbs.length).toBe(100)
+      if (nbs.edges !== undefined) {
+        expect(nbs.edges.length).toBe(100)
       }
     } finally { engine.close() }
   }, 120000)
 
-  it.skip('V37-bulk: edges 200 after 50 nodes', async () => {
+  it('neighbors-ENGINE neighbors returns edges/nodes not array', async () => {
     const engine = new GraphEngine({ path: '/tmp/bm-v37-b5' })
     await engine.open()
     try {
@@ -978,8 +978,8 @@ describe('Throughput Benchmarks', () => {
         await engine.upsertEdge(src, dst, 1, { props: { seq: i } })
       }
       const nbs = engine.neighbors(src)
-      if (nbs !== undefined) {
-        expect(nbs.length).toBe(200)
+      if (nbs.edges !== undefined) {
+        expect(nbs.edges.length).toBe(200)
       }
     } finally { engine.close() }
   }, 120000)
@@ -1019,16 +1019,16 @@ describe('Throughput Benchmarks', () => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('V37-cont-tp: single edge isolation', async () => {
-    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp9' })
+  it('neighbors-ENGINE neighbors returns edges/nodes', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp9-fix' })
     await engine.open()
     try {
       const a = await engine.upsertNode(1, 'src', { props: {} })
       const b = await engine.upsertNode(1, 'dst', { props: {} })
       await engine.upsertEdge(a, b, 1, { props: {} })
       const nbs = engine.neighbors(a)
-      if (nbs !== undefined) {
-        expect(nbs.length).toBe(1)
+      if (nbs.edges !== undefined) {
+        expect(nbs.edges.length).toBe(1)
       }
     } finally { engine.close() }
   }, 30000)

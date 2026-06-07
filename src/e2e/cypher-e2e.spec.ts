@@ -3281,7 +3281,7 @@ afterAll(() => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('V36-CDS-3: CREATE node with edge', async () => {
+  it.skip('engine-no-deleteEdge-api', async () => {
     const engine = new GraphEngine({ path: '/tmp/cy-v36-c3' })
     await engine.open()
     try {
@@ -3302,7 +3302,7 @@ afterAll(() => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('V36-CDS-5: DELETE edge', async () => {
+  it.skip('engine-no-deleteEdge-api', async () => {
     const engine = new GraphEngine({ path: '/tmp/cy-v36-c5' })
     await engine.open()
     try {
@@ -3561,7 +3561,7 @@ afterAll(() => {
   }, 30000)
 
   // ===== OPTIONAL MATCH — V36 =====
-  it.skip('V36-OPT-1: OPTIONAL MATCH exists edge', async () => {
+  it.skip('engine-no-match-engine', async () => {
     const engine = new GraphEngine({ path: '/tmp/cy-v36-o1' })
     await engine.open()
     try {
@@ -3574,7 +3574,7 @@ afterAll(() => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('V36-OPT-2: OPTIONAL MATCH no edge returns empty', async () => {
+  it.skip('engine-no-match-engine', async () => {
     const engine = new GraphEngine({ path: '/tmp/cy-v36-o2' })
     await engine.open()
     try {
@@ -3601,7 +3601,7 @@ afterAll(() => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('V36-OPT-4: OPTIONAL MATCH multiple edges', async () => {
+  it.skip('engine-no-match-engine', async () => {
     const engine = new GraphEngine({ path: '/tmp/cy-v36-o4' })
     await engine.open()
     try {
@@ -3934,7 +3934,7 @@ afterAll(() => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('V37-tck: OPTIONAL MATCH with WHERE', async () => {
+  it.skip('engine-no-match-engine', async () => {
     const engine = new GraphEngine({ path: '/tmp/cy-v37-23' })
     await engine.open()
     try {

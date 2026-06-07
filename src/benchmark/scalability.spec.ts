@@ -572,7 +572,7 @@ describe('Scalability Benchmarks', () => {
         }
       } finally { engine.close() }
     }, 30000)
-    it.skip('should scale neighbors with varying edge density', async () => {
+    it('neighbors-ENGINE neighbors returns edges/nodes not array', async () => {
       const engine = makeEngine('bench-sc3')
       try {
         const densities = [5, 10, 20]
@@ -586,7 +586,7 @@ describe('Scalability Benchmarks', () => {
           const nbs = engine.neighbors(src)
           const elapsed = performance.now() - t0
           console.log(`[BENCH][scalability] neighbors ${d} edges: ${elapsed.toFixed(3)} ms`)
-          expect(nbs.length).toBe(d)
+          expect(nbs.edges.length).toBe(d)
         }
       } finally { engine.close() }
     }, 30000)
