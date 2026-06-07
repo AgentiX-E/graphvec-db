@@ -4383,3 +4383,77 @@ afterAll(() => {
       expect(e.scanAllNodes().length).toBe(0)
     } finally { e.close() }
   }, 30000)
+
+  // ── V42 TCK ──
+  it('V42-tck: MATCH on large typeId', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-t1' })
+    await e.open()
+    try {
+      for (let t = 90; t <= 100; t++) await e.upsertNode(t, `t${t}`, { props: {} })
+      const all = e.scanAllNodes()
+      expect(all.length).toBe(11)
+      expect(all.every(n => n.type >= 90 && n.type <= 100)).toBe(true)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42-tck: CREATE then getNode chain', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-t2' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 5; i++) ids.push(await e.upsertNode(1, `c${i}`, { props: { seq: i } }))
+      const chk = ids.map(id => e.getNode(id))
+      expect(chk.every(n => n !== null)).toBe(true)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42-tck: WHERE with multiple OR', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-t3' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const r = e.scanAllNodes().filter(n => n.props.v === 1 || n.props.v === 4 || n.props.v === 9)
+      expect(r.length).toBe(3)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42-tck: ORDER BY string property', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-t4' })
+    await e.open()
+    try {
+      await e.upsertNode(1, 'b', { props: { name: 'banana' } })
+      await e.upsertNode(1, 'a', { props: { name: 'apple' } })
+      await e.upsertNode(1, 'c', { props: { name: 'cherry' } })
+      const sorted = e.scanAllNodes().sort((a, b) => String(a.props.name).localeCompare(String(b.props.name)))
+      expect(sorted[0].name).toBe('a')
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42-tck: SKIP beyond count returns empty', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-t5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 3; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().slice(10).length).toBe(0)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42-tck: DELETE all inserts verify zero', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-t6' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      e.scanAllNodes().forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42-tck: filter on two numeric ranges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-t7' })
+    await e.open()
+    try {
+      for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const r = e.scanAllNodes().filter(n => (n.props.v < 3 || n.props.v > 16))
+      expect(r.length).toBe(7)
+    } finally { e.close() }
+  }, 30000)

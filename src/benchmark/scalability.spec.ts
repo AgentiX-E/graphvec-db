@@ -978,3 +978,45 @@ describe('Scalability Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(40)
     } finally { e.close() }
   }, 30000)
+
+  // ── V42 scalability ──
+  it('V42: scan 400 after insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-s1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 400; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(400)
+    } finally { e.close() }
+  }, 180000)
+
+  it('V42: multi-type 25 types x 4 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-s2' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 25; t++)
+        for (let j = 0; j < 4; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(100)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42: delete first and last of 30', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-s3' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 30; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      e.deleteNode(ids[0]); e.deleteNode(ids[29])
+      expect(e.scanAllNodes().length).toBe(28)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42: sequential delete all 60', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-s4' })
+    await e.open()
+    try {
+      for (let i = 0; i < 60; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const all = e.scanAllNodes()
+      for (const n of all) e.deleteNode(n.id)
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 30000)

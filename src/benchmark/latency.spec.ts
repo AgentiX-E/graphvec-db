@@ -986,3 +986,38 @@ describe('Latency Benchmarks', () => {
       console.log(`[BENCH] scan 80+get: ${(performance.now() - start).toFixed(2)}ms`)
     } finally { e.close() }
   }, 30000)
+
+  // ── V42 latency ──
+  it('V42: upsert 250 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-l1' })
+    await e.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 250; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      console.log(`[BENCH] upsert 250: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 180000)
+
+  it('V42: scan 250 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-l2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 250; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now(); e.scanAllNodes()
+      console.log(`[BENCH] scan 250: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V42: upsertEdge 10 star latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-l3' })
+    await e.open()
+    try {
+      const h = await e.upsertNode(1, 'h', { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 10; i++) {
+        const l = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(h, l, 1, { props: {} })
+      }
+      console.log(`[BENCH] star 10 edges: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)

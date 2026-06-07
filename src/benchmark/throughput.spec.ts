@@ -1459,3 +1459,72 @@ describe('Throughput Benchmarks', () => {
       expect(e.getNode(ids[7])).toBeNull()
     } finally { e.close() }
   }, 30000)
+
+  // ── V42 throughput ──
+  it('V42: upsert 4 types x 5 each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-1' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 4; t++)
+        for (let j = 0; j < 5; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(20)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42: upsert 300 single type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 300; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(300)
+    } finally { e.close() }
+  }, 180000)
+
+  it('V42: delete last 5 of 20', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-3' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 20; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 15; i < 20; i++) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(15)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42: edges 5 star + verify neighbors count', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-4' })
+    await e.open()
+    try {
+      const h = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 5; i++) {
+        const l = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(h, l, 1, { props: {} })
+      }
+      const nbs = e.neighbors(h)
+      expect(nbs.edges.length).toBe(10) // bidirectional
+    } finally { e.close() }
+  }, 30000)
+
+  it('V42: upsert 100 then verify getNode round-trip', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-5' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 100; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: { seq: i } }))
+      for (let i = 0; i < 100; i++) {
+        const n = e.getNode(ids[i])
+        expect(n).not.toBeNull()
+        expect(n?.props?.seq).toBe(i)
+      }
+    } finally { e.close() }
+  }, 60000)
+
+  it('V42: upsert with numeric name', async () => {
+    const e = new GraphEngine({ path: '/tmp/v42-6' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, '12345', { props: {} })
+      const n = e.getNode(id)
+      expect(n?.name).toBe('12345')
+    } finally { e.close() }
+  }, 30000)
