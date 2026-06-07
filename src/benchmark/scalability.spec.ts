@@ -539,7 +539,7 @@ describe('Scalability Benchmarks', () => {
     console.log(`  Scans/sec: ${scansPerSec.toFixed(0)}`)
   }, 120000)
 
-    it.skip('should scale getNode latency at 10/50/100/200 nodes', async () => {
+    it('should scale getNode latency at 10/50/100/200 nodes', async () => {
       const engine = makeEngine('bench-sc1')
       try {
         const sizes = [10, 50, 100, 200]
@@ -556,7 +556,7 @@ describe('Scalability Benchmarks', () => {
         }
       } finally { engine.close() }
     }, 30000)
-    it.skip('should scale scanAllNodes latency with node count', async () => {
+    it('should scale scanAllNodes latency with node count', async () => {
       const engine = makeEngine('bench-sc2')
       try {
         const sizes = [10, 50, 100]

@@ -365,7 +365,7 @@ describe('Stability Benchmarks', () => {
     }
   }, 30000)
 
-  it.skip('V37-stab: 50 open/close cycles', async () => {
+  it('V37-stab: 50 open/close cycles', async () => {
     for (let i = 0; i < 50; i++) {
       const engine = new GraphEngine({ path: `/tmp/bm-v37-st2-${i}` })
       await engine.open()
