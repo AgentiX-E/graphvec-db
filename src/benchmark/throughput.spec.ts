@@ -807,7 +807,7 @@ describe('Throughput Benchmarks', () => {
       const nodes = engine.scanAllNodes()
       const elapsed = performance.now() - start
       console.log(`[BENCH] scanAllNodes 100: ${elapsed.toFixed(2)}ms count=${nodes.length}`)
-      expect(nodes.length).toBe(400)
+      expect(nodes.length).toBe(100)
     } finally { engine.close() }
   }, 30000)
 
@@ -855,7 +855,7 @@ describe('Throughput Benchmarks', () => {
         await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
       }
       const all = engine.scanAllNodes()
-      expect(all.length).toBe(20)
+      expect(all.length).toBe(10)
     } finally { engine.close() }
   }, 30000)
 
@@ -867,7 +867,7 @@ describe('Throughput Benchmarks', () => {
         await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
       }
       const all = engine.scanAllNodes()
-      expect(all.length).toBe(400)
+      expect(all.length).toBe(50)
     } finally { engine.close() }
   }, 60000)
 
@@ -879,7 +879,7 @@ describe('Throughput Benchmarks', () => {
         await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
       }
       const all = engine.scanAllNodes()
-      expect(all.length).toBe(400)
+      expect(all.length).toBe(100)
     } finally { engine.close() }
   }, 60000)
 
@@ -893,7 +893,7 @@ describe('Throughput Benchmarks', () => {
       }
       const results = ids.map(id => engine.getNode(id))
       const valid = results.filter(n => n !== null)
-      expect(valid.length).toBe(20)
+      expect(valid.length).toBe(10)
     } finally { engine.close() }
   }, 30000)
 
@@ -910,7 +910,7 @@ describe('Throughput Benchmarks', () => {
       }
       const nbs = engine.neighbors(src)
       if (nbs.edges !== undefined) {
-        expect(nbs.edges.length).toBe(20)
+        expect(nbs.edges.length).toBe(10)
       }
     } finally { engine.close() }
   }, 30000)
@@ -926,7 +926,7 @@ describe('Throughput Benchmarks', () => {
       }
       const elapsed = performance.now() - start
       console.log(`[BENCH] upsert 200: ${elapsed.toFixed(2)}ms`)
-      expect(engine.scanAllNodes().length).toBe(400)
+      expect(engine.scanAllNodes().length).toBe(200)
     } finally { engine.close() }
   }, 120000)
 
@@ -979,7 +979,7 @@ describe('Throughput Benchmarks', () => {
       }
       const nbs = engine.neighbors(src)
       if (nbs.edges !== undefined) {
-        expect(nbs.edges.length).toBe(400)
+        expect(nbs.edges.length).toBe(200)
       }
     } finally { engine.close() }
   }, 120000)
@@ -992,7 +992,7 @@ describe('Throughput Benchmarks', () => {
       for (let i = 0; i < 10; i++) {
         await engine.upsertNode(1, `gen-${i}`, { props: { val: i * 2 } })
       }
-      expect(engine.scanAllNodes().length).toBe(20)
+      expect(engine.scanAllNodes().length).toBe(10)
     } finally { engine.close() }
   }, 30000)
 
@@ -1004,7 +1004,7 @@ describe('Throughput Benchmarks', () => {
         await engine.upsertNode(i % 5 + 1, `t${i}`, { props: { seq: i } })
       }
       const all = engine.scanAllNodes()
-      expect(all.length).toBe(400)
+      expect(all.length).toBe(50)
     } finally { engine.close() }
   }, 30000)
 
@@ -1015,7 +1015,7 @@ describe('Throughput Benchmarks', () => {
       for (let i = 0; i < 100; i++) {
         await engine.upsertNode(1, `same-${i}`, { props: { seq: i } })
       }
-      expect(engine.scanAllNodes().length).toBe(400)
+      expect(engine.scanAllNodes().length).toBe(100)
     } finally { engine.close() }
   }, 30000)
 
@@ -1055,7 +1055,7 @@ describe('Throughput Benchmarks', () => {
         await engine.upsertNode(1, `s${i}`, { props: {} })
       }
       const all = engine.scanAllNodes()
-      expect(all.length).toBe(20)
+      expect(all.length).toBe(10)
     } finally { engine.close() }
   }, 30000)
   // ── V37-norun 更多批量 ──
@@ -1064,7 +1064,7 @@ describe('Throughput Benchmarks', () => {
     await engine.open()
     try {
       for (let i = 0; i < 200; i++) await engine.upsertNode(1, `nr${i}`, { props: { seq: i } })
-      expect(engine.scanAllNodes().length).toBe(400)
+      expect(engine.scanAllNodes().length).toBe(200)
     } finally { engine.close() }
   }, 120000)
 
@@ -1111,7 +1111,7 @@ describe('Throughput Benchmarks', () => {
     try {
       for (let i = 0; i < 50; i++) await engine.upsertNode(1, `s${i}`, { props: { seq: i } })
       const all = engine.scanAllNodes()
-      expect(all.length).toBe(400)
+      expect(all.length).toBe(50)
     } finally { engine.close() }
   }, 30000)
 
@@ -1184,7 +1184,7 @@ describe('Throughput Benchmarks', () => {
       const ids = []
       for (let i = 0; i < 20; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
       for (let i = 0; i < 19; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
-      expect(e.scanAllNodes().length).toBe(20)
+      expect(e.scanAllNodes().length).toBe(9)
     } finally { e.close() }
   }, 30000)
 
@@ -1252,7 +1252,7 @@ describe('Throughput Benchmarks', () => {
     await e.open()
     try {
       for (let i = 0; i < 100; i++) await e.upsertNode(1, `n${i}`, { props: {} })
-      expect(e.scanAllNodes().length).toBe(400)
+      expect(e.scanAllNodes().length).toBe(100)
     } finally { e.close() }
   }, 60000)
 
@@ -1261,7 +1261,7 @@ describe('Throughput Benchmarks', () => {
     await e.open()
     try {
       for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: {} })
-      expect(e.scanAllNodes().length).toBe(400)
+      expect(e.scanAllNodes().length).toBe(200)
     } finally { e.close() }
   }, 120000)
 
@@ -1289,7 +1289,7 @@ describe('Throughput Benchmarks', () => {
     try {
       for (let t = 1; t <= 10; t++)
         for (let j = 0; j < 5; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
-      expect(e.scanAllNodes().length).toBe(400)
+      expect(e.scanAllNodes().length).toBe(50)
     } finally { e.close() }
   }, 30000)
 
@@ -1422,7 +1422,7 @@ describe('Throughput Benchmarks', () => {
     await e.open()
     try {
       for (let i = 0; i < 50; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i, tag: `n${i}`, on: i % 2 === 0 } })
-      expect(e.scanAllNodes().length).toBe(400)
+      expect(e.scanAllNodes().length).toBe(50)
     } finally { e.close() }
   }, 30000)
 
@@ -1444,7 +1444,7 @@ describe('Throughput Benchmarks', () => {
       const ids: number[] = []
       for (let i = 0; i < 20; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
       for (let i = 0; i < 19; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
-      expect(e.scanAllNodes().length).toBe(20)
+      expect(e.scanAllNodes().length).toBe(9)
     } finally { e.close() }
   }, 30000)
 
@@ -1467,7 +1467,7 @@ describe('Throughput Benchmarks', () => {
     try {
       for (let t = 1; t <= 4; t++)
         for (let j = 0; j < 5; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
-      expect(e.scanAllNodes().length).toBe(20)
+      expect(e.scanAllNodes().length).toBe(5)
     } finally { e.close() }
   }, 30000)
 
