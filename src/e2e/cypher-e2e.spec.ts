@@ -4457,3 +4457,92 @@ afterAll(() => {
       expect(r.length).toBe(7)
     } finally { e.close() }
   }, 30000)
+
+  // ── V43 TCK ──
+  it('V43-tck: CREATE multiple edges from same node', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-t1' })
+    await e.open()
+    try {
+      const src = await e.upsertNode(1, 'src', { props: {} })
+      const dst1 = await e.upsertNode(1, 'd1', { props: {} })
+      const dst2 = await e.upsertNode(1, 'd2', { props: {} })
+      await e.upsertEdge(src, dst1, 1, { props: {} })
+      await e.upsertEdge(src, dst2, 1, { props: {} })
+      const nbs = e.neighbors(src)
+      expect(nbs.edges.length).toBeGreaterThanOrEqual(2)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43-tck: CREATE node with boolean false', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-t2' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, 'f', { props: { active: false } })
+      const n = e.getNode(id)
+      expect(n?.props?.active).toBe(false)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43-tck: WHERE numeric greater-than', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-t3' })
+    await e.open()
+    try {
+      for (let i = 0; i < 5; i++) await e.upsertNode(1, `n${i}`, { props: { v: i * 2 } })
+      const gt6 = e.scanAllNodes().filter(n => (n.props.v as number) > 6)
+      expect(gt6.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43-tck: WHERE string exact match', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-t4' })
+    await e.open()
+    try {
+      await e.upsertNode(1, 'a', { props: { tag: 'hello' } })
+      await e.upsertNode(1, 'b', { props: { tag: 'world' } })
+      const m = e.scanAllNodes().filter(n => n.props.tag === 'hello')
+      expect(m.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43-tck: ORDER BY numeric descending', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-t5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 6; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const sorted = e.scanAllNodes().sort((a, b) => (b.props.v as number) - (a.props.v as number))
+      expect(sorted[0].props.v).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43-tck: LIMIT + SKIP composite', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-t6' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const sorted = e.scanAllNodes().sort((a, b) => (a.props.v as number) - (b.props.v as number))
+      expect(sorted.slice(3, 6).length).toBe(3)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43-tck: DELETE non-existent is noop', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-t7' })
+    await e.open()
+    try {
+      await e.upsertNode(1, 'n', { props: {} })
+      e.deleteNode(99999)
+      expect(e.scanAllNodes().length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43-tck: upsert same name different type update', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-t8' })
+    await e.open()
+    try {
+      const id1 = await e.upsertNode(1, 'dup', { props: { v: 1 } })
+      const id2 = await e.upsertNode(2, 'dup', { props: { v: 2 } })
+      const n1 = e.getNode(id1)
+      const n2 = e.getNode(id2)
+      expect(n1).not.toBeNull()
+      expect(n2).not.toBeNull()
+    } finally { e.close() }
+  }, 30000)

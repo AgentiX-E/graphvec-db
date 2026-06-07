@@ -645,3 +645,68 @@ let engine: GraphEngine
       expect(e.getNode(ids[7])).toBeNull()
     } finally { e.close() }
   }, 30000)
+
+  // ── V43 throughput ──
+  it('V43: upsert 8 then verify all present', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 8; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i } })
+      expect(e.scanAllNodes().length).toBe(8)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: upsert 30 chain + scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-2' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 30; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 29; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(30)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: getNode middle id of 30', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-3' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 30; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: { seq: i } }))
+      const n = e.getNode(ids[15])
+      expect(n).not.toBeNull()
+      expect(n!.props.seq).toBe(15)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: delete alternating positions 5/10', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-4' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 10; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let idx = 0; idx < ids.length; idx += 2) e.deleteNode(ids[idx])
+      expect(e.scanAllNodes().length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: two disconnected subgraphs', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-5' })
+    await e.open()
+    try {
+      const g1 = [await e.upsertNode(1, 'g1a', {}), await e.upsertNode(1, 'g1b', {})]
+      const g2 = [await e.upsertNode(1, 'g2a', {}), await e.upsertNode(1, 'g2b', {})]
+      await e.upsertEdge(g1[0], g1[1], 1, { props: {} })
+      await e.upsertEdge(g2[0], g2[1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(4)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: upsert 5 with large string value', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-6' })
+    await e.open()
+    try {
+      for (let i = 0; i < 5; i++) await e.upsertNode(1, `n${i}`, { props: { data: 'x'.repeat(1000) } })
+      expect(e.scanAllNodes().length).toBe(5)
+    } finally { e.close() }
+  }, 30000)

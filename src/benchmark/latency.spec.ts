@@ -1021,3 +1021,52 @@ describe('Latency Benchmarks', () => {
       console.log(`[BENCH] star 10 edges: ${(performance.now() - start).toFixed(2)}ms`)
     } finally { e.close() }
   }, 30000)
+
+  // ── V43 latency ──
+  it('V43: upsert 40 with mixed property types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-l1' })
+    await e.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 40; i++) await e.upsertNode(1, `n${i}`, { props: { v: i, s: `s${i}`, flag: i % 2 === 0 } })
+      console.log(`[BENCH] upsert 40 mixed props: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: upsertEdge 50 star', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-l2' })
+    await e.open()
+    try {
+      const h = await e.upsertNode(1, 'hub', { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 50; i++) {
+        const l = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(h, l, 1, { props: {} })
+      }
+      console.log(`[BENCH] star 50 edges: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: getNode after bulk 120', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-l3' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 120; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      const start = performance.now()
+      for (const id of ids) e.getNode(id)
+      console.log(`[BENCH] getNode 120: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V43: delete 10 then scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-l4' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 20; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 10; i++) e.deleteNode(ids[i])
+      const start = performance.now(); e.scanAllNodes()
+      console.log(`[BENCH] scan after delete: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 30000)

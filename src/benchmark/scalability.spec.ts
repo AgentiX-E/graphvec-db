@@ -1020,3 +1020,58 @@ describe('Scalability Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(0)
     } finally { e.close() }
   }, 30000)
+
+  // ── V43 scalability ──
+  it('V43: scan 100 single type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-s1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 100; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(100)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: scan 500 single type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-s2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 500; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(500)
+    } finally { e.close() }
+  }, 180000)
+
+  it('V43: multi-type 7 types x 20 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-s3' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 7; t++)
+        for (let i = 0; i < 20; i++) await e.upsertNode(t, `t${t}-${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(140)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: delete every 5th node of 25', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-s4' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 25; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 4; i < ids.length; i += 5) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(20)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V43: 3 parallel star graphs', async () => {
+    const e = new GraphEngine({ path: '/tmp/v43-s5' })
+    await e.open()
+    try {
+      for (let star = 0; star < 3; star++) {
+        const h = await e.upsertNode(1, `hub${star}`, { props: {} })
+        for (let i = 0; i < 10; i++) {
+          const l = await e.upsertNode(1, `l${star}-${i}`, { props: {} })
+          await e.upsertEdge(h, l, 1, { props: {} })
+        }
+      }
+      expect(e.scanAllNodes().length).toBe(33) // 3 hubs + 30 leaves
+    } finally { e.close() }
+  }, 30000)
