@@ -606,4 +606,55 @@ describe('Scalability Benchmarks', () => {
       } finally { engine.close() }
     }, 30000)
 
-})
+})  // ── V37: Edge density scalability ──
+  it('V37-scale: edge density 50 edges', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-s1' })
+    await engine.open()
+    try {
+      const src = await engine.upsertNode(1, 'src', { props: {} })
+      for (let i = 0; i < 50; i++) {
+        const dst = await engine.upsertNode(1, `d${i}`, { props: {} })
+        await engine.upsertEdge(src, dst, 1, { props: { seq: i } })
+      }
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(51)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-scale: edge density 50→100→200 readers', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-s2' })
+    await engine.open()
+    try {
+      for (const sz of [50, 100, 200]) {
+        const sub = new GraphEngine({ path: `/tmp/bm-v37-s2-${sz}` })
+        await sub.open()
+        try {
+          for (let i = 0; i < sz; i++) {
+            await sub.upsertNode(1, `n${i}`, { props: { seq: i } })
+          }
+          const all = sub.scanAllNodes()
+          expect(all.length).toBe(sz)
+        } finally { sub.close() }
+      }
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-scale: typeId distribution 10→50→100', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-s3' })
+    await engine.open()
+    try {
+      for (const typeCnt of [10, 50, 100]) {
+        const sub = new GraphEngine({ path: `/tmp/bm-v37-s3-${typeCnt}` })
+        await sub.open()
+        try {
+          for (let t = 1; t <= typeCnt; t++) {
+            await sub.upsertNode(t, `n${t}`, { props: {} })
+          }
+          const all = sub.scanAllNodes()
+          expect(all.length).toBe(typeCnt)
+          const types = new Set(all.map(n => n.type))
+          expect(types.size).toBe(typeCnt)
+        } finally { sub.close() }
+      }
+    } finally { engine.close() }
+  }, 120000)

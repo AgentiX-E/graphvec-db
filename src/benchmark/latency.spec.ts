@@ -627,3 +627,81 @@ describe('Latency Benchmarks', () => {
     }, 30000)
 
 })
+  // ── V37: More latency patterns ──
+  it('V37-lat: edge upsert latency (1 edge)', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-l1' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      const start = performance.now()
+      await engine.upsertEdge(a, b, 1, { props: {} })
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] edgeUpsert 1: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-lat: edge upsert latency (10 edges)', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-l2' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const times: number[] = []
+      for (let i = 0; i < 10; i++) {
+        const b = await engine.upsertNode(1, `b${i}`, { props: {} })
+        const start = performance.now()
+        await engine.upsertEdge(a, b, 1, { props: {} })
+        times.push(performance.now() - start)
+      }
+      const avg = times.reduce((s, t) => s + t, 0) / times.length
+      const p99 = [...times].sort((a, b) => a - b)[Math.floor(times.length * 0.99)]
+      console.log(`[BENCH] edgeUpsert 10: avg=${avg.toFixed(3)}ms p99=${p99.toFixed(3)}ms`)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-lat: getNode with props (100 nodes)', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-l3' })
+    await engine.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 100; i++) {
+        ids.push(await engine.upsertNode(1, `n${i}`, { props: { seq: i, name: `user${i}`, active: true } }))
+      }
+      const start = performance.now()
+      for (const id of ids) {
+        engine.getNode(id)
+      }
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] getNode 100 (with props): ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-lat: scanAllNodes with large props (50 nodes)', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-l4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 50; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { seq: i, desc: 'x'.repeat(100) } })
+      }
+      const start = performance.now()
+      const all = engine.scanAllNodes()
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] scanAllNodes 50 (large props): ${elapsed.toFixed(2)}ms count=${all.length}`)
+      expect(all.length).toBe(50)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-lat: scanAllNodes with large props (200 nodes)', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-l5' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 200; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { seq: i, desc: 'x'.repeat(100) } })
+      }
+      const start = performance.now()
+      const all = engine.scanAllNodes()
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] scanAllNodes 200 (large props): ${elapsed.toFixed(2)}ms count=${all.length}`)
+      expect(all.length).toBe(200)
+    } finally { engine.close() }
+  }, 30000)

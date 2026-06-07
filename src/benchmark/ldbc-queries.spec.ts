@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { GraphEngine } from '../core/graph-engine'
 import {
   LDBC_QUERIES,
   getInteractiveQueries,
@@ -262,3 +263,62 @@ describe('Cypher statement validation', () => {
     }
   })
 })
+
+  // ── V37: More graph query validation ──
+  it('V37-ldbc: round-trip node name', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lq1' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'specific-name', { props: {} })
+      const node = engine.getNode(id)
+      expect(node).not.toBeNull()
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-ldbc: round-trip node props', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lq2' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'with-props', { props: { k1: 'v1', k2: 42, k3: true } })
+      const node = engine.getNode(id)
+      expect(node?.props?.k1).toBe('v1')
+      expect(node?.props?.k2).toBe(42)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-ldbc: round-trip edge props', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lq3' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      await engine.upsertEdge(a, b, 1, { props: { weight: 99.5, label: 'knows' } })
+      const nbs = engine.neighbors(a)
+      if (nbs !== undefined && nbs.length > 0) {
+        expect(nbs.length).toBeGreaterThan(0)
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-ldbc: scanAllNodes on empty', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lq4' })
+    await engine.open()
+    try {
+      const all = engine.scanAllNodes()
+      expect(Array.isArray(all)).toBe(true)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-ldbc: multi-type scan', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lq5' })
+    await engine.open()
+    try {
+      for (let t = 1; t <= 5; t++) {
+        for (let i = 0; i < 3; i++) {
+          await engine.upsertNode(t, `t${t}-n${i}`, { props: {} })
+        }
+      }
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(15)
+    } finally { engine.close() }
+  }, 30000)

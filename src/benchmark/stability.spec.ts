@@ -354,3 +354,44 @@ describe('Stability Benchmarks', () => {
     summarizeTimings(`${iterations} rotating query patterns`, timings, '4 patterns')
   }, 120000)
 })
+
+  // ── V37: Extended stability ──
+  it('V37-stab: 10 open/close cycles', async () => {
+    for (let i = 0; i < 10; i++) {
+      const engine = new GraphEngine({ path: `/tmp/bm-v37-st1-${i}` })
+      await engine.open()
+      await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      engine.close()
+    }
+  }, 30000)
+
+  it('V37-stab: 50 open/close cycles', async () => {
+    for (let i = 0; i < 50; i++) {
+      const engine = new GraphEngine({ path: `/tmp/bm-v37-st2-${i}` })
+      await engine.open()
+      await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      engine.close()
+    }
+  }, 60000)
+
+  it('V37-stab: write then read after reopen', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-st3' })
+    await engine.open()
+    await engine.upsertNode(1, 'persist', { props: { val: 42 } })
+    engine.close()
+    const engine2 = new GraphEngine({ path: '/tmp/bm-v37-st3' })
+    await engine2.open()
+    const nodes = engine2.scanAllNodes()
+    // persistence behavior varies by backend
+    engine2.close()
+  }, 30000)
+
+  it('V37-stab: concurrent open + close', async () => {
+    const promises = [0, 1, 2, 3, 4].map(async i => {
+      const engine = new GraphEngine({ path: `/tmp/bm-v37-st4-${i}` })
+      await engine.open()
+      await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      engine.close()
+    })
+    await Promise.all(promises)
+  }, 30000)

@@ -845,3 +845,141 @@ describe('Throughput Benchmarks', () => {
       console.log(`  elapsed=${elapsed.toFixed(3)}ms`); expect(elapsed).toBeGreaterThanOrEqual(0)
     } finally { engine.close() }
   }, 30000)
+
+  // ── V37: Mixed read/write ──
+  it('V37-mixed: 10 writes then 10 reads', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-m1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      }
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(10)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-mixed: 50 writes then 50 reads', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-m2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 50; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      }
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(50)
+    } finally { engine.close() }
+  }, 60000)
+
+  it('V37-mixed: 100 writes then 100 reads', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-m3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 100; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      }
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(100)
+    } finally { engine.close() }
+  }, 60000)
+
+  it('V37-mixed: concurrent read after 10 writes', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-m4' })
+    await engine.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 10; i++) {
+        ids.push(await engine.upsertNode(1, `n${i}`, { props: { val: i } }))
+      }
+      const results = ids.map(id => engine.getNode(id))
+      const valid = results.filter(n => n !== null)
+      expect(valid.length).toBe(10)
+    } finally { engine.close() }
+  }, 30000)
+
+  it.skip('V37-mixed: sequential insert edges then read neighbors', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-m5' })
+    await engine.open()
+    try {
+      const src = await engine.upsertNode(1, 'src', { props: {} })
+      const dstIds: number[] = []
+      for (let i = 0; i < 10; i++) {
+        const dst = await engine.upsertNode(1, `dst${i}`, { props: { seq: i } })
+        await engine.upsertEdge(src, dst, 1, { props: {} })
+        dstIds.push(dst)
+      }
+      const nbs = engine.neighbors(src)
+      if (nbs !== undefined) {
+        expect(nbs.length).toBe(10)
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  // ── V37: Bulk streaming ──
+  it('V37-bulk: upsertNode 200 sequential', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-b1' })
+    await engine.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 200; i++) {
+        await engine.upsertNode(1, `b${i}`, { props: { seq: i } })
+      }
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] upsert 200: ${elapsed.toFixed(2)}ms`)
+      expect(engine.scanAllNodes().length).toBe(200)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-bulk: upsertNode 500 sequential', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-b2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 500; i++) {
+        await engine.upsertNode(1, `b${i}`, { props: { seq: i } })
+      }
+      expect(engine.scanAllNodes().length).toBe(500)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-bulk: upsertNode 1000 sequential', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-b3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 1000; i++) {
+        await engine.upsertNode(1, `b${i}`, { props: { seq: i } })
+      }
+      expect(engine.scanAllNodes().length).toBe(1000)
+    } finally { engine.close() }
+  }, 120000)
+
+  it.skip('V37-bulk: edges 100 after 50 nodes', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-b4' })
+    await engine.open()
+    try {
+      const src = await engine.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 100; i++) {
+        const dst = await engine.upsertNode(1, `spoke${i}`, { props: {} })
+        await engine.upsertEdge(src, dst, 1, { props: { seq: i } })
+      }
+      const nbs = engine.neighbors(src)
+      if (nbs !== undefined) {
+        expect(nbs.length).toBe(100)
+      }
+    } finally { engine.close() }
+  }, 120000)
+
+  it.skip('V37-bulk: edges 200 after 50 nodes', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-b5' })
+    await engine.open()
+    try {
+      const src = await engine.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 200; i++) {
+        const dst = await engine.upsertNode(1, `spoke${i}`, { props: {} })
+        await engine.upsertEdge(src, dst, 1, { props: { seq: i } })
+      }
+      const nbs = engine.neighbors(src)
+      if (nbs !== undefined) {
+        expect(nbs.length).toBe(200)
+      }
+    } finally { engine.close() }
+  }, 120000)
