@@ -658,3 +658,55 @@ describe('Scalability Benchmarks', () => {
       }
     } finally { engine.close() }
   }, 120000)
+  // ── V37-norun 更多 scalability ──
+  it('V37-nr: scanAllNodes 300', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-sc1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 300; i++) await engine.upsertNode(1, `sc${i}`, { props: {} })
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(300)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-nr: scanAllNodes 500', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-sc2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 500; i++) await engine.upsertNode(1, `sc${i}`, { props: {} })
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(500)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-nr: scanAllNodes 1000', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-sc3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 1000; i++) await engine.upsertNode(1, `sc${i}`, { props: {} })
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(1000)
+    } finally { engine.close() }
+  }, 180000)
+
+  it('V37-nr: multi-type 300 nodes 10 types', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-sc4' })
+    await engine.open()
+    try {
+      for (let t = 1; t <= 10; t++) {
+        for (let i = 0; i < 30; i++) await engine.upsertNode(t, `t${t}-n${i}`, { props: {} })
+      }
+      expect(engine.scanAllNodes().length).toBe(300)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-nr: multi-type 500 nodes 20 types', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-sc5' })
+    await engine.open()
+    try {
+      for (let t = 1; t <= 20; t++) {
+        for (let i = 0; i < 25; i++) await engine.upsertNode(t, `t${t}-n${i}`, { props: {} })
+      }
+      expect(engine.scanAllNodes().length).toBe(500)
+    } finally { engine.close() }
+  }, 120000)

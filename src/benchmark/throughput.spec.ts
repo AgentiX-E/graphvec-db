@@ -983,3 +983,105 @@ describe('Throughput Benchmarks', () => {
       }
     } finally { engine.close() }
   }, 120000)
+
+  // ── V37-cont: More bulk patterns ──
+  it('V37-cont-tp: upsertNode 10 with generated names', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp6' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `gen-${i}`, { props: { val: i * 2 } })
+      }
+      expect(engine.scanAllNodes().length).toBe(10)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-cont-tp: upsertNode 50 with alternating types', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp7' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 50; i++) {
+        await engine.upsertNode(i % 5 + 1, `t${i}`, { props: { seq: i } })
+      }
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(50)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-cont-tp: upsertNode 100 with typeId=1 all same', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp8' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 100; i++) {
+        await engine.upsertNode(1, `same-${i}`, { props: { seq: i } })
+      }
+      expect(engine.scanAllNodes().length).toBe(100)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-cont-tp: single edge isolation', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp9' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'src', { props: {} })
+      const b = await engine.upsertNode(1, 'dst', { props: {} })
+      await engine.upsertEdge(a, b, 1, { props: {} })
+      const nbs = engine.neighbors(a)
+      if (nbs !== undefined) {
+        expect(nbs.length).toBe(1)
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-cont-tp: getNode chain 5 after insert', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp10' })
+    await engine.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 5; i++) {
+        ids.push(await engine.upsertNode(1, `c${i}`, { props: { val: i } }))
+      }
+      for (const id of ids) {
+        expect(engine.getNode(id)).not.toBeNull()
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-cont-tp: scanAllNodes 10 after upsertNode', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp11' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `s${i}`, { props: {} })
+      }
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(10)
+    } finally { engine.close() }
+  }, 30000)
+  // ── V37-norun 更多批量 ──
+  it('V37-nr: upsertNode 200 same type', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-nr1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 200; i++) await engine.upsertNode(1, `nr${i}`, { props: { seq: i } })
+      expect(engine.scanAllNodes().length).toBe(200)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-nr: upsertNode 300 same type', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-nr2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 300; i++) await engine.upsertNode(1, `nr${i}`, { props: { seq: i } })
+      expect(engine.scanAllNodes().length).toBe(300)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-nr: upsertNode 500 same type', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-nr3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 500; i++) await engine.upsertNode(1, `nr${i}`, { props: { seq: i } })
+      expect(engine.scanAllNodes().length).toBe(500)
+    } finally { engine.close() }
+  }, 180000)

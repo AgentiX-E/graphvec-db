@@ -705,3 +705,49 @@ describe('Latency Benchmarks', () => {
       expect(all.length).toBe(200)
     } finally { engine.close() }
   }, 30000)
+  // ── V37-norun 更多延迟 ──
+  it('V37-nr: upsertNode latency 200 nodes measure sum', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lt1' })
+    await engine.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 200; i++) await engine.upsertNode(1, `lt${i}`, { props: { seq: i } })
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] upsert 200 latency sum: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-nr: upsertNode latency 500 nodes', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lt2' })
+    await engine.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 500; i++) await engine.upsertNode(1, `lt${i}`, { props: { seq: i } })
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] upsert 500 latency sum: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 180000)
+
+  it('V37-nr: scanAllNodes latency 200', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lt3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 200; i++) await engine.upsertNode(1, `lt${i}`, { props: { seq: i } })
+      const start = performance.now()
+      engine.scanAllNodes()
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] scanAllNodes 200: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V37-nr: scanAllNodes latency 500', async () => {
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-lt4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 500; i++) await engine.upsertNode(1, `lt${i}`, { props: { seq: i } })
+      const start = performance.now()
+      engine.scanAllNodes()
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] scanAllNodes 500: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 120000)

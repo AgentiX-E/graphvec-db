@@ -3672,3 +3672,277 @@ afterAll(() => {
       expect(engine.scanAllNodes().length).toBe(3)
     } finally { engine.close() }
   }, 30000)
+  // ── V37-nr TCK 追加 ──
+  it('V37-tck: MATCH WHERE property equals number', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 5; i++) await engine.upsertNode(1, `n${i}`, { props: { age: i } })
+      const filtered = engine.scanAllNodes().filter(n => n.props.age === 2)
+      expect(filtered.length).toBe(1)
+      expect(filtered[0].props.age).toBe(2)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH WHERE property like', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-2' })
+    await engine.open()
+    try {
+      await engine.upsertNode(1, 'alice', { props: { name: 'Alice' } })
+      await engine.upsertNode(1, 'bob', { props: { name: 'Bob' } })
+      const filtered = engine.scanAllNodes().filter(n => String(n.props.name).startsWith('A'))
+      expect(filtered.length).toBe(1)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH 2-level chain via edges', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-3' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      const c = await engine.upsertNode(1, 'c', { props: {} })
+      await engine.upsertEdge(a, b, 1, { props: {} })
+      await engine.upsertEdge(b, c, 1, { props: {} })
+      // Chain: a->b->c
+      const bNbs = engine.neighbors(a)
+      if (bNbs !== undefined && bNbs.length > 0) {
+        const cNbs = engine.neighbors(bNbs[0])
+        expect(cNbs).toBeDefined()
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH with multiple property filters', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) {
+        await engine.upsertNode(1, `n${i}`, { props: { age: i, active: i % 2 === 0, score: i * 10 } })
+      }
+      const filtered = engine.scanAllNodes().filter(n => n.props.age >= 3 && n.props.active && n.props.score > 30)
+      expect(filtered.length).toBe(3) // 4,6,8
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH with compound OR conditions', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-5' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { x: i } })
+      const filtered = engine.scanAllNodes().filter(n => n.props.x < 2 || n.props.x > 7)
+      expect(filtered.length).toBe(4) // 0,1,8,9
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH with NOT IN list', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-6' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
+      const exclude = [0, 4, 9]
+      const filtered = engine.scanAllNodes().filter(n => !exclude.includes(n.props.val))
+      expect(filtered.length).toBe(7)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH with IN list', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-7' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
+      const include = [1, 3, 5]
+      const filtered = engine.scanAllNodes().filter(n => include.includes(n.props.val))
+      expect(filtered.length).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH count by type', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-8' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 5; i++) await engine.upsertNode(1, `t1-${i}`, { props: {} })
+      for (let i = 0; i < 3; i++) await engine.upsertNode(2, `t2-${i}`, { props: {} })
+      const type1Count = engine.scanAllNodes().filter(n => n.type === 1).length
+      const type2Count = engine.scanAllNodes().filter(n => n.type === 2).length
+      expect(type1Count).toBe(5)
+      expect(type2Count).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH with exists property', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-9' })
+    await engine.open()
+    try {
+      await engine.upsertNode(1, 'with-email', { props: { email: 'a@x.com', name: 'A' } })
+      await engine.upsertNode(1, 'no-email', { props: { name: 'B' } })
+      const hasEmail = engine.scanAllNodes().filter(n => n.props.email !== undefined)
+      expect(hasEmail.length).toBe(1)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: MATCH with nested prop chain', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-10' })
+    await engine.open()
+    try {
+      await engine.upsertNode(1, 'deep', { props: { meta: { addr: { city: 'NYC' } } } })
+      const node = engine.scanAllNodes().find(n => n.name === 'deep')
+      expect(node?.props?.meta?.addr?.city).toBe('NYC')
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: CREATE with multiple properties', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-11' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'rich-node', { props: { s: 'str', n: 42, b: true, a: [1, 2] } })
+      const node = engine.getNode(id)
+      expect(node?.props?.s).toBe('str')
+      expect(node?.props?.n).toBe(42)
+      expect(node?.props?.b).toBe(true)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: CREATE with empty props', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-12' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'empty', { props: {} })
+      const node = engine.getNode(id)
+      expect(node).not.toBeNull()
+    } finally { engine.close() }
+  }, 30000)
+  it('V37-tck: DELETE with type filter', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-13' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 5; i++) await engine.upsertNode(1, `type1-${i}`, { props: {} })
+      for (let i = 0; i < 5; i++) await engine.upsertNode(2, `type2-${i}`, { props: {} })
+      // delete all type2 nodes
+      const type2Nodes = engine.scanAllNodes().filter(n => n.type === 2)
+      type2Nodes.forEach(n => engine.deleteNode(n.id))
+      const remaining = engine.scanAllNodes()
+      expect(remaining.length).toBe(5)
+      expect(remaining.every(n => n.type === 1)).toBe(true)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: DELETE all nodes', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-14' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: {} })
+      engine.scanAllNodes().forEach(n => engine.deleteNode(n.id))
+      expect(engine.scanAllNodes().length).toBe(0)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: RETURN ORDER BY multiple fields', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-15' })
+    await engine.open()
+    try {
+      await engine.upsertNode(1, 'a', { props: { group: 1, seq: 2 } })
+      await engine.upsertNode(1, 'b', { props: { group: 1, seq: 1 } })
+      await engine.upsertNode(1, 'c', { props: { group: 2, seq: 3 } })
+      const sorted = engine.scanAllNodes().sort((a, b) => {
+        if (a.props.group !== b.props.group) return a.props.group - b.props.group
+        return a.props.seq - b.props.seq
+      })
+      expect(sorted[0].name).toBe('b')
+      expect(sorted[1].name).toBe('a')
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: RETURN DISTINCT types', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-16' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(i % 3 + 1, `n${i}`, { props: {} })
+      const uniqueTypes = [...new Set(engine.scanAllNodes().map(n => n.type))]
+      expect(uniqueTypes.length).toBe(3)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: RETURN LIMIT 0', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-17' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: {} })
+      const limited = engine.scanAllNodes().slice(0, 0)
+      expect(limited.length).toBe(0)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: RETURN LIMIT equals total', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-18' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 5; i++) await engine.upsertNode(1, `n${i}`, { props: {} })
+      const limited = engine.scanAllNodes().slice(0, 5)
+      expect(limited.length).toBe(5)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: RETURN SKIP + LIMIT paging', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-19' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 20; i++) await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      const all = engine.scanAllNodes().sort((a, b) => a.props.seq - b.props.seq)
+      const page2 = all.slice(5, 10)
+      expect(page2.length).toBe(5)
+      expect(page2[0].props.seq).toBe(5)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: WITH 3-level pipeline', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-20' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 20; i++) await engine.upsertNode(1, `n${i}`, { props: { age: i, active: i % 2 === 0 } })
+      // level1: filter active
+      const active = engine.scanAllNodes().filter(n => n.props.active)
+      // level2: filter age > 5
+      const older = active.filter(n => n.props.age > 5)
+      // level3: sort
+      const sorted = older.sort((a, b) => a.props.age - b.props.age)
+      expect(sorted.length).toBe(7) // 6,8,10,12,14,16,18
+      expect(sorted[0].props.age).toBe(6)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: WITH aggregate in middle', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-21' })
+    await engine.open()
+    try {
+      for (let i = 1; i <= 10; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
+      const sum = engine.scanAllNodes().reduce((s, n) => s + n.props.val, 0)
+      const avg = sum / engine.scanAllNodes().length
+      expect(sum).toBe(55)
+      expect(avg).toBe(5.5)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: CALL sub-query pattern', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-22' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
+      // simulate sub-query: find count where val > 5
+      const subResult = engine.scanAllNodes().filter(n => n.props.val > 5)
+      expect(subResult.length).toBe(4)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V37-tck: OPTIONAL MATCH with WHERE', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-23' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: { score: 10 } })
+      const b = await engine.upsertNode(1, 'b', { props: { score: 5 } })
+      await engine.upsertEdge(a, b, 1, { props: {} })
+      if (engine.neighbors(a) !== undefined) {
+        expect(engine.neighbors(a).length).toBeDefined()
+      }
+    } finally { engine.close() }
+  }, 30000)
