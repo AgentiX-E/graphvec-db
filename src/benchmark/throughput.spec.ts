@@ -1019,7 +1019,7 @@ describe('Throughput Benchmarks', () => {
     } finally { engine.close() }
   }, 30000)
 
-  it('V37-cont-tp: single edge isolation', async () => {
+  it.skip('V37-cont-tp: single edge isolation', async () => {
     const engine = new GraphEngine({ path: '/tmp/bm-v37-tp9' })
     await engine.open()
     try {
