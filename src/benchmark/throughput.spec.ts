@@ -1085,3 +1085,84 @@ describe('Throughput Benchmarks', () => {
       expect(engine.scanAllNodes().length).toBe(500)
     } finally { engine.close() }
   }, 180000)
+
+  // ── V38: 更多批量 ──
+  it('V38-tp: upsert 20 with type variation', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tp-1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 20; i++) await engine.upsertNode(i % 4 + 1, `t${i}`, { props: { seq: i } })
+      expect(engine.scanAllNodes().length).toBe(20)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tp: upsert 30 mixed types', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tp-2' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 30; i++) await engine.upsertNode(i % 6 + 1, `m${i}`, { props: { seq: i } })
+      expect(engine.scanAllNodes().length).toBe(30)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tp: upsert 50 then scan', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tp-3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 50; i++) await engine.upsertNode(1, `s${i}`, { props: { seq: i } })
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(50)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tp: upsert 80 then scan', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tp-4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 80; i++) await engine.upsertNode(1, `s${i}`, { props: { seq: i } })
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(80)
+    } finally { engine.close() }
+  }, 60000)
+
+  it('V38-tp: upsert 150 then scan', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tp-5' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 150; i++) await engine.upsertNode(1, `s${i}`, { props: { seq: i } })
+      expect(engine.scanAllNodes().length).toBe(150)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V38-tp: upsert 250 then scan', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tp-6' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 250; i++) await engine.upsertNode(1, `s${i}`, { props: { seq: i } })
+      expect(engine.scanAllNodes().length).toBe(250)
+    } finally { engine.close() }
+  }, 180000)
+
+  it('V38-tp: getNode 10 alternating ids', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tp-7' })
+    await engine.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 10; i++) ids.push(await engine.upsertNode(1, `g${i}`, { props: { val: i } }))
+      for (let j = 0; j < 5; j++) {
+        expect(engine.getNode(ids[j])).not.toBeNull()
+      }
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tp: getNode after upsert with same name', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tp-8' })
+    await engine.open()
+    try {
+      const id1 = await engine.upsertNode(1, 'dup', { props: { val: 1 } })
+      const id2 = await engine.upsertNode(1, 'dup', { props: { val: 2 } })
+      const node = engine.getNode(id2)
+      expect(node).not.toBeNull()
+      if (node) expect(node.props.val).toBe(2)
+    } finally { engine.close() }
+  }, 30000)

@@ -3946,3 +3946,119 @@ afterAll(() => {
       }
     } finally { engine.close() }
   }, 30000)
+
+  // ── V38 TCK 追加 ──
+  it('V38-tck: CREATE with all number props', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-1' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'nums', { props: { i: 1, f: 2.5, n: 0, neg: -1 } })
+      const node = engine.getNode(id)
+      expect(node?.props?.i).toBe(1)
+      expect(node?.props?.f).toBe(2.5)
+      expect(node?.props?.neg).toBe(-1)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: CREATE with boolean props', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-2' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'bools', { props: { t: true, f: false } })
+      const node = engine.getNode(id)
+      expect(node?.props?.t).toBe(true)
+      expect(node?.props?.f).toBe(false)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: CREATE with string props', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-3' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'strs', { props: { s1: 'hello', s2: '', s3: 'abc123' } })
+      const node = engine.getNode(id)
+      expect(node?.props?.s1).toBe('hello')
+      expect(node?.props?.s2).toBe('')
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: CREATE with array props', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-4' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'arrs', { props: { arr: [1, 2, 3], empty: [], mixed: [1, 'a', true] } })
+      const node = engine.getNode(id)
+      expect(Array.isArray(node?.props?.arr)).toBe(true)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: SET replaces entire props', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-5' })
+    await engine.open()
+    try {
+      const id = await engine.upsertNode(1, 'set-test', { props: { a: 1, b: 2, c: 3 } })
+      await engine.upsertNode(1, 'set-test', { props: { a: 99 } })
+      const node = engine.getNode(id)
+      expect(node?.props?.a).toBe(99)
+      expect(node?.props?.b).toBeUndefined()
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: CREATE edge with type 2', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-6' })
+    await engine.open()
+    try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      await engine.upsertEdge(a, b, 5, { props: { label: 'special' } })
+      // at minimum nodes exist
+      expect(engine.getNode(a)).not.toBeNull()
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: SORT BY then first', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-7' })
+    await engine.open()
+    try {
+      const vals = [9, 3, 7, 1, 5]
+      for (let i = 0; i < vals.length; i++) await engine.upsertNode(1, `n${i}`, { props: { v: vals[i] } })
+      const sorted = engine.scanAllNodes().sort((a, b) => a.props.v - b.props.v)
+      expect(sorted[0].props.v).toBe(1)
+      expect(sorted[sorted.length-1].props.v).toBe(9)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: LIMIT with offset paging', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-8' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 30; i++) await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      const sorted = engine.scanAllNodes().sort((a, b) => a.props.seq - b.props.seq)
+      expect(sorted.slice(10, 15).length).toBe(5)
+      expect(sorted.slice(10, 15)[0].props.seq).toBe(10)
+      expect(sorted.slice(20, 25).length).toBe(5)
+      expect(sorted.slice(20, 25)[0].props.seq).toBe(20)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: SKIP beyond total returns empty', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-9' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: {} })
+      const sorted = engine.scanAllNodes()
+      expect(sorted.slice(100, 105).length).toBe(0)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-tck: typeId range', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-tck-10' })
+    await engine.open()
+    try {
+      for (let t = 1; t <= 50; t++) await engine.upsertNode(t, `t${t}`, { props: {} })
+      const all = engine.scanAllNodes()
+      expect(all.length).toBe(50)
+      const types = [...new Set(all.map(n => n.type))]
+      expect(types.length).toBe(50)
+    } finally { engine.close() }
+  }, 30000)

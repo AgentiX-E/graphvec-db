@@ -710,3 +710,62 @@ describe('Scalability Benchmarks', () => {
       expect(engine.scanAllNodes().length).toBe(500)
     } finally { engine.close() }
   }, 120000)
+
+  // ── V38: 更多 scalability ──
+  it('V38-scale: node count 200+100+50 multi-type', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-sc-1' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 200; i++) await engine.upsertNode(1, `t1-${i}`, { props: {} })
+      for (let i = 0; i < 100; i++) await engine.upsertNode(2, `t2-${i}`, { props: {} })
+      for (let i = 0; i < 50; i++) await engine.upsertNode(3, `t3-${i}`, { props: {} })
+      expect(engine.scanAllNodes().length).toBe(350)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V38-scale: node count 5+10+15+20+25 types', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-sc-2' })
+    await engine.open()
+    try {
+      for (let t = 1; t <= 5; t++) {
+        for (let i = 0; i < t * 10; i++) await engine.upsertNode(t, `t${t}-n${i}`, { props: {} })
+      }
+      expect(engine.scanAllNodes().length).toBe(150) // 10+20+30+40+50
+    } finally { engine.close() }
+  }, 60000)
+
+  it('V38-scale: delete half 100 nodes', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-sc-3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 100; i++) await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
+      const all = engine.scanAllNodes()
+      const half = all.filter(n => n.props.seq % 2 === 0)
+      half.forEach(n => engine.deleteNode(n.id))
+      expect(engine.scanAllNodes().length).toBe(50)
+    } finally { engine.close() }
+  }, 60000)
+
+  it('V38-scale: delete all then reinsert half', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-sc-4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 100; i++) await engine.upsertNode(1, `n${i}`, { props: {} })
+      engine.scanAllNodes().forEach(n => engine.deleteNode(n.id))
+      expect(engine.scanAllNodes().length).toBe(0)
+      for (let i = 0; i < 50; i++) await engine.upsertNode(1, `r${i}`, { props: {} })
+      expect(engine.scanAllNodes().length).toBe(50)
+    } finally { engine.close() }
+  }, 120000)
+
+  it('V38-scale: insert with large name variations', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-sc-5' })
+    await engine.open()
+    try {
+      const names = ['a', 'ab', 'abc', 'x'.repeat(10), 'y'.repeat(50), 'z'.repeat(100)]
+      for (const name of names) {
+        await engine.upsertNode(1, name, { props: {} })
+      }
+      expect(engine.scanAllNodes().length).toBe(names.length)
+    } finally { engine.close() }
+  }, 30000)

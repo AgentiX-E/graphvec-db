@@ -751,3 +751,65 @@ describe('Latency Benchmarks', () => {
       console.log(`[BENCH] scanAllNodes 500: ${elapsed.toFixed(2)}ms`)
     } finally { engine.close() }
   }, 120000)
+
+  // ── V38: 更多延迟 ──
+  it('V38-lat: upsertNode 80 measure sum', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-lat-1' })
+    await engine.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 80; i++) await engine.upsertNode(1, `l${i}`, { props: { seq: i } })
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] upsert 80: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-lat: upsertNode 150 measure sum', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-lat-2' })
+    await engine.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 150; i++) await engine.upsertNode(1, `l${i}`, { props: { seq: i } })
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] upsert 150: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 60000)
+
+  it('V38-lat: scanAllNodes 80 measure', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-lat-3' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 80; i++) await engine.upsertNode(1, `l${i}`, { props: { seq: i } })
+      const start = performance.now()
+      engine.scanAllNodes()
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] scan 80: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 30000)
+
+  it('V38-lat: scanAllNodes 150 measure', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-lat-4' })
+    await engine.open()
+    try {
+      for (let i = 0; i < 150; i++) await engine.upsertNode(1, `l${i}`, { props: { seq: i } })
+      const start = performance.now()
+      engine.scanAllNodes()
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] scan 150: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 60000)
+
+  it('V38-lat: upsertEdge 20 measure', async () => {
+    const engine = new GraphEngine({ path: '/tmp/v38-lat-5' })
+    await engine.open()
+    try {
+      const src = await engine.upsertNode(1, 'hub', { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 20; i++) {
+        const dst = await engine.upsertNode(1, `d${i}`, { props: {} })
+        await engine.upsertEdge(src, dst, 1, { props: {} })
+      }
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] upsertEdge 20: ${elapsed.toFixed(2)}ms`)
+    } finally { engine.close() }
+  }, 30000)
