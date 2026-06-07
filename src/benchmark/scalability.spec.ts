@@ -879,3 +879,52 @@ describe('Scalability Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(100)
     } finally { e.close() }
   }, 120000)
+  // ── V40 scalability ──
+  it('V40: scan 50 after bulk insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-s1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 50; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(50)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: scan 150 after bulk', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-s2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 150; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(150)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V40: multi-type 8 types x 8 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-s3' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 8; t++)
+        for (let j = 0; j < 8; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(64)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: delete all 200 then scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-s4' })
+    await e.open()
+    try {
+      for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      e.scanAllNodes().forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V40: delete 25% of 80 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-s5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 80; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i } })
+      const del = e.scanAllNodes().filter(n => n.props.idx < 20)
+      del.forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(60)
+    } finally { e.close() }
+  }, 30000)

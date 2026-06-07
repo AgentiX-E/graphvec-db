@@ -905,3 +905,49 @@ describe('Latency Benchmarks', () => {
       console.log(`[BENCH] scan 200: ${(performance.now() - start).toFixed(3)}ms`)
     } finally { e.close() }
   }, 120000)
+  // ── V40 latency ──
+  it('V40: upsertNode 60 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-l1' })
+    await e.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 60; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      console.log(`[BENCH] upsert 60: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: scan 60 latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-l2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 60; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now(); e.scanAllNodes()
+      console.log(`[BENCH] scan 60: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: upsertEdge 5 + scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-l3' })
+    await e.open()
+    try {
+      const h = await e.upsertNode(1, 'h', { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 5; i++) {
+        const l = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(h, l, 1, { props: {} })
+      }
+      console.log(`[BENCH] 5 edges + 5 nodes: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: deleteNode then getNode', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-l4' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, 'del', { props: {} })
+      e.deleteNode(id)
+      const start = performance.now()
+      e.getNode(id)
+      console.log(`[BENCH] getNode after delete: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 30000)

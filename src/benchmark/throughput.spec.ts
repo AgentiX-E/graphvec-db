@@ -1331,3 +1331,69 @@ describe('Throughput Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(21)
     } finally { e.close() }
   }, 60000)
+  // ── V40 throughput ──
+  it('V40: upsert 5 edges isolated', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-1' })
+    await e.open()
+    try {
+      const a = await e.upsertNode(1, 'a', { props: {} }); const b = await e.upsertNode(1, 'b', { props: {} })
+      await e.upsertEdge(a, b, 1, { props: {} }); const c = await e.upsertNode(1, 'c', { props: {} })
+      await e.upsertEdge(a, c, 1, { props: {} }); const d = await e.upsertNode(1, 'd', { props: {} })
+      await e.upsertEdge(a, d, 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(4)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: upsert 10 edges hub', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-2' })
+    await e.open()
+    try {
+      const h = await e.upsertNode(1, 'h', { props: {} })
+      for (let i = 0; i < 10; i++) {
+        const l = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(h, l, 1, { props: {} })
+      }
+      expect(e.scanAllNodes().length).toBe(11)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: upsert 30 mixed 3 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-3' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 3; t++)
+        for (let j = 0; j < 10; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(30)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: getNode non-existent returns null', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-4' })
+    await e.open()
+    try {
+      expect(e.getNode(99999)).toBeNull()
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: delete single node mid-collection', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-5' })
+    await e.open()
+    try {
+      const ids = []
+      for (let i = 0; i < 10; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      e.deleteNode(ids[5])
+      expect(e.getNode(ids[5])).toBeNull()
+      expect(e.scanAllNodes().length).toBe(9)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40: upsert dup name different type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-6' })
+    await e.open()
+    try {
+      const id1 = await e.upsertNode(1, 'same', { props: {} })
+      const id2 = await e.upsertNode(2, 'same', { props: {} })
+      expect(id1).not.toBe(id2)
+      expect(e.scanAllNodes().length).toBe(2)
+    } finally { e.close() }
+  }, 30000)

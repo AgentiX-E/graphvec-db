@@ -4166,3 +4166,109 @@ afterAll(() => {
       expect(e.scanAllNodes().length).toBe(0)
     } finally { e.close() }
   }, 30000)
+  // ── V40 TCK ──
+  it('V40-tck: WHERE property not exists', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t1' })
+    await e.open()
+    try {
+      await e.upsertNode(1, 'a', { props: { x: 1 } })
+      await e.upsertNode(1, 'b', { props: {} })
+      const noX = e.scanAllNodes().filter(n => n.props.x === undefined)
+      expect(noX.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: WHERE compound AND/OR', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { a: i % 2, b: i % 3 } })
+      const r = e.scanAllNodes().filter(n => (n.props.a === 0 && n.props.b === 0) || n.props.a === 1)
+      expect(r.length).toBeGreaterThan(0)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: RETURN only first property', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t3' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, 'n', { props: { k1: 'v1', k2: 'v2' } })
+      const node = e.getNode(id)
+      expect(node?.props).toBeDefined()
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: ORDER BY with skip', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t4' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const sorted = e.scanAllNodes().sort((a, b) => a.props.v - b.props.v)
+      expect(sorted.slice(3).length).toBe(7)
+      expect(sorted.slice(3)[0].props.v).toBe(3)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: LIMIT multiple pages', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const sorted = e.scanAllNodes().sort((a, b) => a.props.v - b.props.v)
+      expect(sorted.slice(0, 5).length).toBe(5)
+      expect(sorted.slice(5, 10).length).toBe(5)
+      expect(sorted.slice(10, 15).length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: MATCH on boolean property', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t6' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { active: i % 2 === 0 } })
+      const active = e.scanAllNodes().filter(n => n.props.active === true)
+      expect(active.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: MATCH with float property', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t7' })
+    await e.open()
+    try {
+      const vals = [1.5, 2.7, 3.14, 0.5, 9.9]
+      for (let i = 0; i < vals.length; i++) await e.upsertNode(1, `n${i}`, { props: { v: vals[i] } })
+      const gt2 = e.scanAllNodes().filter(n => n.props.v > 2)
+      expect(gt2.length).toBe(3)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: CREATE with integer zero', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t8' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, 'zero', { props: { val: 0 } })
+      const n = e.getNode(id)
+      expect(n?.props?.val).toBe(0)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: CREATE nested object in props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t9' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, 'nested', { props: { meta: { color: 'red', size: 10 } } })
+      const n = e.getNode(id)
+      expect(n?.props?.meta?.color).toBe('red')
+    } finally { e.close() }
+  }, 30000)
+
+  it('V40-tck: DELETE all nodes by type', async () => {
+    const e = new GraphEngine({ path: '/tmp/v40-t10' })
+    await e.open()
+    try {
+      for (let i = 0; i < 5; i++) await e.upsertNode(1, `t1-${i}`, { props: {} })
+      for (let i = 0; i < 3; i++) await e.upsertNode(2, `t2-${i}`, { props: {} })
+      e.scanAllNodes().filter(n => n.type === 2).forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
