@@ -951,3 +951,38 @@ describe('Latency Benchmarks', () => {
       console.log(`[BENCH] getNode after delete: ${(performance.now() - start).toFixed(3)}ms`)
     } finally { e.close() }
   }, 30000)
+
+  // ── V41 latency ──
+  it('V41: upsert 30 with props latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-l1' })
+    await e.open()
+    try {
+      const start = performance.now()
+      for (let i = 0; i < 30; i++) await e.upsertNode(1, `n${i}`, { props: { v: i, s: `s${i}` } })
+      console.log(`[BENCH] upsert 30 props: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: getNode after bulk upsert 20', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-l2' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 20; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      const start = performance.now()
+      for (const id of ids) e.getNode(id)
+      console.log(`[BENCH] getNode 20: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: scan 80 then getNode', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-l3' })
+    await e.open()
+    try {
+      for (let i = 0; i < 80; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      const all = e.scanAllNodes()
+      e.getNode(all[0].id)
+      console.log(`[BENCH] scan 80+get: ${(performance.now() - start).toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)

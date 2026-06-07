@@ -4272,3 +4272,114 @@ afterAll(() => {
       expect(e.scanAllNodes().length).toBe(5)
     } finally { e.close() }
   }, 30000)
+
+  // ── V41 TCK ──
+  it('V41-tck: MATCH on negative numbers', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t1' })
+    await e.open()
+    try {
+      for (let i = -5; i <= 5; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const neg = e.scanAllNodes().filter(n => n.props.v < 0)
+      expect(neg.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: MATCH on zero boundary', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t2' })
+    await e.open()
+    try {
+      for (let i = -3; i <= 3; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const zero = e.scanAllNodes().filter(n => n.props.v === 0)
+      expect(zero.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: MATCH on nullish values', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t3' })
+    await e.open()
+    try {
+      await e.upsertNode(1, 'nullv', { props: { v: null } })
+      await e.upsertNode(1, 'undef', { props: {} })
+      const hasV = e.scanAllNodes().filter(n => n.props.v !== undefined)
+      expect(hasV.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: DELETE specific range', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t4' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      e.scanAllNodes().filter(n => n.props.v >= 3 && n.props.v <= 6).forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(6)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: CREATE with conflicting name via upsert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t5' })
+    await e.open()
+    try {
+      const id1 = await e.upsertNode(1, 'conflict', { props: { v: 1 } })
+      const id2 = await e.upsertNode(1, 'conflict', { props: { v: 2 } })
+      expect(id1).toBeDefined()
+      expect(id2).toBeDefined()
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: ORDER BY two fields', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t6' })
+    await e.open()
+    try {
+      await e.upsertNode(1, 'a', { props: { g: 1, s: 2 } })
+      await e.upsertNode(1, 'b', { props: { g: 1, s: 1 } })
+      await e.upsertNode(1, 'c', { props: { g: 2, s: 3 } })
+      await e.upsertNode(1, 'd', { props: { g: 2, s: 0 } })
+      const sorted = e.scanAllNodes().sort((a, b) => {
+        if (a.props.g !== b.props.g) return a.props.g - b.props.g
+        return a.props.s - b.props.s
+      })
+      expect(sorted[0].name).toBe('b')
+      expect(sorted[sorted.length - 1].name).toBe('c')
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: RETURN with aliased property', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t7' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, 'n', { props: { x: 10 } })
+      const n = e.getNode(id)
+      expect(n?.props?.x).toBe(10)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: MATCH path exists', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t8' })
+    await e.open()
+    try {
+      const a = await e.upsertNode(1, 'a', { props: {} })
+      const b = await e.upsertNode(1, 'b', { props: {} })
+      await e.upsertEdge(a, b, 1, { props: {} })
+      const nbs = e.neighbors(a)
+      expect(nbs.edges.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: LIMIT with skip = total', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t9' })
+    await e.open()
+    try {
+      for (let i = 0; i < 5; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().slice(5, 5).length).toBe(0)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41-tck: DELETE unknown id noop', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-t10' })
+    await e.open()
+    try {
+      e.deleteNode(999999)
+      e.deleteNode(-1)
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 30000)

@@ -1397,3 +1397,65 @@ describe('Throughput Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(2)
     } finally { e.close() }
   }, 30000)
+
+  // ── V41 throughput ──
+  it('V41: upsert 10 with int props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { val: i * 2 } })
+      expect(e.scanAllNodes().length).toBe(10)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: upsert 20 with string props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { id: `tag-${i}` } })
+      expect(e.scanAllNodes().length).toBe(20)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: upsert 50 with mixed props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-3' })
+    await e.open()
+    try {
+      for (let i = 0; i < 50; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i, tag: `n${i}`, on: i % 2 === 0 } })
+      expect(e.scanAllNodes().length).toBe(50)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: edge chain length 5', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-4' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 5; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 4; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: edge chain length 20', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-5' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 20; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 19; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(20)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: delete middle of 15 chain', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-6' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 15; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      e.deleteNode(ids[7])
+      expect(e.scanAllNodes().length).toBe(14)
+      expect(e.getNode(ids[7])).toBeNull()
+    } finally { e.close() }
+  }, 30000)

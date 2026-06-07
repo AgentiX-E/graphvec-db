@@ -928,3 +928,53 @@ describe('Scalability Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(60)
     } finally { e.close() }
   }, 30000)
+
+  // ── V41 scalability ──
+  it('V41: scan 70 after insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-s1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 70; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(70)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: scan 250 after insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-s2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 250; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(250)
+    } finally { e.close() }
+  }, 120000)
+
+  it('V41: multi-type 4 types x 25 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-s3' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 4; t++)
+        for (let j = 0; j < 25; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(100)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V41: multi-type 15 types x 10 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-s4' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 15; t++)
+        for (let j = 0; j < 10; j++) await e.upsertNode(t, `t${t}-${j}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(150)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V41: delete first 10 of 50', async () => {
+    const e = new GraphEngine({ path: '/tmp/v41-s5' })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 50; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 10; i++) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(40)
+    } finally { e.close() }
+  }, 30000)
