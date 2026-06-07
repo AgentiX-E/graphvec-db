@@ -84,7 +84,7 @@ let engine: GraphEngine
   }, 30000)
 
   it('neighbors-ENGINE neighbors returns edges/nodes not array', async () => {
-    const engine = new GraphEngine({ path: '/tmp/bm-v37-m5' })
+    const engine = new GraphEngine({ path: '/tmp/bm-nb1-v3' })
     await engine.open()
     try {
       const src = await engine.upsertNode(1, 'src', { props: {} })
@@ -139,7 +139,7 @@ let engine: GraphEngine
   }, 120000)
 
   it('neighbors-ENGINE neighbors returns edges/nodes not array', async () => {
-    const engine = new GraphEngine({ path: '/tmp/bm-v37-b4' })
+    const engine = new GraphEngine({ path: '/tmp/bm-nb100-v3' })
     await engine.open()
     try {
       const src = await engine.upsertNode(1, 'hub', { props: {} })
@@ -155,7 +155,7 @@ let engine: GraphEngine
   }, 120000)
 
   it('neighbors-ENGINE neighbors returns edges/nodes not array', async () => {
-    const engine = new GraphEngine({ path: '/tmp/bm-v37-b5' })
+    const engine = new GraphEngine({ path: '/tmp/bm-nb200-v3' })
     await engine.open()
     try {
       const src = await engine.upsertNode(1, 'hub', { props: {} })
@@ -206,7 +206,7 @@ let engine: GraphEngine
   }, 30000)
 
   it('neighbors-ENGINE neighbors returns edges/nodes', async () => {
-    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp9-fix' })
+    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp9-v3' })
     await engine.open()
     try {
       const a = await engine.upsertNode(1, 'src', { props: {} })
