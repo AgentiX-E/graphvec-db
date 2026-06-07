@@ -769,3 +769,52 @@ describe('Scalability Benchmarks', () => {
       expect(engine.scanAllNodes().length).toBe(names.length)
     } finally { engine.close() }
   }, 30000)
+
+  // ── V38-cont more ──
+  it('V38c: scan 30 after insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-s1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 30; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(30)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: scan 60 after insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-s2' })
+    await e.open()
+    try {
+      for (let i = 0; i < 60; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(60)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: scan 120 after insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-s3' })
+    await e.open()
+    try {
+      for (let i = 0; i < 120; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(120)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V38c: delete all 30 then reinsert 30', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-s4' })
+    await e.open()
+    try {
+      for (let i = 0; i < 30; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      e.scanAllNodes().forEach(n => e.deleteNode(n.id))
+      for (let i = 0; i < 30; i++) await e.upsertNode(1, `r${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(30)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V38c: multi-type 5 types x 10 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-s5' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 5; t++)
+        for (let i = 0; i < 10; i++) await e.upsertNode(t, `t${t}-${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(50)
+    } finally { e.close() }
+  }, 30000)

@@ -813,3 +813,41 @@ describe('Latency Benchmarks', () => {
       console.log(`[BENCH] upsertEdge 20: ${elapsed.toFixed(2)}ms`)
     } finally { engine.close() }
   }, 30000)
+
+  // ── V38-cont more ──
+  it('V38c: getNode after upsert measure', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-l1' })
+    await e.open()
+    try {
+      const id = await e.upsertNode(1, 't', { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 10; i++) e.getNode(id)
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] getNode 10x: ${elapsed.toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: scan then getNode cycle', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-l2' })
+    await e.open()
+    try {
+      const ids = []
+      for (let i = 0; i < 10; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: { v: i } }))
+      const start = performance.now()
+      for (let i = 0; i < 10; i++) { e.scanAllNodes(); e.getNode(ids[0]) }
+      const elapsed = performance.now() - start
+      console.log(`[BENCH] scan+get cycle 10x: ${elapsed.toFixed(2)}ms`)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: upsertEdge single latency', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-l3' })
+    await e.open()
+    try {
+      const a = await e.upsertNode(1, 'a', { props: {} })
+      const b = await e.upsertNode(1, 'b', { props: {} })
+      const start = performance.now()
+      await e.upsertEdge(a, b, 1, { props: {} })
+      console.log(`[BENCH] single edge: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 30000)

@@ -1166,3 +1166,64 @@ describe('Throughput Benchmarks', () => {
       if (node) expect(node.props.val).toBe(2)
     } finally { engine.close() }
   }, 30000)
+
+  // ── V38-cont more ──
+  it('V38c: upsert 10 with props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-1' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i, s: `s${i}` } })
+      expect(e.scanAllNodes().length).toBe(10)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: upsert 20 chain edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-2' })
+    await e.open()
+    try {
+      const ids = []
+      for (let i = 0; i < 20; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 19; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(20)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: getNode after multi-edge', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-3' })
+    await e.open()
+    try {
+      const a = await e.upsertNode(1, 'a', { props: { x: 1 } })
+      const b = await e.upsertNode(1, 'b', { props: { x: 2 } })
+      await e.upsertEdge(a, b, 1, { props: {} })
+      const node = e.getNode(a)
+      expect(node?.props?.x).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: scanAllNodes after 10 upserts', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-4' })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(10)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: scanAllNodes after 10 upsert + 10 delete', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-5' })
+    await e.open()
+    try {
+      for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i } })
+      e.scanAllNodes().filter(n => n.props.idx < 10).forEach(n => e.deleteNode(n.id))
+      expect(e.scanAllNodes().length).toBe(10)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V38c: typeId 1..10 each one node', async () => {
+    const e = new GraphEngine({ path: '/tmp/v38c-6' })
+    await e.open()
+    try {
+      for (let t = 1; t <= 10; t++) await e.upsertNode(t, `t${t}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(10)
+    } finally { e.close() }
+  }, 30000)
