@@ -343,7 +343,7 @@ describe('EventBus 单例模式', () => {
     }
   })
 
-  it.skip('initEventBus creates a new EventBus and starts it', async () => {
+  it('initEventBus creates a new EventBus and starts it', async () => {
     const instance = await initEventBus({
       nodeId: 'test-node',
       security: {
