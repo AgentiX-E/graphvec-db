@@ -1416,3 +1416,51 @@ describe('Latency Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(300)
     } finally { e.close() }
   }, 30000)
+
+  // ── V51 latency ──
+  it('V51: getNode 110 random after 110 insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-l40-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 110; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      const start = performance.now()
+      for (const id of ids) e.getNode(id)
+      console.log(`[BENCH] getNode 110: ${(performance.now() - start).toFixed(3)}ms`)
+    } finally { e.close() }
+  }, 30000)
+  it('V51: scanAllNodes 130 then filter top 30', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-l41-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 130; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const t0 = performance.now()
+      const r = e.scanAllNodes().filter(n => (n.props.v as number) >= 100)
+      console.log(`[BENCH] filter top 30 130: ${(performance.now() - t0).toFixed(3)}ms`)
+      expect(r.length).toBe(30)
+    } finally { e.close() }
+  }, 30000)
+  it('V51: upsertEdge 65 star', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-l42-' + Date.now() })
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 65; i++) { const l = await e.upsertNode(1, `l${i}`, { props: {} }); await e.upsertEdge(h, l, 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(65)
+    } finally { e.close() }
+  }, 30000)
+  it('V51: deleteNode 16 of 48 then scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-l43-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 48; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 16; i++) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(32)
+    } finally { e.close() }
+  }, 30000)
+  it('V51: bulk upsert 340 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-l44-' + Date.now() })
+    await e.open(); try {
+      const start = performance.now()
+      for (let i = 0; i < 340; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      console.log(`[BENCH] bulk 340 nodes: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(340)
+    } finally { e.close() }
+  }, 30000)

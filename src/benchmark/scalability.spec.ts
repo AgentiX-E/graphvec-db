@@ -1378,3 +1378,46 @@ describe('Scalability Benchmarks', () => {
       for (const h of hubs) expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(4)
     } finally { e.close() }
   }, 30000)
+
+  // ── V51 scalability ──
+  it('V51: 800 nodes upsertNode', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-s42-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 800; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(800)
+    } finally { e.close() }
+  }, 30000)
+  it('V51: star 45 leaves', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-s43-' + Date.now() })
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 45; i++) { const l = await e.upsertNode(1, `l${i}`, { props: {} }); await e.upsertEdge(h, l, 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(45)
+    } finally { e.close() }
+  }, 30000)
+  it('V51: chain 100 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-s44-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 101; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 100; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(101)
+    } finally { e.close() }
+  }, 30000)
+  it('V51: deleteNode last 4 of 16', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-s45-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 16; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 12; i < 16; i++) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(12)
+    } finally { e.close() }
+  }, 30000)
+  it('V51: 2 rings of 10 leaves each via hub', async () => {
+    const e = new GraphEngine({ path: '/tmp/v51-s46-' + Date.now() })
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'hub', { props: {} })
+      for (let r = 0; r < 2; r++) for (let i = 0; i < 10; i++) { const d = await e.upsertNode(1, `r${r}-${i}`, { props: {} }); await e.upsertEdge(h, d, r + 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(20)
+    } finally { e.close() }
+  }, 30000)
