@@ -914,3 +914,53 @@ let engine: GraphEngine
       expect(e.getNode(id)?.props.v).toBe(2)
     } finally { e.close() }
   }, 30000)
+
+  // ── V48 throughput ──
+  it('V48: upsertNode 200 5 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v48-t19-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 5; t++) for (let i = 0; i < 40; i++) await e.upsertNode(t, `n${t}-${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(200)
+    } finally { e.close() }
+  }, 30000)
+  it('V48: upsertEdge 80 chain', async () => {
+    const e = new GraphEngine({ path: '/tmp/v48-t20-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 81; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 80; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(81)
+    } finally { e.close() }
+  }, 30000)
+  it('V48: upsertNode 250 then scan count', async () => {
+    const e = new GraphEngine({ path: '/tmp/v48-t21-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 250; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(250)
+    } finally { e.close() }
+  }, 30000)
+  it('V48: deleteNode 6 of 18 then verify', async () => {
+    const e = new GraphEngine({ path: '/tmp/v48-t22-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 18; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 6; i++) e.deleteNode(ids[i * 3])
+      expect(e.scanAllNodes().length).toBe(12)
+    } finally { e.close() }
+  }, 30000)
+  it('V48: neighbors after 14 edges mixed types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v48-t23-' + Date.now() })
+    await e.open(); try {
+      const s = await e.upsertNode(1, 's', { props: {} }); const s2 = await e.upsertNode(1, 's2', { props: {} })
+      for (let i = 0; i < 7; i++) { const d = await e.upsertNode(2, `d${i}`, { props: {} }); await e.upsertEdge(s, d, 1, { props: {} }); await e.upsertEdge(s2, d, 2, { props: {} }) }
+      expect(e.neighbors(s).edges.length).toBeGreaterThanOrEqual(7); expect(e.neighbors(s2).edges.length).toBeGreaterThanOrEqual(7)
+    } finally { e.close() }
+  }, 30000)
+  it('V48: getNode after upsert with float props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v48-t24-' + Date.now() })
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'f', { props: { pi: 3.14, e: 2.718 } })
+      const n = e.getNode(id)
+      expect(n?.props.pi).toBe(3.14); expect(n?.props.e).toBeCloseTo(2.718)
+    } finally { e.close() }
+  }, 30000)
