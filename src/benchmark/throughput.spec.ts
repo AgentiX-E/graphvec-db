@@ -964,3 +964,54 @@ let engine: GraphEngine
       expect(n?.props.pi).toBe(3.14); expect(n?.props.e).toBeCloseTo(2.718)
     } finally { e.close() }
   }, 30000)
+
+  // ── V49 throughput ──
+  it('V49: upsertNode 250 with 10 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v49-t25-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 10; t++) for (let i = 0; i < 25; i++) await e.upsertNode(t, `n${t}-${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(250)
+    } finally { e.close() }
+  }, 30000)
+  it('V49: upsertEdge 90 chain', async () => {
+    const e = new GraphEngine({ path: '/tmp/v49-t26-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 91; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 90; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(91)
+    } finally { e.close() }
+  }, 30000)
+  it('V49: upsertNode 300 then scatter read 50%', async () => {
+    const e = new GraphEngine({ path: '/tmp/v49-t27-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 300; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 300; i += 2) { const n = e.getNode(ids[i]); expect(n).not.toBeNull() }
+    } finally { e.close() }
+  }, 30000)
+  it('V49: deleteNode 7 of 21 then verify', async () => {
+    const e = new GraphEngine({ path: '/tmp/v49-t28-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 21; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 7; i++) e.deleteNode(ids[i * 3])
+      expect(e.scanAllNodes().length).toBe(14)
+    } finally { e.close() }
+  }, 30000)
+  it('V49: neighbors after 20 edges type 1 and 2', async () => {
+    const e = new GraphEngine({ path: '/tmp/v49-t29-' + Date.now() })
+    await e.open(); try {
+      const s = await e.upsertNode(1, 's', { props: {} })
+      for (let i = 0; i < 10; i++) { const d = await e.upsertNode(2, `d${i}`, { props: {} }); await e.upsertEdge(s, d, 1, { props: {} }); await e.upsertEdge(s, d, 2, { props: {} }) }
+      expect(e.neighbors(s).edges.length).toBeGreaterThanOrEqual(20)
+    } finally { e.close() }
+  }, 30000)
+  it('V49: getNode on deleted returns null', async () => {
+    const e = new GraphEngine({ path: '/tmp/v49-t30-' + Date.now() })
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'del', { props: { v: 1 } })
+      e.deleteNode(id)
+      expect(e.getNode(id)).toBeNull()
+    } finally { e.close() }
+  }, 30000)
