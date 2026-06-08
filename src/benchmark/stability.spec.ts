@@ -2221,3 +2221,88 @@ describe('Stability Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(10000)
     } finally { e.close() }
   }, 300000)
+
+  // ── V57 stress batch21 ──
+  it('V57-stress21: 360000 upsertNode 36 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr203-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 36; t++) for (let i = 0; i < 10000; i++) await e.upsertNode(t, `n${t}-${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(360000)
+    } finally { e.close() }
+  }, 600000)
+  it('V57-stress21: 26000 deleteNode every 16th', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr204-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 26000; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 15; i < 26000; i += 16) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(24375)
+    } finally { e.close() }
+  }, 300000)
+  it('V57-stress21: chain 45000 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr205-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 45001; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 45000; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(45001)
+    } finally { e.close() }
+  }, 600000)
+  it('V57-stress21: 440000 scanAllNodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr206-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 440000; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      expect(all.length).toBe(440000)
+    } finally { e.close() }
+  }, 120000)
+  it('V57-stress21: 45000 hubs × 1 leaf each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr207-' + Date.now() })
+    await e.open(); try {
+      for (let h = 0; h < 45000; h++) { const hub = await e.upsertNode(1, `hub${h}`, { props: {} }); const leaf = await e.upsertNode(1, `l${h}`, { props: {} }); await e.upsertEdge(hub, leaf, 1, { props: {} }) }
+      expect(e.scanAllNodes().length).toBe(90000)
+    } finally { e.close() }
+  }, 600000)
+  it('V57-stress21: 370000 upsertNode 37 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr208-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 37; t++) for (let i = 0; i < 10000; i++) await e.upsertNode(t, `n${t}-${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(370000)
+    } finally { e.close() }
+  }, 600000)
+  it('V57-stress21: 16000 deleteAll then 15000 re-insert', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr209-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 16000; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (const id of ids) e.deleteNode(id)
+      for (let i = 0; i < 15000; i++) await e.upsertNode(1, `n2-${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(15000)
+    } finally { e.close() }
+  }, 300000)
+  it('V57-stress21: chain 48000 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr210-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 48001; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 48000; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(48001)
+    } finally { e.close() }
+  }, 600000)
+  it('V57-stress21: 460000 scanAllNodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr211-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 460000; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      expect(all.length).toBe(460000)
+    } finally { e.close() }
+  }, 120000)
+  it('V57-stress21: 22000 deleteNode scatter pattern half', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-sr212-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 22000; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 11000; i++) e.deleteNode(ids[i * 2])
+      expect(e.scanAllNodes().length).toBe(11000)
+    } finally { e.close() }
+  }, 300000)
