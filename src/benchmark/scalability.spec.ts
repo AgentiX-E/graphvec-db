@@ -1553,3 +1553,48 @@ describe('Scalability Benchmarks', () => {
       for (const h of hubs) expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(12)
     } finally { e.close() }
   }, 30000)
+
+  // ── V55 scalability ──
+  it('V55: 1200 nodes upsertNode', async () => {
+    const e = new GraphEngine({ path: '/tmp/v55-s62-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 1200; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(1200)
+    } finally { e.close() }
+  }, 30000)
+  it('V55: star 65 leaves', async () => {
+    const e = new GraphEngine({ path: '/tmp/v55-s63-' + Date.now() })
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 65; i++) { const l = await e.upsertNode(1, `l${i}`, { props: {} }); await e.upsertEdge(h, l, 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(65)
+    } finally { e.close() }
+  }, 30000)
+  it('V55: chain 140 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v55-s64-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 141; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 140; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(141)
+    } finally { e.close() }
+  }, 30000)
+  it('V55: deleteNode first 6 of 18 then verify remaining', async () => {
+    const e = new GraphEngine({ path: '/tmp/v55-s65-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 18; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 6; i++) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(12)
+      for (let i = 6; i < 18; i++) expect(e.getNode(ids[i])).not.toBeNull()
+    } finally { e.close() }
+  }, 30000)
+  it('V55: 5 stars 10 leaves each varied types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v55-s66-' + Date.now() })
+    await e.open(); try {
+      const hubs: number[] = []
+      for (let i = 1; i <= 5; i++) hubs.push(await e.upsertNode(1, `h${i}`, { props: {} }))
+      for (let i = 0; i < 10; i++) { const d = await e.upsertNode(1, `d${i}`, { props: {} }); for (let hi = 0; hi < hubs.length; hi++) await e.upsertEdge(hubs[hi], d, hi + 1, { props: {} }) }
+      for (const h of hubs) expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(10)
+    } finally { e.close() }
+  }, 30000)
