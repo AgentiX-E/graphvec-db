@@ -1642,3 +1642,47 @@ describe('Scalability Benchmarks', () => {
       for (const h of hubs) expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(8)
     } finally { e.close() }
   }, 30000)
+
+  // ── V57 scalability (final batch) ──
+  it('V57: 1400 nodes upsertNode', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s72-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 1400; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(1400)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: star 75 leaves', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s73-' + Date.now() })
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 75; i++) { const l = await e.upsertNode(1, `l${i}`, { props: {} }); await e.upsertEdge(h, l, 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(75)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: chain 160 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s74-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 161; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 160; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(161)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: deleteNode all then verify zero', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s75-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 25; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (const id of ids) e.deleteNode(id)
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: 7 stars 6 leaves each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s76-' + Date.now() })
+    await e.open(); try {
+      const hubs: number[] = []
+      for (let i = 1; i <= 7; i++) hubs.push(await e.upsertNode(1, `h${i}`, { props: {} }))
+      for (let i = 0; i < 6; i++) { const d = await e.upsertNode(1, `d${i}`, { props: {} }); for (let hi = 0; hi < hubs.length; hi++) await e.upsertEdge(hubs[hi], d, hi + 1, { props: {} }) }
+      for (const h of hubs) expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(6)
+    } finally { e.close() }
+  }, 30000)
