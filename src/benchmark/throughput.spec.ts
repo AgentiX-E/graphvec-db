@@ -206,7 +206,7 @@ let engine: GraphEngine
   }, 30000)
 
   it('neighbors-ENGINE neighbors returns edges/nodes', async () => {
-    const engine = new GraphEngine({ path: '/tmp/bm-v37-tp9-v3' })
+    const engine = new GraphEngine({ path: '/tmp/bm-nb1-v5-' + Date.now() })
     await engine.open()
     try {
       const a = await engine.upsertNode(1, 'src', { props: {} })
@@ -708,5 +708,59 @@ let engine: GraphEngine
     try {
       for (let i = 0; i < 5; i++) await e.upsertNode(1, `n${i}`, { props: { data: 'x'.repeat(1000) } })
       expect(e.scanAllNodes().length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+
+  // ── V44 throughput ──
+  it('V44: upsertNode 40 with unique path', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-t1-' + Date.now() })
+    await e.open()
+    try {
+      for (let i = 0; i < 40; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(40)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V44: upsertNode 80 same name (dup)', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-t2-' + Date.now() })
+    await e.open()
+    try {
+      for (let i = 0; i < 80; i++) await e.upsertNode(1, 'dup', { props: { seq: i } })
+      expect(e.scanAllNodes().length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V44: chain 20 edges then neighbors count', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-t3-' + Date.now() })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 21; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 20; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      const nbs = e.neighbors(ids[0])
+      expect(nbs.edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V44: delete then verify scan count', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-t4-' + Date.now() })
+    await e.open()
+    try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      e.deleteNode(1)
+      expect(e.scanAllNodes().length).toBe(9)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V44: neighbors after 10 edges from same src', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-t5-' + Date.now() })
+    await e.open()
+    try {
+      const src = await e.upsertNode(1, 'src', { props: {} })
+      for (let i = 0; i < 10; i++) {
+        const dst = await e.upsertNode(1, `dst${i}`, { props: {} })
+        await e.upsertEdge(src, dst, 1, { props: {} })
+      }
+      expect(e.neighbors(src).edges.length).toBeGreaterThanOrEqual(10)
     } finally { e.close() }
   }, 30000)

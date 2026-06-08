@@ -1059,3 +1059,57 @@ describe('Scalability Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(33) // 3 hubs + 30 leaves
     } finally { e.close() }
   }, 30000)
+
+  // ── V44 scalability ──
+  it('V44: 120 nodes via upsertNode', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-s7-' + Date.now() })
+    await e.open()
+    try {
+      for (let i = 0; i < 120; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(120)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V44: star graph 8 leaves', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-s8-' + Date.now() })
+    await e.open()
+    try {
+      const hub = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 8; i++) {
+        const l = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(hub, l, 1, { props: {} })
+      }
+      expect(e.neighbors(hub).edges.length).toBeGreaterThanOrEqual(8)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V44: 80 nodes then scanAllNodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-s9-' + Date.now() })
+    await e.open()
+    try {
+      for (let i = 0; i < 80; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(80)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V44: delete half of 30', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-s10-' + Date.now() })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 30; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 15; i++) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(15)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V44: chain 30 edges trangle', async () => {
+    const e = new GraphEngine({ path: '/tmp/v44-s11-' + Date.now() })
+    await e.open()
+    try {
+      const ids: number[] = []
+      for (let i = 0; i < 31; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 30; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.neighbors(ids[0]).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
