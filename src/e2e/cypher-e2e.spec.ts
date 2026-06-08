@@ -3933,16 +3933,15 @@ afterAll(() => {
     } finally { engine.close() }
   }, 30000)
 
-  it.skip('engine-no-match-engine', async () => {
-    const engine = new GraphEngine({ path: '/tmp/cy-v37-23' })
+  it('V37-tck: MATCH with score comparison via neighbors', async () => {
+    const engine = new GraphEngine({ path: '/tmp/cy-v37-23b' })
     await engine.open()
     try {
       const a = await engine.upsertNode(1, 'a', { props: { score: 10 } })
       const b = await engine.upsertNode(1, 'b', { props: { score: 5 } })
       await engine.upsertEdge(a, b, 1, { props: {} })
-      if (engine.neighbors(a) !== undefined) {
-        expect(engine.neighbors(a).length).toBeDefined()
-      }
+      const nbs = engine.neighbors(a)
+      expect(nbs.edges.length).toBeGreaterThanOrEqual(1)
     } finally { engine.close() }
   }, 30000)
 
