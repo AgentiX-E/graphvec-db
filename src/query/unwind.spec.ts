@@ -141,7 +141,7 @@ describe('UNWIND executor', () => {
     expect(r2).toHaveLength(2)
   })
 
-  it.skip('UNWIND with WITH chain does not crash (engine crash bug, TYPE_COLUMN split)', () => {
+  it('UNWIND with WITH chain does not crash', () => {
     const plan: QueryPlan = {
       match: [],
       filters: [],

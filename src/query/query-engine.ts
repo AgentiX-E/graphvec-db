@@ -3334,12 +3334,12 @@ export function _executeQuery(
       let rows = _executeAggregation(inputRows, aggCols, groupByCols)
 
       // Apply WITH WHERE (post-aggregation filter = HAVING equivalent)
-      if (plan.with.filters.length > 0) {
+      if (plan.with.filters?.length > 0) {
         rows = _applyWhereFiltersOnRows(rows, plan.with.filters)
       }
 
       // Apply WITH ORDER BY
-      if (plan.with.orderBy.length > 0) {
+      if (plan.with.orderBy?.length > 0) {
         rows = _applyOrderByOnRows(rows, plan.with.orderBy)
       }
 
@@ -3354,12 +3354,12 @@ export function _executeQuery(
       let rows: QueryRow[] = _projectToColumns(candidates, plan.with.columns)
 
       // Apply WITH WHERE directly
-      if (plan.with.filters.length > 0) {
+      if (plan.with.filters && plan.with.filters?.length > 0) {
         rows = _applyWhereFiltersOnRows(rows, plan.with.filters)
       }
 
       // Apply WITH ORDER BY
-      if (plan.with.orderBy.length > 0) {
+      if (plan.with.orderBy?.length > 0) {
         rows = _applyOrderByOnRows(rows, plan.with.orderBy)
       }
 
@@ -5052,20 +5052,21 @@ function _evaluateAddExpression(expr: any, row: Record<string, unknown>): unknow
  */
 function _projectToColumns(
   records: Array<Record<string, unknown>>,
-  columns: Array<{ expression: string; alias: string | null }>,
+  columns: Array<{ expression: string | { type: string; name?: string; property?: string }; alias: string | null }>,
 ): QueryRow[] {
   return records.map(rec => {
     const row: QueryRow = {}
     for (const col of columns) {
-      if (col.expression.includes('.')) {
-        const parts = col.expression.split('.')
+      const exprStr = typeof col.expression === 'string' ? col.expression : (col.expression as any).name ?? ''
+      if (exprStr.includes('.')) {
+        const parts = exprStr.split('.')
         const prop = parts[parts.length - 1]
         const val = _getPropValue(rec, prop)
         const key = col.alias ?? prop
         row[key] = val
       } else {
-        const key = col.alias ?? col.expression
-        const val = _getPropValue(rec, col.expression)
+        const key = col.alias ?? exprStr
+        const val = _getPropValue(rec, exprStr)
         row[key] = val
       }
     }
