@@ -1113,3 +1113,47 @@ describe('Scalability Benchmarks', () => {
       expect(e.neighbors(ids[0]).edges.length).toBeGreaterThanOrEqual(1)
     } finally { e.close() }
   }, 30000)
+
+  // ── V45 scalability ──
+  it('V45: 200 nodes via upsertNode', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-s12-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(200)
+    } finally { e.close() }
+  }, 30000)
+  it('V45: star with 15 leaves', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-s13-' + Date.now() })
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 15; i++) { const l = await e.upsertNode(1, `l${i}`, { props: {} }); await e.upsertEdge(h, l, 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(15)
+    } finally { e.close() }
+  }, 30000)
+  it('V45: chain 40 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-s14-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 41; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 40; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.neighbors(ids[0]).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
+  it('V45: deleteNode end of chain 25', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-s15-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 25; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: { v: i } }))
+      e.deleteNode(ids[24])
+      expect(e.scanAllNodes().length).toBe(24)
+    } finally { e.close() }
+  }, 30000)
+  it('V45: neighbors count after 12 edges from 2 src', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-s16-' + Date.now() })
+    await e.open(); try {
+      const s1 = await e.upsertNode(1, 's1', { props: {} }); const s2 = await e.upsertNode(1, 's2', { props: {} })
+      for (let i = 0; i < 6; i++) { const d = await e.upsertNode(1, `d${i}`, { props: {} }); await e.upsertEdge(s1, d, 1, { props: {} }); await e.upsertEdge(s2, d, 1, { props: {} }) }
+      const n1 = e.neighbors(s1); const n2 = e.neighbors(s2)
+      expect(n1.edges.length).toBeGreaterThanOrEqual(6); expect(n2.edges.length).toBeGreaterThanOrEqual(6)
+    } finally { e.close() }
+  }, 30000)

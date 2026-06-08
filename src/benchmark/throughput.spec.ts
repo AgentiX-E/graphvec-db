@@ -764,3 +764,51 @@ let engine: GraphEngine
       expect(e.neighbors(src).edges.length).toBeGreaterThanOrEqual(10)
     } finally { e.close() }
   }, 30000)
+
+  // ── V45 throughput ──
+  it('V45: upsertNode 50 nodes 5 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-t1-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 5; t++) for (let i = 0; i < 10; i++) await e.upsertNode(t, `n${t}-${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(50)
+    } finally { e.close() }
+  }, 30000)
+  it('V45: upsertNode 200 with varying props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-t2-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: { v: i, s: `s${i}`, flag: i % 2 === 0 } })
+      expect(e.scanAllNodes().length).toBe(200)
+    } finally { e.close() }
+  }, 30000)
+  it('V45: upsertEdge 30 cross edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-t3-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 31; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 30; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.neighbors(ids[0]).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
+  it('V45: deleteNode then verify getNode null', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-t4-' + Date.now() })
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'del', { props: {} })
+      e.deleteNode(id)
+      expect(e.getNode(id)).toBeNull()
+    } finally { e.close() }
+  }, 30000)
+  it('V45: upsertNode 100 with duplicate names unique types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-t5-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 5; t++) for (let i = 0; i < 20; i++) await e.upsertNode(t, 'dup', { props: { seq: i } })
+      expect(e.scanAllNodes().length).toBe(100)
+    } finally { e.close() }
+  }, 30000)
+  it('V45: getNode random access after 30 inserts', async () => {
+    const e = new GraphEngine({ path: '/tmp/v45-t6-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 30; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 30; i++) { const n = e.getNode(ids[i]); expect(n).not.toBeNull() }
+    } finally { e.close() }
+  }, 30000)
