@@ -3501,19 +3501,19 @@ describe('TCK EXT - COMPLEX_PATTERNS (30 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CPX-07 min path length', () => {
+  test('CPX-07 min path length', () => {
     const plan = execQuery('MATCH (a)-[:KNOWS*..4]->(c) RETURN a, c')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CPX-08 named path p=()', () => {
+  test('CPX-08 named path p=()', () => {
     const plan = execQuery('MATCH p = (a:Person)-[:KNOWS]->(b:Person) RETURN p')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CPX-09 named path multi-hop', () => {
+  test('CPX-09 named path multi-hop', () => {
     const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN p')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3549,13 +3549,13 @@ describe('TCK EXT - COMPLEX_PATTERNS (30 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CPX-15 named var-length', () => {
+  test('CPX-15 named var-length', () => {
     const plan = execQuery('MATCH p = (a)-[:KNOWS*2..5]->(c) RETURN p')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CPX-16 path + ORDER BY', () => {
+  test('CPX-16 path + ORDER BY', () => {
     const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b) RETURN p ORDER BY a.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

@@ -613,7 +613,11 @@ OnMatchSetClause
 // ── MATCH ──────────────────────────────────────────────────
 
 MatchClause
-  = _ "MATCH"i _ patterns:PatternList { return { type: 'MATCH', patterns } }
+  = _ "MATCH"i _ name:Identifier _ "=" _ pattern:PathPattern {
+      const m = { type: 'MATCH', patterns: [pattern] }
+      return m
+    }
+  / _ "MATCH"i _ patterns:PatternList { return { type: 'MATCH', patterns } }
 
 PatternList
   = head:PathPattern tail:(_ "," _ PathPattern)* {
@@ -628,6 +632,7 @@ PathPattern
 
 Range
   = '*' min:Integer '..' max:Integer { return { min, max } }
+  / '*' '..' max:Integer { return { min: null, max } }
   / '*' min:Integer '..' { return { min, max: null } }
   / '*' exact:Integer !'.' { return { min: exact, max: exact } }
 
