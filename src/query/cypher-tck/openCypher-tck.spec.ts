@@ -5804,19 +5804,19 @@ describe('TCK EXT - SHOW_DESCRIBE (10 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
-  test.skip('SQ2-01 EXISTS edge pattern', () => {
+  test('SQ2-01 EXISTS edge pattern', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person) } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-02 EXISTS path pattern', () => {
+  test('SQ2-02 EXISTS path pattern', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS*2..4]->(:Person) } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-03 NOT EXISTS edge', () => {
+  test('SQ2-03 NOT EXISTS edge', () => {
     const plan = execQuery('MATCH (n:Person) WHERE NOT EXISTS { (n)-[:KNOWS]->() } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5876,7 +5876,7 @@ describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-13 EXISTS + UNION subquery', () => {
+  test('SQ2-13 EXISTS + UNION subquery', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->(f) RETURN f UNION MATCH (n)-[:WORKS_WITH]->(c) RETURN c } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5888,7 +5888,7 @@ describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-15 EXISTS + OR subq', () => {
+  test('SQ2-15 EXISTS + OR subq', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person) } OR EXISTS { (n)-[:WORKS_AT]->(:Company) } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5906,7 +5906,7 @@ describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-18 NOT EXISTENTIAL multi-hop', () => {
+  test('SQ2-18 NOT EXISTENTIAL multi-hop', () => {
     const plan = execQuery('MATCH (n:Person) WHERE NOT EXISTS { (n)-[:KNOWS*3..]->(f) } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

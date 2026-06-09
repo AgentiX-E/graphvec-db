@@ -1148,6 +1148,17 @@ ExistsExpression
         query: subq,
       }
     }
+  / "NOT"i _ "EXISTS"i _ "{" _ pattern:ExistsPattern _ "}" {
+      return {
+        type: 'NOT_EXISTS',
+        source: pattern.source,
+        edgeLabel: pattern.edgeLabel,
+        direction: pattern.direction,
+        target: pattern.target,
+        targetLabel: pattern.targetLabel,
+        sourceLabel: pattern.sourceLabel,
+      }
+    }
   / "COUNT"i _ "{" _ subq:MatchStatement _ "}" {
       return {
         type: 'COUNT_SUBQUERY',
@@ -1156,32 +1167,42 @@ ExistsExpression
     }
 
 ExistsPattern
-  = "(" _ sourceName:Identifier _ ")" _ edge:ExistsEdge? _ "(" _ targetName:Identifier _ ")" {
-      return {
-        source: sourceName,
-        edgeLabel: edge ? edge.label : null,
-        direction: edge ? edge.direction : 'any',
-        target: targetName,
-      }
+  = "(" _ sourceName:Identifier _ ")" _ edge:ExistsEdge? _ "(" _ ":" _ targetLabel:LabelName _ ")" {
+      return { source: sourceName, sourceLabel: null, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: null, targetLabel: targetLabel.name }
+    }
+  / "(" _ sourceName:Identifier _ ")" _ edge:ExistsEdge? _ "(" _ targetName:Identifier _ ")" {
+      return { source: sourceName, sourceLabel: null, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: targetName, targetLabel: null }
+    }
+  / "(" _ sourceName:Identifier _ ")" _ edge:ExistsEdge? _ "(" _ _ ")" {
+      return { source: sourceName, sourceLabel: null, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: null, targetLabel: null }
+    }
+  / "(" _ ":" _ sourceLabel:LabelName _ ")" _ edge:ExistsEdge? _ "(" _ targetName:Identifier _ ")" {
+      return { source: null, sourceLabel: sourceLabel.name, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: targetName, targetLabel: null }
+    }
+  / "(" _ _ ")" _ edge:ExistsEdge? _ "(" _ targetName:Identifier _ ")" {
+      return { source: null, sourceLabel: null, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: targetName, targetLabel: null }
     }
 
 ExistsEdge
-  = "-[" _ label:ExistsEdgeLabel _ "]->" {
+  = "-[" _ label:ExistsEdgeLabel _ range:ExistsEdgeRange? _ "]->" {
       return {
         label: label,
         direction: 'out',
+        range: range,
       }
     }
-  / "<-[" _ label:ExistsEdgeLabel _ "]-" {
+  / "<-[" _ label:ExistsEdgeLabel _ range:ExistsEdgeRange? _ "]-" {
       return {
         label: label,
         direction: 'in',
+        range: range,
       }
     }
-  / "-[" _ label:ExistsEdgeLabel _ "]-" {
+  / "-[" _ label:ExistsEdgeLabel _ range:ExistsEdgeRange? _ "]-" {
       return {
         label: label,
         direction: 'any',
+        range: range,
       }
     }
   / "-->" {
@@ -1197,6 +1218,12 @@ ExistsEdge
 ExistsEdgeLabel
   = ":" name:Identifier { return name }
   / "" { return null }
+
+ExistsEdgeRange
+  = '*' min:Integer '..' max:Integer { return { min, max } }
+  / '*' '..' max:Integer { return { min: null, max } }
+  / '*' min:Integer '..' { return { min, max: null } }
+  / '*' exact:Integer !'.' { return { min: exact, max: exact } }
 
 // ── COUNT 子查询 ─────────────────────────────────────────
 
