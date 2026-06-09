@@ -447,13 +447,20 @@ WithOrderColumn
 // ── UNWIND ─────────────────────────────────────────────────
 
 UnwindStatement
-  = u:UnwindClause r:ReturnClause? {
-      const result = {
-        type: 'QUERY',
-        unwind: u,
-        return: r,
-      }
-      return result
+  = u:UnwindClause whereClause:WhereClause returnClause:ReturnClause orderByClause:OrderByClause? limitSkip:LimitSkipClause? {
+      return { type: 'QUERY', unwind: u, where: whereClause, return: returnClause, orderBy: orderByClause, limit: limitSkip?.limit, skip: limitSkip?.skip }
+    }
+  / u:UnwindClause matchClause:MatchClause whereClause:WhereClause? returnClause:ReturnClause orderByClause:OrderByClause? limitSkip:LimitSkipClause? {
+      return { type: 'QUERY', unwind: u, match: matchClause, where: whereClause, return: returnClause, orderBy: orderByClause, limit: limitSkip?.limit, skip: limitSkip?.skip }
+    }
+  / u:UnwindClause matchClause:MatchClause returnClause:ReturnClause orderByClause:OrderByClause? limitSkip:LimitSkipClause? {
+      return { type: 'QUERY', unwind: u, match: matchClause, return: returnClause, orderBy: orderByClause, limit: limitSkip?.limit, skip: limitSkip?.skip }
+    }
+  / u:UnwindClause createClause:CreateClause returnClause:ReturnClause? {
+      return { type: 'QUERY', unwind: u, create: createClause, return: returnClause }
+    }
+  / u:UnwindClause r:ReturnClause? {
+      return { type: 'QUERY', unwind: u, return: r }
     }
 
 // ── 事务语句 (BEGIN / COMMIT / ROLLBACK) ───────────────────
@@ -485,6 +492,7 @@ UnwindClause
 UnwindList
   = head:ListLiteral { return head.items }
   / pc:PatternComprehension { return pc }
+  / fc:FunctionCall { return [fc] }
 
 UnwindItemList
   = head:UnwindItem tail:(_ "," _ UnwindItem)* {
@@ -687,7 +695,10 @@ WhereClause
 // ── RETURN ──────────────────────────────────────────────────
 
 ReturnClause
-  = _ "RETURN"i _ agg:AggregateFunc _ {
+  = _ "RETURN"i _ "DISTINCT"i _ cols:ColumnList _ {
+      return { type: 'RETURN', columns: cols, distinct: true }
+    }
+  / _ "RETURN"i _ agg:AggregateFunc _ {
       const field = agg.field ? agg.field.join('.') : undefined
       const aggregateClause = { type: agg.func, field, alias: agg.alias }
       return { type: 'RETURN', columns: [], aggregate: aggregateClause }

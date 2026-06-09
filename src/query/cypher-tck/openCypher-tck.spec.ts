@@ -3042,19 +3042,19 @@ describe('TCK EXT - UNWIND (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-06 UNWIND + MATCH', () => {
+  test('UNWIND-06 UNWIND + MATCH', () => {
     const plan = execQuery('UNWIND [1, 2, 3] AS x MATCH (n:Person) WHERE n.age = x RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-07 UNWIND + CREATE', () => {
+  test('UNWIND-07 UNWIND + CREATE', () => {
     const plan = execQuery('UNWIND [1, 2, 3] AS x CREATE (n:Node {id: x})')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-08 UNWIND + CREATE + RETURN', () => {
+  test('UNWIND-08 UNWIND + CREATE + RETURN', () => {
     const plan = execQuery("UNWIND ['a', 'b', 'c'] AS name CREATE (n:Person {name: name}) RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3066,19 +3066,19 @@ describe('TCK EXT - UNWIND (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-10 UNWIND range(1,100)', () => {
+  test('UNWIND-10 UNWIND range(1,100)', () => {
     const plan = execQuery('UNWIND range(1, 100) AS x RETURN x')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-11 UNWIND + DISTINCT', () => {
+  test('UNWIND-11 UNWIND + DISTINCT', () => {
     const plan = execQuery('UNWIND [1, 1, 2, 2, 3] AS x RETURN DISTINCT x')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-12 UNWIND + WHERE', () => {
+  test('UNWIND-12 UNWIND + WHERE', () => {
     const plan = execQuery('UNWIND [1, 2, 3, 4, 5] AS x WHERE x > 3 RETURN x')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4829,7 +4829,7 @@ describe('TCK EXT - UNWIND_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNW2-13 UNWIND + MATCH WHERE compound', () => {
+  test('UNW2-13 UNWIND + MATCH WHERE compound', () => {
     const plan = execQuery('UNWIND [1, 2, 3] AS x MATCH (n:Person) WHERE n.age > x AND n.age < x + 10 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
