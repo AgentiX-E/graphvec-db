@@ -2728,7 +2728,7 @@ describe('TCK EXT - LIST_OPS (29 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST-07 RETURN [-1] neg index', () => {
+  test('LIST-07 RETURN [-1] neg index', () => {
     const plan = execQuery('RETURN [1, 2, 3][-1] AS last')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4672,7 +4672,7 @@ describe('TCK EXT - LIST_OPS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST2-13 RETURN slice negative', () => {
+  test('LIST2-13 RETURN slice negative', () => {
     const plan = execQuery('RETURN [1, 2, 3, 4, 5][-3..-1] AS neg_slice')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
