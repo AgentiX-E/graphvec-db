@@ -1514,3 +1514,11 @@ let engine: GraphEngine
       expect(e.getNode(s)).not.toBeNull()
     } finally { e.close() }
   }, 30000)
+
+  it('V57: throughput 1k nodes 10 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t90-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 10; t++) for (let i = 0; i < 100; i++) await e.upsertNode(t, `n${t}-${i}`, { props: { v: i } })
+      expect(e.scanAllNodes().length).toBe(1000)
+    } finally { e.close() }
+  }, 30000)
