@@ -6460,13 +6460,13 @@ describe('TCK EXT - PATTERN_COMPREHENSION (10 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - MAP_OPS (10 tests)', () => {
-  test.skip('MAP-01 RETURN map literal', () => {
+  test('MAP-01 RETURN map literal', () => {
     const plan = execQuery("RETURN {name: 'Alice', age: 30} AS person")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MAP-02 RETURN map with field', () => {
+  test('MAP-02 RETURN map with field', () => {
     const plan = execQuery('MATCH (n:Person) RETURN {name: n.name, age: n.age} AS person')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6478,7 +6478,7 @@ describe('TCK EXT - MAP_OPS (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MAP-04 RETURN nested map', () => {
+  test('MAP-04 RETURN nested map', () => {
     const plan = execQuery("RETURN {person: {name: 'Alice', age: 30}, city: 'NYC'} AS data")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

@@ -1021,6 +1021,13 @@ Column
         alias: alias,
       }
     }
+  / map:PropertyMap alias:AsClause? {
+      return {
+        type: 'COLUMN',
+        expression: { type: 'MAP_LITERAL', value: map },
+        alias: alias,
+      }
+    }
 
 AsClause
   = _ "AS"i _ name:Identifier { return name }
@@ -1228,6 +1235,7 @@ Primary
   / CaseExpression
   / ParameterRef
   / PropertyRef
+  / PropertyMap
   / StringLiteral
   / NumberLiteral
   / BooleanLiteral
