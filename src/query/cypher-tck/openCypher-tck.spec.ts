@@ -3899,19 +3899,19 @@ describe('TCK EXT - SET_OPS (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SETOP-16 EXCEPT two queries', () => {
+  test('SETOP-16 EXCEPT two queries', () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name EXCEPT MATCH (m:Employee) RETURN m.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SETOP-17 EXCEPT with WHERE', () => {
+  test('SETOP-17 EXCEPT with WHERE', () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.active = true RETURN n.name EXCEPT MATCH (m:Person) WHERE m.inactive = true RETURN m.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SETOP-18 EXCEPT + ORDER', () => {
+  test('SETOP-18 EXCEPT + ORDER', () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name EXCEPT MATCH (m:Employee) RETURN m.name ORDER BY n.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4214,7 +4214,7 @@ describe('TCK EXT - CASE_WHEN (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CASE-05 CASE in ORDER BY', () => {
+  test('CASE-05 CASE in ORDER BY', () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name, n.age ORDER BY CASE WHEN n.age > 30 THEN 1 ELSE 0 END DESC')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4250,7 +4250,7 @@ describe('TCK EXT - CASE_WHEN (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CASE-11 CASE with nested expression', () => {
+  test('CASE-11 CASE with nested expression', () => {
     const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN (n.age * 2) > 100 THEN 'high' ELSE 'normal' END AS factor")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4274,7 +4274,7 @@ describe('TCK EXT - CASE_WHEN (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CASE-15 CASE in RETURN with multiple fields', () => {
+  test('CASE-15 CASE in RETURN with multiple fields', () => {
     const plan = execQuery("MATCH (n:Person) RETURN n.name, CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END AS level, n.age * 2 AS doubled")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5579,13 +5579,13 @@ describe('TCK EXT - DELETE_EXTENDED (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('DEL-07 DELETE with SKIP + LIMIT', () => {
+  test('DEL-07 DELETE with SKIP + LIMIT', () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.expired = true DELETE n SKIP 5 LIMIT 10')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('DEL-08 DETACH DELETE + ORDER BY', () => {
+  test('DEL-08 DETACH DELETE + ORDER BY', () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.expired = true DETACH DELETE n ORDER BY n.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

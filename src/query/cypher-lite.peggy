@@ -121,11 +121,17 @@ DMLStatement
       }
       return stmt
     }
-  / matchClause:MatchClause deleteClause:DeleteClause returnClause:ReturnClause? {
+  / matchClause:MatchClause deleteClause:DeleteClause limitSkip:LimitSkipClause? returnClause:ReturnClause? {
       const stmt = { type: 'QUERY', match: matchClause, delete: deleteClause }
+      if (limitSkip) { stmt.limit = limitSkip.limit; stmt.skip = limitSkip.skip }
       if (returnClause) {
         stmt.return = returnClause
       }
+      return stmt
+    }
+  / matchClause:MatchClause deleteClause:DeleteClause deleteLimitSkip:LimitSkipClause? {
+      const stmt = { type: 'QUERY', match: matchClause, delete: deleteClause }
+      if (deleteLimitSkip) { stmt.limit = deleteLimitSkip.limit; stmt.skip = deleteLimitSkip.skip }
       return stmt
     }
   / matchClause:MatchClause setClause:SetClause removeClause:RemoveClause? returnClause:ReturnClause? {
@@ -311,13 +317,28 @@ MatchStatement
       return stmt
     }
   // ── 复合 MATCH + WHERE + DELETE + RETURN ─────────────
-  / matchClause:MatchClause where:WhereClause? deleteClause:DeleteClause returnClause:ReturnClause? {
+  / matchClause:MatchClause where:WhereClause? deleteClause:DeleteClause limitSkip:LimitSkipClause? orderByClause:OrderByClause? returnClause:ReturnClause? {
       const stmt = {
         type: 'QUERY',
         match: matchClause,
         where: where,
         delete: deleteClause,
       }
+      if (limitSkip) { stmt.limit = limitSkip.limit; stmt.skip = limitSkip.skip }
+      if (orderByClause) stmt.orderBy = orderByClause
+      if (returnClause) {
+        stmt.return = returnClause
+      }
+      return stmt
+    }
+  / matchClause:MatchClause where:WhereClause? deleteClause:DeleteClause limitSkip:LimitSkipClause? returnClause:ReturnClause? {
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: where,
+        delete: deleteClause,
+      }
+      if (limitSkip) { stmt.limit = limitSkip.limit; stmt.skip = limitSkip.skip }
       if (returnClause) {
         stmt.return = returnClause
       }
@@ -824,6 +845,13 @@ OrderColumn
         direction: dir ? dir : 'ASC',
       }
     }
+  / caseExpr:CaseExpression dir:DirClause? {
+      return {
+        type: 'ORDER_COLUMN',
+        expression: caseExpr,
+        direction: dir ? dir : 'ASC',
+      }
+    }
   / name:Identifier dir:DirClause? {
       return {
         type: 'ORDER_COLUMN',
@@ -848,6 +876,9 @@ UnionClause
       return { unionType: 'intersect', rightQuery: right }
     }
   / _ "SUBTRACT"i _ right:MatchStatement {
+      return { unionType: 'subtract', rightQuery: right }
+    }
+  / _ "EXCEPT"i _ right:MatchStatement {
       return { unionType: 'subtract', rightQuery: right }
     }
 
