@@ -3573,7 +3573,7 @@ describe('TCK EXT - COMPLEX_PATTERNS (30 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CPX-19 undirected var-length', () => {
+  test('CPX-19 undirected var-length', () => {
     const plan = execQuery('MATCH (a)-[:KNOWS*1..3]-(c) RETURN a, c')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3603,7 +3603,7 @@ describe('TCK EXT - COMPLEX_PATTERNS (30 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CPX-24 named path WHERE', () => {
+  test('CPX-24 named path WHERE', () => {
     const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b) WHERE a.age > b.age RETURN p')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3627,7 +3627,7 @@ describe('TCK EXT - COMPLEX_PATTERNS (30 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CPX-28 path + compound', () => {
+  test('CPX-28 path + compound', () => {
     const plan = execQuery('MATCH (a:Person), (b:Company) MATCH (a)-[:WORKS_AT]->(b) RETURN a, b')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5597,7 +5597,7 @@ describe('TCK EXT - DELETE_EXTENDED (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('DEL-10 DELETE edge only', () => {
+  test('DEL-10 DELETE edge only', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->() DELETE r")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
