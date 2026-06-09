@@ -1389,13 +1389,11 @@ ExistsExpression
         query: subq,
       }
     }
-  / "EXISTS"i _ "{" _ pattern:ExistsPattern _ "}" {
+  / "EXISTS"i _ "{" _ result:ExistsPatternList _ "}" {
       return {
-        type: 'EXISTS',
-        source: pattern.source,
-        edgeLabel: pattern.edgeLabel,
-        direction: pattern.direction,
-        target: pattern.target,
+        type: 'EXISTS_PATTERNS',
+        patterns: result.patterns,
+        where: result.where || null,
       }
     }
   / "NOT"i _ "EXISTS"i _ "{" _ subq:MatchStatement _ "}" {
@@ -1404,15 +1402,11 @@ ExistsExpression
         query: subq,
       }
     }
-  / "NOT"i _ "EXISTS"i _ "{" _ pattern:ExistsPattern _ "}" {
+  / "NOT"i _ "EXISTS"i _ "{" _ result:ExistsPatternList _ "}" {
       return {
-        type: 'NOT_EXISTS',
-        source: pattern.source,
-        edgeLabel: pattern.edgeLabel,
-        direction: pattern.direction,
-        target: pattern.target,
-        targetLabel: pattern.targetLabel,
-        sourceLabel: pattern.sourceLabel,
+        type: 'NOT_EXISTS_PATTERNS',
+        patterns: result.patterns,
+        where: result.where || null,
       }
     }
   / "COUNT"i _ "{" _ subq:MatchStatement _ "}" {
@@ -1421,22 +1415,50 @@ ExistsExpression
         query: subq,
       }
     }
+  / "COUNT"i _ "{" _ result:ExistsPatternList _ "}" {
+      return {
+        type: 'COUNT_EXISTS_PATTERNS',
+        patterns: result.patterns,
+        where: result.where || null,
+      }
+    }
+
+ExistsPatternList
+  = head:ExistsPattern tail:(_ "AND"i _ ExistsPattern)* where:(_ "WHERE"i _ cond:OrExpression)? {
+      const pats = [head, ...tail.map(t => t[3])]
+      const result = { patterns: pats }
+      if (where) result.where = where[3]
+      return result
+    }
 
 ExistsPattern
-  = "(" _ sourceName:Identifier _ ")" _ edge:ExistsEdge? _ "(" _ ":" _ targetLabel:LabelName _ ")" {
-      return { source: sourceName, sourceLabel: null, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: null, targetLabel: targetLabel.name }
+  = sourcePattern:ExistsNodePattern rest:(_ edge:ExistsEdge _ node:ExistsNodePattern)+ {
+      const r0 = rest[0]
+      const edge0 = r0[1]
+      const target0 = r0[3]
+      return {
+        source: sourcePattern.name,
+        sourceLabel: sourcePattern.label,
+        edgeLabel: edge0.label,
+        direction: edge0.direction,
+        target: target0.name,
+        targetLabel: target0.label,
+        props: target0.props,
+      }
     }
-  / "(" _ sourceName:Identifier _ ")" _ edge:ExistsEdge? _ "(" _ targetName:Identifier _ ")" {
-      return { source: sourceName, sourceLabel: null, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: targetName, targetLabel: null }
+
+ExistsNodePattern
+  = "(" _ name:Identifier _ ":" _ label:LabelName _ props:PropertyMap? _ ")" {
+      return { name, label: label.name, props: props || null }
     }
-  / "(" _ sourceName:Identifier _ ")" _ edge:ExistsEdge? _ "(" _ _ ")" {
-      return { source: sourceName, sourceLabel: null, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: null, targetLabel: null }
+  / "(" _ name:Identifier _ props:PropertyMap? _ ")" {
+      return { name, label: null, props: props || null }
     }
-  / "(" _ ":" _ sourceLabel:LabelName _ ")" _ edge:ExistsEdge? _ "(" _ targetName:Identifier _ ")" {
-      return { source: null, sourceLabel: sourceLabel.name, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: targetName, targetLabel: null }
+  / "(" _ ":" _ label:LabelName _ props:PropertyMap? _ ")" {
+      return { name: null, label: label.name, props: props || null }
     }
-  / "(" _ _ ")" _ edge:ExistsEdge? _ "(" _ targetName:Identifier _ ")" {
-      return { source: null, sourceLabel: null, edgeLabel: edge ? edge.label : null, direction: edge ? edge.direction : 'any', target: targetName, targetLabel: null }
+  / "(" _ _ ")" {
+      return { name: null, label: null, props: null }
     }
 
 ExistsEdge

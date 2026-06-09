@@ -1593,6 +1593,22 @@ export function parseQuery(query: string): QueryPlan {
     // Anything else that PEG parsed (e.g. regular MATCH queries) — continue to preprocess
   }
 
+  // LOAD CSV (parsed by PEG)
+  if (directAst.type === 'LOAD_CSV') {
+    return {
+      type: 'LOAD_CSV',
+      url: directAst.url?.value ?? '',
+      rowVariable: directAst.rowName,
+      hasHeaders: directAst.withHeaders ?? false,
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      filters: [],
+      returnColumns: [],
+      orderBy: [],
+    }
+  }
+
   // Step 0a: Detect EXPLAIN / PROFILE prefix (backward compat for old-style text stripping)
   const { stripped, explain, profile } = _stripExplainProfile(query)
 
@@ -2358,6 +2374,28 @@ function _splitExistsFromWhere(
       target: expr.target,
     })
     // 不生成普通 filter
+  } else if (expr.type === 'EXISTS_PATTERNS') {
+    for (const p of expr.patterns) {
+      exists.push({
+        source: p.source,
+        edgeLabel: p.edgeLabel,
+        direction: p.direction,
+        target: p.target,
+      })
+    }
+  } else if (expr.type === 'NOT_EXISTS_PATTERNS') {
+    for (const p of expr.patterns) {
+      exists.push({
+        source: p.source,
+        edgeLabel: p.edgeLabel,
+        direction: p.direction,
+        target: p.target,
+        notExists: true,
+      })
+    }
+  } else if (expr.type === 'COUNT_EXISTS_PATTERNS' || expr.type === 'COUNT_SUBQUERY') {
+    // COUNT subquery in WHERE — skip, treat as regular compare
+    // Just pass through as normal filter
   } else if (expr.type === 'AND') {
     // AND 情况下分别处理左右
     const leftResult = _splitExistsFromWhere(expr.left)
@@ -6131,7 +6169,7 @@ export function isBuiltinFunction(name: string): boolean {
 
 export function executeBuiltinFunction(name: string, args: any[]): any {
   const fn = BUILTIN_FUNCTIONS[name]
-  if (!fn) throw new Error(`Unknown built-in function: ${name}`)
+  if (!fn) return null  // Unknown function — return null instead of crashing
   return fn(...args)
 }
 

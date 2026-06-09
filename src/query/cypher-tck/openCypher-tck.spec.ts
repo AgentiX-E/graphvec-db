@@ -5822,55 +5822,55 @@ describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-04 EXISTS multi-edge pattern', () => {
+  test('SQ2-04 EXISTS multi-edge pattern', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person) AND (n)-[:WORKS_AT]->(:Company) } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-05 EXISTS + property filter', () => {
+  test('SQ2-05 EXISTS + property filter', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(f:Person) WHERE f.age > 30 } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-06 NOT EXISTS + property', () => {
+  test('SQ2-06 NOT EXISTS + property', () => {
     const plan = execQuery("MATCH (n:Person) WHERE NOT EXISTS { (n)-[:KNOWS]->(f:Person) WHERE f.status = 'blocked' } RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-07 COUNT subq = 1', () => {
+  test('SQ2-07 COUNT subq = 1', () => {
     const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } = 1 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-08 COUNT subq >= 3', () => {
+  test('SQ2-08 COUNT subq >= 3', () => {
     const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } >= 3 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-09 COUNT subq between', () => {
+  test('SQ2-09 COUNT subq between', () => {
     const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } >= 2 AND COUNT { (n)-[:KNOWS]->() } <= 5 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-10 EXISTS + subq agg', () => {
+  test('SQ2-10 EXISTS + subq agg', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:PURCHASED]->(p:Product) WITH p WHERE p.price > avg(p.price) } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-11 EXISTS with label var', () => {
+  test('SQ2-11 EXISTS with label var', () => {
     const plan = execQuery('MATCH (n) WHERE EXISTS { (n:Person)-[:KNOWS]->() } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-12 NOT EXISTS + label var', () => {
+  test('SQ2-12 NOT EXISTS + label var', () => {
     const plan = execQuery('MATCH (n) WHERE NOT EXISTS { (n:Person)-[:KNOWS]->() } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5882,7 +5882,7 @@ describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-14 COUNT with label', () => {
+  test('SQ2-14 COUNT with label', () => {
     const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->(:Person) } > 0 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5894,13 +5894,13 @@ describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-16 EXISTS + AND WHERE', () => {
+  test('SQ2-16 EXISTS + AND WHERE', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(f:Person) } AND n.age > 30 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-17 EXISTENTIAL triple pattern', () => {
+  test('SQ2-17 EXISTENTIAL triple pattern', () => {
     const plan = execQuery('MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->(:Person)-[:KNOWS]->(:Person) } RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5912,13 +5912,13 @@ describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-19 COUNT subq + ORDER', () => {
+  test('SQ2-19 COUNT subq + ORDER', () => {
     const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } > 0 RETURN n.name ORDER BY n.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SQ2-20 COUNT + SKIP + LIMIT', () => {
+  test('SQ2-20 COUNT + SKIP + LIMIT', () => {
     const plan = execQuery('MATCH (n:Person) WHERE COUNT { (n)-[:KNOWS]->() } > 2 RETURN n.name SKIP 5 LIMIT 10')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6168,7 +6168,7 @@ describe('TCK EXT - LOAD_CSV (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CSV-02 LOAD CSV WITH HEADERS', () => {
+  test('CSV-02 LOAD CSV WITH HEADERS', () => {
     const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///data.csv" AS row RETURN row')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6180,37 +6180,37 @@ describe('TCK EXT - LOAD_CSV (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CSV-04 LOAD CSV WITH HEADERS + CREATE', () => {
+  test('CSV-04 LOAD CSV WITH HEADERS + CREATE', () => {
     const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///people.csv" AS row CREATE (n:Person {name: row.name, age: toInteger(row.age)})')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CSV-05 LOAD CSV + MATCH + MERGE', () => {
+  test('CSV-05 LOAD CSV + MATCH + MERGE', () => {
     const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///data.csv" AS row MATCH (n:Node {id: row.id}) MERGE (m:Node {name: row.name})')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CSV-06 LOAD CSV + FIELDTERMINATOR', () => {
+  test('CSV-06 LOAD CSV + FIELDTERMINATOR', () => {
     const plan = execQuery('LOAD CSV FROM "file:///data.tsv" AS row FIELDTERMINATOR "\\t" RETURN row')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CSV-07 LOAD CSV + WHERE', () => {
+  test('CSV-07 LOAD CSV + WHERE', () => {
     const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///data.csv" AS row WHERE row.active = "true" RETURN row')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CSV-08 LOAD CSV + SET', () => {
+  test('CSV-08 LOAD CSV + SET', () => {
     const plan = execQuery('LOAD CSV WITH HEADERS FROM "file:///updates.csv" AS row MATCH (n:Person {id: row.id}) SET n.status = row.status')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CSV-09 LOAD CSV + FOREACH', () => {
+  test('CSV-09 LOAD CSV + FOREACH', () => {
     const plan = execQuery('LOAD CSV FROM "file:///items.csv" AS row FOREACH (x IN [1] | CREATE (n:Item {value: row[0]}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6259,7 +6259,7 @@ describe('TCK EXT - DATETIME (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('DT-06 RETURN duration()', () => {
+  test('DT-06 RETURN duration()', () => {
     const plan = execQuery('RETURN duration({days: 7}) AS week')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6277,7 +6277,7 @@ describe('TCK EXT - DATETIME (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('DT-09 RETURN date parts', () => {
+  test('DT-09 RETURN date parts', () => {
     const plan = execQuery('RETURN date({year: 2024, month: 12, day: 25}) AS xmas')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
