@@ -3169,7 +3169,7 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-04 MATCH + FOREACH', () => {
+  test('FOREACH-04 MATCH + FOREACH', () => {
     const plan = execQuery('MATCH (p:Person) FOREACH (x IN p.tags | CREATE (t:Tag {name: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3181,7 +3181,7 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-06 MATCH WHERE + FOREACH', () => {
+  test('FOREACH-06 MATCH WHERE + FOREACH', () => {
     const plan = execQuery('MATCH (p:Person) WHERE p.active = true FOREACH (x IN p.tags | CREATE (t:Tag {name: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3193,13 +3193,13 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-08 MATCH + FOREACH iter', () => {
+  test('FOREACH-08 MATCH + FOREACH iter', () => {
     const plan = execQuery('MATCH (p:Person) FOREACH (n IN p.friends | CREATE (f:Friend {name: n}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-09 WITH + FOREACH', () => {
+  test('FOREACH-09 WITH + FOREACH', () => {
     const plan = execQuery('MATCH (p:Person) WITH p FOREACH (x IN p.items | CREATE (i:Item {id: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3223,7 +3223,7 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-13 MATCH + FOREACH SET', () => {
+  test('FOREACH-13 MATCH + FOREACH SET', () => {
     const plan = execQuery('MATCH (p:Person) FOREACH (x IN p.updates | SET p.last_update = x)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3253,7 +3253,7 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-18 MATCH edge ctx', () => {
+  test('FOREACH-18 MATCH edge ctx', () => {
     const plan = execQuery("MATCH (p:Person {name: 'Alice'}) FOREACH (item IN p.cart | CREATE (o:Order {product: item}))")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3271,13 +3271,13 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-21 empty + MATCH', () => {
+  test('FOREACH-21 empty + MATCH', () => {
     const plan = execQuery('MATCH (n:Person) FOREACH (x IN [] | CREATE (t:Tmp {v: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-22 FOREACH + DELETE', () => {
+  test('FOREACH-22 FOREACH + DELETE', () => {
     const plan = execQuery('MATCH (n:Node) FOREACH (x IN [1] | DELETE n)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4890,13 +4890,13 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-02 FOREACH + SET property', () => {
+  test('FOREACH2-02 FOREACH + SET property', () => {
     const plan = execQuery('MATCH (n:Person) FOREACH (flag IN [true] | SET n.flagged = flag)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-03 FOREACH + REMOVE property', () => {
+  test('FOREACH2-03 FOREACH + REMOVE property', () => {
     const plan = execQuery('MATCH (n:Person) FOREACH (x IN [1] | REMOVE n.temp)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4932,7 +4932,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-09 MATCH + FOREACH + MATCH', () => {
+  test('FOREACH2-09 MATCH + FOREACH + MATCH', () => {
     const plan = execQuery('MATCH (p:Person) FOREACH (f IN p.friend_ids | MATCH (n:Person {id: f}) CREATE (p)-[:KNOWS]->(n))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4944,7 +4944,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-11 FOREACH + collect', () => {
+  test('FOREACH2-11 FOREACH + collect', () => {
     const plan = execQuery('MATCH (p:Person) FOREACH (t IN collect(p.tag) | CREATE (n:Tag {name: t}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4956,13 +4956,13 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-13 FOREACH + DELETE with WHERE', () => {
+  test('FOREACH2-13 FOREACH + DELETE with WHERE', () => {
     const plan = execQuery('MATCH (n:Node) WHERE n.expired = true FOREACH (x IN [1] | DELETE n)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-14 FOREACH + SET FROM attr', () => {
+  test('FOREACH2-14 FOREACH + SET FROM attr', () => {
     const plan = execQuery('MATCH (p:Person) FOREACH (prop IN keys(p) | SET p.processed = true)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

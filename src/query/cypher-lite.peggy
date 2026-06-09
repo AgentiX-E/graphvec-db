@@ -33,7 +33,7 @@
  */
 
 Start
-  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
+  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionStatement / ForEachStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
       if (hint) {
         stmt.periodicCommitHint = hint
       }
@@ -162,9 +162,21 @@ DMLStatement
       }
       return stmt
     }
+  // ── FOREACH ───────────────────────────────────────────
+  / forEachClause:ForEachClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', forEach: forEachClause }
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
+  / matchClause:MatchClause whereClause:WhereClause? forEachClause:ForEachClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', match: matchClause, forEach: forEachClause }
+      if (whereClause) stmt.where = whereClause
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
 
 MatchStatement
-  = optionalClauses:OptionalMatchClauseList? matchClause:MatchClause whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? returnClause:ReturnClause groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
+  = optionalClauses:OptionalMatchClauseList? matchClause:MatchClause whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? forEachClause:ForEachClause? returnClause:ReturnClause? groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
       const stmt = {
         type: 'QUERY',
         match: matchClause,
@@ -185,7 +197,10 @@ MatchStatement
       if (unwindClause) {
         stmt.unwind = unwindClause
       }
-      if (unionClause) {
+            if (forEachClause) {
+        stmt.forEach = forEachClause
+      }
+if (unionClause) {
         stmt.unionType = unionClause.unionType
         stmt.rightQuery = unionClause.rightQuery
       }
@@ -365,6 +380,13 @@ MatchStatement
   / matchClause:MatchClause whereClause:WhereClause? {
       const stmt = { type: 'QUERY', match: matchClause }
       if (whereClause) { stmt.where = whereClause }
+      return stmt
+    }
+  // ── MATCH + FOREACH ───────────────────────────────────
+  / matchClause:MatchClause whereClause:WhereClause? forEachClause:ForEachClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', match: matchClause, forEach: forEachClause }
+      if (whereClause) stmt.where = whereClause
+      if (returnClause) stmt.return = returnClause
       return stmt
     }
 
@@ -1393,3 +1415,27 @@ LoadCsvStatement
 
 FieldTerminatorClause
   = _ "FIELDTERMINATOR"i _ delim:StringLiteral { return delim }
+
+// ── FOREACH ────────────────────────────────────────────────
+
+ForEachStatement
+  = forClause:ForEachClause {
+      return { type: 'QUERY', forEach: forClause }
+    }
+
+ForEachClause
+  = _ "FOREACH"i _ "(" _ varName:Identifier _ "IN"i _ list:UnwindList _ "|" _ body:ForEachBody _ ")" {
+      return {
+        type: 'FOREACH',
+        variable: varName,
+        list: list,
+        body: body,
+      }
+    }
+
+ForEachBody
+  = nested:ForEachClause { return { type: 'FOREACH_BODY', forEach: nested } }
+  / createClause:CreateClause { return { type: 'FOREACH_BODY', create: createClause } }
+  / setClause:SetClause { return { type: 'FOREACH_BODY', set: setClause } }
+  / delClause:DeleteClause { return { type: 'FOREACH_BODY', delete: delClause } }
+  / removeClause:RemoveClause { return { type: 'FOREACH_BODY', remove: removeClause } }
