@@ -4479,13 +4479,13 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-07 RETURN rand + ceil', () => {
+  test('MATH2-07 RETURN rand + ceil', () => {
     const plan = execQuery('RETURN ceil(rand() * 100) AS random_ceil')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-08 RETURN rand + floor', () => {
+  test('MATH2-08 RETURN rand + floor', () => {
     const plan = execQuery('RETURN floor(rand() * 100) AS random_floor')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4509,19 +4509,19 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-12 RETURN complex calc field', () => {
+  test('MATH2-12 RETURN complex calc field', () => {
     const plan = execQuery('MATCH (n:Person) RETURN (n.age * 12 + n.month) / 365.0 AS years')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-13 MATCH WHERE percent calc', () => {
+  test('MATH2-13 MATCH WHERE percent calc', () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.score / 100.0 > 0.8 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-14 RETURN nested arithmetic', () => {
+  test('MATH2-14 RETURN nested arithmetic', () => {
     const plan = execQuery('RETURN (((1 + 2) * 3) - 4) / 2 AS nested_result')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6028,37 +6028,37 @@ describe('TCK EXT - WITH_COMPLEX (15 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - INDEX_CONSTRAINT (10 tests)', () => {
-  test.skip('IDX-01 CREATE INDEX', () => {
+  test('IDX-01 CREATE INDEX', () => {
     const plan = execQuery('CREATE INDEX FOR (n:Person) ON (n.name)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('IDX-02 CREATE INDEX composite', () => {
+  test('IDX-02 CREATE INDEX composite', () => {
     const plan = execQuery('CREATE INDEX FOR (n:Person) ON (n.name, n.age)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('IDX-03 DROP INDEX', () => {
+  test('IDX-03 DROP INDEX', () => {
     const plan = execQuery('DROP INDEX ON (n:Person)')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('IDX-04 CREATE CONSTRAINT unique', () => {
+  test('IDX-04 CREATE CONSTRAINT unique', () => {
     const plan = execQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.name IS UNIQUE')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('IDX-05 CREATE CONSTRAINT exists', () => {
+  test('IDX-05 CREATE CONSTRAINT exists', () => {
     const plan = execQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.name IS NOT NULL')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('IDX-06 DROP CONSTRAINT', () => {
+  test('IDX-06 DROP CONSTRAINT', () => {
     const plan = execQuery('DROP CONSTRAINT FOR (n:Person) REQUIRE n.name IS UNIQUE')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

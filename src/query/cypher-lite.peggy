@@ -85,15 +85,24 @@ ExplainStatement
 // ── DROP CONSTRAINT ──────────────────────────────────────────
 
 DropConstraintStatement
-  = "DROP"i _ "CONSTRAINT"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ASSERT"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+  = "DROP"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+      return { type: 'DROP_CONSTRAINT', label: label, property: prop.property }
+    }
+  / "DROP"i _ "CONSTRAINT"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ASSERT"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
       return { type: 'DROP_CONSTRAINT', label: label, property: prop.property }
     }
 
 // ── CREATE CONSTRAINT ──────────────────────────────────
 
 ConstraintRule
-  = "CREATE"i _ "CONSTRAINT"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ASSERT"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
-      return { type: 'CREATE_CONSTRAINT', label: label, property: prop.property }
+  = "CREATE"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+      return { type: 'CREATE_CONSTRAINT', label: label, property: prop.property, constraintType: 'unique' }
+    }
+  / "CREATE"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "NOT"i _ "NULL"i {
+      return { type: 'CREATE_CONSTRAINT', label: label, property: prop.property, constraintType: 'not_null' }
+    }
+  / "CREATE"i _ "CONSTRAINT"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ASSERT"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+      return { type: 'CREATE_CONSTRAINT', label: label, property: prop.property, constraintType: 'unique' }
     }
 
 // ── USE 语句 ────────────────────────────────────────────
@@ -106,12 +115,21 @@ UseStatement
 // ── CREATE INDEX / DROP INDEX ──────────────────────────
 
 CreateIndexStatement
-  = "CREATE"i _ "INDEX"i _ "ON"i _ ":" label:LabelName "(" prop:PropertyName ")" {
+  = "CREATE"i _ "INDEX"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ON"i _ "(" _ node:Identifier "." prop:PropertyName ")" {
+      return { type: 'CREATE_INDEX', label, property: prop }
+    }
+  / "CREATE"i _ "INDEX"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ON"i _ "(" _ head:Identifier "." hprop:PropertyName tail:(_ "," _ id2:Identifier "." tprop:PropertyName { return tprop })* _ ")" {
+      return { type: 'CREATE_INDEX', label, property: [hprop, ...tail] }
+    }
+  / "CREATE"i _ "INDEX"i _ "ON"i _ ":" label:LabelName "(" prop:PropertyName ")" {
       return { type: 'CREATE_INDEX', label, property: prop }
     }
 
 DropIndexStatement
-  = "DROP"i _ "INDEX"i _ "ON"i _ ":" label:LabelName "(" prop:PropertyName ")" {
+  = "DROP"i _ "INDEX"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName ")" {
+      return { type: 'DROP_INDEX', label, property: null }
+    }
+  / "DROP"i _ "INDEX"i _ "ON"i _ ":" label:LabelName "(" prop:PropertyName ")" {
       return { type: 'DROP_INDEX', label, property: prop }
     }
 
@@ -1149,7 +1167,7 @@ FunctionCall
     }
 
 FunctionArgList
-  = head:Unary tail:(_ "," _ Unary)* {
+  = head:OrExpression tail:(_ "," _ OrExpression)* {
       return [head, ...tail.map(t => t[3])]
     }
 
