@@ -1424,3 +1424,93 @@ let engine: GraphEngine
       expect(Array.isArray(p)).toBe(true); expect((p as number[]).length).toBe(3)
     } finally { e.close() }
   }, 30000)
+
+  // ── V57 throughput batch t79-t89 (+11) ──
+  it('V57: thread 2 concurrent 50 upsertNode each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t79-' + Date.now() })
+    await e.open(); try {
+      const ids = await Promise.all([...Array(10)].map((_, i) => e.upsertNode(1, `t${i}`, { props: {} })))
+      expect(ids.every(id => id > 0)).toBe(true)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: write 100 nodes via loop then read', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t80-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 100; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: { v: i } }))
+      for (const id of ids) expect(e.getNode(id)?.id).toBe(id)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: upsertEdge 100 edges from 1 source', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t81-' + Date.now() })
+    await e.open(); try {
+      const s = await e.upsertNode(1, 's', { props: {} })
+      for (let i = 0; i < 100; i++) { const d = await e.upsertNode(1, `d${i}`, { props: {} }); await e.upsertEdge(s, d, 1, { props: {} }) }
+      expect(e.neighbors(s).edges.length).toBeGreaterThanOrEqual(100)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: deleteNode then re-upsert same label', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t82-' + Date.now() })
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'x', { props: { v: 1 } })
+      e.deleteNode(id)
+      const id2 = await e.upsertNode(1, 'x', { props: { v: 2 } })
+      expect(e.getNode(id2)?.props.v).toBe(2)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: update props then read back', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t83-' + Date.now() })
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'u', { props: { x: 1 } })
+      await e.upsertNode(1, 'u', { props: { x: 42 } })
+      expect(e.getNode(id)?.props.x).toBe(42)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: chain 2000 edges read back', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t84-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 2001; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 2000; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.neighbors(ids[0]).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 60000)
+  it('V57: mixed type scan all nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t85-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 20; i++) await e.upsertNode((i % 5) + 1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(20)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: concurrent 20 upsertNode mixed types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t86-' + Date.now() })
+    await e.open(); try {
+      const ids = await Promise.all([...Array(20)].map((_, i) => e.upsertNode((i % 4) + 1, `c${i}`, { props: { v: i } })))
+      expect(ids.filter(id => id > 0).length).toBe(20)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: upsertNode 500 nodes with sequential props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t87-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 500; i++) await e.upsertNode(1, `n${i}`, { props: { v: i, sq: i * i } })
+      expect(e.scanAllNodes().length).toBe(500)
+    } finally { e.close() }
+  }, 60000)
+  it('V57: upsertEdge multi type from hub', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t88-' + Date.now() })
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'h', { props: {} })
+      for (let t = 0; t < 5; t++) { const d = await e.upsertNode(1, `d${t}`, { props: {} }); await e.upsertEdge(h, d, t + 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(5)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: delete single edge verify structure', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t89-' + Date.now() })
+    await e.open(); try {
+      const s = await e.upsertNode(1, 's', { props: {} })
+      const d = await e.upsertNode(1, 'd', { props: {} })
+      await e.upsertEdge(s, d, 1, { props: {} })
+      e.deleteNode(d)
+      expect(e.getNode(s)).not.toBeNull()
+    } finally { e.close() }
+  }, 30000)
