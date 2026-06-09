@@ -5446,7 +5446,7 @@ describe('TCK EXT - MERGE_EXTENDED (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MERGE-05 MERGE + ON CREATE + ON MATCH', () => {
+  test('MERGE-05 MERGE + ON CREATE + ON MATCH', () => {
     const plan = execQuery("MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.count = 1 ON MATCH SET n.count = n.count + 1")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5464,19 +5464,19 @@ describe('TCK EXT - MERGE_EXTENDED (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MERGE-08 MERGE edge with props', () => {
+  test('MERGE-08 MERGE edge with props', () => {
     const plan = execQuery("MERGE (a:Person {name: 'Alice'})-[r:KNOWS {since: 2020}]->(b:Person {name: 'Bob'}) RETURN r")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MERGE-09 MERGE + SET multiple', () => {
+  test('MERGE-09 MERGE + SET multiple', () => {
     const plan = execQuery("MERGE (n:Person {name: 'Alice'}) SET n.age = 30, n.city = 'NYC'")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MERGE-10 MERGE + REMOVE', () => {
+  test('MERGE-10 MERGE + REMOVE', () => {
     const plan = execQuery("MERGE (n:Person {name: 'Alice'}) REMOVE n.temp_prop")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5652,7 +5652,7 @@ describe('TCK EXT - SET_EXTENDED (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SET-03 SET with expression', () => {
+  test('SET-03 SET with expression', () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = n.age + 1")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

@@ -219,6 +219,17 @@ DMLStatement
       }
       return stmt
     }
+  / mergeClause:MergeClause secondMerge:MergeClause thirdMerge:MergeClause? returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', merge: [mergeClause, secondMerge] }
+      if (thirdMerge) stmt.merge.push(thirdMerge)
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
+  / mergeClause:MergeClause removeClause:RemoveClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', merge: mergeClause, remove: removeClause }
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
   / mergeClause:MergeClause returnClause:ReturnClause? {
       const stmt = { type: 'QUERY', merge: mergeClause }
       if (returnClause) {
@@ -703,8 +714,20 @@ SetItemList
     }
 
 SetItem
-  = ref:PropertyRef _ "=" _ val:Primary {
+  = name:Identifier _ "=" _ val:PropertyMap {
+      return { type: 'SET_MAP', name, value: val }
+    }
+  / name:Identifier _ "+=" _ val:PropertyMap {
+      return { type: 'SET_MAP_AUGMENT', name, value: val }
+    }
+  / name:Identifier labelExpr:LabelExpression {
+      return { type: 'SET_LABEL', name, label: labelExpr }
+    }
+  / ref:PropertyRef _ "=" _ val:OrExpression {
       return { type: 'SET_ITEM', property: ref, value: val }
+    }
+  / ref:PropertyRef _ "+=" _ val:OrExpression {
+      return { type: 'SET_AUGMENT', property: ref, value: val }
     }
 
 // ── REMOVE ─────────────────────────────────────────────────
