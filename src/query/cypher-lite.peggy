@@ -889,14 +889,50 @@ Comparison
     }
   / Additive
 
-// ── 加法 / 列表拼接 ────────────────────────────────────────
+// ── 幂运算（右结合）────────────────────────────────────
 
-Additive
-  = head:ListSubscript tail:(_ "+" _ ListSubscript)* {
+Power
+  = head:Unary tail:(_ "^" _ Unary)+ {
+      let result = head
+      for (const t of tail) {
+        result = { type: 'POWER', left: result, right: t[3] }
+      }
+      return result
+    }
+  / Unary
+
+// ── 一元运算（负号）────────────────────────────────────
+
+Unary
+  = "-" _ expr:Unary { return { type: 'UNARY_MINUS', expr } }
+  / "+" _ expr:Unary { return expr }
+  / ListSubscript
+
+// ── 乘法 / 除法 / 取模 ──────────────────────────────────
+
+Multiplicative
+  = head:Power tail:(_ op:("*" / "/" / "%") _ Power)* {
       if (tail.length === 0) return head
       let result = head
       for (const t of tail) {
-        result = { type: 'ADD', left: result, right: t[3] }
+        const op = t[1]
+        if (op === '*') result = { type: 'MULTIPLY', left: result, right: t[3] }
+        else if (op === '/') result = { type: 'DIVIDE', left: result, right: t[3] }
+        else result = { type: 'MODULO', left: result, right: t[3] }
+      }
+      return result
+    }
+
+// ── 加法 / 减法 / 列表拼接 ─────────────────────────────
+
+Additive
+  = head:Multiplicative tail:(_ op:("+" / "-") _ Multiplicative)* {
+      if (tail.length === 0) return head
+      let result = head
+      for (const t of tail) {
+        const op = t[1]
+        if (op === '+') result = { type: 'ADD', left: result, right: t[3] }
+        else result = { type: 'SUBTRACT', left: result, right: t[3] }
       }
       return result
     }
@@ -968,7 +1004,7 @@ FunctionCall
     }
 
 FunctionArgList
-  = head:Primary tail:(_ "," _ Primary)* {
+  = head:Unary tail:(_ "," _ Unary)* {
       return [head, ...tail.map(t => t[3])]
     }
 
@@ -1182,6 +1218,7 @@ ProcedureArg
   / NumberLiteral
   / BooleanLiteral
   / ListLiteral
+  / Unary
   / Identifier { return { type: 'IDENTIFIER', name: text() } }
 
 YieldClause

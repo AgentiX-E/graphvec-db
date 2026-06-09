@@ -3,6 +3,14 @@ import path from 'path'
 
 export default defineConfig({
   test: {
+    coverage: {
+      enabled: true,
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.spec.ts', 'src/test-utils/**', 'src/security/__mocks__/**', 'src/**/*.d.ts'],
+      reporter: ['text', 'text-summary', 'json'],
+      reportsDirectory: './coverage',
+    },
     environment: 'node',
     include: ['src/**/*.spec.ts'],
     exclude: ['**/node_modules/**'],

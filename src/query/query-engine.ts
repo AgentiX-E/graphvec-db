@@ -2150,7 +2150,17 @@ export function planFromAST(
               alias,
             })
             regularCols.push(alias)
-          } else if (col.type === 'COLUMN' && (col.expression?.type === 'ADD' || col.expression?.type === 'LIST' || col.expression?.type === 'SUBSCRIPT' || col.expression?.type === 'SLICE')) {
+          } else if (col.type === 'COLUMN' && (
+            col.expression?.type === 'ADD' ||
+            col.expression?.type === 'SUBTRACT' ||
+            col.expression?.type === 'MULTIPLY' ||
+            col.expression?.type === 'DIVIDE' ||
+            col.expression?.type === 'MODULO' ||
+            col.expression?.type === 'POWER' ||
+            col.expression?.type === 'UNARY_MINUS' ||
+            col.expression?.type === 'LIST' ||
+            col.expression?.type === 'SUBSCRIPT' ||
+            col.expression?.type === 'SLICE')) {
             // 列表/下标/切片/加法表达式列 — 尝试编译时常量折叠
             const folded = foldConstantExpression(col.expression)
             if (folded && typeof folded === 'object' && folded.type) {
@@ -3645,7 +3655,7 @@ export function _executeQuery(
       rows = rows.map(row => {
         const result = { ...row }
         for (const ec of plan.expressionColumns!) {
-          result[ec.alias] = _evaluateAddExpression(ec.expression, row)
+          result[ec.alias] = _evaluateArithmetic(ec.expression, row)
         }
         return result
       })
@@ -4980,6 +4990,63 @@ function _applyOrderByOnRows(
 /**
  * Evaluate an ADD expression (string concatenation or numeric addition).
  */
+/**
+ * Evaluate arithmetic expressions at runtime.
+ * Handles: ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULO, POWER, UNARY_MINUS
+ */
+function _evaluateArithmetic(expr: any, row: Record<string, unknown>): unknown {
+  if (!expr || typeof expr !== 'object') return expr
+
+  // Recursive helpers for each arithmetic type
+  if (expr.type === 'SUBTRACT') {
+    const left = _evaluateArithmetic(expr.left, row)
+    const right = _evaluateArithmetic(expr.right, row)
+    if (typeof left === 'number' && typeof right === 'number') return left - right
+    return null
+  }
+  if (expr.type === 'MULTIPLY') {
+    const left = _evaluateArithmetic(expr.left, row)
+    const right = _evaluateArithmetic(expr.right, row)
+    if (typeof left === 'number' && typeof right === 'number') return left * right
+    return null
+  }
+  if (expr.type === 'DIVIDE') {
+    const left = _evaluateArithmetic(expr.left, row)
+    const right = _evaluateArithmetic(expr.right, row)
+    if (typeof left === 'number' && typeof right === 'number') {
+      if (right === 0) return null // division by zero → null
+      return left / right
+    }
+    return null
+  }
+  if (expr.type === 'MODULO') {
+    const left = _evaluateArithmetic(expr.left, row)
+    const right = _evaluateArithmetic(expr.right, row)
+    if (typeof left === 'number' && typeof right === 'number') {
+      if (right === 0) return null
+      return left % right
+    }
+    return null
+  }
+  if (expr.type === 'POWER') {
+    const left = _evaluateArithmetic(expr.left, row)
+    const right = _evaluateArithmetic(expr.right, row)
+    if (typeof left === 'number' && typeof right === 'number') return Math.pow(left, right)
+    return null
+  }
+  if (expr.type === 'UNARY_MINUS') {
+    const val = _evaluateArithmetic(expr.expr, row)
+    if (typeof val === 'number') return -val
+    return null
+  }
+
+  // Fall through to existing ADD/collection expression evaluator
+  return _evaluateAddExpression(expr, row)
+}
+
+/**
+ * Evaluate an ADD expression (string concatenation or numeric addition).
+ */
 function _evaluateAddExpression(expr: any, row: Record<string, unknown>): unknown {
   if (!expr || typeof expr !== 'object') return expr
   if (expr.type === 'ADD') {
@@ -5508,12 +5575,63 @@ function resolvePrimary(p: PrimaryAST): unknown {
 }
 
 /**
- * Fold constant ADD expressions at plan-build time.
- * e.g. { type: 'ADD', left: { type: 'STRING', value: 'Hello ' }, right: { type: 'STRING', value: 'World' } }
- * → "Hello World"
- * If not foldable, returns the original expression.
+ * Fold constant arithmetic/expression at plan-build time.
+ * Supports: ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULO, POWER, UNARY_MINUS
+ * Returns folded value if both sides are constant, otherwise the original expression.
  */
 function foldConstantExpression(expr: any): any {
+  if (expr.type === 'SUBTRACT') {
+    const left = foldConstantExpression(expr.left)
+    const right = foldConstantExpression(expr.right)
+    if (typeof left === 'number' && typeof right === 'number') return left - right
+    if (left && typeof left === 'object' && left.type) return expr
+    if (right && typeof right === 'object' && right.type) return expr
+    return expr
+  }
+  if (expr.type === 'MULTIPLY') {
+    const left = foldConstantExpression(expr.left)
+    const right = foldConstantExpression(expr.right)
+    if (typeof left === 'number' && typeof right === 'number') return left * right
+    if (left && typeof left === 'object' && left.type) return expr
+    if (right && typeof right === 'object' && right.type) return expr
+    return expr
+  }
+  if (expr.type === 'DIVIDE') {
+    const left = foldConstantExpression(expr.left)
+    const right = foldConstantExpression(expr.right)
+    if (typeof left === 'number' && typeof right === 'number') {
+      if (right === 0) return null
+      return left / right
+    }
+    if (left && typeof left === 'object' && left.type) return expr
+    if (right && typeof right === 'object' && right.type) return expr
+    return expr
+  }
+  if (expr.type === 'MODULO') {
+    const left = foldConstantExpression(expr.left)
+    const right = foldConstantExpression(expr.right)
+    if (typeof left === 'number' && typeof right === 'number') {
+      if (right === 0) return null
+      return left % right
+    }
+    if (left && typeof left === 'object' && left.type) return expr
+    if (right && typeof right === 'object' && right.type) return expr
+    return expr
+  }
+  if (expr.type === 'POWER') {
+    const left = foldConstantExpression(expr.left)
+    const right = foldConstantExpression(expr.right)
+    if (typeof left === 'number' && typeof right === 'number') return Math.pow(left, right)
+    if (left && typeof left === 'object' && left.type) return expr
+    if (right && typeof right === 'object' && right.type) return expr
+    return expr
+  }
+  if (expr.type === 'UNARY_MINUS') {
+    const val = foldConstantExpression(expr.expr)
+    if (typeof val === 'number') return -val
+    if (val && typeof val === 'object' && val.type) return expr
+    return expr
+  }
   if (expr.type === 'ADD') {
     const left = foldConstantExpression(expr.left)
     const right = foldConstantExpression(expr.right)
@@ -5548,7 +5666,13 @@ function formatColumn(expr: PrimaryAST): string {
   if (expr.type === 'LIST') return 'list'
   if (expr.type === 'AGGREGATE') return String(expr.func ?? '')
   if (expr.type === 'FUNCTION_CALL') return expr.name
-  if (expr.type === 'ADD') return 'concat'
+  if (expr.type === 'ADD') return 'expr'
+  if (expr.type === 'SUBTRACT') return 'expr'
+  if (expr.type === 'MULTIPLY') return 'expr'
+  if (expr.type === 'DIVIDE') return 'expr'
+  if (expr.type === 'MODULO') return 'expr'
+  if (expr.type === 'POWER') return 'expr'
+  if (expr.type === 'UNARY_MINUS') return 'expr'
   return String(expr)
 }
 

@@ -2529,25 +2529,25 @@ describe('TCK EXT - MATH_FUNCTIONS (27 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-02 RETURN subtraction', () => {
+  test('MATH-02 RETURN subtraction', () => {
     const plan = execQuery('RETURN 5 - 3 AS diff')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-03 RETURN multiplication', () => {
+  test('MATH-03 RETURN multiplication', () => {
     const plan = execQuery('RETURN 3 * 4 AS prod')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-04 RETURN division', () => {
+  test('MATH-04 RETURN division', () => {
     const plan = execQuery('RETURN 10 / 3 AS quot')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-05 RETURN modulo', () => {
+  test('MATH-05 RETURN modulo', () => {
     const plan = execQuery('RETURN 10 % 3 AS mod')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -2577,7 +2577,7 @@ describe('TCK EXT - MATH_FUNCTIONS (27 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-10 RETURN abs(-5)', () => {
+  test('MATH-10 RETURN abs(-5)', () => {
     const plan = execQuery('RETURN abs(-5) AS abs_val')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -2619,13 +2619,13 @@ describe('TCK EXT - MATH_FUNCTIONS (27 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-17 RETURN power ^', () => {
+  test('MATH-17 RETURN power ^', () => {
     const plan = execQuery('RETURN 2 ^ 10 AS power')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-18 RETURN sign(-3)', () => {
+  test('MATH-18 RETURN sign(-3)', () => {
     const plan = execQuery('RETURN sign(-3) AS sgn')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -2655,7 +2655,7 @@ describe('TCK EXT - MATH_FUNCTIONS (27 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-23 MATCH RETURN age*2', () => {
+  test('MATH-23 MATCH RETURN age*2', () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.age * 2 AS double_age')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -2673,13 +2673,13 @@ describe('TCK EXT - MATH_FUNCTIONS (27 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-26 MATCH WHERE compound', () => {
+  test('MATH-26 MATCH WHERE compound', () => {
     const plan = execQuery('MATCH (n:Person) WHERE (n.age * 2) + 1 > 50 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH-27 RETURN multi-op', () => {
+  test('MATH-27 RETURN multi-op', () => {
     const plan = execQuery('RETURN (1 + 2) * 3 - 4 / 2 AS result')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
