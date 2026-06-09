@@ -6124,3 +6124,21 @@ afterAll(() => {
       expect(r.length).toBe(1)
     } finally { e.close() }
   }, 30000)
+
+  it('V57-e2e: WHERE string starts with empty', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-start-empty'))
+    await e.open(); try {
+      await e.upsertNode(1, 'n', { props: { s: 'test' } })
+      const all = e.scanAllNodes()
+      expect(all.filter(n => (n.props.s as string).startsWith('')).length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: MATCH with negated IN', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-neg-in'))
+    await e.open(); try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      const r = all.filter(n => ![1, 3, 5, 7, 9].includes(n.props.v as number))
+      expect(r.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
