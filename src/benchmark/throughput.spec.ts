@@ -1758,3 +1758,165 @@ let engine: GraphEngine
       expect(e.scanAllNodes().length).toBe(1801)
     } finally { e.close() }
   }, 30000)
+  it('V57: throughput hub 2500 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t118-' + Date.now() })
+    await e.open(); try {
+      const hub = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 2500; i++) {
+        const d = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(hub, d, 1, { props: {} })
+      }
+      expect(e.neighbors(hub).edges.length).toBeGreaterThanOrEqual(2500)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput chain 3000 edges 6 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t119-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 3001; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 3000; i++) await e.upsertEdge(ids[i], ids[i + 1], (i % 6) + 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(3001)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput 6k nodes scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t120-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 6000; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(6000)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput 5000 chain edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t121-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 5001; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 5000; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(5001)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput 8 hubs 30 leaves each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t122-' + Date.now() })
+    await e.open(); try {
+      for (let h = 0; h < 8; h++) {
+        const hub = await e.upsertNode(1, `h${h}`, { props: {} })
+        for (let i = 0; i < 30; i++) {
+          const d = await e.upsertNode(1, `h${h}-l${i}`, { props: {} })
+          await e.upsertEdge(hub, d, 1, { props: {} })
+        }
+        expect(e.neighbors(hub).edges.length).toBeGreaterThanOrEqual(30)
+      }
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput 2500 nodes mixed types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t123-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 2500; i++) await e.upsertNode((i % 7) + 1, `n${i}`, { props: { t: (i % 7) + 1 } })
+      expect(e.scanAllNodes().length).toBe(2500)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput 3000 delete ops', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t124-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 3000; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      for (let i = 0; i < 3000; i++) e.deleteNode(i + 1)
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 60000)
+  it('V57: throughput chain 3500 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t125-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 3501; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 3500; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(3501)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput hub 10 types 500 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t126-' + Date.now() })
+    await e.open(); try {
+      const hub = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 500; i++) {
+        const d = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(hub, d, (i % 10) + 1, { props: {} })
+      }
+      expect(e.neighbors(hub).edges.length).toBeGreaterThanOrEqual(500)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput 4k nodes scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t127-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 4000; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(4000)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput delete-all 3k nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t128-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 3000; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      for (let i = 0; i < 3000; i++) e.deleteNode(i + 1)
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 60000)
+  it('V57: throughput 2 hubs 1000 edges each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t129-' + Date.now() })
+    await e.open(); try {
+      for (let h = 0; h < 2; h++) {
+        const hub = await e.upsertNode(1, `h${h}`, { props: {} })
+        for (let i = 0; i < 1000; i++) {
+          const d = await e.upsertNode(1, `h${h}-l${i}`, { props: {} })
+          await e.upsertEdge(hub, d, 1, { props: {} })
+        }
+        expect(e.neighbors(hub).edges.length).toBeGreaterThanOrEqual(1000)
+      }
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput chain 4k edges 8 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t130-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 4001; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 4000; i++) await e.upsertEdge(ids[i], ids[i + 1], (i % 8) + 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(4001)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput 10 hubs 50 leaves', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t131-' + Date.now() })
+    await e.open(); try {
+      for (let h = 0; h < 10; h++) {
+        const hub = await e.upsertNode(1, `h${h}`, { props: {} })
+        for (let i = 0; i < 50; i++) {
+          const d = await e.upsertNode(1, `h${h}-l${i}`, { props: {} })
+          await e.upsertEdge(hub, d, 1, { props: {} })
+        }
+        expect(e.neighbors(hub).edges.length).toBeGreaterThanOrEqual(50)
+      }
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput 7k nodes scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t132-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 7000; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(7000)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput batch delete with large ids', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t133-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 2000; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 2000; i += 2) e.deleteNode(ids[i])
+      const remaining = e.scanAllNodes()
+      expect(remaining.length).toBe(1000)
+    } finally { e.close() }
+  }, 30000)
+  it('V57: throughput hub 1500 edges 3 types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-t134-' + Date.now() })
+    await e.open(); try {
+      const hub = await e.upsertNode(1, 'hub', { props: {} })
+      for (let i = 0; i < 1500; i++) {
+        const d = await e.upsertNode(1, `l${i}`, { props: {} })
+        await e.upsertEdge(hub, d, (i % 3) + 1, { props: {} })
+      }
+      expect(e.neighbors(hub).edges.length).toBeGreaterThanOrEqual(1500)
+    } finally { e.close() }
+  }, 30000)
