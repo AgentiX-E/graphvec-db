@@ -4981,31 +4981,31 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - FUNCTIONS_2 (20 tests)', () => {
-  test.skip('FUNC2-01 RETURN startNode()', () => {
+  test('FUNC2-01 RETURN startNode()', () => {
     const plan = execQuery('MATCH (a)-[r]->(b) RETURN startNode(r) AS start')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC2-02 RETURN endNode()', () => {
+  test('FUNC2-02 RETURN endNode()', () => {
     const plan = execQuery('MATCH (a)-[r]->(b) RETURN endNode(r) AS end')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC2-03 RETURN length(path)', () => {
+  test('FUNC2-03 RETURN length(path)', () => {
     const plan = execQuery('MATCH p = (a)-[:KNOWS*1..5]->(c) RETURN length(p) AS path_len')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC2-04 RETURN nodes(path)', () => {
+  test('FUNC2-04 RETURN nodes(path)', () => {
     const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b) RETURN nodes(p) AS node_list')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC2-05 RETURN relationships(path)', () => {
+  test('FUNC2-05 RETURN relationships(path)', () => {
     const plan = execQuery('MATCH p = (a)-[:KNOWS]->(b) RETURN relationships(p) AS rel_list')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
