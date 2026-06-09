@@ -33,7 +33,7 @@
  */
 
 Start
-  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionConjunction / TransactionStatement / ForEachStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
+  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / AdminStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionConjunction / TransactionStatement / ForEachStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
       if (hint) {
         stmt.periodicCommitHint = hint
       }
@@ -65,6 +65,9 @@ ShowKind
   / "LABELS"i { return 'labels' }
   / "RELATIONSHIPTYPES"i { return 'relationshiptypes' }
   / "SCHEMA"i { return 'schema' }
+  / "USERS"i { return 'users' }
+  / "ROLES"i { return 'roles' }
+  / "DATABASES"i { return 'databases' }
 
 // ── EXPLAIN / PROFILE / DESCRIBE ────────────────────────────
 
@@ -110,6 +113,34 @@ CreateIndexStatement
 DropIndexStatement
   = "DROP"i _ "INDEX"i _ "ON"i _ ":" label:LabelName "(" prop:PropertyName ")" {
       return { type: 'DROP_INDEX', label, property: prop }
+    }
+
+// ── 管理语句 (CREATE/DROP/ALTER USER/ROLE, GRANT/REVOKE, CREATE DATABASE) ──
+
+AdminStatement
+  = "CREATE"i _ "USER"i _ name:Identifier _ "SET"i _ "PASSWORD"i _ pwd:StringLiteral {
+      return { type: 'CREATE_USER', name, password: pwd }
+    }
+  / "ALTER"i _ "USER"i _ name:Identifier _ "SET"i _ "PASSWORD"i _ pwd:StringLiteral {
+      return { type: 'ALTER_USER', name, password: pwd }
+    }
+  / "DROP"i _ "USER"i _ name:Identifier {
+      return { type: 'DROP_USER', name }
+    }
+  / "CREATE"i _ "ROLE"i _ name:Identifier {
+      return { type: 'CREATE_ROLE', name }
+    }
+  / "DROP"i _ "ROLE"i _ name:Identifier {
+      return { type: 'DROP_ROLE', name }
+    }
+  / "GRANT"i _ "ROLE"i _ role:Identifier _ "TO"i _ user:Identifier {
+      return { type: 'GRANT_ROLE', role, user }
+    }
+  / "REVOKE"i _ "ROLE"i _ role:Identifier _ "FROM"i _ user:Identifier {
+      return { type: 'REVOKE_ROLE', role, user }
+    }
+  / "CREATE"i _ "DATABASE"i _ name:Identifier {
+      return { type: 'CREATE_DATABASE', name }
     }
 
 // ── 顶级语句 ───────────────────────────────────────────
