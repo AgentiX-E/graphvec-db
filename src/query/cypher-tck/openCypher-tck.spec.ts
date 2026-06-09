@@ -5089,7 +5089,7 @@ describe('TCK EXT - FUNCTIONS_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC2-19 RETURN type on named rel', () => {
+  test('FUNC2-19 RETURN type on named rel', () => {
     const plan = execQuery('MATCH (a:Person)-[r]->(b:Company) RETURN type(r) AS rel_type')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6174,7 +6174,7 @@ describe('TCK EXT - LOAD_CSV (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CSV-03 LOAD CSV + CREATE', () => {
+  test('CSV-03 LOAD CSV + CREATE', () => {
     const plan = execQuery('LOAD CSV FROM "file:///nodes.csv" AS row CREATE (n:Node {id: row[0], name: row[1]})')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
