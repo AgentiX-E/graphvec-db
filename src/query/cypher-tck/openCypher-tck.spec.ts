@@ -2504,13 +2504,13 @@ describe('TCK EXT - STRING_FUNCTIONS (26 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('STR-25 MATCH regex wildcard', () => {
+  test('STR-25 MATCH regex wildcard', () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.name =~ 'A.*' RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('STR-26 MATCH regex exact', () => {
+  test('STR-26 MATCH regex exact', () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.name =~ 'Alice' RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -2969,7 +2969,7 @@ describe('TCK EXT - PARAM_QUERY (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('PARAM-17 MATCH n.$1 field', () => {
+  test('PARAM-17 MATCH n.$1 field', () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.$1 AS field', ['name'])
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

@@ -573,12 +573,15 @@ function _execQueryPositional(query: string, params: unknown[]): QueryPlan {
     )
   }
 
-  // 4. 按序替换占位符
+  // 4. 按序替换占位符（跳过属性访问上下文: n.$1 不做纯文本替换）
   let result = query
   for (let i = 0; i < params.length; i++) {
+    // 仅替换不在 . 之后的 $N（属性访问上下文的 $1 由 parser PROP_REF_DYNAMIC 处理）
     const placeholder = `\\$${i + 1}`
     const serialized = serializeParamValue(params[i])
-    const re = new RegExp(placeholder, 'g')
+    // 不在 . 之后的 $1 → 正常替换
+    // 在 . 之后的 $1 → 保留给 PROP_REF_DYNAMIC 处理
+    const re = new RegExp(`(?<!\\.)\\$${i + 1}\\b`, 'g')
     result = result.replace(re, serialized)
   }
 
@@ -4731,6 +4734,12 @@ function _evalSimpleExpr(node: any, row: QueryRow): unknown {
     return row[node.property] ?? null
   }
 
+  // Dynamic property reference: n.$1 → resolves $1 from params/row
+  if (node.type === 'PROP_REF_DYNAMIC') {
+    // property is the param name (e.g. '$1') — resolve it from row
+    return row[node.property] ?? null
+  }
+
   // Property reference (simpler form): e.g. n.age or just age
   if (node.type === 'PROPERTY_REF') {
     const key = node.name ?? node.value
@@ -5090,6 +5099,9 @@ function _evaluateAddExpression(expr: any, row: Record<string, unknown>): unknow
   if (expr.type === 'STRING') return expr.value
   if (expr.type === 'NUMBER') return expr.value
   if (expr.type === 'BOOLEAN') return expr.value
+  if (expr.type === 'PROP_REF_DYNAMIC') {
+    return _getPropValue(row, expr.property)
+  }
   if (expr.type === 'PROP_REF') {
     // 先尝试直接获取属性（expr.property 直接作为 key）
     const direct = _getPropValue(row, expr.property)
@@ -5500,10 +5512,10 @@ function extractFilters(expr: ExpressionAST, steps: TraverseStep[]): FilterClaus
     let propRef: PrimaryAST
     let value: unknown
 
-    if (left.type === 'PROP_REF' && right.type !== 'PROP_REF') {
+    if ((left.type === 'PROP_REF' || left.type === 'PROP_REF_DYNAMIC') && right.type !== 'PROP_REF' && right.type !== 'PROP_REF_DYNAMIC') {
       propRef = left
       value = resolvePrimary(right)
-    } else if (right.type === 'PROP_REF' && left.type !== 'PROP_REF') {
+    } else if ((right.type === 'PROP_REF' || right.type === 'PROP_REF_DYNAMIC') && left.type !== 'PROP_REF' && left.type !== 'PROP_REF_DYNAMIC') {
       propRef = right
       value = resolvePrimary(left)
     } else {
@@ -5538,7 +5550,7 @@ function extractFilters(expr: ExpressionAST, steps: TraverseStep[]): FilterClaus
   if (expr.type === 'STRING_PREDICATE') {
     const left = expr.left
     const right = expr.right
-    if (left.type !== 'PROP_REF') return []
+    if (left.type !== 'PROP_REF' && left.type !== 'PROP_REF_DYNAMIC') return []
     const value = right.type === 'STRING' ? resolvePrimary(right) : null
     if (value === null) return []
     return [{
@@ -5546,6 +5558,20 @@ function extractFilters(expr: ExpressionAST, steps: TraverseStep[]): FilterClaus
       property: left.property,
       operator: expr.operator as FilterClause['operator'],
       value,
+    }]
+  }
+
+  if (expr.type === 'REGEX_MATCH') {
+    const left = expr.left
+    const right = expr.right
+    if (left.type !== 'PROP_REF' && left.type !== 'PROP_REF_DYNAMIC') return []
+    const pattern = right.type === 'STRING' ? resolvePrimary(right) : null
+    if (pattern === null) return []
+    return [{
+      source: left.name,
+      property: left.property,
+      operator: 'REGEX' as FilterClause['operator'],
+      value: new RegExp(pattern),
     }]
   }
 
@@ -5652,6 +5678,14 @@ function foldConstantExpression(expr: any): any {
     // 列表表达式需要运行时求值
     return expr
   }
+  if (expr.type === 'PROP_REF_DYNAMIC') {
+    // Dynamic property ref (n.$1) — can't fold at plan time
+    return expr
+  }
+  if (expr.type === 'REGEX_MATCH') {
+    // Regex match — can't fold at plan time
+    return expr
+  }
   if (expr.type === 'STRING') return expr.value
   if (expr.type === 'NUMBER') return expr.value
   if (expr.type === 'BOOLEAN') return expr.value
@@ -5660,6 +5694,7 @@ function foldConstantExpression(expr: any): any {
 
 function formatColumn(expr: PrimaryAST): string {
   if (expr.type === 'PROP_REF') return expr.property
+  if (expr.type === 'PROP_REF_DYNAMIC') return expr.property
   if (expr.type === 'IDENTIFIER') return expr.name
   if (expr.type === 'STRING') return expr.value
   if (expr.type === 'NUMBER') return String(expr.value)

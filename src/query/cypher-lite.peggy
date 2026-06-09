@@ -792,6 +792,12 @@ PropertyRef
   = name:Identifier "." prop:Identifier {
       return { type: 'PROP_REF', name, property: prop }
     }
+  / name:Identifier "." digits:[0-9]+ {
+      return { type: 'PROP_REF', name, property: '$' + digits.join('') }
+    }
+  / name:Identifier "." param:ParameterRef {
+      return { type: 'PROP_REF_DYNAMIC', name, property: param.name }
+    }
 
 // ── ORDER BY ──────────────────────────────────────────────
 
@@ -886,6 +892,9 @@ Comparison
     }
   / lhs:Additive _ op:StringPredicateOp _ rhs:(Additive) {
       return { type: 'STRING_PREDICATE', operator: op, left: lhs, right: rhs }
+    }
+  / lhs:Additive _ "=~"i _ rhs:Additive {
+      return { type: 'REGEX_MATCH', left: lhs, right: rhs }
     }
   / Additive
 
