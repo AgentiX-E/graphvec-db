@@ -33,7 +33,7 @@
  */
 
 Start
-  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionStatement / CreateIndexStatement / DropIndexStatement) _ {
+  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
       if (hint) {
         stmt.periodicCommitHint = hint
       }
@@ -64,6 +64,7 @@ ShowKind
   / "FUNCTIONS"i { return 'functions' }
   / "LABELS"i { return 'labels' }
   / "RELATIONSHIPTYPES"i { return 'relationshiptypes' }
+  / "SCHEMA"i { return 'schema' }
 
 // ── EXPLAIN / PROFILE / DESCRIBE ────────────────────────────
 
@@ -483,6 +484,7 @@ UnwindClause
 
 UnwindList
   = head:ListLiteral { return head.items }
+  / pc:PatternComprehension { return pc }
 
 UnwindItemList
   = head:UnwindItem tail:(_ "," _ UnwindItem)* {
@@ -639,7 +641,17 @@ Range
 // ── 节点模式 ─────────────────────────────────────────────
 
 NodePattern
-  = "(" _ name:Identifier _ ")" { return { type: 'NODE', name, label: null, labelExpr: null, props: null } }
+  = "(" _ ")" { return { type: 'NODE', name: null, label: null, labelExpr: null, props: null } }
+  / "(" _ expr:LabelExpression _ ")" {
+      return { type: 'NODE', name: null, label: null, labelExpr: expr, props: null }
+    }
+  / "(" _ props:PropertyMap _ ")" {
+      return { type: 'NODE', name: null, label: null, labelExpr: null, props }
+    }
+  / "(" _ expr:LabelExpression _ props:PropertyMap _ ")" {
+      return { type: 'NODE', name: null, label: null, labelExpr: expr, props }
+    }
+  / "(" _ name:Identifier _ ")" { return { type: 'NODE', name, label: null, labelExpr: null, props: null } }
   / "(" _ name:Identifier _ expr:LabelExpression _ ")" {
       return { type: 'NODE', name, label: null, labelExpr: expr, props: null }
     }
@@ -1233,13 +1245,14 @@ InTransactionsClause
 // 例如: CALL db.index.fulltext.queryNodes("idx_name", "search_term") YIELD node, score
 
 CallProcedureStatement
-  = "CALL"i _ name:ProcedureName _ "(" _ args:ProcedureArgList? _ ")" _ yc:YieldClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
+  = "CALL"i _ name:ProcedureName _ "(" _ args:ProcedureArgList? _ ")" _ yc:YieldClause? _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
       const stmt = {
         type: 'CALL_PROCEDURE',
         procedureName: name,
         arguments: args ?? [],
       }
       if (yc) stmt.yield = yc
+      if (rc) stmt.return = rc
       if (ob) stmt.orderBy = ob
       if (ls) {
         stmt.limit = ls.limit
@@ -1267,8 +1280,9 @@ ProcedureArg
   / Identifier { return { type: 'IDENTIFIER', name: text() } }
 
 YieldClause
-  = _ "YIELD"i _ items:YieldItemList _ ob:OrderByClause? _ ls:LimitSkipClause? {
+  = _ "YIELD"i _ items:YieldItemList _ wc:WhereClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
       const result = { type: 'YIELD', items: items }
+      if (wc) result.where = wc
       if (ob) result.orderBy = ob
       if (ls) { result.limit = ls.limit; result.skip = ls.skip }
       return result
@@ -1288,3 +1302,20 @@ YieldItem
 
 _ "whitespace"
   = [ \t\n\r]*
+
+
+// ── LOAD CSV ─────────────────────────────────────────────
+
+LoadCsvStatement
+  = "LOAD"i _ "CSV"i _ headers:("WITH"i _ "HEADERS"i)? _ "FROM"i _ url:StringLiteral _ "AS"i _ rowName:Identifier _ terminator:FieldTerminatorClause? _ rest:.* {
+      return {
+        type: 'LOAD_CSV',
+        withHeaders: headers !== null,
+        url: url,
+        rowName,
+        fieldTerminator: terminator,
+      }
+    }
+
+FieldTerminatorClause
+  = _ "FIELDTERMINATOR"i _ delim:StringLiteral { return delim }

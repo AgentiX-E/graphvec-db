@@ -5773,7 +5773,7 @@ describe('TCK EXT - SHOW_DESCRIBE (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('META-07 SHOW SCHEMA', () => {
+  test('META-07 SHOW SCHEMA', () => {
     const plan = execQuery('SHOW SCHEMA')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6326,31 +6326,31 @@ describe('TCK EXT - DATETIME (15 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - CALL_PROCEDURE (10 tests)', () => {
-  test.skip('CALL-01 CALL procedure', () => {
+  test('CALL-01 CALL procedure', () => {
     const plan = execQuery('CALL db.labels() YIELD label RETURN label')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CALL-02 CALL procedure with args', () => {
+  test('CALL-02 CALL procedure with args', () => {
     const plan = execQuery('CALL db.schema.nodeTypeProperties() YIELD propertyName RETURN propertyName')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CALL-03 CALL + WHERE', () => {
+  test('CALL-03 CALL + WHERE', () => {
     const plan = execQuery("CALL db.labels() YIELD label WHERE label STARTS WITH 'P' RETURN label")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CALL-04 CALL + ORDER BY', () => {
+  test('CALL-04 CALL + ORDER BY', () => {
     const plan = execQuery('CALL db.labels() YIELD label RETURN label ORDER BY label')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CALL-05 CALL + SKIP + LIMIT', () => {
+  test('CALL-05 CALL + SKIP + LIMIT', () => {
     const plan = execQuery('CALL db.labels() YIELD label RETURN label SKIP 1 LIMIT 5')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6362,7 +6362,7 @@ describe('TCK EXT - CALL_PROCEDURE (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CALL-07 CALL + agg', () => {
+  test('CALL-07 CALL + agg', () => {
     const plan = execQuery('CALL db.labels() YIELD label RETURN count(label) AS label_count')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6423,13 +6423,13 @@ describe('TCK EXT - PATTERN_COMPREHENSION (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('PCOMP-06 comprehension with UNWIND', () => {
+  test('PCOMP-06 comprehension with UNWIND', () => {
     const plan = execQuery('MATCH (a:Person) UNWIND [(a)-[:KNOWS]->(b) | b.name] AS friend RETURN a.name, friend')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('PCOMP-07 comprehension + WHERE', () => {
+  test('PCOMP-07 comprehension + WHERE', () => {
     const plan = execQuery('MATCH (a:Person) WHERE size([(a)-[:KNOWS]->() | 1]) > 2 RETURN a.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
