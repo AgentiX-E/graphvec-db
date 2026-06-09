@@ -361,6 +361,12 @@ MatchStatement
       }
       return stmt
     }
+  // ── 子查询用 (MATCH + WHERE, 无 RETURN) ──────────────
+  / matchClause:MatchClause whereClause:WhereClause? {
+      const stmt = { type: 'QUERY', match: matchClause }
+      if (whereClause) { stmt.where = whereClause }
+      return stmt
+    }
 
 // ── OPTIONAL MATCH ─────────────────────────────────────────
 
@@ -1029,6 +1035,8 @@ StringPredicateOp
 Primary
   = PatternComprehension
   / ExistsExpression
+  / "NOT" _ ExistsExpression
+  / CountSubquery
   / CaseExpression
   / ParameterRef
   / PropertyRef
@@ -1119,13 +1127,31 @@ Integer "integer"
 // ── EXISTS 子查询 ──────────────────────────────────────────
 
 ExistsExpression
-  = "EXISTS"i _ "{" _ pattern:ExistsPattern _ "}" {
+  = "EXISTS"i _ "{" _ subq:MatchStatement _ "}" {
+      return {
+        type: 'EXISTS_SUBQUERY',
+        query: subq,
+      }
+    }
+  / "EXISTS"i _ "{" _ pattern:ExistsPattern _ "}" {
       return {
         type: 'EXISTS',
         source: pattern.source,
         edgeLabel: pattern.edgeLabel,
         direction: pattern.direction,
         target: pattern.target,
+      }
+    }
+  / "NOT"i _ "EXISTS"i _ "{" _ subq:MatchStatement _ "}" {
+      return {
+        type: 'NOT_EXISTS_SUBQUERY',
+        query: subq,
+      }
+    }
+  / "COUNT"i _ "{" _ subq:MatchStatement _ "}" {
+      return {
+        type: 'COUNT_SUBQUERY',
+        query: subq,
       }
     }
 
@@ -1171,6 +1197,16 @@ ExistsEdge
 ExistsEdgeLabel
   = ":" name:Identifier { return name }
   / "" { return null }
+
+// ── COUNT 子查询 ─────────────────────────────────────────
+
+CountSubquery
+  = "COUNT"i _ "{" _ subq:MatchStatement _ "}" {
+      return {
+        type: 'COUNT_SUBQUERY',
+        query: subq,
+      }
+    }
 
 // ── CASE / WHEN / THEN / ELSE ────────────────────────────
 
