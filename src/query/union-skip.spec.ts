@@ -53,9 +53,7 @@ describe('UNION execution', () => {
     const leftResult = _executeQuery({ ...left, filters: [] }, nodes.filter(left._filterFn))
     const rightResult = _executeQuery({ ...right, filters: [] }, nodes.filter(right._filterFn))
 
-    // 手动构造 UNION plan
-    const unionPlan = plan({
-    // 对 UNION 我们会分别执行左右再合并
+    // 手动构造 UNION plan — 对 UNION 我们会分别执行左右再合并
     const allLeft = _executeQuery(left, nodes)
     const allRight = _executeQuery(right, nodes)
 

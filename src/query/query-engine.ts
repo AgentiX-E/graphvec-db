@@ -2033,15 +2033,32 @@ export function planFromAST(
 
   if (ast.merge) {
     plan.type = 'MERGE'
-    const { createNodes: mergeNodes, createEdges: mergeEdges } = planFromCreateClause(ast.merge)
-    plan.mergeNodes = mergeNodes
-    plan.mergeEdges = mergeEdges
-    if (ast.merge.onCreate) {
-      plan.mergeOnCreate = planFromSetClause(ast.merge.onCreate)
+    // Handle both single MERGE and multi-MERGE (array)
+    const mergeClauses = Array.isArray(ast.merge) ? ast.merge : [ast.merge]
+    const allMergeNodes: QueryPlan['mergeNodes'] = []
+    const allMergeEdges: QueryPlan['mergeEdges'] = []
+
+    if (mergeClauses.length > 0) {
+      const first = mergeClauses[0]
+      const { createNodes: mergeNodes, createEdges: mergeEdges } = planFromCreateClause(first)
+      allMergeNodes.push(...(mergeNodes ?? []))
+      allMergeEdges.push(...(mergeEdges ?? []))
+      // For multi-MERGE chains, include all patterns
+      for (let i = 1; i < mergeClauses.length; i++) {
+        const { createNodes: moreNodes, createEdges: moreEdges } = planFromCreateClause(mergeClauses[i])
+        allMergeNodes.push(...(moreNodes ?? []))
+        allMergeEdges.push(...(moreEdges ?? []))
+      }
+      if (first.onCreate) {
+        plan.mergeOnCreate = planFromSetClause(first.onCreate)
+      }
+      if (first.onMatch) {
+        plan.mergeOnMatch = planFromSetClause(first.onMatch)
+      }
     }
-    if (ast.merge.onMatch) {
-      plan.mergeOnMatch = planFromSetClause(ast.merge.onMatch)
-    }
+
+    plan.mergeNodes = allMergeNodes
+    plan.mergeEdges = allMergeEdges
   }
 
   // ── CALL 过程调用处理 ──────────────────────────────────
@@ -5235,6 +5252,11 @@ function _evaluateAddExpression(expr: any, row: Record<string, unknown>): unknow
   if (expr.type === 'IDENTIFIER') {
     return row[expr.name]
   }
+  if (expr.type === 'METHOD_CALL') {
+    const methodName = expr.method as string
+    const args = (expr.args || []).map((a: any) => _evaluateAddExpression(a, row))
+    return executeBuiltinFunction(methodName, args)
+  }
   return null
 }
 
@@ -5679,11 +5701,20 @@ function extractFilters(expr: ExpressionAST, steps: TraverseStep[]): FilterClaus
     if (left.type !== 'PROP_REF' && left.type !== 'PROP_REF_DYNAMIC') return []
     const pattern = right.type === 'STRING' ? resolvePrimary(right) : null
     if (pattern === null) return []
+    // Handle (?i) case-insensitive flag
+    let regexPattern = pattern
+    let regexFlags = ''
+    if (typeof pattern === 'string') {
+      if (pattern.startsWith('(?i)')) {
+        regexPattern = pattern.slice(4)
+        regexFlags = 'i'
+      }
+    }
     return [{
       source: left.name,
       property: left.property,
       operator: 'REGEX' as FilterClause['operator'],
-      value: new RegExp(pattern),
+      value: new RegExp(regexPattern, regexFlags),
     }]
   }
 
@@ -6169,7 +6200,7 @@ export function isBuiltinFunction(name: string): boolean {
 
 export function executeBuiltinFunction(name: string, args: any[]): any {
   const fn = BUILTIN_FUNCTIONS[name]
-  if (!fn) return null  // Unknown function — return null instead of crashing
+  if (!fn) throw new Error(`Unknown built-in function: ${name}`)
   return fn(...args)
 }
 

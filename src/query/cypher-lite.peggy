@@ -290,7 +290,7 @@ MatchStatement
       if (secondWhere) stmt.where = secondWhere
       return stmt
   }
-  / optionalClauses:OptionalMatchClauseList? matchClause:MatchClause whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? forEachClause:ForEachClause? returnClause:ReturnClause? groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
+  / optionalClauses:OptionalMatchClauseList? matchClause:MatchClause whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? forEachClause:ForEachClause? mergeClause:MergeClause? setClause:SetClause? removeClause2:RemoveClause? returnClause:ReturnClause? groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
       const stmt = {
         type: 'QUERY',
         match: matchClause,
@@ -313,6 +313,15 @@ MatchStatement
       }
             if (forEachClause) {
         stmt.forEach = forEachClause
+      }
+      if (mergeClause) {
+        stmt.merge = mergeClause
+      }
+      if (setClause) {
+        stmt.set = setClause
+      }
+      if (removeClause2) {
+        stmt.remove = removeClause2
       }
 if (unionClause) {
         stmt.unionType = unionClause.unionType
@@ -430,8 +439,8 @@ if (unionClause) {
       }
       return stmt
     }
-  // ── 复合 MATCH + SET + REMOVE + RETURN ───────────────
-  / matchClause:MatchClause where:WhereClause? setClause:SetClause removeClause:RemoveClause? returnClause:ReturnClause? {
+  // ── 复合 MATCH + SET + REMOVE + RETURN + ORDER + SKIP + LIMIT ──
+  / matchClause:MatchClause where:WhereClause? setClause:SetClause removeClause:RemoveClause? returnClause:ReturnClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? {
       const stmt = {
         type: 'QUERY',
         match: matchClause,
@@ -444,6 +453,8 @@ if (unionClause) {
       if (returnClause) {
         stmt.return = returnClause
       }
+      if (orderByClause) stmt.orderBy = orderByClause
+      if (limitSkip) { stmt.limit = limitSkip.limit; stmt.skip = limitSkip.skip }
       return stmt
     }
   // ── 复合 MATCH + WHERE + DELETE + RETURN ─────────────
@@ -490,10 +501,11 @@ if (unionClause) {
       }
       return stmt
     }
-  // ── 子查询用 (MATCH + WHERE, 无 RETURN) ──────────────
-  / matchClause:MatchClause whereClause:WhereClause? {
-      const stmt = { type: 'QUERY', match: matchClause }
-      if (whereClause) { stmt.where = whereClause }
+  // ── MATCH + WHERE + MERGE ──────────────────────────────
+  / matchClause:MatchClause whereClause:WhereClause? mergeClause:MergeClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', match: matchClause, merge: mergeClause }
+      if (whereClause) stmt.where = whereClause
+      if (returnClause) stmt.return = returnClause
       return stmt
     }
   // ── MATCH + FOREACH ───────────────────────────────────
@@ -501,6 +513,12 @@ if (unionClause) {
       const stmt = { type: 'QUERY', match: matchClause, forEach: forEachClause }
       if (whereClause) stmt.where = whereClause
       if (returnClause) stmt.return = returnClause
+      return stmt
+    }
+  // ── 子查询用 (MATCH + WHERE, 无 RETURN) ──────────────
+  / matchClause:MatchClause whereClause:WhereClause? {
+      const stmt = { type: 'QUERY', match: matchClause }
+      if (whereClause) { stmt.where = whereClause }
       return stmt
     }
 
@@ -1024,10 +1042,19 @@ Column
         alias: agg.alias,
       }
     }
-  / expr:FunctionCall alias:AsClause? {
+  / expr:FunctionCall !(_ ("+" / "-" / "*" / "/" / "%" / "^")) alias:AsClause? {
       return {
         type: 'COLUMN',
         expression: expr,
+        alias: alias,
+      }
+    }
+  / expr:FunctionCall _ op:("+" / "-") _ rest:ListSubscript alias:AsClause? {
+      // Function call followed by arithmetic op
+      const astType = op === '+' ? 'ADD' : 'SUBTRACT'
+      return {
+        type: 'COLUMN',
+        expression: { type: astType, left: expr, right: rest },
         alias: alias,
       }
     }
@@ -1078,7 +1105,9 @@ AsClause
   = _ "AS"i _ name:Identifier { return name }
 
 PropertyRef
-  = name:Identifier "." prop:Identifier {
+  = name:Identifier "." prop:Identifier !"(" {
+      // Check if this is a method call (expr.method())
+      // If followed by "(", let ListSubscript METHOD_CALL handle it
       return { type: 'PROP_REF', name, property: prop }
     }
   / name:Identifier "." digits:[0-9]+ {
@@ -1258,6 +1287,10 @@ ListSubscript
   / expr:Primary "[" _ ".." _ end:OrExpression _ "]" { return { type: 'SLICE', expr, start: null, end } }
   / expr:Primary "[" _ start:OrExpression _ ".." _ "]" { return { type: 'SLICE', expr, start, end: null } }
   / expr:Primary "[" _ start:OrExpression _ ".." _ end:OrExpression _ "]" { return { type: 'SLICE', expr, start, end } }
+  / expr:Primary "." _ name:Identifier _ "(" _ args:FunctionArgList? _ ")" {
+      // Method call: expr.method(args)
+      return { type: 'METHOD_CALL', expr, method: name, args: args || [] }
+    }
   / Primary
 
 ComparisonOp
