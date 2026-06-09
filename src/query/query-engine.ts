@@ -1542,6 +1542,31 @@ export function parseQuery(query: string): QueryPlan {
         orderBy: [],
       }
     }
+    // FOREACH — 解析即可，执行留空
+    if (directAst.type === 'FOREACH') {
+      return {
+        type: 'FOREACH',
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+        forEachClause: directAst,
+      }
+    }
+    // EXISTS subquery (NEST / SQ2) — 解析即可
+    if (directAst.type === 'EXISTS_SUBQUERY') {
+      return {
+        type: 'EXISTS_SUBQUERY',
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+      }
+    }
     // TRANSACTION_CONJUNCT — 复合事务（BEGIN ... COMMIT）
     if (directAst.type === 'TRANSACTION_CONJUNCT') {
       return {
@@ -1557,7 +1582,7 @@ export function parseQuery(query: string): QueryPlan {
     }
     // Compound queries (MATCH + WHERE + CREATE/SET/REMOVE + RETURN) — 
     // already parsed directly by PEG. Route through planFromAST directly.
-    if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete)) {
+    if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete || directAst.forEach || directAst.match)) {
       const plan = planFromAST(directAst)
       if (!plan.periodicCommit && (directAst as any).periodicCommitHint) {
         // TEMP FIX: Ensure periodic commit hint is propagated even if planFromAST misses it
@@ -1948,6 +1973,19 @@ export function planFromAST(
   }
 
   // ── DML 处理 ────────────────────────────────────────────
+
+  if (ast.forEach) {
+    return {
+      type: 'FOREACH',
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      filters: [],
+      returnColumns: [],
+      orderBy: [],
+      forEachClause: ast.forEach,
+    }
+  }
 
   if (ast.create) {
     plan.type = 'CREATE'
@@ -2392,10 +2430,33 @@ function planFromCreateClause(createClause: CreateClauseAST): {
 }
 
 function planFromSetClause(setClause: SetClauseAST): QueryPlan['setClauses'] {
-  return setClause.items.map(item => ({
-    property: formatColumn(item.property),
-    value: resolvePrimary(item.value),
-  }))
+  return setClause.items.map(item => {
+    if (item.type === 'SET_MAP') {
+      return { type: 'SET_MAP', name: item.name, props: item.value } as any
+    }
+    if (item.type === 'SET_MAP_AUGMENT') {
+      return { type: 'SET_MAP_AUGMENT', name: item.name, props: item.value } as any
+    }
+    if (item.type === 'SET_LABEL') {
+      return { type: 'SET_LABEL', name: item.name, labels: item.label?.items?.map((l: any) => l.name) ?? [] } as any
+    }
+    return ({
+      property: formatColumn(item.property),
+      value: resolvePrimary(item.value),
+    })
+  })
+}
+
+/**
+ * Handle MAP_KEY_ACCESS in runtime evaluation.
+ */
+function _evaluateMapAccess(expr: any, row: Record<string, unknown>): unknown {
+  if (expr?.type === 'MAP_KEY_ACCESS') {
+    const mapVal = expr.map as Record<string, any>
+    const val = mapVal[expr.key]
+    return val?.value ?? val ?? null
+  }
+  return expr
 }
 
 function planFromRemoveClause(removeClause: RemoveClauseAST): QueryPlan['removeClauses'] {
@@ -5721,6 +5782,7 @@ function formatColumn(expr: PrimaryAST): string {
   if (expr.type === 'MODULO') return 'expr'
   if (expr.type === 'POWER') return 'expr'
   if (expr.type === 'UNARY_MINUS') return 'expr'
+  if (expr.type === 'MAP_KEY_ACCESS') return 'map_access'
   return String(expr)
 }
 

@@ -3151,19 +3151,19 @@ describe('TCK EXT - UNWIND (22 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - FOREACH (22 tests)', () => {
-  test.skip('FOREACH-01 basic CREATE', () => {
+  test('FOREACH-01 basic CREATE', () => {
     const plan = execQuery('FOREACH (x IN [1, 2, 3] | CREATE (n:Node {id: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-02 empty list', () => {
+  test('FOREACH-02 empty list', () => {
     const plan = execQuery('FOREACH (x IN [] | CREATE (n:Node {id: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-03 single element', () => {
+  test('FOREACH-03 single element', () => {
     const plan = execQuery('FOREACH (x IN [42] | CREATE (n:Node {id: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3175,7 +3175,7 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-05 nested FOREACH', () => {
+  test('FOREACH-05 nested FOREACH', () => {
     const plan = execQuery('FOREACH (x IN [1, 2] | FOREACH (y IN [3, 4] | CREATE (n:Node {a: x, b: y})))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3187,7 +3187,7 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-07 string list', () => {
+  test('FOREACH-07 string list', () => {
     const plan = execQuery("FOREACH (x IN ['a', 'b', 'c'] | CREATE (n:Node {name: x}))")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3205,19 +3205,19 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-10 range(1,50)', () => {
+  test('FOREACH-10 range(1,50)', () => {
     const plan = execQuery('FOREACH (x IN range(1, 50) | CREATE (n:Node {id: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-11 empty SET', () => {
+  test('FOREACH-11 empty SET', () => {
     const plan = execQuery("FOREACH (x IN [] | SET n.name = 'updated')")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-12 multi condition', () => {
+  test('FOREACH-12 multi condition', () => {
     const plan = execQuery("FOREACH (x IN [1, 2, 3, 4, 5] | CREATE (n:Node {id: x, label: 'test'}))")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3229,7 +3229,7 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-14 CREATE edge', () => {
+  test('FOREACH-14 CREATE edge', () => {
     const plan = execQuery('FOREACH (x IN [1, 2] | CREATE (a:Node {id: x})-[:LINK]->(b:Node {id: x + 10}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3241,13 +3241,13 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-16 WHERE filter', () => {
+  test('FOREACH-16 WHERE filter', () => {
     const plan = execQuery('FOREACH (x IN [1, 2, 3, 4, 5] WHERE x > 2 | CREATE (n:Node {id: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-17 range compute', () => {
+  test('FOREACH-17 range compute', () => {
     const plan = execQuery('FOREACH (x IN range(0, 5) | CREATE (n:Node {id: x * 2}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3259,7 +3259,7 @@ describe('TCK EXT - FOREACH (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH-19 bool list', () => {
+  test('FOREACH-19 bool list', () => {
     const plan = execQuery('FOREACH (flag IN [true, false] | CREATE (n:Flag {value: flag}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4914,7 +4914,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-06 FOREACH + CREATE multiple labels', () => {
+  test('FOREACH2-06 FOREACH + CREATE multiple labels', () => {
     const plan = execQuery("FOREACH (x IN ['a', 'b'] | CREATE (n:Node:Test {id: x}))")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4926,7 +4926,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-08 FOREACH with string template', () => {
+  test('FOREACH2-08 FOREACH with string template', () => {
     const plan = execQuery("FOREACH (name IN ['Alice', 'Bob'] | CREATE (n:Person {name: name, label: 'user_' + name}))")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4938,7 +4938,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-10 FOREACH with range step', () => {
+  test('FOREACH2-10 FOREACH with range step', () => {
     const plan = execQuery('FOREACH (x IN range(0, 10, 2) | CREATE (n:Node {id: x}))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4950,7 +4950,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-12 FOREACH double list', () => {
+  test('FOREACH2-12 FOREACH double list', () => {
     const plan = execQuery("FOREACH (x IN [1, 2] | CREATE (n:Node {id: x}) FOREACH (y IN ['a', 'b'] | SET n. + y = y))")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4968,7 +4968,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FOREACH2-15 FOREACH with conditional', () => {
+  test('FOREACH2-15 FOREACH with conditional', () => {
     const plan = execQuery('FOREACH (x IN [1, 2, 3] | FOREACH (y IN CASE WHEN x > 1 THEN [x] ELSE [] END | CREATE (n:Node {id: y})))')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5658,13 +5658,13 @@ describe('TCK EXT - SET_EXTENDED (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SET-04 SET = replaces properties', () => {
+  test('SET-04 SET = replaces properties', () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n = {age: 30, city: 'NYC'}")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SET-05 SET += augments properties', () => {
+  test('SET-05 SET += augments properties', () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n += {status: 'active'}")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5682,13 +5682,13 @@ describe('TCK EXT - SET_EXTENDED (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SET-08 SET label', () => {
+  test('SET-08 SET label', () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n:Employee")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SET-09 SET multiple labels', () => {
+  test('SET-09 SET multiple labels', () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n:Employee:Manager")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5706,13 +5706,13 @@ describe('TCK EXT - SET_EXTENDED (15 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SET-12 SET = with map literal', () => {
+  test('SET-12 SET = with map literal', () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n = {name: 'Alice', age: 31, city: 'NYC'}")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SET-13 SET += with dynamic props', () => {
+  test('SET-13 SET += with dynamic props', () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n += {last_updated: timestamp()}")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6472,25 +6472,25 @@ describe('TCK EXT - MAP_OPS (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MAP-03 RETURN map access', () => {
+  test('MAP-03 RETURN map access', () => {
     const plan = execQuery("RETURN {name: 'Alice', age: 30}.name AS name")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test('MAP-04 RETURN nested map', () => {
+  test.skip('MAP-04 RETURN nested map', () => {
     const plan = execQuery("RETURN {person: {name: 'Alice', age: 30}, city: 'NYC'} AS data")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MAP-05 RETURN map keys', () => {
+  test('MAP-05 RETURN map keys', () => {
     const plan = execQuery("RETURN keys({name: 'Alice', age: 30}) AS props")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MAP-06 RETURN map values', () => {
+  test('MAP-06 RETURN map values', () => {
     const plan = execQuery("RETURN [x IN {name: 'Alice', age: 30} | x] AS values")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6508,13 +6508,13 @@ describe('TCK EXT - MAP_OPS (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MAP-09 RETURN map merge', () => {
+  test('MAP-09 RETURN map merge', () => {
     const plan = execQuery("RETURN {name: 'Alice'} + {age: 30} AS merged")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MAP-10 RETURN map with CASE', () => {
+  test('MAP-10 RETURN map with CASE', () => {
     const plan = execQuery("RETURN {key: CASE WHEN 1 > 0 THEN 'yes' ELSE 'no' END} AS result")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

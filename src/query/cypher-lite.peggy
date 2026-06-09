@@ -1282,6 +1282,7 @@ Primary
   / CaseExpression
   / ParameterRef
   / PropertyRef
+  / MapKeyAccess
   / PropertyMap
   / StringLiteral
   / NumberLiteral
@@ -1290,6 +1291,18 @@ Primary
   / FunctionCall
   / Identifier
   / "(" _ expr:OrExpression _ ")" { return expr }
+
+// ── MAP 访问 ──────────────────────────────────────────────
+
+MapKeyAccess
+  = "{" _ head:PropertyEntry tail:(_ "," _ PropertyEntry)* _ "}" "." key:Identifier {
+      const map = {}
+      map[head.key] = head.value
+      for (const t of tail) {
+        map[t[3].key] = t[3].value
+      }
+      return { type: 'MAP_KEY_ACCESS', map, key }
+    }
 
 // ── 参数引用 ──────────────────────────────────────────────
 
