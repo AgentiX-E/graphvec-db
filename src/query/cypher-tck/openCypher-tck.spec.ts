@@ -3138,7 +3138,7 @@ describe('TCK EXT - UNWIND (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-22 UNWIND + ORDER + SKIP', () => {
+  test('UNWIND-22 UNWIND + ORDER + SKIP', () => {
     const plan = execQuery('UNWIND range(1, 10) AS x RETURN x ORDER BY x DESC SKIP 3')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4165,7 +4165,7 @@ describe('TCK EXT - TRANSACTIONS (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-18 BEGIN + multi-statement', () => {
+  test('TXN-18 BEGIN + multi-statement', () => {
     const plan = execQuery('BEGIN MATCH (n:Person) RETURN n SKIP 5 LIMIT 10 COMMIT')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4527,19 +4527,19 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-15 RETURN mod with field', () => {
+  test('MATH2-15 RETURN mod with field', () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.age % 10 AS last_digit')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-16 MATCH WHERE mod filter', () => {
+  test('MATH2-16 MATCH WHERE mod filter', () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.id % 2 = 0 RETURN n')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-17 RETURN power with field', () => {
+  test('MATH2-17 RETURN power with field', () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.age ^ 2 AS age_squared')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4575,7 +4575,7 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-23 RETURN abs + round combo', () => {
+  test('MATH2-23 RETURN abs + round combo', () => {
     const plan = execQuery('RETURN round(abs(-3.7)) AS combo')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4587,7 +4587,7 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MATH2-25 RETURN mixed type arithmetic', () => {
+  test('MATH2-25 RETURN mixed type arithmetic', () => {
     const plan = execQuery('RETURN 1 + 2.5 * 3 AS mixed_result')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4600,7 +4600,7 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - LIST_OPS_2 (25 tests)', () => {
-  test.skip('LIST2-01 RETURN list of lists index', () => {
+  test('LIST2-01 RETURN list of lists index', () => {
     const plan = execQuery('RETURN [[1,2],[3,4]][0] AS first_sublist')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4853,19 +4853,19 @@ describe('TCK EXT - UNWIND_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNW2-17 UNWIND + WITH + SKIP', () => {
+  test('UNW2-17 UNWIND + WITH + SKIP', () => {
     const plan = execQuery('UNWIND range(1, 10) AS x WITH x SKIP 5 RETURN x')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNW2-18 UNWIND + WITH + LIMIT', () => {
+  test('UNW2-18 UNWIND + WITH + LIMIT', () => {
     const plan = execQuery('UNWIND range(1, 10) AS x WITH x LIMIT 3 RETURN x')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNW2-19 UNWIND + WITH + SKIP + LIMIT', () => {
+  test('UNW2-19 UNWIND + WITH + SKIP + LIMIT', () => {
     const plan = execQuery('UNWIND range(1, 10) AS x WITH x SKIP 2 LIMIT 5 RETURN x')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5337,7 +5337,7 @@ describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-13 CREATE + ORDER BY', () => {
+  test('CREATE-13 CREATE + ORDER BY', () => {
     const plan = execQuery("CREATE (n:Person {name: 'Test'}) RETURN n.name ORDER BY n.name")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5355,13 +5355,13 @@ describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-16 CREATE with labeled edge', () => {
+  test('CREATE-16 CREATE with labeled edge', () => {
     const plan = execQuery("CREATE (a:Person {name: 'A'})-[:KNOWS {type: 'friend'}]->(b:Person {name: 'B'})")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-17 CREATE node + SET', () => {
+  test('CREATE-17 CREATE node + SET', () => {
     const plan = execQuery("CREATE (n:Person {name: 'Temp'}) SET n.status = 'pending'")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5379,7 +5379,7 @@ describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-20 CREATE with path prop', () => {
+  test('CREATE-20 CREATE with path prop', () => {
     const plan = execQuery("CREATE p = (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'}) RETURN p")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5403,13 +5403,13 @@ describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-24 CREATE multiple labels', () => {
+  test('CREATE-24 CREATE multiple labels', () => {
     const plan = execQuery("CREATE (n:Person:Employee:Manager {name: 'Boss'})")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-25 CREATE + SKIP', () => {
+  test('CREATE-25 CREATE + SKIP', () => {
     const plan = execQuery("CREATE (n:Person {name: 'Test'}) MATCH (m:Person) RETURN m SKIP 0")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5488,7 +5488,7 @@ describe('TCK EXT - MERGE_EXTENDED (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MERGE-12 MERGE with collect', () => {
+  test('MERGE-12 MERGE with collect', () => {
     const plan = execQuery('MATCH (n:Person) WITH collect(n.name) AS names MERGE (m:Summary {names: names})')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5500,7 +5500,7 @@ describe('TCK EXT - MERGE_EXTENDED (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('MERGE-14 MERGE multiple labels', () => {
+  test('MERGE-14 MERGE multiple labels', () => {
     const plan = execQuery("MERGE (n:Person:Employee {name: 'Alice'})")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

@@ -173,10 +173,33 @@ DMLStatement
       if (limitSkip) { stmt.limit = limitSkip.limit; stmt.skip = limitSkip.skip }
       return stmt
     }
-  / createClause:CreateClause returnClause:ReturnClause? {
+  / createClause:CreateClause matchClause:MatchClause whereClause:WhereClause? returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', create: createClause, match: matchClause }
+      if (whereClause) stmt.where = whereClause
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
+  / createClause:CreateClause matchClause:MatchClause whereClause:WhereClause? createClause2:CreateClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', create: createClause, match: matchClause }
+      if (whereClause) stmt.where = whereClause
+      stmt.create2 = createClause2
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
+  / createClause:CreateClause setClause:SetClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', create: createClause, set: setClause }
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
+  / createClause:CreateClause returnClause:ReturnClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? {
       const stmt = { type: 'QUERY', create: createClause }
       if (returnClause) {
         stmt.return = returnClause
+      }
+      if (orderByClause) stmt.orderBy = orderByClause
+      if (limitSkip) {
+        if (limitSkip.limit !== undefined) stmt.limit = limitSkip.limit
+        if (limitSkip.skip !== undefined) stmt.skip = limitSkip.skip
       }
       return stmt
     }
@@ -681,6 +704,17 @@ CreatePathPattern
       // 带边 CREATE (a)-[:KNOWS]->(b)
       return {
         type: 'CREATE_PATH',
+        node,
+        edges: rest.map(r => ({ edge: r[1], node: r[3] }))
+      }
+    }
+  / name:Identifier _ "=" _ node:NodePattern rest:(_ EdgePattern _ NodePattern)* {
+      if (rest.length === 0) {
+        return { type: 'CREATE_PATH', name, node, edges: [] }
+      }
+      return {
+        type: 'CREATE_PATH',
+        name,
         node,
         edges: rest.map(r => ({ edge: r[1], node: r[3] }))
       }
@@ -1289,9 +1323,9 @@ Label
   = chars:[_a-zA-Z0-9]+ { return text() }
 
 // ── 标签表达式 ──────────────────────────────────────────
-// 支持: :Person|Animal, :!Person, :Person|!Animal, :Person
+// 支持: :Person|Animal, :!Person, :Person|!Animal, :Person, :Person:Employee
 LabelExpression
-  = ":" head:LabelPart rest:("|" part:LabelPart)* {
+  = ":" head:LabelPart rest:("|" part:LabelPart / ":" part:LabelPart)* {
       const items = [head].concat(rest.map(r => r[1]))
       return { type: 'LABEL_EXPR', items }
     }
