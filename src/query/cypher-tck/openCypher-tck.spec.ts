@@ -6356,7 +6356,7 @@ describe('TCK EXT - CALL_PROCEDURE (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CALL-06 CALL procedure + WITH', () => {
+  test('CALL-06 CALL procedure + WITH', () => {
     const plan = execQuery("CALL db.labels() YIELD label WITH label WHERE label <> 'Person' RETURN label")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -6374,7 +6374,7 @@ describe('TCK EXT - CALL_PROCEDURE (10 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CALL-09 CALL + UNION', () => {
+  test('CALL-09 CALL + UNION', () => {
     const plan = execQuery('CALL db.labels() YIELD label RETURN label UNION CALL db.labels() YIELD label RETURN label')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

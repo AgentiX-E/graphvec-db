@@ -1388,18 +1388,23 @@ if (unionClause) {
   function peg$f250() {
     return { batchSize: undefined }
   }
-  function peg$f251(name, args, yc, rc, ob, ls) {
+  function peg$f251(name, args, yc, wc, rc, ob, ls, uc) {
     const stmt = {
       type: 'CALL_PROCEDURE',
       procedureName: name,
       arguments: args ?? [],
     }
     if (yc) stmt.yield = yc
+    if (wc) stmt.with = wc
     if (rc) stmt.return = rc
     if (ob) stmt.orderBy = ob
     if (ls) {
       stmt.limit = ls.limit
       stmt.skip = ls.skip
+    }
+    if (uc) {
+      stmt.unionType = uc.unionType
+      stmt.rightQuery = uc.rightQuery
     }
     return stmt
   }
@@ -7933,7 +7938,13 @@ if (unionClause) {
       }
       if (s4 !== peg$FAILED) {
         s5 = peg$parse_();
-        s6 = peg$parseMatchStatement();
+        s6 = peg$parseCallProcedureStatement();
+        if (s6 === peg$FAILED) {
+          s6 = peg$parseCallStatement();
+          if (s6 === peg$FAILED) {
+            s6 = peg$parseMatchStatement();
+          }
+        }
         if (s6 !== peg$FAILED) {
           peg$savedPos = s0;
           s0 = peg$f162(s6);
@@ -7961,7 +7972,13 @@ if (unionClause) {
       }
       if (s2 !== peg$FAILED) {
         s3 = peg$parse_();
-        s4 = peg$parseMatchStatement();
+        s4 = peg$parseCallProcedureStatement();
+        if (s4 === peg$FAILED) {
+          s4 = peg$parseCallStatement();
+          if (s4 === peg$FAILED) {
+            s4 = peg$parseMatchStatement();
+          }
+        }
         if (s4 !== peg$FAILED) {
           peg$savedPos = s0;
           s0 = peg$f163(s4);
@@ -11593,7 +11610,7 @@ if (unionClause) {
   }
 
   function peg$parseCallProcedureStatement() {
-    let s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, s16, s17;
+    let s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, s16, s17, s18, s19, s20, s21;
 
     s0 = peg$currPos;
     s1 = input.substr(peg$currPos, 4);
@@ -11636,22 +11653,32 @@ if (unionClause) {
               s11 = null;
             }
             s12 = peg$parse_();
-            s13 = peg$parseReturnClause();
+            s13 = peg$parseWithClause();
             if (s13 === peg$FAILED) {
               s13 = null;
             }
             s14 = peg$parse_();
-            s15 = peg$parseOrderByClause();
+            s15 = peg$parseReturnClause();
             if (s15 === peg$FAILED) {
               s15 = null;
             }
             s16 = peg$parse_();
-            s17 = peg$parseLimitSkipClause();
+            s17 = peg$parseOrderByClause();
             if (s17 === peg$FAILED) {
               s17 = null;
             }
+            s18 = peg$parse_();
+            s19 = peg$parseLimitSkipClause();
+            if (s19 === peg$FAILED) {
+              s19 = null;
+            }
+            s20 = peg$parse_();
+            s21 = peg$parseUnionClause();
+            if (s21 === peg$FAILED) {
+              s21 = null;
+            }
             peg$savedPos = s0;
-            s0 = peg$f251(s3, s7, s11, s13, s15, s17);
+            s0 = peg$f251(s3, s7, s11, s13, s15, s17, s19, s21);
           } else {
             peg$currPos = s0;
             s0 = peg$FAILED;

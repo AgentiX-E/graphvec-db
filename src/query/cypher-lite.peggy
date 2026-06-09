@@ -922,10 +922,10 @@ DirClause
 // ── UNION / INTERSECT / SUBTRACT ────────────────────────────
 
 UnionClause
-  = _ "UNION"i _ "ALL"i _ right:MatchStatement {
+  = _ "UNION"i _ "ALL"i _ right:(CallProcedureStatement / CallStatement / MatchStatement) {
       return { unionType: 'union_all', rightQuery: right }
     }
-  / _ "UNION"i _ right:MatchStatement {
+  / _ "UNION"i _ right:(CallProcedureStatement / CallStatement / MatchStatement) {
       return { unionType: 'union', rightQuery: right }
     }
   / _ "INTERSECT"i _ right:MatchStatement {
@@ -1341,18 +1341,23 @@ InTransactionsClause
 // 例如: CALL db.index.fulltext.queryNodes("idx_name", "search_term") YIELD node, score
 
 CallProcedureStatement
-  = "CALL"i _ name:ProcedureName _ "(" _ args:ProcedureArgList? _ ")" _ yc:YieldClause? _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
+  = "CALL"i _ name:ProcedureName _ "(" _ args:ProcedureArgList? _ ")" _ yc:YieldClause? _ wc:WithClause? _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? _ uc:UnionClause? {
       const stmt = {
         type: 'CALL_PROCEDURE',
         procedureName: name,
         arguments: args ?? [],
       }
       if (yc) stmt.yield = yc
+      if (wc) stmt.with = wc
       if (rc) stmt.return = rc
       if (ob) stmt.orderBy = ob
       if (ls) {
         stmt.limit = ls.limit
         stmt.skip = ls.skip
+      }
+      if (uc) {
+        stmt.unionType = uc.unionType
+        stmt.rightQuery = uc.rightQuery
       }
       return stmt
     }
