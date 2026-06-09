@@ -1686,3 +1686,91 @@ describe('Scalability Benchmarks', () => {
       for (const h of hubs) expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(6)
     } finally { e.close() }
   }, 30000)
+
+  // ── V57 scalability batch s136-s145 (+10) ──
+  it('V57 scalability: 1500 nodes 3 types scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s136-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 3; t++) for (let i = 0; i < 500; i++) await e.upsertNode(t, `n${t}-${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(1500)
+    } finally { e.close() }
+  }, 30000)
+  it('V57 scalability: 2000 edges from single hub', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s137-' + Date.now() })
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'h', { props: {} })
+      for (let i = 0; i < 2000; i++) { const d = await e.upsertNode(1, `d${i}`, { props: {} }); await e.upsertEdge(h, d, 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(2000)
+    } finally { e.close() }
+  }, 30000)
+  it('V57 scalability: 1000 nodes then delete 500', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s138-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 1000; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 500; i++) e.deleteNode(ids[i])
+      expect(e.scanAllNodes().length).toBe(500)
+    } finally { e.close() }
+  }, 30000)
+  it('V57 scalability: chain 3000 edges across types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s139-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 3001; i++) ids.push(await e.upsertNode((i % 5) + 1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 3000; i++) await e.upsertEdge(ids[i], ids[i + 1], (i % 3) + 1, { props: {} })
+      expect(e.scanAllNodes().length).toBe(3001)
+    } finally { e.close() }
+  }, 60000)
+  it('V57 scalability: 2500 nodes mixed read after write', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s140-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 2500; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      for (let i = 0; i < 2500; i++) expect(e.getNodeByLabel(1, `n${i}`)?.props.v).toBe(i)
+    } finally { e.close() }
+  }, 60000)
+  it('V57 scalability: 1800 nodes hub+leaf with getNode', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s141-' + Date.now() })
+    await e.open(); try {
+      const hubs: number[] = []
+      for (let h = 0; h < 600; h++) {
+        const hub = await e.upsertNode(1, `hub${h}`, { props: {} }); hubs.push(hub)
+        for (let l = 0; l < 3; l++) { const leaf = await e.upsertNode(1, `l${h}-${l}`, { props: {} }); await e.upsertEdge(hub, leaf, 1, { props: {} }) }
+      }
+      expect(e.scanAllNodes().length).toBe(2400)
+    } finally { e.close() }
+  }, 60000)
+  it('V57 scalability: 3500 nodes chain edge heavy read', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s142-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 3501; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (let i = 0; i < 3500; i++) await e.upsertEdge(ids[i], ids[i + 1], 1, { props: {} })
+      for (let i = 0; i < 3501; i++) expect(e.getNode(ids[i])).not.toBeNull()
+    } finally { e.close() }
+  }, 60000)
+  it('V57 scalability: 2000 nodes multi-type scanAll', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s143-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 10; t++) for (let i = 0; i < 200; i++) await e.upsertNode(t, `n${t}-${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(2000)
+    } finally { e.close() }
+  }, 30000)
+  it('V57 scalability: 4000 nodes hub 10 leaves each', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s144-' + Date.now() })
+    await e.open(); try {
+      for (let h = 0; h < 400; h++) {
+        const hub = await e.upsertNode(1, `h${h}`, { props: {} })
+        for (let l = 0; l < 10; l++) { const leaf = await e.upsertNode(1, `l${h}-${l}`, { props: {} }); await e.upsertEdge(hub, leaf, 1, { props: {} }) }
+      }
+      expect(e.scanAllNodes().length).toBe(4400)
+    } finally { e.close() }
+  }, 120000)
+  it('V57 scalability: deleteAll 3000 then verify empty', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-s145-' + Date.now() })
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 3000; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (const id of ids) e.deleteNode(id)
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 30000)
