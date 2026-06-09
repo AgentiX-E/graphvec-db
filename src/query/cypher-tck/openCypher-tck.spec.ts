@@ -3302,7 +3302,7 @@ describe('TCK EXT - FUNCTIONS (28 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC-03 RETURN type() edge', () => {
+  test('FUNC-03 RETURN type() edge', () => {
     const plan = execQuery('MATCH ()-[r]->() RETURN type(r) AS rel_type')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3392,7 +3392,7 @@ describe('TCK EXT - FUNCTIONS (28 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC-18 RETURN count DISTINCT', () => {
+  test('FUNC-18 RETURN count DISTINCT', () => {
     const plan = execQuery('MATCH (n:Person) RETURN count(DISTINCT n.city) AS cities')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3422,37 +3422,37 @@ describe('TCK EXT - FUNCTIONS (28 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC-23 type IS STRING', () => {
+  test('FUNC-23 type IS STRING', () => {
     const plan = execQuery("RETURN 'hello' IS STRING AS is_str")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC-24 type IS INTEGER', () => {
+  test('FUNC-24 type IS INTEGER', () => {
     const plan = execQuery('RETURN 42 IS INTEGER AS is_int')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC-25 type IS FLOAT', () => {
+  test('FUNC-25 type IS FLOAT', () => {
     const plan = execQuery('RETURN 3.14 IS FLOAT AS is_float')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC-26 type IS BOOLEAN', () => {
+  test('FUNC-26 type IS BOOLEAN', () => {
     const plan = execQuery('RETURN true IS BOOLEAN AS is_bool')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC-27 type IS NULL', () => {
+  test('FUNC-27 type IS NULL', () => {
     const plan = execQuery('RETURN null IS NULL AS is_null')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('FUNC-28 type NOT IS NULL', () => {
+  test('FUNC-28 type NOT IS NULL', () => {
     const plan = execQuery("RETURN 'hello' IS NOT NULL AS not_null")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4370,25 +4370,25 @@ describe('TCK EXT - STRING_FUNCTIONS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('STR2-15 MATCH WHERE regex starts with', () => {
+  test('STR2-15 MATCH WHERE regex starts with', () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.name =~ 'A.*e' RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('STR2-16 MATCH WHERE regex ends with', () => {
+  test('STR2-16 MATCH WHERE regex ends with', () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.name =~ '.*ce' RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('STR2-17 MATCH WHERE regex contains', () => {
+  test('STR2-17 MATCH WHERE regex contains', () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.name =~ '.*li.*' RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('STR2-18 MATCH WHERE regex OR', () => {
+  test('STR2-18 MATCH WHERE regex OR', () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.name =~ 'Alice|Bob' RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

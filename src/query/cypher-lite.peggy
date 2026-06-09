@@ -798,6 +798,12 @@ EdgePattern
   / "-[" _ ":" _ type:Label _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any' } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "<-" { return { type: 'EDGE', name, label: type, direction: 'in' } }
   / "-[" _ ":" _ type:Label _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in' } }
+  / "-[" _ name:Identifier _ range:Range _ "]->" { return { type: 'EDGE', name, label: null, direction: 'out', range } }
+  / "-[" _ name:Identifier _ range:Range _ "]-" { return { type: 'EDGE', name, label: null, direction: 'any', range } }
+  / "-[" _ name:Identifier _ range:Range _ "<-" { return { type: 'EDGE', name, label: null, direction: 'in', range } }
+  / "-[" _ name:Identifier _ "]->" { return { type: 'EDGE', name, label: null, direction: 'out' } }
+  / "-[" _ name:Identifier _ "]-" { return { type: 'EDGE', name, label: null, direction: 'any' } }
+  / "-[" _ name:Identifier _ "<-" { return { type: 'EDGE', name, label: null, direction: 'in' } }
   / "-[" _ range:Range _ "]->" { return { type: 'EDGE', name: null, label: null, direction: 'out', range } }
   / "-[" _ range:Range _ "]-" { return { type: 'EDGE', name: null, label: null, direction: 'any', range } }
   / "-[" _ range:Range _ "<-" { return { type: 'EDGE', name: null, label: null, direction: 'in', range } }
@@ -843,7 +849,16 @@ CollectFunc
     }
 
 CountFunc
-  = "count"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
+  = "count"i _ "(" _ "DISTINCT"i _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
+      return { func: 'count', field: [name, prop], distinct: true, alias }
+    }
+  / "count"i _ "(" _ "DISTINCT"i _ name:Identifier _ ")" alias:AsClause? {
+      return { func: 'count', field: [name], distinct: true, alias }
+    }
+  / "count"i _ "(" _ "DISTINCT"i _ "*" _ ")" alias:AsClause? {
+      return { func: 'count', field: ['*'], distinct: true, alias }
+    }
+  / "count"i _ "(" _ name:Identifier _ "." _ prop:Identifier _ ")" alias:AsClause? {
       return { func: 'count', field: [name, prop], alias }
     }
   / "count"i _ "(" _ "*" _ ")" alias:AsClause? {
@@ -929,6 +944,13 @@ Column
       return {
         type: 'COLUMN',
         expression: expr,
+        alias: alias,
+      }
+    }
+  / compare:Comparison alias:AsClause? {
+      return {
+        type: 'COLUMN',
+        expression: compare,
         alias: alias,
       }
     }
@@ -1062,6 +1084,12 @@ Comparison
   = "NOT"i _ expr:Comparison { return { type: 'NOT', expr } }
   / expr:Additive _ "IS"i _ nullNot:("NOT"i)? _ "NULL"i {
       return { type: 'NULL_PREDICATE', expr: expr, not: nullNot ? true : false }
+    }
+  / expr:Additive _ "IS"i _ typeCheck:("STRING"i / "INTEGER"i / "FLOAT"i / "BOOLEAN"i) {
+      return { type: 'TYPE_PREDICATE', expr: expr, type: typeCheck.toLowerCase(), not: false }
+    }
+  / expr:Additive _ "IS"i _ "NOT"i _ typeCheck:("STRING"i / "INTEGER"i / "FLOAT"i / "BOOLEAN"i) {
+      return { type: 'TYPE_PREDICATE', expr: expr, type: typeCheck.toLowerCase(), not: true }
     }
   / lhs:Additive _ op:ComparisonOp _ rhs:Additive {
       return { type: 'COMPARISON', operator: op, left: lhs, right: rhs }
