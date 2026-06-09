@@ -6095,61 +6095,61 @@ describe('TCK EXT - INDEX_CONSTRAINT (10 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - SHORTEST_PATH (10 tests)', () => {
-  test.skip('SP-01 shortestPath', () => {
+  test('SP-01 shortestPath', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-02 allShortestPaths', () => {
+  test('SP-02 allShortestPaths', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = allShortestPaths((a)-[*..10]-(b)) RETURN p")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-03 shortestPath directed', () => {
+  test('SP-03 shortestPath directed', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]->(b)) RETURN p")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-04 shortestPath + length', () => {
+  test('SP-04 shortestPath + length', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN length(p) AS path_length")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-05 allShortestPaths + nodes', () => {
+  test('SP-05 allShortestPaths + nodes', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = allShortestPaths((a)-[*..10]-(b)) RETURN nodes(p) AS nodes_list")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-06 shortestPath WHERE', () => {
+  test('SP-06 shortestPath WHERE', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) WHERE length(p) > 2 RETURN p")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-07 shortestPath + ORDER', () => {
+  test('SP-07 shortestPath + ORDER', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p ORDER BY length(p)")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-08 shortestPath + aggregate', () => {
+  test('SP-08 shortestPath + aggregate', () => {
     const plan = execQuery('MATCH (a:Person), (b:Person) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN a.name, b.name, length(p) AS dist')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-09 shortestPath + label filter', () => {
+  test('SP-09 shortestPath + label filter', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b:Person)) RETURN p")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('SP-10 shortestPath + LIMIT', () => {
+  test('SP-10 shortestPath + LIMIT', () => {
     const plan = execQuery("MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) MATCH p = shortestPath((a)-[*..10]-(b)) RETURN p LIMIT 5")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

@@ -225,7 +225,23 @@ DMLStatement
     }
 
 MatchStatement
-  = optionalClauses:OptionalMatchClauseList? matchClause:MatchClause whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? forEachClause:ForEachClause? returnClause:ReturnClause? groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
+  = matchClause:MatchClause whereClause:WhereClause? second:MatchClause secondWhere:WhereClause? returnClause:ReturnClause? groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? {
+      const stmt = {
+        type: 'QUERY',
+        match: matchClause,
+        where: whereClause,
+        return: returnClause,
+        groupBy: groupByClause ? groupByClause.columns : null,
+        having: groupByClause ? groupByClause.having : null,
+        orderBy: orderByClause,
+        limit: limitSkip ? limitSkip.limit : undefined,
+        skip: limitSkip ? limitSkip.skip : undefined,
+      }
+      stmt.secondMatch = second
+      if (secondWhere) stmt.where = secondWhere
+      return stmt
+  }
+  / optionalClauses:OptionalMatchClauseList? matchClause:MatchClause whereClause:WhereClause? withClause:WithClause? unwindClause:UnwindClause? forEachClause:ForEachClause? returnClause:ReturnClause? groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? unionClause:UnionClause? {
       const stmt = {
         type: 'QUERY',
         match: matchClause,
@@ -732,6 +748,14 @@ PathPattern
       const edges = rest.map(r => ({ edge: r[1], node: r[3] }))
       return { type: 'PATH', node, edges }
     }
+  / "shortestPath"i _ "(" _ node:NodePattern rest:(_ EdgePattern _ NodePattern)* _ ")" {
+      const edges = rest.map(r => ({ edge: r[1], node: r[3] }))
+      return { type: 'SHORTEST_PATH', node, edges }
+    }
+  / "allShortestPaths"i _ "(" _ node:NodePattern rest:(_ EdgePattern _ NodePattern)* _ ")" {
+      const edges = rest.map(r => ({ edge: r[1], node: r[3] }))
+      return { type: 'ALL_SHORTEST_PATHS', node, edges }
+    }
 
 Range
   = '*' min:Integer '..' max:Integer { return { min, max } }
@@ -774,6 +798,9 @@ EdgePattern
   / "-[" _ ":" _ type:Label _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any' } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "<-" { return { type: 'EDGE', name, label: type, direction: 'in' } }
   / "-[" _ ":" _ type:Label _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in' } }
+  / "-[" _ range:Range _ "]->" { return { type: 'EDGE', name: null, label: null, direction: 'out', range } }
+  / "-[" _ range:Range _ "]-" { return { type: 'EDGE', name: null, label: null, direction: 'any', range } }
+  / "-[" _ range:Range _ "<-" { return { type: 'EDGE', name: null, label: null, direction: 'in', range } }
   / "-->" { return { type: 'EDGE', name: null, label: null, direction: 'out' } }
   / "-" _ name:Identifier _ "->" { return { type: 'EDGE', name: null, label: null, direction: 'out' } }
   / "-[" _ name:Identifier _ "]-" { return { type: 'EDGE', name, label: null, direction: 'any' } }
