@@ -2812,13 +2812,13 @@ describe('TCK EXT - LIST_OPS (29 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST-21 RETURN list WHERE', () => {
+  test('LIST-21 RETURN list WHERE', () => {
     const plan = execQuery('RETURN [x IN [1, 2, 3, 4] WHERE x > 2] AS filtered')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST-22 RETURN list comprehension', () => {
+  test('LIST-22 RETURN list comprehension', () => {
     const plan = execQuery('RETURN [x IN [1, 2, 3] | x * 2] AS doubled')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -2848,7 +2848,7 @@ describe('TCK EXT - LIST_OPS (29 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST-27 RETURN comp WHERE+map', () => {
+  test('LIST-27 RETURN comp WHERE+map', () => {
     const plan = execQuery('RETURN [x IN [1, 2, 3, 4, 5, 6] WHERE x > 2 AND x < 6 | x * 10] AS result')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3036,7 +3036,7 @@ describe('TCK EXT - UNWIND (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-05 UNWIND nested list', () => {
+  test('UNWIND-05 UNWIND nested list', () => {
     const plan = execQuery('UNWIND [[1, 2], [3, 4]] AS x RETURN x')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4612,7 +4612,7 @@ describe('TCK EXT - LIST_OPS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST2-03 RETURN list with range', () => {
+  test('LIST2-03 RETURN list with range', () => {
     const plan = execQuery('RETURN [x IN range(1, 5)] AS ranged')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4660,13 +4660,13 @@ describe('TCK EXT - LIST_OPS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST2-11 RETURN slice open start', () => {
+  test('LIST2-11 RETURN slice open start', () => {
     const plan = execQuery('RETURN [1, 2, 3, 4, 5][..3] AS from_start')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST2-12 RETURN slice open end', () => {
+  test('LIST2-12 RETURN slice open end', () => {
     const plan = execQuery('RETURN [1, 2, 3, 4, 5][2..] AS to_end')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4702,13 +4702,13 @@ describe('TCK EXT - LIST_OPS_2 (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST2-18 RETURN list literal with bools', () => {
+  test('LIST2-18 RETURN list literal with bools', () => {
     const plan = execQuery('RETURN [true, false, 1 > 2, 1 < 2] AS bool_list')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('LIST2-19 MATCH RETURN nested collect', () => {
+  test('LIST2-19 MATCH RETURN nested collect', () => {
     const plan = execQuery('MATCH (n:Person) RETURN collect([n.name, n.age]) AS nested_collect')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4757,7 +4757,7 @@ describe('TCK EXT - LIST_OPS_2 (25 tests)', () => {
 // ===================================================================
 
 describe('TCK EXT - UNWIND_2 (20 tests)', () => {
-  test.skip('UNW2-01 UNWIND list of lists + CREATE', () => {
+  test('UNW2-01 UNWIND list of lists + CREATE', () => {
     const plan = execQuery("UNWIND [[1, 'a'], [2, 'b']] AS pair CREATE (n:Node {id: pair[0], name: pair[1]})")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

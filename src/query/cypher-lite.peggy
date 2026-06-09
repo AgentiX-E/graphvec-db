@@ -673,6 +673,15 @@ ListLiteral
   = "[" _ items:ListItemList? _ "]" {
       return { type: 'LIST', items: items || [] }
     }
+  / "[" _ varName:Identifier _ "IN"i _ listSource:OrExpression _ where:(_ "WHERE"i _ cond:OrExpression)? _ "|" _ project:OrExpression _ "]" {
+      return { type: 'LIST_COMPREHENSION', variable: varName, source: listSource, where: where ? where.expression : null, project }
+    }
+  / "[" _ varName:Identifier _ "IN"i _ listSource:OrExpression _ where:(_ "WHERE"i _ cond:OrExpression)? _ "|" _ "]" {
+      return { type: 'LIST_COMPREHENSION', variable: varName, source: listSource, where: where ? where.expression : null, project: null }
+    }
+  / "[" _ varName:Identifier _ "IN"i _ listSource:OrExpression _ where:(_ "WHERE"i _ cond:OrExpression)? _ "]" {
+      return { type: 'LIST_COMPREHENSION', variable: varName, source: listSource, where: where ? where.expression : null, project: null }
+    }
 
 ListItemList
   = head:ListItem tail:(_ "," _ ListItem)* {
@@ -680,8 +689,7 @@ ListItemList
     }
 
 ListItem
-  = v:Primary { return v }
-  / id:Identifier { return { type: 'IDENTIFIER', name: id } }
+  = expr:OrExpression { return expr }
 
 // ── CREATE ────────────────────────────────────────────────
 
@@ -862,13 +870,13 @@ NodePattern
 // ── 边模式 ─────────────────────────────────────────────
 
 EdgePattern
-  = "-[" _ name:Identifier _ ":" _ type:Label _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range, props } }
-  / "-[" _ name:Identifier _ ":" _ type:Label _ range:Range _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range } }
-  / "-[" _ ":" _ type:Label _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', range, props } }
-  / "-[" _ ":" _ type:Label _ range:Range _ props:PropertyMap _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range, props } }
-  / "-[" _ ":" _ type:Label _ range:Range _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range } }
-  / "-[" _ ":" _ type:Label _ range:Range _ props:PropertyMap _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range, props } }
-  / "-[" _ ":" _ type:Label _ range:Range _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range } }
+  = "-[" _ name:Identifier _ ":" _ type:LabelExpression _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range, props } }
+  / "-[" _ name:Identifier _ ":" _ type:LabelExpression _ range:Range _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range } }
+  / "-[" _ ":" _ type:LabelExpression _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', range, props } }
+  / "-[" _ ":" _ type:LabelExpression _ range:Range _ props:PropertyMap _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range, props } }
+  / "-[" _ ":" _ type:LabelExpression _ range:Range _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range } }
+  / "-[" _ ":" _ type:LabelExpression _ range:Range _ props:PropertyMap _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range, props } }
+  / "-[" _ ":" _ type:LabelExpression _ range:Range _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', props } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out' } }
   / "-[" _ ":" _ type:Label _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', props } }
@@ -1247,6 +1255,8 @@ Additive
 
 ListSubscript
   = expr:Primary "[" _ index:OrExpression _ "]" { return { type: 'SUBSCRIPT', expr, index } }
+  / expr:Primary "[" _ ".." _ end:OrExpression _ "]" { return { type: 'SLICE', expr, start: null, end } }
+  / expr:Primary "[" _ start:OrExpression _ ".." _ "]" { return { type: 'SLICE', expr, start, end: null } }
   / expr:Primary "[" _ start:OrExpression _ ".." _ end:OrExpression _ "]" { return { type: 'SLICE', expr, start, end } }
   / Primary
 
@@ -1640,13 +1650,17 @@ ForEachStatement
     }
 
 ForEachClause
-  = _ "FOREACH"i _ "(" _ varName:Identifier _ "IN"i _ list:UnwindList _ "|" _ body:ForEachBody _ ")" {
-      return {
+  = _ "FOREACH"i _ "(" _ varName:Identifier _ "IN"i _ list:OrExpression _ where:(_ "WHERE"i _ cond:OrExpression)? _ "|" _ body:ForEachBody _ ")" {
+      const result = {
         type: 'FOREACH',
         variable: varName,
         list: list,
         body: body,
       }
+      if (where) {
+        result.where = where.expression
+      }
+      return result
     }
 
 ForEachBody
