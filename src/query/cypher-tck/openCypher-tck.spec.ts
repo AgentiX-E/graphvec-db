@@ -5277,7 +5277,7 @@ describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-03 CREATE edge with props', () => {
+  test('CREATE-03 CREATE edge with props', () => {
     const plan = execQuery("CREATE (a:Person {name: 'Alice'})-[r:KNOWS {since: 2020, level: 3}]->(b:Person {name: 'Bob'})")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5301,7 +5301,7 @@ describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-07 CREATE + MATCH + RETURN', () => {
+  test('CREATE-07 CREATE + MATCH + RETURN', () => {
     const plan = execQuery("CREATE (n:Person {name: 'New'}) MATCH (m:Person) RETURN count(m) AS total")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5313,7 +5313,7 @@ describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-09 CREATE with nested expression', () => {
+  test('CREATE-09 CREATE with nested expression', () => {
     const plan = execQuery("CREATE (n:Person {name: 'Test', score: 42 + 8})")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5343,7 +5343,7 @@ describe('TCK EXT - ADVANCED_CREATE (25 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('CREATE-14 CREATE + SKIP + LIMIT', () => {
+  test('CREATE-14 CREATE + SKIP + LIMIT', () => {
     const plan = execQuery("CREATE (n:Person {name: 'Test'}) MATCH (m:Person) RETURN m.name SKIP 5 LIMIT 10")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

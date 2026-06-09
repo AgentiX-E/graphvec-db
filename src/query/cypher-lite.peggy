@@ -164,11 +164,26 @@ AdminStatement
 // ── 顶级语句 ───────────────────────────────────────────
 
 DMLStatement
-  = createClause:CreateClause returnClause:ReturnClause? {
+  = createClause:CreateClause matchClause:MatchClause whereClause:WhereClause? returnClause:ReturnClause? groupByClause:GroupByClause? orderByClause:OrderByClause? limitSkip:LimitSkipClause? {
+      const stmt = { type: 'QUERY', create: createClause, match: matchClause }
+      if (whereClause) stmt.where = whereClause
+      if (returnClause) stmt.return = returnClause
+      if (groupByClause) { stmt.groupBy = groupByClause.columns; stmt.having = groupByClause.having }
+      if (orderByClause) stmt.orderBy = orderByClause
+      if (limitSkip) { stmt.limit = limitSkip.limit; stmt.skip = limitSkip.skip }
+      return stmt
+    }
+  / createClause:CreateClause returnClause:ReturnClause? {
       const stmt = { type: 'QUERY', create: createClause }
       if (returnClause) {
         stmt.return = returnClause
       }
+      return stmt
+    }
+  / createClause:CreateClause secondCreate:CreateClause thirdCreate:CreateClause? returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', create: [createClause, secondCreate] }
+      if (thirdCreate) stmt.create.push(thirdCreate)
+      if (returnClause) stmt.return = returnClause
       return stmt
     }
   / matchClause:MatchClause deleteClause:DeleteClause limitSkip:LimitSkipClause? returnClause:ReturnClause? {
@@ -790,13 +805,21 @@ NodePattern
 // ── 边模式 ─────────────────────────────────────────────
 
 EdgePattern
-  = "-[" _ name:Identifier _ ":" _ type:Label _ range:Range _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range } }
+  = "-[" _ name:Identifier _ ":" _ type:Label _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range, props } }
+  / "-[" _ name:Identifier _ ":" _ type:Label _ range:Range _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range } }
+  / "-[" _ ":" _ type:Label _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', range, props } }
   / "-[" _ ":" _ type:Label _ range:Range _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', range } }
+  / "-[" _ name:Identifier _ ":" _ type:Label _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', props } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out' } }
+  / "-[" _ ":" _ type:Label _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', props } }
   / "-[" _ ":" _ type:Label _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out' } }
+  / "-[" _ name:Identifier _ ":" _ type:Label _ props:PropertyMap _ "]-"  { return { type: 'EDGE', name, label: type, direction: 'any', props } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "]-"  { return { type: 'EDGE', name, label: type, direction: 'any' } }
+  / "-[" _ ":" _ type:Label _ props:PropertyMap _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', props } }
   / "-[" _ ":" _ type:Label _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any' } }
+  / "-[" _ name:Identifier _ ":" _ type:Label _ props:PropertyMap _ "<-" { return { type: 'EDGE', name, label: type, direction: 'in', props } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "<-" { return { type: 'EDGE', name, label: type, direction: 'in' } }
+  / "-[" _ ":" _ type:Label _ props:PropertyMap _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', props } }
   / "-[" _ ":" _ type:Label _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in' } }
   / "-[" _ name:Identifier _ range:Range _ "]->" { return { type: 'EDGE', name, label: null, direction: 'out', range } }
   / "-[" _ name:Identifier _ range:Range _ "]-" { return { type: 'EDGE', name, label: null, direction: 'any', range } }
@@ -1423,7 +1446,7 @@ PropertyMap
     }
 
 PropertyEntry
-  = key:Identifier _ ":" _ val:Primary { return { key, value: val } }
+  = key:Identifier _ ":" _ val:OrExpression { return { key, value: val } }
 
 // ── CALL 子查询 ──────────────────────────────────────────
 
