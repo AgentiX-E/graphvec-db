@@ -3096,13 +3096,13 @@ describe('TCK EXT - UNWIND (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-15 UNWIND + collect', () => {
+  test('UNWIND-15 UNWIND + collect', () => {
     const plan = execQuery('UNWIND [1, 2, 3] AS x RETURN collect(x * 2) AS doubled')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-16 UNWIND [] + CREATE', () => {
+  test('UNWIND-16 UNWIND [] + CREATE', () => {
     const plan = execQuery('UNWIND [] AS x CREATE (n:Node {id: x})')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -3126,7 +3126,7 @@ describe('TCK EXT - UNWIND (22 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNWIND-20 UNWIND + MATCH str', () => {
+  test('UNWIND-20 UNWIND + MATCH str', () => {
     const plan = execQuery("UNWIND ['Alice', 'Bob'] AS name MATCH (n:Person {name: name}) RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -4763,7 +4763,7 @@ describe('TCK EXT - UNWIND_2 (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('UNW2-02 UNWIND range + CREATE edge', () => {
+  test('UNW2-02 UNWIND range + CREATE edge', () => {
     const plan = execQuery('UNWIND range(1, 3) AS x CREATE (a:Node {id: x})-[:NEXT]->(b:Node {id: x + 1})')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

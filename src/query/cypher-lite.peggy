@@ -657,7 +657,7 @@ ListItemList
     }
 
 ListItem
-  = v:UnwindValue { return v }
+  = v:Primary { return v }
   / id:Identifier { return { type: 'IDENTIFIER', name: id } }
 
 // ── CREATE ────────────────────────────────────────────────
