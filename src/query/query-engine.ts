@@ -1542,6 +1542,19 @@ export function parseQuery(query: string): QueryPlan {
         orderBy: [],
       }
     }
+    // TRANSACTION_CONJUNCT — 复合事务（BEGIN ... COMMIT）
+    if (directAst.type === 'TRANSACTION_CONJUNCT') {
+      return {
+        type: 'TRANSACTION_CONJUNCT',
+        end: directAst.end,
+        scanLabel: null,
+        labelExpr: null,
+        steps: [],
+        filters: [],
+        returnColumns: [],
+        orderBy: [],
+      }
+    }
     // Compound queries (MATCH + WHERE + CREATE/SET/REMOVE + RETURN) — 
     // already parsed directly by PEG. Route through planFromAST directly.
     if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete)) {

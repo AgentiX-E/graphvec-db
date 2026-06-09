@@ -4081,85 +4081,85 @@ describe('TCK EXT - TRANSACTIONS (20 tests)', () => {
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-04 BEGIN + CREATE + COMMIT', () => {
+  test('TXN-04 BEGIN + CREATE + COMMIT', () => {
     const plan = execQuery("BEGIN CREATE (n:Person {name: 'Alice'}) COMMIT")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-05 BEGIN + CREATE + ROLLBACK', () => {
+  test('TXN-05 BEGIN + CREATE + ROLLBACK', () => {
     const plan = execQuery("BEGIN CREATE (n:Person {name: 'Bob'}) ROLLBACK")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-06 BEGIN + MATCH + COMMIT', () => {
+  test('TXN-06 BEGIN + MATCH + COMMIT', () => {
     const plan = execQuery('BEGIN MATCH (n:Person) RETURN n COMMIT')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-07 BEGIN + MATCH + ROLLBACK', () => {
+  test('TXN-07 BEGIN + MATCH + ROLLBACK', () => {
     const plan = execQuery('BEGIN MATCH (n:Person) RETURN n ROLLBACK')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-08 BEGIN + multiple CREATE + COMMIT', () => {
+  test('TXN-08 BEGIN + multiple CREATE + COMMIT', () => {
     const plan = execQuery("BEGIN CREATE (a:Person {name: 'Alice'}) CREATE (b:Person {name: 'Bob'}) COMMIT")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-09 BEGIN + CREATE edge + COMMIT', () => {
+  test('TXN-09 BEGIN + CREATE edge + COMMIT', () => {
     const plan = execQuery("BEGIN CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'}) COMMIT")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-10 BEGIN + CREATE + MATCH + COMMIT', () => {
+  test('TXN-10 BEGIN + CREATE + MATCH + COMMIT', () => {
     const plan = execQuery("BEGIN CREATE (n:Person {name: 'Test'}) MATCH (m:Person) RETURN m COMMIT")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-11 BEGIN + MERGE + COMMIT', () => {
+  test('TXN-11 BEGIN + MERGE + COMMIT', () => {
     const plan = execQuery("BEGIN MERGE (n:Person {name: 'Alice'}) SET n.age = 30 COMMIT")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-12 BEGIN + SET + ROLLBACK', () => {
+  test('TXN-12 BEGIN + SET + ROLLBACK', () => {
     const plan = execQuery("BEGIN MATCH (n:Person {name: 'Alice'}) SET n.age = 40 ROLLBACK")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-13 BEGIN + DELETE + COMMIT', () => {
+  test('TXN-13 BEGIN + DELETE + COMMIT', () => {
     const plan = execQuery("BEGIN MATCH (n:Person {name: 'Alice'}) DELETE n COMMIT")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-14 nested BEGIN + COMMIT', () => {
+  test('TXN-14 nested BEGIN + COMMIT', () => {
     const plan = execQuery("BEGIN BEGIN CREATE (n:Person {name: 'Inner'}) COMMIT COMMIT")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-15 BEGIN + FOREACH + COMMIT', () => {
+  test('TXN-15 BEGIN + FOREACH + COMMIT', () => {
     const plan = execQuery('BEGIN FOREACH (x IN [1, 2, 3] | CREATE (n:Node {id: x})) COMMIT')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-16 BEGIN + UNWIND + COMMIT', () => {
+  test('TXN-16 BEGIN + UNWIND + COMMIT', () => {
     const plan = execQuery('BEGIN UNWIND [1, 2, 3] AS x CREATE (n:Node {id: x}) COMMIT')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
   }, 10000)
 
-  test.skip('TXN-17 BEGIN + WITH + COMMIT', () => {
+  test('TXN-17 BEGIN + WITH + COMMIT', () => {
     const plan = execQuery('BEGIN MATCH (n:Person) WITH n WHERE n.age > 30 RETURN n COMMIT')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()

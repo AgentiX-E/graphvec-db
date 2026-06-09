@@ -33,7 +33,7 @@
  */
 
 Start
-  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionStatement / ForEachStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
+  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionConjunction / TransactionStatement / ForEachStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
       if (hint) {
         stmt.periodicCommitHint = hint
       }
@@ -491,6 +491,21 @@ UnwindStatement
       return { type: 'QUERY', unwind: u, return: r }
     }
 
+// ── 事务复合语句 ────────────────────────────────────
+
+TransactionConjunction
+  = _ "BEGIN"i _ stmts:(TransactionConjunction / DMLStatement / MatchStatement / ForEachStatement / UnwindStatement / WithStatement)+ _ end:TransactionEnd {
+      return {
+        type: 'TRANSACTION_CONJUNCT',
+        statements: Array.isArray(stmts) ? stmts : [stmts],
+        end: end.type,
+      }
+    }
+
+TransactionEnd
+  = "COMMIT"i _ { return { type: 'COMMIT' } }
+  / "ROLLBACK"i _ { return { type: 'ROLLBACK' } }
+
 // ── 事务语句 (BEGIN / COMMIT / ROLLBACK) ───────────────────
 
 TransactionStatement
@@ -631,10 +646,11 @@ RemoveItem
 // ── MERGE ──────────────────────────────────────────────────
 
 MergeClause
-  = _ "MERGE"i _ patterns:CreatePatternList onCreate:OnCreateSetClause? onMatch:OnMatchSetClause? {
+  = _ "MERGE"i _ patterns:CreatePatternList onCreate:OnCreateSetClause? onMatch:OnMatchSetClause? setClause:SetClause? {
       const result = { type: 'MERGE', patterns: patterns }
       if (onCreate) result.onCreate = onCreate
       if (onMatch) result.onMatch = onMatch
+      if (setClause) result.set = setClause
       return result
     }
 
