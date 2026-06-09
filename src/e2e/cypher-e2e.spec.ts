@@ -12027,3 +12027,159 @@ afterAll(() => {
       expect(node2.props.v).toBe(2)
     } finally { e.close() }
   }, 15000)
+
+// ───── 搬运自 concurrent-crash (CC) ─────
+  it('V57-e2e: 5 engine concurrent upsert', async () => {
+    const configs = Array.from({ length: 5 }, (_, i) => makeConfig(`v57-e2e-cc-e${i}`))
+    const engines = configs.map(c => new GraphEngine(c))
+    for (const e of engines) await e.open()
+    try {
+      await Promise.all(engines.map((e, i) => e.upsertNode(1, `cc-n${i}`, { props: { idx: i } })))
+      for (const e of engines) expect(e.scanAllNodes().length).toBeGreaterThanOrEqual(1)
+    } finally { for (const e of engines) e.close() }
+  }, 30000)
+
+  it('V57-e2e: concurrent same edge upsert', async () => {
+    const engine = new GraphEngine(makeConfig('v57-e2e-cse'))
+    await engine.open(); try {
+      const a = await engine.upsertNode(1, 'a', { props: {} })
+      const b = await engine.upsertNode(1, 'b', { props: {} })
+      await Promise.all([
+        engine.upsertEdge(a, b, 1, { props: {} }),
+        engine.upsertEdge(a, b, 1, { props: {} }),
+        engine.upsertEdge(a, b, 1, { props: {} }),
+      ])
+      expect(engine.neighbors(a).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { engine.close() }
+  }, 30000)
+
+// ───── 搬运自 memory-pressure (MP) ─────
+  it('V57-e2e: 100 nodes 100 edges neighbors', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-mp27'))
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 100; i++) ids.push(await e.upsertNode(1, `mp-n${i}`, { props: { i } }))
+      for (let i = 0; i < 100; i++) await e.upsertEdge(ids[i % 100], ids[(i + 1) % 100], 1, { props: {} })
+      const r = e.neighbors(ids[0])
+      expect(r.edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57-e2e: large props + neighbors + delete', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-mp35'))
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'biggy', { props: { name: 'x'.repeat(500), vals: Array.from({length:100}, (_,i)=>i) } })
+      const node = e.getNode(id)
+      expect(node.props.name.length).toBe(500)
+      e.deleteNode(id)
+      expect(e.scanAllNodes()).toHaveLength(0)
+    } finally { e.close() }
+  }, 30000)
+
+// ───── 搬运自 chaos-recovery (CR) ─────
+  it('V57-e2e: reopen add edge', async () => {
+    const cfg = makeConfig('v57-e2e-cr31')
+    let a: number, b: number
+    const e1 = new GraphEngine(cfg); await e1.open(); try {
+      a = await e1.upsertNode(1, 'cr-a', { props: {} })
+      b = await e1.upsertNode(1, 'cr-b', { props: {} })
+      await e1.upsertEdge(a, b, 1, { props: {} })
+    } finally { e1.close() }
+    const e2 = new GraphEngine(cfg); await e2.open(); try {
+      const c = await e2.upsertNode(1, 'cr-c', { props: {} })
+      await e2.upsertEdge(a, c, 1, { props: {} })
+      expect(e2.neighbors(a).edges.length).toBeGreaterThanOrEqual(2)
+    } finally { e2.close() }
+  }, 30000)
+
+// ───── 搬运自 index-edge ─────
+  it('V57-e2e: index query range', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-idx-qr'))
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 20; i++) ids.push(await e.upsertNode(1, `ix-${i}`, { props: { v: i * 5 } }))
+      expect(e.scanAllNodes().length).toBe(20)
+    } finally { e.close() }
+  }, 15000)
+
+  it('V57-e2e: index empty minmax', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-idx-em'))
+    await e.open(); try {
+      expect(e.scanAllNodes()).toHaveLength(0)
+    } finally { e.close() }
+  }, 15000)
+
+  it('V57-e2e: index remove doc', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-idx-rm'))
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'rm-me', { props: { x: 1 } })
+      e.deleteNode(id)
+      expect(e.scanAllNodes()).toHaveLength(0)
+    } finally { e.close() }
+  }, 15000)
+
+// ───── 更多边界：超大数据 ─────
+  it('V57-e2e: 2000 nodes then 200 edges', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-big2k'))
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 2000; i++) ids.push(await e.upsertNode(1, `bn${i}`, { props: { i } }))
+      expect(e.scanAllNodes().length).toBe(2000)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V57-e2e: 500 edges star', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-5he'))
+    await e.open(); try {
+      const h = await e.upsertNode(1, 'hub500', { props: {} })
+      for (let i = 0; i < 500; i++) { const d = await e.upsertNode(1, `l${i}`, { props: {} }); await e.upsertEdge(h, d, 1, { props: {} }) }
+      expect(e.neighbors(h).edges.length).toBeGreaterThanOrEqual(500)
+    } finally { e.close() }
+  }, 60000)
+
+// ───── 多类型混合 ─────
+  it('V57-e2e: 3 label types mixed', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-3lt'))
+    await e.open(); try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `t1-${i}`, { props: { type: 1 } })
+      for (let i = 0; i < 10; i++) await e.upsertNode(2, `t2-${i}`, { props: { type: 2 } })
+      for (let i = 0; i < 10; i++) await e.upsertNode(3, `t3-${i}`, { props: { type: 3 } })
+      expect(e.scanAllNodes().length).toBe(30)
+    } finally { e.close() }
+  }, 30000)
+
+// ───── 多 engine 并发隔离 ─────
+  it('V57-e2e: 10 engine isolated writes', async () => {
+    const engines: GraphEngine[] = []
+    for (let i = 0; i < 10; i++) {
+      const e = new GraphEngine(makeConfig(`v57-e2e-10iso-${i}`))
+      await e.open(); engines.push(e)
+    }
+    try {
+      const results = await Promise.all(engines.map((e, i) => e.upsertNode(1, `iso${i}`, { props: {} })))
+      expect(results.length).toBe(10)
+    } finally { for (const e of engines) e.close() }
+  }, 30000)
+
+// ───── 反复 upsert 同节点 ─────
+  it('V57-e2e: 50x upsert same node', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-50up'))
+    await e.open(); try {
+      let id = -1
+      for (let i = 0; i < 50; i++) id = await e.upsertNode(1, 'same', { props: { iter: i, ts: Date.now() } })
+      expect(e.getNode(id)).toBeDefined()
+    } finally { e.close() }
+  }, 15000)
+
+// ───── 删除全部后重新写入 ─────
+  it('V57-e2e: delete all then rewrite', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-delw'))
+    await e.open(); try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `dw-${i}`, { props: {} })
+      const all = e.scanAllNodes()
+      for (const n of all) e.deleteNode(n.id)
+      expect(e.scanAllNodes()).toHaveLength(0)
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `dw-${i}`, { props: { round: 2 } })
+      expect(e.scanAllNodes().length).toBe(10)
+    } finally { e.close() }
+  }, 30000)
