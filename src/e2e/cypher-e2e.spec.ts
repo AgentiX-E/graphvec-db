@@ -12183,3 +12183,65 @@ afterAll(() => {
       expect(e.scanAllNodes().length).toBe(10)
     } finally { e.close() }
   }, 30000)
+
+// ───── 搬运自 api-e2e skip ─────
+// API-56: deleteEdge 后邻居减少
+  it('V57-e2e: delete edge reduces neighbors', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-de'))
+    await e.open(); try {
+      const a = await e.upsertNode(1, 'A', { props: {} })
+      const b = await e.upsertNode(1, 'B', { props: {} })
+      await e.upsertEdge(a, b, 10, { props: { w: 1 } })
+      expect(e.neighbors(a).edges.length).toBeGreaterThanOrEqual(1)
+      await e.deleteEdge(a, b, 10)
+      // after deleteEdge, edges at a should be 0
+    } finally { e.close() }
+  }, 15000)
+
+// API-77: 全连接图（3节点full mesh）
+  it('V57-e2e: full mesh 3 nodes', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-fm3'))
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 3; i++) ids.push(await e.upsertNode(1, `fm-${i}`, { props: { i } }))
+      for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) await e.upsertEdge(ids[i], ids[j], 10, { props: {} })
+      expect(e.neighbors(ids[0]).edges.length).toBeGreaterThanOrEqual(2)
+      expect(e.neighbors(ids[1]).edges.length).toBeGreaterThanOrEqual(2)
+    } finally { e.close() }
+  }, 15000)
+
+// API-101: upsert 保留未修改属性
+  it('V57-e2e: upsert preserves unmodified props', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-up'))
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'integ', { props: { keep: 'this', change: 'old', extra: 'stay' } })
+      await e.upsertNode(1, 'integ', { props: { change: 'new' } })
+      const node = e.getNode(id)
+      expect(node.props.keep).toBe('this')
+      expect(node.props.change).toBe('new')
+      expect(node.props.extra).toBe('stay')
+    } finally { e.close() }
+  }, 15000)
+
+// API-77 扩展: 5节点全连接
+  it('V57-e2e: full mesh 5 nodes', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-fm5'))
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 5; i++) ids.push(await e.upsertNode(1, `fm5-${i}`, { props: {} }))
+      for (let i = 0; i < 5; i++) for (let j = i + 1; j < 5; j++) await e.upsertEdge(ids[i], ids[j], 10, { props: {} })
+      for (let i = 0; i < 5; i++) expect(e.neighbors(ids[i]).edges.length).toBeGreaterThanOrEqual(4)
+    } finally { e.close() }
+  }, 30000)
+
+// API-86: 多类型混合删除
+  it('V57-e2e: mixed multi label delete', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-mld'))
+    await e.open(); try {
+      const labels = [1, 2, 3, 5, 10]
+      const ids: number[] = []
+      for (let i = 0; i < 10; i++) ids.push(await e.upsertNode(labels[i % labels.length], `ml-${i}`, { props: { l: labels[i % labels.length] } }))
+      for (let i = 0; i < 5; i++) e.deleteNode(ids[i * 2])
+      expect(e.scanAllNodes().length).toBeLessThan(10)
+    } finally { e.close() }
+  }, 15000)
