@@ -1986,3 +1986,292 @@ describe('Latency Benchmarks', () => {
       expect(e.scanAllNodes().length).toBe(0)
     } finally { e.close() }
   }, 60000)
+
+  it('V57 latency: single node upsert 1000 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l151-' + Date.now() })
+    await e.open(); try {
+      const start = performance.now()
+      for (let i = 0; i < 1000; i++) await e.upsertNode(1, `n${i}`, { props: { x: i } })
+      console.log(`[BENCH] single node upsert 1000 nodes: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(1000)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: bulk edge creation star pattern', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l152-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      for (let i = 1; i < 200; i++) await e.upsertEdge(0, i, 1, {})
+      console.log(`[BENCH] bulk edge creation star pattern 199 edges: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.neighbors(0).edges.length).toBe(199)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: neighbors on dense cluster 100 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l153-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 100; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      for (let i = 0; i < 100; i++) for (let j = i + 1; j < 100; j++) await e.upsertEdge(i, j, 1, {})
+      const start = performance.now()
+      const n = e.neighbors(0).edges.length
+      console.log(`[BENCH] neighbors on dense cluster 100 nodes: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(n).toBe(99)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: scanAllNodes 2000 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l154-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 2000; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      const all = e.scanAllNodes()
+      console.log(`[BENCH] scanAllNodes 2000 nodes: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(all.length).toBe(2000)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: multi-type node scan 5 types 500 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l155-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 5; t++) for (let i = 0; i < 100; i++) await e.upsertNode(t, `n${t}-${i}`, { props: {} })
+      const start = performance.now()
+      const all = e.scanAllNodes()
+      console.log(`[BENCH] multi-type node scan 5 types 500 nodes: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(all.length).toBe(500)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: deleteNode from middle of list', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l156-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 500; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      for (let i = 100; i < 400; i++) e.deleteNode(i)
+      console.log(`[BENCH] deleteNode from middle 300 nodes: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(200)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: upsertEdge across 50 node types', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l157-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 50; t++) await e.upsertNode(t, `n${t}`, { props: {} })
+      const start = performance.now()
+      for (let t = 2; t <= 50; t++) await e.upsertEdge(1, t, 1, {})
+      console.log(`[BENCH] upsertEdge across 50 node types: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.neighbors(1).edges.length).toBe(49)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: sequential delete all 50 nodes mid-scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l158-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 500; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      e.deleteNode(0); e.deleteNode(100); e.deleteNode(200); e.deleteNode(300); e.deleteNode(400)
+      console.log(`[BENCH] sequential delete 5 scattered nodes: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(495)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: 10 nodes each with 50 edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l159-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 60; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      for (let src = 0; src < 10; src++) for (let dst = 10; dst < 60; dst++) await e.upsertEdge(src, dst, 1, { label: `e${src}-${dst}` })
+      console.log(`[BENCH] 10 nodes each with 50 edges: ${(performance.now() - start).toFixed(2)}ms`)
+      let total = 0
+      for (let src = 0; src < 10; src++) total += e.neighbors(src).edges.length
+      expect(total).toBe(500)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: single node with 300 edges fan-out', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l160-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 301; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      for (let i = 1; i <= 300; i++) await e.upsertEdge(0, i, 1, {})
+      console.log(`[BENCH] single node 300 edges fan-out: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.neighbors(0).edges.length).toBe(300)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: upsert 500 nodes with props then scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l161-' + Date.now() })
+    await e.open(); try {
+      const start = performance.now()
+      for (let i = 0; i < 500; i++) await e.upsertNode(1, `n${i}`, { props: { a: i, b: i * 2, c: `tag-${i}` } })
+      console.log(`[BENCH] upsert 500 nodes with props: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(500)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: re-upsert existing node 1000 times', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l162-' + Date.now() })
+    await e.open(); try {
+      await e.upsertNode(1, 'target', { props: { v: 0 } })
+      const start = performance.now()
+      for (let i = 0; i < 1000; i++) await e.upsertNode(1, 'target', { props: { v: i } })
+      console.log(`[BENCH] re-upsert existing node 1000 times: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: chain edges 1000 node long path', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l163-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 1000; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 999; i++) await e.upsertEdge(i, i + 1, 1, {})
+      console.log(`[BENCH] chain edges 999 edges: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.neighbors(0).edges.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: two-type bipartite edges 100+100 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l164-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 100; i++) await e.upsertNode(1, `a${i}`, { props: {} })
+      for (let i = 0; i < 100; i++) await e.upsertNode(2, `b${i}`, { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 100; i++) for (let j = 0; j < 100; j++) await e.upsertEdge(i, 100 + j, 1, {})
+      console.log(`[BENCH] bipartite edges 10000 edges: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.neighbors(0).edges.length).toBe(100)
+    } finally { e.close() }
+  }, 60000)
+
+  it('V57 latency: delete half nodes from 600 then scan', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l165-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 600; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 300; i++) e.deleteNode(i)
+      console.log(`[BENCH] delete half 300 nodes: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(300)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: upsertEdge existing edge repeated 500 times', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l166-' + Date.now() })
+    await e.open(); try {
+      await e.upsertNode(1, 'a', { props: {} })
+      await e.upsertNode(1, 'b', { props: {} })
+      await e.upsertEdge(0, 1, 1, {})
+      const start = performance.now()
+      for (let i = 0; i < 500; i++) await e.upsertEdge(0, 1, 1, { tag: i })
+      console.log(`[BENCH] re-upsert edge 500 times: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.neighbors(0).edges.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: 1500 nodes scan after edge-filled graph', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l167-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 1500; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      for (let t = 0; t < 100; t++) for (let j = 1; j < 15; j++) await e.upsertEdge(t, (t + j) % 1500, 1, {})
+      const start = performance.now()
+      const all = e.scanAllNodes()
+      console.log(`[BENCH] scan 1500 nodes after edges: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(all.length).toBe(1500)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: 200 node 10-type cross edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l168-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 10; t++) for (let i = 0; i < 20; i++) await e.upsertNode(t, `n${t}-${i}`, { props: {} })
+      const start = performance.now()
+      for (let s = 0; s < 200; s++) for (let d = s + 1; d < 200; d++) await e.upsertEdge(s, d, 1, {})
+      console.log(`[BENCH] 200 node 10-type cross edges: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.neighbors(0).edges.length).toBe(199)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: upsert then delete then re-upsert cycle 200 times', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l169-' + Date.now() })
+    await e.open(); try {
+      const start = performance.now()
+      for (let cycle = 0; cycle < 200; cycle++) {
+        await e.upsertNode(1, `n${cycle}`, { props: { cycle } })
+        e.deleteNode(cycle)
+      }
+      console.log(`[BENCH] upsert-delete cycle 200 times: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(0)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: 300 node ring edges', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l170-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 300; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      for (let i = 0; i < 300; i++) await e.upsertEdge(i, (i + 1) % 300, 1, {})
+      console.log(`[BENCH] 300 node ring edges: ${(performance.now() - start).toFixed(2)}ms`)
+      let total = 0
+      for (let i = 0; i < 300; i++) total += e.neighbors(i).edges.length
+      expect(total).toBe(300)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: delete middle range from 800 nodes', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l171-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 800; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      const start = performance.now()
+      for (let i = 200; i < 600; i++) e.deleteNode(i)
+      console.log(`[BENCH] delete range 400 from 800: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(400)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: mixed type scan after many deletions', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l172-' + Date.now() })
+    await e.open(); try {
+      for (let t = 1; t <= 5; t++) for (let i = 0; i < 100; i++) await e.upsertNode(t, `n${t}-${i}`, { props: { type: t } })
+      for (let i = 0; i < 250; i++) e.deleteNode(i)
+      const start = performance.now()
+      const all = e.scanAllNodes()
+      console.log(`[BENCH] mixed type scan after 250 deletions: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(all.length).toBe(250)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: large edge disconnect from single hub', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l173-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 251; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      for (let i = 1; i <= 250; i++) await e.upsertEdge(0, i, 1, {})
+      expect(e.neighbors(0).edges.length).toBe(250)
+      const start = performance.now()
+      e.deleteNode(0)
+      console.log(`[BENCH] delete hub node disconnects 250 edges: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(250)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: 2K re-upsert same node with growing props', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l174-' + Date.now() })
+    await e.open(); try {
+      await e.upsertNode(1, 'grow', { props: { v: 0 } })
+      const start = performance.now()
+      for (let i = 0; i < 2000; i++) await e.upsertNode(1, 'grow', { props: { v: i, ts: Date.now(), tag: `iter-${i}` } })
+      console.log(`[BENCH] 2K re-upsert same node with growing props: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(e.scanAllNodes().length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+
+  it('V57 latency: 10-way cross neighbors in small cluster', async () => {
+    const e = new GraphEngine({ path: '/tmp/v57-l175-' + Date.now() })
+    await e.open(); try {
+      for (let i = 0; i < 50; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      for (let i = 0; i < 50; i++) for (let j = i + 1; j < 50; j++) await e.upsertEdge(i, j, 1, {})
+      const start = performance.now()
+      let total = 0
+      for (let i = 0; i < 10; i++) total += e.neighbors(i).edges.length
+      console.log(`[BENCH] 10-way cross neighbors 50-cluster: ${(performance.now() - start).toFixed(2)}ms`)
+      expect(total).toBe(10 * 49)
+    } finally { e.close() }
+  }, 30000)
