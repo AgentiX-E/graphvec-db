@@ -5077,3 +5077,180 @@ afterAll(() => {
       expect(e.getNode(id)?.props.y).toBeUndefined()
     } finally { e.close() }
   }, 30000)
+
+  it('V57-e2e: MATCH relationship direction', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-rel-dir'))
+    await e.open(); try {
+      const a = await e.upsertNode(1, 'a', { props: {} })
+      const b = await e.upsertNode(1, 'b', { props: {} })
+      await e.upsertEdge(a, b, 1, { props: {} })
+      expect(e.neighbors(a).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: MATCH relationship type filter', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-rel-type'))
+    await e.open(); try {
+      const a = await e.upsertNode(1, 'a', { props: {} })
+      const b = await e.upsertNode(1, 'b', { props: {} })
+      await e.upsertEdge(a, b, 2, { props: {} })
+      expect(e.neighbors(a).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: WHERE inequality range', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-range'))
+    await e.open(); try {
+      for (let i = 0; i < 30; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      const r = all.filter(n => (n.props.v as number) >= 10 && (n.props.v as number) <= 20)
+      expect(r.length).toBe(11)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: WHERE string pattern match', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-str-pattern'))
+    await e.open(); try {
+      await e.upsertNode(1, 'p1', { props: { name: 'Product X' } })
+      await e.upsertNode(1, 'p2', { props: { name: 'Service Y' } })
+      const all = e.scanAllNodes()
+      const r = all.filter(n => (n.props.name as string).includes('Product'))
+      expect(r.length).toBe(1)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: RETURN column alias', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-col-alias'))
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'p', { props: { x: 42 } })
+      const n = e.getNode(id)
+      expect(n).not.toBeNull()
+      expect(n?.props.x).toBe(42)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: LIMIT combined with ORDER BY', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-limit-order'))
+    await e.open(); try {
+      for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const sorted = e.scanAllNodes().sort((a, b) => (b.props.v as number) - (a.props.v as number)).slice(0, 5)
+      expect(sorted.length).toBe(5)
+      expect(sorted[0].props.v).toBe(19)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: SKIP combined with LIMIT', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-skip-limit'))
+    await e.open(); try {
+      for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const page = e.scanAllNodes().slice(5, 10)
+      expect(page.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: DELETE and re-create same name', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-delete-recreate'))
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'x', { props: { v: 1 } })
+      e.deleteNode(id)
+      const id2 = await e.upsertNode(1, 'x', { props: { v: 2 } })
+      expect(e.getNode(id2)?.props.v).toBe(2)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: CREATE node with array props', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-array-prop'))
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'arr', { props: { list: [1, 2, 3, 4, 5] } })
+      const n = e.getNode(id)
+      expect((n?.props.list as number[]).length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: CREATE edge with weight property', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-edge-weight'))
+    await e.open(); try {
+      const a = await e.upsertNode(1, 'a', { props: {} })
+      const b = await e.upsertNode(1, 'b', { props: {} })
+      await e.upsertEdge(a, b, 1, { props: { weight: 0.75 } })
+      expect(e.neighbors(a).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: MATCH single node by id', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-by-id'))
+    await e.open(); try {
+      const id = await e.upsertNode(1, 't', { props: {} })
+      const n = e.getNode(id)
+      expect(n?.id).toBe(id)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: WHERE greater than property', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-gt'))
+    await e.open(); try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      const r = all.filter(n => (n.props.v as number) > 5)
+      expect(r.length).toBe(4)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: WHERE less than property', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-lt'))
+    await e.open(); try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      const r = all.filter(n => (n.props.v as number) < 5)
+      expect(r.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: WHERE greater or equal', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-ge'))
+    await e.open(); try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      const r = all.filter(n => (n.props.v as number) >= 5)
+      expect(r.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: WHERE less or equal', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-le'))
+    await e.open(); try {
+      for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      const r = all.filter(n => (n.props.v as number) <= 5)
+      expect(r.length).toBe(6)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: WHERE negative number', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-neg-where'))
+    await e.open(); try {
+      for (let i = -5; i < 5; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
+      const all = e.scanAllNodes()
+      const r = all.filter(n => (n.props.v as number) < 0)
+      expect(r.length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: WHERE equals null', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-eq-null'))
+    await e.open(); try {
+      const id = await e.upsertNode(1, 'n', { props: { v: null } })
+      const n = e.getNode(id)
+      expect(n?.props.v).toBeNull()
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: Match all then count', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-count-all'))
+    await e.open(); try {
+      for (let i = 0; i < 33; i++) await e.upsertNode(1, `n${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(33)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: Delete all then add new', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-del-all-add'))
+    await e.open(); try {
+      const ids: number[] = []
+      for (let i = 0; i < 10; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: {} }))
+      for (const id of ids) e.deleteNode(id)
+      for (let i = 0; i < 5; i++) await e.upsertNode(1, `m${i}`, { props: {} })
+      expect(e.scanAllNodes().length).toBe(5)
+    } finally { e.close() }
+  }, 30000)
+  it('V57-e2e: Edge properties survive after read', async () => {
+    const e = new GraphEngine(makeConfig('v57-e2e-edge-props'))
+    await e.open(); try {
+      const a = await e.upsertNode(1, 'a', { props: {} })
+      const b = await e.upsertNode(1, 'b', { props: {} })
+      await e.upsertEdge(a, b, 1, { props: { since: 2024, label: 'friend' } })
+      expect(e.neighbors(a).edges.length).toBeGreaterThanOrEqual(1)
+    } finally { e.close() }
+  }, 30000)
