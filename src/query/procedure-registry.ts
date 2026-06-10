@@ -279,6 +279,13 @@ globalRegistry.register({
   },
 })
 
+globalRegistry.register({
+  name: 'dbms.security.createUser',
+  signature: 'dbms.security.createUser(username :: STRING?, password :: STRING?, requirePasswordChange :: BOOLEAN?) :: VOID',
+  execute(_ctx: ProcedureContext, _args: any[]) {
+    return []
+  },
+})
 
 export { globalRegistry }
 

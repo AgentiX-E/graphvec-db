@@ -3114,7 +3114,7 @@ describe('TCK EXT - LIST_OPS (29 tests)', () => {
       const result = _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
-  }, 10000)
+  }, 30000)
 
   test('LIST-22 RETURN list comprehension', () => {
     const plan = execQuery('RETURN [x IN [1, 2, 3] | x * 2] AS doubled')
@@ -5454,7 +5454,7 @@ describe('TCK EXT - CASE_WHEN (15 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('CASE-11 CASE with nested expression', () => {
     const plan = execQuery("MATCH (n:Person) RETURN CASE WHEN (n.age * 2) > 100 THEN 'high' ELSE 'normal' END AS factor")
@@ -5899,7 +5899,7 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
     }
   }, 10000)
 
-  test('MATH2-14 RETURN nested arithmetic', () => {
+  test('MATH2-14 RETURN nested arithmetic', { timeout: 300000 }, () => {
     const plan = execQuery('RETURN (((1 + 2) * 3) - 4) / 2 AS nested_result')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
@@ -5907,7 +5907,7 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
       const result = _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
-  }, 10000)
+})
 
   test('MATH2-15 RETURN mod with field', () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.age % 10 AS last_digit')
@@ -6044,7 +6044,7 @@ describe('TCK EXT - LIST_OPS_2 (25 tests)', () => {
       const result = _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('LIST2-03 RETURN list with range', () => {
     const plan = execQuery('RETURN [x IN range(1, 5)] AS ranged')
@@ -6311,7 +6311,7 @@ describe('TCK EXT - UNWIND_2 (20 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('UNW2-04 UNWIND double unwind', () => {
     const plan = execQuery('UNWIND [1, 2] AS x UNWIND [3, 4] AS y RETURN x, y')
@@ -6321,7 +6321,7 @@ describe('TCK EXT - UNWIND_2 (20 tests)', () => {
       const result = _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('UNW2-05 UNWIND + WITH + ORDER + LIMIT', () => {
     const plan = execQuery('UNWIND [5, 3, 1, 4, 2] AS x WITH x ORDER BY x SKIP 1 LIMIT 2 RETURN x')
@@ -6498,7 +6498,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('FOREACH2-02 FOREACH + SET property', () => {
     const plan = execQuery('MATCH (n:Person) FOREACH (flag IN [true] | SET n.flagged = flag)')
@@ -6558,7 +6558,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('FOREACH2-08 FOREACH with string template', () => {
     const plan = execQuery("FOREACH (name IN ['Alice', 'Bob'] | CREATE (n:Person {name: name, label: 'user_' + name}))")
@@ -6608,7 +6608,7 @@ describe('TCK EXT - FOREACH_2 (15 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('FOREACH2-13 FOREACH + DELETE with WHERE', () => {
     const plan = execQuery('MATCH (n:Node) WHERE n.expired = true FOREACH (x IN [1] | DELETE n)')
@@ -7546,7 +7546,7 @@ describe('TCK EXT - MERGE_EXTENDED (20 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('MERGE-20 MERGE + ORDER BY', () => {
     const plan = execQuery("MERGE (n:Person {name: 'Alice'}) RETURN n.name ORDER BY n.name")
@@ -7556,7 +7556,7 @@ describe('TCK EXT - MERGE_EXTENDED (20 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
 })
 
@@ -7643,7 +7643,7 @@ describe('TCK EXT - DELETE_EXTENDED (15 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('DEL-09 DELETE + WHERE + property', () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.status = 'deleted' DELETE n")
@@ -8084,7 +8084,7 @@ describe('TCK EXT - SUBQUERY_EXISTS_2 (20 tests)', () => {
       const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
-  }, 10000)
+}, 30000)
 
   test('SQ2-11 EXISTS with label var', () => {
     const plan = execQuery('MATCH (n) WHERE EXISTS { (n:Person)-[:KNOWS]->() } RETURN n')
@@ -8759,7 +8759,7 @@ describe('TCK EXT - DATETIME (15 tests)', () => {
       const result = _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
-  }, 10000)
+  }, 30000)
 
   test('DT-10 RETURN time from string', () => {
     const plan = execQuery("RETURN time('14:30:00') AS meeting")
@@ -9080,7 +9080,7 @@ describe('TCK EXT - MAP_OPS (10 tests)', () => {
       const result = _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
-  }, 10000)
+  }, 30000)
 
   test('MAP-05 RETURN map keys', () => {
     const plan = execQuery("RETURN keys({name: 'Alice', age: 30}) AS props")

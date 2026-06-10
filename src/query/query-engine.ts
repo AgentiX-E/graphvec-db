@@ -302,6 +302,12 @@ export interface QueryPlan {
     name: string
     var?: string  // 变量名引用（如 UNWIND list AS x 中 list 是变量名）
   }
+  /** 第二个 UNWIND（UNWIND 链：UNWIND a AS x UNWIND b AS y） */
+  secondUnwind?: {
+    list: any[]
+    name: string
+    var?: string
+  }
   /** CASE 表达式列（需要运行时求值的复杂表达式） */
   caseColumns?: Array<{
     expression: any  // CASE AST 节点
@@ -1117,7 +1123,67 @@ export function _preprocessQuery(query: string): {
     modifiedQuery = modifiedQuery.slice(0, intersectIdx).trim()
   }
 
-  // ── Step 3.8: Extract second CREATE in chain ──
+  // ── Step 3.7b: Extract MERGE + ORDER BY — PEG can't parse ORDER BY in MERGE
+  // Example: MERGE (n:Person {name: 'Alice'}) RETURN n.name ORDER BY n.name
+  // We need to extract the ORDER BY clause when it follows MERGE
+  let mergeOrderByExtract: string | undefined = undefined
+  const mergeOrderByRE = /(\bMERGE\b[\s\S]*?\bRETURN\b[\s\S]*?)\bORDER\s+BY\s+(.+?)$/i
+  const mergeOrderByMatch = modifiedQuery.match(mergeOrderByRE)
+  if (mergeOrderByMatch && !/\bMATCH\b/i.test(modifiedQuery)) {
+    // Only when no MATCH is present (MATCH + ORDER BY is handled by PEG already)
+    mergeOrderByExtract = mergeOrderByMatch[2].trim()
+    // Remove ORDER BY from the query
+    const orderByIdx = modifiedQuery.search(/\bORDER\s+BY\s+/i)
+    if (orderByIdx !== -1) {
+      modifiedQuery = modifiedQuery.slice(0, orderByIdx).trim()
+    }
+  }
+
+  // ── Step 3.7c: Extract UNWIND + MERGE — PEG can't parse UNWIND followed by MERGE
+  // Example: UNWIND ['Alice', 'Bob'] AS name MERGE (n:Person {name: name}) RETURN n
+  let unwindMergeExtract: string | undefined = undefined
+  const unwindMergeRE = /\bUNWIND\b[\s\S]*?\bMERGE\b/i
+  if (unwindMergeRE.test(modifiedQuery) && /\bUNWIND\b/i.test(modifiedQuery) && /\bMERGE\b/i.test(modifiedQuery)) {
+    // Extract the MERGE+RETURN part, replace with MERGE-free equivalent
+    const mergeIdx = modifiedQuery.search(/\bMERGE\b/i)
+    if (mergeIdx !== -1) {
+      const unwindPart = modifiedQuery.slice(0, mergeIdx).trim()
+      const mergePart = modifiedQuery.slice(mergeIdx).trim()
+      unwindMergeExtract = mergePart
+      // Replace MERGE with a dummy MATCH so PEG can parse
+      // Try: UNWIND [...] AS x MATCH (__merge_anchor__) RETURN ...
+      const returnIdxInMerge = mergePart.search(/\bRETURN\b/i)
+      if (returnIdxInMerge !== -1) {
+        const mergeExpr = mergePart.slice(0, returnIdxInMerge).trim()
+        const returnExpr = mergePart.slice(returnIdxInMerge).trim()
+        modifiedQuery = `${unwindPart} MATCH (__merge_anchor__) ${returnExpr}`
+      } else {
+        modifiedQuery = `${unwindPart} MATCH (__merge_anchor__) RETURN 1 AS __dummy`
+      }
+    }
+  }
+
+  // ── Step 3.7d: Extract second UNWIND in chain — PEG can't parse UNWIND ... UNWIND
+  // Example: UNWIND [1, 2] AS x UNWIND [3, 4] AS y RETURN x, y
+  let secondUnwindExtract: string | undefined = undefined
+  if (!unwindMergeExtract && /\bUNWIND\b/i.test(modifiedQuery)) {
+    // Count UNWIND occurrences
+    const unwindMatches = modifiedQuery.match(/\bUNWIND\b/gi)
+    if (unwindMatches && unwindMatches.length > 1) {
+      // Find the second UNWIND
+      const firstUnwindIdx = modifiedQuery.search(/\bUNWIND\b/i)
+      const afterFirst = modifiedQuery.slice(firstUnwindIdx + 6)
+      const secondUnwindIdx = afterFirst.search(/\bUNWIND\b/i)
+      if (secondUnwindIdx !== -1) {
+        const absoluteSecondIdx = firstUnwindIdx + 6 + secondUnwindIdx
+        const firstPart = modifiedQuery.slice(0, absoluteSecondIdx).trim()
+        const secondPart = modifiedQuery.slice(absoluteSecondIdx).trim()
+        secondUnwindExtract = secondPart
+        // Keep only the first UNWIND
+        modifiedQuery = firstPart
+      }
+    }
+  }
   // CREATE (a:Person ...) CREATE (b:Person ...)
   // PEG only handles one CREATE. Extract the second (and beyond).
   let secondCreateExtract: _QueryExtracts['secondCreateExtract'] = undefined
@@ -1224,8 +1290,8 @@ export function _preprocessQuery(query: string): {
   if (optPatterns.length > 0 && !/MATCH\b/i.test(modifiedQuery) && /\bRETURN\b/i.test(modifiedQuery)) {
     modifiedQuery = `MATCH (__opt_anchor__) ${modifiedQuery.trim()}`
   }
-  if (result.foreachExtract && !/MATCH\b/i.test(modifiedQuery) && /\bRETURN\b/i.test(modifiedQuery)) {
-    modifiedQuery = `MATCH (__foreach_anchor__) ${modifiedQuery.trim()}`
+  if (result.foreachExtract && !/MATCH\b/i.test(modifiedQuery)) {
+    modifiedQuery = `MATCH (__foreach_anchor__) ${modifiedQuery.trim()} RETURN 1 AS __dummy`
   }
 
   // The modified query now has no OPTIONAL MATCH or WITH — should be parseable
@@ -1245,6 +1311,9 @@ export function _preprocessQuery(query: string): {
       searchExtract: result.searchExtract,
       deleteExtract,
       intersectExtract,
+      mergeOrderByExtract,
+      unwindMergeExtract,
+      secondUnwindExtract,
       secondCreateExtract,
       returnExtract,
     },
@@ -1340,6 +1409,12 @@ export interface _QueryExtracts {
   }
   /** INTERSECT 子句提取 */
   intersectExtract?: string
+  /** MERGE + ORDER BY 提取 */
+  mergeOrderByExtract?: string
+  /** UNWIND + MERGE 提取 */
+  unwindMergeExtract?: string
+  /** 第二个 UNWIND 子句提取 */
+  secondUnwindExtract?: string
   /** 第二个 CREATE 子句提取（CREATE 链） */
   secondCreateExtract?: string
   /** 复杂 RETURN 子句提取（PEG 无法解析的复杂表达式） */
@@ -1748,7 +1823,7 @@ export function parseQuery(query: string): QueryPlan {
       // fall through to preprocessing (handles MATCH ... OPTIONAL MATCH ... RETURN cases)
       if (directAst.match && !(directAst as any).optionalMatches && query.includes('OPTIONAL MATCH')) {
         // fall through to preprocessing
-      } else if (directAst.match && !(directAst as any).with && query.match(/\bWITH\b/) && query.indexOf('WITH') > query.indexOf('MATCH')) {
+      } else if (directAst.match && !(directAst as any).with && query.match(/\bWITH\b/) && query.indexOf('WITH') > query.indexOf('MATCH') && !query.match(/EXISTS\s*\{[^}]+\bWITH\b/i)) {
         // fall through to preprocessing for MATCH ... WITH ... cases
       } else if (directAst.match && query.match(/\bDELETE\b/i) && !(directAst as any).delete) {
         // MATCH ... DELETE — PEG didn't parse DELETE, fall through
@@ -1779,7 +1854,7 @@ export function parseQuery(query: string): QueryPlan {
   // Guard: PEG returned null or undefined (syntax not supported) — 
   // but don't throw if the query contains special syntax that preprocessing handles
   if (!directAst) {
-    const hasSpecial = /\bOPTIONAL MATCH\b|\bWITH\b|\bDELETE\b|\bDETACH\b|\bHAVING\b|\bINTERSECT\b|\breduce\s*\(|MATCH.*CREATE|CREATE.*CREATE|\[:\w+\*|\[\[|,\s*\w+\(/.test(query);
+    const hasSpecial = /\bOPTIONAL MATCH\b|\bWITH\b|\bDELETE\b|\bDETACH\b|\bHAVING\b|\bINTERSECT\b|\bFOREACH\b|\bUNWIND\b|\bMERGE\b|\breduce\s*\(|MATCH.*CREATE|CREATE.*CREATE|\[:\w+\*|\[\[|,\s*\w+\(/.test(query);
     if (!hasSpecial) {
       throw new Error(`Query not parsed: ${query}`)
     }
@@ -2125,6 +2200,40 @@ export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
     ;(ast as any).__returnExtract = extracts.returnExtract
   }
 
+  // ── Attach MERGE + ORDER BY ──────────────────────────────
+  if (extracts.mergeOrderByExtract) {
+    // Parse ORDER BY expression and attach to AST
+    const orderByColumns = extracts.mergeOrderByExtract.split(',').map(s => {
+      const col = s.trim()
+      const dirMatch = col.match(/^(.*?)\s+(ASC|DESC)$/i)
+      if (dirMatch) {
+        return {
+          type: 'ORDER_COLUMN' as const,
+          expression: { type: 'IDENTIFIER' as const, name: dirMatch[1].trim() },
+          direction: dirMatch[2].toUpperCase() as 'ASC' | 'DESC',
+        }
+      }
+      return {
+        type: 'ORDER_COLUMN' as const,
+        expression: { type: 'IDENTIFIER' as const, name: col },
+        direction: 'ASC' as const,
+      }
+    })
+    ast.orderBy = { type: 'ORDER_BY' as const, columns: orderByColumns }
+  }
+
+  // ── Attach UNWIND + MERGE ────────────────────────────────
+  if (extracts.unwindMergeExtract) {
+    // Store the merge text for later processing
+    ;(ast as any).__unwindMergeExtract = extracts.unwindMergeExtract
+  }
+
+  // ── Attach second UNWIND ─────────────────────────────────
+  if (extracts.secondUnwindExtract) {
+    // Store the second UNWIND for later processing
+    ;(ast as any).__secondUnwindExtract = extracts.secondUnwindExtract
+  }
+
   // ── Restore ORDER BY aggregate replacements ─────────────────
   if (extracts.orderByAggReplacements && extracts.orderByAggReplacements.length > 0) {
     // Store replacements info for planFromAST to use
@@ -2457,6 +2566,88 @@ export function planFromAST(
     }
   }
 
+  // ── UNWIND + MERGE 处理 ──
+  // When UNWIND was followed by MERGE, the MERGE was extracted and replaced
+  // with a dummy MATCH. We need to reconstruct the merge information.
+  const unwindMergeText = (ast as any).__unwindMergeExtract as string | undefined
+  if (unwindMergeText) {
+    try {
+      // Parse the MERGE text as a pseudo query
+      const mergePseudo = `MATCH (__dummy__) ${unwindMergeText}`
+      const mergeAst = parser.parse(mergePseudo) as QueryAST
+      if (mergeAst.merge) {
+        plan.type = 'MERGE'
+        const { createNodes: mergeNodes, createEdges: mergeEdges } = planFromCreateClause(mergeAst.merge)
+        plan.mergeNodes = mergeNodes
+        plan.mergeEdges = mergeEdges
+        if (mergeAst.merge.onCreate) {
+          plan.mergeOnCreate = planFromSetClause(mergeAst.merge.onCreate)
+        }
+        if (mergeAst.merge.onMatch) {
+          plan.mergeOnMatch = planFromSetClause(mergeAst.merge.onMatch)
+        }
+      }
+    } catch {
+      // If we can't parse the merge, try a regex-based approach
+      const mergeNodeMatch = unwindMergeText.match(/MERGE\s*\((\w+):(\w+)\s*\{([^}]*)\}/i)
+      if (mergeNodeMatch) {
+        const alias = mergeNodeMatch[1]
+        const label = mergeNodeMatch[2]
+        const propsStr = mergeNodeMatch[3]
+        const props: Record<string, unknown> = {}
+        const propMatches = propsStr.matchAll(/(\w+)\s*:\s*([^,}]+)/g)
+        for (const pm of propMatches) {
+          props[pm[1]] = pm[2].trim()
+        }
+        plan.type = 'MERGE'
+        plan.mergeNodes = [{ alias, label, props: Object.keys(props).length > 0 ? props : null }]
+      }
+
+      // Check for ON CREATE SET
+      const onCreateMatch = unwindMergeText.match(/ON\s+CREATE\s+SET\s+(\w+\.(\w+))\s*=\s*(['"]([^'"]+)['"]|true|false|\d+)/i)
+      if (onCreateMatch) {
+        plan.mergeOnCreate = [{ property: onCreateMatch[2], value: onCreateMatch[4] ?? onCreateMatch[3] }]
+      }
+    }
+  }
+
+  // ── Second UNWIND (UNWIND chain) ──
+  const secondUnwindText = (ast as any).__secondUnwindExtract as string | undefined
+  if (secondUnwindText) {
+    // Parse the second UNWIND as a separate statement
+    try {
+      const unwindPseudo = `MATCH (__dummy__) ${secondUnwindText}`
+      const secondAst = parser.parse(unwindPseudo) as QueryAST
+      if (secondAst.unwind) {
+        // Store second UNWIND info in plan
+        plan.secondUnwind = {
+          list: secondAst.unwind.list,
+          name: secondAst.unwind.name,
+          var: secondAst.unwind.var,
+        }
+      }
+    } catch {
+      // Regex fallback
+      const unwindMatch = secondUnwindText.match(/UNWIND\s+(.+?)\s+AS\s+(\w+)/i)
+      if (unwindMatch) {
+        let list: unknown[] = []
+        let isList = true
+        const listStr = unwindMatch[1].trim()
+        if (listStr.startsWith('[') && listStr.endsWith(']')) {
+          try { list = JSON.parse(listStr.replace(/'/g, '"')) } catch { list = [] }
+        } else {
+          isList = false
+          list = [listStr]
+        }
+        plan.secondUnwind = {
+          list: isList ? [list] : [listStr],
+          name: unwindMatch[2],
+          var: isList ? undefined : unwindMatch[1],
+        }
+      }
+    }
+  }
+
   // ── WITH 处理 ──
 
   if (ast.with) {
@@ -2487,8 +2678,13 @@ export function planFromAST(
     if (ast.return.aggregate) {
       // 聚合函数：用 alias 或字段名作为返回列名
       const agg = ast.return.aggregate
-      plan.aggregate = agg
-      plan.returnColumns = [agg.alias ?? agg.field ?? agg.type]
+      // Check allCols for alias info (PEG generates this structure)
+      let alias = agg.alias ?? agg.field ?? agg.type
+      if (ast.return.allCols && ast.return.allCols.length > 0 && !agg.alias) {
+        alias = ast.return.allCols[0].alias ?? alias
+      }
+      plan.aggregate = { type: agg.type, field: agg.field, alias }
+      plan.returnColumns = [alias]
     } else {
       // Check for aggregate columns within the column list
       let foundAggregate = false
@@ -2626,7 +2822,7 @@ function _applyPatternToPlan(
     const traverseStep: TraverseStep = {
       source: step.node.name,
       direction: step.edge.direction,
-      edgeLabel: step.edge.label,
+      edgeLabel: typeof step.edge.label === 'object' && step.edge.label?.items ? String(step.edge.label.items[0]?.name ?? '') : String(step.edge.label ?? ''),
       targetAlias: step.node.name,
       targetLabel: step.node.label ?? (step.node.labelExpr?.items?.[0]?.name ?? null),
       targetProps: step.node.props,
@@ -3396,6 +3592,103 @@ function _executeMerge(
 }
 
 /**
+ * 对单个候选行执行 MERGE，支持属性值中的变量引用。
+ * 用于 UNWIND + MERGE 场景。
+ */
+function _executeMergeOnCandidate(
+  plan: QueryPlan,
+  mergeNode: NonNullable<QueryPlan['mergeNodes']>[number],
+  nodes: Array<Record<string, unknown>>,
+  context: Record<string, unknown>,
+): QueryRow[] {
+  const rows: QueryRow[] = []
+
+  // Resolve props, substituting variable references from the context
+  const resolvedProps: Record<string, unknown> = {}
+  if (mergeNode.props) {
+    for (const [key, val] of Object.entries(mergeNode.props)) {
+      // Resolve PEG values and substitute variables from context
+      const rawVal = _resolvePegValue(val)
+      if (typeof rawVal === 'string' && rawVal in context) {
+        // Variable reference: substitute with context value
+        resolvedProps[key] = context[rawVal]
+      } else {
+        resolvedProps[key] = rawVal
+      }
+    }
+  }
+
+  // Step 1: Try to match existing node by label + props
+  let matched: Record<string, unknown> | null = null
+  let matchedIndex = -1
+
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]
+    let matches = true
+
+    // Check label
+    if (mergeNode.label) {
+      const nodeLabel = node['_label'] as string | undefined
+      if (nodeLabel !== undefined && nodeLabel !== mergeNode.label) {
+        matches = false
+      }
+    }
+
+    // Check properties (all must match) — use already resolved props
+    if (matches && mergeNode.props) {
+      for (const [key, val] of Object.entries(resolvedProps)) {
+        const nodeVal = node[key]
+        if (nodeVal !== val) {
+          matches = false
+          break
+        }
+      }
+    }
+
+    if (matches) {
+      matched = node
+      matchedIndex = i
+      break
+    }
+  }
+
+  if (matched) {
+    // MATCHED — apply ON MATCH SET
+    if (plan.mergeOnMatch && plan.mergeOnMatch.length > 0) {
+      for (const clause of plan.mergeOnMatch) {
+        nodes[matchedIndex][clause.property] = clause.value
+      }
+    }
+    rows.push({ ...nodes[matchedIndex] })
+  } else {
+    // NOT MATCHED — create new node
+    const newNode: Record<string, unknown> = {}
+
+    if (mergeNode.label) {
+      newNode['_label'] = mergeNode.label
+    }
+
+    if (mergeNode.props) {
+      for (const [key, val] of Object.entries(resolvedProps)) {
+        newNode[key] = val
+      }
+    }
+
+    // Apply ON CREATE SET
+    if (plan.mergeOnCreate && plan.mergeOnCreate.length > 0) {
+      for (const clause of plan.mergeOnCreate) {
+        newNode[clause.property] = clause.value
+      }
+    }
+
+    nodes.push(newNode)
+    rows.push({ ...newNode })
+  }
+
+  return rows
+}
+
+/**
  * 将 PEG AST 值格式解析为普通 JavaScript 值。
  * PEG AST: { type: 'NUMBER', value: 1 } → 1
  * 如果是普通值则原样返回。
@@ -3510,10 +3803,19 @@ export function _executeQuery(
   }
 
   // Step 0.5: Handle MERGE — match or create with ON CREATE / ON MATCH
-  if (plan.type === 'MERGE' && plan.mergeNodes && plan.mergeNodes.length > 0) {
-    return _executeMerge(plan, nodes)
+  if (plan.type === 'MERGE' && plan.mergeNodes && plan.mergeNodes.length > 0 && !plan.unwind) {
+    const mergeResult = _executeMerge(plan, nodes)
+    // If there's no RETURN/RETURN columns with ORDER BY, return as-is
+    if (plan.returnColumns.length === 0) {
+      return mergeResult
+    }
+    // Otherwise, store merge result as candidates and continue for RETURN/ORDER BY processing
+    var mergeExecuted = true
+    var mergeResultData = mergeResult
   }
-  let candidates = [...nodes]
+  var candidates = plan.type === 'MERGE' && (typeof mergeExecuted !== 'undefined' && mergeExecuted)
+    ? (mergeResultData as Array<Record<string, unknown>>)
+    : [...nodes]
 
   // Filter by scan label / label expression (MATCH (n:Label) / MATCH (n:Person|Animal))
   var hasLabels = nodes.some(function(n) { return n['_label'] !== undefined })
@@ -3566,6 +3868,25 @@ export function _executeQuery(
   // Step 1.5: Handle UNWIND — 展开列表为多行
   if (plan.unwind) {
     candidates = _executeUnwind(candidates, plan.unwind)
+  }
+
+  // Step 1.55: Handle second UNWIND (UNWIND chain) — 在第一个展开后再展开
+  if (plan.secondUnwind) {
+    candidates = _executeUnwind(candidates, plan.secondUnwind)
+  }
+
+  // Step 1.56: Handle UNWIND + MERGE — 对每个展开的行执行 MERGE
+  if (plan.type === 'MERGE' && plan.mergeNodes && plan.mergeNodes.length > 0 && plan.unwind) {
+    // 对每个展开的候选行，解析 MERGE 属性中的变量引用，然后执行 MERGE
+    const mergeResult: QueryRow[] = []
+    for (const candidate of candidates) {
+      const mergeNodes = plan.mergeNodes!
+      for (const mergeNode of mergeNodes) {
+        let mergedRows = _executeMergeOnCandidate(plan, mergeNode, nodes, candidate)
+        mergeResult.push(...mergedRows)
+      }
+    }
+    candidates = mergeResult
   }
 
   // Step 1.6a: Handle CALL 过程调用 — 从注册表获取并执行
@@ -3621,28 +3942,30 @@ export function _executeQuery(
 
     // Apply YIELD filtering if specified
     if (yieldItems && yieldItems.length > 0) {
-      const validFields = new Set(yieldItems.map(y => y.name))
-      const availableFields = new Set(
-        resultRows.length > 0 ? Object.keys(resultRows[0]) : [],
-      )
+      if (resultRows.length === 0) {
+        candidates = []
+      } else {
+        const availableFields = new Set(Object.keys(resultRows[0]))
 
-      // Check for invalid yield fields
-      for (const y of yieldItems) {
-        if (!availableFields.has(y.name)) {
-          throw new Error(
-            `Invalid YIELD field '${y.name}' for procedure '${name}'. Available fields: ${Array.from(availableFields).join(', ')}`,
-          )
-        }
-      }
-
-      resultRows = resultRows.map(row => {
-        const filtered: Record<string, unknown> = {}
+        // Check for invalid yield fields
         for (const y of yieldItems) {
-          const key = y.alias ?? y.name
-          filtered[key] = row[y.name]
+          if (!availableFields.has(y.name)) {
+            throw new Error(
+              `Invalid YIELD field '${y.name}' for procedure '${name}'. Available fields: ${Array.from(availableFields).join(', ')}`,
+            )
+          }
         }
-        return filtered
-      })
+
+        resultRows = resultRows.map(row => {
+          const filtered: Record<string, unknown> = {}
+          for (const y of yieldItems) {
+            const key = y.alias ?? y.name
+            filtered[key] = row[y.name]
+          }
+          return filtered
+        })
+        candidates = resultRows.map(r => ({ ...r } as Record<string, unknown>))
+      }
     }
 
     candidates = resultRows.map(r => ({ ...r } as Record<string, unknown>))
@@ -5630,6 +5953,13 @@ function _evaluateAddExpression(expr: any, row: Record<string, unknown>): unknow
   if (expr.type === 'LIST') {
     return (expr.items ?? []).map((item: any) => _evaluateAddExpression(item, row))
   }
+  if (expr.type === 'MAP') {
+    const result: Record<string, unknown> = {}
+    for (const entry of expr.properties ?? []) {
+      result[entry.key] = _evaluateAddExpression(entry.value, row)
+    }
+    return result
+  }
   if (expr.type === 'SUBSCRIPT') {
     const arr = _evaluateAddExpression(expr.expr, row)
     const index = _evaluateAddExpression(expr.index, row)
@@ -5679,6 +6009,30 @@ function _evaluateAddExpression(expr: any, row: Record<string, unknown>): unknow
     const args = (expr.args || []).map((a: any) => _evaluateAddExpression(a, row))
     return executeBuiltinFunction(methodName, args)
   }
+
+  // Plain object map literal from PEG (e.g. {person: {name: "Alice"}})
+  // PEG generates plain objects without .type, but values are Expression ASTs
+  if (expr && typeof expr === 'object' && !Array.isArray(expr) && !expr.type) {
+    const keys = Object.keys(expr)
+    if (keys.length > 0) {
+      // Check if this looks like a PEG map literal (at least one value is an AST node)
+      const firstVal = expr[keys[0]]
+      const hasAstValue = firstVal && typeof firstVal === 'object' && (
+        (firstVal.type && typeof firstVal.type === 'string') ||
+        Array.isArray(firstVal)  // List in map value
+      )
+      if (hasAstValue) {
+        const result: Record<string, unknown> = {}
+        for (const key of keys) {
+          result[key] = _evaluateAddExpression((expr as any)[key], row)
+        }
+        return result
+      }
+    }
+    // Runtime data object — return as-is
+    return expr
+  }
+
   return null
 }
 
@@ -6614,6 +6968,9 @@ export const BUILTIN_FUNCTIONS: Record<string, (...args: any[]) => any> = {
     }
     return null
   },
+
+  // ── 存在性判断 ──
+  exists: (prop: any) => prop != null,
 }
 
 export function isBuiltinFunction(name: string): boolean {

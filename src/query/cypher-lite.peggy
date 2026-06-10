@@ -85,14 +85,14 @@ ExplainStatement
 // ── DROP CONSTRAINT ──────────────────────────────────────────
 
 DropConstraintStatement
-  = "DROP"i _ "CONSTRAINT"i _ name:Identifier {
-      return { type: 'DROP_CONSTRAINT', name }
-    }
-  / "DROP"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+  = "DROP"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
       return { type: 'DROP_CONSTRAINT', label: label, property: prop.property }
     }
   / "DROP"i _ "CONSTRAINT"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ASSERT"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
       return { type: 'DROP_CONSTRAINT', label: label, property: prop.property }
+    }
+  / "DROP"i _ "CONSTRAINT"i _ name:Identifier {
+      return { type: 'DROP_CONSTRAINT', name }
     }
 
 // ── CREATE CONSTRAINT ──────────────────────────────────
@@ -233,6 +233,16 @@ DMLStatement
       const stmt = { type: 'QUERY', match: matchClause, create: createClause }
       if (whereClause) stmt.where = whereClause
       if (returnClause) stmt.return = returnClause
+      return stmt
+    }
+  / matchClause:MatchClause whereClause:WhereClause? deleteClause:DeleteClause limitSkip:LimitSkipClause? orderByClause:OrderByClause? returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', match: matchClause, delete: deleteClause }
+      if (whereClause) stmt.where = whereClause
+      if (limitSkip) { stmt.limit = limitSkip.limit; stmt.skip = limitSkip.skip }
+      if (orderByClause) stmt.orderBy = orderByClause
+      if (returnClause) {
+        stmt.return = returnClause
+      }
       return stmt
     }
   / matchClause:MatchClause deleteClause:DeleteClause limitSkip:LimitSkipClause? returnClause:ReturnClause? {
@@ -1335,7 +1345,7 @@ Additive
 // ── 列表下标 & 切片 ────────────────────────────────────────
 
 ListSubscript
-  = expr:Primary "[" _ index:OrExpression _ "]" { return { type: 'SUBSCRIPT', expr, index } }
+  = expr:Primary sub:SubscriptChain { return sub.length === 1 ? { type: 'SUBSCRIPT', expr, index: sub[0] } : { type: 'CHAIN_SUBSCRIPT', expr, indices: sub } }
   / expr:Primary "[" _ ".." _ end:OrExpression _ "]" { return { type: 'SLICE', expr, start: null, end } }
   / expr:Primary "[" _ start:OrExpression _ ".." _ "]" { return { type: 'SLICE', expr, start, end: null } }
   / expr:Primary "[" _ start:OrExpression _ ".." _ end:OrExpression _ "]" { return { type: 'SLICE', expr, start, end } }
@@ -1344,6 +1354,12 @@ ListSubscript
       return { type: 'METHOD_CALL', expr, method: name, args: args || [] }
     }
   / Primary
+
+SubscriptChain
+  = head:SubscriptItem tail:SubscriptItem* { return [head, ...tail] }
+
+SubscriptItem
+  = "[" _ index:OrExpression _ "]" { return index }
 
 ComparisonOp
   = ">=" { return 'GTE' }
