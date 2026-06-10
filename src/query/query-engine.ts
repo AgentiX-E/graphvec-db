@@ -1726,9 +1726,19 @@ export function parseQuery(query: string): QueryPlan {
         orderBy: [],
       }
     }
+    // CALL (子查询) — route through planFromAST directly
+    if (directAst.type === 'CALL') {
+      const plan = planFromAST(directAst)
+      return plan
+    }
+    // CALL_PROCEDURE — route through planFromAST directly
+    if (directAst.type === 'CALL_PROCEDURE') {
+      const plan = planFromAST(directAst)
+      return plan
+    }
     // Compound queries (MATCH + WHERE + CREATE/SET/REMOVE + RETURN) — 
     // already parsed directly by PEG. Route through planFromAST directly.
-    if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete || directAst.forEach || directAst.match)) {
+    if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete || directAst.forEach || directAst.match || directAst.unwind || directAst.merge)) {
       // If query contains OPTIONAL MATCH or WITH but directAst didn't parse them,
       // fall through to preprocessing (handles MATCH ... OPTIONAL MATCH ... RETURN cases)
       if (directAst.match && !(directAst as any).optionalMatches && query.includes('OPTIONAL MATCH')) {
