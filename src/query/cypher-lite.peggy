@@ -1630,8 +1630,16 @@ PropertyEntry
 
 // ── CALL 子查询 ──────────────────────────────────────────
 
+// 支持 CALL { MATCH ... RETURN ... }, CALL { CREATE ... }, CALL { WITH ... } 等多种子查询类型
+CallSubqueryStatement
+  = DMLStatement
+  / MatchStatement
+  / WithStatement
+  / UnwindStatement
+  / ForEachStatement
+
 CallStatement
-  = "CALL"i _ "{" _ subq:DMLStatement _ "}" _ tx:InTransactionsClause? _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
+  = "CALL"i _ "{" _ subq:CallSubqueryStatement _ "}" _ tx:InTransactionsClause? _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
       const stmt = {
         type: 'CALL',
         query: subq,

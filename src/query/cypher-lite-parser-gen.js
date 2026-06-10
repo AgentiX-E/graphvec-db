@@ -16876,6 +16876,26 @@ if (unionClause) {
     return s0;
   }
 
+  function peg$parseCallSubqueryStatement() {
+    let s0;
+
+    s0 = peg$parseDMLStatement();
+    if (s0 === peg$FAILED) {
+      s0 = peg$parseMatchStatement();
+      if (s0 === peg$FAILED) {
+        s0 = peg$parseWithStatement();
+        if (s0 === peg$FAILED) {
+          s0 = peg$parseUnwindStatement();
+          if (s0 === peg$FAILED) {
+            s0 = peg$parseForEachStatement();
+          }
+        }
+      }
+    }
+
+    return s0;
+  }
+
   function peg$parseCallStatement() {
     let s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15;
 
@@ -16898,7 +16918,7 @@ if (unionClause) {
       }
       if (s3 !== peg$FAILED) {
         s4 = peg$parse_();
-        s5 = peg$parseDMLStatement();
+        s5 = peg$parseCallSubqueryStatement();
         if (s5 !== peg$FAILED) {
           s6 = peg$parse_();
           if (input.charCodeAt(peg$currPos) === 125) {
