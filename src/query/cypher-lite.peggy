@@ -229,6 +229,12 @@ DMLStatement
       if (returnClause) stmt.return = returnClause
       return stmt
     }
+  / matchClause:MatchClause whereClause:WhereClause? createClause:CreateClause returnClause:ReturnClause? {
+      const stmt = { type: 'QUERY', match: matchClause, create: createClause }
+      if (whereClause) stmt.where = whereClause
+      if (returnClause) stmt.return = returnClause
+      return stmt
+    }
   / matchClause:MatchClause deleteClause:DeleteClause limitSkip:LimitSkipClause? returnClause:ReturnClause? {
       const stmt = { type: 'QUERY', match: matchClause, delete: deleteClause }
       if (limitSkip) { stmt.limit = limitSkip.limit; stmt.skip = limitSkip.skip }

@@ -1737,7 +1737,8 @@ describe('TCK — EDGE 边操作', () => {
   })
 
   it('[TCK-EDGE-02] CREATE 关系带属性', () => {
-    expect(() => parseQuery('MATCH (a:Person), (b:Person) CREATE (a)-[:KNOWS {since: 2020}]->(b)')).toThrow()
+    const plan = parseQuery('MATCH (a:Person), (b:Person) CREATE (a)-[:KNOWS {since: 2020}]->(b)')
+    expect(plan).toBeDefined()
   })
 
   it('[TCK-EDGE-03] CREATE 关系并 RETURN', () => {
