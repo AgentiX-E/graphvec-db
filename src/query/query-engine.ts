@@ -3454,7 +3454,9 @@ export function _executeQuery(
 
   // Step 0: Handle UNION — 分别执行左右两侧再合并结果
   if (plan.unionType && plan.rightPlan) {
-    const leftResult = _executeQuery(plan, nodes)
+    // 关键修复：左半部分执行时必须剥离 unionType/rightPlan，否则会无限递归
+    const leftPlan = { ...plan, unionType: undefined, rightPlan: undefined }
+    const leftResult = _executeQuery(leftPlan, nodes)
     const rightResult = _executeQuery(plan.rightPlan, nodes)
 
     // 只考虑 rows（忽略 metadata）
