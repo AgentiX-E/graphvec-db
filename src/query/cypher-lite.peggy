@@ -922,6 +922,18 @@ EdgePattern
   / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range } }
   / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ props:PropertyMap _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range, props } }
   / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range } }
+  / "-[" _ name:Identifier _ ":" _ type:EdgeLabelExpression _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', props } }
+  / "-[" _ name:Identifier _ ":" _ type:EdgeLabelExpression _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out' } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', props } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out' } }
+  / "-[" _ name:Identifier _ ":" _ type:EdgeLabelExpression _ props:PropertyMap _ "]-"  { return { type: 'EDGE', name, label: type, direction: 'any', props } }
+  / "-[" _ name:Identifier _ ":" _ type:EdgeLabelExpression _ "]-"  { return { type: 'EDGE', name, label: type, direction: 'any' } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ props:PropertyMap _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', props } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any' } }
+  / "-[" _ name:Identifier _ ":" _ type:EdgeLabelExpression _ props:PropertyMap _ "<-" { return { type: 'EDGE', name, label: type, direction: 'in', props } }
+  / "-[" _ name:Identifier _ ":" _ type:EdgeLabelExpression _ "<-" { return { type: 'EDGE', name, label: type, direction: 'in' } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ props:PropertyMap _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', props } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in' } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', props } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out' } }
   / "-[" _ ":" _ type:Label _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', props } }
@@ -958,14 +970,43 @@ WhereClause
 
 ReturnClause
   = _ "RETURN"i _ "DISTINCT"i _ cols:ColumnList _ {
+      const hasAgg = cols.some(c => c.type === 'AGGREGATE_COLUMN')
+      if (hasAgg) {
+        const firstAgg = cols.find(c => c.type === 'AGGREGATE_COLUMN')
+        const aggregateClause = {
+          type: firstAgg ? firstAgg.expression.func : '',
+          field: firstAgg ? firstAgg.expression.field : undefined,
+          alias: firstAgg ? firstAgg.expression.alias : undefined,
+          multiAgg: cols.map(c => ({
+            type: c.type === 'AGGREGATE_COLUMN' ? c.expression.func : 'literal',
+            field: c.type === 'AGGREGATE_COLUMN' ? c.expression.field : undefined,
+            alias: c.type === 'AGGREGATE_COLUMN' ? c.expression.alias : undefined,
+            expression: c.type === 'LITERAL_COLUMN' ? c.expression : undefined,
+          })),
+        }
+        return { type: 'RETURN', columns: [], aggregate: aggregateClause, distinct: true, allCols: cols }
+      }
       return { type: 'RETURN', columns: cols, distinct: true }
     }
-  / _ "RETURN"i _ agg:AggregateFunc _ {
-      const field = agg.field ? agg.field.join('.') : undefined
-      const aggregateClause = { type: agg.func, field, alias: agg.alias }
-      return { type: 'RETURN', columns: [], aggregate: aggregateClause }
+  / _ "RETURN"i _ cols:ColumnList _ {
+      const hasAgg = cols.some(c => c.type === 'AGGREGATE_COLUMN')
+      if (hasAgg) {
+        const firstAgg = cols.find(c => c.type === 'AGGREGATE_COLUMN')
+        const aggregateClause = {
+          type: firstAgg ? firstAgg.expression.func : '',
+          field: firstAgg ? firstAgg.expression.field : undefined,
+          alias: firstAgg ? firstAgg.expression.alias : undefined,
+          multiAgg: cols.map(c => ({
+            type: c.type === 'AGGREGATE_COLUMN' ? c.expression.func : 'literal',
+            field: c.type === 'AGGREGATE_COLUMN' ? c.expression.field : undefined,
+            alias: c.type === 'AGGREGATE_COLUMN' ? c.expression.alias : undefined,
+            expression: c.type === 'LITERAL_COLUMN' ? c.expression : undefined,
+          })),
+        }
+        return { type: 'RETURN', columns: [], aggregate: aggregateClause, allCols: cols }
+      }
+      return { type: 'RETURN', columns: cols }
     }
-  / _ "RETURN"i _ cols:ColumnList _ { return { type: 'RETURN', columns: cols } }
 
 AggregateFunc
   = func:(CountFunc / SumFunc / AvgFunc / MaxFunc / MinFunc / CollectFunc) { return func }
@@ -1067,22 +1108,6 @@ Column
         type: 'AGGREGATE_COLUMN',
         expression: { type: 'AGGREGATE', func: agg.func, field },
         alias: agg.alias,
-      }
-    }
-  / expr:FunctionCall !(_ ("+" / "-" / "*" / "/" / "%" / "^")) alias:AsClause? {
-      return {
-        type: 'COLUMN',
-        expression: expr,
-        alias: alias,
-      }
-    }
-  / expr:FunctionCall _ op:("+" / "-") _ rest:ListSubscript alias:AsClause? {
-      // Function call followed by arithmetic op
-      const astType = op === '+' ? 'ADD' : 'SUBTRACT'
-      return {
-        type: 'COLUMN',
-        expression: { type: astType, left: expr, right: rest },
-        alias: alias,
       }
     }
   / expr:CaseExpression alias:AsClause? {
@@ -1408,8 +1433,8 @@ Label
 // ── 标签表达式（边内使用，无前导 ":"）─────────────────
 // EdgePattern 中 ":" 已在调用方匹配，所以这里直接匹配 label
 EdgeLabelExpression
-  = head:LabelPart rest:("|" part:LabelPart / ":" part:LabelPart)* {
-      const items = [head].concat(rest.map(r => r[1]))
+  = head:LabelPart rest:(":" part:LabelPart / "|" ":"? part:LabelPart)* {
+      const items = [head].concat(rest.map(r => r[r.length-1]))
       return { type: 'LABEL_EXPR', items }
     }
 
