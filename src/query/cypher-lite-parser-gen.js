@@ -1788,10 +1788,28 @@ if (unionClause) {
     return result
   }
   function peg$f339(nested) {    return { type: 'FOREACH_BODY', forEach: nested }  }
-  function peg$f340(createClause) {    return { type: 'FOREACH_BODY', create: createClause }  }
-  function peg$f341(setClause) {    return { type: 'FOREACH_BODY', set: setClause }  }
-  function peg$f342(delClause) {    return { type: 'FOREACH_BODY', delete: delClause }  }
-  function peg$f343(removeClause) {    return { type: 'FOREACH_BODY', remove: removeClause }  }
+  function peg$f340(mergeClause, setClause) {    
+         const result = { type: 'FOREACH_BODY', merge: mergeClause }
+         if (setClause) result.set = setClause
+         return result
+  }
+  function peg$f341(createClause, secondCreate) {
+    const result = { type: 'FOREACH_BODY', create: createClause }
+    if (secondCreate) result.create2 = secondCreate
+    return result
+  }
+  function peg$f342(createClause) {
+    return { type: 'FOREACH_BODY', create: createClause }
+  }
+  function peg$f343(setClause) {
+    return { type: 'FOREACH_BODY', set: setClause }
+  }
+  function peg$f344(delClause) {
+    return { type: 'FOREACH_BODY', delete: delClause }
+  }
+  function peg$f345(removeClause) {
+    return { type: 'FOREACH_BODY', remove: removeClause }
+  }
   let peg$currPos = options.peg$currPos | 0;
   let peg$savedPos = peg$currPos;
   const peg$posDetailsCache = [{ line: 1, column: 1 }];
@@ -17800,7 +17818,7 @@ if (unionClause) {
   }
 
   function peg$parseForEachBody() {
-    let s0, s1;
+    let s0, s1, s2;
 
     s0 = peg$currPos;
     s1 = peg$parseForEachClause();
@@ -17811,23 +17829,35 @@ if (unionClause) {
     s0 = s1;
     if (s0 === peg$FAILED) {
       s0 = peg$currPos;
-      s1 = peg$parseCreateClause();
+      s1 = peg$parseMergeClause();
       if (s1 !== peg$FAILED) {
+        s2 = peg$parseSetClause();
+        if (s2 === peg$FAILED) {
+          s2 = null;
+        }
         peg$savedPos = s0;
-        s1 = peg$f340(s1);
+        s0 = peg$f340(s1, s2);
+      } else {
+        peg$currPos = s0;
+        s0 = peg$FAILED;
       }
-      s0 = s1;
       if (s0 === peg$FAILED) {
         s0 = peg$currPos;
-        s1 = peg$parseSetClause();
+        s1 = peg$parseCreateClause();
         if (s1 !== peg$FAILED) {
+          s2 = peg$parseCreateClause();
+          if (s2 === peg$FAILED) {
+            s2 = null;
+          }
           peg$savedPos = s0;
-          s1 = peg$f341(s1);
+          s0 = peg$f341(s1, s2);
+        } else {
+          peg$currPos = s0;
+          s0 = peg$FAILED;
         }
-        s0 = s1;
         if (s0 === peg$FAILED) {
           s0 = peg$currPos;
-          s1 = peg$parseDeleteClause();
+          s1 = peg$parseCreateClause();
           if (s1 !== peg$FAILED) {
             peg$savedPos = s0;
             s1 = peg$f342(s1);
@@ -17835,12 +17865,30 @@ if (unionClause) {
           s0 = s1;
           if (s0 === peg$FAILED) {
             s0 = peg$currPos;
-            s1 = peg$parseRemoveClause();
+            s1 = peg$parseSetClause();
             if (s1 !== peg$FAILED) {
               peg$savedPos = s0;
               s1 = peg$f343(s1);
             }
             s0 = s1;
+            if (s0 === peg$FAILED) {
+              s0 = peg$currPos;
+              s1 = peg$parseDeleteClause();
+              if (s1 !== peg$FAILED) {
+                peg$savedPos = s0;
+                s1 = peg$f344(s1);
+              }
+              s0 = s1;
+              if (s0 === peg$FAILED) {
+                s0 = peg$currPos;
+                s1 = peg$parseRemoveClause();
+                if (s1 !== peg$FAILED) {
+                  peg$savedPos = s0;
+                  s1 = peg$f345(s1);
+                }
+                s0 = s1;
+              }
+            }
           }
         }
       }

@@ -1698,7 +1698,7 @@ export function parseQuery(query: string): QueryPlan {
         filters: [],
         returnColumns: [],
         orderBy: [],
-        forEachClause: directAst,
+        forEach: _pegForEachToClause(directAst),
       }
     }
     // EXISTS subquery (NEST / SQ2) — 解析即可
@@ -1739,6 +1739,11 @@ export function parseQuery(query: string): QueryPlan {
     // Compound queries (MATCH + WHERE + CREATE/SET/REMOVE + RETURN) — 
     // already parsed directly by PEG. Route through planFromAST directly.
     if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete || directAst.forEach || directAst.match || directAst.unwind || directAst.merge)) {
+      // FOREACH-only queries — handle directly without preprocessing
+      if (directAst.forEach) {
+        const plan = planFromAST(directAst)
+        return plan
+      }
       // If query contains OPTIONAL MATCH or WITH but directAst didn't parse them,
       // fall through to preprocessing (handles MATCH ... OPTIONAL MATCH ... RETURN cases)
       if (directAst.match && !(directAst as any).optionalMatches && query.includes('OPTIONAL MATCH')) {
@@ -2275,7 +2280,9 @@ export function planFromAST(
       filters: [],
       returnColumns: [],
       orderBy: [],
-      forEachClause: ast.forEach,
+      forEach: ast.forEach && typeof ast.forEach === 'object' && (ast.forEach as any).body
+        ? _pegForEachToClause(ast.forEach as any)
+        : ast.forEach as ForEachClause,
     }
   }
 
@@ -4488,6 +4495,143 @@ export function _executeForeach(
  * @param item - 当前迭代元素值
  * @returns 条件是否通过
  */
+
+function _pegExprToString(expr: any): string {
+  if (typeof expr === 'string') return expr
+  if (typeof expr === 'number') return String(expr)
+  if (expr === null || expr === undefined) return ''
+  if (expr.type === 'NUMBER') return String(expr.value)
+  if (expr.type === 'STRING') return `"${expr.value}"`
+  if (expr.type === 'IDENTIFIER' || expr.type === 'VARIABLE') return expr.name
+  if (expr.type === 'MULTIPLY') {
+    const l = _pegExprToString(expr.left)
+    const r = _pegExprToString(expr.right)
+    return `${l} * ${r}`
+  }
+  if (expr.type === 'PLUS') return `${_pegExprToString(expr.left)} + ${_pegExprToString(expr.right)}`
+  if (expr.type === 'MINUS') return `${_pegExprToString(expr.left)} - ${_pegExprToString(expr.right)}`
+  if (expr.type === 'DIVIDE') return `${_pegExprToString(expr.left)} / ${_pegExprToString(expr.right)}`
+  if (expr.type === 'NEGATE') return `-${_pegExprToString(expr.operand || expr.value)}`
+  if (expr.type === 'FUNCTION_CALL') {
+    const args = (expr.args || []).map((a: any) => _pegExprToString(a)).join(', ')
+    return `${expr.name}(${args})`
+  }
+  if (expr.type === 'PROP_ACCESS') return `${expr.alias}.${expr.property}`
+  if (expr.type === 'LIST') {
+    const items = (expr.items || []).map((i: any) => _pegExprToString(i)).join(', ')
+    return `[${items}]`
+  }
+  return JSON.stringify(expr)
+}
+
+/**
+ * 将 PEG 生成的 FOREACH AST 转换为内部 ForEachClause 格式。
+ * PEG AST: { type: 'FOREACH', variable, list, body: { create/create2/merge/set/delete/remove } }
+ */
+function _pegForEachToClause(pegAst: any): ForEachClause {
+  const listVal = pegAst.list
+  let list: unknown[] = []
+  let isVarRef = true
+  if (listVal && listVal.type === 'LIST') {
+    isVarRef = false
+    list = (listVal.items || []).map((item: any) => item.value ?? item)
+  } else if (typeof listVal === 'string') {
+    list = [listVal]
+  }
+
+  const body = pegAst.body
+  if (!body) {
+    return {
+      variable: pegAst.variable,
+      list,
+      isVarRef,
+      operation: { type: 'CREATE' },
+    }
+  }
+
+  const operations: ForEachClause['operation'][] = []
+
+  // Handle body.create / body.create2 (CREATE node)
+  for (const create of [body.create, body.create2].filter(Boolean)) {
+    const nodePatterns = (create.patterns || []).filter((p: any) => p.type === 'CREATE_NODE')
+    const createNodes = nodePatterns.map((p: any) => {
+      const n = p.node || {}
+      const props = n.props || {}
+      const propsClean: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(props)) {
+        propsClean[k] = typeof v === 'object' && v !== null && 'value' in v ? (v as any).value : v
+      }
+      return {
+        alias: n.name || 'n',
+        label: n.label || (n.labelExpr?.items?.[0]?.name) || null,
+        props: Object.keys(propsClean).length > 0 ? propsClean : null,
+      }
+    })
+    operations.push({
+      type: 'CREATE',
+      createNodes: createNodes.length > 0 ? createNodes : undefined,
+    })
+  }
+
+  // Handle body.merge (MERGE + optional ON MATCH SET)
+  if (body.merge) {
+    const nodePatterns = (body.merge.patterns || []).filter((p: any) => p.type === 'CREATE_NODE')
+    const mergeNodes = nodePatterns.map((p: any) => {
+      const n = p.node || {}
+      const props = n.props || {}
+      return {
+        alias: n.name || 'n',
+        label: (n.labelExpr?.items?.[0]?.name) || null,
+        props: Object.keys(props).length > 0 ? props : null,
+      }
+    })
+    operations.push({ type: 'CREATE', createNodes: mergeNodes })
+    if (body.merge.set) {
+      const setClauses = (body.merge.set.assignments || []).map((a: any) => ({
+        property: `${a.target?.alias || a.target?.name || a.node?.name || 'n'}.${a.target?.property || a.property || ''}`,
+        value: _pegExprToString(a.value || a.source),
+      }))
+      if (setClauses.length > 0) operations.push({ type: 'SET', setClauses })
+    }
+  }
+
+  // Handle body.set (SET)
+  if (body.set && body.set.assignments) {
+    const setClauses = (body.set.assignments || []).map((a: any) => ({
+      property: `${a.target?.alias || a.target?.name || 'n'}.${a.target?.property || a.property || ''}`,
+      value: _pegExprToString(a.value || a.source),
+    }))
+    if (setClauses.length > 0) operations.push({ type: 'SET', setClauses })
+  }
+
+  // Handle body.delete (DELETE)
+  if (body.delete) {
+    const targets = (body.delete.targets || []).map((t: any) => String(t.name ?? t))
+    operations.push({ type: 'DELETE', targets: targets.length > 0 ? targets : undefined })
+  }
+
+  // Handle body.remove (REMOVE)
+  if (body.remove) {
+    const targets = (body.remove.targets || []).map((t: any) => String(t))
+    operations.push({ type: 'REMOVE', targets: targets.length > 0 ? targets : undefined })
+  }
+
+  // Handle nested FOREACH
+  if (body.forEach) {
+    operations.push({ type: 'FOREACH', foreach: _pegForEachToClause(body.forEach) })
+  }
+
+  if (operations.length === 0) {
+    return { variable: pegAst.variable, list, isVarRef, operation: { type: 'CREATE' } }
+  }
+
+  if (operations.length === 1) {
+    return { variable: pegAst.variable, list, isVarRef, operation: operations[0] }
+  }
+
+  return { variable: pegAst.variable, list, isVarRef, operation: { type: 'MULTI', operations } }
+}
+
 export function _evalForeachCondition(
   where: string,
   varName: string,

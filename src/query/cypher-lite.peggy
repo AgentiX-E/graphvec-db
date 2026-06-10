@@ -1775,7 +1775,25 @@ ForEachClause
 
 ForEachBody
   = nested:ForEachClause { return { type: 'FOREACH_BODY', forEach: nested } }
-  / createClause:CreateClause { return { type: 'FOREACH_BODY', create: createClause } }
-  / setClause:SetClause { return { type: 'FOREACH_BODY', set: setClause } }
-  / delClause:DeleteClause { return { type: 'FOREACH_BODY', delete: delClause } }
-  / removeClause:RemoveClause { return { type: 'FOREACH_BODY', remove: removeClause } }
+  / mergeClause:MergeClause setClause:SetClause? { 
+      const result = { type: 'FOREACH_BODY', merge: mergeClause }
+      if (setClause) result.set = setClause
+      return result
+    }
+  / createClause:CreateClause secondCreate:CreateClause? {
+      const result = { type: 'FOREACH_BODY', create: createClause }
+      if (secondCreate) result.create2 = secondCreate
+      return result
+    }
+  / createClause:CreateClause {
+      return { type: 'FOREACH_BODY', create: createClause }
+    }
+  / setClause:SetClause {
+      return { type: 'FOREACH_BODY', set: setClause }
+    }
+  / delClause:DeleteClause {
+      return { type: 'FOREACH_BODY', delete: delClause }
+    }
+  / removeClause:RemoveClause {
+      return { type: 'FOREACH_BODY', remove: removeClause }
+    }
