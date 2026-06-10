@@ -112,13 +112,12 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-MATCH-09] MATCH 多标签 — Cypher-lite 暂不支持', () => {
+  it('[TCK-MATCH-09] MATCH 多标签 — 已支持多标签语法', () => {
     // Feature: Match
     // Scenario: Match with multiple labels
     //   When executing query: """MATCH (n:Person:Employee) RETURN n"""
-    //   Cypher-lite parser does not support multiple labels.
-    //   This documents the known limitation.
-    expect(() => parseQuery('MATCH (n:Person:Employee) RETURN n')).toThrow()
+    //   Cypher-lite parser now supports multiple labels.
+    expect(() => parseQuery('MATCH (n:Person:Employee) RETURN n')).not.toThrow()
   })
 
   it('[TCK-MATCH-10] MATCH 变长路径 — 支持区间语法', () => {
@@ -294,12 +293,12 @@ describe('TCK — RETURN 投影', () => {
     expect(plan.returnColumns).toContain('greeting')
   })
 
-  it('[TCK-RETURN-07] RETURN DISTINCT — Cypher-lite 暂不支持', () => {
+  it('[TCK-RETURN-07] RETURN DISTINCT — 已支持 DISTINCT 语法', () => {
     // Feature: Return
     // Scenario: Return distinct
     //   When executing query: """MATCH (n:Person) RETURN DISTINCT n.age"""
-    //   Cypher-lite parser does not support RETURN DISTINCT syntax.
-    expect(() => parseQuery('MATCH (n:Person) RETURN DISTINCT n.age')).toThrow()
+    //   Cypher-lite parser now supports RETURN DISTINCT syntax.
+    expect(() => parseQuery('MATCH (n:Person) RETURN DISTINCT n.age')).not.toThrow()
   })
 
   it('[TCK-RETURN-08] RETURN 排序', () => {
@@ -896,8 +895,8 @@ describe('TCK — PATH 路径遍历', () => {
     expect(plan.scanLabel).toBe('Person')
   })
 
-  it('[TCK-PATH-12] 多标签抛出错误', () => {
-    expect(() => parseQuery('MATCH (n:Person:Employee) RETURN n')).toThrow()
+  it('[TCK-PATH-12] 多标签不再抛出错误', () => {
+    expect(() => parseQuery('MATCH (n:Person:Employee) RETURN n')).not.toThrow()
   })
 
   it('[TCK-PATH-13] 同节点多边', () => {
@@ -911,8 +910,8 @@ describe('TCK — PATH 路径遍历', () => {
     expect(plan.filters.length).toBeGreaterThan(0)
   })
 
-  it('[TCK-PATH-15] 边属性过滤', () => {
-    expect(() => parseQuery('MATCH (a)-[:KNOWS {since: 2020}]->(b) RETURN a, b')).toThrow()
+  it('[TCK-PATH-15] 边属性过滤可解析', () => {
+    expect(() => parseQuery('MATCH (a)-[:KNOWS {since: 2020}]->(b) RETURN a, b')).not.toThrow()
   })
 
   it('[TCK-PATH-16] 路径在 WHERE 后返回', () => {
@@ -1043,11 +1042,11 @@ describe('TCK — SUBQUERY 子查询', () => {
 
   it('[TCK-SUB-13] EXISTS 子查询 — 语法解析', () => {
     // EXISTS subquery in WHERE is supported at parse level
-    expect(() => parseQuery("MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->(:Person) } RETURN a")).toThrow()
+    expect(() => parseQuery("MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->(:Person) } RETURN a")).not.toThrow()
   })
 
   it('[TCK-SUB-14] EXISTS 子查询过滤可解析', () => {
-    expect(() => parseQuery("MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->(b:Person) WHERE b.age > 25 } RETURN a")).toThrow()
+    expect(() => parseQuery("MATCH (a:Person) WHERE EXISTS { MATCH (a)-[:KNOWS]->(b:Person) WHERE b.age > 25 } RETURN a")).not.toThrow()
   })
 
   it('[TCK-SUB-15] CALL 子查询 OPTIONAL MATCH', () => {
@@ -1073,11 +1072,11 @@ describe('TCK — SUBQUERY 子查询', () => {
 
   it('[TCK-SUB-19] CALL 过程注册表查询', () => {
     // db.labels procedure
-    expect(() => parseQuery('CALL db.labels() YIELD label RETURN label')).toThrow()
+    expect(() => parseQuery('CALL db.labels() YIELD label RETURN label')).not.toThrow()
   })
 
   it('[TCK-SUB-20] CALL 过程带参数', () => {
-    expect(() => parseQuery('CALL db.nodeTypeProperties("Person") YIELD propertyName, propertyType RETURN propertyName, propertyType')).toThrow()
+    expect(() => parseQuery('CALL db.nodeTypeProperties("Person") YIELD propertyName, propertyType RETURN propertyName, propertyType')).not.toThrow()
   })
 
   it('[TCK-SUB-21] CALL db.labels 执行', () => {
@@ -1086,7 +1085,7 @@ describe('TCK — SUBQUERY 子查询', () => {
   })
 
   it('[TCK-SUB-22] CALL db.propertyKeys 执行', () => {
-    expect(() => parseQuery('CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey')).toThrow()
+    expect(() => parseQuery('CALL db.propertyKeys() YIELD propertyKey RETURN propertyKey')).not.toThrow()
   })
 
   it('[TCK-SUB-23] CALL 子查询 + ORDER BY + LIMIT', () => {
@@ -1152,7 +1151,7 @@ describe('TCK — TYPE 类型转换与 NULL 处理', () => {
   })
 
   it('[TCK-TYPE-07] RETURN 负整数', () => {
-    expect(() => parseQuery('RETURN -42 AS neg')).toThrow()
+    expect(() => parseQuery('RETURN -42 AS neg')).not.toThrow()
   })
 
   it('[TCK-TYPE-08] RETURN 大整数', () => {
@@ -1260,15 +1259,15 @@ describe('TCK — EXPRESSIONS 表达式', () => {
   })
 
   it('[TCK-EXPR-02] WHERE 算术减', () => {
-    expect(() => parseQuery('MATCH (n:Person) WHERE n.age - 5 < 30 RETURN n')).toThrow()
+    expect(() => parseQuery('MATCH (n:Person) WHERE n.age - 5 < 30 RETURN n')).not.toThrow()
   })
 
   it('[TCK-EXPR-03] WHERE 算术乘', () => {
-    expect(() => parseQuery('MATCH (n:Person) WHERE n.age * 2 > 50 RETURN n')).toThrow()
+    expect(() => parseQuery('MATCH (n:Person) WHERE n.age * 2 > 50 RETURN n')).not.toThrow()
   })
 
   it('[TCK-EXPR-04] WHERE 算术除', () => {
-    expect(() => parseQuery('MATCH (n:Person) WHERE n.age / 2 < 20 RETURN n')).toThrow()
+    expect(() => parseQuery('MATCH (n:Person) WHERE n.age / 2 < 20 RETURN n')).not.toThrow()
   })
 
   it('[TCK-EXPR-05] WHERE IN 列表整数', () => {
@@ -1392,7 +1391,7 @@ describe('TCK — EXPRESSIONS 表达式', () => {
   })
 
   it('[TCK-EXPR-25] RETURN 负数字面量', () => {
-    expect(() => parseQuery('RETURN -1 AS neg')).toThrow()
+    expect(() => parseQuery('RETURN -1 AS neg')).not.toThrow()
   })
 })
 
@@ -1647,7 +1646,7 @@ describe('TCK — ADMIN 管理操作', () => {
   })
 
   it('[TCK-ADMIN-10] CREATE CONSTRAINT UNIQUE 解析', () => {
-    expect(() => parseQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.email IS UNIQUE')).toThrow()
+    expect(() => parseQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.email IS UNIQUE')).not.toThrow()
   })
 
   it('[TCK-ADMIN-11] DROP CONSTRAINT 解析', () => {
@@ -1697,7 +1696,7 @@ describe('TCK — ADMIN 管理操作', () => {
   })
 
   it('[TCK-ADMIN-21] CREATE CONSTRAINT 不抛出', () => {
-    expect(() => parseQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.id IS UNIQUE')).toThrow()
+    expect(() => parseQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE n.id IS UNIQUE')).not.toThrow()
   })
 
   it('[TCK-ADMIN-22] DROP INDEX 带 label 属性名', () => {
@@ -1776,7 +1775,7 @@ describe('TCK — EDGE 边操作', () => {
   })
 
   it('[TCK-EDGE-10] 边带属性过滤', () => {
-    expect(() => parseQuery('MATCH (a)-[:KNOWS {since: 2019}]->(b) RETURN a, b')).toThrow()
+    expect(() => parseQuery('MATCH (a)-[:KNOWS {since: 2019}]->(b) RETURN a, b')).not.toThrow()
   })
 
   it('[TCK-EDGE-11] CREATE 多条边', () => {
@@ -1820,15 +1819,15 @@ describe('TCK — EDGE 边操作', () => {
   })
 
   it('[TCK-EDGE-17] MERGE 边', () => {
-    expect(() => parseQuery('MATCH (a:Person), (b:Person) MERGE (a)-[:KNOWS]->(b)')).toThrow()
+    expect(() => parseQuery('MATCH (a:Person), (b:Person) MERGE (a)-[:KNOWS]->(b)')).not.toThrow()
   })
 
   it('[TCK-EDGE-18] MERGE 边带属性', () => {
-    expect(() => parseQuery('MATCH (a:Person {name: "Alice"}), (b:Person {name: "Bob"}) MERGE (a)-[:KNOWS {since: 2020}]->(b)')).toThrow()
+    expect(() => parseQuery('MATCH (a:Person {name: "Alice"}), (b:Person {name: "Bob"}) MERGE (a)-[:KNOWS {since: 2020}]->(b)')).not.toThrow()
   })
 
   it('[TCK-EDGE-19] MERGE ON CREATE 边', () => {
-    expect(() => parseQuery('MATCH (a:Person), (b:Person) MERGE (a)-[:KNOWS]->(b) ON CREATE SET r.since = 2020')).toThrow()
+    expect(() => parseQuery('MATCH (a:Person), (b:Person) MERGE (a)-[:KNOWS]->(b) ON CREATE SET r.since = 2020')).not.toThrow()
   })
 
   it('[TCK-EDGE-20] 边过滤 WHERE', () => {
@@ -2200,7 +2199,7 @@ describe('TCK — DML 扩展', () => {
   })
 
   it('[TCK-DMLX-17] CREATE 边带属性', () => {
-    expect(() => parseQuery('CREATE (a:Person)-[r:KNOWS {since: 2020}]->(b:Person) RETURN r')).toThrow()
+    expect(() => parseQuery('CREATE (a:Person)-[r:KNOWS {since: 2020}]->(b:Person) RETURN r')).not.toThrow()
   })
 
   it('[TCK-DMLX-18] MATCH + DELETE 空结果', () => {
