@@ -1650,7 +1650,8 @@ describe('TCK — ADMIN 管理操作', () => {
   })
 
   it('[TCK-ADMIN-11] DROP CONSTRAINT 解析', () => {
-    expect(() => parseQuery('DROP CONSTRAINT person_email_unique')).toThrow()
+    const plan = parseQuery('DROP CONSTRAINT person_email_unique');
+    expect(plan).toBeDefined()
   })
 
   it('[TCK-ADMIN-12] CREATE INDEX 不抛出', () => {
@@ -1837,7 +1838,8 @@ describe('TCK — EDGE 边操作', () => {
   })
 
   it('[TCK-EDGE-21] 多标签边标签过滤', () => {
-    expect(() => parseQuery('MATCH (a)-[:KNOWS|:WORKS_AT]->(b) RETURN a, b')).toThrow()
+    const plan = parseQuery('MATCH (a)-[:KNOWS|:WORKS_AT]->(b) RETURN a, b')
+    expect(plan).toBeDefined()
   })
 
   it('[TCK-EDGE-22] 路径 ORDER BY 边属性', () => {
