@@ -33,7 +33,7 @@
  */
 
 Start
-  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintRule / UseStatement / AdminStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionConjunction / TransactionStatement / ForEachStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
+  = _ hint:PeriodicCommitHint? _ stmt:(ExplainStatement / ShowStatement / DropConstraintStatement / ConstraintThenShowStatement / ConstraintRule / UseStatement / AdminStatement / DMLStatement / CallProcedureStatement / CallStatement / MatchStatement / UnwindStatement / WithStatement / TransactionConjunction / TransactionStatement / ForEachStatement / CreateIndexThenShowStatement / CreateIndexStatement / DropIndexStatement / LoadCsvStatement) _ {
       if (hint) {
         stmt.periodicCommitHint = hint
       }
@@ -85,7 +85,10 @@ ExplainStatement
 // ── DROP CONSTRAINT ──────────────────────────────────────────
 
 DropConstraintStatement
-  = "DROP"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+  = "DROP"i _ "CONSTRAINT"i _ name:Identifier {
+      return { type: 'DROP_CONSTRAINT', name }
+    }
+  / "DROP"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
       return { type: 'DROP_CONSTRAINT', label: label, property: prop.property }
     }
   / "DROP"i _ "CONSTRAINT"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ASSERT"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
@@ -95,7 +98,10 @@ DropConstraintStatement
 // ── CREATE CONSTRAINT ──────────────────────────────────
 
 ConstraintRule
-  = "CREATE"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
+  = "CREATE"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ "(" _ head:(Identifier "." prop:PropertyName { return {name, property: prop} }) tail:(_ "," _ id:Identifier "." pname:PropertyName { return {name: id, property: pname} })* _ ")" _ "IS"i _ "NODE"i _ "KEY"i {
+      return { type: 'CREATE_CONSTRAINT', label, property: [head, ...tail], constraintType: 'node_key' }
+    }
+  / "CREATE"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i {
       return { type: 'CREATE_CONSTRAINT', label: label, property: prop.property, constraintType: 'unique' }
     }
   / "CREATE"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "NOT"i _ "NULL"i {
@@ -124,6 +130,20 @@ CreateIndexStatement
   / "CREATE"i _ "INDEX"i _ "ON"i _ ":" label:LabelName "(" prop:PropertyName ")" {
       return { type: 'CREATE_INDEX', label, property: prop }
     }
+
+// ── CREATE + SHOW 链式 ─────────────────────────────────
+
+CreateIndexThenShowStatement
+  = "CREATE"i _ "INDEX"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "ON"i _ "(" _ node:Identifier "." prop:PropertyName ")" _ "SHOW"i _ "INDEXES"i {
+      return { type: 'CHAIN', statements: [{ type: 'CREATE_INDEX', label, property: prop }, { type: 'SHOW', show: 'indexes' }] }
+    }
+
+ConstraintThenShowStatement
+  = "CREATE"i _ "CONSTRAINT"i _ "FOR"i _ "(" _ name:Identifier ":" label:LabelName _ ")" _ "REQUIRE"i _ prop:PropertyRef _ "IS"i _ "UNIQUE"i _ "SHOW"i _ "CONSTRAINTS"i {
+      return { type: 'CHAIN', statements: [{ type: 'CREATE_CONSTRAINT', label: label, property: prop.property, constraintType: 'unique' }, { type: 'SHOW', show: 'constraints' }] }
+    }
+
+// ── DROP INDEX ──────────────────────────────────────────
 
 DropIndexStatement
   = "DROP"i _ "INDEX"i _ "ON"i _ "(" _ name:Identifier ":" label:LabelName ")" {
@@ -1163,13 +1183,13 @@ DirClause
 // ── UNION / INTERSECT / SUBTRACT ────────────────────────────
 
 UnionClause
-  = _ "UNION"i _ "ALL"i _ right:(CallProcedureStatement / CallStatement / MatchStatement) {
+  = _ "UNION"i _ "ALL"i _ right:(CallProcedureStatement / CallStatement / DMLStatement / MatchStatement) {
       return { unionType: 'union_all', rightQuery: right }
     }
-  / _ "UNION"i _ right:(CallProcedureStatement / CallStatement / MatchStatement) {
+  / _ "UNION"i _ right:(CallProcedureStatement / CallStatement / DMLStatement / MatchStatement) {
       return { unionType: 'union', rightQuery: right }
     }
-  / _ "INTERSECT"i _ right:MatchStatement {
+  / _ "INTERSECT"i _ right:(DMLStatement / MatchStatement) {
       return { unionType: 'intersect', rightQuery: right }
     }
   / _ "SUBTRACT"i _ right:MatchStatement {
@@ -1597,7 +1617,7 @@ PropertyEntry
 // ── CALL 子查询 ──────────────────────────────────────────
 
 CallStatement
-  = "CALL"i _ "{" _ subq:MatchStatement _ "}" _ tx:InTransactionsClause? _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
+  = "CALL"i _ "{" _ subq:DMLStatement _ "}" _ tx:InTransactionsClause? _ rc:ReturnClause? _ ob:OrderByClause? _ ls:LimitSkipClause? {
       const stmt = {
         type: 'CALL',
         query: subq,
