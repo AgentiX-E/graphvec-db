@@ -908,13 +908,14 @@ NodePattern
 // ── 边模式 ─────────────────────────────────────────────
 
 EdgePattern
-  = "-[" _ name:Identifier _ ":" _ type:LabelExpression _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range, props } }
-  / "-[" _ name:Identifier _ ":" _ type:LabelExpression _ range:Range _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range } }
-  / "-[" _ ":" _ type:LabelExpression _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', range, props } }
-  / "-[" _ ":" _ type:LabelExpression _ range:Range _ props:PropertyMap _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range, props } }
-  / "-[" _ ":" _ type:LabelExpression _ range:Range _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range } }
-  / "-[" _ ":" _ type:LabelExpression _ range:Range _ props:PropertyMap _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range, props } }
-  / "-[" _ ":" _ type:LabelExpression _ range:Range _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range } }
+  = "-[" _ name:Identifier _ ":" _ type:EdgeLabelExpression _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range, props } }
+  / "-[" _ name:Identifier _ ":" _ type:EdgeLabelExpression _ range:Range _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', range } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', range, props } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', range } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ props:PropertyMap _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range, props } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ "]-" { return { type: 'EDGE', name: null, label: type, direction: 'any', range } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ props:PropertyMap _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range, props } }
+  / "-[" _ ":" _ type:EdgeLabelExpression _ range:Range _ "<-" { return { type: 'EDGE', name: null, label: type, direction: 'in', range } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ props:PropertyMap _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out', props } }
   / "-[" _ name:Identifier _ ":" _ type:Label _ "]->" { return { type: 'EDGE', name, label: type, direction: 'out' } }
   / "-[" _ ":" _ type:Label _ props:PropertyMap _ "]->" { return { type: 'EDGE', name: null, label: type, direction: 'out', props } }
@@ -1398,8 +1399,15 @@ FunctionArgList
 Label
   = chars:[_a-zA-Z0-9]+ { return text() }
 
-// ── 标签表达式 ──────────────────────────────────────────
-// 支持: :Person|Animal, :!Person, :Person|!Animal, :Person, :Person:Employee
+// ── 标签表达式（边内使用，无前导 ":"）─────────────────
+// EdgePattern 中 ":" 已在调用方匹配，所以这里直接匹配 label
+EdgeLabelExpression
+  = head:LabelPart rest:("|" part:LabelPart / ":" part:LabelPart)* {
+      const items = [head].concat(rest.map(r => r[1]))
+      return { type: 'LABEL_EXPR', items }
+    }
+
+// ── 标签表达式（完整版，带前导 ":"）────────────────────
 LabelExpression
   = ":" head:LabelPart rest:("|" part:LabelPart / ":" part:LabelPart)* {
       const items = [head].concat(rest.map(r => r[1]))
