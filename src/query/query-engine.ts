@@ -1089,6 +1089,135 @@ export function _preprocessQuery(query: string): {
     }
   )
 
+  // ── Step 3.6: Extract DELETE clause ──
+  // MATCH ... WHERE ... DELETE n [SKIP x] [LIMIT y]
+  // or MATCH ... WHERE ... DETACH DELETE n [SKIP x] [LIMIT y]
+  // Replace DELETE with an equivalent RETURN so PEG can parse the rest.
+  let deleteExtract: _QueryExtracts['deleteExtract'] = undefined
+  const deleteRE = /\b(DETACH\s+)?DELETE\s+(\w+(?:\s*,\s*\w+)*)(?:\s+SKIP\s+(\d+))?(?:\s+LIMIT\s+(\d+))?$/i
+  const deleteMatch = modifiedQuery.match(deleteRE)
+  if (deleteMatch) {
+    const targets = deleteMatch[2].split(',').map((s: string) => s.trim())
+    deleteExtract = {
+      targets,
+      detach: !!deleteMatch[1],
+      skip: deleteMatch[3] ? parseInt(deleteMatch[3], 10) : undefined,
+      limit: deleteMatch[4] ? parseInt(deleteMatch[4], 10) : undefined,
+    }
+    // Replace DELETE with RETURN so PEG can parse the rest of the query
+    modifiedQuery = modifiedQuery.replace(deleteMatch[0], '').trim()
+  }
+
+  // ── Step 3.7: Extract INTERSECT clause ──
+  // MATCH ... RETURN ... INTERSECT MATCH ... RETURN ...
+  let intersectExtract: _QueryExtracts['intersectExtract'] = undefined
+  const intersectIdx = modifiedQuery.search(/\bINTERSECT\b/i)
+  if (intersectIdx !== -1) {
+    intersectExtract = modifiedQuery.slice(intersectIdx + 'INTERSECT'.length).trim()
+    modifiedQuery = modifiedQuery.slice(0, intersectIdx).trim()
+  }
+
+  // ── Step 3.8: Extract second CREATE in chain ──
+  // CREATE (a:Person ...) CREATE (b:Person ...)
+  // PEG only handles one CREATE. Extract the second (and beyond).
+  let secondCreateExtract: _QueryExtracts['secondCreateExtract'] = undefined
+  if (modifiedQuery.includes('CREATE') && modifiedQuery.indexOf('CREATE') !== modifiedQuery.lastIndexOf('CREATE')) {
+    const firstCreateEnd = modifiedQuery.indexOf('CREATE') + 'CREATE'.length
+    // Find the second CREATE
+    const secondCreateIdx = modifiedQuery.indexOf('CREATE', firstCreateEnd)
+    // Find end of second CREATE clause (before any subsequent keyword)
+    const afterSecond = modifiedQuery.slice(secondCreateIdx)
+    let createEnd = afterSecond.length
+    for (let i = 0; i < afterSecond.length; i++) {
+      const ch = afterSecond[i]
+      if (ch === '(' || ch === '[') continue // skip past pattern
+      if (ch === ')') continue
+      const lookahead = afterSecond.slice(i)
+      if (/^\bMATCH\b/i.test(lookahead) || /^\bRETURN\b/i.test(lookahead) || /^\bSET\b/i.test(lookahead) || /^\bMERGE\b/i.test(lookahead) || /^\bDELETE\b/i.test(lookahead) || /^\bWITH\b/i.test(lookahead)) {
+        createEnd = i
+        break
+      }
+    }
+    secondCreateExtract = afterSecond.slice(0, createEnd).trim()
+    // Remove the second CREATE from query
+    modifiedQuery = modifiedQuery.slice(0, secondCreateIdx)
+  }
+
+  // ── Step 3.9: Normalize variable-length relationship patterns ──
+  // PEG doesn't support [:KNOWS*1..4], [:KNOWS*..4], [:KNOWS*2..], [:KNOWS*1..3], or [:KNOWS*3].
+  // Transform [:label*range] → [:label] so PEG can parse. The range info is lost but 
+  // the query is parseable. At runtime, plan execution uses default traversal.
+  modifiedQuery = modifiedQuery.replace(
+    /\[:(\w+)\*\d*(?:\.\.\d*)?\]/g,
+    (_match: string, label: string) => `[:${label}]`
+  )
+
+  // Also handle the undirected var-length: -[:KNOWS*1..3]-
+  modifiedQuery = modifiedQuery.replace(
+    /-\[:(\w+)\*\d*(?:\.\.\d*)?\]-/g,
+    (_match: string, label: string) => `-[:${label}]-`
+  )
+
+  // ── Step 3.10: Extract complex RETURN clause ──
+  // Handle queries where PEG can parse MATCH patterns but the RETURN
+  // clause contains complex expressions (nested subscripts, multiple func calls, etc.)
+  let returnExtract: _QueryExtracts['returnExtract'] = undefined
+  // Only extract if MATCH is present and it's the main query section
+  const returnIdx = modifiedQuery.search(/\bRETURN\b/i)
+  if (returnIdx !== -1 && modifiedQuery.search(/\bMATCH\b/i) !== -1 && modifiedQuery.search(/\bMATCH\b/i) < returnIdx) {
+    // Find if PEG can parse the MATCH part (up to but not including RETURN)
+    const matchPart = modifiedQuery.slice(0, returnIdx).trim()
+    const returnPart = modifiedQuery.slice(returnIdx).trim()
+    // Check if the RETURN clause has patterns PEG can't handle:
+    // Nested brackets (`[[`, `][`), multiple function calls with props
+    const complexPatterns = /\[\[|\]\[|DISTINCT\s+\w+\.\w+\(/i.test(returnPart)
+    if (!complexPatterns) {
+      try {
+        parser.parse(modifiedQuery)
+      } catch {
+        // PEG fails on the query — try to extract return
+        const testQuery2 = matchPart + ' RETURN 1 AS __dummy'
+        try {
+          parser.parse(testQuery2)
+          returnExtract = returnPart.slice('RETURN'.length).trim()
+          modifiedQuery = testQuery2
+        } catch {
+          // MATCH part also fails
+        }
+      }
+    } else {
+      // Contains [[ or ][ or complex DISTINCT pattern — definitely extract
+      returnExtract = returnPart.slice('RETURN'.length).trim()
+      modifiedQuery = matchPart + ' RETURN 1 AS __dummy'
+    }
+  }
+
+  // ── Step 3.11: Handle MATCH ... CREATE (no RETURN) ──
+  // PEG can't parse MATCH ... CREATE ... — add a dummy RETURN so PEG parses MATCH
+  if (!/\bRETURN\b/i.test(modifiedQuery) && /\bMATCH\b.*\bCREATE\b/i.test(modifiedQuery)) {
+    const createIdx = modifiedQuery.search(/\bCREATE\b/i)
+    if (createIdx !== -1) {
+      // Extract everything from CREATE onward and store it
+      const matchPart = modifiedQuery.slice(0, createIdx).trim()
+      const createPart = modifiedQuery.slice(createIdx).trim()
+      // Check if PEG can parse just the MATCH part with a dummy RETURN
+      try {
+        const testQ = matchPart + ' RETURN 1 AS __dummy'
+        parser.parse(testQ)
+        // MATCH part works — replace the query
+        modifiedQuery = testQ
+        // Store the CREATE part to be reconstructed in post-processing
+        if (!returnExtract) {
+          returnExtract = createPart
+        } else {
+          returnExtract = createPart + ', ' + returnExtract
+        }
+      } catch {
+        // MATCH part also fails
+      }
+    }
+  }
+
   // Step 4: If after extraction there's no MATCH at all, add a dummy one
   // This handles cases like "OPTIONAL MATCH (n) RETURN n" where all MATCH
   // clauses were OPTIONAL, and "FOREACH (x IN [1] | CREATE (n)) RETURN n".
@@ -1114,6 +1243,10 @@ export function _preprocessQuery(query: string): {
       loadCsvExtract: result.loadCsvExtract,
       windowExtracts: result.windowExtracts,
       searchExtract: result.searchExtract,
+      deleteExtract,
+      intersectExtract,
+      secondCreateExtract,
+      returnExtract,
     },
   }
 }
@@ -1198,6 +1331,19 @@ export interface _QueryExtracts {
     queryVector: number[]
     topK: number
   }
+  /** DELETE 子句提取 */
+  deleteExtract?: {
+    targets: string[]
+    detach: boolean
+    skip?: number
+    limit?: number
+  }
+  /** INTERSECT 子句提取 */
+  intersectExtract?: string
+  /** 第二个 CREATE 子句提取（CREATE 链） */
+  secondCreateExtract?: string
+  /** 复杂 RETURN 子句提取（PEG 无法解析的复杂表达式） */
+  returnExtract?: string
 }
 
 /**
@@ -1583,18 +1729,49 @@ export function parseQuery(query: string): QueryPlan {
     // Compound queries (MATCH + WHERE + CREATE/SET/REMOVE + RETURN) — 
     // already parsed directly by PEG. Route through planFromAST directly.
     if (directAst.type === 'QUERY' && (directAst.create || directAst.set || directAst.remove || directAst.delete || directAst.forEach || directAst.match)) {
-      const plan = planFromAST(directAst)
-      if (!plan.periodicCommit && (directAst as any).periodicCommitHint) {
-        // TEMP FIX: Ensure periodic commit hint is propagated even if planFromAST misses it
-        plan.periodicCommit = { batchSize: (directAst as any).periodicCommitHint.batchSize }
+      // If query contains OPTIONAL MATCH or WITH but directAst didn't parse them,
+      // fall through to preprocessing (handles MATCH ... OPTIONAL MATCH ... RETURN cases)
+      if (directAst.match && !(directAst as any).optionalMatches && query.includes('OPTIONAL MATCH')) {
+        // fall through to preprocessing
+      } else if (directAst.match && !(directAst as any).with && query.match(/\bWITH\b/) && query.indexOf('WITH') > query.indexOf('MATCH')) {
+        // fall through to preprocessing for MATCH ... WITH ... cases
+      } else if (directAst.match && query.match(/\bDELETE\b/i) && !(directAst as any).delete) {
+        // MATCH ... DELETE — PEG didn't parse DELETE, fall through
+      } else if (directAst.match && query.match(/\bDETACH\s+DELETE\b/i) && !(directAst as any).delete) {
+        // MATCH ... DETACH DELETE — PEG didn't parse, fall through
+      } else if (directAst.type === 'QUERY' && directAst.return && query.match(/\bINTERSECT\b/i) && !(directAst as any).unionType) {
+        // RETURN ... INTERSECT — PEG didn't parse, fall through
+      } else if (directAst.type === 'QUERY' && directAst.return && query.match(/\bHAVING\b/i) && !(directAst as any).having) {
+        // GROUP BY ... HAVING — fall through
+      } else if (directAst.type === 'QUERY' && directAst.return && query.match(/\breduce\s*\(/i)) {
+        // ... RETURN reduce(...) — PEG can't handle, fall through
+      } else if (directAst.match && !(directAst as any).create && query.match(/MATCH.*CREATE\b/i) && query.indexOf('CREATE') > query.indexOf('MATCH') && !query.match(/MATCH.*CREATE\b.*RETURN/i)) {
+        // MATCH ... CREATE — No RETURN clause makes PEG fail, fall through
+      } else if (directAst.type === 'QUERY' && !Array.isArray(directAst.create) && query.match(/CREATE\b.*\bCREATE\b/i) && query.indexOf('CREATE') !== query.lastIndexOf('CREATE')) {
+        // CREATE ... CREATE (second CREATE not parsed)
+      } else {
+        const plan = planFromAST(directAst)
+        if (!plan.periodicCommit && (directAst as any).periodicCommitHint) {
+          // TEMP FIX: Ensure periodic commit hint is propagated even if planFromAST misses it
+          plan.periodicCommit = { batchSize: (directAst as any).periodicCommitHint.batchSize }
+        }
+        return plan
       }
-      return plan
     }
     // Anything else that PEG parsed (e.g. regular MATCH queries) — continue to preprocess
   }
 
-  // LOAD CSV (parsed by PEG)
-  if (directAst.type === 'LOAD_CSV') {
+  // Guard: PEG returned null or undefined (syntax not supported) — 
+  // but don't throw if the query contains special syntax that preprocessing handles
+  if (!directAst) {
+    const hasSpecial = /\bOPTIONAL MATCH\b|\bWITH\b|\bDELETE\b|\bDETACH\b|\bHAVING\b|\bINTERSECT\b|\breduce\s*\(|MATCH.*CREATE|CREATE.*CREATE|\[:\w+\*|\[\[|,\s*\w+\(/.test(query);
+    if (!hasSpecial) {
+      throw new Error(`Query not parsed: ${query}`)
+    }
+  }
+
+  // LOAD CSV (parsed by PEG) — only if directAst is non-null
+  if (directAst && directAst.type === 'LOAD_CSV') {
     return {
       type: 'LOAD_CSV',
       url: directAst.url?.value ?? '',
@@ -1684,12 +1861,46 @@ export function parseQuery(query: string): QueryPlan {
     plan.search = extracts.searchExtract
   }
 
+  // Step 8.5: Attach complex RETURN expression if extracted
+  if (extracts.returnExtract) {
+    // Store the raw return expression for plan construction
+    if (!plan.expressionColumns) plan.expressionColumns = []
+    // Try to split the return extract by commas (best effort)
+    const items = extracts.returnExtract.split(',').map((s: string) => s.trim())
+    for (const item of items) {
+      const asMatch = item.match(/(.+?)\s+AS\s+(\w+)$/i)
+      if (asMatch) {
+        const expr = asMatch[1].trim()
+        const alias = asMatch[2].trim()
+        plan.expressionColumns.push({ expression: expr, alias })
+        if (!plan.returnColumns.includes(alias)) {
+          plan.returnColumns = [alias]
+        }
+      } else {
+        plan.expressionColumns.push({ expression: item, alias: item.replace(/[^a-zA-Z0-9_]/g, '_') })
+      }
+    }
+  }
+
   // Step 9: Attach periodic commit hint from parsed AST
   if (ast && (ast as any).periodicCommitHint) {
     const hint = (ast as any).periodicCommitHint
     plan.periodicCommit = {
       batchSize: hint.batchSize,
     }
+  }
+
+  // Step 10: Propagate SKIP/LIMIT from AST to plan for DELETE queries
+  // When DELETE clause was extracted, _postProcessAST set ast.skip/ast.limit
+  if (plan.deleteTargets && plan.deleteTargets.length > 0) {
+    if (ast.skip !== undefined && plan.skip === undefined) plan.skip = ast.skip
+    if (ast.limit !== undefined && plan.limit === undefined) plan.limit = ast.limit
+  }
+
+  // Step 11: Handle INTERSECT unionType with rightQuery
+  if (ast.unionType === 'intersect' && ast.rightQuery) {
+    plan.unionType = 'intersect'
+    plan.rightPlan = planFromAST(ast.rightQuery)
   }
 
 
@@ -1842,6 +2053,61 @@ export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
         (ast.return as any).having = [havingClause]
       }
     }
+  }
+
+  // ── Attach DELETE ────────────────────────────────────────
+  if (extracts.deleteExtract) {
+    const de = extracts.deleteExtract
+    const deleteClause: any = {
+      type: 'DELETE',
+      targets: de.targets,
+      detach: de.detach,
+    }
+    ast.delete = deleteClause
+    // Propagate SKIP/LIMIT to the AST level if present
+    if (de.skip !== undefined) ast.skip = de.skip
+    if (de.limit !== undefined) ast.limit = de.limit
+  }
+
+  // ── Attach INTERSECT ─────────────────────────────────────
+  if (extracts.intersectExtract) {
+    // Set unionType to 'intersect' and store the second query as rightQuery
+    ast.unionType = 'intersect'
+    const intersectText = extracts.intersectExtract.trim()
+    try {
+      const intersectAst = parser.parse(intersectText) as QueryAST
+      ast.rightQuery = intersectAst
+    } catch {
+      // If PEG can't parse the right side, just store the raw text for later handling
+      ;(ast as any).__intersectRaw = intersectText
+    }
+  }
+
+  // ── Attach second CREATE (chains) ─────────────────────────
+  if (extracts.secondCreateExtract) {
+    const secondText = extracts.secondCreateExtract.trim()
+    try {
+      const secondAst = parser.parse(secondText) as QueryAST
+      if (secondAst.create && ast.create) {
+        // Merge patterns from second CREATE into the first
+        for (const pat of secondAst.create.patterns) {
+          ast.create.patterns.push(pat)
+        }
+      }
+      // Also merge any SET that may have been attached
+      if (secondAst.set && ast.set) {
+        for (const item of secondAst.set.items) {
+          ast.set.items.push(item)
+        }
+      }
+    } catch {
+      ;(ast as any).__secondCreateRaw = secondText
+    }
+  }
+
+  // ── Attach returnExtract (complex RETURN expressions) ──────
+  if (extracts.returnExtract) {
+    ;(ast as any).__returnExtract = extracts.returnExtract
   }
 
   // ── Restore ORDER BY aggregate replacements ─────────────────

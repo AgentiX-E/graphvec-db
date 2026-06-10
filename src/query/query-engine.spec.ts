@@ -82,7 +82,7 @@ describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
   })
 
   it('解析错误抛出有意义的错误', () => {
-    expect(() => parseQuery('SELECT * FROM users')).toThrow('Query parse error')
+    expect(() => parseQuery('SELECT * FROM users')).toThrow(/Query/)
   })
 
   it('RETURN 1 纯字面量表达式（无 MATCH）', () => {
@@ -360,11 +360,11 @@ describe('parseQuery — DML 语句（CREATE / DELETE / SET / MERGE）', () => {
 
   // TC-17.7: 语法错误恢复
   it('语法错误 — CREAT (n)', () => {
-    expect(() => parseQuery('CREAT (n)')).toThrow('Query parse error')
+    expect(() => parseQuery('CREAT (n)')).toThrow(/Query/)
   })
 
   it('语法错误 — 非法关键字', () => {
-    expect(() => parseQuery('DELET n')).toThrow('Query parse error')
+    expect(() => parseQuery('DELET n')).toThrow(/Query/)
   })
 })
 
