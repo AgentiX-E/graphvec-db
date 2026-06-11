@@ -7865,7 +7865,6 @@ function _tckEnsureDaemon(): number {
   try {
     const p = parseInt(fs.readFileSync(portFile, 'utf8').trim(), 10)
     if (p > 0) {
-      // Verify health
       try {
         execSync(`curl -s --max-time 1 http://127.0.0.1:${p}/health`, { stdio: 'ignore' })
         _tckDaemonPort = p
@@ -7874,20 +7873,13 @@ function _tckEnsureDaemon(): number {
     }
   } catch {}
 
-  // 启动 daemon
+  // 启动 daemon via nohup — 独立于本进程
   const daemonPath = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
     'tck-daemon.js',
   )
   try { fs.unlinkSync(portFile) } catch {}
-
-  // Use eval-hidden require to avoid Vite transform interception
-  const cp = eval('require')('child_process')
-  const proc = cp.spawn('node', [daemonPath, '0', portFile], {
-    stdio: ['ignore', 'ignore', 'ignore'],
-    detached: true,
-  })
-  proc.unref() // daemon 独立运行
+  try { execSync(`nohup node '${daemonPath}' 0 '${portFile}' </dev/null >/dev/null 2>&1 &`, { shell: true, stdio: 'ignore' }) } catch {}
 
   // Poll for port file
   const deadline = Date.now() + 15000

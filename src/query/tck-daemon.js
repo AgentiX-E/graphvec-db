@@ -118,22 +118,29 @@ function planToQuery(p) {
     q += ' WHERE ' + cs.join(' AND ');
   }
 
-  if (p.returnColumns && p.returnColumns.length > 0) {
-    q += ' RETURN ' + p.returnColumns.join(', ');
-  } else if (p.aggregate) {
-    // Single aggregate: COUNT(*), SUM(n.age), etc.
+  if (p.aggregate) {
+    // Single aggregate: takes priority over returnColumns
     var agg = p.aggregate;
-    var aggExpr = '';
     var funcName = (agg.type || agg.func || '').toUpperCase();
-    var args = agg.args || agg.columns || [];
-    if (args.length > 0) {
-      aggExpr = funcName + '(' + args.join(', ') + ')';
-    } else if (funcName === 'COUNT') {
+    var aggExpr = '';
+
+    if (funcName === 'COUNT' && (agg.field === '*' || !agg.field)) {
       aggExpr = 'count(*)';
+    } else if (agg.field) {
+      // e.g. sum(n.age) — field contains the expression
+      var fieldWithoutDot = agg.field.indexOf('.') >= 0 ? agg.field.split('.').pop() : agg.field;
+      // If it looks like just a property name (no dot or function), prefix with func
+      if (agg.field.indexOf('(') < 0 && !agg.field.match(/^[a-zA-Z_]/)) {
+        // field is a complex expression like n.age
+        aggExpr = funcName.toLowerCase() + '(' + agg.field + ')';
+      } else {
+        aggExpr = funcName.toLowerCase() + '(' + agg.field + ')';
+      }
     } else {
-      aggExpr = funcName + '(n)';
+      aggExpr = funcName.toLowerCase() + '(n)';
     }
-    if (agg.alias && agg.alias !== aggExpr) {
+
+    if (agg.alias && agg.alias !== '*' && agg.alias !== agg.field) {
       aggExpr += ' AS ' + agg.alias;
     }
     q += ' RETURN ' + aggExpr;
@@ -141,11 +148,6 @@ function planToQuery(p) {
     // GROUP BY
     if (p.groupBy && p.groupBy.length > 0) {
       q += ', ' + p.groupBy.join(', ');
-    }
-
-    // HAVING
-    if (p.having) {
-      q += ' HAVING ' + (typeof p.having === 'string' ? p.having : JSON.stringify(p.having));
     }
   } else if (p.aggregates && p.aggregates.length > 0) {
     // Multiple aggregates
@@ -162,6 +164,8 @@ function planToQuery(p) {
     if (p.groupBy && p.groupBy.length > 0) {
       q += ', ' + p.groupBy.join(', ');
     }
+  } else if (p.returnColumns && p.returnColumns.length > 0) {
+    q += ' RETURN ' + p.returnColumns.join(', ');
   } else {
     q += ' RETURN n';
   }
@@ -171,7 +175,7 @@ function planToQuery(p) {
     for (var oi = 0; oi < p.orderBy.length; oi++) {
       var o = p.orderBy[oi];
       // Extract actual field name from orderBy item — try all known keys
-      var orderField = o.field || o.column || o.property || o.expression || o.col;
+      var orderField = o.field || o.property || o.column || o.expression || o.col;
       if (!orderField) {
         var okeys = Object.keys(o);
         for (var ki = 0; ki < okeys.length; ki++) {
@@ -287,6 +291,7 @@ const server = http.createServer((req, res) => {
       // ── 构建并执行查询 ──
       const q = planToQuery(plan);
       const raw = ge.query(q);
+      if (!raw || raw.length === 0) console.error('[tck-daemon] query=' + q + ' → EMPTY');
 
       // ── 格式化结果 ──
       var result = [];
