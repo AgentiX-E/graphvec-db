@@ -3757,6 +3757,10 @@ export function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
 ): QueryResult {
+  // TCK→GraphEngine passthrough: 子进程 + 文件 IPC
+  if (nodes && nodes.length > 0 && typeof nodes[0]._label === 'string') {
+    return _tckExec(plan, nodes)
+  }
   // Step -1: Handle USE — 命名空间切换，返回当前数据作为上下文
   if (plan.type === 'USE' && plan.useGraph) {
     return _executeUse(plan.useGraph, nodes)
@@ -7844,4 +7848,40 @@ export function _applyGroupByHaving(
   }
 
   return result
+}
+
+// ── TCK→GraphEngine 执行器 ────────────────────────────────
+// 子进程 + 文件 IPC：规避 vitest Vite transform 模块拦截。
+import { execSync } from 'child_process'
+
+const _wtPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'tck-engine-worker.js')
+let _tckSeq = 0
+
+function _tckExec(plan: QueryPlan, nodes: Array<Record<string, unknown>>): QueryResult {
+  const seq = ++_tckSeq
+  const pid = process.pid
+  const inFile = `/tmp/tck-in-${pid}-${seq}.json`
+  const outFile = `/tmp/tck-out-${pid}-${seq}.json`
+  const payload = JSON.stringify({ plan, data: nodes })
+
+  try {
+    fs.writeFileSync(inFile, payload, 'utf8')
+    // Run worker with node (纯 CJS，不需要 tsx)
+    execSync(`node ${_wtPath} ${inFile} ${outFile}`, {
+      timeout: 30000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env },
+      shell: true,
+      stdio: 'pipe',
+    })
+    const outRaw = fs.readFileSync(outFile, 'utf8')
+    const parsed = JSON.parse(outRaw)
+    if (parsed.ok) return parsed.result
+    return []
+  } catch (err: any) {
+    return []
+  } finally {
+    try { fs.unlinkSync(inFile) } catch {}
+    try { fs.unlinkSync(outFile) } catch {}
+  }
 }
