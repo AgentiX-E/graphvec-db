@@ -7854,34 +7854,32 @@ export function _applyGroupByHaving(
 // 子进程 + 文件 IPC：规避 vitest Vite transform 模块拦截。
 import { execSync } from 'child_process'
 
-const _wtPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'tck-engine-worker.js')
 let _tckSeq = 0
 
 function _tckExec(plan: QueryPlan, nodes: Array<Record<string, unknown>>): QueryResult {
   const seq = ++_tckSeq
   const pid = process.pid
-  const inFile = `/tmp/tck-in-${pid}-${seq}.json`
-  const outFile = `/tmp/tck-out-${pid}-${seq}.json`
+  const reqFile = `/tmp/tck-req-${pid}-${seq}.json`
   const payload = JSON.stringify({ plan, data: nodes })
+  const portFile = '/tmp/tck-daemon-port'
 
   try {
-    fs.writeFileSync(inFile, payload, 'utf8')
-    // Run worker with node (纯 CJS，不需要 tsx)
-    execSync(`node ${_wtPath} ${inFile} ${outFile}`, {
-      timeout: 30000,
-      maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env },
-      shell: true,
-      stdio: 'pipe',
-    })
-    const outRaw = fs.readFileSync(outFile, 'utf8')
-    const parsed = JSON.parse(outRaw)
-    if (parsed.ok) return parsed.result
-    return []
-  } catch (err: any) {
+    // 读取 daemon 端口
+    let port = 0
+    try { port = parseInt(fs.readFileSync(portFile, 'utf8').trim(), 10) } catch {}
+    if (!port) return [] // daemon not running
+
+    fs.writeFileSync(reqFile, payload, 'utf8')
+    const out = execSync(
+      `curl -s -X POST -d @${reqFile} --max-time 30 http://127.0.0.1:${port}/query`,
+      { timeout: 32000, maxBuffer: 10 * 1024 * 1024, stdio: 'pipe', shell: true }
+    )
+    const outStr = Buffer.isBuffer(out) ? out.toString('utf8') : String(out)
+    const parsed = JSON.parse(outStr)
+    return parsed.ok ? parsed.result : []
+  } catch {
     return []
   } finally {
-    try { fs.unlinkSync(inFile) } catch {}
-    try { fs.unlinkSync(outFile) } catch {}
+    try { fs.unlinkSync(reqFile) } catch {}
   }
 }

@@ -2359,6 +2359,7 @@ describe('TCK — WITH 扩展', () => {
     const plan = parseQuery('MATCH (n:Person) WITH n.name AS name RETURN name')
     expect(plan).toBeDefined()
   })
+})
 // ===================================================================
 
 describe('TCK EXT - STRING_FUNCTIONS (26 tests)', () => {
