@@ -24,16 +24,23 @@ const { GraphEngine } = require(
 );
 
 const PID = process.pid;
-const DB_DIR = path.join('/tmp', 'tckdaemon-' + PID);
 
-// 清理旧数据目录（如果存在）
-try { fs.rmSync(DB_DIR, { recursive: true, force: true }); } catch {}
-fs.mkdirSync(DB_DIR, { recursive: true });
+console.error('[tck-daemon] GraphEngine module loaded');
 
-const engine = new GraphEngine({ path: DB_DIR, denseVector: { dimension: 384 } });
-engine.open();
+// Each request gets its own isolated GraphEngine instance.
+// This prevents test data pollution across tests.
+function createEngine() {
+  const dir = path.join('/tmp', 'tckge-' + PID + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'));
+  fs.mkdirSync(dir, { recursive: true });
+  const ge = new GraphEngine({ path: dir, denseVector: { dimension: 384 } });
+  ge.open();
+  return ge;
+}
 
-console.error('[tck-daemon] GraphEngine opened at ' + DB_DIR);
+function destroyEngine(ge) {
+  try { ge.close(); } catch {}
+  try { fs.rmSync(ge.path || ge._path, { recursive: true, force: true }); } catch {}
+}
 
 // ── 辅助函数 ──
 
@@ -113,6 +120,48 @@ function planToQuery(p) {
 
   if (p.returnColumns && p.returnColumns.length > 0) {
     q += ' RETURN ' + p.returnColumns.join(', ');
+  } else if (p.aggregate) {
+    // Single aggregate: COUNT(*), SUM(n.age), etc.
+    var agg = p.aggregate;
+    var aggExpr = '';
+    var funcName = (agg.type || agg.func || '').toUpperCase();
+    var args = agg.args || agg.columns || [];
+    if (args.length > 0) {
+      aggExpr = funcName + '(' + args.join(', ') + ')';
+    } else if (funcName === 'COUNT') {
+      aggExpr = 'count(*)';
+    } else {
+      aggExpr = funcName + '(n)';
+    }
+    if (agg.alias && agg.alias !== aggExpr) {
+      aggExpr += ' AS ' + agg.alias;
+    }
+    q += ' RETURN ' + aggExpr;
+
+    // GROUP BY
+    if (p.groupBy && p.groupBy.length > 0) {
+      q += ', ' + p.groupBy.join(', ');
+    }
+
+    // HAVING
+    if (p.having) {
+      q += ' HAVING ' + (typeof p.having === 'string' ? p.having : JSON.stringify(p.having));
+    }
+  } else if (p.aggregates && p.aggregates.length > 0) {
+    // Multiple aggregates
+    var aggExprs = [];
+    for (var ai = 0; ai < p.aggregates.length; ai++) {
+      var a = p.aggregates[ai];
+      var fn = (a.type || a.func || '').toUpperCase();
+      var aArgs = a.args || [];
+      var expr = fn + '(' + (aArgs.length > 0 ? aArgs.join(', ') : '*') + ')';
+      if (a.alias && a.alias !== expr) expr += ' AS ' + a.alias;
+      aggExprs.push(expr);
+    }
+    q += ' RETURN ' + aggExprs.join(', ');
+    if (p.groupBy && p.groupBy.length > 0) {
+      q += ', ' + p.groupBy.join(', ');
+    }
   } else {
     q += ' RETURN n';
   }
@@ -121,25 +170,25 @@ function planToQuery(p) {
     var os = [];
     for (var oi = 0; oi < p.orderBy.length; oi++) {
       var o = p.orderBy[oi];
-      // Extract actual field name from orderBy item
-      var orderField = o.field || o.column || o.property || o.expression;
+      // Extract actual field name from orderBy item — try all known keys
+      var orderField = o.field || o.column || o.property || o.expression || o.col;
       if (!orderField) {
-        // Try first non-direction key
-        var keys = Object.keys(o);
-        for (var ki = 0; ki < keys.length; ki++) {
-          if (keys[ki] !== 'direction' && typeof o[keys[ki]] === 'string') {
-            orderField = o[keys[ki]];
+        var okeys = Object.keys(o);
+        for (var ki = 0; ki < okeys.length; ki++) {
+          if (okeys[ki] !== 'direction' && okeys[ki] !== 'type' && typeof o[okeys[ki]] === 'string') {
+            orderField = o[okeys[ki]];
             break;
           }
         }
       }
-      os.push((orderField || 'n') + ' ' + (o.direction || ''));
+      var dir = (o.direction || '').trim();
+      os.push((orderField || 'n') + (dir ? ' ' + dir : ''));
     }
     q += ' ORDER BY ' + os.join(', ');
   }
 
-  if (p.limit !== undefined) q += ' LIMIT ' + p.limit;
-  if (p.skip !== undefined) q += ' SKIP ' + p.skip;
+  if (p.limit !== undefined && p.limit !== null) q += ' LIMIT ' + parseInt(p.limit, 10);
+  if (p.skip !== undefined && p.skip !== null) q += ' SKIP ' + parseInt(p.skip, 10);
   return q;
 }
 
@@ -186,8 +235,6 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ ok: true }));
     server.close(() => {
       console.error('[tck-daemon] Shutting down...');
-      try { engine.close(); } catch {}
-      try { fs.rmSync(DB_DIR, { recursive: true, force: true }); } catch {}
       process.exit(0);
     });
     return;
@@ -203,15 +250,16 @@ const server = http.createServer((req, res) => {
   req.on('data', function(d) { body += d; });
   req.on('end', function() {
     requestCount++;
-
     var reqId = requestCount;
 
+    // Create an isolated engine for this request
+    var ge = null;
     try {
       const { plan, data } = JSON.parse(body);
 
-      // ── 插入所有节点（使用唯一前缀隔离不同请求）──
-      const prefix = uniquePrefix();
-      var nodesInserted = 0;
+      ge = createEngine();
+
+      // ── 插入所有节点 ──
       if (data && data.length > 0) {
         for (var i = 0; i < data.length; i++) {
           const item = data[i];
@@ -223,24 +271,22 @@ const server = http.createServer((req, res) => {
           }
           props._label = label;
 
-          // simple hash for typeId
           var h = 0;
           for (var ci = 0; ci < label.length; ci++) {
             h = ((h << 5) - h + label.charCodeAt(ci)) | 0;
           }
 
-          engine.upsertNode(
+          ge.upsertNode(
             Math.abs(h) % 1000 + 1,
-            prefix + '-' + i + '-tk-' + Math.random().toString(36).slice(2, 6),
+            'req-' + reqId + '-n' + i + '-' + Math.random().toString(36).slice(2, 6),
             { props }
           );
-          nodesInserted++;
         }
       }
 
       // ── 构建并执行查询 ──
       const q = planToQuery(plan);
-      const raw = engine.query(q);
+      const raw = ge.query(q);
 
       // ── 格式化结果 ──
       var result = [];
@@ -270,7 +316,11 @@ const server = http.createServer((req, res) => {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, result: result }));
+
+      // Clean up isolated engine
+      if (ge) destroyEngine(ge);
     } catch (err) {
+      if (ge) destroyEngine(ge);
       console.error('[tck-daemon] Request #' + reqId + ' error:', err.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: err.message }));
