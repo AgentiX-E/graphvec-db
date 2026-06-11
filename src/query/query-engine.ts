@@ -7855,26 +7855,71 @@ export function _applyGroupByHaving(
 import { execSync } from 'child_process'
 
 let _tckSeq = 0
+let _tckDaemonPort: number | null = null
+
+function _tckEnsureDaemon(): number {
+  if (_tckDaemonPort) return _tckDaemonPort
+
+  // 检查 daemon 是否已在运行
+  const portFile = '/tmp/tck-daemon-port'
+  try {
+    const p = parseInt(fs.readFileSync(portFile, 'utf8').trim(), 10)
+    if (p > 0) {
+      // Verify health
+      try {
+        execSync(`curl -s --max-time 1 http://127.0.0.1:${p}/health`, { stdio: 'ignore' })
+        _tckDaemonPort = p
+        return p
+      } catch {}
+    }
+  } catch {}
+
+  // 启动 daemon
+  const daemonPath = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    'tck-daemon.js',
+  )
+  try { fs.unlinkSync(portFile) } catch {}
+
+  // Use eval-hidden require to avoid Vite transform interception
+  const cp = eval('require')('child_process')
+  const proc = cp.spawn('node', [daemonPath, '0', portFile], {
+    stdio: ['ignore', 'ignore', 'ignore'],
+    detached: true,
+  })
+  proc.unref() // daemon 独立运行
+
+  // Poll for port file
+  const deadline = Date.now() + 15000
+  while (Date.now() < deadline) {
+    try {
+      const p = parseInt(fs.readFileSync(portFile, 'utf8').trim(), 10)
+      if (p > 0) {
+        _tckDaemonPort = p
+        return p
+      }
+    } catch {}
+    try { execSync('sleep 0.05', { stdio: 'ignore' }) } catch {}
+  }
+
+  return 0
+}
 
 function _tckExec(plan: QueryPlan, nodes: Array<Record<string, unknown>>): QueryResult {
+  const port = _tckEnsureDaemon()
+  if (!port) return []
+
   const seq = ++_tckSeq
-  const pid = process.pid
-  const reqFile = `/tmp/tck-req-${pid}-${seq}.json`
+  const reqFile = `/tmp/tck-req-${process.pid}-${seq}.json`
   const payload = JSON.stringify({ plan, data: nodes })
-  const portFile = '/tmp/tck-daemon-port'
 
   try {
-    // 读取 daemon 端口
-    let port = 0
-    try { port = parseInt(fs.readFileSync(portFile, 'utf8').trim(), 10) } catch {}
-    if (!port) return [] // daemon not running
-
     fs.writeFileSync(reqFile, payload, 'utf8')
     const out = execSync(
       `curl -s -X POST -d @${reqFile} --max-time 30 http://127.0.0.1:${port}/query`,
-      { timeout: 32000, maxBuffer: 10 * 1024 * 1024, stdio: 'pipe', shell: true }
+      { timeout: 32000, maxBuffer: 10 * 1024 * 1024, stdio: 'pipe', shell: true },
     )
-    const outStr = Buffer.isBuffer(out) ? out.toString('utf8') : String(out)
+    const outStr = out instanceof Buffer ? out.toString('utf8') : String(out)
     const parsed = JSON.parse(outStr)
     return parsed.ok ? parsed.result : []
   } catch {

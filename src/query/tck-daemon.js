@@ -62,8 +62,51 @@ function planToQuery(p) {
     var cs = [];
     for (var fi = 0; fi < p.filters.length; fi++) {
       var f = p.filters[fi];
-      cs.push((f.source || sv) + '.' + f.property + ' ' + f.operator + ' ' +
-        (typeof f.value === 'string' ? "'" + f.value + "'" : f.value));
+      var op = f.operator;
+      var cypherOp = op;
+      // Map PEG internal operators to Cypher syntax
+      var opMap = {
+        'EQ': '=',
+        'NEQ': '<>',
+        'GT': '>',
+        'GTE': '>=',
+        'LT': '<',
+        'LTE': '<=',
+        'IN': 'IN',
+        'IS_NULL': 'IS NULL',
+        'IS_NOT_NULL': 'IS NOT NULL',
+        'CONTAINS': 'CONTAINS',
+        'STARTS_WITH': 'STARTS WITH',
+        'ENDS_WITH': 'ENDS WITH',
+        '=': '=',
+        '>': '>',
+        '<': '<',
+        '>=': '>=',
+        '<=': '<=',
+        '<>': '<>',
+      };
+      cypherOp = (opMap[op] !== undefined) ? opMap[op] : op;
+
+      var left = (f.source || sv) + '.' + f.property;
+      var val = f.value;
+
+      if (op === 'IS_NULL' || op === 'IS NOT NULL') {
+        cs.push(left + ' ' + cypherOp);
+      } else if (op === 'IN' && Array.isArray(val)) {
+        var items = val.map(function(v) {
+          return typeof v === 'string' ? "'" + v + "'" : v;
+        }).join(', ');
+        cs.push(left + ' IN [' + items + ']');
+      } else if (op === 'IN' && typeof val === 'string') {
+        // val might be a literal list string like "[1, 2]"
+        cs.push(left + ' IN ' + val);
+      } else if (typeof val === 'string') {
+        cs.push(left + ' ' + cypherOp + " '" + val + "'");
+      } else if (typeof val === 'boolean') {
+        cs.push(left + ' ' + cypherOp + ' ' + val);
+      } else {
+        cs.push(left + ' ' + cypherOp + ' ' + val);
+      }
     }
     q += ' WHERE ' + cs.join(' AND ');
   }
@@ -78,7 +121,19 @@ function planToQuery(p) {
     var os = [];
     for (var oi = 0; oi < p.orderBy.length; oi++) {
       var o = p.orderBy[oi];
-      os.push((o.column || o.property || o.expression) + ' ' + (o.direction || ''));
+      // Extract actual field name from orderBy item
+      var orderField = o.field || o.column || o.property || o.expression;
+      if (!orderField) {
+        // Try first non-direction key
+        var keys = Object.keys(o);
+        for (var ki = 0; ki < keys.length; ki++) {
+          if (keys[ki] !== 'direction' && typeof o[keys[ki]] === 'string') {
+            orderField = o[keys[ki]];
+            break;
+          }
+        }
+      }
+      os.push((orderField || 'n') + ' ' + (o.direction || ''));
     }
     q += ' ORDER BY ' + os.join(', ');
   }
