@@ -107,10 +107,11 @@ export function tckQuery(engine: GraphEngine, queryStr: string): Record<string, 
     })
   }
 
-  // Multi-variable (edge query): engine returns one node per traversal step
-  // Pairs: each pair of consecutive nodes is a matched (a,b)
-  // If result count is multiple of varNames, group them
-  if (varNames.length >= 2) {
+  // Multi-variable (edge query): engine returns one NodeRecord per matched path.
+  // For MATCH (a)-[:X]->(b) RETURN a,b, engine may return just the target node (b)
+  // or both (a,b) depending on execution path.
+  // If raw.length < varNames.length × expected_rows, fall back to single-var format.
+  if (varNames.length >= 2 && raw.length >= 2) {
     const result: Record<string, any>[] = []
     for (let i = 0; i + 1 < raw.length; i += 2) {
       const row: Record<string, any> = {}
