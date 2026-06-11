@@ -992,3 +992,20 @@ function createEmptyPlan(): QueryPlan {
     skip: undefined,
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// `parseQuery` 兼容签名 — 可直接替代 query-engine 的 parseQuery
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * 与 query-engine.ts 的 parseQuery 签名完全兼容。
+ * 接收 Cypher 查询字符串，返回 QueryPlan。
+ * 生成的 plan 可以直接传给 _executeQuery。
+ *
+ * 测试替换方法：
+ *   import { parseQueryAntlr } from './ast-to-plan-v2'
+ *   // 替换 parseQuery 引用
+ */
+export function parseQueryAntlr(query: string): QueryPlan {
+  return parseCypherToPlan(query)
+}
