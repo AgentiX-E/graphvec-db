@@ -305,11 +305,27 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
       // (ANTLR nests WHERE inside MatchClauseContext)
       case 'RETURN': {
         const ret = extractReturn(clause.ctx)
-        plan.returnColumns = ret.columns.map(c => c.alias ?? c.expression)
+        // 兼容 _executeQuery：returnColumns 期望字段名（不含变量.前缀），* 则置空
+        plan.returnColumns = ret.columns.map(c => {
+          const expr = c.alias ?? c.expression
+          if (expr === '*') return ''
+          // 去掉变量前缀：n.name → name
+          return expr.replace(/^\w+\./, '')
+        }).filter((v, i, arr) => !(v === '' && i === 0 && arr.length === 1)) // only filter out * alone
+        if (ret.columns.length === 1 && ret.columns[0].expression === '*') {
+          plan.returnColumns = []
+        }
         plan.orderBy = ret.orderBy
         plan.limit = ret.limit
         plan.skip = ret.skip
-        plan.aggregate = ret.aggregate
+        // 兼容 _executeQuery：aggregate 需要 type 字段
+        if (ret.aggregate) {
+          ;(plan.aggregate as any) = {
+            function: ret.aggregate.function,
+            column: ret.aggregate.column,
+            type: ret.aggregate.function.charAt(0).toUpperCase() + ret.aggregate.function.slice(1),
+          }
+        }
         break
       }
       case 'CREATE': {
