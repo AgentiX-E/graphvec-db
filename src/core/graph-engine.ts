@@ -219,6 +219,10 @@ export class GraphEngine {
   /** 备份写冻结 */
   private _writesFrozen = false
   private _frozenWrites: Array<{ resolve: () => void }> = []
+  /** 字符串标签 → typeId 注册表（惰性分配） */
+  private _labelRegistry: Map<string, number> = new Map()
+  /** 字符串 edge 类型名 → typeId 注册表 */
+  private _edgeTypeRegistry: Map<string, number> = new Map()
   private logger: Logger
 
   // ── 索引持久化 ──
@@ -1594,7 +1598,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
         const minDepth = step.range.min
         const maxDepth = step.range.max ?? minDepth
         results = this._executeVariableLengthTraversal(results, {
-          relationshipType: step.edgeLabel ? Number(step.edgeLabel) : undefined,
+          relationshipType: step.edgeLabel ? this._resolveEdgeType(step.edgeLabel) : undefined,
           minDepth,
           maxDepth,
           direction: step.direction,
@@ -1607,7 +1611,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
         for (const node of results) {
           if (effectiveLimit !== undefined && filtered.length >= effectiveLimit) break
           const neighborsRaw = this.storage.neighbors(node.id, {
-            edgeTypeFilter: step.edgeLabel ? [Number(step.edgeLabel)] : undefined,
+            edgeTypeFilter: step.edgeLabel ? [this._resolveEdgeType(step.edgeLabel)] : undefined,
           })
           for (const entry of neighborsRaw) {
             if (effectiveLimit !== undefined && filtered.length >= effectiveLimit) break
@@ -1753,7 +1757,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       for (const node of results) {
         if (node.id == null || node.id < 0) continue // null or sentinel node — cannot traverse
         const neighborsRaw = this.storage.neighbors(node.id, {
-          edgeTypeFilter: step.edgeLabel ? [Number(step.edgeLabel)] : undefined,
+          edgeTypeFilter: step.edgeLabel ? [this._resolveEdgeType(step.edgeLabel)] : undefined,
         })
         for (const entry of neighborsRaw) {
           const neighbor = this.getNode(entry.nodeId, ctx)
@@ -2363,12 +2367,33 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     const records: NodeRecord[] = []
     for (const id of this._nodeIds) {
       const node = this.getNode(id)
-      if (node && node.typeName === label) {
+      if (!node) continue
+      // 优先：typeName 精确匹配（现有数字 typeId 模式）
+      if (node.typeName === label) {
+        records.push(node)
+        if (limit !== undefined && records.length >= limit) break
+        continue
+      }
+      // 兼容：props._label 匹配（Cypher TCK 字符串标签模式）
+      if (node.props && node.props._label === label) {
         records.push(node)
         if (limit !== undefined && records.length >= limit) break
       }
     }
     return records
+  }
+
+  /**
+   * 缓存并返回字符串 edge label → 数字 typeId 的映射。
+   * 如果 label 已是纯数字字符串，直接返回其数值。
+   */
+  private _resolveEdgeType(label: string): number {
+    const num = Number(label)
+    if (!isNaN(num)) return num
+    if (!this._edgeTypeRegistry.has(label)) {
+      this._edgeTypeRegistry.set(label, this._edgeTypeRegistry.size + 1000)
+    }
+    return this._edgeTypeRegistry.get(label)!
   }
 
   /**
@@ -2455,47 +2480,20 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   ): boolean {
     let typeFilter: number[] | undefined
     if (ef.edgeLabel) {
-      // edgeLabel 是字符串（如 'FRIEND'），需要查找到对应的数字类型 ID
-      // 通过 nodes 查询找到匹配的 edgeType
-      typeFilter = [Number(ef.edgeLabel)]
-      // 如果不是数字（字符串标签名），不传 typeFilter，后续通过 edge.props 过滤
-      if (isNaN(typeFilter[0])) {
-        typeFilter = undefined
-      }
+      const typeId = this._resolveEdgeType(ef.edgeLabel)
+      typeFilter = [typeId]
     }
 
     try {
       const result = this.neighbors(node.id, { maxDepth: 1, edgeTypeFilter: typeFilter })
       if (!result) return false
 
-      // 如果有字符串标签名，在边 props 中匹配
-      if (ef.edgeLabel && isNaN(Number(ef.edgeLabel))) {
-        const matched = result.edges.filter(e => {
-          // 检查 edge.props.type 是否匹配标签名
-          return e.props?.type === ef.edgeLabel || e.props?.label === ef.edgeLabel
-        })
-        if (matched.length === 0) return false
-        return ef.direction === 'any' || matched.some(edge => {
+      // 检查方向
+      return ef.direction === 'any' || result.edges.some(edge => {
           if (ef.direction === 'out') return edge.src === node.id
           if (ef.direction === 'in') return edge.dst === node.id
           return true
         })
-      }
-
-      if (ef.direction === 'any') {
-        return result.edges.length > 0
-      }
-
-      // For direction-specific check, fall back to scanning edges
-      for (const edge of result.edges) {
-        if (ef.direction === 'out' && edge.src === node.id) {
-          return true
-        }
-        if (ef.direction === 'in' && edge.dst === node.id) {
-          return true
-        }
-      }
-      return false
     } catch {
       return false
     }
