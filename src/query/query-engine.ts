@@ -7874,18 +7874,16 @@ let _tckDaemonPort: number | null = null
 function _tckEnsureDaemon(): number {
   if (_tckDaemonPort) return _tckDaemonPort
 
-  // 检查 daemon 是否已在运行
+  // 检查 daemon 是否已在运行 (scans all daemon port files)
   const portFile = '/tmp/tck-daemon-port'
-  try {
-    const p = parseInt(fs.readFileSync(portFile, 'utf8').trim(), 10)
-    if (p > 0) {
-      try {
-        execSync(`curl -s --max-time 1 http://127.0.0.1:${p}/health`, { stdio: 'ignore' })
-        _tckDaemonPort = p
-        return p
-      } catch {}
-    }
-  } catch {}
+  // Check any daemon port files: primary + PID-suffixed
+  for (const pf of _tckScanDaemonPortFiles()) {
+    try {
+      execSync(`curl -s --max-time 1 http://127.0.0.1:${pf}/health`, { stdio: 'ignore' })
+      _tckDaemonPort = pf
+      return pf
+    } catch {}
+  }
 
   // 启动 daemon via nohup — 独立于本进程
   const daemonPath = path.resolve(
@@ -7918,6 +7916,28 @@ function _tckEnsureDaemon(): number {
   }
 
   return 0
+}
+
+function _tckScanDaemonPortFiles(): number[] {
+  const ports: number[] = []
+  try {
+    const p = parseInt(fs.readFileSync('/tmp/tck-daemon-port', 'utf8').trim(), 10)
+    if (p > 0) ports.push(p)
+  } catch {}
+  // Also scan for PID-suffixed port files created by other workers
+  try {
+    const files = fs.readdirSync('/tmp')
+    for (const f of files) {
+      const m = f.match(/^tck-daemon-port-(\d+)$/)
+      if (m) {
+        try {
+          const p = parseInt(fs.readFileSync('/tmp/' + f, 'utf8').trim(), 10)
+          if (p > 0) ports.push(p)
+        } catch {}
+      }
+    }
+  } catch {}
+  return [...new Set(ports)] // deduplicate
 }
 
 function _tckExec(plan: QueryPlan, nodes: Array<Record<string, unknown>>): QueryResult {
