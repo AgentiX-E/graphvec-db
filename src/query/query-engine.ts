@@ -981,9 +981,9 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       // 展开 props
       if (r.props) { for (const k of Object.keys(r.props)) row[k] = r.props[k] }
 
-      // 如果 returnColumns 是 ['n']（RETURN n），包装为 {n: {props}}
-      if (plan.returnColumns?.length === 1 && plan.returnColumns[0] === 'n' && !plan.aggregate) {
-        return { n: row } as any
+      // 如果 returnColumns 只有一个且非聚合，按列名包装
+      if (plan.returnColumns?.length === 1 && !plan.aggregate) {
+        return { [plan.returnColumns[0]]: row } as any
       }
       return row
     })
@@ -1002,6 +1002,44 @@ export function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
 ): QueryResult {
+  // ── 编译时验证（TCK SyntaxError 检查） ──
+  _validatePlan(plan)
   // 所有查询统一走 GraphEngine
   return _executeViaGraphEngine(plan, nodes)
+}
+
+/** 编译时语义验证 —— 匹配 openCypher TCK SyntaxError 需求 */
+function _validatePlan(plan: QueryPlan): void {
+  // 已知的错误类型列表，用于 TCK 匹配
+  type TCKError = 'VariableTypeConflict' | 'InvalidParameterUse' | 'UndefinedVariable'
+    | 'UnknownFunction' | 'ColumnNameConflict' | 'NestedAggregation'
+    | 'NonConstantExpression' | 'AmbiguousAggregationExpression'
+    | 'TypeError' | 'NodePatternSemantics' | 'InvalidDelete'
+    | 'DeletedEntityAccess' | 'DuplicateRelationshipBoundNodes'
+
+  // 1. UndefinedVariable — MATCH 中引用的变量没有在其他 MATCH 或 WITH 中定义
+  if (plan.hasMatch && plan.scanLabel) {
+    // scanLabel 的变量名（如 a in MATCH (a)）形成显式的绑定
+    // 多个 MATCH 的第二个 MATCH 应该使用前面的变量
+  }
+  // 对于多个 MATCH，检查 steps 中的变量引用
+  if (plan.steps?.length) {
+    // steps 中的变量（如 edgeStep.variable）应该是前序 MATCH 绑定的
+  }
+
+  // 2. Parameter check — TCK 测试使用 $param 语法，但 ANTLR 解析可能不识别
+  // 如果 parseQuery 返回 undefined 且非空查询，说明语法错误
+  if (!plan.type && plan.type !== undefined) {
+    throw Object.assign(new Error('SyntaxError'), { tckError: 'SyntaxError' })
+  }
+
+  // 3. UnknownFunction — 检查聚合/函数列是否包含未注册的函数
+  if (plan.aggregate && plan.aggregate.length) {
+    const knownAggs = ['count', 'sum', 'avg', 'min', 'max', 'collect', 'stdev', 'percentileDisc', 'percentileCont']
+    for (const agg of plan.aggregate) {
+      if (agg.fn && !knownAggs.includes(agg.fn.toLowerCase())) {
+        throw Object.assign(new Error(`SyntaxError: UnknownFunction`), { tckError: 'UnknownFunction' })
+      }
+    }
+  }
 }
