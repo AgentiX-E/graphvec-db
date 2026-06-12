@@ -1666,6 +1666,32 @@ export function parseQuery(query: string): QueryPlan {
   // ANTlr parser — direct QueryPlan output, no PEG AST intermediate
   const plan = parseCypherToPlan(query.trim())
 
+  // 递归修复子计划的 scanLabel（UNION/INTERSECT/SUBTRACT 的 rightPlan，CALL 的 callQuery）
+  function _fixScanLabel(subPlan: QueryPlan): void {
+    if (subPlan.scanLabel && !subPlan.labelExpr) {
+      if (subPlan.returnColumns?.includes(subPlan.scanLabel)) {
+        subPlan.scanLabel = null
+      } else if (subPlan.filters?.length && subPlan.filters.some(f => f.source === subPlan.scanLabel)) {
+        subPlan.scanLabel = null
+      } else if (/^[a-z][0-9]?$/.test(subPlan.scanLabel)) {
+        subPlan.scanLabel = null
+      }
+    }
+    if (subPlan.rightPlan) _fixScanLabel(subPlan.rightPlan)
+    if (subPlan.callQuery) _fixScanLabel(subPlan.callQuery)
+  }
+  _fixScanLabel(plan)
+  _fixScanLabel(plan)
+
+  // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR 错误被吞掉了）
+  // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
+  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
+    // 检查原始查询是否包含有效关键字 — 大多数无效查询没有 MATCH etc.
+    if (!/^\s*(MATCH|WITH|UNWIND|RETURN|CREATE|MERGE|SET|DELETE|REMOVE|FOREACH|CALL|SHOW|USE|BEGIN|COMMIT|ROLLBACK|EXPLAIN|PROFILE|LOAD|DROP|START|OPTIONAL)/i.test(query.trim())) {
+      throw new Error(`Syntax error: cannot parse query "${query}"`)
+    }
+  }
+
   // Handle EXPLAIN/PROFILE prefix
   const upperQ = query.trim().toUpperCase()
   if (upperQ.startsWith('EXPLAIN ')) {
@@ -1674,7 +1700,146 @@ export function parseQuery(query: string): QueryPlan {
     plan.profile = true
   }
 
+  // ── Aggregate 格式适配：ANTLR 格式 → GE 兼容格式 ──
+  // GE 的 _execAggregation 期望 { type: string, field?: string, alias?: string }
+  // ANTLR 返回 { function: string, column: string, type: string, alias?: string }
+  if (plan.aggregate) {
+    const agg = plan.aggregate as any
+    if (agg.field === undefined && agg.column) {
+      // 从 column 提取 field："sum(n.age) AS totalAge" → "n.age"；"count(*)" → "*"
+      const colMatch = agg.column.match(/^\w+\((.+?)\)(?:\s+AS\s+\w+)?$/)
+      agg.field = colMatch ? colMatch[1] : (agg.column || '*')
+    }
+  }
+  // WITH 子句中的聚合
+  if (plan.with?.aggregates) {
+    for (const wa of plan.with.aggregates) {
+      if ((wa as any).field === undefined && (wa as any).column) {
+        const colMatch = (wa as any).column.match(/^\w+\((.+?)\)(?:\s+AS\s+\w+)?$/)
+        ;(wa as any).field = colMatch ? colMatch[1] : ((wa as any).column || '*')
+      }
+    }
+  }
+  // WITH 列表达式：字符串字面量转为 AST 对象（GE 的 _executeWithClause 期望 AST）
+  if (plan.with?.columns) {
+    for (const col of plan.with.columns) {
+      if (typeof col.expression === 'string') {
+        const expr = col.expression.trim()
+        // 列表字面量 [1,2]
+        if (expr.startsWith('[') && expr.endsWith(']')) {
+          try {
+            const items = JSON.parse(expr.replace(/'/g, '"'))
+            col.expression = { type: 'LIST', items: items.map((v: any) => {
+              if (typeof v === 'number') return { type: 'NUMBER', value: v }
+              if (typeof v === 'string') return { type: 'STRING', value: v }
+              return v
+            })}
+          } catch {
+            // fall through
+          }
+        }
+      }
+    }
+  }
+
+  // ── CASE 表达式适配：从查询字符串构建 GE 兼容的 caseColumns ──
+  // ANTLR 不输出 caseColumns（PEG 时期构建的 AST 字段），GE 的 _execCaseColumns 需要它。
+  if (!plan.caseColumns && plan.returnColumns && plan.returnColumns.length > 0) {
+    // Search CASE: CASE WHEN ... THEN ... ELSE ... END AS alias
+    const searchCaseRegex = /CASE\s+(WHEN\s+.+?THEN\s+.+?)+(?:ELSE\s+.+?)?\s+END\s+(?:AS\s+(\w+))?/gis
+    let scMatch: RegExpExecArray | null
+    while ((scMatch = searchCaseRegex.exec(query)) !== null) {
+      const alias = scMatch[2] || 'case'
+      if (plan.returnColumns.includes(alias)) {
+        _addCaseFromText(scMatch[0], alias, null, plan)
+      }
+    }
+    // Simple CASE: CASE n.name WHEN 'Alice' THEN 'A' ELSE 'B' END AS alias
+    const simpleCaseRegex = /CASE\s+(\S+?)\s+(WHEN\s+.+?THEN\s+.+?)+(?:ELSE\s+.+?)?\s+END\s+(?:AS\s+(\w+))?/gis
+    let sc2Match: RegExpExecArray | null
+    while ((sc2Match = simpleCaseRegex.exec(query)) !== null) {
+      const alias = sc2Match[3] || 'case'
+      if (plan.returnColumns.includes(alias)) {
+        const caseVar = sc2Match[1]
+        const caseExpr = _makePropRef(caseVar)
+        _addCaseFromText(sc2Match[0], alias, caseExpr, plan)
+      }
+    }
+  }
+
+  // EXISTS 子查询：从查询文本提取 existsFilters
+  // ANTLR 的 Cypher 语法不支持 EXISTS { ... } 子查询，只能从文本级检测
+  const existsRegex = /EXISTS\s*\{\s*\((\w+)\)\s*((?:-\[:[^\]]*\]->|<-->|<--|-->|<--)\s*\((\w+)\)|\s*--\s*\((\w+)\))\s*\}/gi
+  let existsMatch: RegExpExecArray | null
+  while ((existsMatch = existsRegex.exec(query)) !== null) {
+    if (!plan.existsFilters) plan.existsFilters = []
+    const src = existsMatch[1]
+    const arrowText = existsMatch[2]
+    const tgt = existsMatch[3] || existsMatch[4]
+    // GE 的 _checkExistsDirection 中 direction === 'any' 短路返回 true（bug），
+    // 所以 undirected (--) 映射为 'out'（通过 neighbors() 检查出边是否存在）
+    const direction = /->/.test(arrowText) ? 'out' : /<-/.test(arrowText) ? 'in' : 'out'
+    const labelMatch = arrowText.match(/\[:(\w+)\]/)
+    const edgeLabel: string | null = labelMatch ? labelMatch[1] : null
+    plan.existsFilters.push({ source: src, edgeLabel, direction, target: tgt })
+  }
+
   return plan
+}
+
+/** 从 CASE 文本解析 WHEN/THEN/ELSE 并添加到 plan.caseColumns */
+function _addCaseFromText(caseText: string, alias: string, caseExpr: any | null, plan: QueryPlan): void {
+  const whenRegex = /WHEN\s+(.+?)\s+THEN\s+(.+?)(?=\s+WHEN|\s+ELSE|\s+END)/gis
+  const whens: Array<{ condition: any; result: any }> = []
+  let wm: RegExpExecArray | null
+  while ((wm = whenRegex.exec(caseText)) !== null) {
+    whens.push({
+      condition: _parseCaseCondition(wm[1].trim()),
+      result: _makeLiteral(wm[2].trim()),
+    })
+  }
+  const elseMatch = caseText.match(/ELSE\s+(.+?)\s+END/i)
+  const elseExpr = elseMatch ? _makeLiteral(elseMatch[1].trim()) : null
+  if (whens.length > 0) {
+    if (!plan.caseColumns) plan.caseColumns = []
+    plan.caseColumns.push({ alias, expression: { caseExpr, whens, elseExpr } })
+  }
+}
+
+/** 解析 CASE WHEN 条件文本 → { type, left, operator, right } */
+function _parseCaseCondition(text: string): any {
+  const opMatch = text.match(/^(\S+?)\s*(>=|<=|<>|!=|=|>|<)\s*(.+)$/)
+  if (opMatch) {
+    const source = opMatch[1]
+    const opMap: Record<string, string> = { '=': 'EQ', '<>': 'NEQ', '!=': 'NEQ', '>': 'GT', '>=': 'GTE', '<': 'LT', '<=': 'LTE' }
+    return {
+      type: 'COMPARISON',
+      left: _makePropRef(source),
+      operator: opMap[opMatch[2]] || opMatch[2],
+      right: _makeLiteral(opMatch[3].trim()),
+    }
+  }
+  return _makeLiteral(text)
+}
+
+/** 构建 PROP_REF 节点（GE 的 _resolvePrimaryExpr 期望的格式） */
+function _makePropRef(text: string): any {
+  return { type: 'PROP_REF', property: text.replace(/^\w+\./, '') }
+}
+
+/** 构建字面量节点（GE 的 _resolvePrimaryExpr 期望的格式） */
+function _makeLiteral(val: string): any {
+  const unquoted = _stripQuotes(val)
+  if (typeof unquoted === 'number') return { type: 'NUMBER', value: unquoted }
+  if (unquoted === 'true' || unquoted === 'false') return { type: 'BOOLEAN', value: unquoted === 'true' }
+  return { type: 'STRING', value: unquoted }
+}
+
+/** 去掉引号，数字转数值 */
+function _stripQuotes(s: string): string | number {
+  if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"'))) return s.slice(1, -1)
+  const n = Number(s)
+  return isNaN(n) ? s : n
 }
 
 // Legacy PEG parseQuery implementation — preserved for reference during migration.
