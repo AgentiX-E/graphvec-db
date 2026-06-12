@@ -25,7 +25,7 @@ import fs from 'fs'
 import path from 'path'
 import http from 'http'
 import https from 'https'
-import { parser } from './cypher-lite-parser'
+import { parseCypherToPlan } from './ast-to-plan-v2'
 import { LRUCache } from 'lru-cache'
 import { planCache as plannerPlanCache, makePlanCacheKey } from '../api/query-planner'
 import { globalRegistry as procRegistry, type ProcedureContext } from './procedure-registry'
@@ -1239,12 +1239,12 @@ export function _preprocessQuery(query: string): {
     const complexPatterns = /\[\[|\]\[|DISTINCT\s+\w+\.\w+\(/i.test(returnPart)
     if (!complexPatterns) {
       try {
-        parser.parse(modifiedQuery)
+        parseCypherToPlan(modifiedQuery)
       } catch {
         // PEG fails on the query — try to extract return
         const testQuery2 = matchPart + ' RETURN 1 AS __dummy'
         try {
-          parser.parse(testQuery2)
+          parseCypherToPlan(testQuery2)
           returnExtract = returnPart.slice('RETURN'.length).trim()
           modifiedQuery = testQuery2
         } catch {
@@ -1269,7 +1269,7 @@ export function _preprocessQuery(query: string): {
       // Check if PEG can parse just the MATCH part with a dummy RETURN
       try {
         const testQ = matchPart + ' RETURN 1 AS __dummy'
-        parser.parse(testQ)
+        parseCypherToPlan(testQ)
         // MATCH part works — replace the query
         modifiedQuery = testQ
         // Store the CREATE part to be reconstructed in post-processing
@@ -1438,7 +1438,7 @@ export function _parseOptionalMatchExtract(
   if (firstVarMatch) firstVar = firstVarMatch[1]
   const pseudoQuery = `MATCH ${extract} RETURN ${firstVar}`
   try {
-    const ast = parser.parse(pseudoQuery) as QueryAST
+    const ast = parseCypherToPlan(pseudoQuery) as QueryAST
     const pattern = ast.match?.patterns?.[0] ?? null
     const filters = ast.where ? extractFilters(ast.where.expression, []) : []
     return { pattern, filters }
@@ -1517,7 +1517,7 @@ export function _parseWithExtract(
     // Parse the WHERE expression by building a pseudo-query
     const pseudoQuery = `MATCH (n) WHERE ${whereExprStr} RETURN n`
     try {
-      const ast = parser.parse(pseudoQuery) as QueryAST
+      const ast = parseCypherToPlan(pseudoQuery) as QueryAST
       if (ast.where) {
         result.filters = extractFilters(ast.where.expression, [])
       }
@@ -1659,14 +1659,28 @@ function _stripExplainProfile(query: string): { stripped: string; explain: boole
 }
 
 export function parseQuery(query: string): QueryPlan {
-  // Step 0: Try direct PEG parse first — handles SHOW, DESCRIBE, DROP CONSTRAINT, EXPLAIN etc.
-  // If PEG parses it as a non-QUERY type, handle it directly.
+  // ANTlr parser — direct QueryPlan output, no PEG AST intermediate
+  const plan = parseCypherToPlan(query.trim())
+
+  // Handle EXPLAIN/PROFILE prefix
+  const upperQ = query.trim().toUpperCase()
+  if (upperQ.startsWith('EXPLAIN ')) {
+    plan.explain = true
+  } else if (upperQ.startsWith('PROFILE ')) {
+    plan.profile = true
+  }
+
+  return plan
+}
+
+// Legacy PEG parseQuery implementation — preserved for reference during migration.
+// All preprocessing logic below (lines ~1680-2350) is deprecated and can be removed
+// once ANTLR coverage is verified across the full TCK suite.
+function _legacyPegParseQuery(_query: string): QueryPlan {
   let directAst: any = null
   try {
-    directAst = parser.parse(query.trim())
-  } catch (_directErr) {
-    // Not directly parseable — fall through to preprocessing path
-  }
+    directAst = parseCypherToPlan(_query.trim())
+  } catch {}
 
   if (directAst) {
     // SHOW CONSTRAINTS / INDEXES / PROCEDURES / FUNCTIONS / LABELS / RELATIONSHIPTYPES
@@ -1885,7 +1899,7 @@ export function parseQuery(query: string): QueryPlan {
   // Step 2: Parse the cleaned query with peggy
   let ast: QueryAST
   try {
-    ast = parser.parse(cleanQuery) as QueryAST
+    ast = parseCypherToPlan(cleanQuery) as QueryAST
   } catch (err: any) {
     throw new Error(`Query parse error: ${err.message}`)
   }
@@ -2037,7 +2051,7 @@ export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
       }
 
       try {
-        const optAst = parser.parse(pseudoQuery) as QueryAST
+        const optAst = parseCypherToPlan(pseudoQuery) as QueryAST
         if (optAst.match) {
           optMatch.patterns = optAst.match.patterns
           if (optAst.where) {
@@ -2052,7 +2066,7 @@ export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
             ? extract.slice(0, whereIdx).trimEnd()
             : extract
           const simplePseudo = `MATCH ${simpleExtract} RETURN ${firstVar}`
-          const simpleAst = parser.parse(simplePseudo) as QueryAST
+          const simpleAst = parseCypherToPlan(simplePseudo) as QueryAST
           if (simpleAst.match) {
             optMatch.patterns = simpleAst.match.patterns
           }
@@ -2165,7 +2179,7 @@ export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
     ast.unionType = 'intersect'
     const intersectText = extracts.intersectExtract.trim()
     try {
-      const intersectAst = parser.parse(intersectText) as QueryAST
+      const intersectAst = parseCypherToPlan(intersectText) as QueryAST
       ast.rightQuery = intersectAst
     } catch {
       // If PEG can't parse the right side, just store the raw text for later handling
@@ -2177,7 +2191,7 @@ export function _postProcessAST(ast: QueryAST, extracts: _QueryExtracts): void {
   if (extracts.secondCreateExtract) {
     const secondText = extracts.secondCreateExtract.trim()
     try {
-      const secondAst = parser.parse(secondText) as QueryAST
+      const secondAst = parseCypherToPlan(secondText) as QueryAST
       if (secondAst.create && ast.create) {
         // Merge patterns from second CREATE into the first
         for (const pat of secondAst.create.patterns) {
@@ -2574,7 +2588,7 @@ export function planFromAST(
     try {
       // Parse the MERGE text as a pseudo query
       const mergePseudo = `MATCH (__dummy__) ${unwindMergeText}`
-      const mergeAst = parser.parse(mergePseudo) as QueryAST
+      const mergeAst = parseCypherToPlan(mergePseudo) as QueryAST
       if (mergeAst.merge) {
         plan.type = 'MERGE'
         const { createNodes: mergeNodes, createEdges: mergeEdges } = planFromCreateClause(mergeAst.merge)
@@ -2617,7 +2631,7 @@ export function planFromAST(
     // Parse the second UNWIND as a separate statement
     try {
       const unwindPseudo = `MATCH (__dummy__) ${secondUnwindText}`
-      const secondAst = parser.parse(unwindPseudo) as QueryAST
+      const secondAst = parseCypherToPlan(unwindPseudo) as QueryAST
       if (secondAst.unwind) {
         // Store second UNWIND info in plan
         plan.secondUnwind = {
