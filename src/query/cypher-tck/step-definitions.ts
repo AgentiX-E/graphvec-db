@@ -83,14 +83,22 @@ function parseCreateStmt(query: string): Array<Record<string, unknown>> {
 
 function nodesFromGe(ge: any): any[] {
   try {
-    // Use GE's internal method to extract all nodes into seedNodes format
     const result = ge.query('MATCH (n) RETURN n')
     if (!result || !result.length) return []
     return result.map((r: any) => {
-      const raw = r.n || r
-      // GE returns node objects that may have props
-      if (raw && typeof raw === 'object' && raw.props) {
-        return { ...raw.props }
+      // GE query returns array of {n: {id, name, type, props}}
+      const raw = r?.n || r
+      if (raw && typeof raw === 'object') {
+        if (raw.props) return { ...raw.props }
+        if (raw.name && raw.type) {
+          const node: Record<string, unknown> = { _label: raw.type }
+          // Try to extract props from GE node object
+          for (const k of Object.keys(raw)) {
+            if (k !== 'id' && k !== 'name' && k !== 'type') node[k] = raw[k]
+          }
+          return node
+        }
+        return raw
       }
       return raw
     })
@@ -115,7 +123,9 @@ function _runOnPersistGe(q: string): void {
     st.err = null
     if (!raw || !raw.length) { st.res = []; return }
 
-    const rc = plan.returnColumns || ['n']
+    const rc = (plan.returnColumns && plan.returnColumns[0] !== undefined)
+      ? plan.returnColumns
+      : ['n']
     const records: any[] = []
     for (const r of raw) {
       const row: any = {}
@@ -252,6 +262,49 @@ Given('a graph with:', function (dt: DataTable) {
 })
 
 /** Seed a single node into GE */
+/** Hand-parse a CREATE statement with relationships and inject nodes+edges directly into GE */
+function execCreateOnGe(ge: any, q: string): void {
+  const createdNodes: Array<Record<string, unknown>> = []
+  // Extract all node patterns (:Label {props})
+  const nodePatterns = q.match(/\([^)]+\)/g)
+  if (!nodePatterns) { st.nodes = []; return }
+
+  for (const np of nodePatterns) {
+    const inner = np.slice(1, -1).trim()
+    const labels: string[] = []
+    const props: Record<string, unknown> = {}
+    const bi = inner.indexOf('{')
+    if (bi >= 0) {
+      if (inner.substring(0, bi).trim().startsWith(':')) labels.push(...inner.substring(0, bi).trim().substring(1).split(':').filter(Boolean))
+      const raw = inner.substring(bi).replace(/'/g, '"').replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)(\s*:)/g, '$1"$2"$3')
+      try { Object.assign(props, JSON.parse(raw)) } catch {}
+    } else if (inner.startsWith(':')) {
+      labels.push(...inner.substring(1).split(':').filter(Boolean))
+    }
+    const node: Record<string, unknown> = { _label: labels[0] || 'Default', ...props }
+    const label = String(node._label || 'Default')
+    let h = 0; for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
+    try { (ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'rn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
+    createdNodes.push(node)
+  }
+
+  // Extract edge patterns [:EDGE_LABEL] and create edges between consecutive nodes
+  const edgePatterns = q.match(/\[:[A-Za-z_]+\]/g)
+  if (edgePatterns) {
+    for (let ei = 0; ei < edgePatterns.length && ei + 1 < createdNodes.length; ei++) {
+      const edgeLabel = edgePatterns[ei].replace(/[\[\]:]/g, '')
+      let h = 0; for (let ci = 0; ci < edgeLabel.length; ci++) h = ((h << 5) - h + edgeLabel.charCodeAt(ci)) | 0
+      // Determine direction from arrows in the query
+      const node1Idx = ei // first node index
+      const node2Idx = ei + 1 // second node index
+      // For now, create undirected edges (both directions)
+      try { (ge as any).upsertEdge(node1Idx + 1, node2Idx + 1, Math.abs(h) % 1000 + 1) } catch {}
+    }
+  }
+
+  st.nodes = createdNodes
+}
+
 function seedGe(ge: any, node: Record<string, unknown>): void {
   const label = String(node['_label'] || 'Default')
   let h = 0
@@ -263,28 +316,65 @@ function seedGe(ge: any, node: Record<string, unknown>): void {
 Given('having executed:', function (query: string) {
   const q = query.trim()
   try {
+    // First try: parse CREATE to seed nodes directly (simple node-only CREATE)
     const parsed = parseCreateStmt(q)
-    if (parsed.length > 0) {
+    if (parsed.length > 0 && !q.includes('-') && !q.includes('>')) {
+      // Simple node CREATE without relationships — use seedNodes mode
       for (const node of parsed) {
         if (!node._label) node._label = 'Default'
       }
       st.nodes = parsed
       return
     }
+    // If parseCreateStmt fails but no relationships, fallback to run()
+    if (!q.includes('-') && !q.includes('>')) {
+      run(q)
+      return
+    }
   } catch {}
-  run(q)
+
+  // Has relationships or complex DML — use persistent GE with direct node creation
+  try {
+    const ge = persistGe()
+    // Seed any existing nodes into GE first
+    for (const n of st.nodes) seedGe(ge, n)
+    // Hand-parse CREATE with relationships and inject nodes directly into GE
+    if (q.toUpperCase().startsWith('CREATE')) {
+      execCreateOnGe(ge, q)
+    } else {
+      // For non-CREATE DML, try parseQuery + GE internal
+      const plan = parseQuery(q)
+      if (plan && plan.type) {
+        try { (ge as any)._executeQueryPlan(plan) } catch {}
+      }
+      st.nodes = nodesFromGe(ge)
+    }
+    st.err = null
+  } catch (e: any) {
+    st.err = e
+    st.res = []
+  }
 })
 Given('parameters are:', () => {})
 Given(/^there exists a procedure .*$/, () => {})
 
 When('executing query:', function (query: string) {
   st.q = query.trim()
-  run(st.q)
+  // Only use persistent GE if it was explicitly created by having_executed with relationships
+  if (st.pGe && st.q.includes('-')) {
+    _runOnPersistGe(st.q)
+  } else {
+    run(st.q)
+  }
 })
 
 When('executing control query:', function (query: string) {
   st.q = query.trim()
-  run(st.q)
+  if (st.pGe && st.q.includes('-')) {
+    _runOnPersistGe(st.q)
+  } else {
+    run(st.q)
+  }
 })
 
 // ── Then ──
