@@ -623,10 +623,20 @@ function splitByTopLevelAndOr(text: string): string[] {
 
 /**
  * 解析单个条件属性表达式。
- * 支持: prop op value, x IN [...], x IS [NOT] NULL
+ * 支持: prop op value, x IN [...], x IS [NOT] NULL, NOT prop ...
  */
 function parseSingleCondition(text: string): FilterClause | null {
   const t = text.trim()
+  
+  // Handle NOT prefix: "NOT n.name = 'Alice'" → parse "n.name = 'Alice'" with negated flag
+  const notMatch = t.match(/^NOT\s+(.+)$/i)
+  if (notMatch) {
+    const inner = parseSingleCondition(notMatch[1].trim())
+    if (inner) {
+      inner.negated = true
+      return inner
+    }
+  }
   
   // IS [NOT] NULL
   const isNullMatch = t.match(/^(\w+)\.(\w+)\s+IS\s+(NOT\s+)?NULL$/i)
