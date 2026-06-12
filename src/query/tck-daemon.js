@@ -121,33 +121,54 @@ function planToQuery(p) {
   if (p.aggregate) {
     // Single aggregate: takes priority over returnColumns
     var agg = p.aggregate;
-    var funcName = (agg.type || agg.func || '').toUpperCase();
+    var funcName = (agg.type || agg.func || agg.function || '').toUpperCase();
     var aggExpr = '';
 
-    if (funcName === 'COUNT' && (agg.field === '*' || !agg.field)) {
+    // Support both ANTLR format (column contains full expr like "count(*)")
+    // and legacy PEG format (field contains just the field name)
+    if (agg.column && !agg.field) {
+      // ANTLR format: column = "count(*)" or "count(*) AS total" or "count(n.age)"
+      var colExpr = agg.column;
+      // Remove AS alias from expression
+      var asMatch = colExpr.match(/^(.+?)\s+AS\s+\w+$/i);
+      if (asMatch) colExpr = asMatch[1].trim();
+      aggExpr = colExpr;
+    } else if (funcName === 'COUNT' && (agg.field === '*' || !agg.field)) {
       aggExpr = 'count(*)';
     } else if (agg.field) {
       // e.g. sum(n.age) — field contains the expression
-      var fieldWithoutDot = agg.field.indexOf('.') >= 0 ? agg.field.split('.').pop() : agg.field;
-      // If it looks like just a property name (no dot or function), prefix with func
-      if (agg.field.indexOf('(') < 0 && !agg.field.match(/^[a-zA-Z_]/)) {
-        // field is a complex expression like n.age
-        aggExpr = funcName.toLowerCase() + '(' + agg.field + ')';
-      } else {
-        aggExpr = funcName.toLowerCase() + '(' + agg.field + ')';
-      }
+      aggExpr = funcName.toLowerCase() + '(' + agg.field + ')';
     } else {
       aggExpr = funcName.toLowerCase() + '(n)';
     }
 
-    if (agg.alias && agg.alias !== '*' && agg.alias !== agg.field) {
-      aggExpr += ' AS ' + agg.alias;
+    if (agg.alias && agg.alias !== '*' && agg.alias !== agg.column && agg.alias !== agg.field) {
+      // Only add AS if the expression doesn't already contain AS
+      if (aggExpr.indexOf(' AS ') < 0) {
+        aggExpr += ' AS ' + agg.alias;
+      }
     }
-    q += ' RETURN ' + aggExpr;
-
-    // GROUP BY
+    // When there are GROUP BY columns, include them in the RETURN clause
+    // (the daemon's generated query must include both group columns and aggregates)
     if (p.groupBy && p.groupBy.length > 0) {
-      q += ', ' + p.groupBy.join(', ');
+      // Build: RETURN col1, col2, aggExpr GROUP BY col1, col2
+      var groupCols = p.groupBy.map(function(g) { return g.replace(/^(\w+)\./, '') }).join(', ');
+      q += ' RETURN ' + groupCols + ', ' + aggExpr;
+      q += ' GROUP BY ' + p.groupBy.join(', ');
+
+      // HAVING
+      if (p.having && p.having.length > 0) {
+        var havingParts = [];
+        for (var hi = 0; hi < p.having.length; hi++) {
+          var h = p.having[hi];
+          var opMap = {GT: '>', GTE: '>=', LT: '<', LTE: '<=', EQ: '=', NEQ: '<>', '<>': '<>'};
+          var op = opMap[h.operator] || h.operator;
+          havingParts.push(h.aggregate + ' ' + op + ' ' + h.value);
+        }
+        q += ' HAVING ' + havingParts.join(' AND ');
+      }
+    } else {
+      q += ' RETURN ' + aggExpr;
     }
   } else if (p.aggregates && p.aggregates.length > 0) {
     // Multiple aggregates
@@ -162,7 +183,7 @@ function planToQuery(p) {
     }
     q += ' RETURN ' + aggExprs.join(', ');
     if (p.groupBy && p.groupBy.length > 0) {
-      q += ', ' + p.groupBy.join(', ');
+      q += ' GROUP BY ' + p.groupBy.join(', ');
     }
   } else if (p.returnColumns && p.returnColumns.length > 0) {
     q += ' RETURN ' + p.returnColumns.join(', ');

@@ -123,6 +123,7 @@ interface AggregateClause {
   function: string  // 'count' | 'sum' | 'avg' | 'max' | 'min' | 'collect'
   column: string
   distinct?: boolean
+  alias?: string
 }
 
 interface HavingClause {
@@ -182,7 +183,142 @@ export function parseCypherToPlan(query: string): QueryPlan {
  * Parse Cypher string into intermediate representation, then convert to QueryPlan.
  */
 function buildQueryPlan(query: string): QueryPlan {
-  const is = new antlr4.InputStream(query.trim())
+  const trimmed = query.trim()
+  const upperQ = trimmed.toUpperCase()
+
+  // ── ADMIN COMMANDS: Handle before ANTLR parsing ──
+  // These queries are not valid Cypher per the ANTLR grammar (SHOW, BEGIN, etc.)
+  // or require custom handling. We detect them by text pattern and return
+  // the correct QueryPlan directly.
+
+  // SHOW commands
+  if (upperQ === 'SHOW INDEXES') {
+    const plan = createEmptyPlan()
+    plan.show = { what: 'INDEXES' }
+    return plan
+  }
+  if (upperQ === 'SHOW CONSTRAINTS') {
+    const plan = createEmptyPlan()
+    plan.show = { what: 'CONSTRAINTS' }
+    return plan
+  }
+  if (upperQ === 'SHOW PROCEDURES') {
+    const plan = createEmptyPlan()
+    plan.show = { what: 'PROCEDURES' }
+    return plan
+  }
+  if (upperQ === 'SHOW FUNCTIONS') {
+    const plan = createEmptyPlan()
+    plan.show = { what: 'FUNCTIONS' }
+    return plan
+  }
+  if (upperQ === 'SHOW LABELS') {
+    const plan = createEmptyPlan()
+    plan.show = { what: 'LABELS' }
+    return plan
+  }
+  if (upperQ === 'SHOW RELATIONSHIPTYPES') {
+    const plan = createEmptyPlan()
+    plan.show = { what: 'RELATIONSHIPTYPES' }
+    return plan
+  }
+
+  // Transaction commands
+  if (upperQ === 'BEGIN') {
+    const plan = createEmptyPlan()
+    plan.type = 'BEGIN'
+    return plan
+  }
+  if (upperQ === 'COMMIT') {
+    const plan = createEmptyPlan()
+    plan.type = 'COMMIT'
+    return plan
+  }
+  if (upperQ === 'ROLLBACK') {
+    const plan = createEmptyPlan()
+    plan.type = 'ROLLBACK'
+    return plan
+  }
+
+  // CREATE INDEX ON :Label(prop)
+  const createIndexMatch = trimmed.match(/^CREATE\s+INDEX\s+ON\s+:(\w+)\s*\((\w+)\)$/i)
+  if (createIndexMatch) {
+    const plan = createEmptyPlan()
+    plan.indexOp = 'CREATE'
+    plan.indexLabel = createIndexMatch[1]
+    plan.indexProperty = createIndexMatch[2]
+    return plan
+  }
+
+  // DROP INDEX ON :Label(prop)
+  const dropIndexMatch = trimmed.match(/^DROP\s+INDEX\s+ON\s+:(\w+)\s*\((\w+)\)$/i)
+  if (dropIndexMatch) {
+    const plan = createEmptyPlan()
+    plan.indexOp = 'DROP'
+    plan.indexLabel = dropIndexMatch[1]
+    plan.indexProperty = dropIndexMatch[2]
+    return plan
+  }
+
+  // DROP CONSTRAINT name
+  const dropConstraintMatch = trimmed.match(/^DROP\s+CONSTRAINT\s+(\w[\w_]*)/i)
+  if (dropConstraintMatch) {
+    const plan = createEmptyPlan()
+    plan.type = 'DROP_CONSTRAINT'
+    plan.constraint = { label: '', property: dropConstraintMatch[1] }
+    return plan
+  }
+
+  // CREATE CONSTRAINT
+  const createConstraintMatch = trimmed.match(/^CREATE\s+CONSTRAINT\s+FOR\s+\((\w+):(\w+)\)\s+REQUIRE\s+(\w+\.\w+)\s+IS\s+UNIQUE/i)
+  if (createConstraintMatch) {
+    const plan = createEmptyPlan()
+    plan.type = 'CREATE_CONSTRAINT'
+    plan.constraint = { label: createConstraintMatch[2], property: createConstraintMatch[3].split('.')[1] }
+    return plan
+  }
+
+  // DESCRIBE — strip prefix, set explain, recurse
+  const describeMatch = trimmed.match(/^DESCRIBE\s+(.+)/i)
+  if (describeMatch) {
+    const innerPlan = buildQueryPlan(describeMatch[1].trim())
+    innerPlan.explain = true
+    return innerPlan
+  }
+
+  // Check for INTERSECT/SUBTRACT
+  // These would blow up ANTLR so handle them first.
+  const enumMatch = trimmed.match(new RegExp('^(.+?)\\s+(INTERSECT|SUBTRACT)\\s+(.+)$', 'is'))
+
+  // Validate edge patterns before ANTLR: (a)->(b) and (a)<-(b) are invalid
+  // Valid patterns: -[*]->, <-[*]-, -[*]-, <-[*]->
+  const edgePattern = trimmed.match(/\([^)]+\)\s*(->|<-)\s*\(/i)
+  if (edgePattern) {
+    const invalidArrow = edgePattern[1]
+    const beforeArrow = trimmed.slice(0, edgePattern.index! + edgePattern[0].indexOf(invalidArrow))
+    if (!beforeArrow.endsWith('-') && !beforeArrow.endsWith('[')) {
+      if (invalidArrow === '->' || invalidArrow === '<-') {
+        throw new Error('Invalid edge direction')
+      }
+    }
+  }
+  if (enumMatch) {
+    const leftQuery = enumMatch[1].trim()
+    const op = enumMatch[2].toUpperCase()
+    const rightQuery = enumMatch[3].trim()
+    
+    const leftPlan = buildQueryPlan(leftQuery)
+    const rightPlan = buildQueryPlan(rightQuery)
+    
+    const plan = createEmptyPlan()
+    Object.assign(plan, leftPlan, {
+      unionType: op === 'INTERSECT' ? 'intersect' as const : 'subtract' as const,
+      rightPlan: rightPlan,
+    })
+    return plan
+  }
+
+  const is = new antlr4.InputStream(trimmed)
   const lexer = new CypherLexer(is)
   const tokens = new antlr4.CommonTokenStream(lexer)
   const parser = new CypherParser(tokens)
@@ -192,7 +328,59 @@ function buildQueryPlan(query: string): QueryPlan {
   const clauses = collectClauses(tree)
 
   // Build plan from clauses
-  return clausesToPlan(clauses)
+  const plan = clausesToPlan(clauses)
+
+  // ── Post-processing: GROUP BY, HAVING from text ──
+  // ANTLR grammar doesn't support GROUP BY / HAVING natively.
+  // Extract from the RETURN clause text.
+  const retMatch = trimmed.match(/RETURN\s+((?:(?!\s+(?:ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT|SKIP)).)*)/is)
+  if (retMatch) {
+    const afterReturn = trimmed.slice(retMatch.index! + retMatch[0].length)
+    
+    // GROUP BY
+    const groupByMatch = afterReturn.match(/GROUP\s+BY\s+(.+?)(?:\s+(?:ORDER\s+BY|HAVING|LIMIT|SKIP)|$)/is)
+    if (groupByMatch) {
+      plan.groupBy = groupByMatch[1].trim().split(',').map(g => g.trim().replace(/^\w+\./, ''))
+    }
+
+    // HAVING
+    const havingMatch = afterReturn.match(/HAVING\s+(.+?)(?:\s+(?:ORDER\s+BY|GROUP\s+BY|LIMIT|SKIP)|$)/is)
+    if (havingMatch) {
+      plan.having = parseHavingClause(havingMatch[1].trim())
+    }
+
+    // ORDER BY — extract from afterReturn if not already set by extractReturn
+    // (extractReturn may miss ORDER BY when ANTLR stops at GROUP/HAVING keyword)
+    if (!plan.orderBy || plan.orderBy.length === 0) {
+      const orderByMatch = afterReturn.match(/ORDER\s+BY\s+(.+?)(?:\s+(?:GROUP\s+BY|HAVING|LIMIT|SKIP)|$)/is)
+      if (orderByMatch) {
+        const orderByItems = orderByMatch[1].trim().split(',').map(s => s.trim())
+        plan.orderBy = orderByItems.map(item => {
+          const parts = item.split(/\s+/)
+          const prop = parts[0].replace(/^\w+\./, '')
+          const dir = parts.slice(1).join(' ').toUpperCase()
+          return {
+            property: prop,
+            direction: dir === 'DESC' ? 'DESC' as const : 'ASC' as const,
+          }
+        })
+      }
+    }
+
+    // SKIP — extract if not already set
+    if (plan.skip === undefined) {
+      const skipMatch = afterReturn.match(/SKIP\s+(\d+)/i)
+      if (skipMatch) plan.skip = parseInt(skipMatch[1], 10)
+    }
+
+    // LIMIT — extract if not already set
+    if (plan.limit === undefined) {
+      const limitMatch = afterReturn.match(/LIMIT\s+(\d+)/i)
+      if (limitMatch) plan.limit = parseInt(limitMatch[1], 10)
+    }
+  }
+
+  return plan
 }
 
 /**
@@ -318,12 +506,40 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         plan.orderBy = ret.orderBy
         plan.limit = ret.limit
         plan.skip = ret.skip
-        // 兼容 _executeQuery：aggregate 需要 type 字段
+        // 兼容 _executeQuery：aggregate 需要 type 字段（test expects lowercase, e.g. 'count' not 'Count'）
         if (ret.aggregate) {
-          ;(plan.aggregate as any) = {
+          const aggColumn = ret.aggregate.column || ''
+          const aliasMatch = aggColumn.match(/AS\s+(\w+)$/i)
+          const alias = aliasMatch ? aliasMatch[1] : undefined
+          
+          const agg: any = {
             function: ret.aggregate.function,
             column: ret.aggregate.column,
-            type: ret.aggregate.function.charAt(0).toUpperCase() + ret.aggregate.function.slice(1),
+            type: ret.aggregate.function,
+          }
+          if (alias) agg.alias = alias
+          plan.aggregate = agg
+        }
+
+        // Also check return columns for aggregate patterns (fallback)
+        if (!ret.aggregate && ret.columns.length > 0) {
+          for (const col of ret.columns) {
+            const expr = col.expression
+            if (/\b(count|sum|avg|max|min|collect)\s*\(/i.test(expr)) {
+              const fnMatch = expr.match(/^\s*(count|sum|avg|max|min|collect)\s*\(/i)
+              if (fnMatch) {
+                const aliasMatch2 = expr.match(/AS\s+(\w+)$/i)
+                const alias2 = aliasMatch2 ? aliasMatch2[1] : undefined
+                const agg2: any = {
+                  function: fnMatch[1].toLowerCase(),
+                  column: expr,
+                  type: fnMatch[1].toLowerCase(),
+                }
+                if (alias2) agg2.alias = alias2
+                plan.aggregate = agg2
+              }
+              break
+            }
           }
         }
         break
@@ -346,6 +562,16 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         const m = extractMerge(clause.ctx)
         plan.mergeNodes = m.nodes
         plan.mergeEdges = m.edges
+        // Extract ON CREATE / ON MATCH sets from text
+        const mergeText = getTextRecursive(clause.ctx)
+        const onCreateMatch = mergeText.match(/ON\s+CREATE\s+SET\s+(.+?)(?:\s+ON\s+MATCH|$)/i)
+        if (onCreateMatch) {
+          plan.mergeOnCreate = parseSetClausesFromText(onCreateMatch[1])
+        }
+        const onMatchMatch = mergeText.match(/ON\s+MATCH\s+SET\s+(.+?)(?:\s+ON\s+CREATE|$)/i)
+        if (onMatchMatch) {
+          plan.mergeOnMatch = parseSetClausesFromText(onMatchMatch[1])
+        }
         break
       }
       case 'SET': {
@@ -401,6 +627,93 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
 
   plan.hasMatch = hasMatch
   return plan
+}
+
+/**
+ * Parse HAVING clause like "count(*) > 1" into structured clauses.
+ */
+function parseHavingClause(text: string): HavingClause[] {
+  const clauses: HavingClause[] = []
+  // Split by AND/OR at top level
+  const parts = text.split(/\s+(?:AND|OR)\s+/i)
+  
+  for (const part of parts) {
+    const match = part.match(/^(\w+(?:\([^)]*\))?)\s*([<>=!]+)\s*(.+)$/)
+    if (match) {
+      const aggregate = match[1]
+      const opText = match[2]
+      const valText = match[3].trim()
+      
+      const opMap: Record<string, string> = {
+        '>': 'GT',
+        '>=': 'GTE',
+        '<': 'LT',
+        '<=': 'LTE',
+        '=': 'EQ',
+        '!=': 'NEQ',
+        '<>': 'NEQ',
+      }
+      
+      clauses.push({
+        aggregate,
+        operator: opMap[opText] || opText,
+        value: parseInt(valText, 10) || valText,
+      })
+    }
+  }
+  
+  return clauses
+}
+
+/**
+ * Parse SET clauses from text like "n.created_at = timestamp(), n.foo = bar"
+ */
+function parseSetClausesFromText(text: string): Array<{ property: string; value: unknown }> {
+  const results: Array<{ property: string; value: unknown }> = []
+  const items = splitByTopLevelComma(text)
+  
+  for (const item of items) {
+    const eqMatch = item.match(/^(\w+)\.(\w+)\s*=\s*(.+)$/)
+    if (eqMatch) {
+      const valueText = eqMatch[3].trim()
+      let value: unknown = valueText
+      // Try to parse literal values
+      if ((valueText.startsWith("'") && valueText.endsWith("'")) || 
+          (valueText.startsWith('"') && valueText.endsWith('"'))) {
+        value = valueText.slice(1, -1)
+      } else if (valueText === 'true') value = true
+      else if (valueText === 'false') value = false
+      else if (/^-?\d+$/.test(valueText)) value = parseInt(valueText, 10)
+      else if (/^-?\d+\.\d+$/.test(valueText)) value = parseFloat(valueText)
+      
+      results.push({ property: eqMatch[2], value })
+    }
+  }
+  
+  return results
+}
+
+/**
+ * Split text by comma at top level (not inside parentheses)
+ */
+function splitByTopLevelComma(text: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let current = ''
+  
+  for (const ch of text) {
+    if (ch === '(' || ch === '[' || ch === '{') depth++
+    else if (ch === ')' || ch === ']' || ch === '}') depth--
+    else if (ch === ',' && depth === 0) {
+      parts.push(current.trim())
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current.trim()) parts.push(current.trim())
+  
+  return parts
 }
 
 /**
@@ -488,10 +801,11 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
   if (!nodePatterns.length) return null
 
   // Use the FIRST node's label as the scanLabel
+  // If no explicit label, use the variable name (PEG compatibility)
   const firstPattern = nodePatterns[0]
   const variable = findSymbolicName(findChild(firstPattern, 'VariableContext'))
   const nodeLabel = findChild(firstPattern, 'NodeLabelContext')
-  const label = nodeLabel ? findSymbolicName(nodeLabel) : null
+  const label = nodeLabel ? findSymbolicName(nodeLabel) : (variable || null)
   const propsNode = findChild(firstPattern, 'PropertiesContext')
   const properties = propsNode ? extractMapLiteral(propsNode) : null
 
@@ -510,6 +824,19 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
     const hasLeft = findChild(relPattern, 'LeftArrowHeadContext')
     const hasRight = findChild(relPattern, 'RightArrowHeadContext')
     let direction: 'out' | 'in' | 'any' = 'out'
+
+    // Validate edge direction syntax:
+    //   (a)-[*]->(b)  — valid OUT (text starts with '-')
+    //   (a)<-[*]-(b)  — valid IN (text starts with '<')
+    //   (a)-[*]-(b)   — valid ANY (no arrows)
+    //   (a)<-[*]->(b) — valid ANY (both arrows)
+    //   (a)->(b)      — INVALID (no dash before arrow)
+    //   (a)<-(b)      — INVALID (no dash after arrow in reverse)
+    const relText = relPattern.getText()
+    if (hasRight && !relText.startsWith('-') && !relText.startsWith('<')) {
+      throw new Error('Invalid edge direction')
+    }
+
     if (hasLeft && !hasRight) direction = 'in'
     else if (hasLeft && hasRight) direction = 'any'
 
@@ -860,15 +1187,50 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
 
 function extractSetClauses(setCtx: any): QueryPlan['setClauses'] {
   const sets: QueryPlan['setClauses'] = []
-  const texts = getTextRecursive(setCtx)
-  // Simple: "n.prop = value"
-  const items = texts.split(/\s*=\s*/)
+  const text = getTextRecursive(setCtx)
+  // Remove "SET " prefix
+  const setText = text.replace(/^SET\s+/i, '')
+  // Split by comma at top level
+  const items = splitByTopLevelComma(setText)
+  for (const item of items) {
+    const eqMatch = item.match(/^(\w+)\.(\w+)\s*=\s*(.+)$/)
+    if (eqMatch) {
+      let val: unknown = eqMatch[3].trim()
+      // Try to parse literal values
+      if ((val as string).startsWith("'") || (val as string).startsWith('"')) {
+        val = (val as string).slice(1, -1)
+      } else if (val === 'true') val = true
+      else if (val === 'false') val = false
+      else if (/^-?\d+$/.test(val as string)) val = parseInt(val as string, 10)
+      else if (/^-?\d+\.\d+$/.test(val as string)) val = parseFloat(val as string)
+      sets.push({ property: eqMatch[2], value: val })
+    }
+  }
   return sets
 }
 
 function extractRemoveClauses(removeCtx: any): QueryPlan['removeClauses'] {
   const removes: QueryPlan['removeClauses'] = []
-  const texts = getTextRecursive(removeCtx)
+  const text = getTextRecursive(removeCtx)
+  // Remove "REMOVE " prefix, split by comma
+  const removeText = text.replace(/^REMOVE\s+/i, '')
+  const items = splitByTopLevelComma(removeText)
+  for (const item of items) {
+    const trimItem = item.trim()
+    // Detect label removal: n:Label
+    const labelMatch = trimItem.match(/^(\w+):(\w+)$/)
+    if (labelMatch) {
+      removes.push({ type: 'REMOVE_LABEL', ref: labelMatch[1], label: labelMatch[2] })
+    } else {
+      // Property removal: n.prop
+      const propMatch = trimItem.match(/^(\w+)\.(\w+)$/)
+      if (propMatch) {
+        removes.push({ type: 'REMOVE_PROP', ref: propMatch[1], property: propMatch[2] })
+      } else {
+        removes.push({ type: 'REMOVE_PROP', property: trimItem })
+      }
+    }
+  }
   return removes
 }
 
