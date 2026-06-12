@@ -664,7 +664,7 @@ export function parseQuery(query: string): QueryPlan {
 
   // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR 错误被吞掉了）
   // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
-  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
+  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.createNodes?.length && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
     // 检查原始查询是否包含有效关键字 — 大多数无效查询没有 MATCH etc.
     if (!/^\s*(MATCH|WITH|UNWIND|RETURN|CREATE|MERGE|SET|DELETE|REMOVE|FOREACH|CALL|SHOW|USE|BEGIN|COMMIT|ROLLBACK|EXPLAIN|PROFILE|LOAD|DROP|START|OPTIONAL|ALTER|GRANT|REVOKE)/i.test(query.trim())) {
       throw new Error(`Syntax error: cannot parse query "${query}"`)
@@ -933,7 +933,14 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
   }
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
-  const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT', 'FOREACH'].includes(plan.type || '')
+  const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT', 'FOREACH', 'MATCH_MODIFY'].includes(plan.type || '')
+
+  // ── DML 无输出返回空：纯 CREATE/MERGE/DELETE（无 RETURN）应返回空 ──
+  if (isDML && !plan.returnColumns?.length && !plan.aggregate?.length && !plan.expressionColumns?.length) {
+    // 仍然插入节点到 GE（side effects 可能存在），但返回空
+    return []
+  }
+
   if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML) {
     const row: QueryRow = {}
     if (plan.constColumns?.length) {
@@ -954,10 +961,20 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     ge = new GraphEngine(config)
     ge.open()
 
-    // ── 插入节点 ──
-    if (nodes?.length) {
-      for (let i = 0; i < nodes.length; i++) {
-        const item = nodes[i]
+    // ── 插入节点（seedNodes + plan.createNodes） ──
+    const allNodes: Array<Record<string, unknown>> = [...(nodes || [])]
+    // 合并 DML CREATE 的节点定义
+    if (plan.createNodes?.length) {
+      for (const cn of plan.createNodes) {
+        const props: Record<string, unknown> = { _label: cn.label || 'Default' }
+        if (cn.props) { for (const k of Object.keys(cn.props)) props[k] = cn.props[k] }
+        if (cn.alias) props['_alias'] = cn.alias
+        allNodes.push(props)
+      }
+    }
+    if (allNodes.length) {
+      for (let i = 0; i < allNodes.length; i++) {
+        const item = allNodes[i]
         const label = String(item['_label'] || 'Default')
         const props: Record<string, unknown> = { _label: label }
         for (const k of Object.keys(item)) { if (k !== '_label') props[k] = item[k] }
