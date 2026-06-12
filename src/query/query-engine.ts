@@ -3775,109 +3775,6 @@ function _executeUse(name: string, data: Array<Record<string, unknown>>): QueryR
 // GraphEngine 原生执行器（替换 daemon HTTP IPC + 手写执行逻辑）
 // ═══════════════════════════════════════════════════════════════
 
-/** plan → Cypher query string（移植自 tck-daemon.js 的 planToQuery） */
-function _planToQuery(p: QueryPlan): string {
-  if (!p) return 'MATCH (n) RETURN n'
-  if (p.unionType || p.type === 'UNION') return _planToQuery(p.rightPlan || p.leftPlan || p)
-  if (p.type === 'CALL') return p.callProcedure ? 'CALL ' + p.callProcedure.name + '() YIELD *' : 'MATCH (n) RETURN n'
-  if (p.type === 'CREATE' || p.type === 'DELETE' || p.type === 'MERGE') {
-    return p.scanLabel ? 'MATCH (n:' + p.scanLabel + ') RETURN n' : 'MATCH (n) RETURN n'
-  }
-
-  let q = '', sv = 'n'
-  if (p.scanLabel) {
-    q = 'MATCH (n:' + p.scanLabel + ')'
-  } else if (p.steps && p.steps.length > 0) {
-    const s = p.steps[0]; sv = s.source || 'a'
-    const f = s.direction === 'in' ? '<-[:' : '-[:'
-    const t = s.direction === 'in' ? ']-' : ']->'
-    q = 'MATCH (' + sv + ')' + f + (s.edgeLabel || '') + t + '(' + (s.targetAlias || 'b') + ')'
-  } else {
-    q = 'MATCH (n)'
-  }
-
-  if (p.filters && p.filters.length > 0) {
-    const cs: string[] = []
-    for (const f of p.filters) {
-      const op = f.operator
-      const opMap: Record<string, string> = {
-        'EQ': '=', 'NEQ': '<>', 'GT': '>', 'GTE': '>=', 'LT': '<', 'LTE': '<=',
-        'IN': 'IN', 'IS_NULL': 'IS NULL', 'IS_NOT_NULL': 'IS NOT NULL',
-        'CONTAINS': 'CONTAINS', 'STARTS_WITH': 'STARTS WITH', 'ENDS_WITH': 'ENDS WITH',
-        '=': '=', '>': '>', '<': '<', '>=': '>=', '<=': '<=', '<>': '<>',
-      }
-      const cypherOp = opMap[op] || op
-      const left = (f.source || sv) + '.' + f.property
-      const val = f.value
-
-      if (op === 'IS_NULL' || op === 'IS NOT NULL') {
-        cs.push(left + ' ' + cypherOp)
-      } else if (op === 'IN' && Array.isArray(val)) {
-        cs.push(left + ' IN [' + val.map(v => typeof v === 'string' ? '"' + v + '"' : v).join(', ') + ']')
-      } else if (op === 'IN' && typeof val === 'string') {
-        cs.push(left + ' IN ' + val)
-      } else if (typeof val === 'string') {
-        cs.push(left + ' ' + cypherOp + " '" + val + "'")
-      } else if (typeof val === 'boolean') {
-        cs.push(left + ' ' + cypherOp + ' ' + val)
-      } else {
-        cs.push(left + ' ' + cypherOp + ' ' + val)
-      }
-    }
-    q += ' WHERE ' + cs.join(' AND ')
-  }
-
-  // ── 聚合 ──
-  if (p.aggregate) {
-    const agg = p.aggregate
-    const funcName = (agg.type || agg.func || agg.function || '').toUpperCase()
-    let aggExpr = ''
-    if (agg.column && !agg.field) {
-      let colExpr = agg.column
-      const asMatch = colExpr.match(/^(.+?)\s+AS\s+\w+$/i)
-      if (asMatch) colExpr = asMatch[1].trim()
-      aggExpr = colExpr
-    } else if (funcName === 'COUNT' && (agg.field === '*' || !agg.field)) {
-      aggExpr = 'count(*)'
-    } else if (agg.field) {
-      aggExpr = funcName.toLowerCase() + '(' + agg.field + ')'
-    } else {
-      aggExpr = funcName.toLowerCase() + '(n)'
-    }
-    if (agg.alias && agg.alias !== '*' && agg.alias !== agg.column && agg.alias !== agg.field) {
-      if (aggExpr.indexOf(' AS ') < 0) aggExpr += ' AS ' + agg.alias
-    }
-    if (p.groupBy && p.groupBy.length > 0) {
-      const groupCols = p.groupBy.map(g => g.replace(/^\w+\./, '')).join(', ')
-      q += ' RETURN ' + groupCols + ', ' + aggExpr
-      q += ' GROUP BY ' + p.groupBy.join(', ')
-      if (p.having && p.having.length > 0) {
-        const havingParts = p.having.map(h => {
-          const opMap2: Record<string, string> = { GT: '>', GTE: '>=', LT: '<', LTE: '<=', EQ: '=', NEQ: '<>', '<>': '<>' }
-          return h.aggregate + ' ' + (opMap2[h.operator] || h.operator) + ' ' + h.value
-        })
-        q += ' HAVING ' + havingParts.join(' AND ')
-      }
-    } else {
-      q += ' RETURN ' + aggExpr
-    }
-  } else if (p.aggregates && p.aggregates.length > 0) {
-    const aggExprs = p.aggregates.map(a => {
-      const fn = (a.type || a.func || '').toUpperCase()
-      const expr = fn + '(' + (a.args?.length ? a.args.join(', ') : '*') + ')'
-      return a.alias && a.alias !== expr ? expr + ' AS ' + a.alias : expr
-    })
-    q += ' RETURN ' + aggExprs.join(', ')
-    if (p.groupBy?.length) q += ' GROUP BY ' + p.groupBy.join(', ')
-  } else if (p.returnColumns?.length) {
-    q += ' RETURN ' + p.returnColumns.join(', ')
-  } else {
-    q += ' RETURN n'
-  }
-
-  return q
-}
-
 /** 从 orderBy 中提取字段名，去除节点前缀 */
 function _orderByField(o: any): string {
   let field = o.field || o.property || o.column || o.expression || o.col
@@ -3890,48 +3787,15 @@ function _orderByField(o: any): string {
   return field || 'n'
 }
 
-/** 提取返回列名（去除节点前缀） */
-function _returnCols(p: QueryPlan): string[] | null {
-  if (!p.returnColumns?.length) return null
-  return p.returnColumns.map(c => { const m = c.match(/^\w+\.(\w+)$/); return m ? m[1] : c })
-}
-
 /**
- * 后处理：列投影 → ORDER BY → HAVING → SKIP/LIMIT
- * （移植自 tck-daemon.js 的 _postProcess）
+ * 后处理：ORDER BY → HAVING
+ * 注：GE 的 _executeQueryPlan 已处理 MATCH/WHERE/聚合/列投影/GROUP BY/SKIP/LIMIT，
+ * 但 ORDER BY 和 HAVING 需要在此补完。
  */
 function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
   if (!result?.length) return result
   const p = plan
   let processed = result.slice()
-
-  // ── 列投影 ──
-  const cols = _returnCols(p)
-  if (cols?.length && cols.every(c => c !== 'n')) {
-    processed = processed.map(row => {
-      let props: Record<string, unknown> | null = null
-      for (const k of Object.keys(row)) {
-        if (typeof row[k] === 'object' && row[k] !== null) { props = row[k] as any; break }
-      }
-      if (!props) return row
-      const flat: Record<string, unknown> = {}
-      for (const col of cols) flat[col] = props[col] !== undefined ? props[col] : null
-
-      // fallback: strip non-alphanum
-      if (cols.some(c => flat[c] === null)) {
-        for (const col of cols) {
-          if (flat[col] === null) {
-            const stripped = col.replace(/[^a-zA-Z0-9]/g, '')
-            for (const pk of Object.keys(props!)) {
-              if (pk.replace(/[^a-zA-Z0-9]/g, '') === stripped && props![pk] !== undefined) { flat[col] = props![pk]; break }
-            }
-          }
-        }
-      }
-      if (props._label) flat._label = props._label
-      return Object.keys(flat).length ? flat : row
-    })
-  }
 
   // ── ORDER BY ──
   if (p.orderBy?.length) {
@@ -3982,13 +3846,6 @@ function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
         }
       })
     }
-  }
-
-  // ── SKIP / LIMIT ──
-  const skip = (p.skip != null) ? parseInt(String(p.skip), 10) : 0
-  const limit = (p.limit != null) ? parseInt(String(p.limit), 10) : undefined
-  if (skip > 0 || limit !== undefined) {
-    processed = limit !== undefined ? processed.slice(skip, skip + limit) : processed.slice(skip)
   }
 
   return processed
@@ -4043,9 +3900,9 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     } else if (plan.returnColumns?.length) {
       for (const c of plan.returnColumns) row[c] = null
     }
-    // 至少返回一行（无 MATCH = 空结果集的返回一行）
     return Object.keys(row).length ? [row] : []
   }
+
   const dir = path.join('/tmp', 'tckge-' + process.pid + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'))
   let ge: GraphEngine | null = null
   try {
@@ -4061,21 +3918,34 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         const label = String(item['_label'] || 'Default')
         const props: Record<string, unknown> = { _label: label }
         for (const k of Object.keys(item)) { if (k !== '_label') props[k] = item[k] }
-
         let h = 0
         for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
         ;(ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'req-n' + i + '-' + Math.random().toString(36).slice(2, 6), { props })
       }
     }
 
-    // ── 查询 ──
-    const cypher = _planToQuery(plan)
-    const raw = ge.query(cypher)
+    // ── 直接调用 GE 的 _executeQueryPlan，不做字符串绕路 ──
+    const rawRecords: any[] = (ge as any)._executeQueryPlan(plan)
 
-    // ── 格式化结果 → {n: {props}} ──
-    const result: QueryRow[] = (raw || []).map(r => ({ n: r.props ? { ...r.props } : r }))
+    // ── 修复 GE limit=0 bug（GE 的 _executeQueryPlan 中 limit=0 是 falsy，不执行 slice） ──
+    if (plan.limit === 0 && rawRecords?.length) {
+      return []
+    }
 
-    // ── 后处理 ──
+    // ── 格式化结果 ──
+    const result: QueryRow[] = (rawRecords || []).map((r: any) => {
+      const row: QueryRow = {}
+      // 展开 props
+      if (r.props) { for (const k of Object.keys(r.props)) row[k] = r.props[k] }
+
+      // 如果 returnColumns 是 ['n']（RETURN n），包装为 {n: {props}}
+      if (plan.returnColumns?.length === 1 && plan.returnColumns[0] === 'n' && !plan.aggregate) {
+        return { n: row } as any
+      }
+      return row
+    })
+
+    // ── 后处理（ORDER BY / HAVING） ──
     return _postProcessResults(result, plan)
   } finally {
     if (ge) {
