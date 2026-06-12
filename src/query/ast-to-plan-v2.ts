@@ -837,10 +837,13 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
       throw new Error('Invalid edge direction')
     }
 
+    // Deduct direction from arrow heads
     if (hasLeft && !hasRight) direction = 'in'
     else if (hasLeft && hasRight) direction = 'any'
 
     // Edge label
+    let rangeInfo: { min: number; max: number | null } | undefined = undefined
+
     const relDetail = findChild(relPattern, 'RelationshipDetailContext')
     let edgeLabel: string | null = null
     if (relDetail) {
@@ -852,7 +855,18 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
       }
 
       // VARLEN range
-      const rangeCtx = findChild(relDetail, 'RangeLiteralContext')
+      if (findChild(relDetail, 'RangeLiteralContext')) {
+        const rctx = findChild(relDetail, 'RangeLiteralContext')
+        const rangeText = rctx!.getText ? rctx!.getText() : ''
+        const cleanRange = rangeText.startsWith('*') ? rangeText.slice(1) : rangeText
+        const parts = cleanRange.split('..')
+        if (parts.length === 2) {
+          rangeInfo = { min: parseInt(parts[0], 10), max: parseInt(parts[1], 10) }
+        } else {
+          const val = parseInt(parts[0], 10)
+          rangeInfo = { min: val, max: val }
+        }
+      }
     }
 
     // Target
@@ -869,6 +883,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
       targetAlias: targetVar ?? '',
       targetLabel,
       targetProps,
+      ...(rangeInfo ? { range: rangeInfo } : {}),
     })
 
     currentSource = targetVar ?? ''
@@ -1071,7 +1086,7 @@ function extractReturn(returnCtx: any): ParsedReturn {
     if (name === 'SortItemContext') {
       const sortText = getTextRecursive(node)
       const parts = sortText.split(/\s+/)
-      const orderProp = parts[0]
+      const orderProp = parts[0].replace(/^\w+\./, '')
       const orderDir = parts[1]?.toUpperCase() === 'DESC' ? 'DESC' as const : 'ASC' as const
       orderBy.push({ property: orderProp, direction: orderDir })
       return
