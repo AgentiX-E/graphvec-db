@@ -153,10 +153,6 @@ interface ParsedEdgeStep {
   range?: { min: number; max: number | null }
 }
 
-interface ParsedWhere {
-  filters: FilterClause[]
-}
-
 interface ParsedReturn {
   columns: Array<{ expression: string; alias: string | null }>
   orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
@@ -866,7 +862,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
   if (!nodePatterns.length) return null
 
   // Use the FIRST node's label as the scanLabel
-  // If no explicit label, use the variable name (PEG compatibility)
+  // If no explicit label, fall back to the variable name
   const firstPattern = nodePatterns[0]
   const variable = findSymbolicName(findChild(firstPattern, 'VariableContext'))
   const nodeLabel = findChild(firstPattern, 'NodeLabelContext')
