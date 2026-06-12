@@ -58,13 +58,15 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(plan.steps[0].direction).toBe('out')
   })
 
-  it('[TCK-MATCH-05] MATCH 反向边 — Cypher-lite 暂不支持 <-- 语法', () => {
+  it('[TCK-MATCH-05] MATCH 反向边 — ANTLR 原生支持 <-- 语法', () => {
     // Feature: Match
     // Scenario: Match relationship with reversed direction
     //   When executing query: """MATCH (a)<-[:KNOWS]-(b) RETURN a, b"""
-    //   Cypher-lite parser currently does not support "<-" syntax.
-    //   This documents the known limitation.
-    expect(() => parseQuery('MATCH (a)<-[:KNOWS]-(b) RETURN a, b')).toThrow()
+    //   ANTLR parser natively supports "<-" syntax (unlike PEG).
+    //   This test updates the legacy toThrow expectation for ANTLR.
+    const plan = parseQuery('MATCH (a)<-[:KNOWS]-(b) RETURN a, b')
+    expect(plan).toBeDefined()
+    expect(plan.scanLabel).toBe('a')
   })
 
   it('[TCK-MATCH-06] MATCH 多跳路径 — 支持两跳', () => {
