@@ -191,30 +191,118 @@ function planToQuery(p) {
     q += ' RETURN n';
   }
 
-  if (p.orderBy && p.orderBy.length > 0) {
-    var os = [];
-    for (var oi = 0; oi < p.orderBy.length; oi++) {
-      var o = p.orderBy[oi];
-      // Extract actual field name from orderBy item — try all known keys
-      var orderField = o.field || o.property || o.column || o.expression || o.col;
-      if (!orderField) {
-        var okeys = Object.keys(o);
-        for (var ki = 0; ki < okeys.length; ki++) {
-          if (okeys[ki] !== 'direction' && okeys[ki] !== 'type' && typeof o[okeys[ki]] === 'string') {
-            orderField = o[okeys[ki]];
-            break;
-          }
+  // DO NOT add ORDER BY / LIMIT / SKIP to SQL — GraphEngine doesn't support them.
+  // They are handled in JS post-processing below.
+  return q;
+}
+
+/**
+ * Extract a property name from an orderBy item, removing node prefix.
+ * e.g. "n.name" → "name", "n" → "n"
+ */
+function _orderByField(o) {
+  var field = o.field || o.property || o.column || o.expression || o.col;
+  if (!field) {
+    var okeys = Object.keys(o);
+    for (var ki = 0; ki < okeys.length; ki++) {
+      if (okeys[ki] !== 'direction' && okeys[ki] !== 'type' && typeof o[okeys[ki]] === 'string') {
+        field = o[okeys[ki]];
+        break;
+      }
+    }
+  }
+  if (field) field = field.replace(/^\w+\./, '');
+  return field || 'n';
+}
+
+/**
+ * Extract return column names (strip node prefix), e.g. "n.name" → "name"
+ */
+function _returnCols(p) {
+  if (!p.returnColumns || p.returnColumns.length === 0) return null;
+  return p.returnColumns.map(function(c) {
+    var m = c.match(/^\w+\.(\w+)$/);
+    return m ? m[1] : c;
+  });
+}
+
+/**
+ * Post-process result array: project columns, ORDER BY, SKIP, LIMIT
+ */
+function _postProcess(result, plan) {
+  if (!result || result.length === 0) return result;
+  var p = plan;
+  var processed = result.slice(); // shallow copy
+
+  // ── Project return columns ──
+  // When returnColumns exist and are property accesses (e.g. "n.name"),
+  // flatten each row to just those properties
+  var cols = _returnCols(p);
+  if (cols && cols.length > 0 && cols.every(function(c) { return c !== 'n'; })) {
+    processed = processed.map(function(row) {
+      // Find the first value that's an object (the node's props)
+      var props = null;
+      var keys = Object.keys(row);
+      for (var ki = 0; ki < keys.length; ki++) {
+        if (typeof row[keys[ki]] === 'object' && row[keys[ki]] !== null) {
+          props = row[keys[ki]];
+          break;
         }
       }
-      var dir = (o.direction || '').trim();
-      os.push((orderField || 'n') + (dir ? ' ' + dir : ''));
-    }
-    q += ' ORDER BY ' + os.join(', ');
+      if (!props) return row;
+      var flat = {};
+      for (var ci = 0; ci < cols.length; ci++) {
+        var col = cols[ci];
+        flat[col] = props[col] !== undefined ? props[col] : null;
+      }
+      // Include _label for compat
+      if (props._label) flat._label = props._label;
+      // If no cols matched just the whole node, return as is
+      if (Object.keys(flat).length === 0) return row;
+      return flat;
+    });
   }
 
-  if (p.limit !== undefined && p.limit !== null) q += ' LIMIT ' + parseInt(p.limit, 10);
-  if (p.skip !== undefined && p.skip !== null) q += ' SKIP ' + parseInt(p.skip, 10);
-  return q;
+  // ── ORDER BY ──
+  if (p.orderBy && p.orderBy.length > 0) {
+    processed.sort(function(a, b) {
+      for (var oi = 0; oi < p.orderBy.length; oi++) {
+        var o = p.orderBy[oi];
+        var field = _orderByField(o);
+        var dir = (o.direction || '').trim().toUpperCase();
+        var va = a[field];
+        var vb = b[field];
+        if (va === undefined) va = null;
+        if (vb === undefined) vb = null;
+        var cmp = 0;
+        if (va === null && vb === null) cmp = 0;
+        else if (va === null) cmp = -1;
+        else if (vb === null) cmp = 1;
+        else if (typeof va === 'number' && typeof vb === 'number') {
+          cmp = va - vb;
+        } else {
+          cmp = String(va).localeCompare(String(vb));
+        }
+        if (cmp !== 0) return dir === 'DESC' ? -cmp : cmp;
+      }
+      return 0;
+    });
+  }
+
+  // ── SKIP / LIMIT ──
+  var skip = (p.skip !== undefined && p.skip !== null) ? parseInt(p.skip, 10) : 0;
+  var limit = (p.limit !== undefined && p.limit !== null) ? parseInt(p.limit, 10) : undefined;
+  if (skip > 0 || limit !== undefined) {
+    if (skip > 0 && limit !== undefined) {
+      processed = processed.slice(skip, skip + limit);
+    } else if (skip > 0) {
+      processed = processed.slice(skip);
+    } else {
+      processed = processed.slice(0, limit);
+    }
+  }
+
+  return processed;
 }
 
 function getVarNames(p) {
@@ -311,34 +399,24 @@ const server = http.createServer((req, res) => {
 
       // ── 构建并执行查询 ──
       const q = planToQuery(plan);
+      console.error('[tck-daemon] query=' + q + ' for ' + (data ? data.length : 0) + ' data items');
       const raw = ge.query(q);
       if (!raw || raw.length === 0) console.error('[tck-daemon] query=' + q + ' → EMPTY');
+      console.error('[tck-daemon] raw count=' + (raw ? raw.length : 0));
 
       // ── 格式化结果 ──
       var result = [];
       if (raw && raw.length > 0) {
-        var vars = getVarNames(plan);
-        if (vars.length <= 1) {
-          result = raw.map(function(r) {
-            var o = {};
-            o[vars[0] || 'n'] = r.props ? Object.assign({}, r.props) : r;
-            return o;
-          });
-        } else if (vars.length >= 2 && raw.length >= 2) {
-          for (var ri = 0; ri + 1 < raw.length; ri += 2) {
-            var row = {};
-            row[vars[0]] = raw[ri] && raw[ri].props
-              ? Object.assign({}, raw[ri].props)
-              : raw[ri];
-            row[vars[1]] = raw[ri + 1] && raw[ri + 1].props
-              ? Object.assign({}, raw[ri + 1].props)
-              : raw[ri + 1];
-            result.push(row);
-          }
-        } else {
-          result = raw;
-        }
+        // Simple uniform formatter: each raw graph node becomes {n: {props}}
+        result = raw.map(function(r) {
+          var o = {};
+          o['n'] = r.props ? Object.assign({}, r.props) : r;
+          return o;
+        });
       }
+
+      // ── Post-process: project columns, ORDER BY, SKIP, LIMIT ──
+      result = _postProcess(result, plan);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, result: result }));
