@@ -932,8 +932,9 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     }
   }
 
-  // 纯 RETURN 字面量（无 MATCH 无 steps）——不经过 GraphEngine
-  if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch) {
+  // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
+  const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT', 'FOREACH'].includes(plan.type || '')
+  if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML) {
     const row: QueryRow = {}
     if (plan.constColumns?.length) {
       for (const c of plan.constColumns) row[c.alias] = c.value
