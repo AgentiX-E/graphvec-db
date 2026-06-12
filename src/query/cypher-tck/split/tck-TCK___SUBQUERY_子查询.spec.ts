@@ -37,8 +37,10 @@ describe('TCK — SUBQUERY 子查询', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-SUB-07] CALL 嵌套子查询', () => {
-    expect(() => parseQuery('CALL { CALL { MATCH (n:Person) RETURN n.name } RETURN n.name } RETURN n.name')).toThrow()
+  it('[TCK-SUB-07] CALL 嵌套子查询 — ANTLR 原生支持', () => {
+    const plan = parseQuery('CALL { CALL { MATCH (n:Person) RETURN n.name } RETURN n.name } RETURN n.name')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBe('CALL')
   })
 
   it('[TCK-SUB-08] CALL 子查询 IN TRANSACTIONS', () => {

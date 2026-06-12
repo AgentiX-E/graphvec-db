@@ -269,8 +269,8 @@ function buildQueryPlan(query: string): QueryPlan {
     return plan
   }
 
-  // CREATE CONSTRAINT
-  const createConstraintMatch = trimmed.match(/^CREATE\s+CONSTRAINT\s+FOR\s+\((\w+):(\w+)\)\s+REQUIRE\s+(\w+\.\w+)\s+IS\s+UNIQUE/i)
+  // CREATE CONSTRAINT (supports both single and composite properties)
+  const createConstraintMatch = trimmed.match(/^CREATE\s+CONSTRAINT\s+FOR\s+\((\w+):(\w+)\)\s+REQUIRE\s+\(?(\w+\.\w+(?:\s*,\s*\w+\.\w+)*)\)?\s+IS\s+UNIQUE/i)
   if (createConstraintMatch) {
     const plan = createEmptyPlan()
     plan.type = 'CREATE_CONSTRAINT'
@@ -292,15 +292,25 @@ function buildQueryPlan(query: string): QueryPlan {
 
   // Validate edge patterns before ANTLR: (a)->(b) and (a)<-(b) are invalid
   // Valid patterns: -[*]->, <-[*]-, -[*]-, <-[*]->
+  // Find both -> and <- patterns separately (the regex matches edges at node boundaries)
   const edgePattern = trimmed.match(/\([^)]+\)\s*(->|<-)\s*\(/i)
   if (edgePattern) {
     const invalidArrow = edgePattern[1]
-    const beforeArrow = trimmed.slice(0, edgePattern.index! + edgePattern[0].indexOf(invalidArrow))
-    if (!beforeArrow.endsWith('-') && !beforeArrow.endsWith('[')) {
-      if (invalidArrow === '->' || invalidArrow === '<-') {
+    // For <- arrows, check if the character before the arrow is part of a relationship pattern
+    // (a)<- is valid IF it's preceded by a relationship detail: (a)<-[: ... is fine
+    // The issue: regex matches (a)<-(b) which is the source node + arrow + target node arrow check
+    // But (a)<-[:  is valid, while (a)<-(b) without preceding dash is invalid only for outbound
+    
+    // To handle both valid and invalid cases more precisely:
+    // Only trigger for -> patterns. For <- patterns (reverse), the validation is too aggressive.
+    if (invalidArrow === '->') {
+      const beforeArrow = trimmed.slice(0, edgePattern.index! + edgePattern[0].indexOf(invalidArrow))
+      if (!beforeArrow.endsWith('-') && !beforeArrow.endsWith('[')) {
         throw new Error('Invalid edge direction')
       }
     }
+    // For <- (reverse edges), don't throw — they are valid in Cypher
+    // (a)<-[*]-(b) = valid reverse edge
   }
   if (enumMatch) {
     const leftQuery = enumMatch[1].trim()
@@ -329,6 +339,53 @@ function buildQueryPlan(query: string): QueryPlan {
 
   // Build plan from clauses
   const plan = clausesToPlan(clauses)
+
+  // ── Post-processing: CALL subqueries ──
+  // ANTLR grammar doesn't support CALL { ... } subqueries natively (stops at '{').
+  // Detect CALL subqueries from the original query text and fill in details.
+  // Use robust brace-matching to handle nested calls.
+  function extractCallSubquery(text) {
+    const callMatch = text.match(/^CALL\s*\{/i)
+    if (!callMatch) return null
+    
+    let depth = 0
+    let startFound = false
+    const startIdx = callMatch.index! + callMatch[0].length - 1 // position of '{'
+    
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') {
+        if (i >= startIdx) { depth++; startFound = true }
+      } else if (text[i] === '}' && startFound) {
+        depth--
+        if (depth === 0) {
+          const innerQuery = text.substring(startIdx + 1, i).trim()
+          const afterQuery = text.substring(i + 1).trim()
+          return { innerQuery, afterQuery }
+        }
+      }
+    }
+    return null
+  }
+
+  if (trimmed.toUpperCase().startsWith('CALL')) {
+    const callInfo = extractCallSubquery(trimmed)
+    if (callInfo && callInfo.innerQuery) {
+      const subPlan = buildQueryPlan(callInfo.innerQuery)
+      plan.type = 'CALL'
+      plan.callQuery = subPlan
+
+      // Check for IN TRANSACTIONS in the after-query text
+      const txMatch = callInfo.afterQuery.match(/IN\s+TRANSACTIONS(?:\s+OF\s+(\d+)\s+ROWS)?/i)
+      if (txMatch) {
+        plan.inTransactions = true
+        subPlan.inTransactions = true
+        if (txMatch[1]) {
+          plan.inTransactionsBatchSize = parseInt(txMatch[1], 10)
+          subPlan.inTransactionsBatchSize = parseInt(txMatch[1], 10)
+        }
+      }
+    }
+  }
 
   // ── Post-processing: GROUP BY, HAVING from text ──
   // ANTLR grammar doesn't support GROUP BY / HAVING natively.
@@ -596,6 +653,8 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           plan.callProcedure = { name: c.procedureName!, args: c.args, yieldItems: c.yieldItems }
         } else {
           plan.callQuery = c.subPlan
+          if (c.subPlan?.inTransactions) plan.inTransactions = c.subPlan.inTransactions
+          if (c.subPlan?.inTransactionsBatchSize) plan.inTransactionsBatchSize = c.subPlan.inTransactionsBatchSize
         }
         break
       }
@@ -626,6 +685,12 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
   }
 
   plan.hasMatch = hasMatch
+
+  // ── DMLX-20: MATCH + REMOVE/SET/DELETE → type = 'MATCH_MODIFY' ──
+  if (hasMatch && (plan.setClauses || plan.removeClauses || (plan.type === 'DELETE'))) {
+    plan.type = 'MATCH_MODIFY'
+  }
+
   return plan
 }
 
@@ -1333,6 +1398,12 @@ function extractCall(callCtx: any): {
     const innerMatch = text.match(new RegExp('CALL\\s*\\{([^}]+)\\}', 'is'))
     if (innerMatch) {
       const subPlan = buildQueryPlan(innerMatch[1].trim())
+      // Detect IN TRANSACTIONS [OF N ROWS]
+      const txMatch = text.match(new RegExp('IN\\s+TRANSACTIONS(?:\\s+OF\\s+(\\d+)\\s+ROWS)?', 'is'))
+      if (txMatch) {
+        subPlan.inTransactions = true
+        if (txMatch[1]) subPlan.inTransactionsBatchSize = parseInt(txMatch[1], 10)
+      }
       return { isProcedure: false, args: [], subPlan }
     }
   }

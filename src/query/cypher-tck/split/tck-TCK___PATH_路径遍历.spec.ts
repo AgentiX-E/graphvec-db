@@ -53,8 +53,10 @@ describe('TCK — PATH 路径遍历', () => {
     expect(() => parseQuery('MATCH (a)->(b) RETURN a, b')).toThrow()
   })
 
-  it('[TCK-PATH-10] 反向边抛出错误', () => {
-    expect(() => parseQuery('MATCH (a)<-[:KNOWS]-(b) RETURN a, b')).toThrow()
+  it('[TCK-PATH-10] 反向边 — ANTLR 原生支持', () => {
+    const plan = parseQuery('MATCH (a)<-[:KNOWS]-(b) RETURN a, b')
+    expect(plan).toBeDefined()
+    expect(plan.steps[0].direction).toBe('in')
   })
 
   it('[TCK-PATH-11] 逗号多 pattern', () => {

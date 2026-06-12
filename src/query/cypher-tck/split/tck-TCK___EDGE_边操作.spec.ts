@@ -37,8 +37,10 @@ describe('TCK — EDGE 边操作', () => {
     expect(() => parseQuery('MATCH (a)->(b) RETURN a, b')).toThrow()
   })
 
-  it('[TCK-EDGE-07] MATCH 反向边抛出', () => {
-    expect(() => parseQuery('MATCH (a)<-[:KNOWS]-(b) RETURN a, b')).toThrow()
+  it('[TCK-EDGE-07] MATCH 反向边 — ANTLR 原生支持', () => {
+    const plan = parseQuery('MATCH (a)<-[:KNOWS]-(b) RETURN a, b')
+    expect(plan).toBeDefined()
+    expect(plan.steps[0].direction).toBe('in')
   })
 
   it('[TCK-EDGE-08] 边名赋值过滤', () => {

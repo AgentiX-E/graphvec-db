@@ -108,8 +108,10 @@ describe('TCK — DML 扩展', () => {
     expect(plan.detachDelete).toBe(true)
   })
 
-  it('[TCK-DMLX-20] MATCH + REMOVE + SET 链式', () => {
-    expect(() => parseQuery('MATCH (n:Person) REMOVE n.temp SET n.finalized = true')).toThrow()
+  it('[TCK-DMLX-20] MATCH + REMOVE + SET 链式 — ANTLR 原生支持', () => {
+    const plan = parseQuery('MATCH (n:Person) REMOVE n.temp SET n.finalized = true')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBe('MATCH_MODIFY')
   })
 
   it('[TCK-DMLX-21] SET 字符串属性值', () => {

@@ -132,7 +132,9 @@ describe('TCK — ADMIN 管理操作', () => {
     expect(result).toBeDefined()
   })
 
-  it('[TCK-ADMIN-25] CREATE CONSTRAINT 带复合属性', () => {
-    expect(() => parseQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE (n.firstName, n.lastName) IS UNIQUE')).toThrow()
+  it('[TCK-ADMIN-25] CREATE CONSTRAINT 带复合属性 — ANTLR 原生支持', () => {
+    const plan = parseQuery('CREATE CONSTRAINT FOR (n:Person) REQUIRE (n.firstName, n.lastName) IS UNIQUE')
+    expect(plan).toBeDefined()
+    expect(plan.type).toBe('CREATE_CONSTRAINT')
   })
 })
