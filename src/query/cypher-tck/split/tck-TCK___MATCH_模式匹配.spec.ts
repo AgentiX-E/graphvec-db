@@ -66,7 +66,8 @@ describe('TCK — MATCH 模式匹配', () => {
     //   This test updates the legacy toThrow expectation for ANTLR.
     const plan = parseQuery('MATCH (a)<-[:KNOWS]-(b) RETURN a, b')
     expect(plan).toBeDefined()
-    expect(plan.scanLabel).toBe('a')
+    expect(plan.scanLabel).toBe(null)
+    expect(plan.returnColumns).toContain('a')
   })
 
   it('[TCK-MATCH-06] MATCH 多跳路径 — 支持两跳', () => {
