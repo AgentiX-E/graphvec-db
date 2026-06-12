@@ -7889,20 +7889,29 @@ function _tckEnsureDaemon(): number {
 
   // 启动 daemon via nohup — 独立于本进程
   const daemonPath = path.resolve(
-    path.dirname(new URL(import.meta.url).pathname),
+    __dirname,
     'tck-daemon.js',
   )
   try { fs.unlinkSync(portFile) } catch {}
   try { execSync(`nohup node '${daemonPath}' 0 '${portFile}' </dev/null >/dev/null 2>&1 &`, { shell: true, stdio: 'ignore' }) } catch {}
 
-  // Poll for port file
+  // Poll for port file then wait for daemon to accept connections
   const deadline = Date.now() + 15000
   while (Date.now() < deadline) {
     try {
       const p = parseInt(fs.readFileSync(portFile, 'utf8').trim(), 10)
       if (p > 0) {
         _tckDaemonPort = p
-        return p
+        // Now wait for daemon to actually accept HTTP connections
+        const healthDeadline = Date.now() + 5000
+        while (Date.now() < healthDeadline) {
+          try {
+            execSync(`curl -s --max-time 1 http://127.0.0.1:${p}/health`, { stdio: 'ignore' })
+            return p
+          } catch {}
+          try { execSync('sleep 0.1', { stdio: 'ignore' }) } catch {}
+        }
+        return p // fallback: port file exists, daemon might be slow
       }
     } catch {}
     try { execSync('sleep 0.05', { stdio: 'ignore' }) } catch {}
