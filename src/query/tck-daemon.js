@@ -106,7 +106,7 @@ function planToQuery(p) {
         cs.push(left + ' ' + cypherOp);
       } else if (op === 'IN' && Array.isArray(val)) {
         var items = val.map(function(v) {
-          return typeof v === 'string' ? "'" + v + "'" : v;
+          return typeof v === 'string' ? '"' + v + '"' : v;
         }).join(', ');
         cs.push(left + ' IN [' + items + ']');
       } else if (op === 'IN' && typeof val === 'string') {
