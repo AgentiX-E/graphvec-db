@@ -1508,7 +1508,13 @@ function extractMapLiteral(propsCtx: any): Record<string, unknown> | null {
         // 数组字面量解析
         value = parseListLiteral(value)
       } else if (/^-?\d+$/.test(value)) {
-        value = parseInt(value, 10)
+        // 大整数保持字符串精度（超过 JS Number.MAX_SAFE_INTEGER）
+        const bigVal = BigInt(value)
+        if (bigVal > BigInt(Number.MAX_SAFE_INTEGER) || bigVal < BigInt(Number.MIN_SAFE_INTEGER)) {
+          value = value  // 保持字符串以保留精度
+        } else {
+          value = parseInt(value, 10)
+        }
       } else if (/^-?\d+\.\d+$/.test(value)) {
         value = parseFloat(value)
       } else if (value.toUpperCase() === 'TRUE') {

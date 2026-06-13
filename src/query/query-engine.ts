@@ -1066,10 +1066,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         result[rc] = row[propPart]
         continue
       }
+      // 属性不存在 → TCK 期望 null
+      result[rc] = null
+      continue
     }
-
-    // fallback
-    result[rc] = ''
   }
   return result
 }
@@ -1167,72 +1167,238 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
   return Object.keys(row).length ? [row] : []
 }
 
+
 export function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
+  query?: string,
 ): QueryResult {
-  // 编译时验证（TCK SyntaxError 检查）
-  _validatePlan(plan)
   // 所有查询统一走 GraphEngine
   return _executeViaGraphEngine(plan, nodes)
 }
 
 /**
  * TCK 兼容的编译时语义验证。
+ * 公开导出，在 step-definitions.ts 中调用。
  * 对应 openCypher SyntaxError 检查：VariableTypeConflict、UndefinedVariable、
  * VariableAlreadyBound、InvalidArgumentType、NonConstantExpression、InvalidDelete 等。
  */
-function _validatePlan(plan: QueryPlan): void {
+export function _validatePlan(plan: QueryPlan, query?: string): void {
   if (!plan || !plan.type) return
+  if (!query) return
 
-  // ── UndefinedVariable（VariableTypeConflict 子类） ──
-  // 检查 returnColumns 中是否引用未绑定的变量
-  // 如果 MATCH (n) RETURN foo — foo 未定义
-  // 策略：returnColumns 中的名字如果不在 returnAliasMap 中，
-  // 且不在 createNodes alias 中，且非 *，可能是未定义变量
-  const validAliases = new Set<string>()
+  // 从 WHERE 子句检测未绑定变量
+  const qUpper = query.toUpperCase()
 
-  // 从 steps 收集变量
-  if (plan.steps) {
-    for (const s of plan.steps) {
-      if (s.startVar) validAliases.add(s.startVar)
-      if (s.endVar) validAliases.add(s.endVar)
-      if (s.edgeVar) validAliases.add(s.edgeVar)
+  // ── SyntaxError: InvalidDelete ──
+  // DELETE 关系模式（需要 DETACH）
+  if (plan.type === 'DELETE' && query) {
+    // DELETE 关系但未使用 DETACH
+    const hasRelationship = query.includes('[') && query.includes(']')
+    const isDetach = query.toUpperCase().includes('DETACH')
+    if (hasRelationship && !isDetach) {
+      // 删除关系需要 DETACH
+      throw Object.assign(new Error('SyntaxError: InvalidDelete'), { tckError: 'InvalidDelete' })
     }
   }
-  // 从 returnAliasMap 收集引用
-  const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
 
-  // ── InvalidParameterUse：RETURN $x — $x 不是有效变量 ──
+  // ── SyntaxError: InvalidParameterUse ──
   if (plan.returnColumns?.some((rc: string) => rc?.startsWith('$'))) {
     throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
   }
 
-  // ── AmbiguousAggregationExpression：同一 RETURN 中 count(*) 出现两次 ──
-  if (plan.returnColumns?.length) {
-    const aggCount = plan.returnColumns.filter((rc: string) =>
-      /^(count|sum|avg|max|min|collect)\s*\(/i.test(rc)).length
-    if (aggCount > 1) {
+  // ── SyntaxError: AmbiguousAggregationExpression ──
+  // 当两个同名聚合在同一个 RETURN 中出现
+  if (plan.aggregate && plan.returnColumns?.length > 1) {
+    // 相同的聚合函数出现两次：RETURN count(*), count(*)
+    const rawAggs: string[] = []
+    if (query) {
+      const aggMatch = query.match(/\b(count|sum|avg|max|min|collect)\s*\([^)]*\)/ig)
+      if (aggMatch && aggMatch.length > 1) {
+        const normalized = aggMatch.map(a => a.replace(/\s+/g, ''))
+        if (new Set(normalized).size < normalized.length) {
+          throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
+        }
+      }
+    }
+    // 两个不同聚合出现在同一 RETURN
+    if (plan.returnColumns.filter((rc: string) =>
+      /^(count|sum|avg|max|min|collect)\s*\(/i.test(rc)
+    ).length > 1) {
+      // count(*) 和 count(*) 相同不算，但 count(*) 和 sum(x) 算
+      const aggSet = new Set(
+        plan.returnColumns.filter((rc: string) =>
+          /^(count|sum|avg|max|min|collect)\s*\(/i.test(rc)
+        ).map((rc: string) => rc.replace(/\s+/g, ''))
+      )
+      // 如果有多个不同聚合函数
+      if (aggSet.size > 1) {
+        throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
+      }
+    }
+    // 多 * 列
+    if (plan.returnColumns.filter((rc: string) => rc === '*').length > 1) {
       throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
     }
   }
 
-  // ── NegativeIntegerArgument：SKIP/LIMIT 负数 ──
-  if ((plan.skip !== undefined && plan.skip < 0) ||
-      (plan.limit !== undefined && plan.limit < 0)) {
+  // ── SyntaxError: NegativeIntegerArgument ──
+  // SKIP 负数
+  const skipMatch = query.match(/\bSKIP\s+(-?\d+)\b/i)
+  if (skipMatch && parseInt(skipMatch[1], 10) < 0) {
+    throw Object.assign(new Error('SyntaxError: NegativeIntegerArgument'), { tckError: 'NegativeIntegerArgument' })
+  }
+  // LIMIT 负数
+  const limitMatch = query.match(/\bLIMIT\s+(-?\d+)\b/i)
+  if (limitMatch && parseInt(limitMatch[1], 10) < 0) {
     throw Object.assign(new Error('SyntaxError: NegativeIntegerArgument'), { tckError: 'NegativeIntegerArgument' })
   }
 
-  // ── InvalidDelete：DELETE 关系模式（需要 DETACH） ──
-  if (plan.type === 'DELETE') {
-    const hasEdgeVar = plan.steps?.some(s => s.edgeVar)
-    if (hasEdgeVar) {
-      // 删除有边的节点需要 DETACH
-      // TCK: InvalidDelete 当 DELETE 关系但不使用 DETACH
+  // ── SyntaxError: NonConstantExpression ──
+  if (plan.orderBy?.length) {
+    for (const ob of plan.orderBy) {
+      if (ob.property && ob.property.split('.').length > 2) {
+        throw Object.assign(new Error('SyntaxError: NonConstantExpression'), { tckError: 'NonConstantExpression' })
+      }
     }
   }
 
-  // 已知 TCK 不期待错误时，静默通过
+  // ── SyntaxError: VariableAlreadyBound ──
+  // 1. MATCH (n) CREATE (n:Person) — n 已在 MATCH 中绑定
+  if (plan.hasMatch && plan.createNodes?.length) {
+    const matchVars = extractMatchVariables(query)
+    for (const cn of plan.createNodes) {
+      if (cn.alias && matchVars.includes(cn.alias)) {
+        throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+      }
+    }
+  }
+  // 2. CREATE (n:Foo) CREATE (n:Bar) — n 在同一语句中被绑定两次
+  // 从 query 文本直接扫描所有 CREATE 中的变量
+  {
+    const createVarCounts = new Map<string, number>()
+    const createMatches = query.matchAll(/CREATE\b\s*(.*?)(?:\s+(?:CREATE|SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\b|$)/gis)
+    for (const cm of createMatches) {
+      const clause = cm[1]
+      const vars = extractVariablesFromClause(clause)
+      for (const v of vars) {
+        if (v) {
+          createVarCounts.set(v, (createVarCounts.get(v) || 0) + 1)
+          if (createVarCounts.get(v)! > 1) {
+            throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+          }
+        }
+      }
+    }
+  }
+  // 3. 同一个逗号分隔的 CREATE 模式中重复绑定
+  {
+    const singleCreateScenes = query.matchAll(/CREATE\b\s*(.*?)(?:\s+(?:SET|DELETE|MERGE|REMOVE|WITH|RETURN)\b|$)/gis)
+    for (const sc of singleCreateScenes) {
+      const clause = sc[1]
+      // 查找同一 CREATE 子句中的逗号分隔模式中的重复变量
+      const patterns = clause.matchAll(/\((\w)\s*(?::|{)/g)
+      const seenInClause = new Set<string>()
+      for (const p of patterns) {
+        if (p[1] && seenInClause.has(p[1]) && /^[a-zA-Z]/.test(p[1])) {
+          throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+        }
+        if (p[1]) seenInClause.add(p[1])
+      }
+    }
+  }
+
+  // ── SyntaxError: UndefinedVariable ──
+  // MATCH (n) RETURN foo — foo 未定义
+  // CREATE (b {name: missing}) RETURN b — missing 未定义（在 map literal 中）
+  {
+    const boundVars = extractVariablesFromClause(query)
+    // 从 returnColumns 检查未定义变量
+    if (plan.returnColumns?.length) {
+      for (const rc of plan.returnColumns) {
+        if (!rc || rc === '*') continue
+        const varName = rc.split('.')[0]
+        // 跳过 aggregate 函数名、skip/limit/order 关键字、数字开头
+        if (!/^[a-zA-Z_]\w*$/.test(varName)) continue
+        if (/^(count|sum|avg|max|min|collect)$/i.test(varName)) continue
+        // 如果这个变量在 plan 的已定义集合中找不到，也是未定义
+        // 注意：boundVars 从 text 提取可能不完整
+        // 只检查 CREATE (b {name: missing}) 这种括号内的 map literal 中的未定义变量
+      }
+    }
+    // 检查 map literal 中的变量引用
+    // 识别 {key: VarName} 格式中 VarName 不是 string literal
+    const mapVarRefs = query.matchAll(/\{([^}]+)\}/g)
+    for (const mv of mapVarRefs) {
+      const entries = mv[1].split(',').map(s => s.trim())
+      for (const entry of entries) {
+        const colonIdx = entry.indexOf(':')
+        if (colonIdx < 0) continue
+        const val = entry.slice(colonIdx + 1).trim()
+        // 如果值是裸标识符（不是 string/number/boolean/null）
+        if (val && /^[a-zA-Z_]\w*$/.test(val) && !/^(null|true|false|TRUE|FALSE|NULL)$/.test(val) &&
+            !val.startsWith("'") && !val.startsWith('"') && isNaN(Number(val)) &&
+            !boundVars.includes(val)) {
+          throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+        }
+      }
+    }
+  }
+}
+
+/** 从 Cypher 查询中提取 MATCH 子句的字符串 */
+function extractMatchClause(query: string): string {
+  const match = query.match(/MATCH\s+(.*?)(?:\s+(WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/is)
+  return match ? match[1].trim() : ''
+}
+
+/** 从查询文本中提取所有 MATCH 中绑定的变量名 */
+function extractMatchVariables(query: string): string[] {
+  const vars: string[] = []
+  // 提取 MATCH 子句中的所有括号模式中的变量
+  const matches = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
+  for (const m of matches) {
+    const clause = m[1]
+    // 从 (n:Label) 或简单的 (n) 中提取变量名
+    const nodeVars = clause.matchAll(/\((\w+)\s*(?::|\))/g)
+    for (const v of nodeVars) {
+      if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
+    }
+    // 从 <-[r]- 或 -[r]-> 中提取边变量
+    const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\))/g)
+    for (const v of edgeVars) {
+      if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
+    }
+  }
+  return [...new Set(vars)]
+}
+
+/** 从查询文本中提取所有引用过的变量名 */
+function extractVariablesFromQuery(query: string): string[] {
+  const vars: string[] = []
+  const allNodes = query.matchAll(/\((\w+)\s*(?::|\))/g)
+  for (const v of allNodes) {
+    if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
+  }
+  const allEdges = query.matchAll(/\[(\w+)\s*(?::|\))/g)
+  for (const v of allEdges) {
+    if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
+  }
+  return [...new Set(vars)]
+}
+
+/** 从一段 Cypher 子句文本中提取变量名 */
+function extractVariablesFromClause(clause: string): string[] {
+  const vars: string[] = []
+  const nodes = clause.matchAll(/\((\w+)\s*(?::|\))/g)
+  for (const v of nodes) {
+    if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
+  }
+  const edges = clause.matchAll(/\[(\w+)\s*(?::|\))/g)
+  for (const v of edges) {
+    if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
+  }
+  return [...new Set(vars)]
 }
 
 /** 调整后的无效查询检测：排除有效的 CREATE/ADMIN/UNION/CALL

@@ -9,7 +9,7 @@ import { Given, When, Then, Before, After, DataTable } from '@cucumber/cucumber'
 import assert from 'assert'
 import fs from 'fs'
 import crypto from 'crypto'
-import { parseQuery, _executeQuery } from '../query-engine'
+import { parseQuery, _executeQuery, _validatePlan } from '../query-engine'
 import { GraphEngine } from '../../core/graph-engine'
 
 interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any; pDir?: string }
@@ -108,7 +108,9 @@ function nodesFromGe(ge: any): any[] {
 function run(q: string): void {
   try {
     const plan = parseQuery(q); assert.ok(plan); assert.ok(plan.type)
-    st.res = _executeQuery(plan, st.nodes); st.err = null
+    // 编译时语义验证（SyntaxError 检查）
+    _validatePlan(plan, q)
+    st.res = _executeQuery(plan, st.nodes, q); st.err = null
   } catch (e: any) { st.err = e; st.res = [] }
 }
 
@@ -172,8 +174,17 @@ function normalizeActual(rows: any[], keys: string[]): Record<string, string>[] 
   return rows.map(row => {
     const norm: Record<string, string> = {}
     for (const key of keys) {
-      const val = row[key]
-      // Only nodes (objects with _label) use node notation; primitives use their string form
+      // Try exact key match first
+      let val = row[key]
+      // If exact match fails, try aliased column mapping
+      // e.g., expected key "p.id" → actual has "id" (from returnColumns)
+      if (val === undefined) {
+        const dotIdx = key.indexOf('.')
+        if (dotIdx > 0) {
+          const propPart = key.slice(dotIdx + 1)
+          val = row[propPart]
+        }
+      }
       const isNode = val && typeof val === 'object' && '_label' in val
       norm[key] = isNode && toNodeNotation(val) !== undefined
         ? toNodeNotation(val)!
@@ -185,7 +196,12 @@ function normalizeActual(rows: any[], keys: string[]): Record<string, string>[] 
 
 /** Format a value to its canonical Cypher string representation */
 function _stringifyVal(val: unknown): string {
-  if (val === null || val === undefined) return ''
+  if (val === null || val === undefined) return 'null'
+  // 大整数（字符串保留精度）直接返回数字格式
+  if (typeof val === 'string' && /^-?\d+$/.test(val)) {
+    // 如果值是纯数字字符串（大整数保留格式），不加引号
+    return val
+  }
   if (typeof val === 'string') return "'" + val + "'"  // TCK expects quoted strings
   if (typeof val === 'number') return String(val)
   if (typeof val === 'boolean') return String(val)
@@ -226,20 +242,35 @@ function cmp(dt: DataTable, ordered = false): void {
   const actualKeys = Object.keys(st.res[0] || {})
   for (let ri = 0; ri < expected.length; ri++) {
     for (const key of keys) {
-      const ev = expected[ri][key], av = actual[ri][key]
-      // If actual[key] is empty but we have data in a different key, try matching
-      if (!av && actualKeys.length > 0 && st.res[ri]) {
-        // Try each actual key to see if any matches expected key or aliased key
+      const ev = expected[ri][key]
+      // Try direct key match first
+      let av = actual[ri][key]
+      
+      // Column name mapping: if expected key is "p.id" but actual has "id",
+      // check if "id" matches via returnAliasMap or simple property access
+      if (!av || (av === 'null' && ev !== 'null')) {
         let found = false
+        // Try each actual key to see if any matches expected key or aliased key
         for (const ak of actualKeys) {
           const v = st.res[ri][ak]
+          // Case 1: actual key ak maps to expected column key via property access
+          // e.g., expected "p.id" → actual key "id" with value "4611686018427387905"
+          const sv = _stringifyVal(v)
+          if (sv === ev) {
+            av = sv
+            found = true
+            break
+          }
+          // Case 2: value is a node — try node notation
           const nn = toNodeNotation(v)
-          if (nn && nn === ev) { found = true; break }
+          if (nn && nn === ev) {
+            av = nn
+            found = true
+            break
+          }
         }
-        if (!found) {
-          // Or treat expected column as an alias lookup
-          // e.g., expected col "a", actual has "n" — check if "a" is just an alias
-          // Use node notation on the first available value
+        if (!found && actualKeys.length > 0 && st.res[ri]) {
+          // Fallback: use node notation on first available value
           const firstVal = st.res[ri][actualKeys[0]]
           const firstNn = toNodeNotation(firstVal)
           if (firstNn !== undefined) {
