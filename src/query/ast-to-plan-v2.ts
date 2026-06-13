@@ -70,7 +70,7 @@ export interface QueryPlan {
   show?: string
   search?: { targetProperty: string; queryVector: number[]; topK: number }
   createNodes?: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
-  createEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any' }>
+  createEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any'; props?: Record<string, unknown> | null }>
   deleteTargets?: string[]
   detachDelete?: boolean
   setClauses?: Array<{ property: string; value: unknown }>
@@ -91,6 +91,7 @@ export interface TraverseStep {
   targetAlias: string
   targetLabel: string | null
   targetProps: Record<string, unknown> | null
+  edgeProps?: Record<string, unknown> | null
   range?: { min: number; max: number | null }
 }
 
@@ -150,6 +151,7 @@ interface ParsedEdgeStep {
   targetAlias: string
   targetLabel: string | null
   targetProps: Record<string, unknown> | null
+  edgeProps?: Record<string, unknown> | null
   range?: { min: number; max: number | null }
 }
 
@@ -949,6 +951,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
 
     const relDetail = findChild(relPattern, 'RelationshipDetailContext')
     let edgeLabel: string | null = null
+    let edgeProps: Record<string, unknown> | null = null
     if (relDetail) {
       const relTypes = findChild(relDetail, 'RelationshipTypesContext')
       if (relTypes) {
@@ -970,6 +973,13 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
           rangeInfo = { min: val, max: val }
         }
       }
+
+      // ── 关系属性提取（edgeProps） ──
+      // MATCH ()-[r:KNOWS {name: 'monkey'}]->() — 提取 {name: 'monkey'}
+      const edgePropsNode = findChild(relDetail, 'PropertiesContext')
+      if (edgePropsNode) {
+        edgeProps = extractMapLiteral(edgePropsNode)
+      }
     }
 
     // Target
@@ -983,6 +993,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
       source: currentSource,
       direction,
       edgeLabel,
+      edgeProps,
       targetAlias: targetVar ?? '',
       targetLabel,
       targetProps,
@@ -1252,9 +1263,12 @@ function extractCreateEdges(createCtx: any): Array<{
 
       const relDetail = findChild(relPattern, 'RelationshipDetailContext')
       let edgeLabel: string | null = null
+      let edgeProps: Record<string, unknown> | null = null
       if (relDetail) {
         const typeName = findChild(relDetail, 'RelTypeNameContext')
         edgeLabel = typeName ? findSymbolicName(typeName) : null
+        const propsNode = findChild(relDetail, 'PropertiesContext')
+        if (propsNode) edgeProps = extractMapLiteral(propsNode)
       }
 
       const hasLeft = findChild(relPattern, 'LeftArrowHeadContext')
@@ -1268,12 +1282,21 @@ function extractCreateEdges(createCtx: any): Array<{
       const dstNode = ci + 1 < peNodes.length ? peNodes[ci + 1] : null
       const sourceAlias = srcNode ? findSymbolicName(findChild(srcNode, 'VariableContext')) ?? '' : ''
       const targetAlias = dstNode ? findSymbolicName(findChild(dstNode, 'VariableContext')) ?? '' : ''
+      const baseSrcIdx = nodeIdx + ci
+      const baseTgtIdx = sourceAlias && sourceAlias === targetAlias ? nodeIdx + ci : nodeIdx + ci + 1
+      // direction="in"（<-[]-）: Cypher 语法逆序，需要交换 sourceIdx 和 targetIdx
+      // 存储层面总是 src→dst，方向用 direction 表示
+      const realSrcIdx = direction === 'in' ? baseTgtIdx : baseSrcIdx
+      const realTgtIdx = direction === 'in' ? baseSrcIdx : baseTgtIdx
+      const realSource = direction === 'in' ? targetAlias : sourceAlias
+      const realTarget = direction === 'in' ? sourceAlias : targetAlias
       edges.push({
-        source: sourceAlias,
-        target: targetAlias,
-        sourceIdx: nodeIdx + ci,
-        targetIdx: sourceAlias && sourceAlias === targetAlias ? nodeIdx + ci : nodeIdx + ci + 1,
+        source: realSource,
+        target: realTarget,
+        sourceIdx: realSrcIdx,
+        targetIdx: realTgtIdx,
         label: edgeLabel,
+        props: edgeProps,
         direction,
       })
     }

@@ -114,7 +114,6 @@ function run(q: string): void {
     } catch (e: any) {
       st.err = e; st.res = []; return
     }
-    // DEBUG
     st.res = _executeQuery(plan, st.nodes, q); st.err = null
   } catch (e: any) { st.err = e; st.res = [] }
 }
@@ -440,7 +439,7 @@ Given('having executed:', function (query: string) {
           const record = (ge as any).getNode(nid)
           if (record) geNodeMap.push({ id: nid })
         }
-        const createdEdgeInfos: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
+        const createdEdgeInfos: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }> = []
         for (const edge of edges) {
           const srcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : cns.findIndex(n => n.alias === edge.source)
           const dstIdx = edge.targetIdx !== undefined ? edge.targetIdx : cns.findIndex(n => n.alias === edge.target)
@@ -449,7 +448,7 @@ Given('having executed:', function (query: string) {
             const dstId = geNodeMap[dstIdx].id
             const typeId = (ge as any)._resolveEdgeType(edge.label || '')
             try { (ge as any).upsertEdge(srcId, dstId, typeId) } catch {}
-            createdEdgeInfos.push({ srcIdx, dstIdx, label: edge.label || '' })
+            createdEdgeInfos.push({ srcIdx, dstIdx, label: edge.label || '', props: (edge as any).props || null })
           }
         }
         // 把边信息编码到 st.nodes 的 __edges 中，供后续 _executeQuery 重建边

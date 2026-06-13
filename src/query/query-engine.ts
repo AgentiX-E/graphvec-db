@@ -656,7 +656,7 @@ export function parseQuery(query: string): QueryPlan {
         subPlan.scanLabel = null
       } else if (subPlan.filters?.length && subPlan.filters.some(f => f.source === subPlan.scanLabel)) {
         subPlan.scanLabel = null
-      } else if (/^[a-z][0-9]?$/.test(subPlan.scanLabel)) {
+      } else if (/^[a-z][0-9]?$/.test(subPlan.scanLabel) && !subPlan.createNodes?.some(n => n.label === subPlan.scanLabel)) {
         subPlan.scanLabel = null
       }
     }
@@ -1054,9 +1054,24 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         }
         let h = 0
         for (let ci = 0; ci < geLabel.length; ci++) h = ((h << 5) - h + geLabel.charCodeAt(ci)) | 0
-        // upsertNode 自动从 1 递增分配 nodeId
-        ;(ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'n' + i, { props })
-        nodeGeIds[i] = i + 1
+        // 调用 GE 的 upsertNode（处理 nodeIds 索引、缓存等），获取返回的 Promise
+        // 由于 _executeViaGraphEngine 是同步函数，无法 await，
+        // 但 GE.upsertNode 的核心（storage.upsertNode + nodeId tracking）是同步的
+        const geTypeId = Math.abs(h) % 1000 + 1
+        try {
+          // GE upsertNode 返回 Promise<NodeId>，核心在 sync 阶段完成
+          const p = (ge as any).asyncUpsertNode
+            ? (ge as any).upsertNode(geTypeId, 'n' + i, { props })
+            : Promise.resolve(i + 1)
+          // 同步执行：upsertNode 内部 this.storage.upsertNode 是同步的，nodeIds 也同步更新
+          // 但 upsertNode 定义为 async，返回 Promise。我们直接调 storage.upsertNode + 手动更新 nodeIds
+          const actualId = (ge as any).storage.upsertNode(geTypeId, 'n' + i, { props })
+          ;(ge as any)._nodeIds.add(actualId)
+          ;(ge as any)._labelIndex?.addNode?.(geTypeId, actualId)
+          nodeGeIds[i] = actualId
+        } catch (e) {
+          nodeGeIds[i] = i + 1
+        }
       }
       // 从 allNodes 中提取 __edges 并创建边
       edgesPayload = extractEdgesFromNodes(allNodes)
@@ -1064,7 +1079,11 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         for (const ep of edgesPayload) {
           if (ep.srcIdx >= 0 && ep.dstIdx >= 0 && ep.srcIdx < nodeGeIds.length && ep.dstIdx < nodeGeIds.length) {
             const typeId = (ge as any)._resolveEdgeType(ep.label || '')
-            try { (ge as any).upsertEdge(nodeGeIds[ep.srcIdx], nodeGeIds[ep.dstIdx], typeId) } catch {}
+            if ((ep as any).props) {
+              try { (ge as any).upsertEdge(nodeGeIds[ep.srcIdx], nodeGeIds[ep.dstIdx], typeId, { props: (ep as any).props }) } catch {}
+            } else {
+              try { (ge as any).upsertEdge(nodeGeIds[ep.srcIdx], nodeGeIds[ep.dstIdx], typeId) } catch {}
+            }
           }
         }
       }
@@ -1094,30 +1113,80 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       return _postProcessResults(created, plan)
     }
 
-    // ── 直接调用 GE 的 _executeQueryPlan ──
-    const rawRecords: any[] = (ge as any)._executeQueryPlan(plan)
+        const rawRecords: any[] = (ge as any)._executeQueryPlan(plan)
+
+    // ── scanLabel 变量名降级 ──
+    // 当 scanLabel 在 steps 中被用作 source 变量（非标签）且 allNodes 中确实没有此标签时，降级到 _scanAll
+    let records = rawRecords
+    if (!records?.length && allNodes.length && plan.scanLabel && plan.hasMatch) {
+      const isUsedAsVariable = (plan.steps || []).some(s => s.source === plan.scanLabel)
+      const isLabelInNodes = allNodes.some(n => String(n._label) === plan.scanLabel)
+      if (isUsedAsVariable && !isLabelInNodes) {
+        const fallbackPlan = { ...plan, scanLabel: null }
+        records = (ge as any)._executeQueryPlan(fallbackPlan)
+      }
+    }
 
     // ── 修复 GE limit=0 bug ──
-    if (plan.limit === 0 && rawRecords?.length) {
+    if (plan.limit === 0 && records?.length) {
       return []
     }
 
     // ── labelExpr 过滤（多标签 AND 匹配） ──
-    const filteredRecords = plan.labelExpr?.items.length
-      ? (rawRecords || []).filter((r: any) => {
+    const filteredRecords = plan.labelExpr?.items?.length
+      ? (records || []).filter((r: any) => {
           const nodeLabel = r?.props?.__fullLabel ?? r?.props?._label ?? ''
           const nodeLabels = String(nodeLabel).split(':')
           return plan.labelExpr!.items.every(item =>
             !item.exclude && nodeLabels.includes(item.name)
           )
         })
-      : (rawRecords || [])
+      : (records || [])
+
+    // ── edgeProps（内联关系属性谓词）过滤 ──
+    // MATCH (node)-[r:KNOWS {name: 'monkey'}]->(a) — steps 中的 edgeProps
+    // 利用 edgesPayload（从 __edges 提取的边信息）来验证边属性是否匹配
+    const edgePropSteps = (plan.steps || []).filter(s => s.edgeProps && Object.keys(s.edgeProps).length > 0)
+    const edgePropFilteredRecords = edgePropSteps.length && edgesPayload.length
+      ? (filteredRecords || []).filter((r: any) => {
+          // 找到结果节点在 allNodes 中的索引
+          const nodeIdx = nodeGeIds.indexOf(r.id)
+          if (nodeIdx < 0) return false
+          return edgePropSteps.every(s => {
+            if (!s.edgeProps) return true
+            // 找到连接到此节点的边（src → dst 或 dst → src）
+            const matchingEdges = edgesPayload.filter(e =>
+              (e.dstIdx === nodeIdx || e.srcIdx === nodeIdx)
+            )
+            if (!matchingEdges.length) return false
+            // 验证边属性是否匹配 edgeProps
+            for (const me of matchingEdges) {
+              if (me.label && s.edgeLabel && me.label !== s.edgeLabel) continue
+              if (!me.props && Object.keys(s.edgeProps).length > 0) continue
+              let match = true
+              for (const [k, v] of Object.entries(s.edgeProps)) {
+                const actual = me.props?.[k]
+                if (String(actual) !== String(v)) { match = false; break }
+              }
+              if (match) return true
+            }
+            return false
+          })
+        })
+      : filteredRecords
 
     // ── 边变量后处理 ──
     // 如果 returnColumns 包含边变量（如 MATCH (a)-[r]->(b) RETURN r），
     // GE 的 _executeQueryPlan 只返回邻居节点，不追踪边。
     // 从 edgesPayload（__edges 信息）中获取边标签构建 [:T1] 格式。
+    // 策略：
+    // 1. 如果 MATCH 指定了 edgeLabel（:T1），直接用 query 的 label
+    // 2. 如果未指定，从 edgesPayload 按 srcIdx→dstIdx 匹配边标签
     const edgeLabelsFromPayload = edgesPayload.map(ep => ep.label).filter(Boolean)
+    const uniqueEdgeLabels = [...new Set(edgeLabelsFromPayload)]
+    const queryEdgeLabel = (plan.steps || []).find(s => s.edgeLabel)?.edgeLabel
+    const hasExplicitEdgeLabel = queryEdgeLabel && !queryEdgeLabel.includes('|')
+    const hasMatchingEdgeLabel = hasExplicitEdgeLabel && uniqueEdgeLabels.includes(queryEdgeLabel)
     const nodeAliases = new Set([
       ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
       ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
@@ -1125,17 +1194,26 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     const edgeVarCols = (plan.returnColumns || []).filter(rc =>
       rc && rc !== '*' && !rc.includes('.') && !nodeAliases.has(rc)
     )
-    const rawWithEdges = edgeVarCols.length && edgeLabelsFromPayload.length
-      ? filteredRecords.map((r: any) => {
+    const rawWithEdges = edgeVarCols.length && (hasMatchingEdgeLabel || edgesPayload.length)
+      ? edgePropFilteredRecords.map((r: any) => {
           const row: Record<string, unknown> = {}
           if (r.props) Object.assign(row, r.props)
           for (const evc of edgeVarCols) {
-            const edgeLabel = edgeLabelsFromPayload[0] || ''
+            // 通过 nodeGeIds 找到结果节点的索引
+            const nodeIdx = nodeGeIds.indexOf(r.id)
+            let edgeLabel = ''
+            if (hasExplicitEdgeLabel) {
+              edgeLabel = queryEdgeLabel!
+            } else if (nodeIdx >= 0) {
+              // 查找匹配此源和目标节点的边
+              const matchingEdge = edgesPayload.find(e => e.dstIdx === nodeIdx || e.srcIdx === nodeIdx)
+              if (matchingEdge?.label) edgeLabel = matchingEdge.label
+            }
             row[evc] = edgeLabel ? `[:${edgeLabel}]` : '[:]'
           }
           return { ...r, props: row }
         })
-      : filteredRecords
+      : edgePropFilteredRecords
 
     // ── 格式化结果 ──
     const result: QueryRow[] = rawWithEdges.map((r: any) =>
@@ -1621,13 +1699,13 @@ function _isInvalidPlan(plan: QueryPlan): boolean {
  * 从 nodes 的 __edges 数组中提取边列表。
  * __edges 格式: [{srcIdx: 0, dstIdx: 1, label: 'T1'}, ...]
  */
-function extractEdgesFromNodes(nodes: Array<Record<string, unknown>>): Array<{ srcIdx: number; dstIdx: number; label: string }> {
-  const edges: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
+function extractEdgesFromNodes(nodes: Array<Record<string, unknown>>): Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }> {
+  const edges: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }> = []
   for (const n of nodes) {
     if (n.__edges && Array.isArray(n.__edges)) {
       for (const e of n.__edges) {
         if (typeof e.srcIdx === 'number' && typeof e.dstIdx === 'number') {
-          edges.push({ srcIdx: e.srcIdx, dstIdx: e.dstIdx, label: String(e.label || '') })
+          edges.push({ srcIdx: e.srcIdx, dstIdx: e.dstIdx, label: String(e.label || ''), props: e.props || null })
         }
       }
     }
