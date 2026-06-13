@@ -108,8 +108,12 @@ function nodesFromGe(ge: any): any[] {
 function run(q: string): void {
   try {
     const plan = parseQuery(q); assert.ok(plan); assert.ok(plan.type)
-    // 编译时语义验证（SyntaxError 检查）
-    _validatePlan(plan, q)
+    // 编译时语义验证（SyntaxError 检查）— 单独 try-catch
+    try {
+      _validatePlan(plan, q)
+    } catch (e: any) {
+      st.err = e; st.res = []; return
+    }
     st.res = _executeQuery(plan, st.nodes, q); st.err = null
   } catch (e: any) { st.err = e; st.res = [] }
 }

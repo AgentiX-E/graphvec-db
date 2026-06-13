@@ -1206,6 +1206,10 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   if (plan.returnColumns?.some((rc: string) => rc?.startsWith('$'))) {
     throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
   }
+  // MATCH (n $param) — parameter as node predicate
+  if (query && /MATCH\s*\(\s*\w+(?::\w+)?\s+\$\w+/i.test(query)) {
+    throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
+  }
 
   // ── SyntaxError: AmbiguousAggregationExpression ──
   // 当两个同名聚合在同一个 RETURN 中出现
@@ -1341,6 +1345,39 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
             !boundVars.includes(val)) {
           throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
         }
+      }
+    }
+  }
+
+  // ── SyntaxError: VariableTypeConflict ──
+  // MATCH r = ()-[]-() MATCH (r) RETURN r — path variable reused as node
+  // MATCH ()-[r]-() MATCH (r) RETURN r — edge variable reused as node
+  // WITH <value> AS n MATCH (n) RETURN n — value bound then matched as node
+  if (query && (plan.hasMatch || qUpper.includes('MATCH'))) {
+    // 移除路径分配模式避免误匹配
+    const cleaned = query.replace(/\w+\s*=\s*\([^)]*\)/g, '()')
+    const matchClauses = cleaned.match(/MATCH[^.]*?(?=RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|\$Cypher|$)/gi) || []
+    const matchNodeVars = [...new Set(matchClauses.flatMap(mc => [...mc.matchAll(/\((\w+)(?::|\))/g)].map(m => m[1])))]
+    const edgeVars = [...new Set(cleaned.matchAll(/\[(\w+)/g).map(m => m[1]).filter(v => v && v !== '*' && v !== '?'))]
+    const pathAssignments = [...query.matchAll(/(\w+)\s*=\s*\(/g)].map(m => m[1])
+    const withBindings = [...query.matchAll(/WITH\s+([\s\S]+?)\s+AS\s+(\w+)/ig)].map(m => m[2])
+
+    // 关系变量被重新用作节点变量
+    for (const ev of edgeVars) {
+      if (matchNodeVars.includes(ev) && !pathAssignments.includes(ev)) {
+        throw Object.assign(new Error('SyntaxError: VariableTypeConflict'), { tckError: 'VariableTypeConflict' })
+      }
+    }
+    // 路径分配变量被重新用作节点变量
+    for (const pa of pathAssignments) {
+      if (matchNodeVars.includes(pa) && pa) {
+        throw Object.assign(new Error('SyntaxError: VariableTypeConflict'), { tckError: 'VariableTypeConflict' })
+      }
+    }
+    // WITH 值绑定变量被用作 MATCH 节点
+    for (const wv of withBindings) {
+      if (matchNodeVars.includes(wv) && wv) {
+        throw Object.assign(new Error('SyntaxError: VariableTypeConflict'), { tckError: 'VariableTypeConflict' })
       }
     }
   }
