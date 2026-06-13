@@ -12,11 +12,11 @@ import crypto from 'crypto'
 import { parseQuery, _executeQuery, _validatePlan } from '../query-engine'
 import { GraphEngine } from '../../core/graph-engine'
 
-interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any; pDir?: string }
-const st: St = { nodes: [], q: '', res: [], err: null }
+interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any; pDir?: string; params?: Record<string, string> }
+const st: St = { nodes: [], q: '', res: [], err: null, params: {} }
 
 Before(function () {
-  st.nodes = []; st.q = ''; st.res = []; st.err = null
+  st.nodes = []; st.q = ''; st.res = []; st.err = null; st.params = {}
   if (st.pGe) { try { st.pGe.close() } catch {}; st.pGe = undefined }
   if (st.pDir) { try { fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}; st.pDir = undefined }
 })
@@ -107,14 +107,23 @@ function nodesFromGe(ge: any): any[] {
 
 function run(q: string): void {
   try {
-    const plan = parseQuery(q); assert.ok(plan); assert.ok(plan.type)
+    // 参数注入：替换 $param → 实际值
+    let resolvedQ = q
+    if (st.params && Object.keys(st.params).length) {
+      for (const [key, val] of Object.entries(st.params)) {
+        // $param → 'val'（字符串）或数值
+        const escaped = typeof val === 'string' ? `'${val}'` : String(val)
+        resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), escaped)
+      }
+    }
+    const plan = parseQuery(resolvedQ); assert.ok(plan); assert.ok(plan.type)
     // 编译时语义验证（SyntaxError 检查）— 单独 try-catch
     try {
-      _validatePlan(plan, q)
+      _validatePlan(plan, resolvedQ)
     } catch (e: any) {
       st.err = e; st.res = []; return
     }
-    st.res = _executeQuery(plan, st.nodes, q); st.err = null
+    st.res = _executeQuery(plan, st.nodes, resolvedQ); st.err = null
   } catch (e: any) { st.err = e; st.res = [] }
 }
 
@@ -519,7 +528,17 @@ Given('having executed:', function (query: string) {
     st.res = []
   }
 })
-Given('parameters are:', () => {})
+Given('parameters are:', function (dt: any) {
+  // 存储参数表供 run() 使用
+  st.params = {}
+  if (dt?.raw) {
+    const rows = dt.raw()
+    for (const [key, val] of rows) {
+      // 去掉引号（'me' → me）
+      st.params[key] = val.replace(/^['"]|['"]$/g, '')
+    }
+  }
+})
 Given(/^there exists a procedure .*$/, () => {})
 
 When('executing query:', function (query: string) {

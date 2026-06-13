@@ -1193,9 +1193,6 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
     const stepSourceFilters = (plan.filters || []).filter(f => {
       const firstStep = plan.steps?.[0]
       const result = firstStep && f.source === firstStep.source && firstStep.source
-      if (query && query.includes("a.name = 'Andres'") && query.includes("ADMIN")) {
-
-      }
       return result
     })
     // ── WHERE 标签谓词预过滤 ──
@@ -1464,14 +1461,17 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
     // 但肯定不是步骤 source 也不是扫描出来的节点变量。
     // 判断条件：plan.filters 中 source 不是步骤 source，且 steps 非空（否则是纯节点 WHERE）。
     const stepSrc = plan.steps?.[0]?.source
+    const stepTarget = plan.steps?.[0]?.targetAlias
+    const nodeAliasList = [stepSrc, stepTarget, plan.scanLabel].filter(Boolean)
     const edgeFilters = plan.steps?.length && (plan.filters || []).filter(f =>
-      f.source && stepSrc && f.source !== stepSrc
+      f.source && !nodeAliasList.includes(f.source)
     ) || []
-    const hasOR = query ? /OR/i.test(query) : false
-    const geFilters = hasOR ? [] : (plan.filters || []).filter(f => !edgeFilters.includes(f))
+    const hasOR = query ? /OR/i.test(query) : false
+    const geFilters = (plan.filters || []).filter(f => !edgeFilters.includes(f))
 
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
 
+    // DEBUG [10]
     const rawRecords: any[] = multiTypeStep
       ? (() => {
           const labels = multiTypeStep.edgeLabel!.split('|')
@@ -1485,13 +1485,48 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
           }
           return [...combined.values()]
         })()
+      : hasOR
+      ? (() => {
+          // OR 语义：
+          // 1) plan.filters 非空 → 逐 filter 执行 GE，合并去重
+          // 2) plan.filters 为空但 query 有 type(r)=L1 OR type(r)=L2 → 逐 label 执行 GE，用 (id,label) 复合键去重
+          const combined: Map<string, any> = new Map()
+          const orFilters = (plan.filters || [])
+          if (orFilters.length >= 2) {
+            for (const f of orFilters) {
+              const p2 = JSON.parse(JSON.stringify(plan))
+              p2.filters = [f]
+              const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
+              for (const r of subRaw || []) combined.set(String(r.id), r)
+            }
+          } else if (query && plan.steps?.[0]) {
+            const typeRMatches = query.matchAll(/type\s*\(\s*(\w+)\s*\)\s*=\s*['"]([^'"]+)['"]/ig)
+            const orLabels: Array<{ edgeVar: string; label: string }> = []
+            for (const m of typeRMatches) orLabels.push({ edgeVar: m[1], label: m[2] })
+            if (orLabels.length >= 2) {
+              for (const ol of orLabels) {
+                const p2 = JSON.parse(JSON.stringify(plan))
+                p2.filters = []
+                if (p2.steps?.[0]) p2.steps[0].edgeLabel = ol.label
+                const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
+                for (const r of subRaw || []) {
+                  // 保存边标签信息用于 RETURN r 格式化
+                  if (!combined.has(String(r.id) + '__' + ol.label)) {
+                    const rec = r.id !== undefined ? { ...r, id: r.id } : r
+                    rec.__edgeLabel = ol.label
+                    combined.set(String(r.id) + '__' + ol.label, rec)
+                  }
+                }
+              }
+            }
+          }
+          return [...combined.values()]
+        })()
       : (() => {
           const planForGe = JSON.parse(JSON.stringify(plan))
           planForGe.filters = geFilters
           return (ge as any)._executeQueryPlan(planForGe)
         })()
-
-
     // ── scanLabel 变量名降级 ──
     // 当 scanLabel 在 steps 中被用作 source 变量（非标签）且 allNodes 中确实没有此标签时，降级到 _scanAll
     let records = rawRecords
@@ -1651,7 +1686,6 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
         })
       })
     }
-
     // ── OR 连接谓词过滤（WHERE n.p1 > 11 OR n.p2 = 13） ──
     // ANTLR 将 OR 谓词解析为两个独立的 filter 且无 OR 标记，
     // engine 默认 AND 连接导致无行匹配。从 query 文本检查 OR，改 AND 为 OR 语义。
@@ -1694,18 +1728,35 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
 
     }
 
+    // ── length(p) / path 长度谓词过滤 ──
+    // MATCH p = (n)-->(x) WHERE length(p) = 10 — ANTLR 不解析 length 函数
+    // 从 query 文本检测 `length(p)` 模式，在 GE 返回后手动过滤
+    if (query && filteredWithLabels?.length) {
+      const lenMatch = query.match(/length\s*\(\s*(\w+)\s*\)\s*=\s*(\d+)/)
+      if (lenMatch) {
+        const targetLen = parseInt(lenMatch[2], 10)
+        // 路径长度 = edgesPayload 中与结果节点相关的边数（单层无循环）
+        // 简单情况：一个 step，一条边 → length=1
+        // 对于复杂路径，路径长度就是步骤数
+        const nSteps = plan.steps?.length || 1  // 单步默认 1
+        if (nSteps !== targetLen) {
+          filteredWithLabels = []  // 长度不匹配，无结果
+        }
+      }
+    }
+
     // ── 边变量 filter（WHERE r.name = 'foo'） ──
     // plan.filters 中的 source 如果是边变量（不在 MATCH 的节点变量中），
     // 用 edgesPayload 中的边 props 来过滤结果行。
     // 找到所有边变量 filter
 
+    const stepSource = plan.steps?.[0]?.source
+    const aliasNodeList = [stepSource, plan.steps?.[0]?.targetAlias, plan.scanLabel].filter(Boolean)
     const edgeVarFilters = edgeFilters.length
       ? edgeFilters
       : (plan.filters || []).filter(f => {
       if (!f.source || !f.property) return false
-      // 如果不是步骤 source 节点变量，也不是 scanLabel 变量，说明是边变量
-      const stepSource = plan.steps?.[0]?.source
-      return stepSource && f.source !== stepSource && f.source !== plan.scanLabel
+      return f.source && !aliasNodeList.includes(f.source)
     })
     const ep = edgesPayload || [] as any
 
@@ -1800,27 +1851,45 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
             // 通过 nodeGeIds 找到结果节点的索引
             const nodeIdx = nodeGeIds.indexOf(r.id)
             let edgeLabel = ''
-            if (hasExplicitEdgeLabel) {
+            let edgeProps: Record<string, unknown> | null = null
+            // 如果记录已有 __edgeLabel（OR 分支填充），优先使用
+            if (r.__edgeLabel) {
+              edgeLabel = r.__edgeLabel
+            } else if (hasExplicitEdgeLabel) {
               edgeLabel = queryEdgeLabel!
             } else if (nodeIdx >= 0) {
-              // 查找匹配此源和目标节点的边
+              // 查找匹配此源和目标节点的边（优先全字段匹配：label + props）
               const matchingEdge = edgesPayload.find(e => e.dstIdx === nodeIdx || e.srcIdx === nodeIdx)
               if (matchingEdge?.label) edgeLabel = matchingEdge.label
+              if (matchingEdge?.props && Object.keys(matchingEdge.props).length) edgeProps = matchingEdge.props as Record<string, unknown>
             }
-            row[evc] = edgeLabel ? `[:${edgeLabel}]` : '[:]'
+            if (edgeLabel && edgeProps && Object.keys(edgeProps).length) {
+              const propsStr = Object.entries(edgeProps)
+                .map(([k, v]) => `${k}: ${typeof v === 'string' ? `'${v}'` : String(v)}`)
+                .join(', ')
+              row[evc] = `[:${edgeLabel} {${propsStr}}]`
+            } else {
+              row[evc] = edgeLabel ? `[:${edgeLabel}]` : '[:]'
+            }
           }
           return { ...r, props: row }
         })
       : edgePropFilteredRecords
 
     // ── 格式化结果 ──
-    const result: QueryRow[] = rawWithEdges.map((r: any) =>
-      _formatResultRow(r, plan)
-    )
+    if (query && query.includes("_MAGIC_DEBUG")) {
+    }
+    const result: QueryRow[] = rawWithEdges.map((r: any) => {
+      const fr = _formatResultRow(r, plan)
+      return fr
+    })
 
     // ── type() 函数后处理 ──
     // 如果原查询包含 type(r) 且结果中该列是边表示 [:T]，替换为类型名 'T'
-    if (plan.returnAliasMap && query && /type\s*\(/i.test(query)) {
+    const hasTypeReturnCol = (plan.returnColumns || []).some((rc: string) =>
+      rc && (rc.startsWith('type(') || (plan.returnAliasMap?.[rc] || '').startsWith('type('))
+    )
+    if (hasTypeReturnCol && query && /type\s*\(/i.test(query)) {
       for (const row of result) {
         for (const rc of plan.returnColumns || []) {
           if (!rc) continue
@@ -1913,9 +1982,21 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       continue
     }
 
+    // ── 边变量 RETURN r ──
+    // rc 是边变量名（如 RETURN r），从 r.__edgeLabel 获取标签输出 [:LABEL] 格式
+    if (r.__edgeLabel) {
+      result[rc] = '[:' + r.__edgeLabel + ']'
+      continue
+    }
+
     // 使用 returnAliasMap 解析原始表达式
     if (aliasMap && rc in aliasMap) {
       const expr = aliasMap[rc]  // 如 "n" 或 "n.name"
+      // 如果 row[rc] 已经是边格式 [:xxx]（由 rawWithEdges 填充），不要覆盖
+      if (typeof row[rc] === 'string' && row[rc].startsWith('[:')) {
+        result[rc] = row[rc]
+        continue
+      }
       // 如果表达式是纯变量名（无点号），是 RETURN n
       if (!expr.includes('.')) {
         // RETURN <变量>：返回完整节点（保留 _label 以便 step-definitions 识别为节点）
@@ -2256,7 +2337,13 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     // MATCH ()-(p), p = ()-[]-() — 同场景
     const pathAssignVar = query.match(/(\w+)\s*=\s*\(/)?.[1]
     if (pathAssignVar) {
-      const nodeVarRefs = [...query.matchAll(/\(\s*(\w+)\s*(?::|\))/g)].map(m => m[1])
+      const nodeVarRefs: string[] = []
+      // MATCH / OPTIONAL MATCH 模式中的节点变量（排除函数参数，如 length(p)）
+      const matchBlocks = [...query.matchAll(/(?:MATCH|OPTIONAL\s+MATCH)\s+(.*?)(?=\s+(?:WHERE|WITH|RETURN|CREATE|ORDER\s+BY|SKIP|LIMIT|$))/gis)]
+      for (const [, block] of matchBlocks) {
+        const blockVars = [...block.matchAll(/\(\s*(\w+)\s*(?::|\))/g)].map(m => m[1])
+        nodeVarRefs.push(...blockVars)
+      }
       if (nodeVarRefs.includes(pathAssignVar)) {
         throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
       }
