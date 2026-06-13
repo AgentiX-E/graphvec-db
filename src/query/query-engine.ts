@@ -1192,7 +1192,11 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
     // 所以在 seed 循环中条件跳过，而非过滤 allNodes。
     const stepSourceFilters = (plan.filters || []).filter(f => {
       const firstStep = plan.steps?.[0]
-      return firstStep && f.source === firstStep.source && firstStep.source
+      const result = firstStep && f.source === firstStep.source && firstStep.source
+      if (query && query.includes("a.name = 'Andres'") && query.includes("ADMIN")) {
+
+      }
+      return result
     })
     // ── WHERE 标签谓词预过滤 ──
     // 提取 `WHERE a:A` 形式的标签检查（ANTLR 不将其解析为 filter）
@@ -1255,10 +1259,11 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
       }
       // 从 plan.filters 中移除已预处理的过滤器
       plan.filters = (plan.filters || []).filter((f: any) => !stepSourceFilters.includes(f))
+
     }
+
     // ── 内联节点属性预过滤（从 query 解析 `(n {name: 'A'})`） ──
-if (query && query.includes('type(r)')) {
-    }
+
     if (query && !stepSourceFilters.length) {
       const inlineMatch = query.match(/MATCH\s+\((\w+)\s*\{([^}]+)\}[^)]*\)/)
       if (inlineMatch) {
@@ -1451,6 +1456,19 @@ if (query && query.includes('type(r)')) {
 
     // ── 多类型 edgeLabel 处理 ──
     // MATCH (n)-[r:KNOWS|HATES]->(x) — 分割为多个单标签查询合并结果
+    // DEBUG [5]: check filter state
+    // ── 预分离边变量 filter（WHERE r.name = 'foo'） ──
+    // GE 的 _matchFilter 只检查节点属性，无法处理 source="r" 的边属性 filter。
+    // 从 plan.filters 中摘出边变量 filter，GE 执行时去掉它们，执行完后手动应用。
+    // 边变量 filter 的判断：source 是 MATCH 中的关系变量（通常在步骤 source 左边或右边），
+    // 但肯定不是步骤 source 也不是扫描出来的节点变量。
+    // 判断条件：plan.filters 中 source 不是步骤 source，且 steps 非空（否则是纯节点 WHERE）。
+    const stepSrc = plan.steps?.[0]?.source
+    const edgeFilters = plan.steps?.length && (plan.filters || []).filter(f =>
+      f.source && stepSrc && f.source !== stepSrc
+    ) || []
+    const geFilters = (plan.filters || []).filter(f => !edgeFilters.includes(f))
+
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
 
     const rawRecords: any[] = multiTypeStep
@@ -1459,16 +1477,18 @@ if (query && query.includes('type(r)')) {
           const combined: Map<number, any> = new Map()
           for (const lbl of labels) {
             const p2 = JSON.parse(JSON.stringify(plan))
-            if (p2.steps?.[0]) p2.steps[0].edgeLabel = lbl
+            p2.steps[0].edgeLabel = lbl
+            p2.filters = geFilters
             const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
             for (const r of subRaw || []) combined.set(r.id, r)
           }
           return [...combined.values()]
         })()
-      : (ge as any)._executeQueryPlan(plan)
-
-
-
+      : (() => {
+          const planForGe = JSON.parse(JSON.stringify(plan))
+          planForGe.filters = geFilters
+          return (ge as any)._executeQueryPlan(planForGe)
+        })()
 
 
     // ── scanLabel 变量名降级 ──
@@ -1535,9 +1555,9 @@ if (query && query.includes('type(r)')) {
       }
     }
 
+
     // ── 内联节点属性预过滤（从 query 解析 `(n {name: 'A'})`） ──
-if (query && query.includes('type(r)')) {
-    }
+
     // 在 seed 阶段对每个 `allNodes` 中的节点进行属性匹配，不匹配则跳过 seed
     // 支持 `(var {prop1: val1, prop2: val2})` 格式
     if (query) {
@@ -1609,6 +1629,7 @@ if (query && query.includes('type(r)')) {
     // 对所有节点变量检查其 _label 是否匹配
     const labelFilterItems: Array<{ variable: string; label: string; exclude: boolean }> | undefined = (plan as any).labelFilterItems
     let filteredWithLabels = filteredRecords
+
     if (labelFilterItems?.length && filteredRecords.length) {
       // 构建 nodeGeIdx → label 的映射
       const nodeLabelsMap: Map<number, string> = new Map()
@@ -1652,14 +1673,18 @@ if (query && query.includes('type(r)')) {
     // 用 edgesPayload 中的边 props 来过滤结果行。
     // 找到所有边变量 filter
 
-    const edgeVarFilters = (plan.filters || []).filter(f => {
+    const edgeVarFilters = edgeFilters.length
+      ? edgeFilters
+      : (plan.filters || []).filter(f => {
       if (!f.source || !f.property) return false
       // 如果不是步骤 source 节点变量，也不是 scanLabel 变量，说明是边变量
       const stepSource = plan.steps?.[0]?.source
-      return f.source !== stepSource && f.source !== plan.scanLabel
+      return stepSource && f.source !== stepSource && f.source !== plan.scanLabel
     })
     const ep = edgesPayload || [] as any
+
     if (edgeVarFilters.length && ep.length && filteredWithLabels?.length) {
+
       filteredWithLabels = filteredWithLabels.filter((r: any) => {
         // 对每个边变量 filter，检查当前记录是否通过
         return edgeVarFilters.every((f: any) => {
