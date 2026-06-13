@@ -554,6 +554,10 @@ export function execQuery(
 
 /**
  * 位置参数替换：$1, $2, ..., $N
+ *
+ * 策略：先用 parseQuery 解析含 $1 占位符的 query（ANTLR 会保留 $1 为 filter value），
+ * 然后遍历 plan 结构，将 $1 / $2 等占位符替换为真实参数值。
+ * 这样避免了 ANTLR 词法分析对参数值中特殊字符（如 OR/AND/--/引号）的误解析。
  */
 function _execQueryPositional(query: string, params: unknown[]): QueryPlan {
   // 1. 统计占位符数量
@@ -580,23 +584,23 @@ function _execQueryPositional(query: string, params: unknown[]): QueryPlan {
     )
   }
 
-  // 4. 按序替换占位符（跳过属性访问上下文: n.$1 不做纯文本替换）
-  let result = query
-  for (let i = 0; i < params.length; i++) {
-    // 仅替换不在 . 之后的 $N（属性访问上下文的 $1 由 parser PROP_REF_DYNAMIC 处理）
-    const placeholder = `\\$${i + 1}`
-    const serialized = serializeParamValue(params[i])
-    // 不在 . 之后的 $1 → 正常替换
-    // 在 . 之后的 $1 → 保留给 PROP_REF_DYNAMIC 处理
-    const re = new RegExp(`(?<!\\.)\\$${i + 1}\\b`, 'g')
-    result = result.replace(re, serialized)
-  }
+  // 4. 先用 parseQuery 解析（$1 会被 ANTLR 保留为 filter value 字符串）
+  const plan = parseQuery(query)
 
-  return parseQuery(result)
+  // 5. 注入参数值到 plan 结构中
+  _injectParamsToPlan(plan, (name: string) => {
+    const idx = parseInt(name, 10)
+    if (isNaN(idx) || idx < 1 || idx > params.length) return undefined
+    return params[idx - 1]
+  })
+
+  return plan
 }
 
 /**
  * 命名参数替换：$name, $age, ...
+ *
+ * 同位置参数策略：先 parseQuery，再注入参数值。
  */
 function _execQueryNamed(query: string, params: Record<string, unknown>): QueryPlan {
   // 1. 提取所有 $identifier 占位符
@@ -616,15 +620,83 @@ function _execQueryNamed(query: string, params: Record<string, unknown>): QueryP
     }
   }
 
-  // 3. 替换占位符
-  let result = query
-  for (const name of names) {
-    const serialized = serializeParamValue(params[name])
-    const re = new RegExp(`\\$${name}\\b`, 'g')
-    result = result.replace(re, serialized)
+  // 3. 先用 parseQuery 解析（$name 会被 ANTLR 保留为 filter value 字符串）
+  const plan = parseQuery(query)
+
+  // 4. 注入参数值到 plan 结构中
+  _injectParamsToPlan(plan, (name: string) => {
+    if (name in params) return params[name]
+    return undefined
+  })
+
+  return plan
+}
+
+/**
+ * 遍历 plan 结构，将所有以 `$` 开头的 filter value 替换为真实参数值。
+ */
+function _injectParamsToPlan(plan: QueryPlan, resolve: (name: string) => unknown): void {
+  // 替换 filter.values
+  if (plan.filters?.length) {
+    for (const f of plan.filters) {
+      if (typeof f.value === 'string' && f.value.startsWith('$')) {
+        const paramName = f.value.slice(1)
+        const provided = resolve(paramName)
+        if (provided !== undefined) {
+          // 对字符串值做安全处理（移除引号字符防止被解析为字符串字面量）
+          if (typeof provided === 'string') {
+            const hasSingle = provided.includes("'")
+            const hasDouble = provided.includes('"')
+            if (hasSingle && hasDouble) {
+              // 同时含两种引号：移除全部引号（安全兜底）
+              f.value = provided.replace(/['"]/g, '')
+            } else if (hasSingle) {
+              // 仅含单引号：用双引号包裹的等价方式无须处理（ANTLR 已不用），保留原值
+              f.value = provided
+            } else {
+              f.value = provided
+            }
+          } else {
+            f.value = provided
+          }
+        }
+      }
+    }
   }
 
-  return parseQuery(result)
+  // 替换 limit / skip（$limit → number）
+  if (typeof plan.limit === 'string' && (plan.limit as string).startsWith('$')) {
+    const paramName = (plan.limit as string).slice(1)
+    const provided = resolve(paramName)
+    if (typeof provided === 'number') plan.limit = provided
+  }
+  if (typeof plan.skip === 'string' && (plan.skip as string).startsWith('$')) {
+    const paramName = (plan.skip as string).slice(1)
+    const provided = resolve(paramName)
+    if (typeof provided === 'number') plan.skip = provided
+  }
+
+  // 替换 createNode props
+  if (plan.createNodes?.length) {
+    for (const cn of plan.createNodes) {
+      if (cn.props) {
+        for (const [pk, pv] of Object.entries(cn.props)) {
+          if (typeof pv === 'string' && pv.startsWith('$')) {
+            const paramName = pv.slice(1)
+            const provided = resolve(paramName)
+            if (provided !== undefined) {
+              cn.props[pk] = provided
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 递归处理 rightPlan（UNION/INTERSECT/SUBTRACT）
+  if (plan.rightPlan) _injectParamsToPlan(plan.rightPlan, resolve)
+  // 递归处理 callQuery
+  if (plan.callQuery) _injectParamsToPlan(plan.callQuery, resolve)
 }
 
 // ── 解析 + 转换 ──────────────────────────────────────────────
@@ -684,6 +756,47 @@ export function parseQuery(query: string): QueryPlan {
   _fixScanLabel(plan)
   _fixScanLabel(plan)
 
+  // ── DML type 修复：MATCH_MODIFY → DELETE/SET ──
+  if (plan.type === 'MATCH_MODIFY') {
+    if (plan.deleteTargets?.length) {
+      plan.type = 'DELETE'
+    } else if (plan.setClauses?.length) {
+      plan.type = 'SET'
+    }
+  }
+
+  // ── returnColumns 拆解：b.name → name （去掉变量前缀） ──
+  if (plan.returnColumns?.length) {
+    plan.returnColumns = plan.returnColumns.map((rc: string) => {
+      const dotIdx = rc.indexOf('.')
+      if (dotIdx >= 0) return rc.substring(dotIdx + 1)
+      return rc
+    })
+  }
+
+  // ── OR 条件检测：ANTLR 会把 WHERE a OR b 拆成两个 AND'd filter ──
+  // 如果原始 WHERE 子句包含 OR / XOR，清空 filters（OR 需要运行时可短路评估）
+  if (plan.filters?.length) {
+    const whereClause = (query || '').match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
+    if (whereClause) {
+      const whereBody = whereClause[1]
+      // 检测顶层 OR/XOR（不在括号内的 OR）
+      let depth = 0
+      let hasTopLevelOr = false
+      for (let i = 0; i < whereBody.length; i++) {
+        const ch = whereBody[i]
+        if (ch === '(') depth++
+        else if (ch === ')') depth--
+        else if (depth === 0) {
+          if (whereBody.substring(i).match(/^\b(OR|XOR)\b/i)) { hasTopLevelOr = true; break }
+        }
+      }
+      if (hasTopLevelOr) {
+        plan.filters = []
+      }
+    }
+  }
+
   // ── 多标签修复（AST 标签提取只取第一个，用 query 文本补全） ──
   const qText = query.trim()
   // 修复 scanLabel（MATCH 的多标签）
@@ -725,6 +838,21 @@ export function parseQuery(query: string): QueryPlan {
     }
   }
 
+  // ── createNodes props 格式转换：{prop: 'val'} → {prop: {type: 'STRING', value: 'val'}} ──
+  for (const cn of (plan.createNodes || [])) {
+    if (cn.props) {
+      for (const [pk, pv] of Object.entries(cn.props)) {
+        if (typeof pv === 'string' && !pv.startsWith('$') && !(pv as any)?.type) {
+          cn.props[pk] = { type: 'STRING', value: pv }
+        } else if (typeof pv === 'number') {
+          cn.props[pk] = { type: 'NUMBER', value: pv }
+        } else if (typeof pv === 'boolean') {
+          cn.props[pk] = { type: 'BOOLEAN', value: pv }
+        }
+      }
+    }
+  }
+
   // ── Fallback: 如果 parseQuery 后 returnColumns 为空但有 RETURN 子句 ──
   // ANTLR 可能无法解析某些函数调用（如 type(r) AS alias），用正则提取
   if (!plan.returnColumns?.length && !plan.aggregate && !plan.with) {
@@ -754,7 +882,7 @@ export function parseQuery(query: string): QueryPlan {
   if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
     // 检查原始查询是否包含有效关键字 — 大多数无效查询没有 MATCH etc.
     if (!/^\s*(MATCH|WITH|UNWIND|RETURN|CREATE|MERGE|SET|DELETE|REMOVE|FOREACH|CALL|SHOW|USE|BEGIN|COMMIT|ROLLBACK|EXPLAIN|PROFILE|LOAD|DROP|START|OPTIONAL|ALTER|GRANT|REVOKE)/i.test(query.trim())) {
-      throw new Error(`Syntax error: cannot parse query "${query}"`)
+      throw new Error(`Query parse error: cannot parse query "${query}"`)
     }
   }
 
@@ -2801,4 +2929,105 @@ function extractEdgesFromNodes(nodes: Array<Record<string, unknown>>): Array<{ s
     }
   }
   return edges
+}
+
+// ── ParameterizedQuery 预编译参数化查询 ─────────────────────────────────
+
+/**
+ * 编译缓存：template → 参数名称列表
+ */
+const _compileCache = new Map<string, string[]>()
+
+/**
+ * 从模板中提取所有 `$var` 参数名称
+ */
+function _extractParamNames(template: string): string[] {
+  const names: string[] = []
+  const re = /\$([a-zA-Z_]\w*)/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(template)) !== null) {
+    names.push(match[1])
+  }
+  return names
+}
+
+/**
+ * 将参数值注入到模板中，返回可直接解析的 Cypher-lite 字符串。
+ */
+function _injectParams(template: string, params: Record<string, unknown>): string {
+  const re = /\$([a-zA-Z_]\w*)/g
+  return template.replace(re, (_, name: string) => {
+    if (!(name in params)) {
+      throw new Error(`Missing parameter: $${name}`)
+    }
+    return serializeParamValue(params[name])
+  })
+}
+
+/**
+ * 预编译参数化查询类。
+ *
+ * 对模板进行一次编译（提取参数名称列表），可多次调用 `execute` 传入不同参数。
+ */
+export class ParameterizedQuery {
+  private readonly template: string
+  private paramNames: string[] | null = null
+
+  constructor(template: string) {
+    this.template = template
+  }
+
+  /** 获取模板中所有的参数名称 */
+  getParamNames(): string[] {
+    if (this.paramNames === null) {
+      const cached = _compileCache.get(this.template)
+      if (cached) {
+        this.paramNames = cached
+      } else {
+        this.paramNames = _extractParamNames(this.template)
+        _compileCache.set(this.template, this.paramNames)
+      }
+    }
+    return [...this.paramNames]
+  }
+
+  /** 检查指定参数是否存在 */
+  hasParam(name: string): boolean {
+    return this.getParamNames().includes(name)
+  }
+
+  /** 填入参数并解析为 QueryPlan */
+  execute(params: Record<string, unknown>): QueryPlan {
+    const paramNames = this.getParamNames()
+    if (paramNames.length === 0) {
+      return parseQuery(this.template)
+    }
+    const injected = _injectParams(this.template, params)
+    return parseQuery(injected)
+  }
+}
+
+/**
+ * 便捷函数：创建预编译参数化查询并立即执行。
+ *
+ * @param template  - Cypher-lite 模板字符串，参数占位符为 `$name`
+ * @param params    - 参数对象
+ * @returns 解析后的 QueryPlan
+ */
+export function cypher(template: string, params?: Record<string, unknown>): QueryPlan {
+  if (!params || Object.keys(params).length === 0) {
+    return parseQuery(template)
+  }
+  const injected = _injectParams(template, params)
+  return parseQuery(injected)
+}
+
+/**
+ * 静态工厂：创建 ParameterizedQuery 实例。
+ *
+ * @param template - Cypher-lite 模板字符串
+ * @returns ParameterizedQuery 实例
+ */
+export function compileCypher(template: string): ParameterizedQuery {
+  return new ParameterizedQuery(template)
 }
