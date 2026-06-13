@@ -956,8 +956,10 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
       const relTypes = findChild(relDetail, 'RelationshipTypesContext')
       if (relTypes) {
         // Support multiple types (separated by |)
-        const firstType = findChild(relTypes, 'RelTypeNameContext')
-        edgeLabel = firstType ? findSymbolicName(firstType) : null
+        const relTypeNames = findAllChildren(relTypes, 'RelTypeNameContext')
+        if (relTypeNames?.length) {
+          edgeLabel = relTypeNames.map((n: any) => findSymbolicName(n)).filter(Boolean).join('|')
+        }
       }
 
       // VARLEN range
