@@ -1015,6 +1015,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
     }
     const nodeGeIds: number[] = []
+    let edgesPayload: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
     if (allNodes.length) {
       for (let i = 0; i < allNodes.length; i++) {
         const item = allNodes[i]
@@ -1034,7 +1035,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         nodeGeIds[i] = i + 1
       }
       // 从 allNodes 中提取 __edges 并创建边
-      const edgesPayload = extractEdgesFromNodes(allNodes)
+      edgesPayload = extractEdgesFromNodes(allNodes)
       if (edgesPayload.length) {
         for (const ep of edgesPayload) {
           if (ep.srcIdx >= 0 && ep.dstIdx >= 0 && ep.srcIdx < nodeGeIds.length && ep.dstIdx < nodeGeIds.length) {
@@ -1088,8 +1089,32 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         })
       : (rawRecords || [])
 
+    // ── 边变量后处理 ──
+    // 如果 returnColumns 包含边变量（如 MATCH (a)-[r]->(b) RETURN r），
+    // GE 的 _executeQueryPlan 只返回邻居节点，不追踪边。
+    // 从 edgesPayload（__edges 信息）中获取边标签构建 [:T1] 格式。
+    const edgeLabelsFromPayload = edgesPayload.map(ep => ep.label).filter(Boolean)
+    const nodeAliases = new Set([
+      ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
+      ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
+    ])
+    const edgeVarCols = (plan.returnColumns || []).filter(rc =>
+      rc && rc !== '*' && !rc.includes('.') && !nodeAliases.has(rc)
+    )
+    const rawWithEdges = edgeVarCols.length && edgeLabelsFromPayload.length
+      ? filteredRecords.map((r: any) => {
+          const row: Record<string, unknown> = {}
+          if (r.props) Object.assign(row, r.props)
+          for (const evc of edgeVarCols) {
+            const edgeLabel = edgeLabelsFromPayload[0] || ''
+            row[evc] = edgeLabel ? `[:${edgeLabel}]` : '[:]'
+          }
+          return { ...r, props: row }
+        })
+      : filteredRecords
+
     // ── 格式化结果 ──
-    const result: QueryRow[] = filteredRecords.map((r: any) =>
+    const result: QueryRow[] = rawWithEdges.map((r: any) =>
       _formatResultRow(r, plan)
     )
 
@@ -1138,6 +1163,11 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // 检查 rc 是否是节点变量名（RETURN n / RETURN m）
     // GE 返回的 r 本身可能包含节点数据
     if (r[rc] !== undefined) {
+      // 如果是边变量（值是字符串 "[:T1]" 格式），直接输出
+      if (typeof r[rc] === 'string' && r[rc].startsWith('[:')) {
+        result[rc] = r[rc]
+        continue
+      }
       result[rc] = r[rc]
       continue
     }

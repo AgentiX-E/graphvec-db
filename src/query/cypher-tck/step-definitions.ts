@@ -210,7 +210,11 @@ function _stringifyVal(val: unknown): string {
     // 如果值是纯数字字符串（大整数保留格式），不加引号
     return val
   }
-  if (typeof val === 'string') return "'" + val + "'"  // TCK expects quoted strings
+  if (typeof val === 'string') {
+    // 如果是边表示（[:T1] 格式），裸输出不含引号
+    if (val.startsWith('[:"') || val.startsWith('[:')) return val
+    return "'" + val + "'"  // TCK expects quoted strings
+  }
   if (typeof val === 'number') return String(val)
   if (typeof val === 'boolean') return String(val)
   if (Array.isArray(val)) {
