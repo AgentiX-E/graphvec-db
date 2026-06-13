@@ -440,9 +440,26 @@ Given('having executed:', function (query: string) {
           if (record) geNodeMap.push({ id: nid })
         }
         const createdEdgeInfos: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }> = []
+        // 构建一个 alias → id 的映射表
+        const aliasToId = new Map<string, number>()
+        for (let ci = 0; ci < cns.length; ci++) {
+          if (cns[ci].alias && !aliasToId.has(cns[ci].alias)) {
+            aliasToId.set(cns[ci].alias, ci)
+          }
+        }
         for (const edge of edges) {
-          const srcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : cns.findIndex(n => n.alias === edge.source)
-          const dstIdx = edge.targetIdx !== undefined ? edge.targetIdx : cns.findIndex(n => n.alias === edge.target)
+          // 优先用 sourceIdx/targetIdx，但如果是匿名节点在 createNodes 中的索引
+          // 超出 geNodeMap 范围，用 alias 映射的后备方案
+          let srcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : cns.findIndex(n => n.alias === edge.source)
+          let dstIdx = edge.targetIdx !== undefined ? edge.targetIdx : cns.findIndex(n => n.alias === edge.target)
+          // 如果 sourceIdx 超出了 geNodeMap 范围（匿名节点在 createNodes 末端），
+          // 尝试用 alias 映射回命名节点索引
+          if (srcIdx >= 0 && srcIdx >= geNodeMap.length && edge.source && aliasToId.has(edge.source)) {
+            srcIdx = aliasToId.get(edge.source)!
+          }
+          if (dstIdx >= 0 && dstIdx >= geNodeMap.length && edge.target && aliasToId.has(edge.target)) {
+            dstIdx = aliasToId.get(edge.target)!
+          }
           if (srcIdx >= 0 && dstIdx >= 0 && srcIdx < geNodeMap.length && dstIdx < geNodeMap.length) {
             const srcId = geNodeMap[srcIdx].id
             const dstId = geNodeMap[dstIdx].id

@@ -1113,7 +1113,22 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       return _postProcessResults(created, plan)
     }
 
-        const rawRecords: any[] = (ge as any)._executeQueryPlan(plan)
+        // ── 多类型 edgeLabel 处理 ──
+    // MATCH (n)-[r:KNOWS|HATES]->(x) — 分割为多个单标签查询合并结果
+    const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
+    const rawRecords: any[] = multiTypeStep
+      ? (() => {
+          const labels = multiTypeStep.edgeLabel!.split('|')
+          const combined: Map<number, any> = new Map()
+          for (const lbl of labels) {
+            const p2 = JSON.parse(JSON.stringify(plan))
+            if (p2.steps?.[0]) p2.steps[0].edgeLabel = lbl
+            const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
+            for (const r of subRaw || []) combined.set(r.id, r)
+          }
+          return [...combined.values()]
+        })()
+      : (ge as any)._executeQueryPlan(plan)
 
     // ── scanLabel 变量名降级 ──
     // 当 scanLabel 在 steps 中被用作 source 变量（非标签）且 allNodes 中确实没有此标签时，降级到 _scanAll
