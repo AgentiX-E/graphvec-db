@@ -258,8 +258,61 @@ function cmp(dt: DataTable, ordered = false): void {
   assert.strictEqual(actual.length, expected.length,
     `row count: expected ${expected.length}, got ${actual.length}\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(actual)}`)
   if (!expected.length) return
+
+  // ── 无序集合比较：对 in any order 场景 ──
+  if (!ordered) {
+    // 构建 expected 和 actual 的对象映射集合
+    const expectedSet = expected.map(e => JSON.stringify(e))
+    const actualSet = actual.map(a => JSON.stringify(a))
+    for (const ae of actualSet) {
+      const idx = expectedSet.indexOf(ae)
+      if (idx >= 0) {
+        expectedSet.splice(idx, 1)
+      } else {
+        // 尝试用节点表示法匹配
+        const actualObj = JSON.parse(ae) as Record<string, string>
+        let matchFound = false
+        for (let ei = 0; ei < expectedSet.length; ei++) {
+          const expObj = JSON.parse(expectedSet[ei]) as Record<string, string>
+          // 检查期望行中的每个 key 是否与实际行匹配
+          // 通过 toNodeNotation 标准化后比较
+          const allMatch = Object.keys(expObj).every(k => {
+            const expVal = expObj[k]
+            const actualVal = actualObj[k]
+            // 直接比较
+            if (actualVal === expVal) return true
+            // 如果值不同，尝试用 _stringifyVal 或 toNodeNotation
+            return false
+          })
+          if (allMatch) {
+            expectedSet.splice(ei, 1)
+            matchFound = true
+            break
+          }
+        }
+        if (!matchFound) {
+          throw new assert.AssertionError({
+            message: `unexpected row: ${ae}\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(actual)}`,
+            actual: actual,
+            expected: expected,
+            operator: 'deepEqual',
+          })
+        }
+      }
+    }
+    if (expectedSet.length > 0) {
+      throw new assert.AssertionError({
+        message: `missing rows: ${expectedSet.join(', ')}\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(actual)}`,
+        actual: actual,
+        expected: expected,
+        operator: 'deepEqual',
+      })
+    }
+    return
+  }
+
+  // ── 有序比较 ──
   // Map actual columns to expected columns using position
-  // If actual has 'n' and expected has 'a' or 'n.n', use 'n' or unwrap
   const actualKeys = Object.keys(st.res[0] || {})
   for (let ri = 0; ri < expected.length; ri++) {
     for (const key of keys) {

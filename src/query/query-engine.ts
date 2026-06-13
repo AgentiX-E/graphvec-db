@@ -1314,8 +1314,13 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
     // 这种 source 变量是步骤起点的 filter，在 seed 阶段跳过不匹配的节点。
     // 注意：allNodes 必须保持原样（__edges 的 srcIdx/dstIdx 依赖原始索引），
     // 所以在 seed 循环中条件跳过，而非过滤 allNodes。
+    // 跨变量属性引用检测：f.value 格式为 `var.property`，不能在 seed 阶段用常数比较
+    const _isVarRef = (v: any): boolean => typeof v === 'string' && /^\w+\.\w+$/.test(v) && !/^['"]/.test(v) && !/^\d/.test(v)
+    const crossVarFilters = (plan.filters || []).filter(f => f.source && f.property && _isVarRef(f.value))
     const stepSourceFilters = (plan.filters || []).filter(f => {
       const firstStep = plan.steps?.[0]
+      // 排除跨变量引用 filter（seed 阶段无法做跨变量比较）
+      if (crossVarFilters.includes(f)) return false
       const result = firstStep && f.source === firstStep.source && firstStep.source
       return result
     })
@@ -1699,7 +1704,7 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
           for (const lbl of labels) {
             const p2 = JSON.parse(JSON.stringify(plan))
             p2.steps[0].edgeLabel = lbl
-            p2.filters = geFilters
+            p2.filters = (geFilters || []).filter(f => !crossVarFilters.includes(f))
             const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
             for (const r of subRaw || []) combined.set(r.id, r)
           }
@@ -1744,7 +1749,8 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
         })()
       : (() => {
           const planForGe = JSON.parse(JSON.stringify(plan))
-          planForGe.filters = geFilters
+          // 排除跨变量属性引用 filter（GE 的 _matchFilter 无法做跨变量比较）
+          planForGe.filters = (geFilters || []).filter(f => !crossVarFilters.includes(f))
           return (ge as any)._executeQueryPlan(planForGe)
         })()
     let records = rawRecords
@@ -1961,6 +1967,95 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
       }
     }
 
+    // DBG removed', JSON.stringify(stepSourceFilters))
+    // DBG removed', JSON.stringify(crossVarFilters))
+    // DBG removed', JSON.stringify(plan.filters))
+    // DBG removed', needSourceVar, 'steps.len:', plan.steps?.length, 'records.len:', filteredWithLabels?.length)
+    // ── 跨变量属性引用过滤（WHERE n.animal = x.animal / a.id = b.id） ──
+    // crossVarFilters 中的 filter 不能在 seed 阶段用常数比较，因为 value 是"x.animal"字符串。
+    // 对于有边模式（needSourceVar=true）：行中 props=source 节点属性 + __targetProps=target 节点属性，
+    // 对每一行检查跨变量比较。
+    // 对于无边模式（steps.length=0）：纯节点扫描，做笛卡尔积配对。
+    if (crossVarFilters.length && filteredWithLabels?.length) {
+      if (plan.steps?.length && needSourceVar) {
+        // 有边模式：行有 props（source）和 __targetProps（target）
+        filteredWithLabels = filteredWithLabels.filter((r: any) => {
+          return crossVarFilters.every((f: any) => {
+            // f.value = "x.animal" → sourceVar="x", targetProp="animal"
+            const dotIdx = (f.value as string).indexOf('.')
+            if (dotIdx < 0) return true
+            const refVar = (f.value as string).substring(0, dotIdx)
+            const refProp = (f.value as string).substring(dotIdx + 1)
+            // refVar 是 steps 中的 source 还是 targetAlias？
+            const refStep = plan.steps?.find(s => s.source === refVar || s.targetAlias === refVar)
+            if (!refStep) return true
+            const isRefSource = refStep.source === refVar
+            // 当前行的 source 值
+            const actualVal = r?.props?.[f.property]
+            // 引用变量的实际值：isRefSource → r.props, else → r.__targetProps
+            const refVal = isRefSource ? r?.props?.[refProp] : r?.__targetProps?.[refProp]
+            if (actualVal === undefined || refVal === undefined) return false
+            switch (f.operator) {
+              case 'EQ':  return String(actualVal) === String(refVal)
+              case 'NEQ': return String(actualVal) !== String(refVal)
+              default:    return String(actualVal) === String(refVal)
+            }
+          })
+        })
+      } else if (!plan.steps?.length) {
+        // 无边模式（steps.length=0）：MATCH (a:A), (b:B) WHERE a.id = b.id
+        // 从 query 中提取变量→标签映射
+        const varLabelMap: Record<string, string> = {}
+        if (query) {
+          const matchClauses = query.matchAll(/MATCH\s*\((\w+)\s*:\s*(\w+)\)/g)
+          for (const mc of matchClauses) varLabelMap[mc[1]] = mc[2]
+        }
+        const returnCols = plan.returnColumns || []
+        // 按变量 label 从 allNodes 分配节点
+        const varNodeMap: Record<string, Array<{node: any; idx: number}>> = {}
+        for (const rc of returnCols) {
+          const varName = typeof rc === 'string' ? rc.split('.')[0] : ''
+          if (!varName || varNodeMap[varName]) continue
+          const targetLabel = varLabelMap[varName]
+          varNodeMap[varName] = allNodes
+            .map((node, idx) => ({ node, idx }))
+            .filter(({ idx }) => !skipNodeIndices.has(idx))
+            .filter(({ node }) => !targetLabel || String(node._label) === targetLabel)
+        }
+        const varNames = Object.keys(varNodeMap)
+        const pairedRows: any[] = []
+        if (varNames.length >= 2) {
+          for (const aEntry of varNodeMap[varNames[0]]) {
+            for (const bEntry of varNodeMap[varNames[1]]) {
+              if (aEntry.idx === bEntry.idx) continue
+              let pass = true
+              for (const f of crossVarFilters) {
+                const dotIdx = (f.value as string).indexOf('.')
+                if (dotIdx < 0) { pass = false; break }
+                const refVar = (f.value as string).substring(0, dotIdx)
+                const refProp = (f.value as string).substring(dotIdx + 1)
+                const actualVal = (f.source === varNames[0] ? aEntry.node : bEntry.node)?.[f.property]
+                const refVal = (refVar === varNames[0] ? aEntry.node : bEntry.node)?.[refProp]
+                if (actualVal === undefined || refVal === undefined) { pass = false; break }
+                if (String(actualVal) !== String(refVal)) { pass = false; break }
+              }
+              if (pass) {
+                pairedRows.push({
+                  id: -1,
+                  props: aEntry.node,
+                  type: aEntry.node._label || 'Default',
+                  name: '',
+                  __crossVarRows: { [varNames[0]]: aEntry.node, [varNames[1]]: bEntry.node },
+                })
+              }
+            }
+          }
+        }
+        filteredWithLabels = pairedRows
+      }
+    }
+
+        // DBG removed
     // ── 边变量 filter（WHERE r.name = 'foo'） ──
     // plan.filters 中的 source 如果是边变量（不在 MATCH 的节点变量中），
     // 用 edgesPayload 中的边 props 来过滤结果行。
@@ -2216,8 +2311,21 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       }
       // 如果表达式是纯变量名（无点号），是 RETURN n
       if (!expr.includes('.')) {
-        // RETURN <变量>：返回完整节点（保留 _label 以便 step-definitions 识别为节点）
-        result[rc] = { ...row }
+        // 检查 __crossVarRows（无边模式配对行）
+        if (r.__crossVarRows && rc in r.__crossVarRows) {
+          // 从 __crossVarRows 中取该变量对应的节点
+          result[rc] = { ...r.__crossVarRows[rc] }
+          continue
+        }
+        // 区分 source 变量和 target 变量
+        const firstStepSource = plan.steps?.[0]?.source
+        if (r.__targetProps && firstStepSource && rc !== firstStepSource) {
+          // target 变量（或之后步中的变量）：从 __targetProps 构建
+          result[rc] = { ...r.__targetProps }
+        } else {
+          // source 变量：从 row 构建（包含 r.props 所有属性）
+          result[rc] = { ...row }
+        }
         continue
       }
       // 属性访问表达式：n.name → 从 row 或 r 取值
