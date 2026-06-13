@@ -558,8 +558,8 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         plan.returnColumns = ret.columns.map(c => {
           const expr = c.alias ?? c.expression
           if (expr === '*') return ''
-          // 去掉变量前缀：n.name → name
-          return expr.replace(/^\w+\./, '')
+          // 保留完整的表达式用于 _formatResultRow 中的变量.属性解析
+          return expr
         }).filter((v, i, arr) => !(v === '' && i === 0 && arr.length === 1)) // only filter out * alone
         if (ret.columns.length === 1 && ret.columns[0].expression === '*') {
           plan.returnColumns = []
@@ -608,9 +608,23 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
       case 'CREATE': {
         plan.type = 'CREATE'
         const nodes = extractCreateNodes(clause.ctx)
-        plan.createNodes = nodes
+        if (nodes.length) {
+          if (plan.createNodes?.length) {
+            // 去重：跳过已存在的 alias（边语句中的节点引用已有变量）
+            const existingAliases = new Set(plan.createNodes.map(n => n.alias))
+            for (const n of nodes) {
+              if (!existingAliases.has(n.alias)) {
+                plan.createNodes.push(n)
+              }
+            }
+          } else {
+            plan.createNodes = nodes
+          }
+        }
         const edges = extractCreateEdges(clause.ctx)
-        plan.createEdges = edges
+        if (edges.length) {
+          plan.createEdges = plan.createEdges?.length ? [...plan.createEdges, ...edges] : edges
+        }
         break
       }
       case 'DELETE': {

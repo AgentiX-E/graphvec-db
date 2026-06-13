@@ -469,9 +469,28 @@ Given('having executed:', function (query: string) {
           }
         }
         // 把边信息编码到 st.nodes 的 __edges 中，供后续 _executeQuery 重建边
-        // 放在第一个节点的属性中（因为 __edges 是数组级别的，不能直接加在 array 上）
-        if (st.nodes.length > 0) {
-          (st.nodes[0] as any).__edges = createdEdgeInfos
+        // 关键：srcIdx/dstIdx 必须指向 st.nodes 中的正确索引（而非 geNodeMap 中的索引）。
+        // 因为 _executeViaGraphEngine 重建边时用 allNodes[i].__edges 中的
+        // srcIdx/dstIdx 来映射到 nodeGeIds[i]，而 nodeGeIds 按 st.nodes 顺序排列。
+        // createdEdgeInfos 中的索引基于 geNodeMap（GE nodeIds 集合顺序），
+        // 可能与 st.nodes 顺序不同。因此从原始 createEdges 重新计算 st.nodes 索引：
+        if (st.nodes.length > 0 && (plan as any).createEdges?.length) {
+          const aliasToNodeIdx = new Map<string, number>()
+          for (let ci = 0; ci < cns.length; ci++) {
+            if (cns[ci].alias) aliasToNodeIdx.set(cns[ci].alias, ci)
+          }
+          const edgesForStNodes: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }> = []
+          for (const edge of (plan as any).createEdges as Array<{ source: string; target: string; sourceIdx?: number; targetIdx?: number; label: string | null; direction: string }>) {
+            // 使用 alias 映射到 st.nodes 索引，而非 sourceIdx/targetIdx（多 CREATE 子句时索引不一致）
+            const srcIdx = aliasToNodeIdx.get(edge.source)
+            const dstIdx = aliasToNodeIdx.get(edge.target)
+            if (srcIdx !== undefined && dstIdx !== undefined && srcIdx < cns.length && dstIdx < cns.length) {
+              edgesForStNodes.push({ srcIdx, dstIdx, label: edge.label || '', props: (edge as any).props || null })
+            }
+          }
+          if (edgesForStNodes.length > 0) {
+            (st.nodes[0] as any).__edges = edgesForStNodes
+          }
         }
       }
 
@@ -493,6 +512,8 @@ Given(/^there exists a procedure .*$/, () => {})
 When('executing query:', function (query: string) {
   st.q = query.trim()
   // Having executed 已经把节点注入 st.nodes，直接用 run()
+  // DEBUG
+
   run(st.q)
 })
 
