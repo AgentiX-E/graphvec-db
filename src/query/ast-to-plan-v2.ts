@@ -546,6 +546,12 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
       // (ANTLR nests WHERE inside MatchClauseContext)
       case 'RETURN': {
         const ret = extractReturn(clause.ctx)
+        // 填充 returnAliasMap：returnColumn → 原始表达式（用于 DML 结果构造）
+        plan.returnAliasMap = {}
+        for (const c of ret.columns) {
+          const key = (c.alias ?? c.expression).replace(/^\w+\./, '')
+          plan.returnAliasMap[key] = c.expression
+        }
         // 兼容 _executeQuery：returnColumns 期望字段名（不含变量.前缀），* 则置空
         plan.returnColumns = ret.columns.map(c => {
           const expr = c.alias ?? c.expression
@@ -1498,6 +1504,9 @@ function extractMapLiteral(propsCtx: any): Record<string, unknown> | null {
     if (typeof value === 'string') {
       if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) {
         value = value.slice(1, -1)
+      } else if (value.startsWith('[') && value.endsWith(']')) {
+        // 数组字面量解析
+        value = parseListLiteral(value)
       } else if (/^-?\d+$/.test(value)) {
         value = parseInt(value, 10)
       } else if (/^-?\d+\.\d+$/.test(value)) {
@@ -1515,6 +1524,26 @@ function extractMapLiteral(propsCtx: any): Record<string, unknown> | null {
   }
 
   return Object.keys(result).length > 0 ? result : null
+}
+
+/** 解析 Cypher 列表字面量 `[1, 2, 3]` 为 JS 数组 */
+function parseListLiteral(text: string): unknown[] {
+  const inner = text.slice(1, -1).trim()
+  if (!inner) return []
+  return inner.split(',').map(s => {
+    const t = s.trim()
+    if ((t.startsWith("'") && t.endsWith("'")) || (t.startsWith('"') && t.endsWith('"'))) {
+      return t.slice(1, -1)
+    }
+    if (/^-?\d+$/.test(t)) return parseInt(t, 10)
+    if (/^-?\d+\.\d+$/.test(t)) return parseFloat(t)
+    if (t.toUpperCase() === 'TRUE') return true
+    if (t.toUpperCase() === 'FALSE') return false
+    if (t.toUpperCase() === 'NULL') return null
+    // 递归解析嵌套列表
+    if (t.startsWith('[') && t.endsWith(']')) return parseListLiteral(t)
+    return t
+  })
 }
 
 /**

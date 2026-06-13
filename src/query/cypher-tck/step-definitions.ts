@@ -161,6 +161,7 @@ function toNodeNotation(val: unknown): string | undefined {
   const propStr = propKeys.map(k => {
     const v = props[k]
     if (typeof v === 'string') return `${k}: '${v}'`
+    if (Array.isArray(v)) return `${k}: [${v.map(e => typeof e === 'string' ? `'${e}'` : String(e)).join(', ')}]`
     return `${k}: ${JSON.stringify(v)}`
   }).join(', ')
   return label ? `(:${label} {${propStr}})` : `({${propStr}})`
@@ -176,10 +177,26 @@ function normalizeActual(rows: any[], keys: string[]): Record<string, string>[] 
       const isNode = val && typeof val === 'object' && '_label' in val
       norm[key] = isNode && toNodeNotation(val) !== undefined
         ? toNodeNotation(val)!
-        : val !== undefined ? String(val) : ''
+        : _stringifyVal(val)
     }
     return norm
   })
+}
+
+/** Format a value to its canonical Cypher string representation */
+function _stringifyVal(val: unknown): string {
+  if (val === null || val === undefined) return ''
+  if (typeof val === 'string') return "'" + val + "'"  // TCK expects quoted strings
+  if (typeof val === 'number') return String(val)
+  if (typeof val === 'boolean') return String(val)
+  if (Array.isArray(val)) {
+    return '[' + val.map(v => {
+      if (typeof v === 'string') return "'" + v + "'"
+      return String(v)
+    }).join(', ') + ']'
+  }
+  if (typeof val === 'object') return JSON.stringify(val)
+  return String(val)
 }
 
 /** Parse a single cell from official TCK notation to its canonical string form */
@@ -313,42 +330,55 @@ function seedGe(ge: any, node: Record<string, unknown>): void {
   try { (ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'sn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
 }
 
+/**
+ * 从持久 GE 中读取所有节点，填充到 st.nodes。
+ * 供 When executing query: 创建临时 GE 时使用。
+ */
+function _syncNodesFromGe(): void {
+  if (!st.pGe || st.pGe === undefined) return
+  try {
+    // 用 GE 的 query 方法 MATCH 所有节点
+    const raw = (st.pGe as any).query?.('MATCH (n) RETURN n')
+    if (raw?.length) {
+      st.nodes = []
+      for (const item of raw) {
+        const n = item.n || item
+        if (n.props && typeof n.props === 'object') {
+          // GE returns { props: { ... } }
+          const node: Record<string, unknown> = { _label: 'Default' }
+          for (const [k, v] of Object.entries(n.props)) node[k] = v
+          st.nodes.push(node)
+        }
+      }
+    }
+  } catch {
+    // ignore GE query failures
+  }
+}
+
 Given('having executed:', function (query: string) {
   const q = query.trim()
   try {
-    // First try: parse CREATE to seed nodes directly (simple node-only CREATE)
-    const parsed = parseCreateStmt(q)
-    if (parsed.length > 0 && !q.includes('-') && !q.includes('>')) {
-      // Simple node CREATE without relationships — use seedNodes mode
-      for (const node of parsed) {
-        if (!node._label) node._label = 'Default'
-      }
-      st.nodes = parsed
-      return
-    }
-    // If parseCreateStmt fails but no relationships, fallback to run()
-    if (!q.includes('-') && !q.includes('>')) {
-      run(q)
-      return
-    }
-  } catch {}
+    const plan = parseQuery(q)
+    if (!plan || !plan.type) throw new Error('parseQuery failed for ' + q)
 
-  // Has relationships or complex DML — use persistent GE with direct node creation
-  try {
-    const ge = persistGe()
-    // Seed any existing nodes into GE first
-    for (const n of st.nodes) seedGe(ge, n)
-    // Hand-parse CREATE with relationships and inject nodes directly into GE
-    if (q.toUpperCase().startsWith('CREATE')) {
-      execCreateOnGe(ge, q)
-    } else {
-      // For non-CREATE DML, try parseQuery + GE internal
-      const plan = parseQuery(q)
-      if (plan && plan.type) {
-        try { (ge as any)._executeQueryPlan(plan) } catch {}
+    // 如果有 createNodes（CREATE/MERGE 的节点定义），直接注入 st.nodes
+    if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan as any).createNodes?.length) {
+      const cns = (plan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
+      for (const cn of cns) {
+        const node: Record<string, unknown> = { _label: cn.label || 'Default' }
+        if (cn.props) { for (const [k, v] of Object.entries(cn.props)) node[k] = v }
+        st.nodes.push(node)
+        // 同时注入持久 GE（用于 Edge 查询和 side effects 检查）
+        const ge = persistGe()
+        seedGe(ge, node)
       }
-      st.nodes = nodesFromGe(ge)
+      st.err = null
+      return
     }
+
+    // 无 createNodes 但查询可执行：run() 并读回结果
+    run(q)
     st.err = null
   } catch (e: any) {
     st.err = e
@@ -360,12 +390,8 @@ Given(/^there exists a procedure .*$/, () => {})
 
 When('executing query:', function (query: string) {
   st.q = query.trim()
-  // Only use persistent GE if it was explicitly created by having_executed with relationships
-  if (st.pGe && st.q.includes('-')) {
-    _runOnPersistGe(st.q)
-  } else {
-    run(st.q)
-  }
+  // Having executed 已经把节点注入 st.nodes，直接用 run()
+  run(st.q)
 })
 
 When('executing control query:', function (query: string) {

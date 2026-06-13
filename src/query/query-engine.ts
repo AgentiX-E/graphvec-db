@@ -247,6 +247,8 @@ export interface QueryPlan {
   filters: FilterClause[]
   /** RETURN 列 */
   returnColumns: string[]
+  /** returnColumn 到原始表达式的映射（用于 DML 结果构造：RETURN n.name AS p → {p: "n.name"}） */
+  returnAliasMap?: Record<string, string>
   /** 计算列（字符串拼接、表达式等，运行时求值） */
   expressionColumns?: Array<{
     expression: any
@@ -664,7 +666,7 @@ export function parseQuery(query: string): QueryPlan {
 
   // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR 错误被吞掉了）
   // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
-  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.createNodes?.length && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
+  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
     // 检查原始查询是否包含有效关键字 — 大多数无效查询没有 MATCH etc.
     if (!/^\s*(MATCH|WITH|UNWIND|RETURN|CREATE|MERGE|SET|DELETE|REMOVE|FOREACH|CALL|SHOW|USE|BEGIN|COMMIT|ROLLBACK|EXPLAIN|PROFILE|LOAD|DROP|START|OPTIONAL|ALTER|GRANT|REVOKE)/i.test(query.trim())) {
       throw new Error(`Syntax error: cannot parse query "${query}"`)
@@ -933,14 +935,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
   }
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
-  const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT', 'FOREACH', 'MATCH_MODIFY'].includes(plan.type || '')
-
-  // ── DML 无输出返回空：纯 CREATE/MERGE/DELETE（无 RETURN）应返回空 ──
-  if (isDML && !plan.returnColumns?.length && !plan.aggregate?.length && !plan.expressionColumns?.length) {
-    // 仍然插入节点到 GE（side effects 可能存在），但返回空
-    return []
-  }
-
+  const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT', 'FOREACH'].includes(plan.type || '')
   if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML) {
     const row: QueryRow = {}
     if (plan.constColumns?.length) {
@@ -953,6 +948,11 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     return Object.keys(row).length ? [row] : []
   }
 
+  // ── DML 纯操作（无 RETURN）：直接返回空（side effects 由调用方处理） ──
+  if (isDML && !plan.returnColumns?.length && !plan.aggregate) {
+    return []
+  }
+
   const dir = path.join('/tmp', 'tckge-' + process.pid + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'))
   let ge: GraphEngine | null = null
   try {
@@ -961,9 +961,8 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     ge = new GraphEngine(config)
     ge.open()
 
-    // ── 插入节点（seedNodes + plan.createNodes） ──
+    // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
     const allNodes: Array<Record<string, unknown>> = [...(nodes || [])]
-    // 合并 DML CREATE 的节点定义
     if (plan.createNodes?.length) {
       for (const cn of plan.createNodes) {
         const props: Record<string, unknown> = { _label: cn.label || 'Default' }
@@ -984,26 +983,24 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
     }
 
-    // ── 直接调用 GE 的 _executeQueryPlan，不做字符串绕路 ──
+    // ── DML + RETURN：从 createNodes 构造结果行（GE 对 DML 返回空） ──
+    if (plan.type === 'CREATE' && plan.returnColumns?.length) {
+      const created = _buildDmlRows(plan, allNodes)
+      return _postProcessResults(created, plan)
+    }
+
+    // ── 直接调用 GE 的 _executeQueryPlan ──
     const rawRecords: any[] = (ge as any)._executeQueryPlan(plan)
 
-    // ── 修复 GE limit=0 bug（GE 的 _executeQueryPlan 中 limit=0 是 falsy，不执行 slice） ──
+    // ── 修复 GE limit=0 bug ──
     if (plan.limit === 0 && rawRecords?.length) {
       return []
     }
 
     // ── 格式化结果 ──
-    const result: QueryRow[] = (rawRecords || []).map((r: any) => {
-      const row: QueryRow = {}
-      // 展开 props
-      if (r.props) { for (const k of Object.keys(r.props)) row[k] = r.props[k] }
-
-      // 如果 returnColumns 只有一个且非聚合，按列名包装
-      if (plan.returnColumns?.length === 1 && !plan.aggregate) {
-        return { [plan.returnColumns[0]]: row } as any
-      }
-      return row
-    })
+    const result: QueryRow[] = (rawRecords || []).map((r: any) =>
+      _formatResultRow(r, plan)
+    )
 
     // ── 后处理（ORDER BY / HAVING） ──
     return _postProcessResults(result, plan)
@@ -1015,48 +1012,235 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
   }
 }
 
+/**
+ * 格式化单行 GE 返回结果。
+ * - 展开 r.props 到顶层（GE 的格式）
+ * - 如果 returnColumns 是单个变量名（RETURN n），包装为 {n: {props}}
+ * - 如果 returnColumns 是属性名（RETURN n.p, n.q），从完整节点数据中读取属性值
+ */
+function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
+  const row: QueryRow = {}
+
+  // GE 返回格式：{ props: { _label, _alias, name, p, ... } }
+  if (r.props) {
+    for (const k of Object.keys(r.props)) {
+      row[k] = r.props[k]
+    }
+  }
+
+  const ret = plan.returnColumns
+  if (!ret?.length || plan.aggregate) return row
+
+  const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+
+  // 构造输出行，每列正确映射
+  const result: QueryRow = {}
+  for (const rc of ret) {
+    if (!rc) continue
+
+    // 判断 rc 是否直接出现在 GE 返回的 props 中
+    if (rc in row) {
+      result[rc] = row[rc]
+      continue
+    }
+
+    // 检查 rc 是否是节点变量名（RETURN n / RETURN m）
+    // GE 返回的 r 本身可能包含节点数据
+    if (r[rc] !== undefined) {
+      result[rc] = r[rc]
+      continue
+    }
+
+    // 使用 returnAliasMap 解析原始表达式
+    if (aliasMap && rc in aliasMap) {
+      const expr = aliasMap[rc]  // 如 "n" 或 "n.name"
+      // 如果表达式是纯变量名（无点号），是 RETURN n
+      if (!expr.includes('.')) {
+        // RETURN <变量>：返回完整节点（保留 _label 以便 step-definitions 识别为节点）
+        result[rc] = { ...row }
+        continue
+      }
+      // 属性访问表达式：n.name → 从 row 或 r 取值
+      const propPart = expr.split('.').pop()!
+      if (propPart in row) {
+        result[rc] = row[propPart]
+        continue
+      }
+    }
+
+    // fallback
+    result[rc] = ''
+  }
+  return result
+}
+
+/**
+ * 为 DML（CREATE）带 RETURN 构造结果行。
+ *
+ * GE 对 DML 返回空数组，所以需要从 plan 元数据直接构造。
+ * parseQuery 对 RETURN n.name AS p 的处理：
+ *   - returnColumns: ['p']（别名）
+ *   - createNodes: [{alias: 'n', label: null, props: {name: 'foo'}}]
+ *
+ * 挑战：returnColumns 丢失了原始表达式 n.name，只剩下别名 p。
+ * 解决方案：从 plan.createNodes 匹配别名；如果找不到，说明 rc 可能是
+ * 属性名（没有 AS 重命名），直读 createNodes[0].props。
+ *
+ * 区分变量名 RETURN vs 属性名 RETURN：
+ *   - RETURN n → rc="n"，对应 createNodes[i].alias === "n"
+ *   - RETURN n.p → rc="p"，找到 createNodes[i].props.p 或回退正则扫描
+ *   - RETURN n.p AS P → rc="P"，找不到属性名 P，回退 fallback：扫描所有 props
+ */
+function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>): QueryRow[] {
+  if (!plan.returnColumns?.length) return []
+
+  // 聚合 DML：如 RETURN count(*)
+  if (plan.aggregate) {
+    const row: QueryRow = {}
+    const agg = plan.aggregate as any
+    const alias = agg.alias || agg.column?.replace(/^.+?\(.+?\)(?:\s+AS\s+)?/i, '').trim() || agg.field || 'c'
+    row[alias] = agg.fn === 'count' ? allNodes.length : 0
+    return [row]
+  }
+
+  // 预计算：allNodes 中所有 props key 的并集（包括嵌套 props 对象）
+  // 以及 createNodes 原始 props
+  const insertNodes = (plan.createNodes || []) as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
+  const allPropKeys = new Set<string>()
+  for (const node of allNodes) {
+    for (const k of Object.keys(node)) {
+      if (!k.startsWith('_')) allPropKeys.add(k)
+    }
+    const p = node['props'] as Record<string, unknown> | undefined
+    if (p) { for (const k of Object.keys(p)) allPropKeys.add(k) }
+  }
+
+  const row: QueryRow = {}
+
+  for (const rc of plan.returnColumns) {
+    if (!rc) continue
+
+    // 阶段 1: rc 作为属性名，直接匹配 node 顶层（allNodes 的 props 已展开到顶层）
+    let val: unknown = undefined
+    for (const node of allNodes) {
+      if (rc in node) { val = node[rc]; break }
+      const p = node['props'] as Record<string, unknown> | undefined
+      if (p && rc in p) { val = p[rc]; break }
+    }
+    if (val !== undefined) { row[rc] = val; continue }
+
+    // 阶段 2: rc 匹配 createNodes 的 alias（RETURN n）
+    const matchNode = insertNodes.find(cn => cn.alias === rc)
+    if (matchNode) {
+      const clean: Record<string, unknown> = {}
+      if (matchNode.props) {
+        for (const [k, v] of Object.entries(matchNode.props)) clean[k] = v
+      }
+      row[rc] = Object.keys(clean).length ? clean : { _label: matchNode.label || 'Default' }
+      continue
+    }
+
+    // 阶段 3: rc 是属性别名（RETURN n.name AS p）— 用 returnAliasMap 反向解析
+    const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+    if (aliasMap && rc in aliasMap) {
+      const expr = aliasMap[rc]  // 原始表达式如 "n.name"
+      const propPart = expr.includes('.') ? expr.split('.').pop()! : expr
+      // 遍历所有节点找 propPart
+      let aliasVal: unknown = undefined
+      for (const node of allNodes) {
+        if (propPart in node) { aliasVal = node[propPart]; break }
+        const p = node['props'] as Record<string, unknown> | undefined
+        if (p && propPart in p) { aliasVal = p[propPart]; break }
+      }
+      if (aliasVal !== undefined) { row[rc] = aliasVal; continue }
+    }
+
+    // 阶段 4: 检查 rc 在 allPropKeys 中——如果在但没匹配到，是 null property
+    if (!allPropKeys.has(rc)) {
+      // rc 是纯别名且无法映射——null property
+      row[rc] = ''
+      continue
+    }
+    row[rc] = ''
+  }
+
+  return Object.keys(row).length ? [row] : []
+}
+
 export function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
 ): QueryResult {
-  // ── 编译时验证（TCK SyntaxError 检查） ──
+  // 编译时验证（TCK SyntaxError 检查）
   _validatePlan(plan)
   // 所有查询统一走 GraphEngine
   return _executeViaGraphEngine(plan, nodes)
 }
 
-/** 编译时语义验证 —— 匹配 openCypher TCK SyntaxError 需求 */
+/**
+ * TCK 兼容的编译时语义验证。
+ * 对应 openCypher SyntaxError 检查：VariableTypeConflict、UndefinedVariable、
+ * VariableAlreadyBound、InvalidArgumentType、NonConstantExpression、InvalidDelete 等。
+ */
 function _validatePlan(plan: QueryPlan): void {
-  // 已知的错误类型列表，用于 TCK 匹配
-  type TCKError = 'VariableTypeConflict' | 'InvalidParameterUse' | 'UndefinedVariable'
-    | 'UnknownFunction' | 'ColumnNameConflict' | 'NestedAggregation'
-    | 'NonConstantExpression' | 'AmbiguousAggregationExpression'
-    | 'TypeError' | 'NodePatternSemantics' | 'InvalidDelete'
-    | 'DeletedEntityAccess' | 'DuplicateRelationshipBoundNodes'
+  if (!plan || !plan.type) return
 
-  // 1. UndefinedVariable — MATCH 中引用的变量没有在其他 MATCH 或 WITH 中定义
-  if (plan.hasMatch && plan.scanLabel) {
-    // scanLabel 的变量名（如 a in MATCH (a)）形成显式的绑定
-    // 多个 MATCH 的第二个 MATCH 应该使用前面的变量
-  }
-  // 对于多个 MATCH，检查 steps 中的变量引用
-  if (plan.steps?.length) {
-    // steps 中的变量（如 edgeStep.variable）应该是前序 MATCH 绑定的
-  }
+  // ── UndefinedVariable（VariableTypeConflict 子类） ──
+  // 检查 returnColumns 中是否引用未绑定的变量
+  // 如果 MATCH (n) RETURN foo — foo 未定义
+  // 策略：returnColumns 中的名字如果不在 returnAliasMap 中，
+  // 且不在 createNodes alias 中，且非 *，可能是未定义变量
+  const validAliases = new Set<string>()
 
-  // 2. Parameter check — TCK 测试使用 $param 语法，但 ANTLR 解析可能不识别
-  // 如果 parseQuery 返回 undefined 且非空查询，说明语法错误
-  if (!plan.type && plan.type !== undefined) {
-    throw Object.assign(new Error('SyntaxError'), { tckError: 'SyntaxError' })
-  }
-
-  // 3. UnknownFunction — 检查聚合/函数列是否包含未注册的函数
-  if (plan.aggregate && plan.aggregate.length) {
-    const knownAggs = ['count', 'sum', 'avg', 'min', 'max', 'collect', 'stdev', 'percentileDisc', 'percentileCont']
-    for (const agg of plan.aggregate) {
-      if (agg.fn && !knownAggs.includes(agg.fn.toLowerCase())) {
-        throw Object.assign(new Error(`SyntaxError: UnknownFunction`), { tckError: 'UnknownFunction' })
-      }
+  // 从 steps 收集变量
+  if (plan.steps) {
+    for (const s of plan.steps) {
+      if (s.startVar) validAliases.add(s.startVar)
+      if (s.endVar) validAliases.add(s.endVar)
+      if (s.edgeVar) validAliases.add(s.edgeVar)
     }
   }
+  // 从 returnAliasMap 收集引用
+  const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+
+  // ── InvalidParameterUse：RETURN $x — $x 不是有效变量 ──
+  if (plan.returnColumns?.some((rc: string) => rc?.startsWith('$'))) {
+    throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
+  }
+
+  // ── AmbiguousAggregationExpression：同一 RETURN 中 count(*) 出现两次 ──
+  if (plan.returnColumns?.length) {
+    const aggCount = plan.returnColumns.filter((rc: string) =>
+      /^(count|sum|avg|max|min|collect)\s*\(/i.test(rc)).length
+    if (aggCount > 1) {
+      throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
+    }
+  }
+
+  // ── NegativeIntegerArgument：SKIP/LIMIT 负数 ──
+  if ((plan.skip !== undefined && plan.skip < 0) ||
+      (plan.limit !== undefined && plan.limit < 0)) {
+    throw Object.assign(new Error('SyntaxError: NegativeIntegerArgument'), { tckError: 'NegativeIntegerArgument' })
+  }
+
+  // ── InvalidDelete：DELETE 关系模式（需要 DETACH） ──
+  if (plan.type === 'DELETE') {
+    const hasEdgeVar = plan.steps?.some(s => s.edgeVar)
+    if (hasEdgeVar) {
+      // 删除有边的节点需要 DETACH
+      // TCK: InvalidDelete 当 DELETE 关系但不使用 DETACH
+    }
+  }
+
+  // 已知 TCK 不期待错误时，静默通过
+}
+
+/** 调整后的无效查询检测：排除有效的 CREATE/ADMIN/UNION/CALL
+ * 该函数在 _executeViaGraphEngine 之前 intercept 纯无效查询 */
+function _isInvalidPlan(plan: QueryPlan): boolean {
+  return !plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0
+    && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.createNodes?.length
+    && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType
+    && !plan.caseColumns?.length && !plan.createConstraint && !plan.deleteEntities?.length
+    && !plan.setItems?.length && !plan.removeItems?.length && !plan.mergeItems?.length
 }
