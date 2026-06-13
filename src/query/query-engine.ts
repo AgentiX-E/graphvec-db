@@ -659,6 +659,24 @@ export function parseQuery(query: string): QueryPlan {
       } else if (/^[a-z][0-9]?$/.test(subPlan.scanLabel) && !subPlan.createNodes?.some(n => n.label === subPlan.scanLabel)) {
         subPlan.scanLabel = null
       }
+      // 如果 scanLabel 是 MATCH 中的变量名而非真正标签（如 MATCH (a) 中 a 被 ANTLR 当成 scanLabel）
+      // 正确标签会出现在 MATCH 子句的 :scanLabel 形式中。否则是变量名。
+      // MATCH (a:Person) → scanLabel='Person', 查询中有 ':Person' → 保留
+      // MATCH (a)       → scanLabel='a', 查询中有 '(a)' 但无 ':a' → 清除
+      if (subPlan.scanLabel && subPlan.hasMatch && query) {
+        const rawQuery = query
+        // 检查 scanLabel 是否在 MATCH 子句中以 :scanLabel 形式出现（标签）
+        const matchClauses = rawQuery.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
+        const isLabelInMatch = matchClauses.some((mc: string) => {
+          // 在节点模式中查找 :scanLabel：如 (:Person), :Person), :Person {prop}
+          const labelPattern = new RegExp(':' + subPlan.scanLabel + '(?=[\)\s{]|$)')
+          return labelPattern.test(mc)
+        })
+        // 如果 scanLabel 在 MATCH 子句中不是作为标签出现，则是变量名，清除
+        if (!isLabelInMatch) {
+          subPlan.scanLabel = null
+        }
+      }
     }
     if (subPlan.rightPlan) _fixScanLabel(subPlan.rightPlan)
     if (subPlan.callQuery) _fixScanLabel(subPlan.callQuery)
@@ -1177,9 +1195,28 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       const firstStep = plan.steps?.[0]
       return firstStep && f.source === firstStep.source && firstStep.source
     })
+    // ── WHERE 标签谓词预过滤 ──
+    // 提取 `WHERE a:A` 形式的标签检查（ANTLR 不将其解析为 filter）
+    const whereLabelFilters: Array<{varName: string; targetLabel: string}> = []
+    if (plan.steps?.length && query) {
+      const firstStepSource = plan.steps[0].source
+      if (firstStepSource) {
+        // 从原始 query 中提取 WHERE 子句，然后查找 var:Label 模式
+        const whereClauseMatch = query.match(/\bWHERE\s+([\s\S]+?)(?=\b(RETURN|WITH|CREATE|ORDER|SKIP|LIMIT)\b|$)/i)
+        if (whereClauseMatch) {
+          const whereClause = whereClauseMatch[1]
+          const varLabelRegex = new RegExp("\\b" + firstStepSource + "\\s*:\\s*(\\w+)", "i")
+          const lcMatch = whereClause.match(varLabelRegex)
+          if (lcMatch) {
+            whereLabelFilters.push({ varName: firstStepSource, targetLabel: lcMatch[1] })
+          }
+        }
+      }
+    }
+
     // 构建需要跳过的节点索引集合
     const skipNodeIndices = new Set<number>()
-    if (stepSourceFilters.length && plan.scanLabel) {
+    if ((stepSourceFilters.length || whereLabelFilters.length) && (plan.scanLabel || !plan.scanLabel)) {
       for (let ni = 0; ni < allNodes.length; ni++) {
         const node = allNodes[ni]
         const nodeLabel = String(node['_label'] || '')
@@ -1205,11 +1242,24 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         if (!match) {
           skipNodeIndices.add(ni)
         }
+        // WHERE 标签谓词过滤：检查节点标签是否匹配 WHERE var:Label
+        if (whereLabelFilters.length && !skipNodeIndices.has(ni)) {
+          const nodeLabel = String(node['_label'] || '')
+          const fsSource = plan.steps?.[0]?.source
+          const labelOk = whereLabelFilters.every(lf => {
+            return fsSource && lf.varName === fsSource && nodeLabel === lf.targetLabel
+          })
+          if (!labelOk) {
+            skipNodeIndices.add(ni)
+          }
+        }
       }
       // 从 plan.filters 中移除已预处理的过滤器
       plan.filters = (plan.filters || []).filter((f: any) => !stepSourceFilters.includes(f))
     }
     const nodeGeIds: number[] = []
+        // DEBUG [1] check skipNodeIndices just before seed
+
     let edgesPayload: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
     if (allNodes.length) {
       for (let i = 0; i < allNodes.length; i++) {
@@ -1252,19 +1302,55 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       // 从 allNodes 中提取 __edges 并创建边
       edgesPayload = extractEdgesFromNodes(allNodes)
       if (edgesPayload.length) {
+        // 为被跳过的节点创建 GE stub node，使其在边缘创建时可被引用
+        if (skipNodeIndices.size) {
+          for (const si of skipNodeIndices) {
+            if (si < allNodes.length && allNodes[si]) {
+              const item = allNodes[si]
+              const label = String(item['_label'] || 'Default')
+              let h = 0
+              for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
+              const geTypeId = Math.abs(h) % 1000 + 1
+              const stubProps: Record<string, unknown> = { _label: label }
+              for (const k of Object.keys(item)) {
+                if (k !== '_label' && k !== '__edges') stubProps[k] = item[k]
+              }
+              try {
+                // 使用同步的 storage.upsertNode 而不是 async ge.upsertNode
+                const stubId = (ge as any).storage.upsertNode(geTypeId, 's' + si, { props: stubProps })
+                // 手动更新 GE 的内部状态（nodeIds、labelIndex、缓存等）
+                if (stubId > 0) {
+                  ;(ge as any)._nodeIds.add(stubId)
+                  ;(ge as any)._labelIndex?.addNode?.(geTypeId, stubId)
+                  nodeGeIds[si] = stubId
+                }
+              } catch (e: any) {
+                // Fallback
+                nodeGeIds[si] = si + 1
+              }
+            }
+          }
+        }
+
+        const anyDirection = plan.steps?.length && plan.steps.some(s => s.direction === 'any')
         for (const ep of edgesPayload) {
-          // 跳过被 WHERE 预过滤跳过的节点（nodeGeIds[idx]=0 占位）
           const srcGeId = ep.srcIdx >= 0 && ep.srcIdx < nodeGeIds.length ? nodeGeIds[ep.srcIdx] : -1
           const dstGeId = ep.dstIdx >= 0 && ep.dstIdx < nodeGeIds.length ? nodeGeIds[ep.dstIdx] : -1
-          if (srcGeId <= 0 || dstGeId <= 0) continue // <=0 是被跳过的占位或无效
+          if (srcGeId <= 0 || dstGeId <= 0) continue
           const typeId = (ge as any)._resolveEdgeType(ep.label || '')
+          // 创建正向边
           if ((ep as any).props) {
             try { (ge as any).upsertEdge(srcGeId, dstGeId, typeId, { props: (ep as any).props }) } catch {}
           } else {
             try { (ge as any).upsertEdge(srcGeId, dstGeId, typeId) } catch {}
           }
+          // 无向边双向
+          if (anyDirection && srcGeId !== dstGeId) {
+            try { (ge as any).upsertEdge(dstGeId, srcGeId, typeId) } catch {}
+          }
         }
       }
+
     }
 
     // ── 构建 source→target 映射（GE 不保留从哪个源节点出发） ──
@@ -1341,39 +1427,47 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     // 我们用 allNodes 重新构造 source 节点数据。
     const needSourceVar = plan.returnColumns?.some((rc: string) => {
       const firstStep = plan.steps?.[0]
-      return firstStep && rc === firstStep.source
+      if (!firstStep || !firstStep.source) return false
+      // 直接匹配变量名（RETURN n）
+      if (rc === firstStep.source) return true
+      // 匹配属性投影（RETURN n.id）
+      if (rc.startsWith(firstStep.source + '.')) return true
+      return false
     })
     if (needSourceVar && sourceTargetMap.size > 0 && records?.length) {
       const sourceVar = plan.steps![0].source
-      const scanLabel = plan.scanLabel
+      const targetAlias = plan.steps![0].targetAlias
       // 对每个 GE 返回的 target 节点，找到它对应的 source 节点
-      records = records.flatMap((r: any) => {
+      // 使用 Map<srcId, targetProps> 去重，确保同一 source→target 只保留一条
+      const dedupedRecords = new Map<string, { srcId: number; targetProps: Record<string, unknown> }>()
+      for (const r of records) {
         const sourceIds = sourceTargetMap.get(r.id) || []
-        if (!sourceIds.length) return [r] // fallback
-        // 为每个 source 节点重建 GE 节点格式
-        return sourceIds.map((srcId: number) => {
-          // 在 nodeGeIds 中找到 srcId 对应的 allNodes 索引
-          const srcIdx = nodeGeIds.indexOf(srcId)
-          if (srcIdx < 0) return r
-          const srcNode = allNodes[srcIdx]
-          // 只在 RETURN 包含 source 变量时才重建
-          if (needSourceVar) {
-            // 剥离 __edges，保持 props 干净
-            const cleanProps: Record<string, unknown> = {}
-            for (const [k, v] of Object.entries(srcNode)) {
-              if (k !== '__edges') cleanProps[k] = v
-            }
-            return {
-              id: srcId,
-              props: cleanProps,
-              type: (ge as any).getNode(srcId)?.type || 0,
-              name: (ge as any).getNode(srcId)?.name || '',
-              deleteNodeKey: () => {},
-            }
+        if (!sourceIds.length) continue
+        const targetProps = { ...(r.props || {}) }
+        for (const srcId of sourceIds) {
+          const key = `${srcId}:${r.id}`
+          if (!dedupedRecords.has(key)) {
+            dedupedRecords.set(key, { srcId, targetProps })
           }
-          return r
-        })
-      })
+        }
+      }
+      records = [...dedupedRecords.entries()].map(([key, { srcId, targetProps }]) => {
+        const srcIdx = nodeGeIds.indexOf(srcId)
+        if (srcIdx < 0) return null as any
+        const srcNode = allNodes[srcIdx]
+        const cleanProps: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(srcNode)) {
+          if (k !== '__edges') cleanProps[k] = v
+        }
+        return {
+          id: srcId as number,
+          props: cleanProps,
+          type: (ge as any).getNode(srcId)?.type || 0,
+          name: (ge as any).getNode(srcId)?.name || '',
+          deleteNodeKey: () => {},
+          __targetProps: targetProps,
+        }
+      }).filter(Boolean)
     }
 
     if (!records?.length && allNodes.length && plan.scanLabel && plan.hasMatch) {
@@ -1426,6 +1520,22 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       })
     }
 
+    // ── WHERE 标签谓词后过滤（已经过 source 回溯后的数据） ──
+    // 从 allNodes 的 skipNodeIndices 反向推断：如果 source 节点被跳过（标签不匹配），丢弃行
+    if (skipNodeIndices.size > 0 && filteredWithLabels?.length && plan.steps?.[0]?.source) {
+      const wsSource = plan.steps[0].source
+      const before = filteredWithLabels.length
+      filteredWithLabels = filteredWithLabels.filter((r: any) => {
+        // 通过 nodeGeIds 查找这条记录对应的 allNodes 索引
+        // 如果 r 是从 source 回溯得到的，它的 id 就是 source GE id
+        const nodeIdx = nodeGeIds.indexOf(r.id)
+        if (nodeIdx < 0) return true
+        // 如果节点在 skipNodeIndices 中（标签不匹配），跳过
+        return !skipNodeIndices.has(nodeIdx)
+      })
+
+    }
+
     // ── edgeProps（内联关系属性谓词）过滤 ──
     // MATCH (node)-[r:KNOWS {name: 'monkey'}]->(a) — steps 中的 edgeProps
     // 利用 edgesPayload（从 __edges 提取的边信息）来验证边属性是否匹配
@@ -1456,7 +1566,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
             return false
           })
         })
-      : filteredRecords
+      : filteredWithLabels
 
     // ── 边变量后处理 ──
     // 如果 returnColumns 包含边变量（如 MATCH (a)-[r]->(b) RETURN r），
@@ -1560,8 +1670,17 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     if (propMatch) {
       const variable = propMatch[1]
       const property = propMatch[2]
-      // 属性值可能来自：r.props 或 row
-      if (r.props && property in r.props) {
+      // 区分 source 变量和 target 变量
+      // 当 source 回溯后，r.props 是 source 节点属性，r.__targetProps 是 target 节点属性
+      // 如果 variable 与 firstStep.source 匹配 → 从 r.props 取（source）
+      // 否则 → 从 r.__targetProps 取（target，如 b.id）
+      const firstStepSource = plan.steps?.[0]?.source
+      const isSourceVar = firstStepSource && variable === firstStepSource
+      if (isSourceVar && r.props && property in r.props) {
+        result[rc] = r.props[property]
+      } else if (!isSourceVar && r.__targetProps && property in r.__targetProps) {
+        result[rc] = r.__targetProps[property]
+      } else if (r.props && property in r.props) {
         result[rc] = r.props[property]
       } else if (property in row) {
         result[rc] = row[property]

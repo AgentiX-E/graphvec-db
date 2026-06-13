@@ -481,9 +481,19 @@ Given('having executed:', function (query: string) {
           }
           const edgesForStNodes: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }> = []
           for (const edge of (plan as any).createEdges as Array<{ source: string; target: string; sourceIdx?: number; targetIdx?: number; label: string | null; direction: string }>) {
-            // 使用 alias 映射到 st.nodes 索引，而非 sourceIdx/targetIdx（多 CREATE 子句时索引不一致）
-            const srcIdx = aliasToNodeIdx.get(edge.source)
-            const dstIdx = aliasToNodeIdx.get(edge.target)
+            // 使用 alias 映射到 st.nodes 索引，匿名节点（alias=）fallback 到 sourceIdx/targetIdx
+            let srcIdx: number | undefined
+            let dstIdx: number | undefined
+            if (edge.source && aliasToNodeIdx.has(edge.source)) {
+              srcIdx = aliasToNodeIdx.get(edge.source)
+            } else if (edge.sourceIdx !== undefined) {
+              srcIdx = edge.sourceIdx < cns.length ? edge.sourceIdx : undefined
+            }
+            if (edge.target && aliasToNodeIdx.has(edge.target)) {
+              dstIdx = aliasToNodeIdx.get(edge.target)
+            } else if (edge.targetIdx !== undefined) {
+              dstIdx = edge.targetIdx < cns.length ? edge.targetIdx : undefined
+            }
             if (srcIdx !== undefined && dstIdx !== undefined && srcIdx < cns.length && dstIdx < cns.length) {
               edgesForStNodes.push({ srcIdx, dstIdx, label: edge.label || '', props: (edge as any).props || null })
             }
