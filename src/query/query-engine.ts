@@ -1627,6 +1627,36 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         throw Object.assign(new Error('SyntaxError: VariableTypeConflict'), { tckError: 'VariableTypeConflict' })
       }
     }
+
+    // ── SyntaxError: VariableAlreadyBound（同 pattern 中节点变量重复） ──
+    // MATCH p = (p)-[]-() — path 变量 p 同时作为节点变量
+    // MATCH ()-(p), p = ()-[]-() — 同场景
+    const pathAssignVar = query.match(/(\w+)\s*=\s*\(/)?.[1]
+    if (pathAssignVar) {
+      const nodeVarRefs = [...query.matchAll(/\(\s*(\w+)\s*(?::|\))/g)].map(m => m[1])
+      if (nodeVarRefs.includes(pathAssignVar)) {
+        throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+      }
+    }
+
+    // ── SyntaxError: VariableAlreadyBound（WITH <val> AS p MATCH p = ()-[]-()） ──
+    const asVarAssign = query.match(/WITH\s+[^;]+\s+AS\s+(\w+)/i)?.[1]
+    if (asVarAssign) {
+      const pathAssignInMatch = query.match(new RegExp(`MATCH[^()]*\\b${asVarAssign}\\b\\s*=\\s*\\(`))
+      if (pathAssignInMatch) {
+        throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+      }
+    }
+
+    // ── SyntaxError: RelationshipUniquenessViolation ──
+    // MATCH (a)-[r]->()-[r]->(a) — 同一关系变量出现多次
+    if (query?.includes('MATCH')) {
+      const edgeVars = [...query.matchAll(/\[(\w+)\]/g)].map(m => m[1])
+      const dupEdgeVars = edgeVars.filter((v, i, a) => a.indexOf(v) !== i)
+      if (dupEdgeVars.length) {
+        throw Object.assign(new Error('SyntaxError: RelationshipUniquenessViolation'), { tckError: 'RelationshipUniquenessViolation' })
+      }
+    }
   }
 }
 
