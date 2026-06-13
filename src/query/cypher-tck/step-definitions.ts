@@ -111,8 +111,8 @@ function run(q: string): void {
     let resolvedQ = q
     if (st.params && Object.keys(st.params).length) {
       for (const [key, val] of Object.entries(st.params)) {
-        // $param → 'val'（字符串）或数值
-        const escaped = typeof val === 'string' ? `'${val}'` : String(val)
+        // 纯数字不加引号（'0' → 0），字符串加引号（'red' → 'red'）
+        const escaped = /^-?\d+(\.\d+)?$/.test(String(val)) ? String(val) : `'${val}'`
         resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), escaped)
       }
     }

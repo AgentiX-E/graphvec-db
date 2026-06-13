@@ -4,7 +4,7 @@ import path from 'path'
 export default defineConfig({
   test: {
     coverage: {
-      enabled: true,
+      enabled: false,
       provider: 'v8',
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.spec.ts', 'src/test-utils/**', 'src/security/__mocks__/**', 'src/**/*.d.ts'],

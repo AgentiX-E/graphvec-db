@@ -1103,6 +1103,130 @@ function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
   return processed
 }
 
+/**
+ * 多步遍历：从 startIdx 节点开始，沿 plan.steps 逐跳导航到最终节点。
+ * 每一步使用 __edges 来查找邻居节点。匹配标签/方向/属性约束。
+ * 返回所有可达的最终节点索引列表。
+ */
+function _walkMultiSteps(
+  startIdx: number, steps: TraverseStep[], allNodes: Record<string, unknown>[],
+  skipNodeIndices?: Set<number>,
+  planFilters?: Array<{source?: string; property: string; value: any}>,
+  stepSourceFilters?: Array<{source?: string; property: string; value: any}>
+): number[] {
+  let currentSet = new Set<number>([startIdx])
+  for (let si = 0; si < steps.length; si++) {
+    const step = steps[si]
+    const nextSet = new Set<number>()
+    // 构建 combinedSourceFilters：当前步的 source 节点属性约束
+    const combinedSourceFilters: Array<{source?: string; property: string; value: any}> = []
+    if (planFilters?.length) {
+      for (const f of planFilters) { if (f.source === step.source) combinedSourceFilters.push(f) }
+    }
+    if (stepSourceFilters?.length) {
+      for (const f of stepSourceFilters) { if (f.source === step.source) combinedSourceFilters.push(f) }
+    }
+    // 在边遍历前应用 source filter：从 currentSet 中移除不满足 source 约束的节点
+    // WHERE a.id = 1 — 在 seed 节点（step 0）和路径回溯（step 3+）中检查
+    if (combinedSourceFilters.length > 0) {
+      for (const idx of [...currentSet]) {
+        const fn = allNodes[idx]
+        if (!fn) continue
+        let passes = true
+        for (const rf of combinedSourceFilters) {
+          if (fn[rf.property] === undefined || String(fn[rf.property]) !== String(rf.value)) {
+            passes = false
+            break
+          }
+        }
+        if (!passes) currentSet.delete(idx)
+      }
+    }
+    // 边遍历
+    for (const idx of currentSet) {
+      const node = allNodes[idx]
+      if (!node) continue
+      const edges: Array<{ dstIdx: number; srcIdx: number; label: string; props?: any }> = (node as any).__edges || []
+      const isAny = step.direction === 'any'
+      // 当前节点的出边
+      for (const e of edges) {
+        let neighborIdx = -1
+        if (isAny) {
+          neighborIdx = e.dstIdx === idx ? e.srcIdx : (e.srcIdx === idx ? e.dstIdx : -1)
+        } else if (step.direction === 'out' && e.srcIdx === idx) {
+          neighborIdx = e.dstIdx
+        } else if (step.direction === 'in' && e.dstIdx === idx) {
+          neighborIdx = e.srcIdx
+        }
+        if (neighborIdx >= 0 && neighborIdx < allNodes.length && neighborIdx !== idx) {
+          // 边标签检查：如果 step 指定了 edgeLabel，边必须匹配（方向已经匹配）
+          if (step.edgeLabel && e.label !== step.edgeLabel) continue
+          if (_stepMatchConstraint(neighborIdx, step, allNodes)) {
+            nextSet.add(neighborIdx)
+          }
+        }
+      }
+      // 无向边：其他节点到当前节点的反向边
+      if (isAny) {
+        for (let j = 0; j < allNodes.length; j++) {
+          if (j === idx) continue
+          const other = allNodes[j] as any
+          if (other.__edges) {
+            for (const e of other.__edges) {
+              if (e.dstIdx === idx || e.srcIdx === idx) {
+                const neighborIdx = e.dstIdx === idx ? e.srcIdx : e.dstIdx
+                if (neighborIdx !== idx && !nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
+                  nextSet.add(neighborIdx)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // 当前 step 的 target filter（约束 step.targetAlias 变量）
+    const targetFilters = planFilters?.length ? planFilters.filter(f => f.source === step.targetAlias) : []
+    if (targetFilters.length > 0) {
+        for (const fidx of [...nextSet]) {
+          const fn = allNodes[fidx]
+          if (!fn) { nextSet.delete(fidx); continue }
+          let passes = true
+          for (const rf of targetFilters) {
+            if (fn[rf.property] === undefined || String(fn[rf.property]) !== String(rf.value)) {
+              passes = false
+              break
+            }
+          }
+          if (!passes) nextSet.delete(fidx)
+        }
+      }
+    // 应用被 WHERE 过滤跳过的节点抑制（仅在单步时使用，多步会错误地过滤路径中间节点）
+    if (skipNodeIndices && skipNodeIndices.size > 0 && steps.length <= 1) {
+      for (const sidx of skipNodeIndices) {
+        nextSet.delete(sidx)
+      }
+    }
+    currentSet = nextSet
+    if (currentSet.size === 0) break
+  }
+  return [...currentSet]
+}
+
+/** 检查 step 对目标节点的约束 */
+function _stepMatchConstraint(nodeIdx: number, step: TraverseStep, allNodes: Record<string, unknown>[]): boolean {
+  const node = allNodes[nodeIdx]
+  if (!node) return false
+  // 标签约束
+  if (step.targetLabel && node._label !== step.targetLabel) return false
+  // 内联属性约束
+  if (step.targetProps) {
+    for (const [k, v] of Object.entries(step.targetProps)) {
+      if (node[k] === undefined || String(node[k]) !== String(v)) return false
+    }
+  }
+  return true
+}
+
 /** GraphEngine 原生执行入口 */
 function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): QueryResult {
 
@@ -1340,6 +1464,24 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
       }
       // 从 allNodes 中提取 __edges 并创建边
       edgesPayload = extractEdgesFromNodes(allNodes)
+      // 将 edgesPayload 中的边分配到对应节点的 __edges 上（供 _walkMultiSteps 遍历使用）
+      // edgesPayload 可能只存储在 allNodes[0].__edges 中（TCK step-definitions 的存储方式）
+      if (edgesPayload.length) {
+        const nodeEdgeMap: Array<Array<{dstIdx: number; srcIdx: number; label: string; props?: any}>> = allNodes.map(() => [] as any)
+        for (const ep of edgesPayload) {
+          if (ep.srcIdx >= 0 && ep.srcIdx < allNodes.length) {
+            nodeEdgeMap[ep.srcIdx].push({dstIdx: ep.dstIdx, srcIdx: ep.srcIdx, label: ep.label, props: ep.props || undefined})
+          }
+          if (ep.dstIdx >= 0 && ep.dstIdx < allNodes.length) {
+            nodeEdgeMap[ep.dstIdx].push({dstIdx: ep.dstIdx, srcIdx: ep.srcIdx, label: ep.label, props: ep.props || undefined})
+          }
+        }
+        for (let ni = 0; ni < allNodes.length; ni++) {
+          if (!(allNodes[ni] as any).__edges || !(allNodes[ni] as any).__edges.length) {
+            (allNodes[ni] as any).__edges = nodeEdgeMap[ni]
+          }
+        }
+      }
   
       if (edgesPayload.length) {
         // 为被跳过的节点创建 GE stub node，使其在边缘创建时可被引用
@@ -1462,7 +1604,14 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
     // 判断条件：plan.filters 中 source 不是步骤 source，且 steps 非空（否则是纯节点 WHERE）。
     const stepSrc = plan.steps?.[0]?.source
     const stepTarget = plan.steps?.[0]?.targetAlias
-    const nodeAliasList = [stepSrc, stepTarget, plan.scanLabel].filter(Boolean)
+    // 收集所有 step 中的节点变量名（source + targetAlias），不仅是 step 0
+    const allStepVars = new Set<string>()
+    for (const s of (plan.steps || [])) {
+      if (s.source) allStepVars.add(s.source)
+      if (s.targetAlias) allStepVars.add(s.targetAlias)
+    }
+    if (plan.scanLabel) allStepVars.add(plan.scanLabel)
+    const nodeAliasList = [...allStepVars]
     const edgeFilters = plan.steps?.length && (plan.filters || []).filter(f =>
       f.source && !nodeAliasList.includes(f.source)
     ) || []
@@ -1471,8 +1620,79 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
 
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
 
+    // ── 多步跳转支持（MATCH (a)-->(b)-->(c)）──
+    // 当 steps.length > 1 时，GE 的 _executeQueryPlan 只处理第一个 step。
+    // 对多步路径手动遍历：从 seed 节点开始逐 step 跳转，使用 __edges 导航。
+    const hasMultiStep = plan.steps && plan.steps.length > 1 && allNodes.length > 0
+
     // DEBUG [10]
-    const rawRecords: any[] = multiTypeStep
+    const rawRecords: any[] = hasMultiStep
+      ? (() => {
+          const multiStepRaw: any[] = []
+          for (let i = 0; i < allNodes.length; i++) {
+            if (skipNodeIndices.has(i)) {
+              continue
+            }
+            let skipNode = false
+            for (const sf of stepSourceFilters) {
+              if (allNodes[i][sf.property] === undefined || String(allNodes[i][sf.property]) !== String(sf.value)) {
+                skipNode = true
+                break
+              }
+            }
+            if (skipNode) continue
+            const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
+        // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
+        // 防止后续 step 引入不相关的中间节点
+        const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).find(rc => {
+          if (!rc) return false
+          const firstSrc = plan.steps?.[0]?.source
+          return rc !== firstSrc && plan.steps?.some(s => s.targetAlias === rc)
+        })
+        let boundedTargetIndices = pathResults
+        if (retVar && plan.steps) {
+          const defStep = plan.steps.find(s => s.targetAlias === retVar)
+          if (defStep !== undefined) {
+            const defStepIdx = plan.steps.indexOf(defStep)
+            // 对返回变量的定义步，重新走到该步的 target 节点。这是 RETURN 变量的实际值。
+            if (defStepIdx >= 0) {
+              const intermediate = _walkMultiSteps(
+                i, plan.steps.slice(0, defStepIdx + 1),
+                allNodes, undefined, plan.filters, stepSourceFilters
+              )
+              // 如果 RETURN 变量等于最后一个 step 的 targetAlias，全路径的过滤约束
+              // 会影响返回值（后续步的 filter 消除多余节点），需要用交集过滤。
+              // 否则 pathResults 中的节点是后续步的 target，不相关，直接用 intermediate。
+              const lastStep = plan.steps[plan.steps.length - 1]
+              if (lastStep && lastStep.targetAlias === retVar) {
+                const defStepSet = new Set(intermediate)
+                boundedTargetIndices = pathResults.filter(idx => defStepSet.has(idx))
+              } else {
+                boundedTargetIndices = intermediate
+              }
+            }
+          }
+        }
+        for (const targetIdx of boundedTargetIndices) {
+              const targetNode = allNodes[targetIdx]
+              if (!targetNode) continue
+              const geNode: any = {
+                id: nodeGeIds[targetIdx] || (targetIdx + 1),
+                props: { _label: targetNode._label || 'Default' },
+                type: targetNode._label || 'Default',
+                __multiStep: true,
+              }
+              for (const k of Object.keys(targetNode)) {
+                if (k !== '_label' && k !== '__edges') {
+                  geNode.props[k] = targetNode[k]
+                }
+              }
+              multiStepRaw.push(geNode)
+            }
+          }
+          return multiStepRaw
+        })()
+      : multiTypeStep
       ? (() => {
           const labels = multiTypeStep.edgeLabel!.split('|')
           const combined: Map<number, any> = new Map()
@@ -1527,11 +1747,7 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
           planForGe.filters = geFilters
           return (ge as any)._executeQueryPlan(planForGe)
         })()
-    // ── scanLabel 变量名降级 ──
-    // 当 scanLabel 在 steps 中被用作 source 变量（非标签）且 allNodes 中确实没有此标签时，降级到 _scanAll
     let records = rawRecords
-
-    // ── Source 节点回溯（当 returnColumns 包含步骤 source 变量时） ──
     // GE 的 _executeQueryPlan 总是返回遍历后的目标节点，不保留 source 节点信息。
     // 当 RETURN n（steps[0].source）时，需要将 GE 返回的 target 节点映射回 source 节点。
     // 通过 sourceTargetMap 完成：targetGeId → sourceGeIds[].
@@ -1751,7 +1967,8 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
     // 找到所有边变量 filter
 
     const stepSource = plan.steps?.[0]?.source
-    const aliasNodeList = [stepSource, plan.steps?.[0]?.targetAlias, plan.scanLabel].filter(Boolean)
+    // 同样使用所有 step 节点变量
+    const aliasNodeList = [...allStepVars]
     const edgeVarFilters = edgeFilters.length
       ? edgeFilters
       : (plan.filters || []).filter(f => {
