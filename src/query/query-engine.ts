@@ -1426,6 +1426,19 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
 
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
     const allNodes: Array<Record<string, unknown>> = [...(nodes || [])]
+    // 如果传入节点没有 _label 标签但 plan 指定了 scanLabel，自动赋值（兼容外部 plan 导入场景）
+    if (plan.scanLabel && allNodes.some(n => !('_label' in n) || n._label === undefined || n._label === null)) {
+      let scanLabelAssigned = false
+      for (const n of allNodes) {
+        if (!('_label' in n) || n._label === undefined || n._label === null) {
+          n._label = plan.scanLabel
+          scanLabelAssigned = true
+        }
+      }
+      if (scanLabelAssigned) {
+        // 同时通知 skipNodeIndices 构建（后面的代码直接用 _label 判断）
+      }
+    }
     if (plan.createNodes?.length) {
       for (const cn of plan.createNodes) {
         const props: Record<string, unknown> = { _label: cn.label || 'Default' }
@@ -2569,6 +2582,10 @@ export function _executeQuery(
   nodes: Array<Record<string, unknown>>,
   query?: string,
 ): QueryResult {
+  // 无显式 LIMIT 时应用 DEFAULT_LIMIT（批量数据集上默认截断防止 OOM）
+  if (plan.limit === undefined || plan.limit === null) {
+    plan.limit = DEFAULT_LIMIT
+  }
   // 所有查询统一走 GraphEngine
   return _executeViaGraphEngine(plan, nodes, query)
 }
