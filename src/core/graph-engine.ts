@@ -668,7 +668,9 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       createdAt: raw.createdAt,
       degree,
       mvccVersion: this._mvccVersions.get(id),
-    }
+    } as NodeRecord & { typeName?: string }
+    // 从 props._label 填充 typeName（用于 TCK label 匹配）
+    ;(record as any).typeName = (raw.props as any)?._label || ''
 
     // Populate cache on miss (only when no RLS context)
     if (!ctx) {

@@ -607,6 +607,8 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         plan.type = 'CREATE'
         const nodes = extractCreateNodes(clause.ctx)
         plan.createNodes = nodes
+        const edges = extractCreateEdges(clause.ctx)
+        plan.createEdges = edges
         break
       }
       case 'DELETE': {
@@ -1223,6 +1225,60 @@ function extractCreateNodes(createCtx: any): Array<{ alias: string; label: strin
   }
 
   return nodes
+}
+
+/** 从 CREATE ctx 中提取边（关系链） */
+function extractCreateEdges(createCtx: any): Array<{
+  source: string; target: string; sourceIdx?: number; targetIdx?: number;
+  label: string | null; direction: 'out' | 'in' | 'any'
+}> {
+  const edges: Array<{
+    source: string; target: string; sourceIdx?: number; targetIdx?: number;
+    label: string | null; direction: 'out' | 'in' | 'any'
+  }> = []
+  // Track global index of NodePatternContext across all PatternElements within this CREATE
+  let nodeIdx = 0
+
+  const patternElements = findAllChildren(createCtx, 'PatternElementContext')
+  for (const pe of patternElements) {
+    const peNodes = findAllChildren(pe, 'NodePatternContext')
+    if (peNodes.length < 2) { nodeIdx += peNodes.length; continue }
+
+    const chainCtxs = findAllChildren(pe, 'PatternElementChainContext')
+    for (let ci = 0; ci < chainCtxs.length; ci++) {
+      const relPattern = findChild(chainCtxs[ci], 'RelationshipPatternContext')
+      if (!relPattern) continue
+
+      const relDetail = findChild(relPattern, 'RelationshipDetailContext')
+      let edgeLabel: string | null = null
+      if (relDetail) {
+        const typeName = findChild(relDetail, 'RelTypeNameContext')
+        edgeLabel = typeName ? findSymbolicName(typeName) : null
+      }
+
+      const hasLeft = findChild(relPattern, 'LeftArrowHeadContext')
+      const hasRight = findChild(relPattern, 'RightArrowHeadContext')
+      let direction: 'out' | 'in' | 'any' = 'out'
+      if (hasLeft && !hasRight) direction = 'in'
+      else if (hasLeft && hasRight) direction = 'any'
+
+      const srcNode = ci < peNodes.length ? peNodes[ci] : null
+      const dstNode = ci + 1 < peNodes.length ? peNodes[ci + 1] : null
+      const sourceAlias = srcNode ? findSymbolicName(findChild(srcNode, 'VariableContext')) ?? '' : ''
+      const targetAlias = dstNode ? findSymbolicName(findChild(dstNode, 'VariableContext')) ?? '' : ''
+      edges.push({
+        source: sourceAlias,
+        target: targetAlias,
+        sourceIdx: nodeIdx + ci,
+        targetIdx: nodeIdx + ci + 1,
+        label: edgeLabel,
+        direction,
+      })
+    }
+    nodeIdx += peNodes.length
+  }
+
+  return edges
 }
 
 // ═══════════════════════════════════════════════════════════════

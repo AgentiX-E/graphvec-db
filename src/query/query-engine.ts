@@ -386,6 +386,8 @@ export interface QueryPlan {
   createEdges?: Array<{
     source: string
     target: string
+    sourceIdx?: number
+    targetIdx?: number
     label: string | null
     direction: 'out' | 'in' | 'any'
   }>
@@ -1012,6 +1014,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         allNodes.push(props)
       }
     }
+    const nodeGeIds: number[] = []
     if (allNodes.length) {
       for (let i = 0; i < allNodes.length; i++) {
         const item = allNodes[i]
@@ -1022,11 +1025,41 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         const props: Record<string, unknown> = { _label: geLabel }
         if (hasMultipleLabels) props['__fullLabel'] = label
         for (const k of Object.keys(item)) {
-          if (k !== '_label') props[k] = item[k]
+          if (k !== '_label' && k !== '__edges') props[k] = item[k]
         }
         let h = 0
         for (let ci = 0; ci < geLabel.length; ci++) h = ((h << 5) - h + geLabel.charCodeAt(ci)) | 0
-        ;(ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'req-n' + i + '-' + Math.random().toString(36).slice(2, 6), { props })
+        // upsertNode 自动从 1 递增分配 nodeId
+        ;(ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'n' + i, { props })
+        nodeGeIds[i] = i + 1
+      }
+      // 从 allNodes 中提取 __edges 并创建边
+      const edgesPayload = extractEdgesFromNodes(allNodes)
+      if (edgesPayload.length) {
+        for (const ep of edgesPayload) {
+          if (ep.srcIdx >= 0 && ep.dstIdx >= 0 && ep.srcIdx < nodeGeIds.length && ep.dstIdx < nodeGeIds.length) {
+            const typeId = (ge as any)._resolveEdgeType(ep.label || '')
+            try { (ge as any).upsertEdge(nodeGeIds[ep.srcIdx], nodeGeIds[ep.dstIdx], typeId) } catch {}
+          }
+        }
+      }
+    }
+
+    // ── CREATE 边（从 createEdges 创建 GE 关系） ──
+    if (plan.createEdges?.length && nodeGeIds.length > 1) {
+      for (const edge of plan.createEdges) {
+        // 通过 alias 或 sourceIdx/targetIdx 查找对应的节点索引
+        let srcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : (plan.createNodes || []).findIndex(cn => cn.alias === edge.source)
+        let dstIdx = edge.targetIdx !== undefined ? edge.targetIdx : (plan.createNodes || []).findIndex(cn => cn.alias === edge.target)
+        if (srcIdx >= 0 && dstIdx >= 0 && srcIdx < nodeGeIds.length && dstIdx < nodeGeIds.length) {
+          const srcId = nodeGeIds[srcIdx]
+          const dstId = nodeGeIds[dstIdx]
+          if (srcId && dstId) {
+            // 使用 GE 的 _resolveEdgeType 获取统一的 typeId
+            const typeId = (ge as any)._resolveEdgeType(edge.label || '')
+            try { (ge as any).upsertEdge(srcId, dstId, typeId) } catch {}
+          }
+        }
       }
     }
 
@@ -1504,4 +1537,22 @@ function _isInvalidPlan(plan: QueryPlan): boolean {
     && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType
     && !plan.caseColumns?.length && !plan.createConstraint && !plan.deleteEntities?.length
     && !plan.setItems?.length && !plan.removeItems?.length && !plan.mergeItems?.length
+}
+
+/**
+ * 从 nodes 的 __edges 数组中提取边列表。
+ * __edges 格式: [{srcIdx: 0, dstIdx: 1, label: 'T1'}, ...]
+ */
+function extractEdgesFromNodes(nodes: Array<Record<string, unknown>>): Array<{ srcIdx: number; dstIdx: number; label: string }> {
+  const edges: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
+  for (const n of nodes) {
+    if (n.__edges && Array.isArray(n.__edges)) {
+      for (const e of n.__edges) {
+        if (typeof e.srcIdx === 'number' && typeof e.dstIdx === 'number') {
+          edges.push({ srcIdx: e.srcIdx, dstIdx: e.dstIdx, label: String(e.label || '') })
+        }
+      }
+    }
+  }
+  return edges
 }

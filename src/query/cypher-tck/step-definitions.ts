@@ -401,17 +401,50 @@ Given('having executed:', function (query: string) {
     const plan = parseQuery(q)
     if (!plan || !plan.type) throw new Error('parseQuery failed for ' + q)
 
-    // 如果有 createNodes（CREATE/MERGE 的节点定义），直接注入 st.nodes
+    // 注入持久 GE
+    const ge = persistGe()
+
+    // 如果有 createNodes（CREATE/MERGE 的节点定义），直接注入 st.nodes 和 GE
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan as any).createNodes?.length) {
       const cns = (plan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
+      const createdNodes: Array<Record<string, unknown>> = []
       for (const cn of cns) {
         const node: Record<string, unknown> = { _label: cn.label || 'Default' }
         if (cn.props) { for (const [k, v] of Object.entries(cn.props)) node[k] = v }
         st.nodes.push(node)
-        // 同时注入持久 GE（用于 Edge 查询和 side effects 检查）
-        const ge = persistGe()
         seedGe(ge, node)
+        createdNodes.push(node)
       }
+
+      // 创建边（如果有 createEdges）
+      const edges = (plan as any).createEdges as Array<{ source: string; target: string; sourceIdx?: number; targetIdx?: number; label: string | null; direction: string }> | undefined
+      if (edges?.length) {
+        // 从 GE 获取所有节点 ID
+        const geNodeMap: Array<{ id: number }> = []
+        const nodeIds: number[] = [...((ge as any)._nodeIds || [])]
+        for (const nid of nodeIds) {
+          const record = (ge as any).getNode(nid)
+          if (record) geNodeMap.push({ id: nid })
+        }
+        const createdEdgeInfos: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
+        for (const edge of edges) {
+          const srcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : cns.findIndex(n => n.alias === edge.source)
+          const dstIdx = edge.targetIdx !== undefined ? edge.targetIdx : cns.findIndex(n => n.alias === edge.target)
+          if (srcIdx >= 0 && dstIdx >= 0 && srcIdx < geNodeMap.length && dstIdx < geNodeMap.length) {
+            const srcId = geNodeMap[srcIdx].id
+            const dstId = geNodeMap[dstIdx].id
+            const typeId = (ge as any)._resolveEdgeType(edge.label || '')
+            try { (ge as any).upsertEdge(srcId, dstId, typeId) } catch {}
+            createdEdgeInfos.push({ srcIdx, dstIdx, label: edge.label || '' })
+          }
+        }
+        // 把边信息编码到 st.nodes 的 __edges 中，供后续 _executeQuery 重建边
+        // 放在第一个节点的属性中（因为 __edges 是数组级别的，不能直接加在 array 上）
+        if (st.nodes.length > 0) {
+          (st.nodes[0] as any).__edges = createdEdgeInfos
+        }
+      }
+
       st.err = null
       return
     }
