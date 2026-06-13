@@ -1105,10 +1105,8 @@ function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
 
 /** GraphEngine 原生执行入口 */
 function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): QueryResult {
-  // DEBUG WHERE
-  if (query?.includes("WHERE n.name") && query?.includes("Person")) {
-    console.error("DEBUG _evGE plan:", JSON.stringify({scanLabel: plan.scanLabel, steps: plan.steps, filters: plan.filters, returnColumns: plan.returnColumns}))
-    console.error("DEBUG _evGE nodes:", JSON.stringify(nodes.map(n => ({label: n._label, name: n.name, edge: n.__edges?.length}))))
+
+if (query?.includes("WHERE n.name") && query?.includes("Person")) {
   }
   // SHOW LABELS —— 从数据中提取
   if (plan.show) {
@@ -1185,6 +1183,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
     }
 
+    let edgeLabelFromTypeFilter = false  // flag: 从 WHERE type(r) 设置了边类型过滤
     // ── WHERE 预过滤：确定哪些 seed 节点需要跳过 ──
     // GE 的 _executeQueryPlan 在 steps 遍历后才对结果节点应用 filter，
     // 且 _matchFilter 忽略 filter.source。对于 WHERE n.name = 'Bob'
@@ -1257,8 +1256,46 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       // 从 plan.filters 中移除已预处理的过滤器
       plan.filters = (plan.filters || []).filter((f: any) => !stepSourceFilters.includes(f))
     }
+    // ── 内联节点属性预过滤（从 query 解析 `(n {name: 'A'})`） ──
+if (query && query.includes('type(r)')) {
+    }
+    if (query && !stepSourceFilters.length) {
+      const inlineMatch = query.match(/MATCH\s+\((\w+)\s*\{([^}]+)\}[^)]*\)/)
+      if (inlineMatch) {
+        const inlineVar = inlineMatch[1]
+        const inlinePropsRaw = inlineMatch[2]
+        const inlinePredicates: Array<{ key: string; value: string | number }> = []
+        const pairRegex = /(\w+)\s*:\s*(?:'([^']*)'|"([^"]*)"|(\d+(?:\.\d+)?))/g
+        let pairMatch
+        while ((pairMatch = pairRegex.exec(inlinePropsRaw)) !== null) {
+          const key = pairMatch[1]
+          const strVal = pairMatch[2] ?? pairMatch[3]
+          const numVal = pairMatch[4]
+          inlinePredicates.push({ key, value: strVal !== undefined ? strVal : parseFloat(numVal) })
+        }
+        if (inlinePredicates.length) {
+          const matchSource = plan.steps?.[0]?.source
+          const isMatchSource = inlineVar === matchSource || (!matchSource && !plan.scanLabel)
+          if (isMatchSource) {
+            for (let i = 0; i < allNodes.length; i++) {
+              if (skipNodeIndices.has(i)) continue
+              let matchesAll = true
+              for (const pred of inlinePredicates) {
+                const actual = allNodes[i][pred.key]
+                const expected = pred.value
+                if (actual === undefined || String(actual) !== String(expected)) {
+                  matchesAll = false
+                  break
+                }
+              }
+              if (!matchesAll) skipNodeIndices.add(i)
+            }
+          }
+        }
+      }
+    }
     const nodeGeIds: number[] = []
-        // DEBUG [1] check skipNodeIndices just before seed
+
 
     let edgesPayload: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
     if (allNodes.length) {
@@ -1301,6 +1338,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
       // 从 allNodes 中提取 __edges 并创建边
       edgesPayload = extractEdgesFromNodes(allNodes)
+  
       if (edgesPayload.length) {
         // 为被跳过的节点创建 GE stub node，使其在边缘创建时可被引用
         if (skipNodeIndices.size) {
@@ -1395,6 +1433,22 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       return _postProcessResults(created, plan)
     }
 
+    // ── WHERE type(r) = 'LABEL' → 转为 edgeLabel 过滤（非参数化） ──
+    if (query && !plan.steps?.some(s => s.edgeLabel)) {
+      const typeMatch = query.match(/WHERE\s+type\s*\(\s*(\w+)\s*\)\s*=\s*['"]([^'"]+)['"]/)
+      if (typeMatch) {
+        const typeLabel = typeMatch[2]
+        const step = plan.steps?.find(s => {
+          if (s.edgeLabel) return s.edgeLabel.split('|').includes(typeLabel)
+          return true
+        })
+        if (step) {
+          step.edgeLabel = typeLabel
+        }
+      }
+    }
+
+
     // ── 多类型 edgeLabel 处理 ──
     // MATCH (n)-[r:KNOWS|HATES]->(x) — 分割为多个单标签查询合并结果
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
@@ -1412,6 +1466,8 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
           return [...combined.values()]
         })()
       : (ge as any)._executeQueryPlan(plan)
+
+
 
 
 
@@ -1479,6 +1535,60 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
     }
 
+    // ── 内联节点属性预过滤（从 query 解析 `(n {name: 'A'})`） ──
+if (query && query.includes('type(r)')) {
+    }
+    // 在 seed 阶段对每个 `allNodes` 中的节点进行属性匹配，不匹配则跳过 seed
+    // 支持 `(var {prop1: val1, prop2: val2})` 格式
+    if (query) {
+      // 从 MATCH 子句中提取变量名和内联属性映射
+      // 匹配模式：var {prop: val} 或 var {prop: 'val', prop2: 123}
+      const inlineMatch = query.match(/MATCH\s*\((\w+)\s*\{([^}]+)\}/)
+      if (inlineMatch) {
+        const inlineVar = inlineMatch[1]
+        const inlinePropsRaw = inlineMatch[2]
+        // 解析键值对
+        const inlinePredicates: Array<{ key: string; value: string | number; isString: boolean }> = []
+        const pairRegex = /(\w+)\s*:\s*(?:'([^']*)'|"([^"]*)"|(\d+(?:\.\d+)?))/g
+        let pairMatch
+        while ((pairMatch = pairRegex.exec(inlinePropsRaw)) !== null) {
+          const key = pairMatch[1]
+          const strVal = pairMatch[2] ?? pairMatch[3]
+          const numVal = pairMatch[4]
+          if (strVal !== undefined) {
+            inlinePredicates.push({ key, value: strVal, isString: true })
+          } else {
+            inlinePredicates.push({ key, value: parseFloat(numVal), isString: false })
+          }
+        }
+        if (inlinePredicates.length && !skipNodeIndices.size) {
+          // 在 seed 之前构建
+          // 第一个 MATCH 的变量名通常是 plan.scanLabel 的 fallback
+          // 或 steps[0].source
+          const matchSource = plan.steps?.[0]?.source
+          const isMatchSource = inlineVar === matchSource || (!matchSource && !plan.scanLabel)
+          if (isMatchSource) {
+            // 对 allNodes 检查属性匹配
+            for (let i = 0; i < allNodes.length; i++) {
+              const node = allNodes[i]
+              let matchesAll = true
+              for (const pred of inlinePredicates) {
+                const actual = node[pred.key]
+                const expected = pred.value
+                if (actual === undefined || String(actual) !== String(expected)) {
+                  matchesAll = false
+                  break
+                }
+              }
+              if (!matchesAll) {
+                skipNodeIndices.add(i)
+              }
+            }
+          }
+        }
+      }
+    }
+
     // ── 修复 GE limit=0 bug ──
     if (plan.limit === 0 && records?.length) {
       return []
@@ -1521,8 +1631,9 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     }
 
     // ── WHERE 标签谓词后过滤（已经过 source 回溯后的数据） ──
-    // 从 allNodes 的 skipNodeIndices 反向推断：如果 source 节点被跳过（标签不匹配），丢弃行
-    if (skipNodeIndices.size > 0 && filteredWithLabels?.length && plan.steps?.[0]?.source) {
+    // 只对 needSourceVar=true 的场景生效（r.id 是 source 节点的 GE id）
+    // 当直接返回 target 节点时（needSourceVar=false），不应用 source 节点的 skip 集合
+    if (needSourceVar && skipNodeIndices.size > 0 && filteredWithLabels?.length && plan.steps?.[0]?.source) {
       const wsSource = plan.steps[0].source
       const before = filteredWithLabels.length
       filteredWithLabels = filteredWithLabels.filter((r: any) => {
@@ -1534,6 +1645,49 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         return !skipNodeIndices.has(nodeIdx)
       })
 
+    }
+
+    // ── 边变量 filter（WHERE r.name = 'foo'） ──
+    // plan.filters 中的 source 如果是边变量（不在 MATCH 的节点变量中），
+    // 用 edgesPayload 中的边 props 来过滤结果行。
+    // 找到所有边变量 filter
+
+    const edgeVarFilters = (plan.filters || []).filter(f => {
+      if (!f.source || !f.property) return false
+      // 如果不是步骤 source 节点变量，也不是 scanLabel 变量，说明是边变量
+      const stepSource = plan.steps?.[0]?.source
+      return f.source !== stepSource && f.source !== plan.scanLabel
+    })
+    const ep = edgesPayload || [] as any
+    if (edgeVarFilters.length && ep.length && filteredWithLabels?.length) {
+      filteredWithLabels = filteredWithLabels.filter((r: any) => {
+        // 对每个边变量 filter，检查当前记录是否通过
+        return edgeVarFilters.every((f: any) => {
+          // 在 edgesPayload 中查找
+          const nodeIdx = nodeGeIds.indexOf(r.id)
+          if (nodeIdx < 0) return true
+          // 连接到这个节点的所有边
+          const connEdges = ep.filter((e: any) =>
+            e.dstIdx === nodeIdx ||
+            (sourceTargetMap.has(r.id) && e.srcIdx === nodeIdx)
+          )
+          if (!connEdges.length) return false
+          return connEdges.some((e: any) => {
+            const edgeProps = e.props || {}
+            const actual = edgeProps[f.property]
+            const expected = f.value
+            if (actual === undefined) return false
+            // 根据 operator 做比较
+            if (f.operator === 'EQ') return String(actual) === String(expected)
+            if (f.operator === 'NEQ') return String(actual) !== String(expected)
+            if (f.operator === 'GT') return Number(actual) > Number(expected)
+            if (f.operator === 'GTE') return Number(actual) >= Number(expected)
+            if (f.operator === 'LT') return Number(actual) < Number(expected)
+            if (f.operator === 'LTE') return Number(actual) <= Number(expected)
+            return String(actual) === String(expected)
+          })
+        })
+      })
     }
 
     // ── edgeProps（内联关系属性谓词）过滤 ──
