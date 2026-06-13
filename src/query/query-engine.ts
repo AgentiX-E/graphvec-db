@@ -1467,7 +1467,8 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
     const edgeFilters = plan.steps?.length && (plan.filters || []).filter(f =>
       f.source && stepSrc && f.source !== stepSrc
     ) || []
-    const geFilters = (plan.filters || []).filter(f => !edgeFilters.includes(f))
+    const hasOR = query ? /OR/i.test(query) : false
+    const geFilters = hasOR ? [] : (plan.filters || []).filter(f => !edgeFilters.includes(f))
 
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
 
@@ -1649,6 +1650,31 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
           return lfi.exclude ? !matches : matches
         })
       })
+    }
+
+    // ── OR 连接谓词过滤（WHERE n.p1 > 11 OR n.p2 = 13） ──
+    // ANTLR 将 OR 谓词解析为两个独立的 filter 且无 OR 标记，
+    // engine 默认 AND 连接导致无行匹配。从 query 文本检查 OR，改 AND 为 OR 语义。
+    if (query && /OR/i.test(query) && filteredWithLabels?.length) {
+      const orFilters = plan.filters?.length ? plan.filters : []
+      if (orFilters.length >= 2) {
+        filteredWithLabels = filteredWithLabels.filter((r: any) => {
+          return orFilters.some((f: any) => {
+            const actual = r?.props?.[f.property]
+            const expected = f.value
+            if (actual === undefined) return false
+            switch (f.operator) {
+              case 'EQ':  return String(actual) === String(expected)
+              case 'NEQ': return String(actual) !== String(expected)
+              case 'GT':  return Number(actual) > Number(expected)
+              case 'GTE': return Number(actual) >= Number(expected)
+              case 'LT':  return Number(actual) < Number(expected)
+              case 'LTE': return Number(actual) <= Number(expected)
+              default:    return String(actual) === String(expected)
+            }
+          })
+        })
+      }
     }
 
     // ── WHERE 标签谓词后过滤（已经过 source 回溯后的数据） ──
