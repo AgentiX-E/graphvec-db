@@ -942,6 +942,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
     // Deduct direction from arrow heads
     if (hasLeft && !hasRight) direction = 'in'
     else if (hasLeft && hasRight) direction = 'any'
+    else if (!hasLeft && !hasRight) direction = 'any'  // 无箭头 = 无向
 
     // Edge label
     let rangeInfo: { min: number; max: number | null } | undefined = undefined
@@ -1261,6 +1262,7 @@ function extractCreateEdges(createCtx: any): Array<{
       let direction: 'out' | 'in' | 'any' = 'out'
       if (hasLeft && !hasRight) direction = 'in'
       else if (hasLeft && hasRight) direction = 'any'
+      else if (!hasLeft && !hasRight) direction = 'any'
 
       const srcNode = ci < peNodes.length ? peNodes[ci] : null
       const dstNode = ci + 1 < peNodes.length ? peNodes[ci + 1] : null
@@ -1270,7 +1272,7 @@ function extractCreateEdges(createCtx: any): Array<{
         source: sourceAlias,
         target: targetAlias,
         sourceIdx: nodeIdx + ci,
-        targetIdx: nodeIdx + ci + 1,
+        targetIdx: sourceAlias && sourceAlias === targetAlias ? nodeIdx + ci : nodeIdx + ci + 1,
         label: edgeLabel,
         direction,
       })
@@ -1337,6 +1339,7 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
     let direction: 'out' | 'in' | 'any' = 'out'
     if (hasLeft && !hasRight) direction = 'in'
     else if (hasLeft && hasRight) direction = 'any'
+    else if (!hasLeft && !hasRight) direction = 'any'
 
     const source = nodes[nodes.length - 1]?.alias ?? ''
     const targetPattern = findChild(chain, 'NodePatternContext')

@@ -707,6 +707,30 @@ export function parseQuery(query: string): QueryPlan {
     }
   }
 
+  // ── Fallback: 如果 parseQuery 后 returnColumns 为空但有 RETURN 子句 ──
+  // ANTLR 可能无法解析某些函数调用（如 type(r) AS alias），用正则提取
+  if (!plan.returnColumns?.length && !plan.aggregate && !plan.with) {
+    const returnClause = query.match(/RETURN\s+(.+?)(?:\s+(ORDER|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW)\s|$)/is)
+    if (returnClause) {
+      const expr = returnClause[1].trim()
+      // 尝试拆分逗号分隔的列定义
+      const cols = expr.split(',').map(c => c.trim()).filter(Boolean)
+      if (cols.length) {
+        plan.returnColumns = cols.map(c => {
+          // type(r) AS r → r（取 AS 后的别名）
+          const asMatch = c.match(/\bAS\s+(\w+)\s*$/i)
+          if (asMatch) return asMatch[1]
+          // type(r) → r（取括号内的变量名）
+          const fnMatch = c.match(/^(\w+)\((\w+)\)$/)
+          if (fnMatch) return fnMatch[2]
+          return c
+        })
+        plan.returnAliasMap = {}
+        for (const c of plan.returnColumns) plan.returnAliasMap[c] = c
+      }
+    }
+  }
+
   // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR 错误被吞掉了）
   // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
   if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
@@ -939,7 +963,7 @@ function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
 }
 
 /** GraphEngine 原生执行入口 */
-function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>): QueryResult {
+function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): QueryResult {
   // SHOW LABELS —— 从数据中提取
   if (plan.show) {
     if (typeof plan.show === 'object' && (plan.show as any).what === 'LABELS') {
@@ -1047,7 +1071,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     }
 
     // ── CREATE 边（从 createEdges 创建 GE 关系） ──
-    if (plan.createEdges?.length && nodeGeIds.length > 1) {
+    if (plan.createEdges?.length && nodeGeIds.length >= 1) {
       for (const edge of plan.createEdges) {
         // 通过 alias 或 sourceIdx/targetIdx 查找对应的节点索引
         let srcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : (plan.createNodes || []).findIndex(cn => cn.alias === edge.source)
@@ -1117,6 +1141,22 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     const result: QueryRow[] = rawWithEdges.map((r: any) =>
       _formatResultRow(r, plan)
     )
+
+    // ── type() 函数后处理 ──
+    // 如果原查询包含 type(r) 且结果中该列是边表示 [:T]，替换为类型名 'T'
+    if (plan.returnAliasMap && query && /type\s*\(/i.test(query)) {
+      for (const row of result) {
+        for (const rc of plan.returnColumns || []) {
+          if (!rc) continue
+          const val = row[rc]
+          if (typeof val === 'string' && val.startsWith('[:') && val.endsWith(']')) {
+            // type(r) 的结果应为边标签名（不含引号）
+            const typeName = val.slice(2, -1) // 去掉 [: 和 ]
+            row[rc] = typeName
+          }
+        }
+      }
+    }
 
     // ── 后处理（ORDER BY / HAVING） ──
     return _postProcessResults(result, plan)
@@ -1295,7 +1335,7 @@ export function _executeQuery(
   query?: string,
 ): QueryResult {
   // 所有查询统一走 GraphEngine
-  return _executeViaGraphEngine(plan, nodes)
+  return _executeViaGraphEngine(plan, nodes, query)
 }
 
 /**

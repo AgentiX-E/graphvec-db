@@ -114,6 +114,7 @@ function run(q: string): void {
     } catch (e: any) {
       st.err = e; st.res = []; return
     }
+    // DEBUG
     st.res = _executeQuery(plan, st.nodes, q); st.err = null
   } catch (e: any) { st.err = e; st.res = [] }
 }
@@ -412,12 +413,21 @@ Given('having executed:', function (query: string) {
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan as any).createNodes?.length) {
       const cns = (plan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
       const createdNodes: Array<Record<string, unknown>> = []
-      for (const cn of cns) {
+      const seenAliases = new Map<string, number>() // alias -> index in createdNodes
+      for (let ci = 0; ci < cns.length; ci++) {
+        const cn = cns[ci]
+        // 如果 alias 已见过（自循环或 reuse），不重新 seed
+        if (cn.alias && seenAliases.has(cn.alias)) {
+          // 复用已有节点
+          createdNodes.push(createdNodes[seenAliases.get(cn.alias)!])
+          continue
+        }
         const node: Record<string, unknown> = { _label: cn.label || 'Default' }
         if (cn.props) { for (const [k, v] of Object.entries(cn.props)) node[k] = v }
         st.nodes.push(node)
         seedGe(ge, node)
         createdNodes.push(node)
+        if (cn.alias) seenAliases.set(cn.alias, ci)
       }
 
       // 创建边（如果有 createEdges）
