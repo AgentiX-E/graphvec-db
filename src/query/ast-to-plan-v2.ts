@@ -858,6 +858,39 @@ function findSymbolicName(node: any): string | null {
   return sym ? getTextRecursive(sym) : null
 }
 
+/** 提取 NodeLabelContext 中的所有标签名（支持多标签 :A:B） */
+function extractAllLabels(nodeLabelCtx: any): string[] {
+  const labels: string[] = []
+  // 尝试通过 findAllChildren 找 SymbolicNameContext
+  const syms = findAllChildren(nodeLabelCtx, 'SymbolicNameContext')
+  for (const sym of syms) {
+    const name = getTextRecursive(sym)
+    if (name) labels.push(name)
+  }
+  if (labels.length) return labels
+
+  // 方法2：用 getText() 获取完整文本
+  // ANTLR 4 webpacked bundle 中 constructor.name 可能丢失，但 getText() 在 context 节点有效
+  // NodeLabelContext.getText() 返回 ":A:B"
+  const text = typeof nodeLabelCtx?.getText === 'function' ? nodeLabelCtx.getText() : ''
+  if (text) {
+    // 文本如 ":A:B" 或 ": A"（有空格）
+    const parts = text.replace(/^:/, '').split(':').filter(Boolean)
+    for (const p of parts) {
+      const trimmed = p.trim()
+      if (trimmed && /^[a-zA-Z_]\w*$/.test(trimmed)) labels.push(trimmed)
+    }
+  }
+  return labels
+}
+
+/** 提取 NodeLabelContext 中的所有标签名，用冒号连接 */
+function extractLabel(nodeLabelCtx: any): string | null {
+  if (!nodeLabelCtx) return null
+  const labels = extractAllLabels(nodeLabelCtx)
+  return labels.length ? labels.join(':') : null
+}
+
 // ═══════════════════════════════════════════════════════════════
 // MATCH 提取
 // ═══════════════════════════════════════════════════════════════
@@ -872,7 +905,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
   const firstPattern = nodePatterns[0]
   const variable = findSymbolicName(findChild(firstPattern, 'VariableContext'))
   const nodeLabel = findChild(firstPattern, 'NodeLabelContext')
-  const label = nodeLabel ? findSymbolicName(nodeLabel) : (variable || null)
+  const label = nodeLabel ? extractLabel(nodeLabel) : (variable || null)
   const propsNode = findChild(firstPattern, 'PropertiesContext')
   const properties = propsNode ? extractMapLiteral(propsNode) : null
 
@@ -939,7 +972,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
     // Target
     const targetVar = findSymbolicName(findChild(targetPattern, 'VariableContext'))
     const targetLabelCtx = findChild(targetPattern, 'NodeLabelContext')
-    const targetLabel = targetLabelCtx ? findSymbolicName(targetLabelCtx) : null
+    const targetLabel = targetLabelCtx ? extractLabel(targetLabelCtx) : null
     const targetPropsNode = findChild(targetPattern, 'PropertiesContext')
     const targetProps = targetPropsNode ? extractMapLiteral(targetPropsNode) : null
 
@@ -1183,7 +1216,7 @@ function extractCreateNodes(createCtx: any): Array<{ alias: string; label: strin
   for (const np of nodePatterns) {
     const variable = findSymbolicName(findChild(np, 'VariableContext')) ?? ''
     const labelCtx = findChild(np, 'NodeLabelContext')
-    const label = labelCtx ? findSymbolicName(labelCtx) : null
+    const label = labelCtx ? extractLabel(labelCtx) : null
     const propsNode = findChild(np, 'PropertiesContext')
     const props = propsNode ? extractMapLiteral(propsNode) : null
     nodes.push({ alias: variable, label, props })
@@ -1225,7 +1258,7 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
   for (const np of nodePatterns) {
     const variable = findSymbolicName(findChild(np, 'VariableContext')) ?? ''
     const labelCtx = findChild(np, 'NodeLabelContext')
-    const label = labelCtx ? findSymbolicName(labelCtx) : null
+    const label = labelCtx ? extractLabel(labelCtx) : null
     nodes.push({ alias: variable, label, props: extractMapLiteral(findChild(np, 'PropertiesContext')) ?? null })
   }
   if (!nodePatterns.length) return { nodes, edges }

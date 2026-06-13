@@ -153,13 +153,17 @@ function _runOnPersistGe(q: string): void {
 function toNodeNotation(val: unknown): string | undefined {
   if (!val || typeof val !== 'object') return undefined
   const obj = val as Record<string, unknown>
-  const label = obj._label && obj._label !== 'Default' ? String(obj._label) : ''
+  // 优先使用 __fullLabel（多标签），回退到 _label
+  const labelSrc = (obj.__fullLabel && String(obj.__fullLabel) !== 'Default' ? String(obj.__fullLabel) : '') ||
+    (obj._label && obj._label !== 'Default' ? String(obj._label) : '')
   const props: Record<string, unknown> = {}
   for (const k of Object.keys(obj)) {
-    if (k === '_label') continue
+    if (k === '_label' || k === '__fullLabel') continue
     if (typeof obj[k] !== 'function') props[k] = obj[k]
   }
   const propKeys = Object.keys(props)
+  // Use for labels below
+  const label = labelSrc
   if (!propKeys.length && !label) return '()'
   // If no props, just (:Label)
   if (!propKeys.length) return `(:${label})`

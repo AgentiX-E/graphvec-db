@@ -664,6 +664,47 @@ export function parseQuery(query: string): QueryPlan {
   _fixScanLabel(plan)
   _fixScanLabel(plan)
 
+  // ── 多标签修复（AST 标签提取只取第一个，用 query 文本补全） ──
+  const qText = query.trim()
+  // 修复 scanLabel（MATCH 的多标签）
+  if (plan.scanLabel && plan.hasMatch) {
+    const nodePatterns = qText.match(/\([^)]+\)/g) || []
+    for (const np of nodePatterns) {
+      const inner = np.slice(1, -1).trim()
+      const colIdx = inner.indexOf(':')
+      if (colIdx === -1) continue
+      let labelPart = inner.substring(colIdx + 1)
+      const braceIdx = labelPart.indexOf('{')
+      if (braceIdx >= 0) labelPart = labelPart.substring(0, braceIdx).trim()
+      const labels = labelPart.split(':').map(s => s.trim()).filter(Boolean)
+      if (labels.length > 1 && labels[0] === plan.scanLabel) {
+        // 填充 labelExpr（用于 engine 二次过滤），但 scanLabel 保留第一个标签
+        // （GE 用单标签扫描后再用 labelExpr AND 过滤）
+        plan.labelExpr = { type: 'LABEL_EXPR', items: labels.map(l => ({ exclude: false, name: l })) }
+        break
+      }
+    }
+  }
+  // 修复 createNodes 的多标签
+  if (plan.createNodes?.length && (plan.type === 'CREATE' || plan.type === 'MERGE')) {
+    const nodePatterns = qText.match(/\([^)]+\)/g) || []
+    let npIdx = 0
+    for (const np of nodePatterns) {
+      if (npIdx >= plan.createNodes.length) break
+      const inner = np.slice(1, -1).trim()
+      const colIdx = inner.indexOf(':')
+      if (colIdx === -1) { npIdx++; continue }
+      let labelPart = inner.substring(colIdx + 1)
+      const braceIdx = labelPart.indexOf('{')
+      if (braceIdx >= 0) labelPart = labelPart.substring(0, braceIdx).trim()
+      const labels = labelPart.split(':').map(s => s.trim()).filter(Boolean)
+      if (labels.length > 1 && labels[0] === plan.createNodes[npIdx].label) {
+        plan.createNodes[npIdx].label = labels.join(':')
+      }
+      npIdx++
+    }
+  }
+
   // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR 错误被吞掉了）
   // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
   if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
@@ -975,10 +1016,16 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       for (let i = 0; i < allNodes.length; i++) {
         const item = allNodes[i]
         const label = String(item['_label'] || 'Default')
-        const props: Record<string, unknown> = { _label: label }
-        for (const k of Object.keys(item)) { if (k !== '_label') props[k] = item[k] }
+        const hasMultipleLabels = label.includes(':')
+        // 多标签：存完整标签到 __fullLabel，用第一个标签注册到 GE
+        const geLabel = hasMultipleLabels ? label.split(':')[0] : label
+        const props: Record<string, unknown> = { _label: geLabel }
+        if (hasMultipleLabels) props['__fullLabel'] = label
+        for (const k of Object.keys(item)) {
+          if (k !== '_label') props[k] = item[k]
+        }
         let h = 0
-        for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
+        for (let ci = 0; ci < geLabel.length; ci++) h = ((h << 5) - h + geLabel.charCodeAt(ci)) | 0
         ;(ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'req-n' + i + '-' + Math.random().toString(36).slice(2, 6), { props })
       }
     }
@@ -997,8 +1044,19 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       return []
     }
 
+    // ── labelExpr 过滤（多标签 AND 匹配） ──
+    const filteredRecords = plan.labelExpr?.items.length
+      ? (rawRecords || []).filter((r: any) => {
+          const nodeLabel = r?.props?.__fullLabel ?? r?.props?._label ?? ''
+          const nodeLabels = String(nodeLabel).split(':')
+          return plan.labelExpr!.items.every(item =>
+            !item.exclude && nodeLabels.includes(item.name)
+          )
+        })
+      : (rawRecords || [])
+
     // ── 格式化结果 ──
-    const result: QueryRow[] = (rawRecords || []).map((r: any) =>
+    const result: QueryRow[] = filteredRecords.map((r: any) =>
       _formatResultRow(r, plan)
     )
 
