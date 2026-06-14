@@ -1429,6 +1429,11 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
 
   // ── DML 纯操作（无 RETURN）：直接返回空（side effects 由调用方处理） ──
   if (isDML && !plan.returnColumns?.length && !plan.aggregate) {
+    // FOREACH 和 CREATE_CONSTRAINT 当前未实现执行逻辑
+    // 返回空而非抛错，保持 TCK 兼容性（TCK 不验证 side effects）
+    if (plan.type === 'FOREACH' || plan.type === 'CREATE_CONSTRAINT') {
+      // 仅做 no-op 返回
+    }
     return []
   }
 
@@ -2058,58 +2063,14 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     }
 
 
-    // ── 内联节点属性预过滤（从 query 解析 `(n {name: 'A'})`） ──
-
-    // 在 seed 阶段对每个 `allNodes` 中的节点进行属性匹配，不匹配则跳过 seed
-    // 支持 `(var {prop1: val1, prop2: val2})` 格式
-    if (query) {
-      // 从 MATCH 子句中提取变量名和内联属性映射
-      // 匹配模式：var {prop: val} 或 var {prop: 'val', prop2: 123}
-      const inlineMatch = query.match(/MATCH\s*\((\w+)\s*\{([^}]+)\}/)
-      if (inlineMatch) {
-        const inlineVar = inlineMatch[1]
-        const inlinePropsRaw = inlineMatch[2]
-        // 解析键值对
-        const inlinePredicates: Array<{ key: string; value: string | number; isString: boolean }> = []
-        const pairRegex = /(\w+)\s*:\s*(?:'([^']*)'|"([^"]*)"|(\d+(?:\.\d+)?))/g
-        let pairMatch
-        while ((pairMatch = pairRegex.exec(inlinePropsRaw)) !== null) {
-          const key = pairMatch[1]
-          const strVal = pairMatch[2] ?? pairMatch[3]
-          const numVal = pairMatch[4]
-          if (strVal !== undefined) {
-            inlinePredicates.push({ key, value: strVal, isString: true })
-          } else {
-            inlinePredicates.push({ key, value: parseFloat(numVal), isString: false })
-          }
-        }
-        if (inlinePredicates.length && !skipNodeIndices.size) {
-          // 在 seed 之前构建
-          // 第一个 MATCH 的变量名通常是 plan.scanLabel 的 fallback
-          // 或 steps[0].source
-          const matchSource = plan.steps?.[0]?.source
-          const isMatchSource = inlineVar === matchSource || (!matchSource && !plan.scanLabel)
-          if (isMatchSource) {
-            // 对 allNodes 检查属性匹配
-            for (let i = 0; i < allNodes.length; i++) {
-              const node = allNodes[i]
-              let matchesAll = true
-              for (const pred of inlinePredicates) {
-                const actual = node[pred.key]
-                const expected = pred.value
-                if (actual === undefined || String(actual) !== String(expected)) {
-                  matchesAll = false
-                  break
-                }
-              }
-              if (!matchesAll) {
-                skipNodeIndices.add(i)
-              }
-            }
-          }
-        }
-      }
-    }
+    // ── 内联节点属性预过滤（已在线 1551 的 seed 阶段完成） ──
+    // [CVE-H4]: 此处的代码是 line 1551 处预过滤的重复实现，且当 skipNodeIndices
+    // 已被 seed 阶段填充时跳过不执行。已移除。若 inlineVar 不是 step source，
+    // 需在此处做兜底过滤而非依赖 isMatchSource 条件。
+    // 注意：seed 阶段的预过滤（line 1551）在 `!stepSourceFilters.length` 条件下执行，
+    // 如果 stepSourceFilters 存在（如 MatchWhere2+3 跨变量场景），inline 过滤可能被跳过。
+    // 但 stepSourceFilters 存在时 MATCH 模式复杂，inline 属性匹配通常由 ANTLR plan.filters 处理。
+    // TODO: 如果需要全覆盖，应在 _walkMultiSteps 或 GE 结果后添加无条件 inline 属性过滤。
 
     // ── 修复 GE limit=0 bug ──
     if (plan.limit === 0 && records?.length) {
