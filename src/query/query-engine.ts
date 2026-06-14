@@ -681,16 +681,15 @@ function _injectParamsToPlan(plan: QueryPlan, resolve: (name: string) => unknown
         const paramName = f.value.slice(1)
         const provided = resolve(paramName)
         if (provided !== undefined) {
-          // 对字符串值做安全处理（移除引号字符防止被解析为字符串字面量）
+          // 字符串参数直接赋值给 plan filter 值（非 SQL 拼接），不存在注入风险。
+          // _injectParamsToPlan 在 AST 解析后的 plan 上运作，filter.value 是 JS 
+          // 运行时值，不会被解释为 CQL/SQL 语句。引号保留以确保值完整匹配。
           if (typeof provided === 'string') {
             const hasSingle = provided.includes("'")
             const hasDouble = provided.includes('"')
             if (hasSingle && hasDouble) {
-              // 同时含两种引号：移除全部引号（安全兜底）
+              // 同时含两种引号：移除全部引号（安全兜底，极罕见）
               f.value = provided.replace(/['"]/g, '')
-            } else if (hasSingle) {
-              // 仅含单引号：用双引号包裹的等价方式无须处理（ANTLR 已不用），保留原值
-              f.value = provided
             } else {
               f.value = provided
             }
@@ -2234,6 +2233,10 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     }
 
     // ── labelExpr 过滤（多标签 AND 匹配） ──
+    // 注意：labelExpr 与 step.targetLabel 存在架构冗余（M1），
+    // labelExpr 在 GE stepping 后再过滤，step.targetLabel 在 _walkMultiSteps
+    // 每步立即过滤。两者都起作用但不冲突：step.targetLabel 做早期截断，
+    // labelExpr 兜底（多标签 AND 匹配时 GE stepping 无法处理多标签）。
     const filteredRecords = plan.labelExpr?.items?.length
       ? (records || []).filter((r: any) => {
           const nodeLabel = r?.props?.__fullLabel ?? r?.props?._label ?? ''
@@ -2281,8 +2284,8 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
             const expected = f.value
             if (actual === undefined) return false
             switch (f.operator) {
-              case 'EQ':  return String(actual) === String(expected)
-              case 'NEQ': return String(actual) !== String(expected)
+              case 'EQ':  return actual !== null && actual !== undefined && String(actual) === String(expected)
+              case 'NEQ': return actual === null || actual === undefined || String(actual) !== String(expected)
               case 'GT':  return Number(actual) > Number(expected)
               case 'GTE': return Number(actual) >= Number(expected)
               case 'LT':  return Number(actual) < Number(expected)
