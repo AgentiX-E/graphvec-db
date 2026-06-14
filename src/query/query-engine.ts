@@ -27,6 +27,37 @@ import { parseCypherToPlan } from './ast-to-plan-v2'
 import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
 
+// ── 内存索引注册表（CREATE INDEX / DROP INDEX）━━━━━━━━━━━━━━━
+
+// ── 内存索引注册表（CREATE INDEX / DROP INDEX） ──
+export interface IndexEntry { label: string; property: string }
+const _indexRegistry = new Map<string, IndexEntry>()
+export function _registerIndex(label: string, property: string): void {
+  _indexRegistry.set(`${label}:${property}`, { label, property })
+}
+export function _dropIndex(label: string, property: string): void {
+  _indexRegistry.delete(`${label}:${property}`)
+}
+export function _getAllIndexes(): IndexEntry[] {
+  return Array.from(_indexRegistry.values())
+}
+export function _clearIndexes(): void { _indexRegistry.clear() }
+
+// ── 约束注册表（唯一性约束） ──
+export interface ConstraintEntry { name: string; label: string; property: string; type: 'UNIQUE' }
+const _constraintRegistry = new Map<string, ConstraintEntry>()
+export function _registerConstraint(name: string, label: string, property: string): void {
+  _constraintRegistry.set(name, { name, label, property, type: 'UNIQUE' })
+}
+export function _dropConstraint(name: string): void { _constraintRegistry.delete(name) }
+export function _getAllConstraints(): ConstraintEntry[] {
+  return Array.from(_constraintRegistry.values())
+}
+export function _clearConstraints(): void { _constraintRegistry.clear() }
+
+
+
+
 /** 默认查询 LIMIT，当查询没有显式 LIMIT 子句时使用 */
 export const DEFAULT_LIMIT = 1000
 
@@ -1376,9 +1407,10 @@ function _stepMatchConstraint(nodeIdx: number, step: TraverseStep, allNodes: Rec
 
 /** GraphEngine 原生执行入口 */
 function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): QueryResult {
-  // SHOW LABELS —— 从数据中提取
+  // SHOW LABELS / INDEXES / CONSTRAINTS / PROCEDURES / FUNCTIONS / RELATIONSHIPTYPES
   if (plan.show) {
-    if (typeof plan.show === 'object' && (plan.show as any).what === 'LABELS') {
+    const what = (plan.show as any).what
+    if (what === 'LABELS') {
       const seen = new Set<string>()
       const labels: QueryRow[] = []
       for (const n of nodes) {
@@ -1387,7 +1419,78 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
       return labels
     }
+    if (what === 'INDEXES') {
+      const indexes = _getAllIndexes()
+      return indexes.map(idx => ({
+        key: `${idx.label}.${idx.property}`,
+        label: idx.label,
+        property: idx.property,
+        state: 'ONLINE',
+      }))
+    }
+    if (what === 'CONSTRAINTS') {
+      const constraints = _getAllConstraints()
+      return constraints.map(c => ({
+        name: c.name,
+        type: 'UNIQUE',
+        entityType: 'NODE',
+        label: c.label,
+        property: c.property,
+        state: 'ONLINE',
+      }))
+    }
+    if (what === 'PROCEDURES') {
+      return [
+        { name: 'db.labels', mode: 'READ', description: 'List all node labels' },
+        { name: 'db.relationshipTypes', mode: 'READ', description: 'List all relationship types' },
+        { name: 'db.indexes', mode: 'READ', description: 'List all indexes' },
+        { name: 'db.constraints', mode: 'READ', description: 'List all constraints' },
+      ]
+    }
+    if (what === 'FUNCTIONS') {
+      return [
+        { name: 'type', description: 'Returns the type of a relationship' },
+        { name: 'properties', description: 'Returns a map containing all properties' },
+        { name: 'toString', description: 'Converts a value to a string' },
+        { name: 'toInteger', description: 'Converts a value to an integer' },
+        { name: 'toFloat', description: 'Converts a value to a float' },
+        { name: 'keys', description: 'Returns the keys of a map or node' },
+        { name: 'labels', description: 'Returns the labels of a node' },
+      ]
+    }
+    if (what === 'RELATIONSHIPTYPES') {
+      const seen = new Set<string>()
+      const types: QueryRow[] = []
+      for (const n of nodes) {
+        if (n.__edges && Array.isArray(n.__edges)) {
+          for (const e of n.__edges) {
+            const lbl = e.label || ''
+            if (lbl && !seen.has(String(lbl))) { seen.add(String(lbl)); types.push({ relationshipType: lbl }) }
+          }
+        }
+      }
+      return types
+    }
     return []
+  }
+
+  // INDEX 操作：CREATE INDEX ON :Label(prop) / DROP INDEX ON :Label(prop)
+  if (plan.indexOp) {
+    if (plan.indexOp === 'CREATE' && plan.indexLabel && plan.indexProperty) {
+      _registerIndex(plan.indexLabel, plan.indexProperty)
+      return [{ created: true }] as any
+    }
+    if (plan.indexOp === 'DROP' && plan.indexLabel && plan.indexProperty) {
+      _dropIndex(plan.indexLabel, plan.indexProperty)
+      return [{ dropped: true }] as any
+    }
+    return []
+  }
+
+  // CONSTRAINT 操作：DROP CONSTRAINT name
+  if (plan.type === 'DROP_CONSTRAINT' && (plan as any).constraint?.property) {
+    _dropConstraint((plan as any).constraint.property)
+    return [{ dropped: true }] as any
   }
 
   // USE — 命名空间切换
