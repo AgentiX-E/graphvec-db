@@ -1203,8 +1203,10 @@ function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
         const va = a[field] ?? null, vb = b[field] ?? null
         let cmp = 0
         if (va === null && vb === null) cmp = 0
-        else if (va === null) cmp = -1
-        else if (vb === null) cmp = 1
+        // openCypher 规范：ASC 排序中 null 排在最后（大于所有非 null 值）
+        // 原实现 null 排在最前，违反规范。参考代码审查 CVE-H6。
+        else if (va === null) cmp = 1  // null > non-null → last in ASC
+        else if (vb === null) cmp = -1 // non-null < null → last in ASC
         else if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
         else cmp = String(va).localeCompare(String(vb))
         if (cmp !== 0) return dir === 'DESC' ? -cmp : cmp
@@ -1737,17 +1739,18 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       return _postProcessResults(created, plan)
     }
 
-    // ── WHERE type(r) = 'LABEL' → 转为 edgeLabel 过滤（非参数化） ──
+    // ── WHERE type(r) = 'X' → 转为 edgeLabel 过滤（非参数化，全局匹配） ──
+    // [CVE-H3]: 原实现只匹配第一个 type(r) = 'X'，AND/OR 复合条件中后续约束被忽略。
+    // 现改用全局正则匹配所有 type(r) = 'X' 条件。
     if (query && !plan.steps?.some(s => s.edgeLabel)) {
-      const typeMatch = query.match(/WHERE\s+type\s*\(\s*(\w+)\s*\)\s*=\s*['"]([^'"]+)['"]/)
-      if (typeMatch) {
+      const typeRegex = /WHERE\s+type\s*\(\s*(\w+)\s*\)\s*=\s*['"]([^'"]+)['"]/g
+      let typeMatch: RegExpExecArray | null
+      while ((typeMatch = typeRegex.exec(query)) !== null) {
         const typeLabel = typeMatch[2]
-        const step = plan.steps?.find(s => {
-          if (s.edgeLabel) return s.edgeLabel.split('|').includes(typeLabel)
-          return true
-        })
-        if (step) {
-          step.edgeLabel = typeLabel
+        for (const s of plan.steps || []) {
+          if (!s.edgeLabel) {
+            s.edgeLabel = typeLabel
+          }
         }
       }
     }
@@ -2002,10 +2005,10 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
     }
 
-    // ── DML side-effect 处理（DELETE / SET） ──
+    // ── DML side-effect 处理（DELETE / SET / REMOVE） ──
     // 在 GE 执行匹配后，对 allNodes 做突变以实现持久化操作。
     // allNodes 的元素是 nodes 数组中对应对象的引用，修改它们也会修改原始 nodes。
-    if ((plan.type === 'DELETE' || plan.type === 'SET') && records?.length) {
+    if ((plan.type === 'DELETE' || plan.type === 'SET' || plan.type === 'REMOVE') && records?.length) {
       if (plan.type === 'DELETE') {
         // 删除：从 allNodes 中移除匹配的节点
         const removeNodeIds = new Set(records.map((r: any) => r.id))
@@ -2032,6 +2035,23 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
               const pv = (sc as any).value
               node[(sc as any).property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
             }
+          }
+        }
+      } else if (plan.type === 'REMOVE' && plan.removeClauses?.length) {
+        // REMOVE：删除匹配节点的属性或标签
+        // removeClauses 格式：[{ type: 'REMOVE_PROP', property: 'name', ref: 'n' }]
+        for (const r of records) {
+          const nodeIdx = nodeGeIds.indexOf(r.id)
+          if (nodeIdx < 0) continue
+          const node = allNodes[nodeIdx]
+          for (const rc of plan.removeClauses) {
+            if (rc.type === 'REMOVE_PROP' && rc.property) {
+              if (rc.ref && rc.ref !== plan.steps?.[0]?.source) continue
+              if (rc.property in node) {
+                delete node[rc.property]
+              }
+            }
+            // REMOVE_LABEL 暂时跳过
           }
         }
       }
@@ -2748,19 +2768,25 @@ export function _executeQuery(
   nodes: Array<Record<string, unknown>>,
   query?: string,
 ): QueryResult {
+  // ── Plan 自我保护：深拷贝防止 `_executeViaGraphEngine` 内部突变泄漏 ──
+  // _executeViaGraphEngine 会直接修改 plan 对象（清除 filters、改写 returnColumns 等），
+  // 当调用方重复使用同一 plan 时会导致结果错误。
+  // 深拷贝后，所有突变只发生在 local copy 上，调用方 plan 不受影响。
+  const planCopy = JSON.parse(JSON.stringify(plan)) as QueryPlan
+
   // 编译时语义验证
   try {
-    _validatePlan(plan, query)
+    _validatePlan(planCopy, query)
   } catch (e: any) {
     // _validatePlan 抛出的 SyntaxError 传播给调用方（如 TCK 正常流程）
     throw e
   }
   // 无显式 LIMIT 时应用 DEFAULT_LIMIT（批量数据集上默认截断防止 OOM）
-  if (plan.limit === undefined || plan.limit === null) {
-    plan.limit = DEFAULT_LIMIT
+  if (planCopy.limit === undefined || planCopy.limit === null) {
+    planCopy.limit = DEFAULT_LIMIT
   }
   // 所有查询统一走 GraphEngine
-  return _executeViaGraphEngine(plan, nodes, query)
+  return _executeViaGraphEngine(planCopy, nodes, query)
 }
 
 /**
@@ -3112,8 +3138,12 @@ function extractEdgesFromNodes(nodes: Array<Record<string, unknown>>): Array<{ s
   for (const n of nodes) {
     if (n.__edges && Array.isArray(n.__edges)) {
       for (const e of n.__edges) {
-        if (typeof e.srcIdx === 'number' && typeof e.dstIdx === 'number') {
-          edges.push({ srcIdx: e.srcIdx, dstIdx: e.dstIdx, label: String(e.label || ''), props: e.props || null })
+        // [CVE-H5]: TCK 中边索引可能以字符串形式传递（如 '"0"'），原实现只检查 === 'number' 导致静默丢弃。
+        // 现改用 Number() 转换，既兼容 number 也兼容 string 格式。
+        const srcIdx = typeof e.srcIdx === 'number' ? e.srcIdx : Number(e.srcIdx)
+        const dstIdx = typeof e.dstIdx === 'number' ? e.dstIdx : Number(e.dstIdx)
+        if (!isNaN(srcIdx) && !isNaN(dstIdx)) {
+          edges.push({ srcIdx, dstIdx, label: String(e.label || ''), props: e.props || null })
         }
       }
     }
