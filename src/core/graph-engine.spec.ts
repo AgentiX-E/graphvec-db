@@ -388,55 +388,54 @@ describe('GraphEngine', () => {
   // ──────────────────────────────────────────
 
   describe('Query set operations (UNION / INTERSECT / SUBTRACT)', () => {
+    let unionEngine: GraphEngine
     beforeAll(async () => {
-      // Ensure data exists when running this block in isolation via -t filter
-      // These match the Cypher-lite query block + agg block nodes
+      // 使用独立路径的 GE 实例，完全避免跨 describe block 数据污染
+      // 其他 describe block 共用 root describe 的 engine 实例，
+      // 可能在 beforeAll/beforeEach 中插入了额外节点。
+      // This describe block runs after upstream describe blocks that insert
+      // nodes with matching typeIds and age values, causing UNION queries
+      // to return 5 results instead of 4.
+      unionEngine = new GraphEngine({ ...testEngineConfig, path: testEngineConfig.path + '-union-' + Date.now() })
+      unionEngine.open()
       try {
-        await engine.upsertNode(1, 'query-alice', { props: { name: 'Alice', age: 30, city: 'NYC' } })
-        await engine.upsertNode(2, 'query-bob', { props: { name: 'Bob', age: 25, city: 'LA' } })
-        await engine.upsertNode(2, 'query-carol', { props: { name: 'Carol', age: 35, city: 'SF' } })
-        await engine.upsertNode(1, 'agg-alice', { props: { name: 'Alice', age: 30, score: 85 } })
-        await engine.upsertNode(2, 'agg-bob',   { props: { name: 'Bob', age: 25, score: 92 } })
-        await engine.upsertNode(1, 'agg-carol', { props: { name: 'Carol', age: 35, score: 78 } })
-        await engine.upsertNode(2, 'agg-dave',  { props: { name: 'Dave', age: 28, score: 95 } })
+        await unionEngine.upsertNode(1, 'query-alice', { props: { name: 'Alice', age: 30, city: 'NYC' } })
+        await unionEngine.upsertNode(2, 'query-bob', { props: { name: 'Bob', age: 25, city: 'LA' } })
+        await unionEngine.upsertNode(2, 'query-carol', { props: { name: 'Carol', age: 35, city: 'SF' } })
+        await unionEngine.upsertNode(1, 'agg-alice', { props: { name: 'Alice', age: 30, score: 85 } })
+        await unionEngine.upsertNode(2, 'agg-bob',   { props: { name: 'Bob', age: 25, score: 92 } })
+        await unionEngine.upsertNode(1, 'agg-carol', { props: { name: 'Carol', age: 35, score: 78 } })
+        await unionEngine.upsertNode(2, 'agg-dave',  { props: { name: 'Dave', age: 28, score: 95 } })
       } catch { /* data may already exist */ }
-    })
+    }, 10000)
+    afterAll(() => { try { unionEngine.close() } catch {} })
 
-    test.skip('UNION — deduplicates nodes by ID', () => {
-      // query-alice (age=30) + agg-alice (age=30) + query-carol (age=35) + agg-carol (age=35)
-      // = 4 distinct nodes with ages 30 or 35
-      const results = engine.query('MATCH (a) WHERE a.age = 30 RETURN a UNION MATCH (b) WHERE b.age = 35 RETURN b')
+    test('UNION — deduplicates nodes by ID', () => {
+      const results = unionEngine.query('MATCH (a) WHERE a.age = 30 RETURN a UNION MATCH (b) WHERE b.age = 35 RETURN b')
       expect(results.length).toBe(4)
-      // Check that they are all distinct nodes
       const ids = new Set(results.map(r => r.id))
       expect(ids.size).toBe(4)
     })
 
     test('UNION ALL — keeps duplicates', () => {
-      // query-alice (age=30) + agg-alice (age=30) = both sides matched
-      const results = engine.query('MATCH (a) WHERE a.age = 30 RETURN a UNION ALL MATCH (b) WHERE b.age = 30 RETURN b')
-      // Should be 4 results (2 from each WHERE age = 30 query)
+      const results = unionEngine.query('MATCH (a) WHERE a.age = 30 RETURN a UNION ALL MATCH (b) WHERE b.age = 30 RETURN b')
       expect(results.length).toBe(4)
     })
 
     test('INTERSECT — finds nodes matching both conditions', () => {
-      const results = engine.query('MATCH (a) WHERE a.age >= 25 RETURN a INTERSECT MATCH (b) WHERE b.age <= 30 RETURN b')
-      // Nodes with age between 25 and 30 inclusive: query-Bob(25), query-Alice(30), agg-Bob(25), agg-Alice(30), agg-Dave(28)
+      const results = unionEngine.query('MATCH (a) WHERE a.age >= 25 RETURN a INTERSECT MATCH (b) WHERE b.age <= 30 RETURN b')
       expect(results.length).toBeGreaterThanOrEqual(5)
     })
 
     test('SUBTRACT — removes right-side nodes from left-side', () => {
-      const results = engine.query('MATCH (a) WHERE a.age >= 25 RETURN a SUBTRACT MATCH (b) WHERE b.age > 30 RETURN b')
-      // All nodes with age >= 25, minus those with age > 30
-      // Should only return nodes aged 25, 28, and 30
+      const results = unionEngine.query('MATCH (a) WHERE a.age >= 25 RETURN a SUBTRACT MATCH (b) WHERE b.age > 30 RETURN b')
       const ages = results.map(r => r.props?.age).filter(a => a !== undefined)
       expect(ages.every(a => a >= 25 && a <= 30)).toBe(true)
       expect(ages).not.toContain(35)
     })
 
-    test.skip('UNION with label-filtered queries', () => {
-      const results = engine.query('MATCH (n) WHERE n.age = 30 RETURN n UNION MATCH (m) WHERE m.age = 35 RETURN m')
-      // query-alice(age=30) + agg-alice(age=30) + query-carol(age=35) + agg-carol(age=35) = 4
+    test('UNION with label-filtered queries', () => {
+      const results = unionEngine.query('MATCH (n) WHERE n.age = 30 RETURN n UNION MATCH (m) WHERE m.age = 35 RETURN m')
       expect(results.length).toBe(4)
       const ages = results.map(r => r.props?.age).sort()
       expect(ages.filter(a => a === 30).length).toBe(2)
