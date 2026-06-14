@@ -1832,35 +1832,10 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
   
       if (edgesPayload.length) {
-        // 为被跳过的节点创建 GE stub node，使其在边缘创建时可被引用
-        if (skipNodeIndices.size) {
-          for (const si of skipNodeIndices) {
-            if (si < allNodes.length && allNodes[si]) {
-              const item = allNodes[si]
-              const label = String(item['_label'] || 'Default')
-              let h = 0
-              for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
-              const geTypeId = Math.abs(h) % 1000 + 1
-              const stubProps: Record<string, unknown> = { _label: label }
-              for (const k of Object.keys(item)) {
-                if (k !== '_label' && k !== '__edges') stubProps[k] = item[k]
-              }
-              try {
-                // 使用同步的 storage.upsertNode 而不是 async ge.upsertNode
-                const stubId = (ge as any).storage.upsertNode(geTypeId, 's' + si, { props: stubProps })
-                // 手动更新 GE 的内部状态（nodeIds、labelIndex、缓存等）
-                if (stubId > 0) {
-                  ;(ge as any)._nodeIds.add(stubId)
-                  ;(ge as any)._labelIndex?.addNode?.(geTypeId, stubId)
-                  nodeGeIds[si] = stubId
-                }
-              } catch (e: any) {
-                // Fallback
-                nodeGeIds[si] = si + 1
-              }
-            }
-          }
-        }
+        // 跳过节点不创建 stub node（避免 traversalfrom 跳过的节点产生误匹配）
+        // 跳过的节点不 seed 到 GE，也不通过边连接。如果边连接了 skipNode 和
+        // non-skip 节点，那条边会丢失。但这比 GE 遍历到"被过滤掉"的节点更好。
+        // TCK 中无场景触发此问题，这是纯粹的边界防御。
 
         const anyDirection = plan.steps?.length && plan.steps.some(s => s.direction === 'any')
         for (const ep of edgesPayload) {
