@@ -537,19 +537,23 @@ export function execQuery(
   query: string,
   params?: Record<string, unknown> | unknown[]
 ): QueryPlan {
-  // 无参数
-  if (!params || (Array.isArray(params) && params.length === 0) ||
-      (!Array.isArray(params) && typeof params === 'object' && Object.keys(params).length === 0)) {
-    return parseQuery(query)
-  }
+  try {
+    // 无参数
+    if (!params || (Array.isArray(params) && params.length === 0) ||
+        (!Array.isArray(params) && typeof params === 'object' && Object.keys(params).length === 0)) {
+      return parseQuery(query)
+    }
 
-  // ── 自动检测：数组 → 位置参数 ──
-  if (Array.isArray(params)) {
-    return _execQueryPositional(query, params)
-  }
+    // ── 自动检测：数组 → 位置参数 ──
+    if (Array.isArray(params)) {
+      return _execQueryPositional(query, params)
+    }
 
-  // ── 对象 → 命名参数 ──
-  return _execQueryNamed(query, params as Record<string, unknown>)
+    // ── 对象 → 命名参数 ──
+    return _execQueryNamed(query, params as Record<string, unknown>)
+  } catch (e: any) {
+    throw new Error(`Failed to execute query: ${(e as Error).message}`)
+  }
 }
 
 /**
@@ -718,8 +722,13 @@ function _injectParamsToPlan(plan: QueryPlan, resolve: (name: string) => unknown
  */
 
 export function parseQuery(query: string): QueryPlan {
-  // ANTlr parser — direct QueryPlan output, no PEG AST intermediate
-  const plan = parseCypherToPlan(query.trim())
+  // ANTLR parser — direct QueryPlan output, no PEG AST intermediate
+  let plan: QueryPlan
+  try {
+    plan = parseCypherToPlan(query.trim())
+  } catch (e: any) {
+    throw new Error(`Query parse error: ${(e as Error).message}`)
+  }
 
   // 递归修复子计划的 scanLabel（UNION/INTERSECT/SUBTRACT 的 rightPlan，CALL 的 callQuery）
   function _fixScanLabel(subPlan: QueryPlan): void {
@@ -2692,6 +2701,13 @@ export function _executeQuery(
   nodes: Array<Record<string, unknown>>,
   query?: string,
 ): QueryResult {
+  // 编译时语义验证
+  try {
+    _validatePlan(plan, query)
+  } catch (e: any) {
+    // _validatePlan 抛出的 SyntaxError 传播给调用方（如 TCK 正常流程）
+    throw e
+  }
   // 无显式 LIMIT 时应用 DEFAULT_LIMIT（批量数据集上默认截断防止 OOM）
   if (plan.limit === undefined || plan.limit === null) {
     plan.limit = DEFAULT_LIMIT

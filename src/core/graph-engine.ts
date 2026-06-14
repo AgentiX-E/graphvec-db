@@ -1323,7 +1323,12 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       return this._queryOptimized(queryString, ctx)
     }
 
-    const plan = parseQuery(queryString)
+    let plan: QueryPlan
+    try {
+      plan = parseQuery(queryString)
+    } catch (e: any) {
+      throw new Error(`GraphEngine query parse error: ${(e as Error).message}`)
+    }
 
     // Handle CALL subquery
     if (plan.type === 'CALL' && plan.callQuery) {
