@@ -332,7 +332,19 @@ function buildQueryPlan(query: string): QueryPlan {
   const parser = new CypherParser(tokens)
   parser.buildParseTrees = true
 
-  const tree = parser.cypher()
+  // ── Suppress ANTLR ConsoleErrorListener stderr noise by swapping process.stderr ──
+  // ANTLR's default ConsoleErrorListener calls System.err.println (→ process.stderr.write).
+  // We temporarily redirect stderr during parsing to hide these messages.
+  // Do NOT use removeErrorListeners() — it interferes with ANTLR's internal error recovery
+  // and causes parse failures that would otherwise be tolerated/compensated.
+  const origStderrWrite = process.stderr.write.bind(process.stderr)
+  ;(process.stderr as any).write = () => true
+  let tree: any
+  try {
+    tree = parser.cypher()
+  } finally {
+    ;(process.stderr as any).write = origStderrWrite
+  }
   const clauses = collectClauses(tree)
 
   // Build plan from clauses
