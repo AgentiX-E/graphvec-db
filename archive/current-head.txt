@@ -1,0 +1,1 @@
+d4b82706535e438b4f56ba48c732670c295eff29 Add full-regression.sh: --quick (4 checks, ~30s) and full (8 checks, ~3min)

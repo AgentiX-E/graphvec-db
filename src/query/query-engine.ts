@@ -2405,6 +2405,9 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
             } else {
               row[evc] = edgeLabel ? `[:${edgeLabel}]` : '[:]'
             }
+            // 同时设置 __edgeLabel 供 _formatResultRow 别名分支使用
+            if (edgeLabel) r.__edgeLabel = edgeLabel
+            if (edgeProps) r.__edgeProps = edgeProps
           }
           return { ...r, props: row }
         })
@@ -2482,6 +2485,11 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       // 当 source 回溯后，r.props 是 source 节点属性，r.__targetProps 是 target 节点属性
       // 如果 variable 与 firstStep.source 匹配 → 从 r.props 取（source）
       // 否则 → 从 r.__targetProps 取（target，如 b.id）
+      // 边变量属性：如 r.weight → 从 r.__edgeProps 取
+      if (r.__edgeProps && property in r.__edgeProps) {
+        result[rc] = r.__edgeProps[property]
+        continue
+      }
       const firstStepSource = plan.steps?.[0]?.source
       const isSourceVar = firstStepSource && variable === firstStepSource
       if (isSourceVar && r.props && property in r.props) {

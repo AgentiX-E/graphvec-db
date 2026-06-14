@@ -4,13 +4,13 @@
 
 | Phase | 内容 | 预计文件数 | 测试影响 |
 |-------|------|-----------|---------|
-| 1 | _formatResultRow 修复（B1#1 表达式别名 + #3 null fallthrough） | 1 | 新增测试 |
-| 2 | DML 路径修复（B2: MERGE + DELETE + SET） | 1 | 新增测试 |
-| 3 | aggregate _buildDmlRows 修复（B3#1 非count聚合） | 1 | 覆盖测试 |
-| 4 | parseQuery 异常处理（B4: try-catch + _validatePlan） | 3 | 覆盖测试 |
-| 5 | 多跳target 别名 + 边变量属性（B1#2/#4/#5 按需） | 1 | 视 scope |
-| 6 | 全量回归验证 | — | — |
-| 7 | 文档同步 | 1 | — |
+| 1 | _formatResultRow 修复（B1#1 表达式别名 + #3 null fallthrough） | 1 | ✅ 已修复 |
+| 2 | DML 路径修复（B2: MERGE + DELETE + SET） | 1 | ✅ 已修复 |
+| 3 | aggregate _buildDmlRows 修复（B3#1 非count聚合） | 1 | ✅ 已修复 |
+| 4 | parseQuery 异常处理（B4: try-catch + _validatePlan） | 3 | ✅ 已修复 |
+| 5 | 多跳target 别名 + 边变量属性（B1#2/#4/#5） | 1 | **进行中** |
+| 6 | 全量回归验证 | — | ⏳ Phase 5 后 |
+| 7 | 文档同步 | 1 | ⏳ 最终 |
 
 ## 执行顺序策略
 

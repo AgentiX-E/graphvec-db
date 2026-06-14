@@ -1,0 +1,20 @@
+d4b82706 Add full-regression.sh: --quick (4 checks, ~30s) and full (8 checks, ~3min)
+a8441165 Resurrect 2 skipped UNION tests: 620/622 → 622/622 all green
+08c32017 Cleanup: remove debug comments + dead code blocks
+7a2c8255 Strengthen crossVarFilters: N-ary cartesian, no needSourceVar gate
+b2202957 Suppress ANTLR ConsoleErrorListener stderr noise (process.stderr swap)
+aacd5ac3 Fix DEFAULT_LIMIT test: now 71/71 passed (was pre-existing 0→1500→1000)
+116525fe WIP on master: ad0abd49 Phase 1: query-engine.spec.ts 37 fail → 1 (pre-existing)
+cfe7c015 index on master: ad0abd49 Phase 1: query-engine.spec.ts 37 fail → 1 (pre-existing)
+ad0abd49 Phase 1: query-engine.spec.ts 37 fail → 1 (pre-existing)
+ebacfdbc checkpoint: MatchWhere 20/20 ALL PASS + MatchWhere3 crossVarFilter
+317784a7 checkpoint: MatchWhere1+2 ALL PASS (17/17)
+232f1346 checkpoint: MatchWhere1 15/15 ALL PASS
+d9d0d4f5 checkpoint: MatchWhere1 9/15 passed (+[9] OR predicate handler)
+0345490c checkpoint: MatchWhere1 9/15 passed (+[5] edgeVarFilters fix + [8] edgeFilter separation)
+b13d1a9a checkpoint: MatchWhere1 8/15 passed (+[7] type(r)+inlineProps)
+28a7f978 checkpoint: MatchWhere1 7/15 passed + MatchWhere total 9/34
+69d000e6 checkpoint: MatchWhere1 [4] pass + WHERE pre-filter + source backtrack + index fix
+fba8c41d Phase O-3: Match2 86/86 complete (multi-type edgeLabel parsing)
+5b42c6b5 Phase O-2: SyntaxError + Having executed __edges edge creation + multi-type
+c7f02965 Phase O: SyntaxError compilation checks completed (14 scenarios)

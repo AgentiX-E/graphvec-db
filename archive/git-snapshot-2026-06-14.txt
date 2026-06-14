@@ -1,0 +1,11 @@
+d4b82706 Add full-regression.sh: --quick (4 checks, ~30s) and full (8 checks, ~3min)
+a8441165 Resurrect 2 skipped UNION tests: 620/622 → 622/622 all green
+08c32017 Cleanup: remove debug comments + dead code blocks
+7a2c8255 Strengthen crossVarFilters: N-ary cartesian, no needSourceVar gate
+b2202957 Suppress ANTLR ConsoleErrorListener stderr noise (process.stderr swap)
+aacd5ac3 Fix DEFAULT_LIMIT test: now 71/71 passed (was pre-existing 0→1500→1000)
+116525fe WIP on master: ad0abd49 Phase 1: query-engine.spec.ts 37 fail → 1 (pre-existing)
+cfe7c015 index on master: ad0abd49 Phase 1: query-engine.spec.ts 37 fail → 1 (pre-existing)
+ad0abd49 Phase 1: query-engine.spec.ts 37 fail → 1 (pre-existing)
+ebacfdbc checkpoint: MatchWhere 20/20 ALL PASS + MatchWhere3 crossVarFilter
+HEAD: d4b82706535e438b4f56ba48c732670c295eff29 Add full-regression.sh: --quick (4 checks, ~30s) and full (8 checks, ~3min)
