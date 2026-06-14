@@ -765,6 +765,14 @@ export function parseQuery(query: string): QueryPlan {
     }
   }
 
+  // ── MERGE: mergeNodes → createNodes（CREATE 路径复用） ──
+  if (plan.type === 'MERGE' && plan.mergeNodes?.length) {
+    if (!plan.createNodes) plan.createNodes = []
+    for (const mn of plan.mergeNodes) {
+      plan.createNodes.push(mn)
+    }
+  }
+
   // ── returnColumns 拆解：b.name → name （去掉变量前缀） ──
   if (plan.returnColumns?.length) {
     plan.returnColumns = plan.returnColumns.map((rc: string) => {
@@ -1715,7 +1723,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     }
 
     // ── DML + RETURN：从 createNodes 构造结果行（GE 对 DML 返回空） ──
-    if (plan.type === 'CREATE' && plan.returnColumns?.length) {
+    if ((plan.type === 'CREATE' || plan.type === 'MERGE') && plan.returnColumns?.length) {
       const created = _buildDmlRows(plan, allNodes)
       return _postProcessResults(created, plan)
     }
@@ -1948,6 +1956,41 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       if (isUsedAsVariable && !isLabelInNodes) {
         const fallbackPlan = { ...plan, scanLabel: null }
         records = (ge as any)._executeQueryPlan(fallbackPlan)
+      }
+    }
+
+    // ── DML side-effect 处理（DELETE / SET） ──
+    // 在 GE 执行匹配后，对 allNodes 做突变以实现持久化操作。
+    // allNodes 的元素是 nodes 数组中对应对象的引用，修改它们也会修改原始 nodes。
+    if ((plan.type === 'DELETE' || plan.type === 'SET') && records?.length) {
+      if (plan.type === 'DELETE') {
+        // 删除：从 allNodes 中移除匹配的节点
+        const removeNodeIds = new Set(records.map((r: any) => r.id))
+        // 从 allNodes 移除（浅拷贝过滤后替换原引用）
+        const keptNodes: typeof allNodes = []
+        for (let i = 0; i < allNodes.length; i++) {
+          if (!removeNodeIds.has(nodeGeIds[i])) {
+            keptNodes.push(allNodes[i])
+          }
+        }
+        allNodes.length = 0
+        allNodes.push(...keptNodes)
+      } else if (plan.type === 'SET' && plan.setClauses?.length) {
+        // SET：修改匹配节点的属性
+        for (const r of records) {
+          const nodeIdx = nodeGeIds.indexOf(r.id)
+          if (nodeIdx < 0) continue
+          const node = allNodes[nodeIdx]
+          // 朴素 SET 处理：每个 setClause 的 property 对应字段
+          // setClauses 格式：[{ alias: 'n', property: 'name', value: 'x' }]
+          for (const sc of plan.setClauses) {
+            if ((sc as any).alias && (sc as any).alias !== plan.steps?.[0]?.source) continue
+            if ((sc as any).property) {
+              const pv = (sc as any).value
+              node[(sc as any).property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
+            }
+          }
+        }
       }
     }
 
