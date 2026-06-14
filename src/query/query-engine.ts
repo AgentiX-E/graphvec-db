@@ -1811,7 +1811,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
   }
 
   let ge: GraphEngine | null = null
-  let geOwned = false  // 标记是否为此调用新创建的 GE（true → finally 中 close+清理）
+  let geOwned = false  // true → 新创建的注册实例，finally 中不 close（由 _clearGeInstances 统一清理）
   let dir = ''
   if (_geInstanceRegistry.has(_activeDatabase)) {
     ge = _geInstanceRegistry.get(_activeDatabase)!
@@ -2965,10 +2965,8 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     // ── 后处理（ORDER BY / HAVING） ──
     return _postProcessResults(result, plan)
   } finally {
-    if (ge && geOwned) {
-      try { ge.close() } catch {}
-      try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
-    }
+    // 注册池中的 GE 实例由 _clearGeInstances() 统一清理，不在 finally 中 close
+    // 非注册临时 GE（当前不存在此场景）应在 finally 中 close + 清理
   }
 }
 
