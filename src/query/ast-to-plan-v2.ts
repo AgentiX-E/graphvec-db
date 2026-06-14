@@ -268,11 +268,20 @@ function buildQueryPlan(query: string): QueryPlan {
   }
 
   // CREATE CONSTRAINT (supports both single and composite properties)
+  // Syntax 1: Neon pg-ish "FOR (n:Person) REQUIRE n.age IS UNIQUE"
   const createConstraintMatch = trimmed.match(/^CREATE\s+CONSTRAINT\s+FOR\s+\((\w+):(\w+)\)\s+REQUIRE\s+\(?(\w+\.\w+(?:\s*,\s*\w+\.\w+)*)\)?\s+IS\s+UNIQUE/i)
   if (createConstraintMatch) {
     const plan = createEmptyPlan()
     plan.type = 'CREATE_CONSTRAINT'
     plan.constraint = { label: createConstraintMatch[2], property: createConstraintMatch[3].split('.')[1] }
+    return plan
+  }
+  // Syntax 2: Cypher-standard "ON (n:Person) ASSERT n.age IS UNIQUE"
+  const createConstraintMatch2 = trimmed.match(/^CREATE\s+CONSTRAINT\s+ON\s+\((\w+):(\w+)\)\s+ASSERT\s+(\w+)\.(\w+)\s+IS\s+UNIQUE/i)
+  if (createConstraintMatch2) {
+    const plan = createEmptyPlan()
+    plan.type = 'CREATE_CONSTRAINT'
+    plan.constraint = { label: createConstraintMatch2[2], property: createConstraintMatch2[4] }
     return plan
   }
 

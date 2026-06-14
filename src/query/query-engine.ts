@@ -41,6 +41,9 @@ export function _dropIndex(label: string, property: string): void {
 export function _getAllIndexes(): IndexEntry[] {
   return Array.from(_indexRegistry.values())
 }
+export function _getIndex(label: string, property: string): IndexEntry | undefined {
+  return _indexRegistry.get(`${label}:${property}`)
+}
 export function _clearIndexes(): void { _indexRegistry.clear() }
 
 // ── 约束注册表（唯一性约束） ──
@@ -1422,21 +1425,13 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     if (what === 'INDEXES') {
       const indexes = _getAllIndexes()
       return indexes.map(idx => ({
-        key: `${idx.label}.${idx.property}`,
-        label: idx.label,
-        property: idx.property,
-        state: 'ONLINE',
+        name: `${idx.label}.${idx.property}`,
       }))
     }
     if (what === 'CONSTRAINTS') {
       const constraints = _getAllConstraints()
       return constraints.map(c => ({
         name: c.name,
-        type: 'UNIQUE',
-        entityType: 'NODE',
-        label: c.label,
-        property: c.property,
-        state: 'ONLINE',
       }))
     }
     if (what === 'PROCEDURES') {
@@ -1517,7 +1512,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
   }
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
-  const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT', 'FOREACH'].includes(plan.type || '')
+  const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT'].includes(plan.type || '')
   if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML) {
     const row: QueryRow = {}
     if (plan.constColumns?.length) {
@@ -1532,10 +1527,39 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
 
   // ── DML 纯操作（无 RETURN）：直接返回空（side effects 由调用方处理） ──
   if (isDML && !plan.returnColumns?.length && !plan.aggregate) {
-    // FOREACH 和 CREATE_CONSTRAINT 当前未实现执行逻辑
-    // 返回空而非抛错，保持 TCK 兼容性（TCK 不验证 side effects）
-    if (plan.type === 'FOREACH' || plan.type === 'CREATE_CONSTRAINT') {
-      // 仅做 no-op 返回
+    // CREATE_CONSTRAINT: 验证现有数据唯一性并注册约束
+    if (plan.type === 'CREATE_CONSTRAINT' && plan.constraint) {
+      const { label, property } = plan.constraint
+      // 约束名: label_property_unique
+      const constraintName = `${label}_${property}_unique`
+      // 检查是否已存在同名约束（幂等）
+      const existing = _getAllConstraints().find(c => c.name === constraintName)
+      if (existing) {
+        return []
+      }
+      // 遍历所有节点，检查该 label + property 的组合是否唯一
+      const seen = new Map<unknown, number>() // value → first index
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i]
+        const nodeLabel = node._label
+        // 检查 label 是否匹配：支持多标签（":" 分隔）
+        const labels = String(nodeLabel ?? '').split(':').map(s => s.trim()).filter(Boolean)
+        if (!labels.includes(label)) continue
+        const rawVal = node[property]
+        // null/undefined 不违反唯一约束（Cypher 语义：唯一约束不覆盖 NULL）
+        if (rawVal === null || rawVal === undefined) continue
+        // 解析 typed 格式：{type: 'STRING', value: 'xxx'} → 'xxx'
+        const propVal = (rawVal && typeof rawVal === 'object' && 'value' in (rawVal as any))
+          ? (rawVal as any).value
+          : rawVal
+        if (propVal === null || propVal === undefined) continue
+        if (seen.has(propVal)) {
+          throw new Error(`ConstraintValidationFailed: Node(${label}) already exists with ${property} = ${JSON.stringify(propVal)}`)
+        }
+        seen.set(propVal, i)
+      }
+      _registerConstraint(constraintName, label, property)
+      return []
     }
     return []
   }
@@ -1569,6 +1593,35 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         if (cn.props) { for (const k of Object.keys(cn.props)) props[k] = cn.props[k] }
         if (cn.alias) props['_alias'] = cn.alias
         allNodes.push(props)
+      }
+    }
+
+    // ── 约束校验：检查 CREATE 的节点是否违反已注册的唯一约束 ──
+    // 遍历已注册的约束，对全部 allNodes 做唯一性检查
+    if (plan.createNodes?.length && (plan.type === 'CREATE' || plan.type === 'MERGE')) {
+      const constraints = _getAllConstraints()
+      for (const constraint of constraints) {
+        const seen = new Map<unknown, number>()
+        for (let i = 0; i < allNodes.length; i++) {
+          const node = allNodes[i]
+          const nodeLabel = node._label
+          const labels = String(nodeLabel ?? '').split(':').map(s => s.trim()).filter(Boolean)
+          if (!labels.includes(constraint.label)) continue
+          const rawVal = node[constraint.property]
+          if (rawVal === null || rawVal === undefined) continue
+          // 解析 typed 格式：{type: 'STRING', value: 'xxx'} → 'xxx'
+          const propVal = (rawVal && typeof rawVal === 'object' && 'value' in (rawVal as any))
+            ? (rawVal as any).value
+            : rawVal
+          if (propVal === null || propVal === undefined) continue
+          const prevIdx = seen.get(propVal)
+          if (prevIdx !== undefined) {
+            throw new Error(
+              `ConstraintValidationFailed: Node(${constraint.label}) already exists with ${constraint.property} = ${JSON.stringify(propVal)}`
+            )
+          }
+          seen.set(propVal, i)
+        }
       }
     }
 
@@ -1608,9 +1661,24 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       }
     }
 
+    // ── 索引加速预过滤：当 plan 有 scanLabel 且 EQ filter 匹配已注册索引时 ──
+    // 利用 _getIndex 检查 (scanLabel, property) 是否已注册索引
+    // 即使索引没有 build 节点 ID 集，也可以用 scanLabel + filter 值做预过滤
+    const indexedEqFilters: Array<{ filter: any; index: IndexEntry }> = []
+    if (plan.scanLabel) {
+      for (const f of (plan.filters || [])) {
+        if (f.operator === 'EQ' && f.property && f.value !== undefined && !_isVarRef(f.value)) {
+          const idx = _getIndex(plan.scanLabel, f.property)
+          if (idx) {
+            indexedEqFilters.push({ filter: f, index: idx })
+          }
+        }
+      }
+    }
+
     // 构建需要跳过的节点索引集合
     const skipNodeIndices = new Set<number>()
-    if ((stepSourceFilters.length || whereLabelFilters.length) && (plan.scanLabel || !plan.scanLabel)) {
+    if (indexedEqFilters.length || stepSourceFilters.length || whereLabelFilters.length) {
       for (let ni = 0; ni < allNodes.length; ni++) {
         const node = allNodes[ni]
         const nodeLabel = String(node['_label'] || '')
@@ -1636,6 +1704,15 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         if (!match) {
           skipNodeIndices.add(ni)
         }
+        // 索引加速过滤：如果已注册索引匹配的 EQ filter 不满足，跳过该节点
+        if (indexedEqFilters.length && !skipNodeIndices.has(ni)) {
+          const idxMatch = indexedEqFilters.every(({ filter: f }) => {
+            return (node as any)[f.property] === f.value
+          })
+          if (!idxMatch) {
+            skipNodeIndices.add(ni)
+          }
+        }
         // WHERE 标签谓词过滤：检查节点标签是否匹配 WHERE var:Label
         if (whereLabelFilters.length && !skipNodeIndices.has(ni)) {
           const nodeLabel = String(node['_label'] || '')
@@ -1648,8 +1725,9 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
           }
         }
       }
-      // 从 plan.filters 中移除已预处理的过滤器
-      plan.filters = (plan.filters || []).filter((f: any) => !stepSourceFilters.includes(f))
+      // 从 plan.filters 中移除已预处理的过滤器（stepSourceFilters + indexedEqFilters）
+      const processedFilters = [...stepSourceFilters, ...indexedEqFilters.map(ie => ie.filter)]
+      plan.filters = (plan.filters || []).filter((f: any) => !processedFilters.includes(f))
 
     }
 
