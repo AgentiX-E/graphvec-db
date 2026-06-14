@@ -58,10 +58,28 @@ export function _getAllConstraints(): ConstraintEntry[] {
 }
 export function _clearConstraints(): void { _constraintRegistry.clear() }
 
-
-
-
-/** 默认查询 LIMIT，当查询没有显式 LIMIT 子句时使用 */
+// ── 数据库注册表（CATALOG 多图命名空间） ──
+// 默认数据库（neo4j）始终存在
+const DEFAULT_DATABASE = 'neo4j'
+const _databaseRegistry = new Set<string>([DEFAULT_DATABASE])
+let _activeDatabase = DEFAULT_DATABASE
+export function _getActiveDatabase(): string { return _activeDatabase }
+export function _setActiveDatabase(name: string): void {
+  if (_databaseRegistry.has(name)) { _activeDatabase = name }
+}
+export function _createDatabase(name: string): void { _databaseRegistry.add(name) }
+export function _dropDatabase(name: string): void {
+  if (name !== DEFAULT_DATABASE) {
+    _databaseRegistry.delete(name)
+    if (_activeDatabase === name) _activeDatabase = DEFAULT_DATABASE
+  }
+}
+export function _getAllDatabases(): string[] { return Array.from(_databaseRegistry) }
+export function _clearDatabases(): void {
+  _databaseRegistry.clear()
+  _databaseRegistry.add(DEFAULT_DATABASE)
+  _activeDatabase = DEFAULT_DATABASE
+}
 export const DEFAULT_LIMIT = 1000
 
 // ── AST 类型 ─────────────────────────────────────────────────
@@ -258,6 +276,8 @@ export interface QueryPlan {
   type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT' | 'BEGIN' | 'COMMIT' | 'ROLLBACK'
   /** USE 的图名称（用于 multi-graph 命名空间切换） */
   useGraph?: string
+  /** CATALOG 操作（多图命名空间） */
+  catalogOp?: 'CREATE_DATABASE' | 'DROP_DATABASE' | 'SHOW_DATABASES'
   /** EXPLAIN: 展示执行计划但不执行 */
   explain?: boolean
   /** PROFILE: 执行并收集每步统计信息 */
@@ -1487,8 +1507,33 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     return [{ dropped: true }] as any
   }
 
+  // CATALOG 操作：CREATE DATABASE / DROP DATABASE / SHOW DATABASES
+  if (plan.catalogOp) {
+    switch (plan.catalogOp) {
+      case 'CREATE_DATABASE':
+        if (plan.useGraph) {
+          _createDatabase(plan.useGraph)
+          return [{ database: plan.useGraph, created: true }] as any
+        }
+        return []
+      case 'DROP_DATABASE':
+        if (plan.useGraph) {
+          _dropDatabase(plan.useGraph)
+          return [{ database: plan.useGraph, dropped: true }] as any
+        }
+        return []
+      case 'SHOW_DATABASES':
+        return _getAllDatabases().map(d => ({ name: d })) as any
+      default:
+        return []
+    }
+  }
+
   // USE — 命名空间切换
-  if (plan.type === 'USE') return nodes
+  if (plan.type === 'USE') {
+    if (plan.useGraph) { _setActiveDatabase(plan.useGraph); return [{ database: plan.useGraph, switched: true }] as any }
+    return nodes
+  }
 
   // UNION — 递归执行
   if (plan.unionType && plan.rightPlan) {

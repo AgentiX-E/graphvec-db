@@ -68,6 +68,8 @@ export interface QueryPlan {
   loadCsv?: { url: string; rowVariable: string; hasHeaders: boolean }
   windowFunctions?: Array<{ function: string; partitionBy: string[]; orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }> }>
   show?: string
+  /** CATALOG 操作（多图命名空间） */
+  catalogOp?: 'CREATE_DATABASE' | 'DROP_DATABASE' | 'SHOW_DATABASES'
   search?: { targetProperty: string; queryVector: number[]; topK: number }
   createNodes?: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
   createEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any'; props?: Record<string, unknown> | null }>
@@ -221,6 +223,13 @@ function buildQueryPlan(query: string): QueryPlan {
     return plan
   }
 
+  // SHOW DATABASES
+  if (upperQ === 'SHOW DATABASES') {
+    const plan = createEmptyPlan()
+    plan.catalogOp = 'SHOW_DATABASES'
+    return plan
+  }
+
   // Transaction commands
   if (upperQ === 'BEGIN') {
     const plan = createEmptyPlan()
@@ -235,6 +244,33 @@ function buildQueryPlan(query: string): QueryPlan {
   if (upperQ === 'ROLLBACK') {
     const plan = createEmptyPlan()
     plan.type = 'ROLLBACK'
+    return plan
+  }
+
+  // USE database — 命名空间切换
+  const useMatch = trimmed.match(/^USE\s+(\w+)$/i)
+  if (useMatch) {
+    const plan = createEmptyPlan()
+    plan.type = 'USE'
+    plan.useGraph = useMatch[1]
+    return plan
+  }
+
+  // CREATE DATABASE name
+  const createDbMatch = trimmed.match(/^CREATE\s+DATABASE\s+(\w+)$/i)
+  if (createDbMatch) {
+    const plan = createEmptyPlan()
+    plan.catalogOp = 'CREATE_DATABASE'
+    plan.useGraph = createDbMatch[1]
+    return plan
+  }
+
+  // DROP DATABASE name
+  const dropDbMatch = trimmed.match(/^DROP\s+DATABASE\s+(\w+)$/i)
+  if (dropDbMatch) {
+    const plan = createEmptyPlan()
+    plan.catalogOp = 'DROP_DATABASE'
+    plan.useGraph = dropDbMatch[1]
     return plan
   }
 

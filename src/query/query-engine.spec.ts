@@ -2,7 +2,7 @@
  * query-engine 单元测试
  */
 
-import { parseQuery, execQuery, ParameterizedQuery, cypher, compileCypher, _executeQuery, DEFAULT_LIMIT } from './query-engine'
+import { parseQuery, execQuery, ParameterizedQuery, cypher, compileCypher, _executeQuery, DEFAULT_LIMIT, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _getActiveDatabase, _setActiveDatabase } from './query-engine'
 
 describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
   it('简单 MATCH + RETURN', () => {
@@ -726,5 +726,75 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
 
     // 确认最后一条是第 999 项（0-based）
     expect(result[result.length - 1].name).toBe('node-999')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// CATALOG 多图命名空间：CREATE / DROP / SHOW DATABASES + USE
+// ═══════════════════════════════════════════════════════════════
+describe('CATALOG — 多图命名空间', () => {
+  beforeEach(() => {
+    _clearDatabases()
+  })
+
+  it('SHOW DATABASES — 默认显示 neo4j', () => {
+    const plan = parseQuery('SHOW DATABASES')
+    expect(plan.catalogOp).toBe('SHOW_DATABASES')
+    const result = _executeQuery(plan, [])
+    expect(Array.isArray(result)).toBe(true)
+    expect(result).toHaveLength(1)
+    expect(result[0].name).toBe('neo4j')
+  })
+
+  it('CREATE DATABASE — 创建新库', () => {
+    const plan = parseQuery('CREATE DATABASE mydb')
+    expect(plan.catalogOp).toBe('CREATE_DATABASE')
+    expect(plan.useGraph).toBe('mydb')
+    const result = _executeQuery(plan, [])
+    expect(result[0].created).toBe(true)
+    expect(result[0].database).toBe('mydb')
+    const dbs = _getAllDatabases()
+    expect(dbs).toContain('neo4j')
+    expect(dbs).toContain('mydb')
+  })
+
+  it('DROP DATABASE — 删除非默认库', () => {
+    _createDatabase('testdb')
+    const plan = parseQuery('DROP DATABASE testdb')
+    expect(plan.catalogOp).toBe('DROP_DATABASE')
+    expect(plan.useGraph).toBe('testdb')
+    const result = _executeQuery(plan, [])
+    expect(result[0].dropped).toBe(true)
+    expect(_getAllDatabases()).not.toContain('testdb')
+  })
+
+  it('DROP DATABASE — 不能删除默认库', () => {
+    const plan = parseQuery('DROP DATABASE neo4j')
+    _executeQuery(plan, [])
+    expect(_getAllDatabases()).toContain('neo4j')
+  })
+
+  it('USE — 切换到已有数据库', () => {
+    _createDatabase('mydb')
+    const plan = parseQuery('USE mydb')
+    expect(plan.type).toBe('USE')
+    expect(plan.useGraph).toBe('mydb')
+    _executeQuery(plan, [])
+    expect(_getActiveDatabase()).toBe('mydb')
+  })
+
+  it('USE — 切换到默认数据库', () => {
+    _createDatabase('mydb')
+    _setActiveDatabase('mydb')
+    _executeQuery(parseQuery('USE neo4j'), [])
+    expect(_getActiveDatabase()).toBe('neo4j')
+  })
+
+  it('SHOW DATABASES — 创建后显示多个', () => {
+    _createDatabase('db1')
+    _createDatabase('db2')
+    const res = _executeQuery(parseQuery('SHOW DATABASES'), []) as any[]
+    const names = res.map(r => r.name).sort()
+    expect(names).toEqual(['db1', 'db2', 'neo4j'])
   })
 })
