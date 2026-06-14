@@ -1847,6 +1847,40 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
                   geNode.props[k] = targetNode[k]
                 }
               }
+              // ── 多步多 RETURN 变量支持 ──
+              // 如果有多个 RETURN 的非 source 变量（如 `RETURN b, c`），
+              // 对每个非最终步的 targetAlias，收集其节点属性存入 __targetPropsMap
+              if (plan.returnColumns && plan.returnColumns.length > 1 && plan.steps.length > 1) {
+                const firstSrc = plan.steps[0].source
+                const targetAliases = plan.steps.map(s => s.targetAlias)
+                const nonFinalReturnVars = (plan.returnColumns || [])
+                  .map((rc: string) => rc?.split('.')[0])
+                  .filter((rc: string) => rc && rc !== firstSrc && targetAliases.includes(rc))
+                  .slice(0, -1) // 排除最后一步（最后一步就是 geNode）
+                if (nonFinalReturnVars.length) {
+                  const targetPropsMap: Record<string, any> = {}
+                  for (const nrv of nonFinalReturnVars) {
+                    const nrvStep = plan.steps.find(s => s.targetAlias === nrv)
+                    if (!nrvStep) continue
+                    const nrvStepIdx = plan.steps.indexOf(nrvStep)
+                    if (nrvStepIdx < 0) continue
+                    const interTargets = _walkMultiSteps(
+                      i, plan.steps.slice(0, nrvStepIdx + 1),
+                      allNodes, undefined, plan.filters, stepSourceFilters
+                    )
+                    if (interTargets.length) {
+                      const interNode = allNodes[interTargets[0]]
+                      if (interNode) {
+                        targetPropsMap[nrv] = { ...interNode }
+                        delete targetPropsMap[nrv].__edges
+                      }
+                    }
+                  }
+                  if (Object.keys(targetPropsMap).length) {
+                    geNode.__targetPropsMap = targetPropsMap
+                  }
+                }
+              }
               multiStepRaw.push(geNode)
             }
           }
@@ -2555,6 +2589,11 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         }
         // 区分 source 变量和 target 变量
         const firstStepSource = plan.steps?.[0]?.source
+        // 多步多 RETURN 变量：从 __targetPropsMap 按变量名取
+        if (r.__targetPropsMap && rc in r.__targetPropsMap) {
+          result[rc] = { ...r.__targetPropsMap[rc] }
+          continue
+        }
         if (r.__targetProps && firstStepSource && rc !== firstStepSource) {
           // target 变量（或之后步中的变量）：从 __targetProps 构建
           result[rc] = { ...r.__targetProps }
