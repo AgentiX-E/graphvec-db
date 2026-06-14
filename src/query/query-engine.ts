@@ -2118,27 +2118,32 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
     // 对每一行检查跨变量比较。
     // 对于无边模式（steps.length=0）：纯节点扫描，做笛卡尔积配对。
     if (crossVarFilters.length && filteredWithLabels?.length) {
-      if (plan.steps?.length && needSourceVar) {
-        // 有边模式：行有 props（source）和 __targetProps（target）
+      if (plan.steps?.length && filteredWithLabels[0]?.props) {
+        // 有边模式：行有 props（遍历 source/当前节点）和 __targetProps（target 节点）
+        // 不需要 needSourceVar=true，因为只要有 props 就可从中取值。
+        // 引用变量可能是 source 或 targetAlias——从 steps 中查找。
+        const stepSourceVars = new Set(plan.steps.map(s => s.source))
+        const stepTargetAliases = new Set(plan.steps.map(s => s.targetAlias))
         filteredWithLabels = filteredWithLabels.filter((r: any) => {
           return crossVarFilters.every((f: any) => {
-            // f.value = "x.animal" → sourceVar="x", targetProp="animal"
             const dotIdx = (f.value as string).indexOf('.')
             if (dotIdx < 0) return true
             const refVar = (f.value as string).substring(0, dotIdx)
             const refProp = (f.value as string).substring(dotIdx + 1)
-            // refVar 是 steps 中的 source 还是 targetAlias？
-            const refStep = plan.steps?.find(s => s.source === refVar || s.targetAlias === refVar)
-            if (!refStep) return true
-            const isRefSource = refStep.source === refVar
-            // 当前行的 source 值
-            const actualVal = r?.props?.[f.property]
-            // 引用变量的实际值：isRefSource → r.props, else → r.__targetProps
-            const refVal = isRefSource ? r?.props?.[refProp] : r?.__targetProps?.[refProp]
+            // isRefSource: f.source 是 source 变量（取 r.props）还是 targetAlias（取 r.__targetProps）
+            // 类似的，refVar 的取值位置也相同。
+            const fSourceIsSourceVar = stepSourceVars.has(f.source)
+            const refIsSourceVar = stepSourceVars.has(refVar)
+            const actualVal = fSourceIsSourceVar ? r?.props?.[f.property] : r?.__targetProps?.[f.property]
+            const refVal = refIsSourceVar ? r?.props?.[refProp] : r?.__targetProps?.[refProp]
             if (actualVal === undefined || refVal === undefined) return false
             switch (f.operator) {
               case 'EQ':  return String(actualVal) === String(refVal)
               case 'NEQ': return String(actualVal) !== String(refVal)
+              case 'GT':  return Number(actualVal) > Number(refVal)
+              case 'GTE': return Number(actualVal) >= Number(refVal)
+              case 'LT':  return Number(actualVal) < Number(refVal)
+              case 'LTE': return Number(actualVal) <= Number(refVal)
               default:    return String(actualVal) === String(refVal)
             }
           })
@@ -2152,11 +2157,22 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
           for (const mc of matchClauses) varLabelMap[mc[1]] = mc[2]
         }
         const returnCols = plan.returnColumns || []
-        // 按变量 label 从 allNodes 分配节点
-        const varNodeMap: Record<string, Array<{node: any; idx: number}>> = {}
+        // 从 crossVarFilters 和 returnCols 收集所有参与变量
+        const involvedVars = new Set<string>()
         for (const rc of returnCols) {
           const varName = typeof rc === 'string' ? rc.split('.')[0] : ''
-          if (!varName || varNodeMap[varName]) continue
+          if (varName) involvedVars.add(varName)
+        }
+        for (const f of crossVarFilters) {
+          if (f.source) involvedVars.add(f.source)
+          if (typeof f.value === 'string') {
+            const dotIdx = f.value.indexOf('.')
+            if (dotIdx >= 0) involvedVars.add(f.value.substring(0, dotIdx))
+          }
+        }
+        // 按变量 label 从 allNodes 分配节点
+        const varNodeMap: Record<string, Array<{node: any; idx: number}>> = {}
+        for (const varName of involvedVars) {
           const targetLabel = varLabelMap[varName]
           varNodeMap[varName] = allNodes
             .map((node, idx) => ({ node, idx }))
@@ -2164,33 +2180,54 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
             .filter(({ node }) => !targetLabel || String(node._label) === targetLabel)
         }
         const varNames = Object.keys(varNodeMap)
+        const _evalCrossVar = (entryMap: Record<string, {node: any; idx: number}>, filters: any[]): boolean => {
+          return filters.every((f: any) => {
+            const actualProp = f.property
+            const actualVal = entryMap[f.source]?.node?.[actualProp]
+            const dotIdx = (f.value as string).indexOf('.')
+            if (dotIdx < 0) return false
+            const refVar = (f.value as string).substring(0, dotIdx)
+            const refProp = (f.value as string).substring(dotIdx + 1)
+            const refVal = entryMap[refVar]?.node?.[refProp]
+            if (actualVal === undefined || refVal === undefined) return false
+            switch (f.operator) {
+              case 'EQ':  return String(actualVal) === String(refVal)
+              case 'NEQ': return String(actualVal) !== String(refVal)
+              default:    return String(actualVal) === String(refVal)
+            }
+          })
+        }
         const pairedRows: any[] = []
         if (varNames.length >= 2) {
-          for (const aEntry of varNodeMap[varNames[0]]) {
-            for (const bEntry of varNodeMap[varNames[1]]) {
-              if (aEntry.idx === bEntry.idx) continue
-              let pass = true
-              for (const f of crossVarFilters) {
-                const dotIdx = (f.value as string).indexOf('.')
-                if (dotIdx < 0) { pass = false; break }
-                const refVar = (f.value as string).substring(0, dotIdx)
-                const refProp = (f.value as string).substring(dotIdx + 1)
-                const actualVal = (f.source === varNames[0] ? aEntry.node : bEntry.node)?.[f.property]
-                const refVal = (refVar === varNames[0] ? aEntry.node : bEntry.node)?.[refProp]
-                if (actualVal === undefined || refVal === undefined) { pass = false; break }
-                if (String(actualVal) !== String(refVal)) { pass = false; break }
+          // N 元笛卡尔积：递归生成所有 entry 组合
+          const _cartesian = (idx: number, current: Record<string, {node: any; idx: number}>): void => {
+            if (idx >= varNames.length) {
+              // 检查 self-join 冲突：不同变量不能指向同一个节点索引
+              const seenIdx = new Set<number>()
+              for (const vn of varNames) {
+                if (seenIdx.has(current[vn].idx)) return
+                seenIdx.add(current[vn].idx)
               }
-              if (pass) {
-                pairedRows.push({
-                  id: -1,
-                  props: aEntry.node,
-                  type: aEntry.node._label || 'Default',
-                  name: '',
-                  __crossVarRows: { [varNames[0]]: aEntry.node, [varNames[1]]: bEntry.node },
-                })
+              if (!_evalCrossVar(current, crossVarFilters)) return
+              // 构建结果行
+              const firstVar = varNames[0]
+              const row: any = {
+                id: -1,
+                props: current[firstVar].node,
+                type: current[firstVar].node._label || 'Default',
+                name: '',
+                __crossVarRows: {} as Record<string, any>,
               }
+              for (const vn of varNames) row.__crossVarRows[vn] = current[vn].node
+              pairedRows.push(row)
+              return
+            }
+            for (const entry of varNodeMap[varNames[idx]]) {
+              current[varNames[idx]] = entry
+              _cartesian(idx + 1, current)
             }
           }
+          _cartesian(0, {})
         }
         filteredWithLabels = pairedRows
       }
