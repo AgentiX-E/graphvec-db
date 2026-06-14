@@ -2,7 +2,7 @@
  * query-engine 单元测试
  */
 
-import { parseQuery, execQuery, ParameterizedQuery, cypher, compileCypher, _executeQuery, DEFAULT_LIMIT, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _getActiveDatabase, _setActiveDatabase } from './query-engine'
+import { parseQuery, execQuery, ParameterizedQuery, cypher, compileCypher, _executeQuery, DEFAULT_LIMIT, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances, _getActiveDatabase, _setActiveDatabase } from './query-engine'
 
 describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
   it('简单 MATCH + RETURN', () => {
@@ -735,6 +735,7 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
 describe('CATALOG — 多图命名空间', () => {
   beforeEach(() => {
     _clearDatabases()
+    _clearGeInstances()
   })
 
   it('SHOW DATABASES — 默认显示 neo4j', () => {
@@ -822,7 +823,6 @@ describe('变量长度路径查询', () => {
     const nodes = buildChain(5) // 0→1→2→3→4
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
     const result = _executeQuery(plan, nodes) as any[]
-    console.log('varLen result:', JSON.stringify(result[0]))
     const names = result.map((r: any) => r['b.name']).sort()
     // 从 a=node-0 出发，1跳=b1, 2跳=b2, 3跳=b3
     expect(names).toEqual(['node-1', 'node-2', 'node-3'])

@@ -80,6 +80,16 @@ export function _clearDatabases(): void {
   _databaseRegistry.add(DEFAULT_DATABASE)
   _activeDatabase = DEFAULT_DATABASE
 }
+
+// ── GE 实例注册表（多数据库隔离） ──
+const _geInstanceRegistry = new Map<string, GraphEngine>()
+export function _clearGeInstances(): void {
+  for (const [, ge] of _geInstanceRegistry) {
+    try { ge.close() } catch {}
+  }
+  _geInstanceRegistry.clear()
+}
+
 export const DEFAULT_LIMIT = 1000
 
 // ── AST 类型 ─────────────────────────────────────────────────
@@ -1800,13 +1810,21 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     return _executeVarLenPath(plan, nodes)
   }
 
-  const dir = path.join('/tmp', 'tckge-' + process.pid + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'))
   let ge: GraphEngine | null = null
-  try {
+  let geOwned = false  // 标记是否为此调用新创建的 GE（true → finally 中 close+清理）
+  let dir = ''
+  if (_geInstanceRegistry.has(_activeDatabase)) {
+    ge = _geInstanceRegistry.get(_activeDatabase)!
+  } else {
+    dir = path.join('/tmp', 'tckge-' + process.pid + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'))
     fs.mkdirSync(dir, { recursive: true })
     const config: OverGraphConfig = { path: dir, denseVector: { dimension: 384 } }
     ge = new GraphEngine(config)
     ge.open()
+    _geInstanceRegistry.set(_activeDatabase, ge)
+    geOwned = true
+  }
+  try {
 
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
     const allNodes: Array<Record<string, unknown>> = [...(nodes || [])]
@@ -2947,7 +2965,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     // ── 后处理（ORDER BY / HAVING） ──
     return _postProcessResults(result, plan)
   } finally {
-    if (ge) {
+    if (ge && geOwned) {
       try { ge.close() } catch {}
       try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
     }
