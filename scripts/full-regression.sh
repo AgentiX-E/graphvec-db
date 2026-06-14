@@ -77,7 +77,7 @@ sys.exit(0 if all==passed else 1)
 
 if [ "$QUICK" = false ]; then
   # ── clauses (JSON 模式) ──
-  check "TCK clauses (17 dirs, ~1250 scenarios)" \
+  check "TCK clauses (17 dirs, ~1230 scenarios)" \
     "npx cucumber-js 'src/query/cypher-tck/features/clauses/{call,create,delete,match,match-where,merge,remove,return,return-orderby,return-skip-limit,set,union,unwind,with,with-orderBy,with-skip-limit,with-where}/**/*.feature' \
       --require-module tsx --require src/query/cypher-tck/step-definitions.ts \
       --format json 2>/dev/null | python3 -c \"
@@ -95,7 +95,7 @@ sys.exit(0 if all==passed else 1)
 \""
 
   # ── expressions (JSON 模式) ──
-  check "TCK expressions (18 dirs)" \
+  check "TCK expressions (18 dirs, ~2620 scenarios)" \
     "npx cucumber-js 'src/query/cypher-tck/features/expressions/{aggregation,boolean,comparison,conditional,existentialSubqueries,graph,list,literals,map,mathematical,null,path,pattern,precedence,quantifier,string,temporal,typeConversion}/**/*.feature' \
       --require-module tsx --require src/query/cypher-tck/step-definitions.ts \
       --format json 2>/dev/null | python3 -c \"
@@ -113,7 +113,7 @@ sys.exit(0 if all==passed else 1)
 \""
 
   # ── useCases (JSON 模式) ──
-  check "TCK useCases" \
+  check "TCK useCases (30 scenarios)" \
     "npx cucumber-js 'src/query/cypher-tck/features/useCases/**/*.feature' \
       --require-module tsx --require src/query/cypher-tck/step-definitions.ts \
       --format json 2>/dev/null | python3 -c \"
