@@ -2590,7 +2590,35 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
     const row: QueryRow = {}
     const agg = plan.aggregate as any
     const alias = agg.alias || agg.column?.replace(/^.+?\(.+?\)(?:\s+AS\s+)?/i, '').trim() || agg.field || 'c'
-    row[alias] = agg.fn === 'count' ? allNodes.length : 0
+    // 支持 count/sum/avg/min/max——从 allNodes 提取属性值做聚合
+    const propField = agg.field || agg.property || ''
+    if (agg.fn === 'count') {
+      row[alias] = allNodes.length
+    } else if (propField) {
+      const values = allNodes
+        .map(n => n[propField] ?? (n as any).props?.[propField])
+        .filter((v: any) => v !== undefined && v !== null)
+        .map(Number)
+        .filter((v: any) => !isNaN(v))
+      switch (agg.fn) {
+        case 'sum':
+          row[alias] = values.reduce((a: number, b: number) => a + b, 0)
+          break
+        case 'avg':
+          row[alias] = values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0
+          break
+        case 'max':
+          row[alias] = values.length ? Math.max(...values) : 0
+          break
+        case 'min':
+          row[alias] = values.length ? Math.min(...values) : 0
+          break
+        default:
+          row[alias] = 0
+      }
+    } else {
+      row[alias] = 0
+    }
     return [row]
   }
 
