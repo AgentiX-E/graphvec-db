@@ -12,7 +12,7 @@ export default defineConfig({
       reportsDirectory: './coverage',
     },
     environment: 'node',
-    include: ['src/**/*.spec.ts'],
+    include: ['src/**/*.spec.ts', 'src/**/*.bench.ts'],
     exclude: ['**/node_modules/**'],
     testTimeout: 1200000,
     hookTimeout: 1200000,
