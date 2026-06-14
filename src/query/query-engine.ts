@@ -2269,6 +2269,14 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         for (let i = 0; i < allNodes.length; i++) {
           if (!removeNodeIds.has(nodeGeIds[i])) {
             keptNodes.push(allNodes[i])
+          } else {
+            // 同步删除 GE 存储层节点
+            if (ge) {
+              try {
+                (ge as any).storage.deleteNode(nodeGeIds[i])
+                if ((ge as any)._nodeIds) (ge as any)._nodeIds.delete(nodeGeIds[i])
+              } catch (_) { /* ignore storage errors */ }
+            }
           }
         }
         allNodes.length = 0
@@ -2279,8 +2287,6 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
           const nodeIdx = nodeGeIds.indexOf(r.id)
           if (nodeIdx < 0) continue
           const node = allNodes[nodeIdx]
-          // 朴素 SET 处理：每个 setClause 的 property 对应字段
-          // setClauses 格式：[{ alias: 'n', property: 'name', value: 'x' }]
           for (const sc of plan.setClauses) {
             if ((sc as any).alias && (sc as any).alias !== plan.steps?.[0]?.source) continue
             if ((sc as any).property) {
@@ -2288,10 +2294,15 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
               node[(sc as any).property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
             }
           }
+          // 同步更新 GE 存储层节点属性
+          if (ge) {
+            try {
+              (ge as any).storage.upsertNode(1, '', { props: node })
+            } catch (_) { /* ignore storage errors */ }
+          }
         }
       } else if (plan.type === 'REMOVE' && plan.removeClauses?.length) {
         // REMOVE：删除匹配节点的属性或标签
-        // removeClauses 格式：[{ type: 'REMOVE_PROP', property: 'name', ref: 'n' }]
         for (const r of records) {
           const nodeIdx = nodeGeIds.indexOf(r.id)
           if (nodeIdx < 0) continue
@@ -2303,7 +2314,12 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
                 delete node[rc.property]
               }
             }
-            // REMOVE_LABEL 暂时跳过
+          }
+          // 同步更新 GE 存储层
+          if (ge) {
+            try {
+              (ge as any).storage.upsertNode(1, '', { props: node })
+            } catch (_) { /* ignore storage errors */ }
           }
         }
       }
@@ -2825,6 +2841,11 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       const isSourceVar = firstStepSource && variable === firstStepSource
       if (isSourceVar && r.props && property in r.props) {
         result[rc] = r.props[property]
+      } else if (!isSourceVar && r.__targetPropsMap && variable in r.__targetPropsMap) {
+        // 中间步变量属性（如 b.name 在 MATCH (a)-[:R1]->(b)-[:R2]->(c) 中）
+        // 从 __targetPropsMap 取该变量的节点属性
+        const midNode = r.__targetPropsMap[variable]
+        result[rc] = midNode && property in midNode ? midNode[property] : null
       } else if (!isSourceVar && r.__targetProps && property in r.__targetProps) {
         result[rc] = r.__targetProps[property]
       } else if (r.props && property in r.props) {
