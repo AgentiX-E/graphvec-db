@@ -1488,6 +1488,53 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     return []
   }
 
+  // 过程调用：CALL db.labels(), db.indexes(), db.constraints(), db.schema.visualization()
+  if (plan.callProcedure) {
+    const { name, args } = plan.callProcedure
+    switch (name) {
+      case 'db.labels': {
+        // 返回所有节点标签（从 allNodes 收集）
+        const labels = new Set<string>()
+        for (const node of nodes) {
+          const lbl = String(node._label || 'Default')
+          for (const l of lbl.split(':').map(s => s.trim()).filter(Boolean)) labels.add(l)
+        }
+        if (args?.length) {
+          // 如果 args 中包含字符串参数，可能要做筛选（但 Cypher 标准 db.labels() 无参数）
+        }
+        return Array.from(labels).map(l => ({ label: l })) as any
+      }
+      case 'db.indexes': {
+        return _getAllIndexes().map(idx => ({
+          id: `${idx.label}:${idx.property}`,
+          name: `${idx.label}:${idx.property}`,
+          state: 'ONLINE',
+          type: 'BTREE',
+          labelsOrTypes: [idx.label],
+          properties: [idx.property],
+          provider: 'native-btree-1.0',
+          entityType: 'NODE',
+        })) as any
+      }
+      case 'db.constraints': {
+        return _getAllConstraints().map(c => ({
+          id: c.name,
+          name: c.name,
+          state: 'ONLINE',
+          type: 'UNIQUENESS',
+          entityType: 'NODE',
+          labelsOrTypes: [c.label],
+          properties: [c.property],
+        })) as any
+      }
+      case 'db.schema.visualization': {
+        return [{ 'schema': 'workspace' }] as any
+      }
+      default:
+        throw new Error(`Unknown procedure: ${name}`)
+    }
+  }
+
   // INDEX 操作：CREATE INDEX ON :Label(prop) / DROP INDEX ON :Label(prop)
   if (plan.indexOp) {
     if (plan.indexOp === 'CREATE' && plan.indexLabel && plan.indexProperty) {
