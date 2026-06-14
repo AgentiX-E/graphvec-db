@@ -2436,6 +2436,71 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       return fr
     })
 
+    // ── OPTIONAL MATCH 处理 ──
+    // 对主查询的每一行结果，尝试匹配 optionalMatchSteps 中的每个 optional MATCH 模式。
+    // 成功 → 将匹配到的节点/边合并到 row；失败 → 填充 null。
+    // 注意：此处的实现假设 OPTIONAL MATCH 使用临时 GE 实例，与主查询共享 allNodes。
+    if (plan.optionalMatchSteps?.length && result.length) {
+      for (const opt of plan.optionalMatchSteps) {
+        const optRecords: Array<{ row: QueryRow; props: Record<string, unknown> | null }> = []
+        for (let ri = 0; ri < result.length; ri++) {
+          const row = result[ri]
+          // 构建 OPTIONAL MATCH 的 GE plan
+          // scanLabel 可选：如果为 null，扫描 allNodes 中的所有节点
+          const optPlan: any = {
+            type: 'QUERY',
+            scanLabel: opt.scanLabel,
+            steps: opt.steps || [],
+            filters: opt.filters || [],
+            returnColumns: [],
+            orderBy: [],
+            limit: undefined,
+            skip: undefined,
+          }
+          const geRecords = (ge as any)._executeQueryPlan(optPlan)
+          if (geRecords?.length) {
+            // 第一个匹配结果
+            const first = geRecords[0]
+            const nodeProps: Record<string, unknown> = {}
+            if (first && first.props) {
+              for (const [k, v] of Object.entries(first.props)) {
+                if (k !== '__edges') nodeProps[k] = v
+              }
+            }
+            // 确定需要填充的变量名
+            const sourceVar = opt.steps?.[0]?.source || ''
+            const targetVar = opt.steps?.[0]?.targetAlias || ''
+            const edgeVar = opt.steps?.[0]?.edgeAlias || ''
+            // 将匹配到的节点属性填回 row
+            if (sourceVar && !row[sourceVar]) {
+              row[sourceVar] = nodeProps
+            }
+            if (targetVar && !row[targetVar]) {
+              row[targetVar] = nodeProps
+            }
+            // 边变量用空 placeholder（精确的边属性扩展见 Phase B）
+            if (edgeVar && !row[edgeVar]) {
+              row[edgeVar] = null
+            }
+          } else {
+            // OPTIONAL MATCH 匹配失败：所有变量设为 null
+            const sourceVar = opt.steps?.[0]?.source || ''
+            const targetVar = opt.steps?.[0]?.targetAlias || ''
+            const edgeVar = opt.steps?.[0]?.edgeAlias || ''
+            if (!sourceVar && !targetVar && !edgeVar && opt.scanLabel) {
+              // 单节点模式：OPTIONAL MATCH (n:Label) — 变量名来自 scanLabel
+              ;[sourceVar, targetVar].filter(Boolean).forEach(v => { row[v] = null })
+            } else {
+              if (sourceVar && !row[sourceVar]) row[sourceVar] = null
+              if (targetVar && !row[targetVar]) row[targetVar] = null
+              if (edgeVar && !row[edgeVar]) row[edgeVar] = null
+            }
+          }
+          optRecords.push({ row, props: null })
+        }
+      }
+    }
+
     // ── type() 函数后处理 ──
     // 如果原查询包含 type(r) 且结果中该列是边表示 [:T]，替换为类型名 'T'
     const hasTypeReturnCol = (plan.returnColumns || []).some((rc: string) =>
