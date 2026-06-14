@@ -1357,9 +1357,6 @@ function _stepMatchConstraint(nodeIdx: number, step: TraverseStep, allNodes: Rec
 
 /** GraphEngine 原生执行入口 */
 function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): QueryResult {
-
-if (query?.includes("WHERE n.name") && query?.includes("Person")) {
-  }
   // SHOW LABELS —— 从数据中提取
   if (plan.show) {
     if (typeof plan.show === 'object' && (plan.show as any).what === 'LABELS') {
@@ -2108,10 +2105,6 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
       }
     }
 
-    // DBG removed', JSON.stringify(stepSourceFilters))
-    // DBG removed', JSON.stringify(crossVarFilters))
-    // DBG removed', JSON.stringify(plan.filters))
-    // DBG removed', needSourceVar, 'steps.len:', plan.steps?.length, 'records.len:', filteredWithLabels?.length)
     // ── 跨变量属性引用过滤（WHERE n.animal = x.animal / a.id = b.id） ──
     // crossVarFilters 中的 filter 不能在 seed 阶段用常数比较，因为 value 是"x.animal"字符串。
     // 对于有边模式（needSourceVar=true）：行中 props=source 节点属性 + __targetProps=target 节点属性，
@@ -2233,7 +2226,6 @@ if (query?.includes("WHERE n.name") && query?.includes("Person")) {
       }
     }
 
-        // DBG removed
     // ── 边变量 filter（WHERE r.name = 'foo'） ──
     // plan.filters 中的 source 如果是边变量（不在 MATCH 的节点变量中），
     // 用 edgesPayload 中的边 props 来过滤结果行。
