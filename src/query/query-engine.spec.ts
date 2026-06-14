@@ -798,3 +798,93 @@ describe('CATALOG — 多图命名空间', () => {
     expect(names).toEqual(['db1', 'db2', 'neo4j'])
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// 变量长度路径查询
+// ═══════════════════════════════════════════════════════════════
+describe('变量长度路径查询', () => {
+  // 构建链式图: n0 -[:NEXT]-> n1 -[:NEXT]-> n2 -[:NEXT]-> n3 -[:NEXT]-> n4
+  function buildChain(len: number): any[] {
+    // 只有 n0 标记为 Node，其余无标签→只有 n0 被 scan
+    const nodes: any[] = []
+    nodes.push({ _label: 'Node', name: 'node-0', __edges: [] as any[] })
+    for (let i = 1; i < len; i++) {
+      nodes.push({ _label: '', name: 'node-' + i, __edges: [] as any[] })
+    }
+    for (let i = 0; i < len - 1; i++) {
+      nodes[i].__edges.push({ dstIdx: i + 1, srcIdx: i, label: 'NEXT' })
+      nodes[i + 1].__edges.push({ dstIdx: i + 1, srcIdx: i, label: 'NEXT' })
+    }
+    return nodes
+  }
+
+  it('[a] -[:NEXT*1..3]-> [b] — 返回 1~3 跳可达节点', () => {
+    const nodes = buildChain(5) // 0→1→2→3→4
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
+    const result = _executeQuery(plan, nodes) as any[]
+    console.log('varLen result:', JSON.stringify(result[0]))
+    const names = result.map((r: any) => r['b.name']).sort()
+    // 从 a=node-0 出发，1跳=b1, 2跳=b2, 3跳=b3
+    expect(names).toEqual(['node-1', 'node-2', 'node-3'])
+  })
+
+  it('[a] -[:NEXT*2..4]-> [b] — 最小 2 跳', () => {
+    const nodes = buildChain(6)
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*2..4]->(b:Node) RETURN b.name')
+    const result = _executeQuery(plan, nodes) as any[]
+    const names = result.map((r: any) => r['b.name']).sort()
+    expect(names).toEqual(['node-2', 'node-3', 'node-4'])
+  })
+
+  it('[a] -[:NEXT*3]-> [b] — 精确 3 跳', () => {
+    const nodes = buildChain(6)
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*3]->(b:Node) RETURN b.name')
+    const result = _executeQuery(plan, nodes) as any[]
+    const names = result.map((r: any) => r['b.name']).sort()
+    expect(names).toEqual(['node-3'])
+  })
+
+  it('无匹配路径时返回空', () => {
+    const nodes = buildChain(3) // 只有 0→1→2
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*5..10]->(b:Node) RETURN b.name')
+    const result = _executeQuery(plan, nodes) as any[]
+    expect(result).toHaveLength(0)
+  })
+
+  it('单步变量长度—调试检查 range 是否传入', () => {
+    const nodes = buildChain(5)
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
+    expect(plan.scanLabel).toBe('Node')
+    expect(plan.steps).toHaveLength(1)
+    expect((plan.steps[0] as any).range).toBeDefined()
+    expect((plan.steps[0] as any).range.min).toBe(1)
+    expect((plan.steps[0] as any).range.max).toBe(3)
+    // 检查 _executeQuery 是否走了 varLen 路径
+    const result = _executeQuery(plan, nodes) as any[]
+    console.log('VARLEN result:', JSON.stringify(result))
+    expect(result.length).toBeGreaterThan(0)
+  })
+
+  it('多步 + 变量长度组合 — 先定长再变长', () => {
+    const nodes: any[] = []
+    // 创建图: 0 -[:X]-> 1 -[:X]-> 2 -[:X]-> 3 -[:X]-> 4
+    // 也: 1 -[:X]-> 5
+    for (let i = 0; i < 6; i++) {
+      nodes.push({ _label: 'Node', name: 'n' + i, __edges: [] as any[] })
+    }
+    // 0→1→2→3→4 链
+    for (let i = 0; i < 4; i++) {
+      nodes[i].__edges.push({ dstIdx: i + 1, srcIdx: i, label: 'X' })
+      nodes[i + 1].__edges.push({ dstIdx: i + 1, srcIdx: i, label: 'X' })
+    }
+    // 1→5
+    nodes[1].__edges.push({ dstIdx: 5, srcIdx: 1, label: 'X' })
+    nodes[5].__edges.push({ dstIdx: 5, srcIdx: 1, label: 'X' })
+
+    // MATCH (a)-[:X]->(b)-[:X*1..2]->(c) RETURN c.name
+    // 解析器会把第二个 step 的 range 带到 QueryPlan
+    const plan = parseQuery('MATCH (a)-[:X]->(b)-[:X*1..2]->(c) RETURN c.name')
+    const result = _executeQuery(plan, nodes) as any[]
+    expect(result.length).toBeGreaterThan(0)
+  })
+})

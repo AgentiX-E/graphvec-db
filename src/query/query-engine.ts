@@ -1317,6 +1317,74 @@ function _walkMultiSteps(
   let currentSet = new Set<number>([startIdx])
   for (let si = 0; si < steps.length; si++) {
     const step = steps[si]
+    // ── 变量长度路径：step.range 存在时做 BFS 多跳 ──
+    if ((step as any).range) {
+      const range = (step as any).range
+      const minHops = range.min ?? 1
+      const maxHops = range.max ?? 10 // 默认最大 10 跳（防止无限）
+      const varLenSet = new Set<number>()
+      // 检查边标签是否配置（仅对匹配边做遍历）
+      const hasEdgeLabel = !!(step as any).edgeLabel
+      for (const sidx of currentSet) {
+        // BFS 从 sidx 出发，记录每层目标节点
+        let frontier = new Set<number>([sidx])
+        const visited = new Set<number>([sidx])
+        for (let depth = 1; depth <= maxHops; depth++) {
+          const nextFrontier = new Set<number>()
+          for (const fidx of frontier) {
+            const node = allNodes[fidx] as any
+            const edges: Array<{ dstIdx: number; srcIdx: number; label: string; props?: any }> = node?.__edges || []
+            const isAny = step.direction === 'any'
+            for (const e of edges) {
+              let neighborIdx = -1
+              if (isAny) {
+                neighborIdx = e.dstIdx === fidx ? e.srcIdx : (e.srcIdx === fidx ? e.dstIdx : -1)
+              } else if (step.direction === 'out' && e.srcIdx === fidx) {
+                neighborIdx = e.dstIdx
+              } else if (step.direction === 'in' && e.dstIdx === fidx) {
+                neighborIdx = e.srcIdx
+              }
+              if (neighborIdx >= 0 && neighborIdx < allNodes.length && !visited.has(neighborIdx) && neighborIdx !== fidx) {
+                if (hasEdgeLabel && (e.label !== step.edgeLabel)) continue
+                visited.add(neighborIdx)
+                if (depth >= minHops) {
+                  if (_stepMatchConstraint(neighborIdx, step, allNodes)) {
+                    // 检查 __edges 一致性（TCK 场景）
+                    varLenSet.add(neighborIdx)
+                  }
+                }
+                nextFrontier.add(neighborIdx)
+              }
+            }
+            // 无向边兜底：所有其他节点的 __edges 中指向 fidx 的边
+            if (isAny) {
+              for (let j = 0; j < allNodes.length; j++) {
+                if (j === fidx || visited.has(j)) continue
+                const other = allNodes[j] as any
+                if (other.__edges) {
+                  for (const e of other.__edges) {
+                    if ((e.dstIdx === fidx || e.srcIdx === fidx) && !visited.has(j)) {
+                      const nIdx = e.dstIdx === fidx ? e.srcIdx : e.dstIdx
+                      if (nIdx === j && !visited.has(j)) {
+                        visited.add(j)
+                        if (depth >= minHops && _stepMatchConstraint(j, step, allNodes)) {
+                          varLenSet.add(j)
+                        }
+                        nextFrontier.add(j)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          frontier = nextFrontier
+          if (frontier.size === 0) break
+        }
+      }
+      currentSet = varLenSet
+      continue
+    }
     const nextSet = new Set<number>()
     // 构建 combinedSourceFilters：当前步的 source 节点属性约束
     const combinedSourceFilters: Array<{source?: string; property: string; value: any}> = []
@@ -1425,6 +1493,77 @@ function _stepMatchConstraint(nodeIdx: number, step: TraverseStep, allNodes: Rec
     }
   }
   return true
+}
+
+/**
+ * 变量长度路径执行器：从 nodes 出发做 BFS，返回格式化结果。
+ * 独立于 GE，纯基于 __edges 遍历。
+ */
+function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown>>): QueryResult {
+  const step = plan.steps[0]
+  const range = (step as any).range
+  const minHops = range.min ?? 1
+  const maxHops = Math.min(range.max ?? 10, 50) // 上限 50 防循环
+  const result: QueryRow[] = []
+  const srcNodes: Array<Record<string, unknown>> = [...(nodes || [])]
+  for (let si = 0; si < srcNodes.length; si++) {
+    const sourceNode = srcNodes[si] as any
+    if (plan.scanLabel && sourceNode._label !== plan.scanLabel) continue
+    let frontier = new Set<number>([si])
+    const visited = new Set<number>([si])
+    for (let depth = 1; depth <= maxHops; depth++) {
+      const nextFrontier = new Set<number>()
+      for (const fidx of frontier) {
+        const node = srcNodes[fidx] as any
+        const edgeArr: Array<{ dstIdx: number; srcIdx: number; label: string }> = node?.__edges || []
+        for (const e of edgeArr) {
+          let nIdx = -1
+          if (e.srcIdx === fidx) nIdx = e.dstIdx
+          else if (e.dstIdx === fidx) nIdx = e.srcIdx
+          if (nIdx < 0 || nIdx >= srcNodes.length || visited.has(nIdx)) continue
+          visited.add(nIdx)
+          if (depth < minHops) {
+            nextFrontier.add(nIdx)
+            continue
+          }
+          const targetNode = srcNodes[nIdx] as any
+          if (step.targetLabel && targetNode._label && targetNode._label !== step.targetLabel) continue
+          if (step.edgeLabel && e.label !== step.edgeLabel) continue
+          const geLike: any = {
+            id: nIdx + 1,
+            props: { _label: targetNode._label || 'Default' },
+            __targetProps: { ...targetNode },
+            __multiStep: true,
+          }
+          for (const k of Object.keys(targetNode)) {
+            if (k !== '_label' && k !== '__edges') geLike.props[k] = targetNode[k]
+          }
+          // 构建返回行：从原始 returnColumns 用变量前缀映射
+          const rowRes: QueryRow = {}
+          for (const rc of plan.returnColumns || []) {
+            if (!rc) continue
+            // rc 是拆解后的纯属性名（b.name → name）
+            // 需要从 __edges 遍历的 BFS 找到对应的 targetNode 属性
+            rowRes[rc] = targetNode[rc] ?? null
+          }
+          // 补充 returnAliasMap 中带变量前缀的完整表达式
+          // 因为 parseQuery 拆解了 returnColumns，但 _formatResultRow 期望完整 key
+          if (plan.returnAliasMap) {
+            for (const [alias, expr] of Object.entries(plan.returnAliasMap)) {
+              if (expr.includes('.')) {
+                rowRes[expr] = rowRes[alias] ?? null
+              }
+            }
+          }
+          if (Object.keys(rowRes).length) result.push(rowRes)
+          nextFrontier.add(nIdx)
+        }
+      }
+      frontier = nextFrontier
+      if (frontier.size === 0) break
+    }
+  }
+  return _postProcessResults(result, plan)
 }
 
 /** GraphEngine 原生执行入口 */
@@ -1653,6 +1792,12 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       return []
     }
     return []
+  }
+
+  // ── 变量长度路径：直接 BFS 并返回，不依赖 GE ──
+  const hasVarLenGE = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
+  if (hasVarLenGE) {
+    return _executeVarLenPath(plan, nodes)
   }
 
   const dir = path.join('/tmp', 'tckge-' + process.pid + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'))
@@ -2035,13 +2180,13 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
 
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
 
-    // ── 多步跳转支持（MATCH (a)-->(b)-->(c)）──
-    // 当 steps.length > 1 时，GE 的 _executeQueryPlan 只处理第一个 step。
-    // 对多步路径手动遍历：从 seed 节点开始逐 step 跳转，使用 __edges 导航。
+    // ── 多步跳转支持（MATCH (a)-->(b)-->(c) 或变量长度路径 (a)-[:X*1..3]->(b)）──
+    // 当 steps.length > 1 或单步但有 range（变量长度）时，用 __edges 手动遍历
     const hasMultiStep = plan.steps && plan.steps.length > 1 && allNodes.length > 0
+    const hasVarLen = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
 
     // DEBUG [10]
-    const rawRecords: any[] = hasMultiStep
+    const rawRecords: any[] = (hasMultiStep || hasVarLen)
       ? (() => {
           const multiStepRaw: any[] = []
           for (let i = 0; i < allNodes.length; i++) {
@@ -2065,7 +2210,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
           return rc !== firstSrc && plan.steps?.some(s => s.targetAlias === rc)
         })
         let boundedTargetIndices = pathResults
-        if (retVar && plan.steps) {
+        if (retVar && plan.steps && !hasVarLen) {
           const defStep = plan.steps.find(s => s.targetAlias === retVar)
           if (defStep !== undefined) {
             const defStepIdx = plan.steps.indexOf(defStep)
@@ -2096,10 +2241,12 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
                 props: { _label: targetNode._label || 'Default' },
                 type: targetNode._label || 'Default',
                 __multiStep: true,
+                __targetProps: {},
               }
               for (const k of Object.keys(targetNode)) {
                 if (k !== '_label' && k !== '__edges') {
                   geNode.props[k] = targetNode[k]
+                  geNode.__targetProps[k] = targetNode[k]
                 }
               }
               // ── 多步多 RETURN 变量支持 ──
@@ -2136,7 +2283,17 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
                   }
                 }
               }
-              multiStepRaw.push(geNode)
+              if (hasVarLen) {
+                // 变量长度路径：简化结果格式，只保留目标节点属性+id
+                // 不走后处理边变量逻辑，直接从 __targetProps 取值
+                multiStepRaw.push({
+                  id: geNode.id,
+                  props: { ...geNode.__targetProps },
+                  __targetProps: geNode.__targetProps,
+                })
+              } else {
+                multiStepRaw.push(geNode)
+              }
             }
           }
           return multiStepRaw
