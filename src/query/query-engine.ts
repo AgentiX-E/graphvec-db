@@ -2479,6 +2479,12 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         result[rc] = row[rc]
         continue
       }
+      // ── 非变量表达式（如 "1+1"、"42"）—— 直接取 row 值或 null ──
+      // 纯数字、运算符、函数调用等不为合法标识符的模式，不能走变量/属性查找
+      if (!/^[a-zA-Z_]\w*$/.test(expr) && !expr.includes('.')) {
+        result[rc] = rc in row ? row[rc] : null
+        continue
+      }
       // 如果表达式是纯变量名（无点号），是 RETURN n
       if (!expr.includes('.')) {
         // 检查 __crossVarRows（无边模式配对行）
@@ -2507,6 +2513,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       // 属性不存在 → TCK 期望 null
       result[rc] = null
       continue
+    }
+    // ── 没有任何分支处理该列 —— 输出 null（TCK 兼容） ──
+    if (!(rc in result)) {
+      result[rc] = null
     }
   }
   return result
