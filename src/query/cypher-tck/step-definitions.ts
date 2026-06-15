@@ -106,7 +106,7 @@ function nodesFromGe(ge: any): any[] {
   } catch { return [] }
 }
 
-function run(q: string): void {
+async function run(q: string): Promise<void> {
   try {
     // 参数注入：替换 $param → 实际值
     let resolvedQ = q
@@ -124,7 +124,7 @@ function run(q: string): void {
     } catch (e: any) {
       st.err = e; st.res = []; return
     }
-    st.res = _executeQuery(plan, st.nodes, resolvedQ); st.err = null
+    st.res = await _executeQuery(plan, st.nodes, resolvedQ); st.err = null
   } catch (e: any) { st.err = e; st.res = [] }
 }
 
@@ -462,7 +462,7 @@ function _syncNodesFromGe(): void {
   }
 }
 
-Given('having executed:', function (query: string) {
+Given('having executed:', async function (query: string) {
   const q = query.trim()
   try {
     const plan = parseQuery(q)
@@ -575,7 +575,7 @@ Given('having executed:', function (query: string) {
     }
 
     // 无 createNodes 但查询可执行：run() 并读回结果
-    run(q)
+    await run(q)
     st.err = null
   } catch (e: any) {
     st.err = e
@@ -670,18 +670,18 @@ function parseTckValue(val: string | null): unknown {
   return trimmed
 }
 
-When('executing query:', function (query: string) {
+When('executing query:', async function (query: string) {
   st.q = query.trim()
   // Having executed 已经把节点注入 st.nodes，直接用 run()
-  run(st.q)
+  await run(st.q)
 })
 
-When('executing control query:', function (query: string) {
+When('executing control query:', async function (query: string) {
   st.q = query.trim()
   if (st.pGe && st.q.includes('-')) {
     _runOnPersistGe(st.q)
   } else {
-    run(st.q)
+    await run(st.q)
   }
 })
 

@@ -1199,3 +1199,83 @@ describe('LOAD CSV', () => {
     await expect(_executeQuery(plan, [])).rejects.toThrow(/LOAD CSV error/)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// GE 实例复用 & 多数据库隔离
+// ═══════════════════════════════════════════════════════════════
+describe('GE 实例复用 & 多数据库隔离', () => {
+  beforeEach(() => {
+    _clearDatabases()
+    _clearGeInstances()
+    _clearIndexes()
+  })
+
+  it('相同数据库的多次 _executeQuery 复用同一 GE 实例', async () => {
+    // 第一次调用 → 创建 GE 实例并注册
+    const nodes1 = [{ _label: 'Person', name: 'Alice' }]
+    const plan1 = parseQuery("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n")
+    const res1 = await _executeQuery(plan1, nodes1) as any[]
+    expect(res1).toHaveLength(1)
+    expect(res1[0].n.name).toBe('Alice')
+
+    // 第二次调用 → 应复用同一个 GE 实例（_geInstanceRegistry 中已将默认数据库 'neo4j' 映射到该 GE）
+    const nodes2 = [{ _label: 'Person', name: 'Bob' }]
+    const plan2 = parseQuery("MATCH (n:Person) WHERE n.name = 'Bob' RETURN n")
+    const res2 = await _executeQuery(plan2, nodes2) as any[]
+    expect(res2).toHaveLength(1)
+    expect(res2[0].n.name).toBe('Bob')
+  })
+
+  it('不同数据库的 _executeQuery 使用独立 GE 实例', async () => {
+    _createDatabase('dbA')
+    _createDatabase('dbB')
+
+    // dbA
+    _setActiveDatabase('dbA')
+    const nodesA = [{ _label: 'Node', id: 'A-only' }]
+    const resA = await _executeQuery(parseQuery("MATCH (n:Node) WHERE n.id = 'A-only' RETURN n"), nodesA) as any[]
+    expect(resA).toHaveLength(1)
+    expect(resA[0].n.id).toBe('A-only')
+
+    // dbB — 不应看到 dbA 的节点
+    _setActiveDatabase('dbB')
+    const nodesB = [{ _label: 'Node', name: 'B-stuff' }]
+    const resB = await _executeQuery(parseQuery("MATCH (n:Node) WHERE n.name = 'B-stuff' RETURN n"), nodesB) as any[]
+    expect(resB).toHaveLength(1)
+    expect(resB[0].n.name).toBe('B-stuff')
+
+    // dbA — 仍可独立使用
+    _setActiveDatabase('dbA')
+    const resA2 = await _executeQuery(parseQuery("MATCH (n:Node) WHERE n.id = 'A-only' RETURN n"), nodesA) as any[]
+    expect(resA2).toHaveLength(1)
+  })
+
+  it('_clearGeInstances 后新查询创建新 GE', async () => {
+    const nodes = [{ _label: 'Test', v: 1 }]
+    await _executeQuery(parseQuery("MATCH (n:Test) WHERE n.v = 1 RETURN n"), nodes)
+
+    _clearGeInstances()
+
+    // 清空后，新查询应创建全新的 GE（与上次不共享任何状态）
+    const nodes2 = [{ _label: 'Test', v: 1 }]
+    const res = await _executeQuery(parseQuery("MATCH (n:Test) WHERE n.v = 1 RETURN n"), nodes2) as any[]
+    expect(res).toHaveLength(1)
+  })
+
+  it('_createDatabase 后切换并执行查询', async () => {
+    _createDatabase('myapp')
+    _setActiveDatabase('myapp')
+    const nodes = [{ _label: 'User', name: 'test' }]
+    const res = await _executeQuery(parseQuery("MATCH (n:User) WHERE n.name = 'test' RETURN n"), nodes) as any[]
+    expect(res).toHaveLength(1)
+    expect(_getActiveDatabase()).toBe('myapp')
+  })
+
+  it('GE 默认数据库（neo4j）自动初始化', async () => {
+    // 不调用任何 _createDatabase，直接执行查询
+    const nodes = [{ _label: 'Task', title: 'hello' }]
+    const res = await _executeQuery(parseQuery("MATCH (n:Task) WHERE n.title = 'hello' RETURN n"), nodes) as any[]
+    expect(res).toHaveLength(1)
+    expect(_getActiveDatabase()).toBe('neo4j')
+  })
+})
