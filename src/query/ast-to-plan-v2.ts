@@ -1275,7 +1275,8 @@ function extractReturn(returnCtx: any): ParsedReturn {
 
     if (name === 'ReturnItemContext') {
       const text = getTextRecursive(node)
-      const asMatch = text.match(/^(.+?)\s+AS\s+(\w+)$/i)
+      const flat = text.replace(/\s+/g, ' ')  // 压平所有空白（包括换行）
+      const asMatch = flat.match(/^(.+?)\s+AS\s+(\w+)$/i)
       if (asMatch) {
         columns.push({ expression: asMatch[1].trim(), alias: asMatch[2] })
       } else {

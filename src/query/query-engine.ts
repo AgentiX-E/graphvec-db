@@ -2806,7 +2806,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const planForGe = JSON.parse(JSON.stringify(plan))
           // 排除跨变量属性引用 filter（GE 的 _matchFilter 无法做跨变量比较）
           planForGe.filters = (geFilters || []).filter(f => !crossVarFilters.includes(f))
-          try { (globalThis as any).__gebug_data = (globalThis as any).__gebug_data || []; (globalThis as any).__gebug_data.push({query, planForGeF: JSON.stringify(planForGe.filters), type: 'GE_exec'}) } catch {}
+
           return (ge as any)._executeQueryPlan(planForGe)
         })()
     let records = rawRecords
@@ -3458,10 +3458,21 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     }
   }
 
-  const ret = plan.returnColumns
+  const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+
+  // 当 expressionColumns 存在时，使用它们而非 returnColumns（括号嵌套导致 returnColumns 被截断）
+  const ret = plan.expressionColumns?.length
+    ? plan.expressionColumns.map((ec: any) => (typeof ec === 'string' ? ec : ec.alias || ec.expression))
+    : plan.returnColumns
   if (!ret?.length || plan.aggregate) return row
 
-  const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+  // expressionColumns 模式下从 ec map 找原始表达式
+  const ecMap: Record<string, string> = {}
+  if (plan.expressionColumns?.length) {
+    for (const ec of plan.expressionColumns) {
+      ecMap[ec.alias || ec.expression] = ec.expression
+    }
+  }
 
   // 构造输出行，每列正确映射
   const result: QueryRow = {}
@@ -3528,9 +3539,9 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       continue
     }
 
-    // 使用 returnAliasMap 解析原始表达式：统一走 _evaluateExpression
-    if (aliasMap && rc in aliasMap) {
-      const expr = aliasMap[rc]  // 如 "n"、"n.name"、"1+1"、"labels(n)" 等
+    // 使用 returnAliasMap 或 expressionColumns 解析原始表达式：统一走 _evaluateExpression
+    let expr = (aliasMap && rc in aliasMap) ? aliasMap[rc] : (rc in ecMap ? ecMap[rc] : null)
+    if (expr !== null) {
       // 如果 row[rc] 已经是边格式 [:xxx]（由 rawWithEdges 填充），不要覆盖
       if (typeof row[rc] === 'string' && row[rc].startsWith('[:')) {
         result[rc] = row[rc]
@@ -3561,10 +3572,21 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       }
       // 如果 GE 没有 steps（MATCH (a) 无关系），从 expr 推断变量名填充 varCtx
       if (!firstStepSource) {
-        // expr 可能是纯变量名（"a"）或属性访问（"a.name"）
-        const varName = expr.includes('.') ? expr.split('.')[0] : expr
-        if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx)) {
-          varCtx[varName] = { ...row }
+        // 如果 expr 是函数调用（如 coalesce(a.title, a.name)），通过提取所有 . 之前的标识符
+        // 来找到变量名；如果 expr 是纯变量名（"a"）或属性访问（"a.name"），直接提取
+        const varNameMatches = expr.match(/(\b[a-zA-Z_]\w*)\s*\./g)
+        if (varNameMatches) {
+          for (const m of varNameMatches) {
+            const vn = m.replace(/\s*\.$/, '')
+            if (vn && /^[a-zA-Z_]\w*$/.test(vn) && !(vn in varCtx)) {
+              varCtx[vn] = { ...row }
+            }
+          }
+        } else {
+          const varName = expr.includes('.') ? expr.split('.')[0] : expr
+          if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx)) {
+            varCtx[varName] = { ...row }
+          }
         }
       }
       // 如果表达式中包含变量名（a.b 或 a），尝试通过 _evaluateExpression 求值
@@ -4210,7 +4232,86 @@ export function compileCypher(template: string): ParameterizedQuery {
  */
 function _evaluateExpression(expr: string, row?: Record<string, unknown>): unknown {
   if (expr == null) return null
-  return _evalBinary(expr.trim(), row)
+  const t = expr.trim()
+  if (t.startsWith('CASE ') || t.startsWith('case ')) {
+    const r = _evalCase(t, row)
+    return r
+  }
+  return _evalBinary(t, row)
+}
+
+function _evalCase(s: string, row?: Record<string, unknown>): unknown {
+  // CASE <value> WHEN <v1> THEN <r1> WHEN <v2> THEN <r2> ... ELSE <default> END
+  // 或 CASE WHEN <cond1> THEN <r1> WHEN <cond2> THEN <r2> ... ELSE <default> END
+  const t = s.replace(/\bEND\b\s*$/i, '').trim()  // 去掉尾部 END
+  const caseMatch = t.match(/^CASE\s+(.+?)\s+WHEN\s/i)
+  const simpleCase = caseMatch !== null
+  let remainder: string
+  let baseValue: unknown = null
+  if (simpleCase) {
+    baseValue = _evaluateExpression(caseMatch[1], row)
+    remainder = t.slice(caseMatch[0].length)  // WHEN ... 部分（不含 WHEN 前缀）
+  } else {
+    // 没有 CASE <value>，直接解析 WHEN ... THEN ... ELSE
+    const caseWhenMatch = t.match(/^CASE\s+(WHEN\s)/i)
+    remainder = caseWhenMatch ? t.slice(caseWhenMatch[1].length) : t.replace(/^CASE\s+/i, '')
+  }
+
+  // 拆分 WHEN ... THEN ... WHEN ... THEN ... [ELSE ...]
+  let result: unknown = null
+  let hasMatch = false
+
+  const parts = remainder.split(/\bWHEN\s+/i)
+  let elseVal: unknown = null
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i].trim()
+    if (!part) continue
+    if (/^ELSE\s+/i.test(part)) {
+      elseVal = _evaluateExpression(part.replace(/^ELSE\s+/i, '').trim(), row)
+      continue
+    }
+    // 一个 WHEN arm: "<cond> THEN <result>"
+    const thenIdx = findThenIndex(part)
+    if (thenIdx < 0) continue
+    const cond = _evaluateExpression(part.slice(0, thenIdx).trim(), row)
+    let thenResult = part.slice(thenIdx + 4).trim() // 去掉 "THEN"
+    // 如果剩余部分包含 ELSE，截断
+    const elseIdx = thenResult.search(/\bELSE\s+/i)
+    if (elseIdx >= 0) {
+      // 如果当前 arm 不匹配且 elseVal 没有被设置，提取 ELSE 值
+      if (elseVal == null) {
+        elseVal = _evaluateExpression(thenResult.slice(elseIdx + 4).trim(), row)
+      }
+      thenResult = thenResult.slice(0, elseIdx).trim()
+    }
+    if (hasMatch) continue  // 已匹配，跳过剩余
+    let condResult: boolean
+    if (simpleCase) {
+      condResult = _compareValues(baseValue, cond, '=')
+    } else {
+      condResult = cond === true
+    }
+    if (condResult) {
+      result = _evaluateExpression(thenResult, row)
+      hasMatch = true
+    }
+  }
+  if (!hasMatch) result = elseVal
+  return result
+}
+
+function findThenIndex(s: string): number {
+  // 找到顶层的 THEN（不嵌套在括号内）
+  let depth = 0
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth++
+    else if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth--
+    else if (depth === 0 && s.slice(i, i + 4).toLowerCase() === 'then' && (i + 4 >= s.length || s[i+4] === ' ' || s[i+4] === '(' || s[i+4] === ')' || s[i+4] === '.' || s[i+4] === "[" || s[i+4] === "'")) {
+      // Check that it's "THEN" not part of another word
+      if (i === 0 || s[i-1] === ' ' || s[i-1] === ')') return i
+    }
+  }
+  return -1
 }
 
 function _parseCommaList(s: string): string[] {
