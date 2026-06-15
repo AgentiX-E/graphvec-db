@@ -4336,7 +4336,7 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
   const re = t.indexOf(' =~ ')
   if (re > 0) { const l = String(_evalAddSub(t.slice(0, re), row)); const r = String(_evalAddSub(t.slice(re + 4), row)); try { return new RegExp(r).test(l) } catch { return false } }
   const inOp = t.indexOf(' IN ')
-  if (inOp > 0) { const l = _evalAddSub(t.slice(0, inOp), row); const r = _evalAddSub(t.slice(inOp + 4), row); return Array.isArray(r) && r.includes(l) }
+  if (inOp > 0) { const l = _evalAddSub(t.slice(0, inOp), row); const r = _evalAddSub(t.slice(inOp + 4), row); if (!Array.isArray(r)) return false; let hasMatch = false; let hasNull = false; for (const item of r) { if (l != null && item != null) { if (l === item) { hasMatch = true } } else { hasNull = true } }; if (hasMatch) return true; if (hasNull) return null; return false }
   for (const op of ['<>', '>=', '<=', '=', '>', '<']) {
     const idx = _findTopLevelOp(t, op)
     if (idx > 0) {

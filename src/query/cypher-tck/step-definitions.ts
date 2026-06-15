@@ -113,9 +113,19 @@ async function run(q: string): Promise<void> {
     let resolvedQ = q
     if (st.params && Object.keys(st.params).length) {
       for (const [key, val] of Object.entries(st.params)) {
-        // 纯数字不加引号（'0' → 0），字符串加引号（'red' → 'red'）
-        const escaped = /^-?\d+(\.\d+)?$/.test(String(val)) ? String(val) : `'${val}'`
-        resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), escaped)
+        // null/bool → 关键字字面量
+        if (val === null) {
+          resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), 'null')
+        } else if (val === true || val === false) {
+          resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), String(val))
+        } else if (Array.isArray(val)) {
+          // 数组 → JSON 字面量（不打引号）
+          resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), JSON.stringify(val))
+        } else {
+          // 纯数字不加引号，其他加引号
+          const escaped = /^-?\d+(\.\d+)?$/.test(String(val)) ? String(val) : `'${val}'`
+          resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), escaped)
+        }
       }
     }
     const plan = parseQuery(resolvedQ); assert.ok(plan); assert.ok(plan.type)
@@ -590,7 +600,16 @@ Given('parameters are:', function (dt: any) {
     const rows = dt.raw()
     for (const [key, val] of rows) {
       // 去掉引号（'me' → me）
-      st.params[key] = val.replace(/^['"]|['"]$/g, '')
+      const cleaned = val.replace(/^['"]|['"]$/g, '')
+      // 尝试解析为 JS 字面量：数字、null、true/false、数组、映射
+      let parsed: unknown = cleaned
+      if (cleaned === 'null') parsed = null
+      else if (cleaned === 'true') parsed = true
+      else if (cleaned === 'false') parsed = false
+      else if (/^-?\d+$/.test(cleaned)) parsed = Number(cleaned)
+      else if (/^-?\d+\.\d+$/.test(cleaned)) parsed = Number(cleaned)
+      else if (/^\[.*\]$/.test(cleaned)) { try { parsed = JSON.parse(cleaned.replace(/'/g, '"')) } catch { parsed = cleaned } }
+      st.params[key] = parsed
     }
   }
 })
