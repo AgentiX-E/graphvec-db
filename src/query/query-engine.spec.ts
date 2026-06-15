@@ -1279,3 +1279,73 @@ describe('GE 实例复用 & 多数据库隔离', () => {
     expect(_getActiveDatabase()).toBe('neo4j')
   })
 })
+
+describe('表达式引擎 — 纯 RETURN 求值', () => {
+  it('RETURN 42', async () => {
+    const res = await _executeQuery(parseQuery('RETURN 42'), []) as any[]
+    expect(res).toHaveLength(1)
+    expect(res[0]['42']).toBe(42)
+  })
+  it('RETURN true AS literal', async () => {
+    const res = await _executeQuery(parseQuery('RETURN true AS literal'), []) as any[]
+    expect(res).toHaveLength(1)
+    expect(res[0]['literal']).toBe(true)
+  })
+  it('RETURN null AS v', async () => {
+    const res = await _executeQuery(parseQuery('RETURN null AS v'), []) as any[]
+    expect(res).toHaveLength(1)
+    expect(res[0]['v']).toBeNull()
+  })
+  it('RETURN 1+2', async () => {
+    const res = await _executeQuery(parseQuery('RETURN 1+2'), []) as any[]
+    expect(res).toHaveLength(1)
+    expect(res[0]['1+2']).toBe(3)
+  })
+  it('RETURN abs(-1)', async () => {
+    const res = await _executeQuery(parseQuery('RETURN abs(-1)'), []) as any[]
+    expect(res).toHaveLength(1)
+    expect(res[0]['abs(-1)']).toBe(1)
+  })
+  it('RETURN size("abc")', async () => {
+    const res = await _executeQuery(parseQuery('RETURN size("abc")'), []) as any[]
+    expect(res).toHaveLength(1)
+    expect(res[0]['size("abc")']).toBe(3)
+  })
+  it('RETURN range(0,3) AS r', async () => {
+    const res = await _executeQuery(parseQuery('RETURN range(0,3) AS r'), []) as any[]
+    expect(res).toHaveLength(1)
+    expect(res[0]['r']).toEqual([0, 1, 2, 3])
+  })
+  it('三值逻辑: true AND null', async () => {
+    const res = await _executeQuery(parseQuery('RETURN true AND null AS v'), []) as any[]
+    expect(res[0]['v']).toBeNull()
+  })
+  it('三值逻辑: false AND null', async () => {
+    const res = await _executeQuery(parseQuery('RETURN false AND null AS v'), []) as any[]
+    expect(res[0]['v']).toBe(false)
+  })
+  it('三值逻辑: null AND false', async () => {
+    const res = await _executeQuery(parseQuery('RETURN null AND false AS v'), []) as any[]
+    expect(res[0]['v']).toBe(false)
+  })
+  it('三值逻辑: null AND null', async () => {
+    const res = await _executeQuery(parseQuery('RETURN null AND null AS v'), []) as any[]
+    expect(res[0]['v']).toBeNull()
+  })
+  it('三值逻辑: true OR null', async () => {
+    const res = await _executeQuery(parseQuery('RETURN true OR null AS v'), []) as any[]
+    expect(res[0]['v']).toBe(true)
+  })
+  it('三值逻辑: false OR null', async () => {
+    const res = await _executeQuery(parseQuery('RETURN false OR null AS v'), []) as any[]
+    expect(res[0]['v']).toBeNull()
+  })
+  it('三值逻辑: null OR null', async () => {
+    const res = await _executeQuery(parseQuery('RETURN null OR null AS v'), []) as any[]
+    expect(res[0]['v']).toBeNull()
+  })
+  it('NOT null', async () => {
+    const res = await _executeQuery(parseQuery('RETURN NOT null AS v'), []) as any[]
+    expect(res[0]['v']).toBeNull()
+  })
+})

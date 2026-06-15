@@ -1916,12 +1916,26 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT'].includes(plan.type || '')
   if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML) {
     const row: QueryRow = {}
-    if (plan.constColumns?.length) {
-      for (const c of plan.constColumns) row[c.alias] = c.value
-    } else if (plan.expressionColumns?.length) {
-      for (const e of plan.expressionColumns) row[e.alias] = e.expression
-    } else if (plan.returnColumns?.length) {
-      for (const c of plan.returnColumns) row[c] = null
+    if (plan.returnColumns?.length) {
+      // 使用表达式引擎求值每个 returnColumn
+      if (plan.expressionColumns?.length) {
+        // expressionColumns 包含结构化的 { expression, alias }，来自 ANTLR parse
+        for (const ec of plan.expressionColumns) {
+          const val = _evaluateExpression(ec.expression)
+          row[ec.alias] = val !== null ? val : null
+        }
+      } else {
+        // 无 expressionColumns 时的 fallback（向后兼容）
+        for (const rc of plan.returnColumns) {
+          const isIdentifier = /^[a-zA-Z_]\w*$/.test(rc) && !['null', 'true', 'false'].includes(rc)
+          if (isIdentifier) {
+            row[rc] = null
+          } else {
+            const val = _evaluateExpression(rc)
+            row[rc] = val !== null ? val : null
+          }
+        }
+      }
     }
     // ── FOREACH 子句：纯 RETURN + FOREACH 时，先执行 FOREACH 再返回结果 ──
     if (plan.forEach?.updates.length && Array.isArray(nodes)) {
@@ -3985,4 +3999,300 @@ export function cypher(template: string, params?: Record<string, unknown>): Quer
  */
 export function compileCypher(template: string): ParameterizedQuery {
   return new ParameterizedQuery(template)
+}
+
+// ============================================================
+// 表达式求值引擎 — 支持字面量/二元运算/函数/属性访问
+// ============================================================
+
+/**
+ * 对单个表达式字符串求值。
+ * `row` 是每行 GE 结果数据，用于变量引用（如 `n.name` → row[name]）。
+ */
+function _evaluateExpression(expr: string, row?: Record<string, unknown>): unknown {
+  if (expr == null) return null
+  return _evalBinary(expr.trim(), row)
+}
+
+function _parseCommaList(s: string): string[] {
+  const result: string[] = []
+  let depth = 0, inStr = false, strChar = '', current = ''
+  for (const ch of s) {
+    if (inStr) { current += ch; if (ch === strChar) inStr = false; continue }
+    if (ch === "'" || ch === '"') { inStr = true; strChar = ch; current += ch; continue }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; current += ch; continue }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; current += ch; continue }
+    if (ch === ',' && depth === 0) { result.push(current.trim()); current = ''; continue }
+    current += ch
+  }
+  if (current.trim()) result.push(current.trim())
+  return result
+}
+
+type _BuiltinFn = (args: string[], row?: Record<string, unknown>) => unknown
+
+const _builtinFunctions: Record<string, _BuiltinFn> = {
+  abs: ([a]) => Math.abs(Number(_evalBinary(a))),
+  sqrt: ([a]) => Math.sqrt(Number(_evalBinary(a))),
+  ceil: ([a]) => Math.ceil(Number(_evalBinary(a))),
+  floor: ([a]) => Math.floor(Number(_evalBinary(a))),
+  round: ([a]) => Math.round(Number(_evalBinary(a))),
+  sign: ([a]) => Math.sign(Number(_evalBinary(a))),
+  rand: () => Math.random(),
+  coalesce: (as, r) => { for (const a of as) { const v = _evalBinary(a, r); if (v != null) return v } return null },
+  toupper: ([a]) => String(_evalBinary(a)).toUpperCase(),
+  tolower: ([a]) => String(_evalBinary(a)).toLowerCase(),
+  trim: ([a]) => String(_evalBinary(a)).trim(),
+  reverse: ([a]) => [...String(_evalBinary(a))].reverse().join(''),
+  substring: ([a, s, l]) => { const str = String(_evalBinary(a)); const st = Number(_evalBinary(s)); return l ? str.slice(st, st + Number(_evalBinary(l))) : str.slice(st) },
+  left: ([a, l]) => String(_evalBinary(a)).slice(0, Number(_evalBinary(l))),
+  right: ([a, l]) => String(_evalBinary(a)).slice(-Number(_evalBinary(l))),
+  replace: ([a, s, r]) => String(_evalBinary(a)).split(String(_evalBinary(s))).join(String(_evalBinary(r))),
+  size: ([a]) => { const v = _evalBinary(a); if (Array.isArray(v)) return v.length; if (typeof v === 'string') return v.length; return 0 },
+  tostring: ([a]) => String(_evalBinary(a)),
+  tointeger: ([a]) => { const v = _evalBinary(a); if (v == null) return null; return parseInt(String(v), 10) },
+  tofloat: ([a]) => { const v = _evalBinary(a); if (v == null) return null; return parseFloat(String(v)) },
+  isnan: ([a]) => isNaN(Number(_evalBinary(a))),
+  labels: (_, r) => r?._label ? String(r._label).split(':').filter(Boolean) : [],
+  type: (_, r) => r?.__edgeLabel ?? r?._type ?? null,
+  properties: (_, r) => { if (!r) return {}; const o: Record<string, unknown> = {}; for (const [k, v] of Object.entries(r)) if (!k.startsWith('_')) o[k] = v; return o },
+  keys: (_, r) => Object.keys(r || {}).filter(k => !k.startsWith('_')),
+  id: ([a]) => { const v = _evalBinary(a); return v && typeof v === 'object' && '_id' in (v as any) ? (v as any)._id : 0 },
+  head: ([a]) => { const v = _evalBinary(a); return Array.isArray(v) && v.length ? v[0] : null },
+  last: ([a]) => { const v = _evalBinary(a); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
+  tail: ([a]) => { const v = _evalBinary(a); return Array.isArray(v) ? v.slice(1) : null },
+  range: ([s, e, step]) => { const start = Number(_evalBinary(s)), end = Number(_evalBinary(e)), st = step ? Math.abs(Number(_evalBinary(step))) : 1; const r: number[] = []; if (start <= end) for (let i = start; i <= end; i += st) r.push(i); else for (let i = start; i >= end; i -= st) r.push(i); return r },
+  length: ([a]) => { const v = _evalBinary(a); return Array.isArray(v) ? v.length : 0 },
+}
+
+function _callFunction(name: string, args: string[], row?: Record<string, unknown>): unknown {
+  const fn = _builtinFunctions[name]
+  return fn ? fn(args, row) : null
+}
+
+function _evalBinary(s: string, row?: Record<string, unknown>): unknown { return _evalOr(s, row) }
+
+function _evalOr(s: string, row?: Record<string, unknown>): unknown {
+  const parts = _splitTopLevel(s, 'OR')
+  if (parts.length === 1) return _evalAnd(s, row)
+  // Cypher 三值逻辑 OR:
+  // true  AND X  → true (短路)
+  // false AND X  → X
+  // null  AND X  → if X is true then true else null
+  let result: unknown = false
+  for (const part of parts) {
+    const v = _evalAnd(part, row)
+    if (v === true) return true
+    if (v == null || v === undefined) {
+      result = null
+    }
+    // false → continue
+  }
+  return result
+}
+
+function _evalAnd(s: string, row?: Record<string, unknown>): unknown {
+  const parts = _splitTopLevel(s, 'AND')
+  if (parts.length === 1) return _evalNot(s, row)
+  // Cypher 三值逻辑 AND:
+  // false AND X → false (短路)
+  // true  AND Y → Y
+  // null  AND Y → if Y is false then false else null
+  let result: unknown = true
+  for (const part of parts) {
+    const v = _evalNot(part, row)
+    if (v === false) return false
+    if (v == null || v === undefined) {
+      result = null
+    }
+    // true → continue
+  }
+  return result
+}
+
+function _evalNot(s: string, row?: Record<string, unknown>): unknown {
+  const t = s.trim()
+  if (t.startsWith('NOT ')) {
+    const inner = _evalNot(t.slice(4), row)
+    return inner === null ? null : !Boolean(inner)
+  }
+  if (t.startsWith('NOT(') && t.endsWith(')')) {
+    const inner = _evalNot(t.slice(4, -1), row)
+    return inner === null ? null : !Boolean(inner)
+  }
+  return _evalComparison(s, row)
+}
+
+function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
+  const t = s.trim()
+  if (t.endsWith(' IS NOT NULL')) { const left = _evalAddSub(t.slice(0, t.length - 12).trim(), row); return left !== null && left !== undefined }
+  if (t.endsWith(' IS NULL')) { const left = _evalAddSub(t.slice(0, t.length - 8).trim(), row); return left === null || left === undefined }
+  const sw = t.indexOf(' STARTS WITH ')
+  if (sw > 0) { const l = String(_evalAddSub(t.slice(0, sw), row)); const r = String(_evalAddSub(t.slice(sw + 13), row)); return l.startsWith(r) }
+  const ci = t.indexOf(' CONTAINS ')
+  if (ci > 0) { const l = String(_evalAddSub(t.slice(0, ci), row)); const r = String(_evalAddSub(t.slice(ci + 10), row)); return l.includes(r) }
+  const ew = t.indexOf(' ENDS WITH ')
+  if (ew > 0) { const l = String(_evalAddSub(t.slice(0, ew), row)); const r = String(_evalAddSub(t.slice(ew + 11), row)); return l.endsWith(r) }
+  const re = t.indexOf(' =~ ')
+  if (re > 0) { const l = String(_evalAddSub(t.slice(0, re), row)); const r = String(_evalAddSub(t.slice(re + 4), row)); try { return new RegExp(r).test(l) } catch { return false } }
+  const inOp = t.indexOf(' IN ')
+  if (inOp > 0) { const l = _evalAddSub(t.slice(0, inOp), row); const r = _evalAddSub(t.slice(inOp + 4), row); return Array.isArray(r) && r.includes(l) }
+  for (const op of ['<>', '>=', '<=', '=', '>', '<']) {
+    const idx = _findTopLevelOp(t, op)
+    if (idx > 0) {
+      const left = _evalAddSub(t.slice(0, idx), row)
+      const right = _evalAddSub(t.slice(idx + op.length), row)
+      return _compareValues(left, right, op)
+    }
+  }
+  return _evalAddSub(t, row)
+}
+
+function _compareValues(a: unknown, b: unknown, op: string): boolean {
+  if (a == null || b == null) return op === '<>' ? true : false
+  switch (op) {
+    case '=': return a === b
+    case '<>': return a !== b
+    case '<': return Number(a) < Number(b)
+    case '>': return Number(a) > Number(b)
+    case '<=': return Number(a) <= Number(b)
+    case '>=': return Number(a) >= Number(b)
+  }
+  return false
+}
+
+function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
+  const t = s.trim()
+  for (let i = t.length - 1; i >= 0; i--) {
+    if (t[i] === '+' && !_inBrackets(t, i)) {
+      const left = _evalAddSub(t.slice(0, i), row)
+      const right = _evalMulDiv(t.slice(i + 1), row)
+      return typeof left === 'string' || typeof right === 'string' ? String(left) + String(right) : Number(left) + Number(right)
+    }
+    if (t[i] === '-' && !_inBrackets(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1])) {
+      const left = _evalAddSub(t.slice(0, i), row)
+      const right = _evalMulDiv(t.slice(i + 1), row)
+      return Number(left) - Number(right)
+    }
+  }
+  return _evalMulDiv(t, row)
+}
+
+function _evalMulDiv(s: string, row?: Record<string, unknown>): unknown {
+  const t = s.trim()
+  for (let i = t.length - 1; i >= 0; i--) {
+    if (t[i] === '*' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) * Number(right) }
+    if (t[i] === '/' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) / Number(right) }
+    if (t[i] === '%' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) % Number(right) }
+  }
+  return _evalUnary(t, row)
+}
+
+function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
+  const t = s.trim()
+  if (t.startsWith('-')) return -Number(_evalUnary(t.slice(1), row))
+  if (t.startsWith('+')) return Number(_evalUnary(t.slice(1), row))
+  return _evalAtom(t, row)
+}
+
+function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
+  const t = s.trim()
+  if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) return _evalBinary(t.slice(1, -1), row)
+  // 函数调用（必须在 dot 之前）
+  const fnMatch = t.match(/^(\w+)\((.+?)\)$/s)
+  if (fnMatch) {
+    const args = fnMatch[2].trim() ? _parseCommaList(fnMatch[2]).map(a => a.trim()) : []
+    return _callFunction(fnMatch[1].toLowerCase(), args, row)
+  }
+  // 字面量先行（避免 . 被当属性访问）
+  if (t.startsWith("'") || t.startsWith('"') || /^-?\d/.test(t) || t.startsWith('.') || t.toLowerCase() === 'null' || t.toLowerCase() === 'true' || t.toLowerCase() === 'false') {
+    return _evalLiteral(t, row)
+  }
+  // 属性访问 a.b
+  const dotIdx = t.indexOf('.')
+  if (dotIdx > 0 && !t.startsWith('.')) {
+    const obj = _evalAtom(t.slice(0, dotIdx), row)
+    const prop = t.slice(dotIdx + 1)
+    if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[prop] ?? null
+    return null
+  }
+  // 下标 a[b]
+  const bracketIdx = t.indexOf('[')
+  if (bracketIdx > 0 && t.endsWith(']')) {
+    const obj = _evalAtom(t.slice(0, bracketIdx), row)
+    const idx = _evalBinary(t.slice(bracketIdx + 1, -1), row)
+    if (Array.isArray(obj)) return obj[Number(idx)] ?? null
+    if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[String(idx)] ?? null
+    return null
+  }
+  // 变量引用
+  if (t in (row || {})) return row![t]
+  if (row?._alias === t) return row
+  return _evalLiteral(t, row)
+}
+
+function _evalLiteral(s: string, row?: Record<string, unknown>): unknown {
+  const v = s.trim()
+  if (v === 'null') return null
+  if (v.toLowerCase() === 'true') return true
+  if (v.toLowerCase() === 'false') return false
+  // 数字字面量：整数、浮点、十六进制、科学计数法、小数点开头
+  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v)) return parseFloat(v)
+  if (/^0[xX][0-9a-fA-F]+$/.test(v)) return parseInt(v, 16)
+  if (/^\.\d+([eE][+-]?\d+)?$/.test(v)) return parseFloat(v)
+  if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) return v.slice(1, -1)
+  if (v.startsWith('[') && v.endsWith(']')) {
+    const inner = v.slice(1, -1).trim()
+    return inner ? _parseCommaList(inner).map(item => _evalBinary(item.trim(), row)) : []
+  }
+  if (v.startsWith('{') && v.endsWith('}')) {
+    const inner = v.slice(1, -1).trim()
+    if (!inner) return {}
+    const result: Record<string, unknown> = {}
+    for (const pair of _parseCommaList(inner)) {
+      const colonIdx = pair.indexOf(':')
+      if (colonIdx === -1) continue
+      result[pair.slice(0, colonIdx).trim().replace(/['"]/g, '')] = _evalBinary(pair.slice(colonIdx + 1).trim(), row)
+    }
+    return result
+  }
+  return null
+}
+
+function _inBrackets(s: string, idx: number): boolean {
+  let depth = 0
+  for (let i = 0; i < idx; i++) { if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth++; if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth-- }
+  return depth > 0
+}
+
+function _isBalanced(s: string): boolean {
+  let depth = 0
+  for (const ch of s) { if (ch === '(') depth++; if (ch === ')') depth--; if (depth < 0) return false }
+  return depth === 0
+}
+
+function _findTopLevelOp(s: string, op: string): number {
+  let depth = 0
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth++
+    if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth--
+    if (depth === 0 && s.slice(i, i + op.length) === op) return i
+  }
+  return -1
+}
+
+function _splitTopLevel(s: string, find: string): string[] {
+  const result: string[] = []
+  let depth = 0, inStr = false, strChar = '', current = '', i = 0
+  while (i < s.length) {
+    if (inStr) { current += s[i]; if (s[i] === strChar) inStr = false; i++; continue }
+    if (s[i] === "'" || s[i] === '"') { inStr = true; strChar = s[i]; current += s[i]; i++; continue }
+    if (s[i] === '(' || s[i] === '[' || s[i] === '{') { depth++; current += s[i]; i++; continue }
+    if (s[i] === ')' || s[i] === ']' || s[i] === '}') { depth--; current += s[i]; i++; continue }
+    if (depth === 0 && s.slice(i, i + find.length) === find) { result.push(current.trim()); current = ''; i += find.length; continue }
+    current += s[i]; i++
+  }
+  const last = current.trim()
+  if (last) result.push(last)
+  return result.length ? result : [s.trim()]
 }

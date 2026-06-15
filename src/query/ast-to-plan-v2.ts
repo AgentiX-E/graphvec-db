@@ -618,11 +618,14 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
       // (ANTLR nests WHERE inside MatchClauseContext)
       case 'RETURN': {
         const ret = extractReturn(clause.ctx)
-        // 填充 returnAliasMap：returnColumn → 原始表达式（用于 DML 结果构造）
+        // 填充 returnAliasMap：returnColumn → 原始表达式（用于 DML 结果构造 & 表达式求值）
         plan.returnAliasMap = {}
+        // 填充 expressionColumns：结构化列信息（用于表达式求值引擎）
+        plan.expressionColumns = []
         for (const c of ret.columns) {
           const key = (c.alias ?? c.expression).replace(/^\w+\./, '')
           plan.returnAliasMap[key] = c.expression
+          plan.expressionColumns.push({ expression: c.expression, alias: c.alias ?? c.expression })
         }
         // 兼容 _executeQuery：returnColumns 期望字段名（不含变量.前缀），* 则置空
         plan.returnColumns = ret.columns.map(c => {
