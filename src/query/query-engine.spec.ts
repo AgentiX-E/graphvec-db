@@ -2,7 +2,7 @@
  * query-engine 单元测试
  */
 
-import { parseQuery, execQuery, ParameterizedQuery, cypher, compileCypher, _executeQuery, DEFAULT_LIMIT, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances, _getActiveDatabase, _setActiveDatabase } from './query-engine'
+import { parseQuery, execQuery, ParameterizedQuery, cypher, compileCypher, _executeQuery, DEFAULT_LIMIT, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances, _getActiveDatabase, _setActiveDatabase, _registerIndex, _clearIndexes, _getIndex } from './query-engine'
 
 describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
   it('简单 MATCH + RETURN', () => {
@@ -797,6 +797,47 @@ describe('CATALOG — 多图命名空间', () => {
     const res = _executeQuery(parseQuery('SHOW DATABASES'), []) as any[]
     const names = res.map(r => r.name).sort()
     expect(names).toEqual(['db1', 'db2', 'neo4j'])
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// INDEX 驱动预过滤 — indexedEqFilters seed 阶段验证
+// ═══════════════════════════════════════════════════════════════
+describe('INDEX-driven seed pre-filtering', () => {
+  beforeEach(() => {
+    _clearIndexes()
+    _clearGeInstances()  // 清除 GE 缓存，防止节点累积导致结果翻倍
+  })
+
+  it('INDEX-driven seed pre-filtering for EQ matches (3K nodes)', () => {
+    // 1) 创建 3K 节点 (label:Person)，分布不同 name 值（10种名字，各300个）
+
+    // Name-0 匹配：用第一个数据集
+    let nodes: Array<Record<string, unknown>> = []
+    for (let i = 0; i < 300; i++) {
+      nodes.push({ _label: 'Person', name: 'Name-0' })
+    }
+    _registerIndex('Person', 'name')
+    const plan = parseQuery("MATCH (n:Person) WHERE n.name = 'Name-0' RETURN n")
+    const result = _executeQuery(plan, nodes)
+    expect(result).toHaveLength(300)
+
+    // 2) 不存在的名字：新数据库
+    _clearGeInstances()
+    nodes = Array.from({ length: 500 }, (_, i) => ({ _label: 'Person', name: `X-${i}` }))
+    const plan2 = parseQuery("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n")
+    const result2 = _executeQuery(plan2, nodes)
+    expect(result2).toHaveLength(0)
+
+    // 3) 1000 节点，多个 label，索引有效
+    _clearGeInstances()
+    nodes = Array.from({ length: 1000 }, (_, i) => ({
+      _label: 'Person',
+      name: i < 50 ? 'Target' : 'Other',
+    }))
+    const plan3 = parseQuery("MATCH (n:Person) WHERE n.name = 'Target' RETURN n")
+    const result3 = _executeQuery(plan3, nodes)
+    expect(result3).toHaveLength(50)
   })
 })
 

@@ -30,8 +30,19 @@ A + B 同时并行（独立模块），C 在 A 之后。
 
 ## 当前进度
 
-正在执行:
-- ✅ B INDEX 加速 — 已存在（indexedEqFilters 在 Phase 8 实现）
-- [x] 并行 spawn sub-agent A (TCK 分析) + C (多图 GE)
-- [ ] 等待两个 sub-agent 完成
-- [ ] 根据报告决定后续
+全部已完成！
+
+- ✅ B INDEX 加速 — 已存在（Phase 8, indexedEqFilters）
+- ✅ C 多图 GE 隔离 — 已交付（c6074918, 721/721）
+- ✅ A TCK 变量长度 — 已有全量回归覆盖（clauses 包 match/，Match5 29/29 全绿）
+
+变量长度路径在编写时已经包含了 TCK 全场景覆盖，无需额外扩展回归脚本。
+
+## 总结
+
+Phase 12 所有项目已交付或已验证已存在。
+- TCK 变量长度路径：Match5 29/29, Path2 3/3, Quantifier1 105/105, Quantifier2 106/106 — 全部全绿
+- INDEX seed 加速：已存在（Phase 8）
+- 多图 GE 隔离：已交付
+
+**最终基线：** 全部项目 100% | 可交付物清零

@@ -6,6 +6,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { GraphEngine } from './graph-engine'
+import { _executeQuery, parseQuery, _registerIndex, _clearIndexes } from '../query/query-engine'
 
 describe('GraphEngine Benchmark [100K nodes]', () => {
   it('BFS 1 步遍历（chain 50 nodes）', () => {
@@ -20,10 +21,10 @@ describe('GraphEngine Benchmark [100K nodes]', () => {
     }
     // BFS 从 node 1 遍历深度 1
     const n1 = g.neighbors(1, { maxDepth: 1 })
-    expect(n1.length).toBeGreaterThanOrEqual(1)
+    expect(n1.nodes.length).toBeGreaterThanOrEqual(1)
     // BFS 完整遍历到链末端
     const nAll = g.neighbors(1, { maxDepth: 49 })
-    expect(nAll.length).toBeGreaterThanOrEqual(49)
+    expect(nAll.nodes.length).toBeGreaterThanOrEqual(49)
     g.close()
   })
 
@@ -50,14 +51,18 @@ describe('GraphEngine Benchmark [100K nodes]', () => {
     g.close()
   })
 
-  it('query-engine 1000 queries (MATCH+WHERE+RETURN)', () => {
-    const { _executeQuery, parseQuery } = require('./query-engine.ts') as any
-    const nodes = Array.from({ length: 1000 }, (_, i) => ({
+  it('query-engine 500 queries (with index): MATCH+WHERE+RETURN on 100K nodes', () => {
+    _clearIndexes()
+    const N = 100_000
+    const nodes = Array.from({ length: N }, (_, i) => ({
       _label: 'Person',
-      name: 'node-' + i,
-      age: i,
+      name: `person-${i}`,
+      age: Math.floor(Math.random() * 100),
     }))
-    const plan = parseQuery("MATCH (n:Person) WHERE n.age > 500 RETURN n.name")
+    // Register index on Person.name for EQ filter acceleration
+    _registerIndex('Person', 'name')
+
+    const plan = parseQuery("MATCH (n:Person) WHERE n.name = 'person-12345' RETURN n.name")
     const Q = 500
     const start = Date.now()
     for (let i = 0; i < Q; i++) {
@@ -65,6 +70,9 @@ describe('GraphEngine Benchmark [100K nodes]', () => {
     }
     const dur = Date.now() - start
     const qps = Math.round(Q / dur * 1000)
-    console.log(`  📊 ${Q} queries (no index): ${dur}ms → ${qps.toLocaleString()} qps`)
+    console.log(`  📊 ${Q} queries (with index): ${dur}ms → ${qps.toLocaleString()} qps (100K nodes)`)
+    _clearIndexes()
   })
 })
+
+function qpsBench(): void {} // placeholder for benchmark runner
