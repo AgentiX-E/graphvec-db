@@ -26,6 +26,7 @@ import crypto from 'crypto'
 import { parseCypherToPlan } from './ast-to-plan-v2'
 import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
+import { globalRegistry as _procedureRegistry } from './procedure-registry'
 
 // ── 内存索引注册表（CREATE INDEX / DROP INDEX）━━━━━━━━━━━━━━━
 
@@ -1805,8 +1806,33 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           })),
         }] as any
       }
-      default:
+      default: {
+        // 查询 procedure registry（支持 db.* 以外的自定义 procedure）
+        const proc = _procedureRegistry.get(name)
+        if (proc) {
+          const ctx: import('./procedure-registry').ProcedureContext = {
+            getAllNodes: () => nodes,
+            getNodeCount: () => nodes.length,
+            getLabels: () => {
+              const labels = new Set<string>()
+              for (const node of nodes) {
+                const lbl = String(node._label || '')
+                if (lbl) for (const l of lbl.split(':').map(s => s.trim()).filter(Boolean)) labels.add(l)
+              }
+              return Array.from(labels)
+            },
+            getPropertyKeys: () => {
+              const keys = new Set<string>()
+              for (const node of nodes) {
+                for (const k of Object.keys(node)) if (!k.startsWith('_')) keys.add(k)
+              }
+              return Array.from(keys)
+            },
+          }
+          return proc.execute(ctx, args || []) as any
+        }
         throw new Error(`Unknown procedure: ${name}`)
+      }
     }
   }
 

@@ -66,7 +66,7 @@ describe('GraphEngine Benchmark [100K nodes]', () => {
     const Q = 500
     const start = Date.now()
     for (let i = 0; i < Q; i++) {
-      _executeQuery(plan, nodes)
+      await _executeQuery(plan, nodes)
     }
     const dur = Date.now() - start
     const qps = Math.round(Q / dur * 1000)

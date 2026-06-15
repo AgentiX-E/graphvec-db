@@ -11,6 +11,7 @@ import fs from 'fs'
 import crypto from 'crypto'
 import { parseQuery, _executeQuery, _validatePlan } from '../query-engine'
 import { GraphEngine } from '../../core/graph-engine'
+import { globalRegistry as _globalProcedureRegistry, type CypherProcedure } from '../procedure-registry'
 
 interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any; pDir?: string; params?: Record<string, string> }
 const st: St = { nodes: [], q: '', res: [], err: null, params: {} }
@@ -592,7 +593,82 @@ Given('parameters are:', function (dt: any) {
     }
   }
 })
-Given(/^there exists a procedure .*$/, () => {})
+Given(/^there exists a procedure .*$/, function (this: any) {
+  // 解析 Gherkin 步骤文本获取 procedure 名称和签名
+  // 步骤格式: "there exists a procedure <name>(<params>) :: (<returns>):"
+  // data table 包含示例输入/输出行（可选，可能为空 | 单独一行）
+  const text = this.getStep ? this.getStep().text || '' : ''
+  const match = text.match(/there exists a procedure\s+(\S+)\(([^)]*)\)\s*::\s*\(([^)]*)\)/)
+  if (!match) {
+    // 宽松匹配：只拿名字
+    const nameMatch = text.match(/there exists a procedure\s+(\S+)/)
+    if (!nameMatch) return
+    const procName = nameMatch[1].toLowerCase()
+    _globalProcedureRegistry.register({ name: procName, signature: '', execute: () => [] })
+    return
+  }
+  const procName = match[1].toLowerCase()
+  const paramsSig = match[2].trim()
+  const returnsSig = match[3].trim()
+
+  // 获取 data table（如果有）
+  let dataTable: any[] = []
+  const dt: DataTable | undefined = this.getDataTable && this.getDataTable()
+  if (dt && dt.rows && dt.rows.length) {
+    const rawRows = dt.rows()
+    // 第一行是表头（参数列名）
+    const headers: string[] = rawRows[0] || []
+    for (let i = 1; i < rawRows.length; i++) {
+      const row: Record<string, unknown> = {}
+      for (let j = 0; j < headers.length; j++) {
+        row[headers[j]] = parseTckValue(rawRows[i][j] ?? null)
+      }
+      dataTable.push(row)
+    }
+  }
+
+  _globalProcedureRegistry.register({
+    name: procName,
+    signature: `${procName}(${paramsSig}) :: (${returnsSig})`,
+    execute(_ctx: any, args: any[]) {
+      // 根据 args 匹配 dataTable 中的行
+      if (dataTable.length === 0) return []
+      if (paramsSig) {
+        const paramNames = paramsSig.split(',').map(s => s.split('::')[0].trim())
+        const matched = dataTable.find(row => {
+          return paramNames.every((pName, i) => {
+            if (args[i] === undefined || args[i] === null) return row[pName] === null || row[pName] === undefined
+            return String(row[pName]) === String(args[i])
+          })
+        })
+        if (matched) {
+          // 移除输入参数列，只返回 yield 列
+          const result: Record<string, unknown> = {}
+          const retNames = returnsSig.split(',').map(s => s.split('::')[0].trim()).filter(Boolean)
+          for (const rn of retNames) {
+            if (matched[rn] !== undefined) result[rn] = matched[rn]
+          }
+          return Object.keys(result).length ? [result] : [matched]
+        }
+        return []
+      }
+      return dataTable
+    },
+  } as CypherProcedure)
+})
+
+/** 解析 TCK 值（数字、字符串、null） */
+function parseTckValue(val: string | null): unknown {
+  if (val === null || val === undefined || val === '' || val === 'null') return null
+  if (/^-?\d+(\.\d+)?$/.test(val)) return Number(val)
+  // 去除引号
+  const trimmed = val.trim()
+  if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
 
 When('executing query:', function (query: string) {
   st.q = query.trim()
