@@ -9,7 +9,7 @@ import { Given, When, Then, Before, After, DataTable } from '@cucumber/cucumber'
 import assert from 'assert'
 import fs from 'fs'
 import crypto from 'crypto'
-import { parseQuery, _executeQuery, _validatePlan } from '../query-engine'
+import { parseQuery, _executeQuery, _validatePlan, _clearGeInstances } from '../query-engine'
 import { GraphEngine } from '../../core/graph-engine'
 import { globalRegistry as _globalProcedureRegistry, type CypherProcedure } from '../procedure-registry'
 
@@ -20,10 +20,23 @@ Before(function () {
   st.nodes = []; st.q = ''; st.res = []; st.err = null; st.params = {}
   if (st.pGe) { try { st.pGe.close() } catch {}; st.pGe = undefined }
   if (st.pDir) { try { fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}; st.pDir = undefined }
+  _clearGeInstances()
 })
 After(function () {
   try { st.pGe?.close() } catch {}
   try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}
+  try {
+    const d = (globalThis as any).__gebug_data;
+    if (d && d.length) {
+      const logPath = '/tmp/ge_debug_' + process.pid + '.log';
+      for (const entry of d) {
+        fs.appendFileSync(logPath, JSON.stringify(entry) + '\n');
+      }
+    }
+  } catch (e: any) {
+    fs.appendFileSync('/tmp/ge_debug_err.log', 'After hook error: ' + e.message + '\n');
+  }
+  try { (globalThis as any).__gebug_data = [] } catch {}
 })
 
 function persistGe(): any {

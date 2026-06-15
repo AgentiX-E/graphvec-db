@@ -1211,7 +1211,9 @@ function parseSingleCondition(text: string): FilterClause | null {
   const strMatch = t.match(/^(\w+)\.(\w+)\s+(STARTS\s+WITH|ENDS\s+WITH|CONTAINS)\s+(.+)$/i)
   if (strMatch) {
     let val: unknown = strMatch[4].trim()
-    if ((val as string).startsWith("'") || (val as string).startsWith('"')) val = (val as string).slice(1, -1)
+    if ((val as string).startsWith("'") || (val as string).startsWith('"')) val = unescapeCypherString((val as string).slice(1, -1))
+    else if (/^(true|false)$/i.test(val as string)) val = (val as string).toUpperCase() === 'TRUE'
+    else if (/^null$/i.test(val as string)) val = null
     return {
       source: strMatch[1],
       property: strMatch[2],
@@ -1236,7 +1238,7 @@ function parseSingleCondition(text: string): FilterClause | null {
     let value: unknown = compMatch[4].trim()
     // Parse value: string, number, bool, null
     if ((value as string).startsWith("'") || (value as string).startsWith('"')) {
-      value = (value as string).slice(1, -1)
+      value = unescapeCypherString((value as string).slice(1, -1))
     } else if (/^-?\d+$/.test(value as string)) {
       value = parseInt(value as string, 10)
     } else if (/^-?\d+\.\d+$/.test(value as string)) {
@@ -1692,6 +1694,34 @@ function extractWith(withCtx: any): QueryPlan['with'] {
 // ═══════════════════════════════════════════════════════════════
 
 /**
+ * 将 Cypher 字符串转义序列解析为实际字符。
+ * 支持: \\n → 换行, \\t → 制表符, \\r → 回车, \\b → 退格, \\f → 换页,
+ *       \\\\ → 反斜杠, \\' → 单引号, \\" → 双引号, \\0 → NUL
+ * 以及十六进制转义 \\uXXXX 和 \\xXX
+ */
+function unescapeCypherString(s: string): string {
+  return s.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[nrtbf0'"\\])/g, (match) => {
+    const esc = match[1]
+    switch (esc) {
+      case 'n':  return '\n'
+      case 'r':  return '\r'
+      case 't':  return '\t'
+      case 'b':  return '\b'
+      case 'f':  return '\f'
+      case '0':  return '\x00'
+      case "'":  return "'"
+      case '"':  return '"'
+      case '\\': return '\\'
+      default:
+        if (esc.startsWith('u') || esc.startsWith('x')) {
+          try { return String.fromCodePoint(parseInt(esc.slice(1), 16)) } catch { return match }
+        }
+        return match
+    }
+  })
+}
+
+/**
  * Extract a MapLiteral (e.g., {name: "Alice", age: 30}) into a Record.
  */
 function extractMapLiteral(propsCtx: any): Record<string, unknown> | null {
@@ -1710,7 +1740,7 @@ function extractMapLiteral(propsCtx: any): Record<string, unknown> | null {
     // Try to parse literal values
     if (typeof value === 'string') {
       if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) {
-        value = value.slice(1, -1)
+        value = unescapeCypherString(value.slice(1, -1))
       } else if (value.startsWith('[') && value.endsWith(']')) {
         // 数组字面量解析
         value = parseListLiteral(value)

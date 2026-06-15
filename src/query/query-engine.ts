@@ -2630,6 +2630,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const planForGe = JSON.parse(JSON.stringify(plan))
           // 排除跨变量属性引用 filter（GE 的 _matchFilter 无法做跨变量比较）
           planForGe.filters = (geFilters || []).filter(f => !crossVarFilters.includes(f))
+          try { (globalThis as any).__gebug_data = (globalThis as any).__gebug_data || []; (globalThis as any).__gebug_data.push({query, planForGeF: JSON.stringify(planForGe.filters), type: 'GE_exec'}) } catch {}
           return (ge as any)._executeQueryPlan(planForGe)
         })()
     let records = rawRecords
