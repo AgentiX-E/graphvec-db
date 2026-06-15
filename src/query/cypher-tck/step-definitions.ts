@@ -25,18 +25,6 @@ Before(function () {
 After(function () {
   try { st.pGe?.close() } catch {}
   try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}
-  try {
-    const d = (globalThis as any).__gebug_data;
-    if (d && d.length) {
-      const logPath = '/tmp/ge_debug_' + process.pid + '.log';
-      for (const entry of d) {
-        fs.appendFileSync(logPath, JSON.stringify(entry) + '\n');
-      }
-    }
-  } catch (e: any) {
-    fs.appendFileSync('/tmp/ge_debug_err.log', 'After hook error: ' + e.message + '\n');
-  }
-  try { (globalThis as any).__gebug_data = [] } catch {}
 })
 
 function persistGe(): any {

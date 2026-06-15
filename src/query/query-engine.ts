@@ -1644,6 +1644,175 @@ function splitCsvLine(line: string, delimiter: string): string[] {
   return result
 }
 
+/**
+ * 处理 WITH/UNWIND/aggregate 管道（不含 MATCH 图遍历）。
+ * 
+ * 处理链：
+ *   WITH [...] AS listVar
+ *     → UNWIND listVar AS x
+ *       → UNWIND listVar AS y（可选 secondUnwind）
+ *         → WITH expr AS v (投影)
+ *           → RETURN agg(v)
+ * 
+ * DSL 语义：WITH 先计算列表字面量（直接在 plan 中），然后 UNWIND 行展开，
+ * WITH 列投影 + aggregate 聚合。
+ */
+function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string, unknown>>, query?: string): QueryRow[] {
+  // Step 1: 解析 WITH 列表字面量
+  // plan.with.columns[0] 是 {expression: "[1, 3.14, ...]", alias: "operands"}
+  const varCtx: Record<string, unknown> = {}
+
+  // 多个 WITH 子句时，plan.with 只存最后一个 WITH
+  // 从原始 query 文本提取 WITH [...] AS var 的列表字面量
+  if (query && plan.unwind?.var) {
+    // 匹配所有 WITH [...] AS var 模式，取第一个
+    const withListMatch = query.match(/WITH\s+(\[.+?\])\s+AS\s+(\w+)/is)
+    if (withListMatch) {
+      const listExpr = withListMatch[1]
+      const alias = withListMatch[2]
+      const val = _evaluateExpression(listExpr, {})
+      if (Array.isArray(val)) varCtx[alias] = val
+    }
+  }
+
+  if (plan.with?.columns?.length) {
+    for (const col of plan.with.columns) {
+      const val = _evaluateExpression(col.expression, varCtx)
+      if (col.alias) varCtx[col.alias] = val
+    }
+  }
+
+  // Step 2: 执行 UNWIND 链（支持双 UNWIND 笛卡尔积）
+  let rows: Array<Record<string, unknown>> = []
+
+  if (plan.unwind) {
+    const list1 = _resolveUnwindList(plan.unwind, varCtx)
+    if (!Array.isArray(list1)) {
+      // 非列表值 → 单行
+      rows = [{ [plan.unwind.name]: list1 }]
+    } else if (plan.secondUnwind) {
+      // 双 UNWIND：笛卡尔积
+      const list2 = _resolveUnwindList(plan.secondUnwind, varCtx)
+      for (const item1 of list1) {
+        const list2Arr = Array.isArray(list2) ? list2 : [list2]
+        for (const item2 of list2Arr) {
+          const row: Record<string, unknown> = { [plan.unwind.name]: item1 }
+          row[plan.secondUnwind.name] = item2
+          rows.push(row)
+        }
+      }
+    } else {
+      // 单 UNWIND
+      rows = list1.map((item: unknown) => ({ [plan.unwind.name!]: item }))
+    }
+  } else {
+    rows = [{}]
+  }
+
+    // Step 3: 应用 WITH 投影（op1 STARTS WITH op2 AS v）
+  if (plan.with?.columns?.length) {
+    // 跳过第一个列（它通常是 WITH [...] AS listVar，已处理）
+    // 如果 WITH 有剩余列，逐个求值
+    // 正常情况：WITH op1 STARTS WITH op2 AS v → expression = "op1 STARTS WITH op2", alias = "v"
+    rows = rows.map(row => {
+      const newRow: Record<string, unknown> = {}
+      // 将 row 绑定到表达式求值的变量上下文
+      const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+      for (const col of plan.with!.columns!) {
+        const alias = col.alias || col.expression
+        if (evalCtx[alias] !== undefined && col.alias) continue
+        if (col.alias === null && col.expression in evalCtx) continue
+        const val = _evaluateExpression(col.expression, evalCtx)
+        newRow[col.alias || col.expression] = val !== undefined ? val : null
+      }
+      return newRow
+    })
+  }
+
+  // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
+  if (!plan.with?.columns?.length && !rows.length) {
+    rows = [{}]
+  }
+
+  // Step 4: 聚合（count/sum/avg/max/min）
+  if (plan.aggregate) {
+    const agg = plan.aggregate as any
+    const aggFn = (agg.function || agg.type || '').toLowerCase()
+    const aggAlias = agg.alias || (agg.column && agg.column.replace(/^.+?\s+AS\s+/i, '').trim()) || agg.field || agg.column || 'count(*)'
+
+    // 从聚合列提取字段名：count(*)=*, count(v)=v
+    const colMatch = (agg.column || '').match(/^\w+\((.+?)\)(?:\s+AS\s+\w+)?$/i)
+    const field = colMatch ? colMatch[1] : (agg.field || '*')
+
+    if (aggFn === 'count') {
+      if (field === '*') {
+        // count(*): 行数
+        return [{ [aggAlias]: rows.length }]
+      }
+      // count(expr): 非 null 行数
+      const nonNull = rows.filter(r => {
+        const v = r[field]
+        return v !== null && v !== undefined
+      })
+      return [{ [aggAlias]: nonNull.length }]
+    }
+
+    // sum/avg/min/max: 从 field 收集数值
+    const values = rows
+      .map(r => r[field])
+      .filter((v: unknown) => v !== null && v !== undefined)
+      .map(Number)
+      .filter((v: number) => !isNaN(v))
+
+    switch (aggFn) {
+      case 'sum':
+        return [{ [aggAlias]: values.reduce((a: number, b: number) => a + b, 0) }]
+      case 'avg':
+        return [{ [aggAlias]: values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0 }]
+      case 'max':
+        return [{ [aggAlias]: values.length ? Math.max(...values) : 0 }]
+      case 'min':
+        return [{ [aggAlias]: values.length ? Math.min(...values) : 0 }]
+      default:
+        return [{ [aggAlias]: 0 }]
+    }
+  }
+
+  // Step 5: RETURN 列映射
+  if (plan.returnColumns?.length) {
+    return rows.map(row => {
+      const out: QueryRow = {}
+      for (const rc of plan.returnColumns) {
+        if (!rc) continue
+        // 查找 returnAliasMap 原始表达式
+        const expr = plan.returnAliasMap?.[rc.replace(/^\w+\./, '')] || rc
+        const val = _evaluateExpression(expr, row)
+        out[rc] = val !== null && val !== undefined ? val : null
+      }
+      return out
+    })
+  }
+
+  return rows
+}
+
+/**
+ * 从 UNWIND clause 解析列表值：
+ * 1. plan.unwind.list 已填充（字面量列表）
+ * 2. plan.unwind.var 是变量引用 → 从 varCtx 查找
+ */
+function _resolveUnwindList(unwind: NonNullable<QueryPlan['unwind']>, varCtx: Record<string, unknown>): unknown[] {
+  if (Array.isArray(unwind.list) && unwind.list.length > 0) {
+    return unwind.list
+  }
+  if (unwind.var && varCtx[unwind.var] !== undefined) {
+    const val = varCtx[unwind.var]
+    if (Array.isArray(val)) return val
+    return [val]
+  }
+  return []
+}
+
 /** GraphEngine 原生执行入口 */
 async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
   // ── LOAD CSV ──
@@ -1910,6 +2079,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       case 'subtract': { const ek = new Set(rightRows.map(r => JSON.stringify(r))); return leftRows.filter(r => !ek.has(JSON.stringify(r))) }
       default: return [...leftRows, ...rightRows]
     }
+  }
+
+  // ── WITH / UNWIND / aggregate 管道 ──
+  // 处理 WITH [...] AS x → UNWIND x AS y → ... → RETURN agg, count(*) 链
+  // 不涉及 MATCH/GE 图遍历，纯表达式 + 聚合
+  if (plan.unwind || (plan.with && !plan.hasMatch)) {
+    return _executeWithUnwindPipeline(plan, nodes, query)
   }
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
@@ -4152,11 +4328,11 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
   if (t.endsWith(' IS NOT NULL')) { const left = _evalAddSub(t.slice(0, t.length - 12).trim(), row); return left !== null && left !== undefined }
   if (t.endsWith(' IS NULL')) { const left = _evalAddSub(t.slice(0, t.length - 8).trim(), row); return left === null || left === undefined }
   const sw = t.indexOf(' STARTS WITH ')
-  if (sw > 0) { const l = String(_evalAddSub(t.slice(0, sw), row)); const r = String(_evalAddSub(t.slice(sw + 13), row)); return l.startsWith(r) }
+  if (sw > 0) { const l = _evalAddSub(t.slice(0, sw), row); const r = _evalAddSub(t.slice(sw + 13), row); if (l == null || r == null) return null; return String(l).startsWith(String(r)) }
   const ci = t.indexOf(' CONTAINS ')
-  if (ci > 0) { const l = String(_evalAddSub(t.slice(0, ci), row)); const r = String(_evalAddSub(t.slice(ci + 10), row)); return l.includes(r) }
+  if (ci > 0) { const l = _evalAddSub(t.slice(0, ci), row); const r = _evalAddSub(t.slice(ci + 10), row); if (l == null || r == null) return null; return String(l).includes(String(r)) }
   const ew = t.indexOf(' ENDS WITH ')
-  if (ew > 0) { const l = String(_evalAddSub(t.slice(0, ew), row)); const r = String(_evalAddSub(t.slice(ew + 11), row)); return l.endsWith(r) }
+  if (ew > 0) { const l = _evalAddSub(t.slice(0, ew), row); const r = _evalAddSub(t.slice(ew + 11), row); if (l == null || r == null) return null; return String(l).endsWith(String(r)) }
   const re = t.indexOf(' =~ ')
   if (re > 0) { const l = String(_evalAddSub(t.slice(0, re), row)); const r = String(_evalAddSub(t.slice(re + 4), row)); try { return new RegExp(r).test(l) } catch { return false } }
   const inOp = t.indexOf(' IN ')
@@ -4229,7 +4405,7 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     return _callFunction(fnMatch[1].toLowerCase(), args, row)
   }
   // 字面量先行（避免 . 被当属性访问）
-  if (t.startsWith("'") || t.startsWith('"') || /^-?\d/.test(t) || t.startsWith('.') || t.toLowerCase() === 'null' || t.toLowerCase() === 'true' || t.toLowerCase() === 'false') {
+  if (t.startsWith("'") || t.startsWith('"') || t.startsWith('[') || t.startsWith('{') || /^-?\d/.test(t) || t.startsWith('.') || t.toLowerCase() === 'null' || t.toLowerCase() === 'true' || t.toLowerCase() === 'false') {
     return _evalLiteral(t, row)
   }
   // 属性访问 a.b

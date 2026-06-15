@@ -736,7 +736,11 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
       }
       case 'UNWIND': {
         const u = extractUnwind(clause.ctx)
-        plan.unwind = u
+        if (plan.unwind) {
+          plan.secondUnwind = u
+        } else {
+          plan.unwind = u
+        }
         break
       }
       case 'CALL': {
@@ -1668,6 +1672,20 @@ function extractWith(withCtx: any): QueryPlan['with'] {
       } else {
         columns.push({ expression: text, alias: null })
       }
+      return
+    }
+    if (name.endsWith('Context') && !['SortItemContext', 'LimitContext', 'WithClauseContext'].includes(name)) {
+      // 某些上下文节点可能直接包含列表字面量而不经过 ReturnItemContext
+      // （如 WITH [...] AS x — ANTLR 可能不将其解析为 ReturnItemContext）
+      const text = getTextRecursive(node)
+      if (text && columns.length === 0) {
+        // 尝试从整体文本解析列：WITH <col1>, <col2>, ... 
+        const trimmed = text.trim()
+        if (trimmed && !trimmed.match(/^(WITH|AS|LIMIT|ORDER|SKIP|WHERE|DISTINCT)\b/i)) {
+          // fallback 解析在此场景暂不触发
+        }
+      }
+      for (const child of node.children) walk(child)
       return
     }
     if (name === 'SortItemContext') {
