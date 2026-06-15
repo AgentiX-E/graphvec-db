@@ -215,11 +215,6 @@ function normalizeActual(rows: any[], keys: string[]): Record<string, string>[] 
 /** Format a value to its canonical Cypher string representation */
 function _stringifyVal(val: unknown): string {
   if (val === null || val === undefined) return 'null'
-  // 大整数（字符串保留精度）直接返回数字格式
-  if (typeof val === 'string' && /^-?\d+$/.test(val)) {
-    // 如果值是纯数字字符串（大整数保留格式），不加引号
-    return val
-  }
   if (typeof val === 'string') {
     // 如果是边表示（[:T1] 格式），裸输出不含引号
     if (val.startsWith('[:"') || val.startsWith('[:')) return val

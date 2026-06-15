@@ -4063,6 +4063,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   tail: ([a]) => { const v = _evalBinary(a); return Array.isArray(v) ? v.slice(1) : null },
   range: ([s, e, step]) => { const start = Number(_evalBinary(s)), end = Number(_evalBinary(e)), st = step ? Math.abs(Number(_evalBinary(step))) : 1; const r: number[] = []; if (start <= end) for (let i = start; i <= end; i += st) r.push(i); else for (let i = start; i >= end; i -= st) r.push(i); return r },
   length: ([a]) => { const v = _evalBinary(a); return Array.isArray(v) ? v.length : 0 },
+  split: ([a, d]) => String(_evalBinary(a)).split(String(_evalBinary(d))),
 }
 
 function _callFunction(name: string, args: string[], row?: Record<string, unknown>): unknown {
