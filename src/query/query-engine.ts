@@ -26,6 +26,7 @@ import crypto from 'crypto'
 import { parseCypherToPlan } from './ast-to-plan-v2'
 import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
+import { globalRegistry as _procedureRegistry } from './procedure-registry'
 
 // ── 内存索引注册表（CREATE INDEX / DROP INDEX）━━━━━━━━━━━━━━━
 
@@ -1635,7 +1636,7 @@ function splitCsvLine(line: string, delimiter: string): string[] {
 }
 
 /** GraphEngine 原生执行入口 */
-function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): QueryResult {
+async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
   // ── LOAD CSV ──
   if (plan.loadCsv) {
     const csv = plan.loadCsv
@@ -1805,8 +1806,33 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
           })),
         }] as any
       }
-      default:
+      default: {
+        // 查询 procedure registry（支持 db.* 以外的自定义 procedure）
+        const proc = _procedureRegistry.get(name)
+        if (proc) {
+          const ctx: import('./procedure-registry').ProcedureContext = {
+            getAllNodes: () => nodes,
+            getNodeCount: () => nodes.length,
+            getLabels: () => {
+              const labels = new Set<string>()
+              for (const node of nodes) {
+                const lbl = String(node._label || '')
+                if (lbl) for (const l of lbl.split(':').map(s => s.trim()).filter(Boolean)) labels.add(l)
+              }
+              return Array.from(labels)
+            },
+            getPropertyKeys: () => {
+              const keys = new Set<string>()
+              for (const node of nodes) {
+                for (const k of Object.keys(node)) if (!k.startsWith('_')) keys.add(k)
+              }
+              return Array.from(keys)
+            },
+          }
+          return proc.execute(ctx, args || []) as any
+        }
         throw new Error(`Unknown procedure: ${name}`)
+      }
     }
   }
 
@@ -2225,15 +2251,8 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         // 但 GE.upsertNode 的核心（storage.upsertNode + nodeId tracking）是同步的
         const geTypeId = Math.abs(h) % 1000 + 1
         try {
-          // GE upsertNode 返回 Promise<NodeId>，核心在 sync 阶段完成
-          const p = (ge as any).asyncUpsertNode
-            ? (ge as any).upsertNode(geTypeId, 'n' + i, { props })
-            : Promise.resolve(i + 1)
-          // 同步执行：upsertNode 内部 this.storage.upsertNode 是同步的，nodeIds 也同步更新
-          // 但 upsertNode 定义为 async，返回 Promise。我们直接调 storage.upsertNode + 手动更新 nodeIds
-          const actualId = (ge as any).storage.upsertNode(geTypeId, 'n' + i, { props })
-          ;(ge as any)._nodeIds.add(actualId)
-          ;(ge as any)._labelIndex?.addNode?.(geTypeId, actualId)
+                    // 异步执行：直接调用 GE 的 upsertNode（真正的 async API）
+          const actualId = await (ge as any).upsertNode(geTypeId, 'n' + i, { props })
           nodeGeIds[i] = actualId
         } catch (e) {
           nodeGeIds[i] = i + 1
@@ -2649,8 +2668,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
             // 同步删除 GE 存储层节点
             if (ge) {
               try {
-                (ge as any).storage.deleteNode(nodeGeIds[i])
-                if ((ge as any)._nodeIds) (ge as any)._nodeIds.delete(nodeGeIds[i])
+                await (ge as any).deleteNode(nodeGeIds[i])
               } catch (_) { /* ignore storage errors */ }
             }
           }
@@ -2673,7 +2691,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
           // 同步更新 GE 存储层节点属性
           if (ge) {
             try {
-              (ge as any).storage.upsertNode(1, '', { props: node })
+              (ge as any).upsertNode(1, '', { props: node })
             } catch (_) { /* ignore storage errors */ }
           }
         }
@@ -2694,7 +2712,7 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
           // 同步更新 GE 存储层
           if (ge) {
             try {
-              (ge as any).storage.upsertNode(1, '', { props: node })
+              await (ge as any).upsertNode(1, '', { props: node })
             } catch (_) { /* ignore storage errors */ }
           }
         }
@@ -3471,11 +3489,11 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
 }
 
 
-export function _executeQuery(
+export async function _executeQuery(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
   query?: string,
-): QueryResult {
+): Promise<QueryResult> {
   // ── Plan 自我保护：深拷贝防止 `_executeViaGraphEngine` 内部突变泄漏 ──
   // _executeViaGraphEngine 会直接修改 plan 对象（清除 filters、改写 returnColumns 等），
   // 当调用方重复使用同一 plan 时会导致结果错误。
@@ -3494,7 +3512,7 @@ export function _executeQuery(
     planCopy.limit = DEFAULT_LIMIT
   }
   // 所有查询统一走 GraphEngine
-  return _executeViaGraphEngine(planCopy, nodes, query)
+  return await _executeViaGraphEngine(planCopy, nodes, query)
 }
 
 /**

@@ -87,11 +87,11 @@ describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
     expect(() => parseQuery('SELECT * FROM users')).toThrow(/Query/)
   })
 
-  it('RETURN 1 纯字面量表达式（无 MATCH）', () => {
+  it('RETURN 1 纯字面量表达式（无 MATCH）', async () => {
     const plan = parseQuery('RETURN 1')
     expect(plan.returnColumns).toContain('1')
     // 无 MATCH 时，执行结果使用合成行
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(Array.isArray(result)).toBe(true)
     expect(result.length).toBe(1)
   })
@@ -699,7 +699,7 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
   })
 
   // ── P1-Q7: 默认 LIMIT ────────────────────────────────────
-  it('无显式 LIMIT 时 _executeQuery 应用 DEFAULT_LIMIT=1000', () => {
+  it('无显式 LIMIT 时 _executeQuery 应用 DEFAULT_LIMIT=1000', async () => {
     // 构造一个无 LIMIT 的 plan，并生成超过 1000 条候选数据
     const plan: import('./query-engine').QueryPlan = {
       scanLabel: 'Test',
@@ -722,7 +722,7 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
       manyNodes.push({ id: i, name: `node-${i}` })
     }
 
-    const result = _executeQuery(plan, manyNodes)
+    const result = await _executeQuery(plan, manyNodes)
     expect(result.length).toBe(DEFAULT_LIMIT)
     expect(result.length).toBe(1000)
 
@@ -740,20 +740,20 @@ describe('CATALOG — 多图命名空间', () => {
     _clearGeInstances()
   })
 
-  it('SHOW DATABASES — 默认显示 neo4j', () => {
+  it('SHOW DATABASES — 默认显示 neo4j', async () => {
     const plan = parseQuery('SHOW DATABASES')
     expect(plan.catalogOp).toBe('SHOW_DATABASES')
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(Array.isArray(result)).toBe(true)
     expect(result).toHaveLength(1)
     expect(result[0].name).toBe('neo4j')
   })
 
-  it('CREATE DATABASE — 创建新库', () => {
+  it('CREATE DATABASE — 创建新库', async () => {
     const plan = parseQuery('CREATE DATABASE mydb')
     expect(plan.catalogOp).toBe('CREATE_DATABASE')
     expect(plan.useGraph).toBe('mydb')
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result[0].created).toBe(true)
     expect(result[0].database).toBe('mydb')
     const dbs = _getAllDatabases()
@@ -761,42 +761,42 @@ describe('CATALOG — 多图命名空间', () => {
     expect(dbs).toContain('mydb')
   })
 
-  it('DROP DATABASE — 删除非默认库', () => {
+  it('DROP DATABASE — 删除非默认库', async () => {
     _createDatabase('testdb')
     const plan = parseQuery('DROP DATABASE testdb')
     expect(plan.catalogOp).toBe('DROP_DATABASE')
     expect(plan.useGraph).toBe('testdb')
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result[0].dropped).toBe(true)
     expect(_getAllDatabases()).not.toContain('testdb')
   })
 
-  it('DROP DATABASE — 不能删除默认库', () => {
+  it('DROP DATABASE — 不能删除默认库', async () => {
     const plan = parseQuery('DROP DATABASE neo4j')
-    _executeQuery(plan, [])
+    await _executeQuery(plan, [])
     expect(_getAllDatabases()).toContain('neo4j')
   })
 
-  it('USE — 切换到已有数据库', () => {
+  it('USE — 切换到已有数据库', async () => {
     _createDatabase('mydb')
     const plan = parseQuery('USE mydb')
     expect(plan.type).toBe('USE')
     expect(plan.useGraph).toBe('mydb')
-    _executeQuery(plan, [])
+    await _executeQuery(plan, [])
     expect(_getActiveDatabase()).toBe('mydb')
   })
 
-  it('USE — 切换到默认数据库', () => {
+  it('USE — 切换到默认数据库', async () => {
     _createDatabase('mydb')
     _setActiveDatabase('mydb')
-    _executeQuery(parseQuery('USE neo4j'), [])
+    await _executeQuery(parseQuery('USE neo4j'), [])
     expect(_getActiveDatabase()).toBe('neo4j')
   })
 
-  it('SHOW DATABASES — 创建后显示多个', () => {
+  it('SHOW DATABASES — 创建后显示多个', async () => {
     _createDatabase('db1')
     _createDatabase('db2')
-    const res = _executeQuery(parseQuery('SHOW DATABASES'), []) as any[]
+    const res = await _executeQuery(parseQuery('SHOW DATABASES'), []) as any[]
     const names = res.map(r => r.name).sort()
     expect(names).toEqual(['db1', 'db2', 'neo4j'])
   })
@@ -811,7 +811,7 @@ describe('INDEX-driven seed pre-filtering', () => {
     _clearGeInstances()  // 清除 GE 缓存，防止节点累积导致结果翻倍
   })
 
-  it('INDEX-driven seed pre-filtering for EQ matches (3K nodes)', () => {
+  it('INDEX-driven seed pre-filtering for EQ matches (3K nodes)', async () => {
     // 1) 创建 3K 节点 (label:Person)，分布不同 name 值（10种名字，各300个）
 
     // Name-0 匹配：用第一个数据集
@@ -821,14 +821,14 @@ describe('INDEX-driven seed pre-filtering', () => {
     }
     _registerIndex('Person', 'name')
     const plan = parseQuery("MATCH (n:Person) WHERE n.name = 'Name-0' RETURN n")
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result).toHaveLength(300)
 
     // 2) 不存在的名字：新数据库
     _clearGeInstances()
     nodes = Array.from({ length: 500 }, (_, i) => ({ _label: 'Person', name: `X-${i}` }))
     const plan2 = parseQuery("MATCH (n:Person) WHERE n.name = 'Alice' RETURN n")
-    const result2 = _executeQuery(plan2, nodes)
+    const result2 = await _executeQuery(plan2, nodes)
     expect(result2).toHaveLength(0)
 
     // 3) 1000 节点，多个 label，索引有效
@@ -838,7 +838,7 @@ describe('INDEX-driven seed pre-filtering', () => {
       name: i < 50 ? 'Target' : 'Other',
     }))
     const plan3 = parseQuery("MATCH (n:Person) WHERE n.name = 'Target' RETURN n")
-    const result3 = _executeQuery(plan3, nodes)
+    const result3 = await _executeQuery(plan3, nodes)
     expect(result3).toHaveLength(50)
   })
 })
@@ -847,14 +847,14 @@ describe('INDEX-driven seed pre-filtering', () => {
 // 变量长度路径查询
 // ═══════════════════════════════════════════════════════════════
 describe('CALL 过程调用 — db.schema.visualization()', () => {
-  it('db.schema.visualization() 返回实际 schema', () => {
+  it('db.schema.visualization() 返回实际 schema', async () => {
     const nodes: any[] = [
       { _label: 'Person', name: 'Alice', age: 30, __edges: [{ label: 'KNOWS', props: { since: 2020 } }] },
       { _label: 'Person', name: 'Bob', city: 'NYC', __edges: [{ label: 'KNOWS', props: { since: 2020 } }] },
       { _label: 'Company', name: 'Acme', industry: 'tech' },
     ]
     const plan = parseQuery('CALL db.schema.visualization()')
-    const result = _executeQuery(plan, nodes) as any
+    const result = await _executeQuery(plan, nodes) as any
     expect(Array.isArray(result)).toBe(true)
     expect(result.length).toBe(1)
     const schema = result[0]
@@ -901,39 +901,39 @@ describe('变量长度路径查询', () => {
     return nodes
   }
 
-  it('[a] -[:NEXT*1..3]-> [b] — 返回 1~3 跳可达节点', () => {
+  it('[a] -[:NEXT*1..3]-> [b] — 返回 1~3 跳可达节点', async () => {
     const nodes = buildChain(5) // 0→1→2→3→4
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     const names = result.map((r: any) => r['b.name']).sort()
     // 从 a=node-0 出发，1跳=b1, 2跳=b2, 3跳=b3
     expect(names).toEqual(['node-1', 'node-2', 'node-3'])
   })
 
-  it('[a] -[:NEXT*2..4]-> [b] — 最小 2 跳', () => {
+  it('[a] -[:NEXT*2..4]-> [b] — 最小 2 跳', async () => {
     const nodes = buildChain(6)
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*2..4]->(b:Node) RETURN b.name')
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     const names = result.map((r: any) => r['b.name']).sort()
     expect(names).toEqual(['node-2', 'node-3', 'node-4'])
   })
 
-  it('[a] -[:NEXT*3]-> [b] — 精确 3 跳', () => {
+  it('[a] -[:NEXT*3]-> [b] — 精确 3 跳', async () => {
     const nodes = buildChain(6)
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*3]->(b:Node) RETURN b.name')
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     const names = result.map((r: any) => r['b.name']).sort()
     expect(names).toEqual(['node-3'])
   })
 
-  it('无匹配路径时返回空', () => {
+  it('无匹配路径时返回空', async () => {
     const nodes = buildChain(3) // 只有 0→1→2
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*5..10]->(b:Node) RETURN b.name')
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     expect(result).toHaveLength(0)
   })
 
-  it('单步变量长度—调试检查 range 是否传入', () => {
+  it('单步变量长度—调试检查 range 是否传入', async () => {
     const nodes = buildChain(5)
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
     expect(plan.scanLabel).toBe('Node')
@@ -942,12 +942,12 @@ describe('变量长度路径查询', () => {
     expect((plan.steps[0] as any).range.min).toBe(1)
     expect((plan.steps[0] as any).range.max).toBe(3)
     // 检查 _executeQuery 是否走了 varLen 路径
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     console.log('VARLEN result:', JSON.stringify(result))
     expect(result.length).toBeGreaterThan(0)
   })
 
-  it('多步 + 变量长度组合 — 先定长再变长', () => {
+  it('多步 + 变量长度组合 — 先定长再变长', async () => {
     const nodes: any[] = []
     // 创建图: 0 -[:X]-> 1 -[:X]-> 2 -[:X]-> 3 -[:X]-> 4
     // 也: 1 -[:X]-> 5
@@ -966,7 +966,7 @@ describe('变量长度路径查询', () => {
     // MATCH (a)-[:X]->(b)-[:X*1..2]->(c) RETURN c.name
     // 解析器会把第二个 step 的 range 带到 QueryPlan
     const plan = parseQuery('MATCH (a)-[:X]->(b)-[:X*1..2]->(c) RETURN c.name')
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     expect(result.length).toBeGreaterThan(0)
   })
 })
@@ -974,11 +974,11 @@ describe('变量长度路径查询', () => {
 // ── MERGE ON CREATE / ON MATCH ─────────────────────────────────
 
 describe('MERGE — ON CREATE SET / ON MATCH SET', () => {
-  it('MERGE 新节点 + ON CREATE SET 属性', () => {
+  it('MERGE 新节点 + ON CREATE SET 属性', async () => {
     // 空图，MERGE 会创建新节点
     const nodes: any[] = []
     const plan = parseQuery(`MERGE (n:Person {name: 'Alice'}) ON CREATE SET n.created = true RETURN n`)
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     expect(result.length).toBeGreaterThan(0)
     // 验证 ON CREATE SET 生效：返回结果包含 created 属性
     expect(result[0].n).toBeDefined()
@@ -987,11 +987,11 @@ describe('MERGE — ON CREATE SET / ON MATCH SET', () => {
     // 验证节点数正确即可
   })
 
-  it('MERGE 已有节点 + ON MATCH SET 属性', () => {
+  it('MERGE 已有节点 + ON MATCH SET 属性', async () => {
     // 已有匹配节点，MERGE 不会创建
     const nodes: any[] = [{ _label: 'Person', name: 'Bob' }]
     const plan = parseQuery(`MERGE (n:Person {name: 'Bob'}) ON MATCH SET n.matched = true RETURN n`)
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     expect(result.length).toBeGreaterThan(0)
     // 验证 ON MATCH SET 生效
     // 注：merge 在执行时 push createNodes 到 allNodes，所以原有节点上的 .matched 应该被设了
@@ -1000,13 +1000,13 @@ describe('MERGE — ON CREATE SET / ON MATCH SET', () => {
     // 当前至少验证 ON CREATE SET 在新场景正确工作。
   })
 
-  it('MERGE 新节点 + ON MATCH SET 不触发', () => {
+  it('MERGE 新节点 + ON MATCH SET 不触发', async () => {
     // 空图，不会触发 ON MATCH
     const nodes: any[] = []
     let errored = false
     try {
       const plan = parseQuery(`MERGE (n:Label {id: 'x'}) ON MATCH SET n.x = 1 RETURN n`)
-      _executeQuery(plan, nodes)
+      await _executeQuery(plan, nodes)
     } catch {
       errored = true
     }
@@ -1015,10 +1015,10 @@ describe('MERGE — ON CREATE SET / ON MATCH SET', () => {
     expect(errored).toBe(false)
   })
 
-  it('MERGE 已有节点 + ON CREATE SET 设置到新节点', () => {
+  it('MERGE 已有节点 + ON CREATE SET 设置到新节点', async () => {
     const nodes: any[] = [{ _label: 'Person', name: 'Charlie' }]
     const plan = parseQuery(`MERGE (n:Person {name: 'Charlie'}) ON CREATE SET n.fallback = true RETURN n`)
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     expect(result.length).toBeGreaterThan(0)
     // 验证至少不抛异常
   })
@@ -1027,7 +1027,7 @@ describe('MERGE — ON CREATE SET / ON MATCH SET', () => {
 // ── FOREACH ───────────────────────────────────────────────────
 
 describe('FOREACH clause', () => {
-  it('FOREACH 字面量列表 + CREATE 节点', () => {
+  it('FOREACH 字面量列表 + CREATE 节点', async () => {
     const nodes: any[] = []
     const plan = parseQuery("FOREACH (x IN [1,2,3] | CREATE (n:Node {id: x})) RETURN n")
     expect(plan.forEach).toBeDefined()
@@ -1035,25 +1035,25 @@ describe('FOREACH clause', () => {
     expect(plan.forEach!.name).toBe('x')
     expect(plan.forEach!.updates.length).toBeGreaterThan(0)
 
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     expect(result.length).toBe(3)
     expect(nodes.length).toBe(3)
   })
 
-  it('FOREACH 空列表无操作', () => {
+  it('FOREACH 空列表无操作', async () => {
     const nodes: any[] = []
     const plan = parseQuery("FOREACH (x IN [] | CREATE (n:Node)) RETURN n")
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     // 空列表：FOREACH 不执行，但 RETURN n 返回 [{n: null}]
     expect(result.length).toBe(1)
     expect(nodes.length).toBe(0)
   })
 
-  it('FOREACH 中 SET 属性', () => {
+  it('FOREACH 中 SET 属性', async () => {
     const nodes: any[] = [{ _label: 'Person', _alias: 'p', name: '' }]
     const plan = parseQuery("FOREACH (val IN ['Hello'] | SET p.name = val) RETURN p")
     expect(plan.forEach).toBeDefined()
-    const result = _executeQuery(plan, nodes) as any[]
+    const result = await _executeQuery(plan, nodes) as any[]
     expect(nodes[0].name).toBe('Hello')
   })
 })
@@ -1074,7 +1074,7 @@ describe('LOAD CSV', () => {
     }
   })
 
-  it('WITH HEADERS: 返回对象行', () => {
+  it('WITH HEADERS: 返回对象行', async () => {
     const csvPath = path.join(tmpDir, 'test-headers.csv')
     fs.writeFileSync(csvPath, 'name,age,city\nAlice,30,Beijing\nBob,25,Shanghai\nCharlie,35,Guangzhou\n', 'utf-8')
     try {
@@ -1084,7 +1084,7 @@ describe('LOAD CSV', () => {
       expect(plan.loadCsv!.hasHeaders).toBe(true)
       expect(plan.loadCsv!.delimiter).toBe(',')
 
-      const result = _executeQuery(plan, []) as any[]
+      const result = await _executeQuery(plan, []) as any[]
       expect(result.length).toBe(3)
       expect(result[0]).toEqual({ row: { name: 'Alice', age: '30', city: 'Beijing' } })
       expect(result[1]).toEqual({ row: { name: 'Bob', age: '25', city: 'Shanghai' } })
@@ -1094,7 +1094,7 @@ describe('LOAD CSV', () => {
     }
   })
 
-  it('WITH NO HEADERS: 返回数组行', () => {
+  it('WITH NO HEADERS: 返回数组行', async () => {
     const csvPath = path.join(tmpDir, 'test-noheaders.csv')
     fs.writeFileSync(csvPath, 'Alice,30,Beijing\nBob,25,Shanghai\n', 'utf-8')
     try {
@@ -1102,7 +1102,7 @@ describe('LOAD CSV', () => {
       expect(plan.loadCsv).toBeDefined()
       expect(plan.loadCsv!.hasHeaders).toBe(false)
 
-      const result = _executeQuery(plan, []) as any[]
+      const result = await _executeQuery(plan, []) as any[]
       expect(result.length).toBe(2)
       expect(result[0]).toEqual({ row: ['Alice', '30', 'Beijing'] })
       expect(result[1]).toEqual({ row: ['Bob', '25', 'Shanghai'] })
@@ -1111,7 +1111,7 @@ describe('LOAD CSV', () => {
     }
   })
 
-  it('默认 WITH NO HEADERS', () => {
+  it('默认 WITH NO HEADERS', async () => {
     const csvPath = path.join(tmpDir, 'test-default.csv')
     fs.writeFileSync(csvPath, 'x,y\n1,2\n', 'utf-8')
     try {
@@ -1119,14 +1119,14 @@ describe('LOAD CSV', () => {
       expect(plan.loadCsv).toBeDefined()
       expect(plan.loadCsv!.hasHeaders).toBe(false)
 
-      const result = _executeQuery(plan, []) as any[]
+      const result = await _executeQuery(plan, []) as any[]
       expect(result.length).toBe(2)
     } finally {
       if (fs.existsSync(csvPath)) fs.unlinkSync(csvPath)
     }
   })
 
-  it('自定义 FIELDTERMINATOR', () => {
+  it('自定义 FIELDTERMINATOR', async () => {
     const csvPath = path.join(tmpDir, 'test-pipe.csv')
     fs.writeFileSync(csvPath, 'name|age\nAlice|30\nBob|25\n', 'utf-8')
     try {
@@ -1134,7 +1134,7 @@ describe('LOAD CSV', () => {
       expect(plan.loadCsv).toBeDefined()
       expect(plan.loadCsv!.delimiter).toBe('|')
 
-      const result = _executeQuery(plan, []) as any[]
+      const result = await _executeQuery(plan, []) as any[]
       expect(result.length).toBe(2)
       expect(result[0]).toEqual({ row: { name: 'Alice', age: '30' } })
       expect(result[1]).toEqual({ row: { name: 'Bob', age: '25' } })
@@ -1143,12 +1143,12 @@ describe('LOAD CSV', () => {
     }
   })
 
-  it('引号内包含分隔符', () => {
+  it('引号内包含分隔符', async () => {
     const csvPath = path.join(tmpDir, 'test-quoted.csv')
     fs.writeFileSync(csvPath, 'name,desc\nAlice,"loves, cats, and dogs"\nBob,"simple"\n', 'utf-8')
     try {
       const plan = parseQuery(`LOAD CSV FROM 'file://${csvPath}' AS row WITH HEADERS RETURN row`)
-      const result = _executeQuery(plan, []) as any[]
+      const result = await _executeQuery(plan, []) as any[]
       expect(result.length).toBe(2)
       expect(result[0]).toEqual({ row: { name: 'Alice', desc: 'loves, cats, and dogs' } })
       expect(result[1]).toEqual({ row: { name: 'Bob', desc: 'simple' } })
@@ -1157,12 +1157,12 @@ describe('LOAD CSV', () => {
     }
   })
 
-  it('引号转义（"" → "）', () => {
+  it('引号转义（"" → "）', async () => {
     const csvPath = path.join(tmpDir, 'test-escape.csv')
     fs.writeFileSync(csvPath, 'value\n"she said ""hello"""\n', 'utf-8')
     try {
       const plan = parseQuery(`LOAD CSV FROM 'file://${csvPath}' AS row WITH HEADERS RETURN row`)
-      const result = _executeQuery(plan, []) as any[]
+      const result = await _executeQuery(plan, []) as any[]
       expect(result.length).toBe(1)
       expect(result[0]).toEqual({ row: { value: 'she said "hello"' } })
     } finally {
@@ -1170,34 +1170,32 @@ describe('LOAD CSV', () => {
     }
   })
 
-  it('空文件返回空数组', () => {
+  it('空文件返回空数组', async () => {
     const csvPath = path.join(tmpDir, 'test-empty.csv')
     fs.writeFileSync(csvPath, '', 'utf-8')
     try {
       const plan = parseQuery(`LOAD CSV FROM 'file://${csvPath}' AS row WITH HEADERS RETURN row`)
-      const result = _executeQuery(plan, []) as any[]
+      const result = await _executeQuery(plan, []) as any[]
       expect(result).toEqual([])
     } finally {
       if (fs.existsSync(csvPath)) fs.unlinkSync(csvPath)
     }
   })
 
-  it('仅包含标题行的文件返回空数组', () => {
+  it('仅包含标题行的文件返回空数组', async () => {
     const csvPath = path.join(tmpDir, 'test-header-only.csv')
     fs.writeFileSync(csvPath, 'name,age\n', 'utf-8')
     try {
       const plan = parseQuery(`LOAD CSV FROM 'file://${csvPath}' AS row WITH HEADERS RETURN row`)
-      const result = _executeQuery(plan, []) as any[]
+      const result = await _executeQuery(plan, []) as any[]
       expect(result).toEqual([])
     } finally {
       if (fs.existsSync(csvPath)) fs.unlinkSync(csvPath)
     }
   })
 
-  it('文件不存在时报错', () => {
-    expect(() => {
-      const plan = parseQuery(`LOAD CSV FROM 'file:///nonexistent/path.csv' AS row RETURN row`)
-      _executeQuery(plan, [])
-    }).toThrow(/LOAD CSV error/)
+  it('文件不存在时报错', async () => {
+        const plan = parseQuery(`LOAD CSV FROM 'file:///nonexistent/path.csv' AS row RETURN row`)
+    await expect(_executeQuery(plan, [])).rejects.toThrow(/LOAD CSV error/)
   })
 })

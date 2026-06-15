@@ -43,25 +43,25 @@ function deepUnwrap(v: unknown): unknown {
  *
  * 对于观察侧节点的增删，直接传入新数组，通过返回值判断。
  */
-function execQ(query: string, seedNodes: Row[] = []): { rows: Row[]; nodes: Row[] } {
+async function execQ(query: string, seedNodes: Row[] = []): Promise<{ rows: Row[]; nodes: Row[] }> {
   const nodes: Row[] = seedNodes.map(n => ({ ...n }))
   const plan = compileCypher(query).execute({}) as QueryPlan
-  const raw = _executeQuery(plan, nodes, query)
+  const raw = await _executeQuery(plan, nodes, query)
   return { rows: raw.map(r => deepUnwrap(r) as Row), nodes }
 }
 
 /** 执行 DML 并让 _executeQuery 直接操作调用方 nodes 数组（共享引用）
  *  用于需要观察 CREATE 新增节点的场景。 */
-function execQDirect(query: string, nodes: Row[], queryStr?: string): Row[] {
+async function execQDirect(query: string, nodes: Row[], queryStr?: string): Row[] {
   const plan = compileCypher(query).execute({}) as QueryPlan
-  const raw = _executeQuery(plan, nodes, queryStr ?? query)
+  const raw = await _executeQuery(plan, nodes, queryStr ?? query)
   return raw.map(r => deepUnwrap(r) as Row)
 }
 
 /** MATCH + RETURN 扫描当前 allNodes 状态 */
-function matchScan(query: string, nodes: Row[]): Row[] {
+async function matchScan(query: string, nodes: Row[]): Row[] {
   const plan = compileCypher(query).execute({}) as QueryPlan
-  const raw = _executeQuery(plan, nodes, query)
+  const raw = await _executeQuery(plan, nodes, query)
   return raw.map(r => deepUnwrap(r) as Row)
 }
 
@@ -69,8 +69,8 @@ function matchScan(query: string, nodes: Row[]): Row[] {
 // Part 1: CREATE
 // ============================================================================
 describe('CREATE', () => {
-  it('单节点 + 标签 + 属性', () => {
-    const { rows } = execQ("CREATE (n:Person {name: 'Alice', age: 30}) RETURN n")
+  it('单节点 + 标签 + 属性', async () => {
+    const { rows } = await execQ("CREATE (n:Person {name: 'Alice', age: 30}) RETURN n")
     expect(rows).toHaveLength(1)
     const n = rows[0].n as Row
     // deepUnwrap 已将 {type:'STRING',value:'Alice'} 解包为原始值
@@ -78,20 +78,20 @@ describe('CREATE', () => {
     expect(n.age).toBe(30)
   })
 
-  it('多节点 CREATE + RETURN', () => {
-    const { rows } = execQ("CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}) RETURN a, b")
+  it('多节点 CREATE + RETURN', async () => {
+    const { rows } = await execQ("CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}) RETURN a, b")
     expect(rows).toHaveLength(1)
     expect((rows[0].a as Row).name).toBe('Alice')
     expect((rows[0].b as Row).name).toBe('Bob')
   })
 
-  it('CREATE 带关系（边）', () => {
-    const { rows } = execQ("CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'}) RETURN a, b")
+  it('CREATE 带关系（边）', async () => {
+    const { rows } = await execQ("CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'}) RETURN a, b")
     expect(rows).toHaveLength(1)
   })
 
-  it('CREATE...RETURN n.name', () => {
-    const { rows } = execQ("CREATE (n:Person {name:'Alice'}) RETURN n.name")
+  it('CREATE...RETURN n.name', async () => {
+    const { rows } = await execQ("CREATE (n:Person {name:'Alice'}) RETURN n.name")
     // RETURN n.name 时，_buildDmlRows 返回 {name: {type:'STRING',value:'Alice'}} 或 {n: {name: ...}}
     // 确保结果有几个 key
     expect(Object.keys(rows[0]).length).toBeGreaterThan(0)
@@ -102,26 +102,26 @@ describe('CREATE', () => {
 // Part 2: MERGE
 // ============================================================================
 describe('MERGE', () => {
-  it('MERGE 已存在节点 → 匹配，不创建', () => {
-    const { rows } = execQ("MERGE (n:Person {name:'Alice'}) RETURN n")
+  it('MERGE 已存在节点 → 匹配，不创建', async () => {
+    const { rows } = await execQ("MERGE (n:Person {name:'Alice'}) RETURN n")
     expect(rows).toHaveLength(1)
   })
 
-  it('MERGE 不存在节点 → 创建', () => {
-    const { rows } = execQ("MERGE (n:Person {name:'Bob', age:25}) RETURN n")
+  it('MERGE 不存在节点 → 创建', async () => {
+    const { rows } = await execQ("MERGE (n:Person {name:'Bob', age:25}) RETURN n")
     expect(rows).toHaveLength(1)
     expect((rows[0].n as Row).name).toBe('Bob')
   })
 
-  it('MERGE...ON CREATE SET', () => {
-    const { rows } = execQ("MERGE (n:Person {name:'Charlie'}) ON CREATE SET n.flag = 'true' RETURN n")
+  it('MERGE...ON CREATE SET', async () => {
+    const { rows } = await execQ("MERGE (n:Person {name:'Charlie'}) ON CREATE SET n.flag = 'true' RETURN n")
     // ON CREATE SET 的 side-effect 取决于 _buildDmlRows 实现
     expect(rows).toHaveLength(1)
   })
 
-  it('MERGE...ON MATCH SET', () => {
+  it('MERGE...ON MATCH SET', async () => {
     const seed: Row[] = [{ _label: 'Person', name: 'Alice', age: 30 }]
-    const { rows } = execQ("MERGE (n:Person {name:'Alice'}) ON MATCH SET n.updated = 'yes' RETURN n", seed)
+    const { rows } = await execQ("MERGE (n:Person {name:'Alice'}) ON MATCH SET n.updated = 'yes' RETURN n", seed)
     // 返回已有 Alice 节点
     expect((rows[0].n as Row).name).toBe('Alice')
   })
@@ -131,12 +131,12 @@ describe('MERGE', () => {
 // Part 3: MATCH...DELETE...RETURN（有 RETURN 时 DELETE 的 side-effect 生效）
 // ============================================================================
 describe('DELETE with RETURN', () => {
-  it('MATCH...DELETE n RETURN n', () => {
+  it('MATCH...DELETE n RETURN n', async () => {
     const seed: Row[] = [
       { _label: 'Person', name: 'Alice', age: 30 },
       { _label: 'Person', name: 'Bob', age: 25 },
     ]
-    const { rows, nodes } = execQ(
+    const { rows, nodes } = await execQ(
       "MATCH (n:Person {name:'Bob'}) DELETE n RETURN n",
       seed
     )
@@ -147,23 +147,23 @@ describe('DELETE with RETURN', () => {
     expect(rows.length).toBeGreaterThanOrEqual(0)
   })
 
-  it('DELETE all nodes — 确认不抛异常', () => {
+  it('DELETE all nodes — 确认不抛异常', async () => {
     const seed: Row[] = [
       { _label: 'Person', name: 'A' },
       { _label: 'Person', name: 'B' },
     ]
-    expect(() => {
-      execQ("MATCH (n:Person) DELETE n", seed)
+    expect(async () => {
+      await execQ("MATCH (n:Person) DELETE n", seed)
     }).not.toThrow()
   })
 
-  it('DETACH DELETE', () => {
+  it('DETACH DELETE', async () => {
     const seed: Row[] = [
       { _label: 'Person', name: 'A', __edges: [{ srcIdx: 0, dstIdx: 1, label: 'KNOWS' }] },
       { _label: 'Person', name: 'B' },
     ]
-    expect(() => {
-      execQ("MATCH (n:Person {name:'A'}) DETACH DELETE n", seed)
+    expect(async () => {
+      await execQ("MATCH (n:Person {name:'A'}) DETACH DELETE n", seed)
     }).not.toThrow()
   })
 })
@@ -172,9 +172,9 @@ describe('DELETE with RETURN', () => {
 // Part 4: MATCH...SET...RETURN
 // ============================================================================
 describe('SET with RETURN', () => {
-  it('SET 单个属性 — MATCH 返回已更新的值', () => {
+  it('SET 单个属性 — MATCH 返回已更新的值', async () => {
     const seed: Row[] = [{ _label: 'Person', name: 'Alice', age: 30 }]
-    const { rows } = execQ(
+    const { rows } = await execQ(
       "MATCH (n:Person {name:'Alice'}) SET n.age = 35 RETURN n",
       seed
     )
@@ -184,21 +184,21 @@ describe('SET with RETURN', () => {
     }
   })
 
-  it('SET 多个属性', () => {
+  it('SET 多个属性', async () => {
     const seed: Row[] = [{ _label: 'Person', name: 'Alice', age: 30 }]
-    const { rows } = execQ(
+    const { rows } = await execQ(
       "MATCH (n:Person {name:'Alice'}) SET n.name = 'Alice X', n.age = 99 RETURN n",
       seed
     )
     expect(rows.length).toBeGreaterThanOrEqual(0)
   })
 
-  it('MATCH + SET 后，同一 nodes 数组可正常查询', () => {
+  it('MATCH + SET 后，同一 nodes 数组可正常查询', async () => {
     const seed: Row[] = [{ _label: 'Person', name: 'Alice', age: 30 }]
     // 执行 SET
-    execQ("MATCH (n:Person {name:'Alice'}) SET n.age = 35 RETURN n", seed)
+    await execQ("MATCH (n:Person {name:'Alice'}) SET n.age = 35 RETURN n", seed)
     // 同一数组再查询
-    const rows = matchScan("MATCH (n:Person) RETURN n.name, n.age", seed)
+    const rows = await matchScan("MATCH (n:Person) RETURN n.name, n.age", seed)
     expect(rows.length).toBeGreaterThanOrEqual(0)
   })
 })
@@ -207,24 +207,24 @@ describe('SET with RETURN', () => {
 // Part 5: 组合序列
 // ============================================================================
 describe('Combined DML', () => {
-  it('CREATE → MATCH → SET → DELETE 全流程', () => {
+  it('CREATE → MATCH → SET → DELETE 全流程', async () => {
     const nodes: Row[] = []
 
     // 1) CREATE Alice — 通过 RETURN 验证节点属性，nodes 数组本身不增长
-    const r1 = execQDirect("CREATE (a:Person {name:'Alice',age:30}) RETURN a", nodes)
+    const r1 = await execQDirect("CREATE (a:Person {name:'Alice',age:30}) RETURN a", nodes)
     expect(r1).toHaveLength(1)
     expect((r1[0].a as Row).name).toBe('Alice')
 
     // 2) CREATE Bob
-    const r2 = execQDirect("CREATE (b:Person {name:'Bob',age:25}) RETURN b", nodes)
+    const r2 = await execQDirect("CREATE (b:Person {name:'Bob',age:25}) RETURN b", nodes)
     expect(r2).toHaveLength(1)
     expect((r2[0].b as Row).name).toBe('Bob')
 
     // 3) SET Alice age — 通过 RETURN 验证结果
-    execQDirect("MATCH (n:Person {name:'Alice'}) SET n.age = 31 RETURN n", nodes)
+    await execQDirect("MATCH (n:Person {name:'Alice'}) SET n.age = 31 RETURN n", nodes)
 
     // 4) DELETE Bob
-    execQDirect("MATCH (n:Person {name:'Bob'}) DELETE n RETURN n", nodes)
+    await execQDirect("MATCH (n:Person {name:'Bob'}) DELETE n RETURN n", nodes)
 
     // 5) 序列中无异常抛出即可 — 当前架构下 _executeQuery 的 nodes 参数是 seed input 不是 mutable output
     expect(true).toBe(true)
