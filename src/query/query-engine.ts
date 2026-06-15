@@ -4505,8 +4505,20 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     const args = fnMatch[2].trim() ? _parseCommaList(fnMatch[2]).map(a => a.trim()) : []
     return _callFunction(fnMatch[1].toLowerCase(), args, row)
   }
-  // 字面量先行（避免 . 被当属性访问）
+  // 字面量先行（避免 . 被当属性访问）— 但如果字面量有后缀索引 [n]，先走下标分支
   if (t.startsWith("'") || t.startsWith('"') || t.startsWith('[') || t.startsWith('{') || /^-?\d/.test(t) || t.startsWith('.') || t.toLowerCase() === 'null' || t.toLowerCase() === 'true' || t.toLowerCase() === 'false') {
+    // 检测字面量后跟后缀下标 [n]（如 [1,2,3][0] 或 'hello'[0]）
+    const suffixBracket = t.search(/[\])'"}]\[\d+\]$/)
+    if ((t.startsWith('[') || t.startsWith("'") || t.startsWith('"')) && suffixBracket > 0 && t.endsWith(']')) {
+      const idxStart = t.lastIndexOf('[')
+      if (idxStart > 0) {
+        const obj = _evalLiteral(t.slice(0, idxStart), row)
+        const idx = _evalBinary(t.slice(idxStart + 1, -1), row)
+        if (Array.isArray(obj)) return obj[Number(idx)] ?? null
+        if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[String(idx)] ?? null
+        return null
+      }
+    }
     return _evalLiteral(t, row)
   }
   // 属性访问 a.b
