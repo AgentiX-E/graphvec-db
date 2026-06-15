@@ -480,7 +480,12 @@ Given('having executed:', async function (query: string) {
           continue
         }
         const node: Record<string, unknown> = { _label: cn.label || 'Default' }
-        if (cn.props) { for (const [k, v] of Object.entries(cn.props)) node[k] = v }
+        if (cn.props) { for (const [k, v] of Object.entries(cn.props)) {
+          // parseQuery 将 props 打包为 {type:'STRING', value:'val'}，需解包
+          node[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
+            ? (v as any).value
+            : v
+        } }
         st.nodes.push(node)
         seedGe(ge, node)
         createdNodes.push(node)

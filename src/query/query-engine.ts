@@ -2052,6 +2052,16 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
     const allNodes: Array<Record<string, unknown>> = [...(nodes || [])]
+    // 解包 typed 格式的 props（{type: 'STRING', value: 'ABCDEF'} → 'ABCDEF'）
+    // 这种包装在 parseQuery 的 createNodes 中产生，GE 的 _matchFilter 只支持裸值
+    for (const node of allNodes) {
+      for (const k of Object.keys(node)) {
+        const v = node[k]
+        if (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type) {
+          node[k] = (v as any).value
+        }
+      }
+    }
     // 如果传入节点没有 _label 标签但 plan 指定了 scanLabel，自动赋值（兼容外部 plan 导入场景）
     if (plan.scanLabel && allNodes.some(n => !('_label' in n) || n._label === undefined || n._label === null)) {
       let scanLabelAssigned = false
@@ -2068,7 +2078,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     if (plan.createNodes?.length) {
       for (const cn of plan.createNodes) {
         const props: Record<string, unknown> = { _label: cn.label || 'Default' }
-        if (cn.props) { for (const k of Object.keys(cn.props)) props[k] = cn.props[k] }
+        if (cn.props) { for (const [k, v] of Object.entries(cn.props)) {
+          props[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
+            ? (v as any).value
+            : v
+        } }
         if (cn.alias) props['_alias'] = cn.alias
         allNodes.push(props)
       }
@@ -2204,7 +2218,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         }
       }
       // 从 plan.filters 中移除已预处理的过滤器（stepSourceFilters + indexedEqFilters）
-      const processedFilters = [...stepSourceFilters, ...indexedEqFilters.map(ie => ie.filter)]
+      // 只移除 seed 阶段能有效处理的 filter（EQ/NEQ/GT/GTE/LT/LTE/IN），
+      // 保留 STARTS_WITH/CONTAINS/ENDS_WITH/IS_NULL/IS_NOT_NULL 给 GE 或后处理
+      const seedCapableOperators = new Set(['EQ', 'NEQ', 'GT', 'GTE', 'LT', 'LTE', 'IN'])
+      const processedFilters = [...stepSourceFilters.filter(f => seedCapableOperators.has(f.operator)), ...indexedEqFilters.map(ie => ie.filter)]
       plan.filters = (plan.filters || []).filter((f: any) => !processedFilters.includes(f))
 
     }
@@ -3334,51 +3351,56 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       continue
     }
 
-    // 使用 returnAliasMap 解析原始表达式
+    // 使用 returnAliasMap 解析原始表达式：统一走 _evaluateExpression
     if (aliasMap && rc in aliasMap) {
-      const expr = aliasMap[rc]  // 如 "n" 或 "n.name"
+      const expr = aliasMap[rc]  // 如 "n"、"n.name"、"1+1"、"labels(n)" 等
       // 如果 row[rc] 已经是边格式 [:xxx]（由 rawWithEdges 填充），不要覆盖
       if (typeof row[rc] === 'string' && row[rc].startsWith('[:')) {
         result[rc] = row[rc]
         continue
       }
-      // ── 非变量表达式（如 "1+1"、"42"）—— 直接取 row 值或 null ──
-      // 纯数字、运算符、函数调用等不为合法标识符的模式，不能走变量/属性查找
-      if (!/^[a-zA-Z_]\w*$/.test(expr) && !expr.includes('.')) {
-        result[rc] = rc in row ? row[rc] : null
+      // 构建变量上下文字典：从 r 的交叉变量表和 targetProps 中提取所有可用变量
+      const varCtx: Record<string, unknown> = {}
+      // 无边模式：从 __crossVarRows 构建
+      if (r.__crossVarRows) {
+        for (const vn of Object.keys(r.__crossVarRows)) {
+          varCtx[vn] = r.__crossVarRows[vn]
+        }
+      }
+      // 多步多 RETURN 变量：从 __targetPropsMap 构建
+      if (r.__targetPropsMap) {
+        for (const vn of Object.keys(r.__targetPropsMap)) {
+          if (!(vn in varCtx)) varCtx[vn] = r.__targetPropsMap[vn]
+        }
+      }
+      // source 变量：从 row 构建
+      const firstStepSource = plan.steps?.[0]?.source
+      if (firstStepSource && !(firstStepSource in varCtx)) {
+        varCtx[firstStepSource] = { ...row }
+      }
+      // 其他 target 变量
+      if (r.__targetProps && firstStepSource && !(firstStepSource in varCtx)) {
+        varCtx[r.__targetAlias || firstStepSource] = { ...r.__targetProps }
+      }
+      // 如果 GE 没有 steps（MATCH (a) 无关系），从 expr 推断变量名填充 varCtx
+      if (!firstStepSource) {
+        // expr 可能是纯变量名（"a"）或属性访问（"a.name"）
+        const varName = expr.includes('.') ? expr.split('.')[0] : expr
+        if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx)) {
+          varCtx[varName] = { ...row }
+        }
+      }
+      // 如果表达式中包含变量名（a.b 或 a），尝试通过 _evaluateExpression 求值
+      const evalResult = _evaluateExpression(expr, varCtx)
+      if (evalResult !== null && evalResult !== undefined) {
+        result[rc] = evalResult
         continue
       }
-      // 如果表达式是纯变量名（无点号），是 RETURN n
-      if (!expr.includes('.')) {
-        // 检查 __crossVarRows（无边模式配对行）
-        if (r.__crossVarRows && rc in r.__crossVarRows) {
-          // 从 __crossVarRows 中取该变量对应的节点
-          result[rc] = { ...r.__crossVarRows[rc] }
-          continue
-        }
-        // 区分 source 变量和 target 变量
-        const firstStepSource = plan.steps?.[0]?.source
-        // 多步多 RETURN 变量：从 __targetPropsMap 按变量名取
-        if (r.__targetPropsMap && rc in r.__targetPropsMap) {
-          result[rc] = { ...r.__targetPropsMap[rc] }
-          continue
-        }
-        if (r.__targetProps && firstStepSource && rc !== firstStepSource) {
-          // target 变量（或之后步中的变量）：从 __targetProps 构建
-          result[rc] = { ...r.__targetProps }
-        } else {
-          // source 变量：从 row 构建（包含 r.props 所有属性）
-          result[rc] = { ...row }
-        }
+      // 回退：从 row 取值
+      if (rc in row) {
+        result[rc] = row[rc]
         continue
       }
-      // 属性访问表达式：n.name → 从 row 或 r 取值
-      const propPart = expr.split('.').pop()!
-      if (propPart in row) {
-        result[rc] = row[propPart]
-        continue
-      }
-      // 属性不存在 → TCK 期望 null
       result[rc] = null
       continue
     }

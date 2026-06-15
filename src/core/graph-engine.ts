@@ -2507,33 +2507,47 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }
 
   /** 检查单条 filter 是否匹配 */
-  private _matchFilter(node: NodeRecord, f: { property: string; operator: string; value: unknown }): boolean {
-    const val = node.props?.[f.property]
+  private _matchFilter(node: NodeRecord, f: { property: string; operator: string; value: unknown; negated?: boolean }): boolean {
+    let val = node.props?.[f.property]
+    const originalVal = val
+    // 解包 typed 格式：{type: 'STRING', value: 'xxx'} → 'xxx'
+    if (val && typeof val === 'object' && 'value' in (val as any) && (val as any).type) {
+      val = (val as any).value
+    }
+    let result: boolean
+    let fv = f.value
+    // 解包 typed 格式的 filter value
+    if (fv && typeof fv === 'object' && 'value' in (fv as any) && (fv as any).type) {
+      fv = (fv as any).value
+    }
     switch (f.operator) {
-      case 'EQ':  return val === f.value
-      case 'NEQ': return val !== f.value
-      case 'GT':  return typeof val === 'number' && typeof f.value === 'number' && val > f.value
-      case 'GTE': return typeof val === 'number' && typeof f.value === 'number' && val >= f.value
-      case 'LT':  return typeof val === 'number' && typeof f.value === 'number' && val < f.value
-      case 'LTE': return typeof val === 'number' && typeof f.value === 'number' && val <= f.value
+      case 'EQ':  result = val === fv; break
+      case 'NEQ': result = val !== fv; break
+      case 'GT':  result = typeof val === 'number' && typeof fv === 'number' && val > fv; break
+      case 'GTE': result = typeof val === 'number' && typeof fv === 'number' && val >= fv; break
+      case 'LT':  result = typeof val === 'number' && typeof fv === 'number' && val < fv; break
+      case 'LTE': result = typeof val === 'number' && typeof fv === 'number' && val <= fv; break
       case 'IN': {
-        if (!Array.isArray(f.value)) return true
-        return f.value.includes(val)
+        if (!Array.isArray(fv)) { result = true; break }
+        result = fv.includes(val); break
       }
       case 'STARTS_WITH': {
-        if (typeof val !== 'string' || typeof f.value !== 'string') return false
-        return val.startsWith(f.value as string)
+        if (typeof val !== 'string' || typeof fv !== 'string') { return false; break }
+        result = val.startsWith(fv as string)
+        break
       }
       case 'ENDS_WITH': {
-        if (typeof val !== 'string' || typeof f.value !== 'string') return false
-        return val.endsWith(f.value as string)
+        if (typeof val !== 'string' || typeof fv !== 'string') { return false; break }
+        result = val.endsWith(fv as string); break
       }
       case 'CONTAINS': {
-        if (typeof val !== 'string' || typeof f.value !== 'string') return false
-        return val.includes(f.value as string)
+        if (typeof val !== 'string' || typeof fv !== 'string') { return false; break }
+        result = val.includes(fv as string); break
       }
-      default: return true
+      default: result = true; break
     }
+    const finalResult = f.negated ? !result : result
+    return finalResult
   }
 
   /**
