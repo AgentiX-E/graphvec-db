@@ -741,7 +741,7 @@ Then(/^a SyntaxError should be raised at compile time(?:.*)$/, function () {
   assert.ok(st.err, `no SyntaxError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })
 
-Then(/^a TypeError should be raised at runtime(?:.*)$/, function () {
+Then(/^a TypeError should be raised (?:at runtime|at compile time|at any time)(?:.*)$/, function () {
   assert.ok(st.err, `no TypeError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })
 
@@ -751,6 +751,9 @@ Then(/^a (QueryError|EntityNotFound) should be raised at runtime(?:.*)$/, functi
 
 Then(/^a (ConstraintError|CreateConstraintFailure) should be raised(?:.*)$/, function (_match?: string) {
   assert.ok(st.err, `no error\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
+})
+Then(/^a ArgumentError should be raised at runtime(?:.*)$/, function () {
+  assert.ok(st.err, `no ArgumentError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })
 Then('no side effects', function () {})
 Then(/^the side effects should be:\s*$/, function (_dt: DataTable) {})
