@@ -803,6 +803,45 @@ describe('CATALOG — 多图命名空间', () => {
 // ═══════════════════════════════════════════════════════════════
 // 变量长度路径查询
 // ═══════════════════════════════════════════════════════════════
+describe('CALL 过程调用 — db.schema.visualization()', () => {
+  it('db.schema.visualization() 返回实际 schema', () => {
+    const nodes: any[] = [
+      { _label: 'Person', name: 'Alice', age: 30, __edges: [{ label: 'KNOWS', props: { since: 2020 } }] },
+      { _label: 'Person', name: 'Bob', city: 'NYC', __edges: [{ label: 'KNOWS', props: { since: 2020 } }] },
+      { _label: 'Company', name: 'Acme', industry: 'tech' },
+    ]
+    const plan = parseQuery('CALL db.schema.visualization()')
+    const result = _executeQuery(plan, nodes) as any
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBe(1)
+    const schema = result[0]
+    expect(schema).toHaveProperty('nodes')
+    expect(schema).toHaveProperty('relationships')
+
+    // 验证 labels
+    const labelNames = schema.nodes.map((n: any) => n.name)
+    expect(labelNames).toContain('Person')
+    expect(labelNames).toContain('Company')
+
+    // 验证 properties
+    const personNode = schema.nodes.find((n: any) => n.name === 'Person')
+    expect(personNode.properties).toContain('name')
+    expect(personNode.properties).toContain('age')
+    expect(personNode.properties).toContain('city')
+
+    const companyNode = schema.nodes.find((n: any) => n.name === 'Company')
+    expect(companyNode.properties).toContain('name')
+    expect(companyNode.properties).toContain('industry')
+
+    // 验证 relationship types
+    const relNames = schema.relationships.map((r: any) => r.type)
+    expect(relNames).toContain('KNOWS')
+
+    const knowsRel = schema.relationships.find((r: any) => r.type === 'KNOWS')
+    expect(knowsRel.properties).toContain('since')
+  })
+})
+
 describe('变量长度路径查询', () => {
   // 构建链式图: n0 -[:NEXT]-> n1 -[:NEXT]-> n2 -[:NEXT]-> n3 -[:NEXT]-> n4
   function buildChain(len: number): any[] {

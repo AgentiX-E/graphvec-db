@@ -1677,7 +1677,53 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
         })) as any
       }
       case 'db.schema.visualization': {
-        return [{ 'schema': 'workspace' }] as any
+        // 从 nodes 遍历实际 schema
+        const labels = new Set<string>()
+        const relTypes = new Set<string>()
+        const labelProps = new Map<string, Set<string>>()
+        const relTypeProps = new Map<string, Set<string>>()
+
+        for (const node of nodes) {
+          // 收集节点标签
+          const lbl = String(node._label || '')
+          if (lbl) {
+            for (const l of lbl.split(':').map(s => s.trim()).filter(Boolean)) {
+              labels.add(l)
+              if (!labelProps.has(l)) labelProps.set(l, new Set())
+              // 收集该标签节点的属性名（排除下划线开头的内部属性）
+              for (const k of Object.keys(node)) {
+                if (!k.startsWith('_')) labelProps.get(l)!.add(k)
+              }
+            }
+          }
+          // 收集边类型
+          if (node.__edges) {
+            for (const e of node.__edges as any[]) {
+              const rl = String(e.label || '')
+              if (rl && !relTypes.has(rl)) {
+                relTypes.add(rl)
+                relTypeProps.set(rl, new Set())
+              }
+              if (rl) {
+                if (e.props) for (const k of Object.keys(e.props)) relTypeProps.get(rl)!.add(k)
+              }
+            }
+          }
+        }
+
+        return [{
+          nodes: Array.from(labels).map(l => ({
+            id: l,
+            name: l,
+            labels: [l],
+            properties: Array.from(labelProps.get(l) || []),
+          })),
+          relationships: Array.from(relTypes).map(r => ({
+            id: r,
+            type: r,
+            properties: Array.from(relTypeProps.get(r) || []),
+          })),
+        }] as any
       }
       default:
         throw new Error(`Unknown procedure: ${name}`)
