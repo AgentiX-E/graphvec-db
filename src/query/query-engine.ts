@@ -310,6 +310,8 @@ export interface QueryPlan {
   steps: TraverseStep[]
   /** WHERE 过滤器 */
   filters: FilterClause[]
+  /** WHERE 子句原始文本（用于表达式引擎后处理） */
+  whereBody?: string
   /** RETURN 列 */
   returnColumns: string[]
   /** returnColumn 到原始表达式的映射（用于 DML 结果构造：RETURN n.name AS p → {p: "n.name"}） */
@@ -862,6 +864,7 @@ export function parseQuery(query: string): QueryPlan {
     const whereClause = (query || '').match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
     if (whereClause) {
       const whereBody = whereClause[1]
+      plan.whereBody = whereBody
       // 检测顶层 OR/XOR（不在括号内的 OR）
       let depth = 0
       let hasTopLevelOr = false
@@ -1066,6 +1069,7 @@ export function parseQuery(query: string): QueryPlan {
   if (plan.hasMatch && query?.includes('WHERE')) {
     const whereText = extractWhereBody(query)
     if (whereText) {
+      plan.whereBody = whereText
       _parseLabelFilterOnly(whereText, plan)
     }
   }
@@ -2060,6 +2064,19 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     if (plan.useGraph) { _setActiveDatabase(plan.useGraph); return [{ database: plan.useGraph, switched: true }] as any }
     return nodes
   }
+
+  // UNION — 递归执行
+  if (plan.unionType && plan.rightPlan) {
+    const leftResult = _executeViaGraphEngine({ ...plan, unionType: undefined, rightPlan: undefined }, nodes)
+    const rightResult = _executeViaGraphEngine(plan.rightPlan, nodes)
+    const left = await leftResult
+    const right = await rightResult
+    const merged = _mergeUnionResults(plan, left as any, right as any)
+    return _postProcessResults(merged as any[], plan)
+  }
+
+  // ── DML（DELETE/SET/MERGE/REMOVE） ──
+  // 非递归入口。DML 操作仅修改 allNodes，不同步 GE 存储（见 DML 持久化分析）
 
   // UNION — 递归执行
   if (plan.unionType && plan.rightPlan) {
@@ -3314,6 +3331,32 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       return fr
     })
 
+    // ── WHERE 子句后处理过滤（表达式引擎处理 GE 不支持的复杂 boolean 表达式） ──
+    // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
+    // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
+    if (plan.whereBody && result.length && !plan.aggregate) {
+      const filteredResult: QueryRow[] = []
+      for (const row of result) {
+        // 构建变量级映射：result 行中键名可能是节点变量名，值有 props 嵌套
+        // 将 {n: {props: {name: 'Alice'}, ...}} → {n: {name: 'Alice', ...}}
+        const ctx: Record<string, unknown> = {}
+        for (const [key, val] of Object.entries(row)) {
+          if (val && typeof val === 'object' && 'props' in (val as any)) {
+            ctx[key] = { ...(val as any).props }
+          } else {
+            ctx[key] = val
+          }
+        }
+        const val = _evaluateExpression(plan.whereBody, ctx)
+        if (val === true) {
+          filteredResult.push(row)
+        }
+        // false / null / undefined → 跳过
+      }
+      result.length = 0
+      result.push(...filteredResult)
+    }
+
     // ── OPTIONAL MATCH 处理 ──
     // 对主查询的每一行结果，尝试匹配 optionalMatchSteps 中的每个 optional MATCH 模式。
     // 成功 → 将匹配到的节点/边合并到 row；失败 → 填充 null。
@@ -4375,14 +4418,14 @@ function _evalBinary(s: string, row?: Record<string, unknown>): unknown { return
 
 function _evalOr(s: string, row?: Record<string, unknown>): unknown {
   const parts = _splitTopLevel(s, 'OR')
-  if (parts.length === 1) return _evalAnd(s, row)
+  if (parts.length === 1) return _evalXor(s, row)
   // Cypher 三值逻辑 OR:
-  // true  AND X  → true (短路)
-  // false AND X  → X
-  // null  AND X  → if X is true then true else null
+  // true  OR  X  → true (短路)
+  // false OR  X  → X
+  // null  OR  X  → if X is true then true, else null
   let result: unknown = false
   for (const part of parts) {
-    const v = _evalAnd(part, row)
+    const v = _evalXor(part, row)
     if (v === true) return true
     if (v == null || v === undefined) {
       result = null
@@ -4390,6 +4433,28 @@ function _evalOr(s: string, row?: Record<string, unknown>): unknown {
     // false → continue
   }
   return result
+}
+
+function _evalXor(s: string, row?: Record<string, unknown>): unknown {
+  // XOR 优先级高于 OR 但低于 AND
+  const parts = _splitTopLevel(s, 'XOR')
+  if (parts.length === 1) return _evalAnd(s, row)
+  // XOR 三值逻辑：null XOR X = null；a XOR b = OR 之一为 true 但非两者
+  if (parts.length >= 3) {
+    // 多操作数 a XOR b XOR c = (a XOR b) XOR c = 奇数个 true
+    let trueCount = 0
+    for (const part of parts) {
+      const v = _evalAnd(part, row)
+      if (v == null || v === undefined) return null
+      if (v === true) trueCount++
+    }
+    return trueCount % 2 === 1
+  }
+  // 2 操作数：a XOR b = (a !== b)（都不为 null 时）
+  const left = _evalAnd(parts[0], row)
+  const right = _evalAnd(parts[1], row)
+  if (left == null || right == null) return null
+  return left !== right
 }
 
 function _evalAnd(s: string, row?: Record<string, unknown>): unknown {
@@ -4436,13 +4501,63 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
   if (ew > 0) { const l = _evalAddSub(t.slice(0, ew), row); const r = _evalAddSub(t.slice(ew + 11), row); if (l == null || r == null) return null; return String(l).endsWith(String(r)) }
   const re = t.indexOf(' =~ ')
   if (re > 0) { const l = String(_evalAddSub(t.slice(0, re), row)); const r = String(_evalAddSub(t.slice(re + 4), row)); try { return new RegExp(r).test(l) } catch { return false } }
-  const inOp = t.indexOf(' IN ')
-  if (inOp > 0) { const l = _evalAddSub(t.slice(0, inOp), row); const r = _evalAddSub(t.slice(inOp + 4), row); if (!Array.isArray(r)) return false; let hasMatch = false; let hasNull = false; for (const item of r) { if (l != null && item != null) { if (l === item) { hasMatch = true } } else { hasNull = true } }; if (hasMatch) return true; if (hasNull) return null; return false }
+  // IN 处理：在操作符循环前处理，但需避开左侧含比较操作符的表达式
+  const inOp = t.lastIndexOf(' IN ')  // 找最后一个 IN
+  if (inOp > 0) {
+    const leftPart = t.slice(0, inOp)
+    // 如果左侧有顶层比较操作符，则 IN 不应抢先（要等 = 先计算）
+    const hasTopLevelCmp = ['<>', '>=', '<=', '=', '>', '<'].some(op => {
+      const opIdx = _findTopLevelOp(leftPart, op)
+      return opIdx > 0
+    })
+    if (!hasTopLevelCmp) {
+      const l = _evalAddSub(leftPart, row)
+      const r = _evalAddSub(t.slice(inOp + 4), row)
+      if (!Array.isArray(r)) return false
+      let hasMatch = false
+      let hasNull = false
+      for (const item of r) {
+        if (l != null && item != null) {
+          if (l === item) { hasMatch = true }
+        } else { hasNull = true }
+      }
+      if (hasMatch) return true
+      if (hasNull) return null
+      return false
+    }
+  }
   for (const op of ['<>', '>=', '<=', '=', '>', '<']) {
+    // 链式比较：a = b = c 等价于 (a = b) AND (b = c)
+    // 对 = 和 <> 支持链式；对 >=, <=, >, < 忽略链式
+    if (op === '=' || op === '<>') {
+      const parts = _splitTopLevel(t, op)
+      if (parts.length >= 3) {
+        let result: unknown = true
+        for (let i = 0; i < parts.length - 1; i++) {
+          const left = _evalAddSub(parts[i].trim(), row)
+          const right = _evalAddSub(parts[i + 1].trim(), row)
+          const cmp = _compareValues(left, right, op)
+          if (cmp === false) return false
+          if (cmp == null) result = null
+        }
+        return result
+      }
+    }
     const idx = _findTopLevelOp(t, op)
     if (idx > 0) {
       const left = _evalAddSub(t.slice(0, idx), row)
-      const right = _evalAddSub(t.slice(idx + op.length), row)
+      const rawRight = t.slice(idx + op.length)
+      // 如果 right 包含顶层 IN，在 _evalAddSub 前处理（IN 优先级 >= 比较操作符）
+      const inIdx = rawRight.indexOf(' IN ')
+      let right: unknown
+      if (inIdx > 0 && !_inBrackets(rawRight, inIdx)) {
+        // 在 _evalAddSub 中 IN 会被解析为 null，所以先计算 IN
+        const rl = _evalAddSub(rawRight.slice(0, inIdx), row)
+        const rr = _evalAddSub(rawRight.slice(inIdx + 4), row)
+        right = Array.isArray(rr) && rr.includes(rl)
+      } else {
+        right = _evalAddSub(rawRight, row)
+      }
       return _compareValues(left, right, op)
     }
   }
@@ -4465,12 +4580,12 @@ function _compareValues(a: unknown, b: unknown, op: string): boolean {
 function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
-    if (t[i] === '+' && !_inBrackets(t, i)) {
+    if (t[i] === '+' && !_inBrackets(t, i) && !_inString(t, i)) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
       return typeof left === 'string' || typeof right === 'string' ? String(left) + String(right) : Number(left) + Number(right)
     }
-    if (t[i] === '-' && !_inBrackets(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1])) {
+    if (t[i] === '-' && !_inBrackets(t, i) && !_inString(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1])) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
       return Number(left) - Number(right)
@@ -4483,7 +4598,7 @@ function _evalMulDiv(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
     if (t[i] === '*' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) * Number(right) }
-    if (t[i] === '/' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) / Number(right) }
+    if (t[i] === '/' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); const nl = Number(left), nr = Number(right); return Number.isInteger(nl) && Number.isInteger(nr) ? Math.trunc(nl / nr) : nl / nr }
     if (t[i] === '%' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) % Number(right) }
   }
   return _evalUnary(t, row)
@@ -4578,6 +4693,16 @@ function _inBrackets(s: string, idx: number): boolean {
   return depth > 0
 }
 
+/** 检查字符串中 idx 位置是否在字符串字面量内（引号内） */
+function _inString(s: string, idx: number): boolean {
+  let inStr = false, strChar = ''
+  for (let i = 0; i < idx; i++) {
+    if (!inStr && (s[i] === "'" || s[i] === '"')) { inStr = true; strChar = s[i] }
+    else if (inStr && s[i] === strChar) { inStr = false }
+  }
+  return inStr
+}
+
 function _isBalanced(s: string): boolean {
   let depth = 0
   for (const ch of s) { if (ch === '(') depth++; if (ch === ')') depth--; if (depth < 0) return false }
@@ -4602,7 +4727,15 @@ function _splitTopLevel(s: string, find: string): string[] {
     if (s[i] === "'" || s[i] === '"') { inStr = true; strChar = s[i]; current += s[i]; i++; continue }
     if (s[i] === '(' || s[i] === '[' || s[i] === '{') { depth++; current += s[i]; i++; continue }
     if (s[i] === ')' || s[i] === ']' || s[i] === '}') { depth--; current += s[i]; i++; continue }
-    if (depth === 0 && s.slice(i, i + find.length) === find) { result.push(current.trim()); current = ''; i += find.length; continue }
+    if (depth === 0 && s.slice(i, i + find.length) === find) {
+      // 单词边界检查：避免 "XOR" 中的 "OR" 被误匹配
+      const prev = i === 0 ? ' ' : s[i - 1]
+      const next = s[i + find.length]
+      const isWord = (c: string) => /[a-zA-Z0-9_]/.test(c)
+      if (!isWord(prev) && (!isWord(next) || next === undefined)) {
+        result.push(current.trim()); current = ''; i += find.length; continue
+      }
+    }
     current += s[i]; i++
   }
   const last = current.trim()
