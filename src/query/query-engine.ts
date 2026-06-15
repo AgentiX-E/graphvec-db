@@ -421,6 +421,7 @@ export interface QueryPlan {
     url: string
     rowVariable: string
     hasHeaders: boolean
+    delimiter: string
   }
   /** 窗口函数 */
   windowFunctions?: Array<{
@@ -959,7 +960,7 @@ export function parseQuery(query: string): QueryPlan {
 
   // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR 错误被吞掉了）
   // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
-  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length) {
+  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length && !plan.loadCsv) {
     // 检查原始查询是否包含有效关键字 — 大多数无效查询没有 MATCH etc.
     if (!/^\s*(MATCH|WITH|UNWIND|RETURN|CREATE|MERGE|SET|DELETE|REMOVE|FOREACH|CALL|SHOW|USE|BEGIN|COMMIT|ROLLBACK|EXPLAIN|PROFILE|LOAD|DROP|START|OPTIONAL|ALTER|GRANT|REVOKE)/i.test(query.trim())) {
       throw new Error(`Query parse error: cannot parse query "${query}"`)
@@ -1576,8 +1577,87 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
   return _postProcessResults(result, plan)
 }
 
+// ── CSV 解析辅助函数 ──────────────────────────────────────────
+
+/**
+ * 解析 CSV 内容为行数组。
+ * 每行以 RowVariable 为 key 返回对象或数组。
+ * WITH HEADERS: 返回 { row: { col1: val1 } }
+ * WITH NO HEADERS: 返回 { row: [val1, val2] }
+ */
+function parseCsvContent(content: string, options: { headers: boolean; delimiter: string; as: string }): any[] {
+  const lines = content.split(/\r?\n/).filter((l: string) => l.trim() !== '')
+  if (lines.length === 0) return []
+
+  const delimiter = options.delimiter
+  const headerLine = options.headers ? lines.shift() : null
+  const headers = headerLine ? splitCsvLine(headerLine, delimiter) : null
+
+  return lines.map((line: string) => {
+    const fields = splitCsvLine(line, delimiter)
+    if (options.headers && headers) {
+      const obj: Record<string, string> = {}
+      headers.forEach((h, i) => { obj[h] = fields[i] || '' })
+      return { [options.as]: obj }
+    } else {
+      return { [options.as]: fields }
+    }
+  })
+}
+
+/**
+ * 单行 CSV 拆分，正确处理引号包裹。
+ * 支持换行符（未闭合引号跨行）和 "" 转义。
+ */
+function splitCsvLine(line: string, delimiter: string): string[] {
+  const result: string[] = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (ch === '"') {
+      // 检查是否转义引号（"" → "）
+      if (i + 1 < line.length && line[i + 1] === '"') {
+        current += '"'
+        i++ // skip next
+      } else {
+        inQuotes = !inQuotes
+      }
+    } else if (ch === delimiter && !inQuotes) {
+      result.push(current.trim())
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  result.push(current.trim())
+  return result
+}
+
 /** GraphEngine 原生执行入口 */
 function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): QueryResult {
+  // ── LOAD CSV ──
+  if (plan.loadCsv) {
+    const csv = plan.loadCsv
+    let filePath = csv.url
+    if (filePath.startsWith('file://')) filePath = filePath.slice(7)
+    if (!path.isAbsolute(filePath)) {
+      filePath = path.resolve(process.cwd(), filePath)
+    }
+    let content: string
+    try {
+      content = fs.readFileSync(filePath, 'utf-8')
+    } catch (e: any) {
+      throw new Error(`LOAD CSV error: cannot read file "${filePath}": ${e.message}`)
+    }
+    const rows = parseCsvContent(content, {
+      headers: csv.hasHeaders,
+      delimiter: csv.delimiter,
+      as: csv.rowVariable,
+    })
+    return _postProcessResults(rows, plan)
+  }
+
   // SHOW LABELS / INDEXES / CONSTRAINTS / PROCEDURES / FUNCTIONS / RELATIONSHIPTYPES
   if (plan.show) {
     const what = (plan.show as any).what
@@ -1807,6 +1887,55 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
       for (const e of plan.expressionColumns) row[e.alias] = e.expression
     } else if (plan.returnColumns?.length) {
       for (const c of plan.returnColumns) row[c] = null
+    }
+    // ── FOREACH 子句：纯 RETURN + FOREACH 时，先执行 FOREACH 再返回结果 ──
+    if (plan.forEach?.updates.length && Array.isArray(nodes)) {
+      const fe = plan.forEach
+      // 解析 list：可能是数组或字符串
+      let listItems: unknown[] = []
+      if (fe.list && fe.name) {
+        if (Array.isArray(fe.list)) {
+          listItems = fe.list
+        } else if (typeof fe.list === 'string') {
+          const listStr = fe.list as string
+          if (listStr.startsWith('[') && listStr.endsWith(']')) {
+            // 尝试 JSON.parse，如果失败（如单引号），将单引号替换为双引号
+            try { listItems = JSON.parse(listStr) } catch {
+              try { listItems = JSON.parse(listStr.replace(/'/g, '"')) } catch {}
+            }
+          }
+        }
+      }
+      if (listItems.length === 0 && Object.keys(row).length) return [row]
+      const rows: QueryRow[] = []
+      for (const item of listItems) {
+        for (const update of fe.updates) {
+          if (update.type === 'CREATE') {
+            const props: Record<string, unknown> = { _label: update.label || 'Default' }
+            if (update.props) {
+              for (const [k, v] of Object.entries(update.props)) {
+                const valToUse = v === fe.name ? item : (typeof v === 'object' && v !== null && 'value' in v ? (v as any).value : v)
+                props[k] = valToUse
+              }
+            }
+            if (update.alias) props['_alias'] = update.alias
+            ;(nodes as any[]).push(props)
+            const r: QueryRow = {}
+            if (update.alias) r[update.alias] = { ...props }
+            rows.push(r)
+          } else if (update.type === 'SET' && update.property && update.value) {
+            // SET p.name = val — 用 item 替换变量引用
+            // update.value 可能是变量名（等于 fe.name）或字面量
+            const valToSet = update.value === fe.name ? item : update.value
+            for (const node of nodes as any[]) {
+              if (node._alias === update.alias || update.alias === '' || node._alias === undefined) {
+                node[update.property] = valToSet
+              }
+            }
+          }
+        }
+      }
+      return rows.length > 0 ? rows : [row]
     }
     return Object.keys(row).length ? [row] : []
   }
@@ -2197,6 +2326,32 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
     // ── DML + RETURN：从 createNodes 构造结果行（GE 对 DML 返回空） ──
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && plan.returnColumns?.length) {
       const created = _buildDmlRows(plan, allNodes)
+
+      // ── MERGE ON CREATE / ON MATCH SET ──
+      if (plan.type === 'MERGE' && (plan.mergeOnCreate?.length || plan.mergeOnMatch?.length)) {
+        const originalCount = nodes.length
+        const newlyCreated = allNodes.slice(originalCount)
+        if (newlyCreated.length > 0) {
+          // 新创建节点 → ON CREATE SET
+          for (const nn of newlyCreated) {
+            for (const oc of plan.mergeOnCreate || []) {
+              nn[oc.property] = typeof oc.value === 'object' && oc.value !== null && 'value' in oc
+                ? (oc.value as any).value
+                : oc.value
+            }
+          }
+        } else if (plan.mergeOnMatch?.length) {
+          // 匹配已有 → ON MATCH SET
+          for (const targetNode of allNodes) {
+            for (const om of plan.mergeOnMatch) {
+              targetNode[om.property] = typeof om.value === 'object' && om.value !== null && 'value' in om
+                ? (om.value as any).value
+                : om.value
+            }
+          }
+        }
+      }
+
       return _postProcessResults(created, plan)
     }
 
@@ -3003,6 +3158,42 @@ function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unk
             // type(r) 的结果应为边标签名（不含引号）
             const typeName = val.slice(2, -1) // 去掉 [: 和 ]
             row[rc] = typeName
+          }
+        }
+      }
+    }
+
+    // ── FOREACH 子句执行 ──
+    // FOREACH (var IN list | CREATE|SET|REMOVE|DELETE)
+    // 在 result 构建后添加 FOREACH CREATE 生成的节点到 result
+    if (plan.forEach && plan.forEach.list?.length) {
+      const fe = plan.forEach
+      // 检查 result 是否是数组（GENERIC），FOREACH 适合的查询通常有 RETURN
+      if (Array.isArray(result)) {
+        for (const item of fe.list) {
+          for (const update of fe.updates) {
+            if (update.type === 'CREATE') {
+              const props: Record<string, unknown> = { _label: update.label || 'Default' }
+              if (update.props) {
+                for (const [k, v] of Object.entries(update.props)) {
+                  if (v === fe.name) {
+                    props[k] = item
+                  } else {
+                    props[k] = typeof v === 'object' && v !== null && 'value' in v ? (v as any).value : v
+                  }
+                }
+              }
+              allNodes.push(props)
+              const row: QueryRow = {}
+              if (update.alias) row[update.alias] = props
+              result.push(row)
+            } else if (update.type === 'SET' && update.property !== undefined) {
+              for (const node of allNodes) {
+                if (node._alias === update.alias || node._label === update.label) {
+                  node[update.property!] = item
+                }
+              }
+            }
           }
         }
       }

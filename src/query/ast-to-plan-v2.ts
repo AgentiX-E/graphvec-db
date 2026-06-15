@@ -65,7 +65,7 @@ export interface QueryPlan {
   callProcedure?: { name: string; args: any[]; yieldItems?: Array<{ name: string; alias: string | null }> }
   forEach?: ForEachClause
   reduce?: { accumulator: string; initial: unknown; variable: string; list: unknown[]; isVarRef: boolean; expression: string }
-  loadCsv?: { url: string; rowVariable: string; hasHeaders: boolean }
+  loadCsv?: { url: string; rowVariable: string; hasHeaders: boolean; delimiter: string }
   windowFunctions?: Array<{ function: string; partitionBy: string[]; orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }> }>
   show?: string
   /** CATALOG 操作（多图命名空间） */
@@ -368,6 +368,19 @@ function buildQueryPlan(query: string): QueryPlan {
       unionType: op === 'INTERSECT' ? 'intersect' as const : 'subtract' as const,
       rightPlan: rightPlan,
     })
+    return plan
+  }
+
+  // ── LOAD CSV ──
+  const loadCsvMatch = trimmed.match(/^LOAD CSV FROM\s+'([^']+)'\s+AS\s+(\w+)(?:\s+(WITH HEADERS|WITH NO HEADERS))?(?:\s+FIELDTERMINATOR\s+'([^']+)')?.*$/is)
+  if (loadCsvMatch) {
+    const plan = createEmptyPlan()
+    plan.loadCsv = {
+      url: loadCsvMatch[1],
+      rowVariable: loadCsvMatch[2],
+      hasHeaders: (loadCsvMatch[3] || '').toUpperCase() === 'WITH HEADERS',
+      delimiter: loadCsvMatch[4] || ',',
+    }
     return plan
   }
 
@@ -1546,7 +1559,7 @@ function extractForEach(foreachCtx: any): ForEachClause {
   const text = expr ? getTextRecursive(expr) : ''
   let list: any[] = []
   if (text.startsWith('[') && text.endsWith(']')) {
-    try { list = JSON.parse(text) } catch { list = text as any }
+    try { list = JSON.parse(text) } catch { try { list = JSON.parse(text.replace(/'/g, '"')) } catch { list = text as any } }
   }
 
   // Updates: find sub-clauses
@@ -1562,7 +1575,10 @@ function extractForEach(foreachCtx: any): ForEachClause {
     }
     const setCtx = findChild(bc, 'SetClauseContext')
     if (setCtx) {
-      updates.push({ type: 'SET', alias: '' })
+      const setClauses = extractSetClauses(setCtx)
+      for (const sc of setClauses) {
+        updates.push({ type: 'SET', alias: '', property: sc.property, value: sc.value as string })
+      }
     }
   }
 

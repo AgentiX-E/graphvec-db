@@ -70,13 +70,11 @@ WITH 信息在 plan 中但 `_executeViaGraphEngine` 在 GE 执行完后再做：
 
 ## 当前进度
 
-正在执行: 分析完成，等待 sub-agent A (INDEX) + B (schema)
+全部完成 ✅
 
-**重要发现：WITH pipeline 多步投影已通过 TCK 完整验证。** With7.feature 有实际的多步 WITH 场景（`MATCH···WITH···WITH···LIMIT···MATCH···RETURN`），29/29 全绿。无需额外工作。
+- ✅ A: INDEX 驱动验证 — 测试在 query-engine.spec.ts 中，3K 节点 Person.name EQ 过滤，`_clearGeInstances` 在 beforeEach 中
+- ✅ B: db.schema.visualization() — 实际 schema 遍历（labels/properties + types/props）
+- ✅ WITH pipeline — 分析确认 TCK 已全绿（With7 多步 WITH 存在）
 
-### 实际工作项
-1. ✅ INDEX 驱动验证 — sub-agent A
-2. ✅ db.schema.visualization() — sub-agent B
-3. ❌ WITH pipeline — TCK 已全绿（29+292+9），多步 WITH 在 With7 已通过
-
-Phase 13 的实际交付 = 2 项（A + B），第三项分析确认已有。
+## 总计
+723/723 vitest ✅ | 2 项新特性 | 1 项分析确认 | 零退化
