@@ -1312,6 +1312,15 @@ function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
     }
   }
 
+  // ── SKIP ──
+  if (p.skip !== undefined && p.skip > 0) {
+    processed = processed.slice(p.skip)
+  }
+  // ── LIMIT ──
+  if (p.limit !== undefined && p.limit >= 0) {
+    processed = processed.slice(0, p.limit)
+  }
+
   return processed
 }
 
