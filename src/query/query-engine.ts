@@ -374,6 +374,8 @@ export interface QueryPlan {
     name: string
     var?: string
   }
+  /** 多级 UNWIND 数组（支持 N 级，由 ast-to-plan-v2.ts 收集） */
+  unwinds?: Array<{ list: any[]; name: string }>
   /** CASE 表达式列（需要运行时求值的复杂表达式） */
   caseColumns?: Array<{
     expression: any  // CASE AST 节点
@@ -964,7 +966,7 @@ export function parseQuery(query: string): QueryPlan {
 
   // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR 错误被吞掉了）
   // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
-  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType && !plan.caseColumns?.length && !plan.loadCsv) {
+  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unwinds?.length && !plan.unionType && !plan.caseColumns?.length && !plan.loadCsv) {
     // 检查原始查询是否包含有效关键字 — 大多数无效查询没有 MATCH etc.
     if (!/^\s*(MATCH|WITH|UNWIND|RETURN|CREATE|MERGE|SET|DELETE|REMOVE|FOREACH|CALL|SHOW|USE|BEGIN|COMMIT|ROLLBACK|EXPLAIN|PROFILE|LOAD|DROP|START|OPTIONAL|ALTER|GRANT|REVOKE)/i.test(query.trim())) {
       throw new Error(`Query parse error: cannot parse query "${query}"`)
@@ -1679,23 +1681,30 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
     }
   }
 
-  if (plan.with?.columns?.length) {
-    for (const col of plan.with.columns) {
-      const val = _evaluateExpression(col.expression, varCtx)
-      if (col.alias) varCtx[col.alias] = val
-    }
-  }
-
-  // Step 2: 执行 UNWIND 链（支持双 UNWIND 笛卡尔积）
+  // Step 2: 执行 UNWIND 链（支持 N 级 UNWIND 笛卡尔积）
   let rows: Array<Record<string, unknown>> = []
 
-  if (plan.unwind) {
+  if (plan.unwinds?.length) {
+    // 多级 UNWIND：N 路笛卡尔积
+    const lists = plan.unwinds.map(u => {
+      const items = _resolveUnwindList(u, varCtx)
+      return Array.isArray(items) ? items : [items]
+    })
+    function _cartesianN(idx: number, current: Record<string, unknown>): void {
+      if (idx >= lists.length) { rows.push({ ...current }); return }
+      for (const item of lists[idx]) {
+        current[plan.unwinds![idx].name] = item
+        _cartesianN(idx + 1, current)
+      }
+    }
+    _cartesianN(0, {})
+  } else if (plan.unwind) {
     const list1 = _resolveUnwindList(plan.unwind, varCtx)
     if (!Array.isArray(list1)) {
       // 非列表值 → 单行
       rows = [{ [plan.unwind.name]: list1 }]
     } else if (plan.secondUnwind) {
-      // 双 UNWIND：笛卡尔积
+      // 双 UNWIND：笛卡尔积（向后兼容 plan.secondUnwind / plan.unwind 字段）
       const list2 = _resolveUnwindList(plan.secondUnwind, varCtx)
       for (const item1 of list1) {
         const list2Arr = Array.isArray(list2) ? list2 : [list2]
@@ -1713,24 +1722,53 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
     rows = [{}]
   }
 
-    // Step 3: 应用 WITH 投影（op1 STARTS WITH op2 AS v）
+    // Step 3: 应用 WITH 投影——逐行计算非聚合列，收集聚合列的值
   if (plan.with?.columns?.length) {
-    // 跳过第一个列（它通常是 WITH [...] AS listVar，已处理）
-    // 如果 WITH 有剩余列，逐个求值
-    // 正常情况：WITH op1 STARTS WITH op2 AS v → expression = "op1 STARTS WITH op2", alias = "v"
+    // 判断哪些列是聚合函数
+    const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
+    const isAggCol: boolean[] = plan.with.columns.map(col => aggFnPattern.test(col.expression))
+    const hasAgg = isAggCol.some(Boolean)
+    const aggCols: Array<{ alias: string; rows: unknown[] }> = []
+    if (hasAgg) {
+      for (let i = 0; i < plan.with.columns.length; i++) {
+        if (isAggCol[i]) {
+          aggCols.push({ alias: plan.with.columns[i].alias || plan.with.columns[i].expression, rows: [] })
+        }
+      }
+    }
     rows = rows.map(row => {
       const newRow: Record<string, unknown> = {}
-      // 将 row 绑定到表达式求值的变量上下文
       const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
-      for (const col of plan.with!.columns!) {
+      let aggIdx = 0
+      for (let i = 0; i < plan.with.columns.length; i++) {
+        const col = plan.with.columns[i]
         const alias = col.alias || col.expression
-        if (evalCtx[alias] !== undefined && col.alias) continue
-        if (col.alias === null && col.expression in evalCtx) continue
-        const val = _evaluateExpression(col.expression, evalCtx)
-        newRow[col.alias || col.expression] = val !== undefined ? val : null
+        if (isAggCol[i]) {
+          // 聚合列：提取参数表达式，逐行计算值，收集到 aggCols
+          const innerMatch = col.expression.match(/^\s*\w+\s*\((.+?)\)\s*$/is)
+          if (innerMatch) {
+            const val = _evaluateExpression(innerMatch[1], evalCtx)
+            aggCols[aggIdx].rows.push(val !== undefined ? val : null)
+          }
+          aggIdx++
+          // 不在 row 中放聚合结果（聚合后统一放）
+        } else {
+          if (evalCtx[alias] !== undefined && col.alias) continue
+          if (col.alias === null && col.expression in evalCtx) continue
+          const val = _evaluateExpression(col.expression, evalCtx)
+          newRow[col.alias || col.expression] = val !== undefined ? val : null
+        }
       }
       return newRow
     })
+    // 聚合后：将所有 UNWIND 行压缩为单行，聚合列的值替换为收集的数组
+    if (hasAgg) {
+      const aggRow: Record<string, unknown> = {}
+      for (const ac of aggCols) {
+        aggRow[ac.alias] = ac.rows  // collect → 整个数组
+      }
+      rows = [aggRow]
+    }
   }
 
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
@@ -4137,7 +4175,7 @@ function extractVariablesFromClause(clause: string): string[] {
 function _isInvalidPlan(plan: QueryPlan): boolean {
   return !plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0
     && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.createNodes?.length
-    && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unionType
+    && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unwinds?.length && !plan.unionType
     && !plan.caseColumns?.length && !plan.createConstraint && !plan.deleteEntities?.length
     && !plan.setItems?.length && !plan.removeItems?.length && !plan.mergeItems?.length
 }
@@ -4491,8 +4529,16 @@ function _evalNot(s: string, row?: Record<string, unknown>): unknown {
 
 function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
-  if (t.endsWith(' IS NOT NULL')) { const left = _evalAddSub(t.slice(0, t.length - 12).trim(), row); return left !== null && left !== undefined }
-  if (t.endsWith(' IS NULL')) { const left = _evalAddSub(t.slice(0, t.length - 8).trim(), row); return left === null || left === undefined }
+  // 括号表达式直接下推（NOT 之后、进入比较操作符前）
+  // 必须确认整个表达式被一对完整括号包围：第一个 '(' 对应的 ')' 正好在末尾
+  if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) {
+    let depth = 0, matchIdx = -1
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] === '(') depth++
+      if (t[i] === ')') { depth--; if (depth === 0) { matchIdx = i; break } }
+    }
+    if (matchIdx === t.length - 1) return _evalBinary(t.slice(1, -1), row)
+  }
   const sw = t.indexOf(' STARTS WITH ')
   if (sw > 0) { const l = _evalAddSub(t.slice(0, sw), row); const r = _evalAddSub(t.slice(sw + 13), row); if (l == null || r == null) return null; return String(l).startsWith(String(r)) }
   const ci = t.indexOf(' CONTAINS ')
@@ -4501,8 +4547,14 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
   if (ew > 0) { const l = _evalAddSub(t.slice(0, ew), row); const r = _evalAddSub(t.slice(ew + 11), row); if (l == null || r == null) return null; return String(l).endsWith(String(r)) }
   const re = t.indexOf(' =~ ')
   if (re > 0) { const l = String(_evalAddSub(t.slice(0, re), row)); const r = String(_evalAddSub(t.slice(re + 4), row)); try { return new RegExp(r).test(l) } catch { return false } }
-  // IN 处理：在操作符循环前处理，但需避开左侧含比较操作符的表达式
-  const inOp = t.lastIndexOf(' IN ')  // 找最后一个 IN
+  // IN 处理：找顶层（不在括号内）的 IN
+  const inOp = (() => {
+    let idx = t.lastIndexOf(' IN ')
+    while (idx > 0 && _inBrackets(t, idx)) {
+      idx = t.lastIndexOf(' IN ', idx - 1)
+    }
+    return idx
+  })()
   if (inOp > 0) {
     const leftPart = t.slice(0, inOp)
     // 如果左侧有顶层比较操作符，则 IN 不应抢先（要等 = 先计算）
@@ -4546,7 +4598,22 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
     const idx = _findTopLevelOp(t, op)
     if (idx > 0) {
       const left = _evalAddSub(t.slice(0, idx), row)
-      const rawRight = t.slice(idx + op.length)
+      let rawRight = t.slice(idx + op.length).trim()
+      // Cypher 优先级：IS NULL/IS NOT NULL > 比较操作符
+      // 所以 a = b IS NULL 应解析为 a = (b IS NULL) 而非 (a = b) IS NULL
+      // 检查 rawRight 末尾是否含 IS NULL（不在括号内）
+      let isNullRight: boolean | undefined
+      if (rawRight.endsWith(' IS NULL') && !_inBrackets(rawRight, rawRight.length - 8) && !rawRight.includes('(')) {
+        const innerExpr = rawRight.slice(0, rawRight.length - 8).trim()
+        const innerVal = _evalAddSub(innerExpr, row)
+        isNullRight = (innerVal === null || innerVal === undefined)
+        rawRight = String(isNullRight)
+      } else if (rawRight.endsWith(' IS NOT NULL') && !_inBrackets(rawRight, rawRight.length - 12) && !rawRight.includes('(')) {
+        const innerExpr = rawRight.slice(0, rawRight.length - 12).trim()
+        const innerVal = _evalAddSub(innerExpr, row)
+        isNullRight = (innerVal !== null && innerVal !== undefined)
+        rawRight = String(isNullRight)
+      }
       // 如果 right 包含顶层 IN，在 _evalAddSub 前处理（IN 优先级 >= 比较操作符）
       const inIdx = rawRight.indexOf(' IN ')
       let right: unknown
@@ -4561,11 +4628,20 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       return _compareValues(left, right, op)
     }
   }
+  // 纯 IS NULL / IS NOT NULL 表达式（没有比较操作符）
+  if (t.endsWith(' IS NULL') && !_inBrackets(t, t.length - 8)) {
+    const innerVal = _evalAddSub(t.slice(0, t.length - 8).trim(), row)
+    return innerVal === null || innerVal === undefined
+  }
+  if (t.endsWith(' IS NOT NULL') && !_inBrackets(t, t.length - 12)) {
+    const innerVal = _evalAddSub(t.slice(0, t.length - 12).trim(), row)
+    return innerVal !== null && innerVal !== undefined
+  }
   return _evalAddSub(t, row)
 }
 
-function _compareValues(a: unknown, b: unknown, op: string): boolean {
-  if (a == null || b == null) return op === '<>' ? true : false
+function _compareValues(a: unknown, b: unknown, op: string): boolean | null {
+  if (a == null || b == null) return null  // Cypher 三值逻辑：null 参与的比较返回 null，包括 <>（不等号也不例外）
   switch (op) {
     case '=': return a === b
     case '<>': return a !== b
@@ -4614,6 +4690,40 @@ function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
 function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) return _evalBinary(t.slice(1, -1), row)
+  // 列表谓词（必须在 fnMatch 之前，因为 all/any/none/single 的 WHERE 子句与普通函数语法冲突）
+  const listPredMatch = t.match(/^(all|any|none|single)\s*\((.+?)\s+IN\s+(.+?)\s+WHERE\s+(.+)\)$/is)
+  if (listPredMatch) {
+    const pred = listPredMatch[1].toLowerCase()
+    const varName = listPredMatch[2].trim()
+    const listExpr = listPredMatch[3].trim()
+    const condExpr = listPredMatch[4].trim()
+    const list = _evaluateExpression(listExpr, row)
+    if (!Array.isArray(list)) return null
+    let count = 0
+    const listLen = list.length
+    for (const item of list) {
+      const evalCtx: Record<string, unknown> = { ...row as any, [varName]: item }
+      const val = _evaluateExpression(condExpr, evalCtx)
+      if (val === true) {
+        count++
+        if (pred === 'any') return true
+        if (pred === 'none') return false
+        if (pred === 'single' && count > 1) return false
+      }
+    }
+    if (pred === 'all') {
+      if (count === listLen && listLen > 0) return true
+      // 如果没有 false 但有 null，返回 true（TCK 场景 14 要求 all() 在 null 谓词下返回 true）
+      if (listLen > 0) {
+        const hasNonNullFalse = list.some(item => _evaluateExpression(condExpr, { ...row as any, [varName]: item }) === false)
+        if (!hasNonNullFalse) return true
+      }
+      return false
+    }
+    if (pred === 'any') return false
+    if (pred === 'none') return true
+    if (pred === 'single') return count === 1
+  }
   // 函数调用（必须在 dot 之前）
   const fnMatch = t.match(/^(\w+)\((.+?)\)$/s)
   if (fnMatch) {

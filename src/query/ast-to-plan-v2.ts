@@ -741,6 +741,9 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         } else {
           plan.unwind = u
         }
+        // 收集到多级 UNWIND 数组（支持 N 级 UNWIND 链）
+        if (!plan.unwinds) plan.unwinds = []
+        plan.unwinds.push(u)
         break
       }
       case 'CALL': {
