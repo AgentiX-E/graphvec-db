@@ -51,7 +51,7 @@ describe('GraphEngine Benchmark [100K nodes]', () => {
     g.close()
   })
 
-  it('query-engine 500 queries (with index): MATCH+WHERE+RETURN on 100K nodes', () => {
+  it('query-engine 500 queries (with index): MATCH+WHERE+RETURN on 100K nodes', async () => {
     _clearIndexes()
     const N = 100_000
     const nodes = Array.from({ length: N }, (_, i) => ({
