@@ -4396,11 +4396,27 @@ function _validateUndefinedVariables(query: string): void {
   const whereBody = whereMatch[1]
   const matchVars = extractMatchVariables(query)
   if (matchVars.length === 0) return
+  // 也提取 WITH 子句中定义的变量：WITH ... AS name
+  const withVars: string[] = []
+  const withMatches = query.matchAll(/\bWITH\s+(.+?)(?:\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)
+  for (const wm of withMatches) {
+    const items = wm[1].split(',').map(s => s.trim())
+    for (const item of items) {
+      const asMatch = item.match(/\bAS\s+(\w+)\s*$/i)
+      if (asMatch) withVars.push(asMatch[1])
+      // 收集 UNWIND 中的变量
+      const unwindMatch = wm[0].match(/\bUNWIND\s+.+\s+AS\s+(\w+)/i) || 
+                          (item.match(/\bUNWIND\s+.+\s+AS\s+(\w+)/i))
+      if (unwindMatch) withVars.push(unwindMatch[1])
+    }
+  }
+  // 合并 MATCH 变量和 WITH 变量
+  const definedVars = [...new Set([...matchVars, ...withVars])]
   // 去掉字符串常量
   let cleaned = whereBody
     .replace(/'[^']*'/g, '')
     .replace(/"[^"]*"/g, '')
-  // 去掉属性访问（x.y 格式）— 用 split 而非复杂正则，防止 tsx 编译差异
+  // 去掉属性访问（x.y 格式）
   cleaned = cleaned.split(/\s+/).filter(word => !word.includes('.')).join(' ')
   // 提取裸标识符
   const idents = cleaned.match(/\b([a-zA-Z_]\w*)\b/g) || []
@@ -4408,12 +4424,21 @@ function _validateUndefinedVariables(query: string): void {
     'AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
     'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
     'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
-    'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE'])
+    'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
+    'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
+    'UNION','ALL','OPTIONAL',
+    // 已知函数名（避免误判函数名变量）
+    'TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','KEYS',
+    'COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
+    'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
+    'COUNT','SUM','AVG','MAX','MIN','COLLECT',
+    'STARTS','CONTAINS','ENDS',
+    ])
   for (const v of idents) {
     const vu = v.toUpperCase()
     if (keywords.has(vu)) continue
     if (/^\d/.test(v)) continue
-    if (!matchVars.includes(v) && !matchVars.includes(vu)) {
+    if (!definedVars.includes(v) && !definedVars.includes(vu)) {
       throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
     }
   }
