@@ -4951,24 +4951,9 @@ function _validateLiterals(query: string): void {
     // 一元运算符前缀（+/-）不是字面量的一部分 — 但在验证字面量类型时需要考虑符号
     const hasSign = rawExpr.startsWith('-') || rawExpr.startsWith('+')
     const expr = hasSign ? rawExpr.slice(1) : rawExpr
-    // ── 列表语法检查 ──
+    // ── 列表语法检查 ── 包含缺失逗号检测
     if (expr.startsWith('[') && expr.endsWith(']')) {
-      const inner = expr.slice(1, -1).trim()
-      // 只有逗号（RETURN [,]）
-      if (/^,\s*$/.test(inner)) {
-        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
-      }
-      // 不均衡括号 + 未闭合字符串检查
-      let depth = 0, inStr = false, strChar = ''
-      for (let i = 0; i < expr.length; i++) {
-        // 跳过转义字符
-        if (inStr && expr[i] === '\\') { i++; continue }
-        if (inStr) { if (expr[i] === strChar) inStr = false; continue }
-        if (expr[i] === "'" || expr[i] === '"') { inStr = true; strChar = expr[i]; continue }
-        if (expr[i] === '[') depth++
-        if (expr[i] === ']') { depth--; if (depth < 0) break }
-      }
-      if (depth !== 0 || inStr) {
+      if (_detectMissingCommas(expr)) {
         throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
       }
     }
@@ -5124,4 +5109,66 @@ function _validateLiterals(query: string): void {
       }
     }
   }
+}
+
+/**
+ * 递归检测列表/Map 字面量中是否缺失逗号分隔符（Cypher 语法错误）
+ */
+function _detectMissingCommas(expr: string): boolean {
+  if (!expr.startsWith('[') && !expr.startsWith('{')) return false
+  const opening = expr[0]
+  const closing = opening === '[' ? ']' : '}'
+  if (!expr.endsWith(closing)) return true
+  const inner = expr.slice(1, -1).trim()
+  if (!inner) return false
+
+  let depth = 0, i = 0, prevEnded = false, hadExpr = false
+
+  while (i < inner.length) {
+    const ch = inner[i]
+    if (depth === 0 && /\s/.test(ch)) { i++; continue }
+
+    if (ch === "'" || ch === '"') {
+      if (depth === 0) { if (prevEnded) return true; prevEnded = true; hadExpr = true }
+      let j = i + 1; while (j < inner.length && inner[j] !== ch) { if (inner[j] === '\\') j++; j++ }
+      i = j + 1; continue
+    }
+
+    if (ch === '[' || ch === '{') {
+      if (depth === 0) { if (prevEnded) return true; prevEnded = false; hadExpr = true }
+      const closeChar = ch === '[' ? ']' : '}'
+      let subDepth = 1, j = i + 1
+      while (j < inner.length && subDepth > 0) {
+        if (inner[j] === "'" || inner[j] === '"') {
+          const q = inner[j]; j++
+          while (j < inner.length && inner[j] !== q) { if (inner[j] === '\\') j++; j++ }
+          j++; continue
+        }
+        if (inner[j] === ch) subDepth++
+        if (inner[j] === closeChar) subDepth--
+        j++
+      }
+      const subExpr = inner.slice(i, j)
+      if ((subExpr.startsWith('[') || subExpr.startsWith('{')) && _detectMissingCommas(subExpr)) return true
+      i = j
+      if (depth === 0) prevEnded = true
+      continue
+    }
+
+    if ((ch === ']' || ch === '}') && depth === 0) { i++; continue }
+    if (ch === ']' || ch === '}') { depth--; if (depth === 0) prevEnded = true; i++; continue }
+    if (ch === ':' && depth === 0) { prevEnded = false; i++; continue }
+    if (ch === ',' && depth === 0) { if (!hadExpr) return true; prevEnded = false; i++; continue }
+
+    if (depth === 0) {
+      if (prevEnded) return true
+      hadExpr = true
+      while (i + 1 < inner.length && /[a-zA-Z0-9_.\-]/.test(inner[i + 1])) i++
+      prevEnded = true
+    }
+    i++
+  }
+
+  if (prevEnded === false && hadExpr && inner.trimEnd().endsWith(',')) return true
+  return false
 }
