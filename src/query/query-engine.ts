@@ -4371,9 +4371,9 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
           const rightRaw = inMatch[1].trim()
           const right = rightRaw.replace(/^\(|\)$/g, '').trim()
           // 右值必须是列表（以 [ 开头）或参数引用（$x）
-          if (!right.startsWith('[') && !right.startsWith('$')) {
-            // 单值字面量：数字、字符串、布尔、null、map
-            if (/^('.*?'|".*?"|-?\d+(\.\d+)?(e[+-]?\d+)?|true|false|null|\{.*\})$/.test(right)) {
+          if (!right.startsWith('[') && !right.startsWith('$') && right.toUpperCase() !== 'NULL') {
+            // 单值字面量：数字、字符串、布尔、map（不包括 null — Cypher 允许 null IN null 返回 null）
+            if (/^('.*?'|".*?"|-?\d+(\.\d+)?(e[+-]?\d+)?|true|false|\{.*\})$/.test(right)) {
               throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
             }
           }
@@ -5007,13 +5007,8 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       const r = _evalAddSub(t.slice(inOp + 4), row)
       // Cypher: null IN null = null, null IN [] = false
       if (!Array.isArray(r)) return l == null ? null : false
-      // null IN list: 如果 l 为 null，只需检查列表是否包含 null
-      if (l == null) {
-        for (const item of r) {
-          if (item == null) return null
-        }
-        return false
-      }
+      // Cypher: 左操作数 null → 空列表返回 false（确定性），非空列表返回 null（未知）
+      if (l == null) return r.length === 0 ? false : null
       let hasMatch = false
       let hasNull = false
       for (const item of r) {
