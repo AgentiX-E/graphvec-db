@@ -3875,6 +3875,11 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // 从 WHERE 子句检测未绑定变量
   const qUpper = query.toUpperCase()
 
+  // ═══════════════════════════════════════════════════════════════
+  // Literals SyntaxError (编译时字面量检查)
+  // ═══════════════════════════════════════════════════════════════
+  _validateLiterals(query)
+
   // ── SyntaxError: InvalidDelete ──
   // DELETE 关系模式（需要 DETACH）
   if (plan.type === 'DELETE' && query) {
@@ -4898,4 +4903,195 @@ function _splitTopLevel(s: string, find: string): string[] {
   const last = current.trim()
   if (last) result.push(last)
   return result.length ? result : [s.trim()]
+}
+
+/**
+ * 字面量编译时语法和语义验证（SyntaxError）
+ * Literals: 整数溢出、非法格式、十六进制/八进制/浮点溢出、Unicode、列表/map 语法
+ */
+function _validateLiterals(query: string): void {
+  // 提取 RETURN 后的裸表达式（去掉 AS alias）
+  const retMatch = query.match(/RETURN\b([\s\S]*)/i)
+  if (!retMatch) return
+  const afterReturn = retMatch[1].trim()
+  const exprs = _splitTopLevel(afterReturn, ',').map(s => s.trim()).filter(Boolean)
+  const literals = exprs.map(s => s.replace(/\s+AS\s+\w+$/i, '').trim())
+
+  for (const rawExpr of literals) {
+    // 一元运算符前缀（+/-）不是字面量的一部分 — 但在验证字面量类型时需要考虑符号
+    const hasSign = rawExpr.startsWith('-') || rawExpr.startsWith('+')
+    const expr = hasSign ? rawExpr.slice(1) : rawExpr
+    // ── 列表语法检查 ──
+    if (expr.startsWith('[') && expr.endsWith(']')) {
+      const inner = expr.slice(1, -1).trim()
+      // 只有逗号（RETURN [,]）
+      if (/^,\s*$/.test(inner)) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+      // 不均衡括号 + 未闭合字符串检查
+      let depth = 0, inStr = false, strChar = ''
+      for (let i = 0; i < expr.length; i++) {
+        // 跳过转义字符
+        if (inStr && expr[i] === '\\') { i++; continue }
+        if (inStr) { if (expr[i] === strChar) inStr = false; continue }
+        if (expr[i] === "'" || expr[i] === '"') { inStr = true; strChar = expr[i]; continue }
+        if (expr[i] === '[') depth++
+        if (expr[i] === ']') { depth--; if (depth < 0) break }
+      }
+      if (depth !== 0 || inStr) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+    }
+
+    // ── Map 语法检查 ──
+    if (expr.startsWith('{') && expr.endsWith('}')) {
+      // 不均衡大括号 + 未闭合字符串
+      let depth = 0, inStr = false, strChar = ''
+      for (let i = 0; i < expr.length; i++) {
+        if (inStr && expr[i] === '\\') { i++; continue }
+        if (inStr) { if (expr[i] === strChar) inStr = false; continue }
+        if (expr[i] === "'" || expr[i] === '"') { inStr = true; strChar = expr[i]; continue }
+        if (expr[i] === '{') depth++
+        if (expr[i] === '}') { depth--; if (depth < 0) break }
+      }
+      if (depth !== 0 || inStr) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+      const inner = expr.slice(1, -1).trim()
+      // {,} 只有逗号
+      if (/^,\s*$/.test(inner)) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+      // {1} 没有 key（值不是 k:v 格式）
+      if (inner && !inner.includes(':')) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+      // 解析 map 条目
+      const entries = _splitTopLevel(inner, ',').map(s => s.trim()).filter(Boolean)
+      for (const entry of entries) {
+        const colonIdx = entry.indexOf(':')
+        if (colonIdx <= 0) {
+          // {[]} 或 {{}} — 值在前没有 key
+          if (entry.startsWith('[') || entry.startsWith('{')) {
+            throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+          }
+          continue
+        }
+        const key = entry.slice(0, colonIdx).trim()
+        // key 以数字开头
+        if (/^[0-9]/.test(key)) {
+          throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+        }
+        // key 含点号
+        if (key.includes('.')) {
+          throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+        }
+        // key 含非法符号 — 只允许字母数字下划线
+        if (!/^[a-zA-Z_]\w*$/.test(key.replace(/['"]/g, ''))) {
+          throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+        }
+      }
+    }
+
+    // ── 纯整数 ──
+    const intMatch = expr.match(/^(\d+)$/)
+    if (intMatch) {
+      const digits = intMatch[1]
+      try {
+        const absVal = BigInt(digits)
+        const big = hasSign ? -absVal : absVal
+        const min = BigInt('-9223372036854775808')
+        const max = BigInt('9223372036854775807')
+        if (big < min || big > max) {
+          throw Object.assign(new Error('SyntaxError: IntegerOverflow'), { tckError: 'IntegerOverflow' })
+        }
+      } catch (e: any) {
+        if (e && e.tckError) throw e
+        throw Object.assign(new Error('SyntaxError: InvalidNumberLiteral'), { tckError: 'InvalidNumberLiteral' })
+      }
+      continue
+    }
+    // 整数含非法符号（如 9223372#54775808）— 以数字开头但非纯数字
+    if (!intMatch && /^\d/.test(rawExpr.replace(/^[+-]/, '')) && !/^0[xXoObB]/.test(expr)) {
+      // 检查是否合法数字格式
+      if (!/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(rawExpr) && !/^-?\.\d+([eE][+-]?\d+)?$/.test(rawExpr)) {
+        throw Object.assign(new Error('SyntaxError: InvalidNumberLiteral'), { tckError: 'InvalidNumberLiteral' })
+      }
+    }
+
+    // ── 十六进制字面量 ──
+    const hexMatch = expr.match(/^0[xX](\w*)$/)
+    if (hexMatch) {
+      const hexDigits = hexMatch[1]
+      if (!hexDigits) {
+        throw Object.assign(new Error('SyntaxError: InvalidNumberLiteral'), { tckError: 'InvalidNumberLiteral' })
+      }
+      if (!/^[0-9a-fA-F]+$/.test(hexDigits)) {
+        throw Object.assign(new Error('SyntaxError: InvalidNumberLiteral'), { tckError: 'InvalidNumberLiteral' })
+      }
+      // 溢出：BigInt 不支持 -0x... 格式，所以用纯 hex 拼数字
+      try {
+        const absVal = BigInt('0x' + hexDigits)
+        const big = hasSign ? -absVal : absVal
+        const min = BigInt('-9223372036854775808')
+        const max = BigInt('9223372036854775807')
+        if (big < min || big > max) {
+          throw Object.assign(new Error('SyntaxError: IntegerOverflow'), { tckError: 'IntegerOverflow' })
+        }
+      } catch (e: any) {
+        if (e && e.tckError) throw e
+        throw Object.assign(new Error('SyntaxError: IntegerOverflow'), { tckError: 'IntegerOverflow' })
+      }
+      continue
+    }
+
+    // ── 八进制字面量 ──
+    const octMatch = expr.match(/^0[oO](\w*)$/)
+    if (octMatch) {
+      const octDigits = octMatch[1]
+      if (!octDigits || !/^[0-7]+$/.test(octDigits)) {
+        throw Object.assign(new Error('SyntaxError: InvalidNumberLiteral'), { tckError: 'InvalidNumberLiteral' })
+      }
+      // 溢出：BigInt 不支持 -0o... 格式，先算绝对值再加负号
+      try {
+        const absVal = BigInt('0o' + octDigits)
+        const big = hasSign ? -absVal : absVal
+        const min = BigInt('-9223372036854775808')
+        const max = BigInt('9223372036854775807')
+        if (big < min || big > max) {
+          throw Object.assign(new Error('SyntaxError: IntegerOverflow'), { tckError: 'IntegerOverflow' })
+        }
+      } catch (_e) {
+        throw Object.assign(new Error('SyntaxError: IntegerOverflow'), { tckError: 'IntegerOverflow' })
+      }
+      continue
+    }
+
+    // ── 浮点溢出 ──
+    if (/^-?\d+(\.\d+)?[eE][+-]?\d+$/.test(expr) || /^-?\.\d+[eE][+-]?\d+$/.test(expr)) {
+      const val = parseFloat(expr)
+      if (!isFinite(val)) {
+        throw Object.assign(new Error('SyntaxError: FloatingPointOverflow'), { tckError: 'FloatingPointOverflow' })
+      }
+    }
+
+    // ── Unicode 字面量 ──
+    const strMatch = expr.match(/^'([^']*)'$/)
+    if (strMatch) {
+      const strContent = strMatch[1]
+      // 查找 \u 后不是 4 hex digits 的情况
+      // 场景：'\uH' — \u 后跟 H（不是 hex）
+      // 但需要排除 \u 被转义的情况（\\u）
+      for (let i = 0; i < strContent.length - 1; i++) {
+        if (strContent[i] === '\\' && strContent[i + 1] === 'u') {
+          // 检查是否被转义 (\\u)
+          if (i > 0 && strContent[i - 1] === '\\') continue
+          const hexPart = strContent.slice(i + 2, i + 6)
+          if (hexPart.length < 4 || !/^[0-9a-fA-F]{4}$/.test(hexPart)) {
+            throw Object.assign(new Error('SyntaxError: InvalidUnicodeLiteral'), { tckError: 'InvalidUnicodeLiteral' })
+          }
+        }
+      }
+    }
+  }
 }
