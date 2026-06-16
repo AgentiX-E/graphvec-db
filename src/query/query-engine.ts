@@ -6006,6 +6006,8 @@ function _isPureLiteralExpr(s: string): boolean {
       if (s.slice(i, i + 2) === '<>' || s.slice(i, i + 2) === '>=' || s.slice(i, i + 2) === '<=') return false
       if (s[i] === '>' || s[i] === '<') return false
       // 算术操作符（不在括号/字符串内）
+      // 但如果 i==0 且 s[i] 为 +/-，可能是字面量前缀（如 -42, +0o100...）
+      if (i === 0 && (s[i] === '+' || s[i] === '-')) continue
       if (s[i] === '+' || s[i] === '-' || s[i] === '*' || s[i] === '/' || s[i] === '%' || s[i] === '^') return false
       // 布尔操作符（IN, AND, OR, XOR, NOT 等）
       if (/\s/.test(s[i]) && i + 2 < s.length) {
