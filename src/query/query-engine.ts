@@ -1867,10 +1867,17 @@ function _resolveUnwindList(unwind: NonNullable<QueryPlan['unwind']>, varCtx: Re
   if (Array.isArray(unwind.list) && unwind.list.length > 0) {
     return unwind.list
   }
-  if (unwind.var && varCtx[unwind.var] !== undefined) {
-    const val = varCtx[unwind.var]
-    if (Array.isArray(val)) return val
-    return [val]
+  if (unwind.var) {
+    // 尝试变量引用
+    if (varCtx[unwind.var] !== undefined) {
+      const val = varCtx[unwind.var]
+      if (Array.isArray(val)) return val
+      return [val]
+    }
+    // 尝试表达式求值（如 split('one1two', '1') 等函数调用）
+    const exprVal = _evaluateExpression(unwind.var, varCtx)
+    if (Array.isArray(exprVal)) return exprVal
+    if (exprVal != null) return [exprVal]
   }
   return []
 }
