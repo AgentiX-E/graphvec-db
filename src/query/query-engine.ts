@@ -4633,7 +4633,8 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
     if (!hasTopLevelCmp) {
       const l = _evalAddSub(leftPart, row)
       const r = _evalAddSub(t.slice(inOp + 4), row)
-      if (!Array.isArray(r)) return false
+      // Cypher: null IN null = null, null IN [] = false
+      if (!Array.isArray(r)) return l == null ? null : false
       let hasMatch = false
       let hasNull = false
       for (const item of r) {
@@ -4686,15 +4687,16 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       let rawRight = t.slice(idx + op.length).trim()
       // Cypher 优先级：IS NULL/IS NOT NULL > 比较操作符
       // 所以 a = b IS NULL 应解析为 a = (b IS NULL) 而非 (a = b) IS NULL
-      // 检查 rawRight 末尾是否含 IS NULL
+      // 检查 rawRight 末尾是否含 IS NULL（大小写不敏感）
       let isNullRight: boolean | undefined
-      if (rawRight.endsWith(' IS NULL') && !_inBrackets(rawRight, rawRight.length - 8)) {
-        const innerExpr = rawRight.slice(0, rawRight.length - 8).trim()
+      const isNullSuffix = _endsWithIsNull(rawRight)
+      if (isNullSuffix === 'IS NULL') {
+        const innerExpr = rawRight.slice(0, rawRight.length - 7).trim()
         const innerVal = _evalAddSub(innerExpr, row)
         isNullRight = (innerVal === null || innerVal === undefined)
         rawRight = String(isNullRight)
-      } else if (rawRight.endsWith(' IS NOT NULL') && !_inBrackets(rawRight, rawRight.length - 12)) {
-        const innerExpr = rawRight.slice(0, rawRight.length - 12).trim()
+      } else if (isNullSuffix === 'IS NOT NULL') {
+        const innerExpr = rawRight.slice(0, rawRight.length - 11).trim()
         const innerVal = _evalAddSub(innerExpr, row)
         isNullRight = (innerVal !== null && innerVal !== undefined)
         rawRight = String(isNullRight)
@@ -4713,13 +4715,14 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       return _compareValues(left, right, op)
     }
   }
-  // 纯 IS NULL / IS NOT NULL 表达式（没有比较操作符）
-  if (t.endsWith(' IS NULL') && !_inBrackets(t, t.length - 8)) {
-    const innerVal = _evalAddSub(t.slice(0, t.length - 8).trim(), row)
+  // 纯 IS NULL / IS NOT NULL 表达式（大小写不敏感）
+  const isNullEnd = _endsWithIsNull(t)
+  if (isNullEnd === 'IS NULL') {
+    const innerVal = _evalAddSub(t.slice(0, t.length - 7).trim(), row)
     return innerVal === null || innerVal === undefined
   }
-  if (t.endsWith(' IS NOT NULL') && !_inBrackets(t, t.length - 12)) {
-    const innerVal = _evalAddSub(t.slice(0, t.length - 12).trim(), row)
+  if (isNullEnd === 'IS NOT NULL') {
+    const innerVal = _evalAddSub(t.slice(0, t.length - 11).trim(), row)
     return innerVal !== null && innerVal !== undefined
   }
   return _evalAddSub(t, row)
@@ -4796,6 +4799,14 @@ function _isNaN(v: unknown): boolean {
 
 /** Cypher 深度相等：支持 List、Map 递归比较，符合三值逻辑（null 元素 = → null） */
 /** Cypher 深度相等（含 null 传播，用于 = 比较） */
+/** 大小写不敏感检测字符串是否以 IS NULL 或 IS NOT NULL 结尾 */
+function _endsWithIsNull(s: string): 'IS NULL' | 'IS NOT NULL' | false {
+  const u = s.toUpperCase()
+  if (u.endsWith('IS NULL') && !_inBrackets(s, s.length - 7)) return 'IS NULL'
+  if (u.endsWith('IS NOT NULL') && !_inBrackets(s, s.length - 11)) return 'IS NOT NULL'
+  return false
+}
+
 function _deepEqWithNull(a: unknown, b: unknown): { match: boolean; hasNull: boolean } {
   if (a === b) return { match: true, hasNull: a == null || b == null }
   if (a == null || b == null) return { match: a === b, hasNull: true }
@@ -4905,8 +4916,8 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
       const innerExpr = t.slice(1, parenEnd)
       const suffix = t.slice(parenEnd + 1).trim()
       const innerVal = _evalBinary(innerExpr, row)
-      if (suffix === 'IS NULL') return (innerVal === null || innerVal === undefined)
-      if (suffix === 'IS NOT NULL') return (innerVal !== null && innerVal !== undefined)
+      if (suffix.toUpperCase() === 'IS NULL') return (innerVal === null || innerVal === undefined)
+      if (suffix.toUpperCase() === 'IS NOT NULL') return (innerVal !== null && innerVal !== undefined)
     }
   }
   // 列表谓词（必须在 fnMatch 之前，因为 all/any/none/single 的 WHERE 子句与普通函数语法冲突）
