@@ -2517,17 +2517,25 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               for (const pred of inlinePredicates) {
                 const actual = allNodes[i][pred.key]
                 const expected = pred.value
-                // 使用原始字符串比较以避免 BigInt 精度丢失
                 const expectedRaw = pred.raw
                 if (actual === undefined) {
                   matchesAll = false
                   break
                 }
-                const actualStr = typeof actual === 'bigint' ? String(actual) : String(actual)
-                if (actualStr !== expectedRaw) {
-                  matchesAll = false
-                  break
+                // 普通字符串/数字比较
+                const actualStr = String(actual)
+                if (actualStr === expectedRaw) continue  // exact match
+                // 大整数精度丢失：actual 被 ANTLR 截断，raw 是原始文本
+                // 用 BigInt(raw) 解析后与 actual 用 BigInt 对比
+                if (/^\d+$/.test(expectedRaw)) {
+                  try {
+                    const actualBig = typeof actual === 'bigint' ? actual : BigInt(actualStr)
+                    const expectedBig = BigInt(expectedRaw)
+                    if (actualBig === expectedBig) continue  // bigint match！
+                  } catch {}
                 }
+                matchesAll = false
+                break
               }
               if (!matchesAll) skipNodeIndices.add(i)
             }
