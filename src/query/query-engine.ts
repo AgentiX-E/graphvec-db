@@ -2708,11 +2708,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     }
     if (plan.scanLabel) allStepVars.add(plan.scanLabel)
     const nodeAliasList = [...allStepVars]
-    const edgeFilters = plan.steps?.length && (plan.filters || []).filter(f =>
+    const edgeFilters = plan.steps?.length ? (plan.filters || []).filter(f =>
       f.source && !nodeAliasList.includes(f.source)
-    ) || []
+    ) : []
     const hasOR = query ? /OR/i.test(query) : false
-    const geFilters = (plan.filters || []).filter(f => !edgeFilters.includes(f))
+    const geFilters = (plan.filters || []).filter(f => !(edgeFilters as any[]).includes(f))
 
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
 
@@ -3248,8 +3248,99 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             }
           }
           _cartesian(0, {})
+        } else if (varNames.length === 1 && plan.hasMatch) {
+          // 单变量 MATCH（无边）：直接取所有节点，构建结果行
+          const singleVar = varNames[0]
+          for (const entry of varNodeMap[singleVar]) {
+            // 应用 plan.filters 过滤（用于 STARTS_WITH / ENDS_WITH / CONTAINS 等 GE 已处理的 filter）
+            const filterMatch = (plan.filters || []).every((f: any) => {
+              if (f.source !== singleVar) return true
+              const actualVal = entry.node[f.property]
+              const fv = f.value
+              if (actualVal === undefined) return false
+              switch (f.operator) {
+                case 'EQ':   return String(actualVal) === String(fv)
+                case 'NEQ':  return String(actualVal) !== String(fv)
+                case 'GT':   return Number(actualVal) > Number(fv)
+                case 'GTE':  return Number(actualVal) >= Number(fv)
+                case 'LT':   return Number(actualVal) < Number(fv)
+                case 'LTE':  return Number(actualVal) <= Number(fv)
+                case 'STARTS_WITH': return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv)
+                case 'ENDS_WITH':   return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv)
+                case 'CONTAINS':    return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv)
+                default:            return String(actualVal) === String(fv)
+              }
+            })
+            if (!filterMatch) continue
+            const row: any = {
+              id: -1,
+              props: entry.node,
+              type: entry.node._label || 'Default',
+              name: '',
+              __crossVarRows: { [singleVar]: entry.node },
+            }
+            pairedRows.push(row)
+          }
         }
         filteredWithLabels = pairedRows
+      }
+    }
+
+    // ── 单变量无边 MATCH 处理（无 crossVarFilters 时） ──
+    // 当 crossVarFilters.length === 0 且 plan.steps?.length === 0 且 plan.hasMatch 时，
+    // 上面的 crossVarFilters 分支不执行，filteredWithLabels 仍为 records。
+    // 此处用 filteredRecords 重新构建正确格式的结果行。
+    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && filteredRecords?.length) {
+      const varLabelMap2: Record<string, string> = {}
+      if (query) {
+        const matchClauses = query.matchAll(/MATCH\s*\((\w+)\s*:\s*(\w+)\)/g)
+        for (const mc of matchClauses) varLabelMap2[mc[1]] = mc[2]
+      }
+      const returnCols2 = plan.returnColumns || []
+      const involvedVarSet2 = new Set<string>()
+      for (const rc of returnCols2) {
+        const varName = typeof rc === 'string' ? rc.split('.')[0] : ''
+        if (varName) involvedVarSet2.add(varName)
+      }
+      if (involvedVarSet2.size === 1) {
+        const singleVar2 = [...involvedVarSet2][0]
+        const targetLabel2 = varLabelMap2[singleVar2]
+        // 原始 filteredRecords 已是 GE 返回的节点，格式 {id, props, type, name}
+        // 将其转换为 _formatResultRow 可用的格式
+        const formattedRows: any[] = []
+        for (const rec of filteredRecords) {
+          const nodeProps = rec.props || rec
+          if (targetLabel2 && String(nodeProps._label) !== targetLabel2) continue
+          // 应用 plan.filters 过滤
+          const filterMatch = (plan.filters || []).every((f: any) => {
+            if (f.source && f.source !== singleVar2) return true
+            const actualVal = nodeProps[f.property]
+            const fv = f.value
+            if (actualVal === undefined) return false
+            switch (f.operator) {
+              case 'EQ':   return String(actualVal) === String(fv)
+              case 'NEQ':  return String(actualVal) !== String(fv)
+              case 'GT':   return Number(actualVal) > Number(fv)
+              case 'GTE':  return Number(actualVal) >= Number(fv)
+              case 'LT':   return Number(actualVal) < Number(fv)
+              case 'LTE':  return Number(actualVal) <= Number(fv)
+              case 'STARTS_WITH': return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv)
+              case 'ENDS_WITH':   return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv)
+              case 'CONTAINS':    return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv)
+              default:            return String(actualVal) === String(fv)
+            }
+          })
+          console.error("DEBUG filterMatch passed, props:", JSON.stringify(nodeProps))
+          if (!filterMatch) continue
+          formattedRows.push({
+            id: rec.id || -1,
+            props: nodeProps,
+            type: rec.type || nodeProps._label || 'Default',
+            name: rec.name || '',
+            __crossVarRows: { [singleVar2]: nodeProps },
+          })
+        }
+        filteredWithLabels = formattedRows
       }
     }
 
@@ -3305,7 +3396,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // MATCH (node)-[r:KNOWS {name: 'monkey'}]->(a) — steps 中的 edgeProps
     // 利用 edgesPayload（从 __edges 提取的边信息）来验证边属性是否匹配
     const edgePropSteps = (plan.steps || []).filter(s => s.edgeProps && Object.keys(s.edgeProps).length > 0)
-    const edgePropFilteredRecords = edgePropSteps.length && edgesPayload.length
+    const edgePropFilteredRecords = (edgePropSteps.length && edgesPayload.length)
       ? (filteredWithLabels || []).filter((r: any) => {
           // 找到结果节点在 allNodes 中的索引
           const nodeIdx = nodeGeIds.indexOf(r.id)
@@ -3352,7 +3443,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     const edgeVarCols = (plan.returnColumns || []).filter(rc =>
       rc && rc !== '*' && !rc.includes('.') && !nodeAliases.has(rc)
     )
-    const rawWithEdges = edgeVarCols.length && (hasMatchingEdgeLabel || edgesPayload.length)
+    const rawWithEdges = (edgeVarCols.length && (hasMatchingEdgeLabel || edgesPayload.length))
       ? edgePropFilteredRecords.map((r: any) => {
           const row: Record<string, unknown> = {}
           if (r.props) Object.assign(row, r.props)
@@ -3388,6 +3479,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         })
       : edgePropFilteredRecords
 
+    // Safety: ensure rawWithEdges is always an array
+    if (!Array.isArray(rawWithEdges)) rawWithEdges = edgePropFilteredRecords
+
     // ── 格式化结果 ──
     if (query && query.includes("_MAGIC_DEBUG")) {
     }
@@ -3417,6 +3511,57 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           filteredResult.push(row)
         }
         // false / null / undefined → 跳过
+      }
+      result.length = 0
+      result.push(...filteredResult)
+    }
+
+    // If WHERE cleared everything but plan.filters exists, rebuild result from raw GE data
+    if (plan.filters?.length && !plan.aggregate && !result.length && rawWithEdges?.length) {
+      // WHERE body couldn't handle STARTS_WITH/ENDS_WITH/CONTAINS/etc
+      // Rebuild result rows from rawWithEdges via _formatResultRow
+      result.length = 0
+      for (const rwe of rawWithEdges) {
+        result.push(_formatResultRow(rwe, plan))
+      }
+    }
+
+    // ── plan.filters 后处理过滤（补 WHERE 后处理不覆盖的 filter） ──
+    // WHERE 后处理依赖 whereBody 字符串，但对于 STARTS_WITH / ENDS_WITH / CONTAINS
+    // 等操作符，whereBody 可能被截断（ANTLR 适配器问题）。plan.filters 包含完整
+    // 的结构化 filter 信息，在此处对所有未在 GE 预过滤中处理的结果做二次过滤。
+    if (plan.filters?.length && result.length && !plan.aggregate) {
+      const filteredResult: QueryRow[] = []
+      for (const row of result) {
+        // 构建变量→节点映射
+        const varNodes: Record<string, Record<string, unknown>> = {}
+        for (const [key, val] of Object.entries(row)) {
+          if (val && typeof val === 'object' && 'props' in (val as any)) {
+            varNodes[key] = { ...(val as any).props }
+          } else if (val && typeof val === 'object') {
+            varNodes[key] = val as Record<string, unknown>
+          }
+        }
+        const match = plan.filters.every((f: any) => {
+          const sourceNode = varNodes[f.source]
+          if (!sourceNode) return false
+          const actualVal = sourceNode[f.property]
+          if (actualVal === undefined && f.operator !== 'IS_NULL') return false
+          const fv = f.value
+          switch (f.operator) {
+            case 'EQ':   return String(actualVal) === String(fv)
+            case 'NEQ':  return String(actualVal) !== String(fv)
+            case 'GT':   return Number(actualVal) > Number(fv)
+            case 'GTE':  return Number(actualVal) >= Number(fv)
+            case 'LT':   return Number(actualVal) < Number(fv)
+            case 'LTE':  return Number(actualVal) <= Number(fv)
+            case 'STARTS_WITH': return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv)
+            case 'ENDS_WITH':   return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv)
+            case 'CONTAINS':    return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv)
+            default:            return String(actualVal) === String(fv)
+          }
+        })
+        if (match) filteredResult.push(row)
       }
       result.length = 0
       result.push(...filteredResult)
