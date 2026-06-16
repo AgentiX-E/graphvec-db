@@ -1754,7 +1754,11 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
           // 不在 row 中放聚合结果（聚合后统一放）
         } else {
           if (evalCtx[alias] !== undefined && col.alias) continue
-          if (col.alias === null && col.expression in evalCtx) continue
+          if (col.alias === null && col.expression in evalCtx) {
+            // 无别名的列且已在 evalCtx 中（如 UNWIND 变量 a, b），传递值到新行
+            newRow[col.expression] = evalCtx[col.expression]
+            continue
+          }
           const val = _evaluateExpression(col.expression, evalCtx)
           newRow[col.alias || col.expression] = val !== undefined ? val : null
         }
@@ -1774,6 +1778,24 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
   if (!plan.with?.columns?.length && !rows.length) {
     rows = [{}]
+  }
+
+  // ── WITH WHERE 过滤 ──
+  // WITH ... WHERE 的过滤在 parseQuery 中没有被提取到 filters。
+  // 从原始 query 文本提取 WHERE 子句，用表达式引擎逐行过滤。
+  if (query && !plan.aggregate && rows.length > 1) {
+    const withWhereMatch = query.match(/\bWHERE\s+(.+?)(?:\s+(?:RETURN|WITH|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT)\s|$)/is)
+    if (withWhereMatch && !withWhereMatch[1].includes('[')) {
+      // 有 MATCH 的 WHERE 由 MATCH 路径处理（hasMatch=true），只有无 MATCH 的 WITH WHERE 才在此处理
+      if (!plan.hasMatch) {
+        const whereExpr = withWhereMatch[1].trim()
+        // 过滤：避免与 MATCH+WHERE 的 GE post-filter 重复（它只在 hasMatch 时执行）
+        rows = rows.filter(row => {
+          const val = _evaluateExpression(whereExpr, row)
+          return val === true
+        })
+      }
+    }
   }
 
   // Step 4: 聚合（count/sum/avg/max/min）
@@ -4601,14 +4623,14 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       let rawRight = t.slice(idx + op.length).trim()
       // Cypher 优先级：IS NULL/IS NOT NULL > 比较操作符
       // 所以 a = b IS NULL 应解析为 a = (b IS NULL) 而非 (a = b) IS NULL
-      // 检查 rawRight 末尾是否含 IS NULL（不在括号内）
+      // 检查 rawRight 末尾是否含 IS NULL
       let isNullRight: boolean | undefined
-      if (rawRight.endsWith(' IS NULL') && !_inBrackets(rawRight, rawRight.length - 8) && !rawRight.includes('(')) {
+      if (rawRight.endsWith(' IS NULL') && !_inBrackets(rawRight, rawRight.length - 8)) {
         const innerExpr = rawRight.slice(0, rawRight.length - 8).trim()
         const innerVal = _evalAddSub(innerExpr, row)
         isNullRight = (innerVal === null || innerVal === undefined)
         rawRight = String(isNullRight)
-      } else if (rawRight.endsWith(' IS NOT NULL') && !_inBrackets(rawRight, rawRight.length - 12) && !rawRight.includes('(')) {
+      } else if (rawRight.endsWith(' IS NOT NULL') && !_inBrackets(rawRight, rawRight.length - 12)) {
         const innerExpr = rawRight.slice(0, rawRight.length - 12).trim()
         const innerVal = _evalAddSub(innerExpr, row)
         isNullRight = (innerVal !== null && innerVal !== undefined)
@@ -4690,6 +4712,21 @@ function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
 function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) return _evalBinary(t.slice(1, -1), row)
+  // 括号 + 后缀 IS NULL/IS NOT NULL： (expr) IS NULL → 先计算 expr，再判 null
+  if (t.startsWith('(') && (t.endsWith(' IS NULL') || t.endsWith(' IS NOT NULL'))) {
+    let depth = 0, parenEnd = -1
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] === '(') depth++
+      if (t[i] === ')') { depth--; if (depth === 0) { parenEnd = i; break } }
+    }
+    if (parenEnd > 0) {
+      const innerExpr = t.slice(1, parenEnd)
+      const suffix = t.slice(parenEnd + 1).trim()
+      const innerVal = _evalBinary(innerExpr, row)
+      if (suffix === 'IS NULL') return (innerVal === null || innerVal === undefined)
+      if (suffix === 'IS NOT NULL') return (innerVal !== null && innerVal !== undefined)
+    }
+  }
   // 列表谓词（必须在 fnMatch 之前，因为 all/any/none/single 的 WHERE 子句与普通函数语法冲突）
   const listPredMatch = t.match(/^(all|any|none|single)\s*\((.+?)\s+IN\s+(.+?)\s+WHERE\s+(.+)\)$/is)
   if (listPredMatch) {
