@@ -518,12 +518,16 @@ Given('having executed:', async function (query: string) {
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan as any).createNodes?.length) {
       const cns = (plan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
       const createdNodes: Array<Record<string, unknown>> = []
+      const unwind = (plan as any).unwind as { list: unknown[]; name: string } | undefined
+      // 有 UNWIND 时，原始 createNodes 只是模板，由 UNWIND block 处理
+      // 但仍然需要正常走一遍来处理非 UNWIND 的别名匹配
+      if (!unwind) {
       const seenAliases = new Map<string, number>() // alias -> index in createdNodes
       for (let ci = 0; ci < cns.length; ci++) {
         const cn = cns[ci]
         // 如果 alias 已见过（自循环或 reuse），不重新 seed
-        if (cn.alias && seenAliases.has(cn.alias)) {
-          // 复用已有节点
+        if (cn.alias && seenAliases.has(cn.alias) && !(plan as any).unwind) {
+          // 没有 UNWIND 时复用已有节点
           createdNodes.push(createdNodes[seenAliases.get(cn.alias)!])
           continue
         }
@@ -538,6 +542,63 @@ Given('having executed:', async function (query: string) {
         seedGe(ge, node)
         createdNodes.push(node)
         if (cn.alias) seenAliases.set(cn.alias, ci)
+      }
+
+      } // !unwind
+      
+      // 如果有 UNWIND，为每个 UNWIND 元素创建额外的节点
+      // 解析 UNWIND 后替换 createNodes 中的变量引用
+      if (unwind && unwind.list) {
+        // 解析 UNWIND 列表：可能是 JS 数组或字符串 "[1,2,3]" / "['a','b','c']"
+        let listVals: unknown[] = []
+        if (Array.isArray(unwind.list)) {
+          listVals = unwind.list
+        } else if (typeof unwind.list === 'string') {
+          // e.g. "['a', 'b', 'c']" or "[1, 2, 3]"
+          const trimmed = unwind.list.trim()
+          if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            try { listVals = JSON.parse(trimmed) } catch {}
+          }
+          // fallback: 尝试手动解析（JSON.parse 可能失败于单引号）
+          if (!listVals.length) {
+            const inner = trimmed.slice(1, -1)
+            for (const part of inner.split(',')) {
+              const p = part.trim()
+              // 去掉引号
+              if ((p.startsWith("'") && p.endsWith("'")) || (p.startsWith('"') && p.endsWith('"'))) {
+                listVals.push(p.slice(1, -1))
+              } else if (p === 'true') listVals.push(true)
+              else if (p === 'false') listVals.push(false)
+              else if (p === 'null') listVals.push(null)
+              else {
+                const n = Number(p)
+                listVals.push(isNaN(n) ? p : n)
+              }
+            }
+          }
+        }
+        // 确保 createNodes 模板存在
+        const cnTemplate = cns.length > 0 ? cns[0] : null
+        if (cnTemplate) {
+          for (const elem of listVals) {
+            const uwNode: Record<string, unknown> = { _label: cnTemplate.label || 'Default' }
+            if (cnTemplate.props) {
+              for (const [k, v] of Object.entries(cnTemplate.props)) {
+                let rawVal = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
+                  ? (v as any).value
+                  : v
+                // 如果值是 UNWIND 变量引用，替换为实际值
+                if (typeof rawVal === 'string' && rawVal === unwind.name) {
+                  rawVal = elem
+                }
+                uwNode[k] = rawVal
+              }
+            }
+            st.nodes.push(uwNode)
+            seedGe(ge, uwNode)
+            createdNodes.push(uwNode)
+          }
+        }
       }
 
       // 创建边（如果有 createEdges）

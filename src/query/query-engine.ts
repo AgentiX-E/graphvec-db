@@ -5443,8 +5443,8 @@ function _findTopLevelOp(s: string, op: string): number {
       // 检查前后字符不是 > 或 <，确保操作符是孤立的
       const before = i > 0 ? s[i - 1] : ' '
       const after = s[i + op.length]
-      // 对于双字符操作符（<>, >=, <=），确保前一个字符不是 < 或 >（避免从 <> 内部找到 =）
-      if (op.length === 1 && (before === '<' || before === '>' || before === '=')) continue
+      // 对于双字符操作符（<>, >=, <=），确保前一个和后一个字符都不是 < > =（避免从 <= 内部找到 < 或 =）
+      if (op.length === 1 && (before === '<' || before === '>' || before === '=' || after === '<' || after === '>' || after === '=')) continue
       return i
     }
   }
