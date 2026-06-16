@@ -236,10 +236,16 @@ function _stringifyVal(val: unknown): string {
   if (Array.isArray(val)) {
     return '[' + val.map(v => {
       if (typeof v === 'string') return "'" + v + "'"
+      if (Array.isArray(v) || (typeof v === 'object' && v !== null)) return _stringifyVal(v)
       return String(v)
     }).join(', ') + ']'
   }
-  if (typeof val === 'object') return JSON.stringify(val)
+  if (typeof val === 'object' && val !== null) {
+    const entries = Object.entries(val as Record<string, unknown>)
+      .map(([k, v]) => `${k}: ${_stringifyVal(v)}`)
+      .join(', ')
+    return '{' + entries + '}'
+  }
   return String(val)
 }
 

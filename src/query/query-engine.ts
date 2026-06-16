@@ -4678,12 +4678,12 @@ function _compareValues(a: unknown, b: unknown, op: string): boolean | null {
 function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
-    if (t[i] === '+' && !_inBrackets(t, i) && !_inString(t, i)) {
+    if (t[i] === '+' && !_inBrackets(t, i) && !_inString(t, i) && !(i > 0 && 'eE'.includes(t[i - 1]))) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
       return typeof left === 'string' || typeof right === 'string' ? String(left) + String(right) : Number(left) + Number(right)
     }
-    if (t[i] === '-' && !_inBrackets(t, i) && !_inString(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1])) {
+    if (t[i] === '-' && !_inBrackets(t, i) && !_inString(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1]) && !'eE'.includes(t[i - 1])) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
       return Number(left) - Number(right)
@@ -4814,8 +4814,18 @@ function _evalLiteral(s: string, row?: Record<string, unknown>): unknown {
   // 数字字面量：整数、浮点、十六进制、科学计数法、小数点开头
   if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v)) return parseFloat(v)
   if (/^0[xX][0-9a-fA-F]+$/.test(v)) return parseInt(v, 16)
-  if (/^\.\d+([eE][+-]?\d+)?$/.test(v)) return parseFloat(v)
-  if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) return v.slice(1, -1)
+  if (/^0[oO][0-7]+$/.test(v)) return parseInt(v.slice(2), 8)
+  if (/^-?\.\d+([eE][+-]?\d+)?$/.test(v)) return parseFloat(v)
+  if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
+    let val = v.slice(1, -1)
+    // 转义序列：\n \t \r \\ \' \" \uXXXX
+    val = val.replace(/\\(n|t|r|\\|'|")/g, (_m: string, ch: string) => {
+      const map: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"' }
+      return map[ch]
+    })
+    val = val.replace(/\\u([0-9a-fA-F]{4})/g, (_m: string, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    return val
+  }
   if (v.startsWith('[') && v.endsWith(']')) {
     const inner = v.slice(1, -1).trim()
     return inner ? _parseCommaList(inner).map(item => _evalBinary(item.trim(), row)) : []
