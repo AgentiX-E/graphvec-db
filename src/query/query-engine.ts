@@ -2179,7 +2179,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       if (plan.expressionColumns?.length) {
         // expressionColumns 包含结构化的 { expression, alias }，来自 ANTLR parse
         for (const ec of plan.expressionColumns) {
-          const val = _evaluateExpression(ec.expression)
+          const val = _evaluateExpression(ec.expression, row)
           row[ec.alias] = val !== null ? val : null
         }
       } else {
@@ -2189,7 +2189,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           if (isIdentifier) {
             row[rc] = null
           } else {
-            const val = _evaluateExpression(rc)
+            const val = _evaluateExpression(rc, row)
             row[rc] = val !== null ? val : null
           }
         }
@@ -4366,8 +4366,12 @@ export function compileCypher(template: string): ParameterizedQuery {
  * 对单个表达式字符串求值。
  * `row` 是每行 GE 结果数据，用于变量引用（如 `n.name` → row[name]）。
  */
-function _evaluateExpression(expr: string, row?: Record<string, unknown>): unknown {
+function _evaluateExpression(expr: string | Record<string, unknown>, row?: Record<string, unknown>): unknown {
   if (expr == null) return null
+  // 支持结构化表达式 {type, value, items}（从 AST 解析而来）
+  if (typeof expr !== 'string' && typeof expr === 'object') {
+    return _evalStructuredLiteral(expr as Record<string, unknown>, row)
+  }
   if (typeof expr !== 'string') return null
   const t = expr.trim()
   if (t.startsWith('CASE ') || t.startsWith('case ')) {
@@ -4375,6 +4379,40 @@ function _evaluateExpression(expr: string, row?: Record<string, unknown>): unkno
     return r
   }
   return _evalBinary(t, row)
+}
+
+/** 从结构化 AST 字面量对象求值 */
+function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Record<string, unknown>): unknown {
+  const type = String(expr.type || '')
+  switch (type.toUpperCase()) {
+    case 'STRING': return String(expr.value)
+    case 'NUMBER': {
+      const n = Number(expr.value)
+      if (!Number.isSafeInteger(n) && String(expr.value).length >= 16) {
+        try { return BigInt(String(expr.value)) } catch { return n }
+      }
+      return n
+    }
+    case 'BOOLEAN': return expr.value === true || expr.value === 'true'
+    case 'NULL': return null
+    case 'LIST': {
+      const items = Array.isArray(expr.items) ? expr.items : []
+      return items.map((item: unknown) =>
+        typeof item === 'object' && item !== null && (item as Record<string, unknown>).type
+          ? _evalStructuredLiteral(item as Record<string, unknown>, _row)
+          : item
+      )
+    }
+    case 'MAP': return Object.fromEntries(
+      Object.entries(expr).filter(([k]) => k !== 'type').map(([k, v]) => [
+        k,
+        typeof v === 'object' && v !== null && (v as Record<string, unknown>).type
+          ? _evalStructuredLiteral(v as Record<string, unknown>, _row)
+          : v,
+      ])
+    )
+    default: return null
+  }
 }
 
 function _evalCase(s: string, row?: Record<string, unknown>): unknown {
@@ -4485,7 +4523,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   left: ([a, l]) => String(_evalBinary(a)).slice(0, Number(_evalBinary(l))),
   right: ([a, l]) => String(_evalBinary(a)).slice(-Number(_evalBinary(l))),
   replace: ([a, s, r]) => String(_evalBinary(a)).split(String(_evalBinary(s))).join(String(_evalBinary(r))),
-  size: ([a]) => { const v = _evalBinary(a); if (Array.isArray(v)) return v.length; if (typeof v === 'string') return v.length; return 0 },
+  size: ([a]) => { const v = _evalBinary(a); if (v == null) return null; if (Array.isArray(v)) return v.length; if (typeof v === 'string') return v.length; return 0 },
   tostring: ([a]) => String(_evalBinary(a)),
   tointeger: ([a]) => { const v = _evalBinary(a); if (v == null) return null; return parseInt(String(v), 10) },
   tofloat: ([a]) => { const v = _evalBinary(a); if (v == null) return null; return parseFloat(String(v)) },
@@ -4902,6 +4940,10 @@ function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
     if (t[i] === '+' && !_inBrackets(t, i) && !_inString(t, i) && !(i > 0 && 'eE'.includes(t[i - 1]))) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
+      // Cypher + 语义: list+list(拼接), list+scalar(追加), scalar+list(前置), number+number(加法), string+any(连接)
+      if (Array.isArray(left) && Array.isArray(right)) return [...left, ...right]
+      if (Array.isArray(left) && !Array.isArray(right)) return [...left, right]
+      if (!Array.isArray(left) && Array.isArray(right)) return [left, ...right]
       return typeof left === 'string' || typeof right === 'string' ? String(left) + String(right) : Number(left) + Number(right)
     }
     if (t[i] === '-' && !_inBrackets(t, i) && !_inString(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1]) && !'eE'.includes(t[i - 1])) {
@@ -5018,10 +5060,34 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
         while (pos < t.length && t[pos] === '[') {
           const endBracket = t.indexOf(']', pos)
           if (endBracket < 0) break
-          const idx = _evalBinary(t.slice(pos + 1, endBracket), row)
-          if (Array.isArray(val)) { val = val[Number(idx)] ?? null }
-          else if (val && typeof val === 'object') { val = (val as Record<string, unknown>)[String(idx)] ?? null }
-          else { val = null }
+          const inner = t.slice(pos + 1, endBracket)
+          // 检测切片语法 [start..end]
+          const rangeIdx = inner.indexOf('..')
+          if (rangeIdx >= 0) {
+            // 切片操作
+            const startStr = inner.slice(0, rangeIdx).trim()
+            const endStr = inner.slice(rangeIdx + 2).trim()
+            const len = Array.isArray(val) ? val.length : (typeof val === 'string' ? val.length : 0)
+            // 如果 start 或 end 值为 null，整个切片返回 null
+            let startVal = startStr ? _evalBinary(startStr, row) : 0
+            let endVal = endStr ? _evalBinary(endStr, row) : len
+            if (startVal == null || endVal == null) { val = null; break }
+            let sliceStart = Number(startVal)
+            let sliceEnd = Number(endVal)
+            if (isNaN(sliceStart)) sliceStart = 0
+            if (isNaN(sliceEnd)) sliceEnd = len
+            // 负索引
+            if (sliceStart < 0) sliceStart = Math.max(len + sliceStart, 0)
+            if (sliceEnd < 0) sliceEnd = Math.max(len + sliceEnd, 0)
+            if (Array.isArray(val)) { val = val.slice(sliceStart, sliceEnd) }
+            else if (typeof val === 'string') { val = val.slice(sliceStart, sliceEnd) }
+            else { val = null }
+          } else {
+            const idx = _evalBinary(inner, row)
+            if (Array.isArray(val)) { val = val[Number(idx)] ?? null }
+            else if (val && typeof val === 'object') { val = (val as Record<string, unknown>)[String(idx)] ?? null }
+            else { val = null }
+          }
           pos = endBracket + 1
         }
         return val
@@ -5029,21 +5095,41 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     }
     return _evalLiteral(t, row)
   }
+  // 下标 a[b] 或切片 a[start..end] — 优先级高于属性访问，因为 [n] 不涉及点
+  const bracketIdx = t.indexOf('[')
+  if (bracketIdx > 0 && t.endsWith(']')) {
+    const obj = _evalAtom(t.slice(0, bracketIdx), row)
+    const inner = t.slice(bracketIdx + 1, -1).trim()
+    // 检测切片语法 [start..end]
+    const rangeIdx = inner.indexOf('..')
+    if (rangeIdx >= 0) {
+      const startStr = inner.slice(0, rangeIdx).trim()
+      const endStr = inner.slice(rangeIdx + 2).trim()
+      const len = Array.isArray(obj) ? obj.length : (typeof obj === 'string' ? obj.length : 0)
+      let startVal = startStr ? _evalBinary(startStr, row) : 0
+      let endVal = endStr ? _evalBinary(endStr, row) : len
+      if (startVal == null || endVal == null) return null
+      let sliceStart = Number(startVal)
+      let sliceEnd = Number(endVal)
+      if (isNaN(sliceStart)) sliceStart = 0
+      if (isNaN(sliceEnd)) sliceEnd = len
+      if (sliceStart < 0) sliceStart = Math.max(len + sliceStart, 0)
+      if (sliceEnd < 0) sliceEnd = Math.max(len + sliceEnd, 0)
+      if (Array.isArray(obj)) return obj.slice(sliceStart, sliceEnd)
+      if (typeof obj === 'string') return obj.slice(sliceStart, sliceEnd)
+      return null
+    }
+    const idx = _evalBinary(inner, row)
+    if (Array.isArray(obj)) return obj[Number(idx)] ?? null
+    if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[String(idx)] ?? null
+    return null
+  }
   // 属性访问 a.b
   const dotIdx = t.indexOf('.')
   if (dotIdx > 0 && !t.startsWith('.')) {
     const obj = _evalAtom(t.slice(0, dotIdx), row)
     const prop = t.slice(dotIdx + 1)
     if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[prop] ?? null
-    return null
-  }
-  // 下标 a[b]
-  const bracketIdx = t.indexOf('[')
-  if (bracketIdx > 0 && t.endsWith(']')) {
-    const obj = _evalAtom(t.slice(0, bracketIdx), row)
-    const idx = _evalBinary(t.slice(bracketIdx + 1, -1), row)
-    if (Array.isArray(obj)) return obj[Number(idx)] ?? null
-    if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[String(idx)] ?? null
     return null
   }
   // 变量引用
