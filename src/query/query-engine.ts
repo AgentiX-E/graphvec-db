@@ -2493,14 +2493,19 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       if (inlineMatch) {
         const inlineVar = inlineMatch[1]
         const inlinePropsRaw = inlineMatch[2]
-        const inlinePredicates: Array<{ key: string; value: string | number }> = []
+        const inlinePredicates: Array<{ key: string; value: string | number; raw: string }> = []
         const pairRegex = /(\w+)\s*:\s*(?:'([^']*)'|"([^"]*)"|(\d+(?:\.\d+)?))/g
         let pairMatch
         while ((pairMatch = pairRegex.exec(inlinePropsRaw)) !== null) {
           const key = pairMatch[1]
           const strVal = pairMatch[2] ?? pairMatch[3]
-          const numVal = pairMatch[4]
-          inlinePredicates.push({ key, value: strVal !== undefined ? strVal : parseFloat(numVal) })
+          const numStr = pairMatch[4]
+          if (strVal !== undefined) {
+            inlinePredicates.push({ key, value: strVal, raw: strVal })
+          } else if (numStr !== undefined) {
+            const num = parseFloat(numStr)
+            inlinePredicates.push({ key, value: num, raw: numStr })
+          }
         }
         if (inlinePredicates.length) {
           const matchSource = plan.steps?.[0]?.source
@@ -2512,7 +2517,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               for (const pred of inlinePredicates) {
                 const actual = allNodes[i][pred.key]
                 const expected = pred.value
-                if (actual === undefined || String(actual) !== String(expected)) {
+                // 使用原始字符串比较以避免 BigInt 精度丢失
+                const expectedRaw = pred.raw
+                if (actual === undefined) {
+                  matchesAll = false
+                  break
+                }
+                const actualStr = typeof actual === 'bigint' ? String(actual) : String(actual)
+                if (actualStr !== expectedRaw) {
                   matchesAll = false
                   break
                 }
@@ -5140,15 +5152,21 @@ function _listLexCompare(a: unknown[], b: unknown[], op: string): boolean | null
   }
   // 所有同索引元素相等
   if (a.length === b.length) return op === '>=' || op === '<=' ? true : false
-  // 长度不等 → 短列表视为小于长列表（前提是多出元素不含 null）
-  const longer = a.length > b.length ? a : b
-  const longerLen = longer.length
-  const shorterLen = a.length > b.length ? b.length : a.length
-  for (let i = shorterLen; i < longerLen; i++) {
-    if (longer[i] == null) return null
+  // 长度不等 → 短列表视为小于长列表
+  // 注意：大于号/小于号的不等比较不因多余元素含 null 而返回 null（规范：短列表总是较小的）
+  // 等号比较带 null 元素：长度不等时 = 为 false，所以不需要 null 检查
+  const isLtGt = op === '>' || op === '<'
+  const isLeGe = op === '>=' || op === '<='
+  if (isLeGe) {
+    // >= 或 <=：退化到 > 或 <（长度不等时 = 不成立），不检查多余元素中的 null
+    if (op === '>=') return a.length >= b.length
+    if (op === '<=') return a.length <= b.length
   }
-  if (op === '>=' || op === '>') return a.length >= b.length
-  if (op === '<=' || op === '<') return a.length <= b.length
+  if (isLtGt) {
+    // > 或 <：直接比较长度，不检查多余元素中的 null
+    if (op === '>') return a.length > b.length
+    if (op === '<') return a.length < b.length
+  }
   return false
 }
 
