@@ -138,12 +138,6 @@ async function run(q: string): Promise<void> {
     } catch (e: any) {
       st.err = e; st.res = []; return
     }
-    st.res = await _executeQuery(plan, st.nodes, resolvedQ); st.err = null
-  } catch (e: any) { st.err = e; st.res = [] }
-}
-
-/** 大整数精度修复：从原始查询文本中提取 filter value 的精确整数字符串，覆盖截断的 Number。 */
-function _fixBigIntFilters(plan: { filters?: Array<{ value: unknown }> }, query: string): void {
   if (!plan.filters?.length) return
   // 从 WHERE 文本中提取所有形如 `= 4611686018427387905` 的字面量
   const bigIntPattern = /=\s*(-?\d{16,})/g

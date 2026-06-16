@@ -2591,6 +2591,25 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     }
     const nodeGeIds: number[] = []
 
+    // seed 前清理 GE 中的旧 seed 节点（name 以 n 开头或 sn- 开头）
+    // 这些节点是之前查询 seed 的，可能没有正确的边连接
+    if (ge) {
+      try {
+        for (const id of (ge as any)._nodeIds || []) {
+          const n = (ge as any).getNode(id)
+          if (n && typeof n.name === 'string' && (n.name.startsWith('n') || n.name.startsWith('sn-'))) {
+            try { (ge as any).storage.deleteNode(id) } catch {}
+          }
+        }
+        // 重建 _nodeIds
+        if ((ge as any)._nodeIds) {
+          (ge as any)._nodeIds = ((ge as any)._nodeIds || []).filter((id: number) => {
+            try { (ge as any).getNode(id); return true } catch { return false }
+          })
+        }
+      } catch {}
+    }
+
 
     let edgesPayload: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
     if (allNodes.length) {
@@ -2655,17 +2674,20 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         for (const ep of edgesPayload) {
           const srcGeId = ep.srcIdx >= 0 && ep.srcIdx < nodeGeIds.length ? nodeGeIds[ep.srcIdx] : -1
           const dstGeId = ep.dstIdx >= 0 && ep.dstIdx < nodeGeIds.length ? nodeGeIds[ep.dstIdx] : -1
-          if (srcGeId <= 0 || dstGeId <= 0) continue
+          if (srcGeId < 0 || dstGeId < 0) continue
           const typeId = (ge as any)._resolveEdgeType(ep.label || '')
-          // 创建正向边
-          if ((ep as any).props) {
-            try { (ge as any).upsertEdge(srcGeId, dstGeId, typeId, { props: (ep as any).props }) } catch {}
-          } else {
-            try { (ge as any).upsertEdge(srcGeId, dstGeId, typeId) } catch {}
-          }
+          // upsertEdge 是 async 函数，但 _executeViaGraphEngine 是同步上下文。
+          // 直接调用 storage.upsertEdge（同步 API）确保边在 MATCH 前已创建。
+          try {
+            if ((ep as any).props) {
+              (ge as any).storage.upsertEdge(srcGeId, dstGeId, typeId, { props: (ep as any).props })
+            } else {
+              (ge as any).storage.upsertEdge(srcGeId, dstGeId, typeId)
+            }
+          } catch {}
           // 无向边双向
           if (anyDirection && srcGeId !== dstGeId) {
-            try { (ge as any).upsertEdge(dstGeId, srcGeId, typeId) } catch {}
+            try { (ge as any).storage.upsertEdge(dstGeId, srcGeId, typeId) } catch {}
           }
         }
       }
@@ -2699,10 +2721,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         if (srcIdx >= 0 && dstIdx >= 0 && srcIdx < nodeGeIds.length && dstIdx < nodeGeIds.length) {
           const srcId = nodeGeIds[srcIdx]
           const dstId = nodeGeIds[dstIdx]
-          if (srcId && dstId) {
+          if (srcId !== undefined && dstId !== undefined && srcId >= 0 && dstId >= 0) {
             // 使用 GE 的 _resolveEdgeType 获取统一的 typeId
             const typeId = (ge as any)._resolveEdgeType(edge.label || '')
-            try { (ge as any).upsertEdge(srcId, dstId, typeId) } catch {}
+            try { (ge as any).storage.upsertEdge(srcId, dstId, typeId) } catch {}
           }
         }
       }
@@ -2779,7 +2801,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       f.source && !nodeAliasList.includes(f.source)
     ) : []
     const hasOR = query ? /OR/i.test(query) : false
+    const geCapableOps = new Set(['EQ', 'NEQ', 'IN', 'STARTS_WITH', 'ENDS_WITH', 'CONTAINS', 'IS_NULL', 'IS_NOT_NULL'])
     const geFilters = (plan.filters || []).filter(f => !(edgeFilters as any[]).includes(f))
+    // 从 GE filter 中移除 GE 不支持的运算符，由 query-engine 在后处理中补偿
+    const geUnsupportedOps = new Set(['GT', 'GTE', 'LT', 'LTE'])
+    const queryEngineFilters = geFilters.filter(f => geUnsupportedOps.has(f.operator))
+    const geFiltered = geFilters.filter(f => !geUnsupportedOps.has(f.operator))
 
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
 
@@ -2787,7 +2814,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 当 steps.length > 1 或单步但有 range（变量长度）时，用 __edges 手动遍历
     const hasMultiStep = plan.steps && plan.steps.length > 1 && allNodes.length > 0
     const hasVarLen = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
-    const rawRecords: any[] = (hasMultiStep || hasVarLen)
+    let rawRecords: any[] = (hasMultiStep || hasVarLen)
       ? (() => {
           const multiStepRaw: any[] = []
           for (let i = 0; i < allNodes.length; i++) {
@@ -2906,7 +2933,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           for (const lbl of labels) {
             const p2 = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
             p2.steps[0].edgeLabel = lbl
-            p2.filters = (geFilters || []).filter(f => !crossVarFilters.includes(f))
+            p2.filters = (geFiltered || []).filter(f => !crossVarFilters.includes(f))
             const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
             for (const r of subRaw || []) combined.set(r.id, r)
           }
@@ -2952,11 +2979,36 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       : (() => {
           const planForGe = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
           // 排除跨变量属性引用 filter（GE 的 _matchFilter 无法做跨变量比较）
-          planForGe.filters = (geFilters || []).filter(f => !crossVarFilters.includes(f))
+          planForGe.filters = (geFiltered || []).filter(f => !crossVarFilters.includes(f))
 
           return (ge as any)._executeQueryPlan(planForGe)
         })()
     let records = rawRecords
+
+    // ── GE filter 补偿 ──
+    // GE 的 _matchFilter 对 GT/LT/GTE/LTE 仅支持 number 类型比较，
+    // 不处理字符串比较。IS_NULL/IS_NOT_NULL 同样未处理（fallthrough 到 true）。
+    // queryEngineFilters 中包含了 GE 排除的运算符，
+    // 在 GE 返回后对 records 做二次过滤。
+    if (queryEngineFilters.length && rawRecords?.length) {
+      rawRecords = rawRecords.filter((r: any) => {
+        const nodeProps = r.props || r
+        return queryEngineFilters.every((f: any) => {
+          const actualVal = nodeProps[f.property]
+          const fv = f.value
+          switch (f.operator) {
+            case 'IS_NULL':     return actualVal == null
+            case 'IS_NOT_NULL': return actualVal != null
+            case 'GT':   return actualVal > fv
+            case 'GTE':  return actualVal >= fv
+            case 'LT':   return actualVal < fv
+            case 'LTE':  return actualVal <= fv
+            default:     return true
+          }
+        })
+      })
+    }
+
     // GE 的 _executeQueryPlan 总是返回遍历后的目标节点，不保留 source 节点信息。
     // 当 RETURN n（steps[0].source）时，需要将 GE 返回的 target 节点映射回 source 节点。
     // 通过 sourceTargetMap 完成：targetGeId → sourceGeIds[].
@@ -3385,16 +3437,18 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             // 先计算 filter 结果，再应用 negated
             let baseResult = false
             switch (f.operator) {
-              case 'EQ':   baseResult = String(actualVal) === String(fv); break
-              case 'NEQ':  baseResult = String(actualVal) !== String(fv); break
-              case 'GT':   baseResult = Number(actualVal) > Number(fv); break
-              case 'GTE':  baseResult = Number(actualVal) >= Number(fv); break
-              case 'LT':   baseResult = Number(actualVal) < Number(fv); break
-              case 'LTE':  baseResult = Number(actualVal) <= Number(fv); break
+              case 'EQ':   baseResult = actualVal === fv; break
+              case 'NEQ':  baseResult = actualVal !== fv; break
+              case 'GT':   baseResult = actualVal > fv; break
+              case 'GTE':  baseResult = actualVal >= fv; break
+              case 'LT':   baseResult = actualVal < fv; break
+              case 'LTE':  baseResult = actualVal <= fv; break
+              case 'IS_NULL':     baseResult = actualVal == null; break
+              case 'IS_NOT_NULL': baseResult = actualVal != null; break
               case 'STARTS_WITH': baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break
               case 'ENDS_WITH':   baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv); break
               case 'CONTAINS':    baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break
-              default:            baseResult = String(actualVal) === String(fv); break
+              default:            baseResult = actualVal === fv; break
             }
             return (f as any).negated ? !baseResult : baseResult
           })
@@ -3507,9 +3561,22 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
       ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
     ])
-    const edgeVarCols = (plan.returnColumns || []).filter(rc =>
-      rc && rc !== '*' && !rc.includes('.') && !nodeAliases.has(rc)
-    )
+    // edgeVarCols：识别边变量 RETURN 列（如 RETURN r），排除 RETURN i.var 等属性列
+    // 属性列已被 dispatchWherePath 拆为简短名称（如 i.var→var），此时 nodeAliases 不含 var。
+    // 用原始 query 做最终判断：如果 query 中是 var.xxx 格式的列，不当作边变量。
+    const varColSet = new Set(plan.returnColumns || [])
+    const queryHasColumnRef = (query || '').match(/\w+\.\w+/)
+    const edgeVarCols = (plan.returnColumns || []).filter(rc => {
+      if (!rc || rc === '*' || rc.includes('.')) return false
+      if (nodeAliases.has(rc)) return false
+      // 如果属性名在所有节点 props 中作为键存在，说明是节点属性而非边变量
+      // 回退方案：检查 query 中是否有原始变量前缀（如 i.var）对应此 rc
+      if (queryHasColumnRef && query) {
+        const varRefs = query.match(/\w+\.\w+/g) || []
+        if (varRefs.some(vr => vr.split('.')[1] === rc)) return false
+      }
+      return true
+    })
     const rawWithEdges = (edgeVarCols.length && (hasMatchingEdgeLabel || edgesPayload.length))
       ? edgePropFilteredRecords.map((r: any) => {
           const row: Record<string, unknown> = {}
