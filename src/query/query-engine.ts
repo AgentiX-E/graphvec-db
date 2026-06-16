@@ -860,14 +860,14 @@ export function parseQuery(query: string): QueryPlan {
     })
   }
 
-  // ── OR 条件检测：ANTLR 会把 WHERE a OR b 拆成两个 AND'd filter ──
-  // 如果原始 WHERE 子句包含 OR / XOR，清空 filters（OR 需要运行时可短路评估）
-  if (plan.filters?.length) {
-    const whereClause = (query || '').match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
-    if (whereClause) {
-      const whereBody = whereClause[1]
-      plan.whereBody = whereBody
-      // 检测顶层 OR/XOR（不在括号内的 OR）
+  // ── WHERE 子句提取（用于后过滤） ──
+  // 即使 ANTLR 没有生成 filters，也需要提取 WHERE 子句供 _evaluateExpression 后处理
+  const whereClause = (query || '').match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
+  if (whereClause) {
+    const whereBody = whereClause[1]
+    plan.whereBody = whereBody
+    // 检测顶层 OR/XOR（不在括号内的 OR）——清空 filters（OR 需要运行时可短路评估）
+    if (plan.filters?.length) {
       let depth = 0
       let hasTopLevelOr = false
       for (let i = 0; i < whereBody.length; i++) {
@@ -878,9 +878,7 @@ export function parseQuery(query: string): QueryPlan {
           if (whereBody.substring(i).match(/^\b(OR|XOR)\b/i)) { hasTopLevelOr = true; break }
         }
       }
-      if (hasTopLevelOr) {
-        plan.filters = []
-      }
+      if (hasTopLevelOr) plan.filters = []
     }
   }
 
@@ -4481,43 +4479,43 @@ function _callFunction(name: string, args: string[], row?: Record<string, unknow
 
 function _evalBinary(s: string, row?: Record<string, unknown>): unknown { return _evalOr(s, row) }
 
+function _assertBool(v: unknown, expr: string): void {
+  if (typeof v !== 'boolean' && v != null) {
+    throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+  }
+}
+
 function _evalOr(s: string, row?: Record<string, unknown>): unknown {
   const parts = _splitTopLevel(s, 'OR')
   if (parts.length === 1) return _evalXor(s, row)
-  // Cypher 三值逻辑 OR:
-  // true  OR  X  → true (短路)
-  // false OR  X  → X
-  // null  OR  X  → if X is true then true, else null
-  let result: unknown = false
-  for (const part of parts) {
-    const v = _evalXor(part, row)
-    if (v === true) return true
-    if (v == null || v === undefined) {
-      result = null
+  const values = parts.map(p => _evalXor(p, row))
+  for (const v of values) {
+    if (typeof v !== 'boolean' && v != null) {
+      throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
     }
-    // false → continue
+  }
+  let result: unknown = false
+  for (const v of values) {
+    if (v === true) return true
+    if (v == null || v === undefined) result = null
   }
   return result
 }
 
 function _evalXor(s: string, row?: Record<string, unknown>): unknown {
-  // XOR 优先级高于 OR 但低于 AND
   const parts = _splitTopLevel(s, 'XOR')
   if (parts.length === 1) return _evalAnd(s, row)
-  // XOR 三值逻辑：null XOR X = null；a XOR b = OR 之一为 true 但非两者
+  const values = parts.map(p => _evalAnd(p, row))
+  for (const v of values) { _assertBool(v, '') }
   if (parts.length >= 3) {
-    // 多操作数 a XOR b XOR c = (a XOR b) XOR c = 奇数个 true
     let trueCount = 0
-    for (const part of parts) {
-      const v = _evalAnd(part, row)
+    for (const v of values) {
       if (v == null || v === undefined) return null
       if (v === true) trueCount++
     }
     return trueCount % 2 === 1
   }
-  // 2 操作数：a XOR b = (a !== b)（都不为 null 时）
-  const left = _evalAnd(parts[0], row)
-  const right = _evalAnd(parts[1], row)
+  const left = values[0], right = values[1]
   if (left == null || right == null) return null
   return left !== right
 }
@@ -4525,18 +4523,18 @@ function _evalXor(s: string, row?: Record<string, unknown>): unknown {
 function _evalAnd(s: string, row?: Record<string, unknown>): unknown {
   const parts = _splitTopLevel(s, 'AND')
   if (parts.length === 1) return _evalNot(s, row)
-  // Cypher 三值逻辑 AND:
-  // false AND X → false (短路)
-  // true  AND Y → Y
-  // null  AND Y → if Y is false then false else null
-  let result: unknown = true
-  for (const part of parts) {
-    const v = _evalNot(part, row)
-    if (v === false) return false
-    if (v == null || v === undefined) {
-      result = null
+  // Cypher 要求：所有操作数必须验证布尔类型（即使短路）
+  const values = parts.map(p => _evalNot(p, row))
+  for (const v of values) {
+    if (typeof v !== 'boolean' && v != null) {
+      throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
     }
-    // true → continue
+  }
+  let result: unknown = true
+  for (const v of values) {
+    _assertBool(v, '')
+    if (v === false) return false
+    if (v == null || v === undefined) result = null
   }
   return result
 }
@@ -4544,11 +4542,13 @@ function _evalAnd(s: string, row?: Record<string, unknown>): unknown {
 function _evalNot(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   if (t.startsWith('NOT ')) {
-    const inner = _evalNot(t.slice(4), row)
+    const inner = _evalBinary(t.slice(4), row)
+    _assertBool(inner, '')
     return inner === null ? null : !Boolean(inner)
   }
   if (t.startsWith('NOT(') && t.endsWith(')')) {
-    const inner = _evalNot(t.slice(4, -1), row)
+    const inner = _evalBinary(t.slice(4, -1), row)
+    _assertBool(inner, '')
     return inner === null ? null : !Boolean(inner)
   }
   return _evalComparison(s, row)
