@@ -4554,6 +4554,47 @@ function _evalNot(s: string, row?: Record<string, unknown>): unknown {
   return _evalComparison(s, row)
 }
 
+/** 提取 Cypher 链式比较中的所有操作符/操作数对
+ *  n.prop1 < m.prop1 = n.prop2 <> m.prop2 → [
+ *   { left: "n.prop1", op: "<", right: "m.prop1" },
+ *   { left: "m.prop1", op: "=", right: "n.prop2" },
+ *   { left: "n.prop2", op: "<>", right: "m.prop2" }
+ * ]
+ *  1 < n.num < 3 → [{left:"1",op:"<",right:"n.num"},{left:"n.num",op:"<",right:"3"}]
+ */
+function _extractChain(expr: string): Array<{ left: string; op: string; right: string }> {
+  const ops = ['<>', '>=', '<=', '=', '>', '<']
+  // 找所有顶层操作符位置
+  const positions: Array<{ idx: number; op: string }> = []
+  for (const op of ops) {
+    const idx = _findTopLevelOp(expr, op)
+    if (idx > 0) positions.push({ idx, op })
+  }
+  if (positions.length < 2) return []  // 少于 2 个操作符 → 不是链式
+  // 按位置排序
+  positions.sort((a, b) => a.idx - b.idx)
+  // 过滤：如果两个相邻操作符重叠（如 <> 的内部包含了 < 或 >），去掉子操作符
+  const filtered: typeof positions = [positions[0]]
+  for (let i = 1; i < positions.length; i++) {
+    const prev = filtered[filtered.length - 1]
+    // 如果当前操作符起始位置在前一个操作符范围内，跳过（子字符串匹配）
+    if (positions[i].idx < prev.idx + prev.op.length) continue
+    filtered.push(positions[i])
+  }
+  if (filtered.length < 2) return []
+  // 构建操作数/操作符对
+  const result: Array<{ left: string; op: string; right: string }> = []
+  for (let i = 0; i < filtered.length; i++) {
+    const { idx, op } = filtered[i]
+    const left = i === 0 ? expr.slice(0, idx) : result[i - 1].right
+    const nextStart = idx + op.length
+    const rightEnd = i < filtered.length - 1 ? filtered[i + 1].idx : expr.length
+    const right = expr.slice(nextStart, rightEnd).trim()
+    result.push({ left: left.trim(), op, right })
+  }
+  return result
+}
+
 function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   // 括号表达式直接下推（NOT 之后、进入比较操作符前）
@@ -4605,10 +4646,27 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       return false
     }
   }
+  // 通用链式比较：检测多段链（任意操作符组合），如 a < b = c <> d 或 a < b < c
+  const chainOps = _extractChain(t)
+  if (chainOps.length >= 2) {
+    // Cypher 链式语义：expr OP1 expr2 OP2 expr3 = (expr OP1 expr2) AND (expr2 OP2 expr3)
+    // 从左到右依次计算每对操作符
+    let result: unknown = true
+    for (let i = 0; i < chainOps.length; i++) {
+      const { left: l, op: cop, right: r } = chainOps[i]
+      const leftVal = _evalAddSub(l.trim(), row)
+      const rightVal = _evalAddSub(r.trim(), row)
+      const cmp = _compareValues(leftVal, rightVal, cop)
+      if (cmp === false) return false
+      if (cmp == null) result = null
+    }
+    return result
+  }
+
   for (const op of ['<>', '>=', '<=', '=', '>', '<']) {
     // 链式比较：a = b = c 等价于 (a = b) AND (b = c)
-    // 对 = 和 <> 支持链式；对 >=, <=, >, < 忽略链式
-    if (op === '=' || op === '<>') {
+    // 对 =, <>, >=, <=, >, < 支持链式（>= 3 段）
+    if (op === '=' || op === '<>' || op === '>=' || op === '<=' || op === '>' || op === '<') {
       const parts = _splitTopLevel(t, op)
       if (parts.length >= 3) {
         let result: unknown = true
@@ -4667,17 +4725,130 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
   return _evalAddSub(t, row)
 }
 
+/** Cypher 列表字典序比较 */
+function _listLexCompare(a: unknown[], b: unknown[], op: string): boolean | null {
+  const minLen = Math.min(a.length, b.length)
+  for (let i = 0; i < minLen; i++) {
+    const ai = a[i], bi = b[i]
+    if (ai == null || bi == null) {
+      return null  // null 在列表中 → 三值不确定
+    }
+    const cmpResult = _compareValues(ai, bi, op)
+    if (cmpResult !== null) {
+      // 如果比较明确 false → 短路
+      if (cmpResult === false) return false
+      // 如果比较明确 true → 继续
+    } else {
+      // _compareValues 返回 null（三值不确定）→ 整体 null
+      return null
+    }
+  }
+  // 所有同索引元素都满足条件或相等
+  if (a.length === b.length) return op === '>=' || op === '<=' ? true : false
+  // 长度不等 → 检查多出的元素是否包含 null
+  const longer = a.length > b.length ? a : b
+  const extraStart = a.length > b.length ? b.length : a.length
+  for (let i = extraStart; i < longer.length; i++) {
+    if (longer[i] == null) return null  // 多出元素有 null → 三值不确定
+  }
+  // 多出元素全都非 null → 按长度决定
+  if (op === '>=' || op === '>') return a.length >= b.length
+  if (op === '<=' || op === '<') return a.length <= b.length
+  return false
+}
+
 function _compareValues(a: unknown, b: unknown, op: string): boolean | null {
   if (a == null || b == null) return null  // Cypher 三值逻辑：null 参与的比较返回 null，包括 <>（不等号也不例外）
+  // List 字典序比较（>=, >, <=, <）
+  if (Array.isArray(a) && Array.isArray(b) && (op === '>=' || op === '<=' || op === '>' || op === '<')) {
+    return _listLexCompare(a, b, op)
+  }
   switch (op) {
-    case '=': return a === b
-    case '<>': return a !== b
-    case '<': return Number(a) < Number(b)
-    case '>': return Number(a) > Number(b)
-    case '<=': return Number(a) <= Number(b)
-    case '>=': return Number(a) >= Number(b)
+    case '=': { const __eq = _deepEqWithNull(a, b); return __eq.hasNull ? null : __eq.match }
+    case '<>': return !_deepEq(a, b)
+    case '<': {
+      if (typeof a !== typeof b) return null
+      if (typeof a === 'string') return a < b  // 字典序
+      return Number(a) < Number(b)
+    }
+    case '>': {
+      if (typeof a !== typeof b) return null
+      if (typeof a === 'string') return a > b
+      return Number(a) > Number(b)
+    }
+    case '<=': {
+      if (typeof a !== typeof b) return null
+      if (typeof a === 'string') return a <= b
+      return Number(a) <= Number(b)
+    }
+    case '>=': {
+      if (typeof a !== typeof b) return null
+      if (typeof a === 'string') return a >= b
+      return Number(a) >= Number(b)
+    }
   }
   return false
+}
+
+function _isNaN(v: unknown): boolean {
+  return typeof v === 'number' && isNaN(v)
+}
+
+/** Cypher 深度相等：支持 List、Map 递归比较，符合三值逻辑（null 元素 = → null） */
+/** Cypher 深度相等（含 null 传播，用于 = 比较） */
+function _deepEqWithNull(a: unknown, b: unknown): { match: boolean; hasNull: boolean } {
+  if (a === b) return { match: true, hasNull: a == null || b == null }
+  if (a == null || b == null) return { match: a === b, hasNull: true }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return { match: false, hasNull: false }
+    let hasNull = false
+    for (let i = 0; i < a.length; i++) {
+      const eq = _deepEqWithNull(a[i], b[i])
+      if (eq.hasNull) { hasNull = true; continue }
+      if (!eq.match) return { match: false, hasNull: false }
+    }
+    return { match: true, hasNull }
+  }
+  if (typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
+    const keysA = Object.keys(a as Record<string, unknown>).sort()
+    const keysB = Object.keys(b as Record<string, unknown>).sort()
+    if (keysA.length !== keysB.length) return { match: false, hasNull: false }
+    let hasNull = false
+    for (let i = 0; i < keysA.length; i++) {
+      if (keysA[i] !== keysB[i]) return { match: false, hasNull: false }
+      const eq = _deepEqWithNull((a as any)[keysA[i]], (b as any)[keysB[i]])
+      if (eq.hasNull) { hasNull = true; continue }
+      if (!eq.match) return { match: false, hasNull: false }
+    }
+    return { match: true, hasNull }
+  }
+  return { match: a === b, hasNull: false }
+}
+
+/** 浅层深度相等（不含 null 传播，用于 <> 和简单比较） */
+function _deepEq(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a == null || b == null) return false
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] == null || b[i] == null) return false
+      if (!_deepEq(a[i], b[i])) return false
+    }
+    return true
+  }
+  if (typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
+    const keysA = Object.keys(a as Record<string, unknown>).sort()
+    const keysB = Object.keys(b as Record<string, unknown>).sort()
+    if (keysA.length !== keysB.length) return false
+    for (let i = 0; i < keysA.length; i++) {
+      if (keysA[i] !== keysB[i]) return false
+      if ((a as any)[keysA[i]] == null || (b as any)[keysB[i]] == null) return false
+      if (!_deepEq((a as any)[keysA[i]], (b as any)[keysB[i]])) return false
+    }
+    return true
+  }
+  return a === b
 }
 
 function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
@@ -4906,7 +5077,15 @@ function _findTopLevelOp(s: string, op: string): number {
   for (let i = 0; i < s.length; i++) {
     if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth++
     if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth--
-    if (depth === 0 && s.slice(i, i + op.length) === op) return i
+    if (depth === 0 && s.slice(i, i + op.length) === op) {
+      // 确保不是子字符串匹配（如 <> 内部的 =）
+      // 检查前后字符不是 > 或 <，确保操作符是孤立的
+      const before = i > 0 ? s[i - 1] : ' '
+      const after = s[i + op.length]
+      // 对于双字符操作符（<>, >=, <=），确保前一个字符不是 < 或 >（避免从 <> 内部找到 =）
+      if (op.length === 1 && (before === '<' || before === '>' || before === '=')) continue
+      return i
+    }
   }
   return -1
 }
@@ -4948,6 +5127,10 @@ function _validateLiterals(query: string): void {
   const literals = exprs.map(s => s.replace(/\s+AS\s+\w+$/i, '').trim())
 
   for (const rawExpr of literals) {
+    // 只对纯字面量（不含顶层操作符的 表达式）做语法验证。
+    // 复杂表达式（如 [1,2] = [1] 或 0.0/0.0 > 1）不应被误识别为非法字面量。
+    if (!_isPureLiteralExpr(rawExpr)) continue
+
     // 一元运算符前缀（+/-）不是字面量的一部分 — 但在验证字面量类型时需要考虑符号
     const hasSign = rawExpr.startsWith('-') || rawExpr.startsWith('+')
     const expr = hasSign ? rawExpr.slice(1) : rawExpr
@@ -5171,4 +5354,34 @@ function _detectMissingCommas(expr: string): boolean {
 
   if (prevEnded === false && hadExpr && inner.trimEnd().endsWith(',')) return true
   return false
+}
+
+/**
+ * 检查表达式是否为纯字面量（不含顶层操作符）。
+ * 用于 _validateLiterals，避免将复杂表达式（如 [1,2] = [1] 或 0.0/0.0 > 1）
+ * 错误地送入字面量语法检查。
+ */
+function _isPureLiteralExpr(s: string): boolean {
+  let depth = 0, inStr = false, strChar = ''
+  for (let i = 0; i < s.length; i++) {
+    if (inStr) { if (s[i] === '\\') { i++; continue }; if (s[i] === strChar) inStr = false; continue }
+    if (s[i] === "'" || s[i] === '"') { inStr = true; strChar = s[i]; continue }
+    if (s[i] === '(' || s[i] === '[' || s[i] === '{') { depth++; continue }
+    if (s[i] === ')' || s[i] === ']' || s[i] === '}') { depth--; continue }
+    if (depth === 0) {
+      // 比较操作符
+      if (s[i] === '=') return false
+      if (s.slice(i, i + 2) === '<>' || s.slice(i, i + 2) === '>=' || s.slice(i, i + 2) === '<=') return false
+      if (s[i] === '>' || s[i] === '<') return false
+      // 算术操作符（不在括号/字符串内）
+      if (s[i] === '+' || s[i] === '-' || s[i] === '*' || s[i] === '/' || s[i] === '%') return false
+      // 布尔操作符（IN, AND, OR, XOR, NOT 等）
+      if (/\s/.test(s[i]) && i + 2 < s.length) {
+        const sub = s.slice(i, i + 5)
+        if (/^\s+(?:IN|AND|OR|XOR|NOT)\s/.test(sub)) return false
+        if (/^\s+STARTS\s+WITH/.test(sub) || /^\s+ENDS\s+WITH/.test(sub) || /^\s+CONTAINS/.test(sub)) return false
+      }
+    }
+  }
+  return true
 }
