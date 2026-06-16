@@ -3311,26 +3311,28 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         for (const rec of filteredRecords) {
           const nodeProps = rec.props || rec
           if (targetLabel2 && String(nodeProps._label) !== targetLabel2) continue
-          // 应用 plan.filters 过滤
+          // 应用 plan.filters 过滤（支持 negated: true）
           const filterMatch = (plan.filters || []).every((f: any) => {
             if (f.source && f.source !== singleVar2) return true
+            if (f.property && !(f.property in nodeProps)) return false
             const actualVal = nodeProps[f.property]
             const fv = f.value
-            if (actualVal === undefined) return false
+            // 先计算 filter 结果，再应用 negated
+            let baseResult = false
             switch (f.operator) {
-              case 'EQ':   return String(actualVal) === String(fv)
-              case 'NEQ':  return String(actualVal) !== String(fv)
-              case 'GT':   return Number(actualVal) > Number(fv)
-              case 'GTE':  return Number(actualVal) >= Number(fv)
-              case 'LT':   return Number(actualVal) < Number(fv)
-              case 'LTE':  return Number(actualVal) <= Number(fv)
-              case 'STARTS_WITH': return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv)
-              case 'ENDS_WITH':   return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv)
-              case 'CONTAINS':    return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv)
-              default:            return String(actualVal) === String(fv)
+              case 'EQ':   baseResult = String(actualVal) === String(fv); break
+              case 'NEQ':  baseResult = String(actualVal) !== String(fv); break
+              case 'GT':   baseResult = Number(actualVal) > Number(fv); break
+              case 'GTE':  baseResult = Number(actualVal) >= Number(fv); break
+              case 'LT':   baseResult = Number(actualVal) < Number(fv); break
+              case 'LTE':  baseResult = Number(actualVal) <= Number(fv); break
+              case 'STARTS_WITH': baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break
+              case 'ENDS_WITH':   baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv); break
+              case 'CONTAINS':    baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break
+              default:            baseResult = String(actualVal) === String(fv); break
             }
+            return (f as any).negated ? !baseResult : baseResult
           })
-          console.error("DEBUG filterMatch passed, props:", JSON.stringify(nodeProps))
           if (!filterMatch) continue
           formattedRows.push({
             id: rec.id || -1,
@@ -3513,15 +3515,38 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         // false / null / undefined → 跳过
       }
       result.length = 0
-      result.push(...filteredResult)
+      result.push(...filteredResult); console.error('DEBUG WHERE end: result len', result.length, 'filteredResult len', filteredResult.length)
     }
 
     // If WHERE cleared everything but plan.filters exists, rebuild result from raw GE data
+    // and apply filters directly (bypassing varNodes lookup that may fail on flattened rows)
     if (plan.filters?.length && !plan.aggregate && !result.length && rawWithEdges?.length) {
-      // WHERE body couldn't handle STARTS_WITH/ENDS_WITH/CONTAINS/etc
-      // Rebuild result rows from rawWithEdges via _formatResultRow
       result.length = 0
       for (const rwe of rawWithEdges) {
+        const rProps = rwe.props || {}
+        const crossVarNode = rwe.__crossVarRows ? Object.values(rwe.__crossVarRows)[0] as Record<string, unknown> : {}
+        // Build combined node properties: crossVarRows first, then rwe.props, then rwe itself
+        const nodeProps = { ...crossVarNode, ...rProps }
+        const filterMatch = (plan.filters || []).every((f: any) => {
+          if (f.property && !(f.property in nodeProps)) return false
+          const actualVal = nodeProps[f.property]
+          const fv = f.value
+          let baseMatch = false
+          switch (f.operator) {
+            case 'EQ':   baseMatch = String(actualVal) === String(fv); break
+            case 'NEQ':  baseMatch = String(actualVal) !== String(fv); break
+            case 'GT':   baseMatch = Number(actualVal) > Number(fv); break
+            case 'GTE':  baseMatch = Number(actualVal) >= Number(fv); break
+            case 'LT':   baseMatch = Number(actualVal) < Number(fv); break
+            case 'LTE':  baseMatch = Number(actualVal) <= Number(fv); break
+            case 'STARTS_WITH': baseMatch = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break
+            case 'ENDS_WITH':   baseMatch = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv); break
+            case 'CONTAINS':    baseMatch = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break
+            default:            baseMatch = String(actualVal) === String(fv); break
+          }
+          return (f as any).negated ? !baseMatch : baseMatch
+        })
+        if (!filterMatch) continue
         result.push(_formatResultRow(rwe, plan))
       }
     }
@@ -3541,25 +3566,45 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           } else if (val && typeof val === 'object') {
             varNodes[key] = val as Record<string, unknown>
           }
+
         }
         const match = plan.filters.every((f: any) => {
           const sourceNode = varNodes[f.source]
+          if (!sourceNode) {
+            // row may not have variable keys (e.g. RETURN a.name AS name)
+            // fallback: try __crossVarRows or raw row from rawWithEdges
+            // Try retrieving from rawWithEdges __crossVarRows (row may be rebuilt from _formatResultRow)
+            if (Array.isArray(rawWithEdges)) {
+              for (const rwe of rawWithEdges) {
+                if (rwe.__crossVarRows?.[f.source] && f.property in rwe.__crossVarRows[f.source]) {
+                  sourceNode = rwe.__crossVarRows[f.source]
+                  break
+                }
+                if (rwe.props && !rwe.__crossVarRows && rwe.props[f.property] !== undefined) {
+                  sourceNode = rwe.props
+                  break
+                }
+              }
+            }
+          }
           if (!sourceNode) return false
           const actualVal = sourceNode[f.property]
           if (actualVal === undefined && f.operator !== 'IS_NULL') return false
           const fv = f.value
+          let baseFilterResult = false
           switch (f.operator) {
-            case 'EQ':   return String(actualVal) === String(fv)
-            case 'NEQ':  return String(actualVal) !== String(fv)
-            case 'GT':   return Number(actualVal) > Number(fv)
-            case 'GTE':  return Number(actualVal) >= Number(fv)
-            case 'LT':   return Number(actualVal) < Number(fv)
-            case 'LTE':  return Number(actualVal) <= Number(fv)
-            case 'STARTS_WITH': return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv)
-            case 'ENDS_WITH':   return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv)
-            case 'CONTAINS':    return typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv)
-            default:            return String(actualVal) === String(fv)
+            case 'EQ':   baseFilterResult = String(actualVal) === String(fv); break
+            case 'NEQ':  baseFilterResult = String(actualVal) !== String(fv); break
+            case 'GT':   baseFilterResult = Number(actualVal) > Number(fv); break
+            case 'GTE':  baseFilterResult = Number(actualVal) >= Number(fv); break
+            case 'LT':   baseFilterResult = Number(actualVal) < Number(fv); break
+            case 'LTE':  baseFilterResult = Number(actualVal) <= Number(fv); break
+            case 'STARTS_WITH': baseFilterResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break
+            case 'ENDS_WITH':   baseFilterResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv); break
+            case 'CONTAINS':    baseFilterResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break
+            default:            baseFilterResult = String(actualVal) === String(fv); break
           }
+          return (f as any).negated ? !baseFilterResult : baseFilterResult
         })
         if (match) filteredResult.push(row)
       }
