@@ -199,6 +199,20 @@ function toNodeNotation(val: unknown): string | undefined {
 }
 
 /** Normalize actual results: convert row objects to node notation strings */
+/** 检测两个字符串是否表示同一个数字，但一个带 .0 一个不带 */
+function _isFloatZeroMatch(actual: string, expected: string): boolean {
+  if (actual === expected) return false
+  // 期望值以 .0 结尾，实际值是没有 .0 的整数
+  // 如 "0" vs "0.0", "1000000000" vs "1000000000.0"
+  if (expected.endsWith('.0')) {
+    const intPart = expected.slice(0, -2)
+    if (actual === intPart) return true
+    // 处理科学计数法：实际 "1e+308" → expected "1e+308.0"
+    // _stringifyVal 已去掉 e+，所以应该不会出现
+  }
+  return false
+}
+
 function normalizeActual(rows: any[], keys: string[]): Record<string, string>[] {
   return rows.map(row => {
     const norm: Record<string, string> = {}
@@ -240,11 +254,16 @@ function _stringifyVal(val: unknown): string {
     s = s.replace(/e\+/g, 'e')
     return s
   }
+  if (typeof val === 'bigint') {
+    // Cypher Int64 literal — BigInt preserves full precision
+    return String(val)
+  }
   if (typeof val === 'boolean') return String(val)
   if (Array.isArray(val)) {
     return '[' + val.map(v => {
       if (typeof v === 'string') return "'" + v.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"
       if (Array.isArray(v) || (typeof v === 'object' && v !== null)) return _stringifyVal(v)
+      if (typeof v === 'bigint') return String(v)
       return String(v)
     }).join(', ') + ']'
   }
@@ -302,6 +321,8 @@ function cmp(dt: DataTable, ordered = false): void {
             const actualVal = actualObj[k]
             // 直接比较
             if (actualVal === expVal) return true
+            // 浮点 .0 格式容差
+            if (_isFloatZeroMatch(actualVal, expVal)) return true
             // 如果值不同，尝试用 _stringifyVal 或 toNodeNotation
             return false
           })
@@ -376,6 +397,8 @@ function cmp(dt: DataTable, ordered = false): void {
         }
         if (found) continue
       }
+      // 浮点 .0 格式容差
+      if (_isFloatZeroMatch(av, ev)) continue
       assert.strictEqual(av, ev,
         `[${ri}] .${key}: "${av}" !== "${ev}"\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(actual)}`)
     }

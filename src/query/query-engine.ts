@@ -4709,8 +4709,14 @@ function _evalMulDiv(s: string, row?: Record<string, unknown>): unknown {
 
 function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
-  if (t.startsWith('-')) return -Number(_evalUnary(t.slice(1), row))
-  if (t.startsWith('+')) return Number(_evalUnary(t.slice(1), row))
+  if (t.startsWith('-')) {
+    const inner = _evalUnary(t.slice(1), row)
+    return typeof inner === 'bigint' ? -inner : -Number(inner)
+  }
+  if (t.startsWith('+')) {
+    const inner = _evalUnary(t.slice(1), row)
+    return typeof inner === 'bigint' ? inner : Number(inner)
+  }
   return _evalAtom(t, row)
 }
 
@@ -4817,9 +4823,33 @@ function _evalLiteral(s: string, row?: Record<string, unknown>): unknown {
   if (v.toLowerCase() === 'true') return true
   if (v.toLowerCase() === 'false') return false
   // 数字字面量：整数、浮点、十六进制、科学计数法、小数点开头
-  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v)) return parseFloat(v)
-  if (/^0[xX][0-9a-fA-F]+$/.test(v)) return parseInt(v, 16)
-  if (/^0[oO][0-7]+$/.test(v)) return parseInt(v.slice(2), 8)
+  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v)) {
+    // 纯整数且超出 Number 安全范围 → 返回 BigInt 保持精度
+    if (!v.includes('.') && !/e/i.test(v)) {
+      try {
+        const big = BigInt(v)
+        if (big > BigInt(Number.MAX_SAFE_INTEGER) || big < BigInt(Number.MIN_SAFE_INTEGER)) {
+          return big
+        }
+      } catch { /* fall through to Number */ }
+    }
+    return parseFloat(v)
+  }
+  if (/^0[xX][0-9a-fA-F]+$/.test(v)) {
+    const n = parseInt(v, 16)
+    // 超出 Number 安全范围时用 BigInt 保持精度
+    if (n > Number.MAX_SAFE_INTEGER) {
+      try { return BigInt(v) } catch { return n }
+    }
+    return n
+  }
+  if (/^0[oO][0-7]+$/.test(v)) {
+    const n = parseInt(v.slice(2), 8)
+    if (n > Number.MAX_SAFE_INTEGER) {
+      try { return BigInt(v) } catch { return n }
+    }
+    return n
+  }
   if (/^-?\.\d+([eE][+-]?\d+)?$/.test(v)) return parseFloat(v)
   if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
     let val = v.slice(1, -1)
