@@ -193,7 +193,7 @@ function toNodeNotation(val: unknown): string | undefined {
     const v = props[k]
     if (typeof v === 'string') return `${k}: '${v}'`
     if (Array.isArray(v)) return `${k}: [${v.map(e => typeof e === 'string' ? `'${e}'` : String(e)).join(', ')}]`
-    return `${k}: ${JSON.stringify(v)}`
+    return `${k}: ${_stringifyVal(v)}`
   }).join(', ')
   return label ? `(:${label} {${propStr}})` : `({${propStr}})`
 }

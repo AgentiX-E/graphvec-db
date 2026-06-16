@@ -933,6 +933,8 @@ export function parseQuery(query: string): QueryPlan {
           cn.props[pk] = { type: 'NUMBER', value: pv }
         } else if (typeof pv === 'boolean') {
           cn.props[pk] = { type: 'BOOLEAN', value: pv }
+        } else if (typeof pv === 'bigint') {
+          cn.props[pk] = { type: 'NUMBER', value: Number(pv) }
         }
       }
     }
@@ -5106,8 +5108,11 @@ function _listLexCompare(a: unknown[], b: unknown[], op: string): boolean | null
   // 所有同索引元素相等
   if (a.length === b.length) return op === '>=' || op === '<=' ? true : false
   // 长度不等 → 短列表视为小于长列表（前提是多出元素不含 null）
-  for (let i = a.length > b.length ? b.length : a.length; i < (a.length > b.length ? a : b).length; i++) {
-    if ((a.length > b.length ? b : a)[i] == null) return null
+  const longer = a.length > b.length ? a : b
+  const longerLen = longer.length
+  const shorterLen = a.length > b.length ? b.length : a.length
+  for (let i = shorterLen; i < longerLen; i++) {
+    if (longer[i] == null) return null
   }
   if (op === '>=' || op === '>') return a.length >= b.length
   if (op === '<=' || op === '<') return a.length <= b.length
