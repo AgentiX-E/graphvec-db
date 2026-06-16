@@ -4145,6 +4145,29 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       }
     }
   }
+  // ── SyntaxError: InvalidArgumentType for IN operator ──
+  // Cypher: IN 右操作数必须是列表（[1,2,3]），否则 SyntaxError
+  if (query) {
+    const returnExprs = query.match(/RETURN\s+(.+)/i)
+    if (returnExprs) {
+      // 对 RETURN 后的每个顶层表达式，检查其包含的 IN
+      const parts = _splitTopLevel(returnExprs[1], ',').map(s => s.trim().replace(/\s+AS\s+\w+$/i, ''))
+      for (const part of parts) {
+        const inMatch = part.match(/\s*IN\s+(.+)$/i)
+        if (inMatch) {
+          const rightRaw = inMatch[1].trim()
+          const right = rightRaw.replace(/^\(|\)$/g, '').trim()
+          // 右值必须是列表（以 [ 开头）或参数引用（$x）
+          if (!right.startsWith('[') && !right.startsWith('$')) {
+            // 单值字面量：数字、字符串、布尔、null、map
+            if (/^('.*?'|".*?"|-?\d+(\.\d+)?(e[+-]?\d+)?|true|false|null|\{.*\})$/.test(right)) {
+              throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 /** 从 Cypher 查询中提取 MATCH 子句的字符串 */
@@ -4345,6 +4368,7 @@ export function compileCypher(template: string): ParameterizedQuery {
  */
 function _evaluateExpression(expr: string, row?: Record<string, unknown>): unknown {
   if (expr == null) return null
+  if (typeof expr !== 'string') return null
   const t = expr.trim()
   if (t.startsWith('CASE ') || t.startsWith('case ')) {
     const r = _evalCase(t, row)
@@ -4646,7 +4670,10 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       let hasNull = false
       for (const item of r) {
         if (l != null && item != null) {
-          if (l === item) { hasMatch = true }
+          // 深度比较（支持数组/对象的内容比较而非引用比较）
+          const eq = _deepEqWithNull(l, item)
+          if (eq.match === true && !eq.hasNull) { hasMatch = true }
+          if (eq.hasNull) { hasNull = true }
         } else { hasNull = true }
       }
       if (hasMatch) return true
@@ -4969,16 +4996,35 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   }
   // 字面量先行（避免 . 被当属性访问）— 但如果字面量有后缀索引 [n]，先走下标分支
   if (t.startsWith("'") || t.startsWith('"') || t.startsWith('[') || t.startsWith('{') || /^-?\d/.test(t) || t.startsWith('.') || t.toLowerCase() === 'null' || t.toLowerCase() === 'true' || t.toLowerCase() === 'false') {
-    // 检测字面量后跟后缀下标 [n]（如 [1,2,3][0] 或 'hello'[0]）
-    const suffixBracket = t.search(/[\])'"}]\[\d+\]$/)
-    if ((t.startsWith('[') || t.startsWith("'") || t.startsWith('"')) && suffixBracket > 0 && t.endsWith(']')) {
-      const idxStart = t.lastIndexOf('[')
-      if (idxStart > 0) {
-        const obj = _evalLiteral(t.slice(0, idxStart), row)
-        const idx = _evalBinary(t.slice(idxStart + 1, -1), row)
-        if (Array.isArray(obj)) return obj[Number(idx)] ?? null
-        if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[String(idx)] ?? null
-        return null
+    // 如果以字面量开头但后面有下标后缀 [[1]][0][0] 或 'hello'[0]
+    if ((t.startsWith('[') || t.startsWith("'") || t.startsWith('"')) && t.endsWith(']')) {
+      // 从最外层找到第一个匹配的 close，右侧剩余都是后缀下标
+      let closePos = -1, depth = 0
+      for (let i = 0; i < t.length; i++) {
+        if (t[i] === "'" || t[i] === '"') {
+          const q = t[i]; i++
+          while (i < t.length && t[i] !== q) { if (t[i] === '\\') i++; i++ }
+          continue
+        }
+        if (t[i] === '[') depth++
+        if (t[i] === ']') { depth--; if (depth === 0) { closePos = i; break } }
+      }
+      if (closePos === t.length - 1) return _evalLiteral(t, row) // 纯字面量，无后缀
+      if (closePos > 0) {
+        // baseObj = 最外层列表/字符串
+        let val = _evalLiteral(t.slice(0, closePos + 1), row)
+        // 逐层解析后缀下标
+        let pos = closePos + 1
+        while (pos < t.length && t[pos] === '[') {
+          const endBracket = t.indexOf(']', pos)
+          if (endBracket < 0) break
+          const idx = _evalBinary(t.slice(pos + 1, endBracket), row)
+          if (Array.isArray(val)) { val = val[Number(idx)] ?? null }
+          else if (val && typeof val === 'object') { val = (val as Record<string, unknown>)[String(idx)] ?? null }
+          else { val = null }
+          pos = endBracket + 1
+        }
+        return val
       }
     }
     return _evalLiteral(t, row)
@@ -5319,11 +5365,19 @@ function _detectMissingCommas(expr: string): boolean {
   if (!expr.startsWith('[') && !expr.startsWith('{')) return false
   const opening = expr[0]
   const closing = opening === '[' ? ']' : '}'
-  if (!expr.endsWith(closing)) return true
-  const inner = expr.slice(1, -1).trim()
+  // 找到第一个 depth=0 的 close char（支持 list[0] 语法下标）
+  let matchIdx = -1, depth = 0, inStr = false, strChar = ''
+  for (let i = 0; i < expr.length; i++) {
+    if (inStr) { if (expr[i] === '\\') i++; else if (expr[i] === strChar) inStr = false; continue }
+    if (expr[i] === "'" || expr[i] === '"') { inStr = true; strChar = expr[i]; continue }
+    if (expr[i] === opening) { depth++; continue }
+    if (expr[i] === closing) { depth--; if (depth === 0) { matchIdx = i; break } }
+  }
+  if (matchIdx < 0) return true
+  const inner = expr.slice(1, matchIdx).trim()
   if (!inner) return false
 
-  let depth = 0, i = 0, prevEnded = false, hadExpr = false
+  depth = 0; let i = 0, prevEnded = false, hadExpr = false
 
   while (i < inner.length) {
     const ch = inner[i]
@@ -5336,7 +5390,17 @@ function _detectMissingCommas(expr: string): boolean {
     }
 
     if (ch === '[' || ch === '{') {
-      if (depth === 0) { if (prevEnded) return true; prevEnded = false; hadExpr = true }
+      if (depth === 0) {
+        // 如果前一个元素已经结束（prevEnded），检查是否下标操作（][）
+        // 下标语法 [list[idx]] 中 inner 可能为 "list[idx]" 或已经部分切片
+        if (prevEnded) {
+          // 如果前一个字符是 ]，这是下标操作 [list[idx]]，不是逗号缺失
+          const prevChar = i > 0 ? inner[i - 1] : ''
+          if (prevChar === ']') { /* 下标访问，正常 */ }
+          else return true
+        }
+        prevEnded = false; hadExpr = true
+      }
       const closeChar = ch === '[' ? ']' : '}'
       let subDepth = 1, j = i + 1
       while (j < inner.length && subDepth > 0) {
