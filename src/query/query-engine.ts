@@ -4078,6 +4078,9 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // 从 WHERE 子句检测未绑定变量
   const qUpper = query.toUpperCase()
 
+  // ── SyntaxError: UndefinedVariable ──
+  _validateUndefinedVariables(query)
+
   // ═══════════════════════════════════════════════════════════════
   // Literals SyntaxError (编译时字面量检查)
   // ═══════════════════════════════════════════════════════════════
@@ -4372,6 +4375,36 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
 function extractMatchClause(query: string): string {
   const match = query.match(/MATCH\s+(.*?)(?:\s+(WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/is)
   return match ? match[1].trim() : ''
+}
+
+/** 检测 WHERE 子句中引用未定义变量（SyntaxError: UndefinedVariable） */
+function _validateUndefinedVariables(query: string): void {
+  const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
+  if (!whereMatch) return
+  const whereBody = whereMatch[1]
+  const matchVars = extractMatchVariables(query)
+  if (matchVars.length === 0) return
+  // 去掉字符串常量
+  let cleaned = whereBody
+    .replace(/'[^']*'/g, '')
+    .replace(/"[^"]*"/g, '')
+  // 去掉属性访问（x.y 格式）— 用 split 而非复杂正则，防止 tsx 编译差异
+  cleaned = cleaned.split(/\s+/).filter(word => !word.includes('.')).join(' ')
+  // 提取裸标识符
+  const idents = cleaned.match(/\b([a-zA-Z_]\w*)\b/g) || []
+  const keywords = new Set([
+    'AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
+    'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
+    'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
+    'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE'])
+  for (const v of idents) {
+    const vu = v.toUpperCase()
+    if (keywords.has(vu)) continue
+    if (/^\d/.test(v)) continue
+    if (!matchVars.includes(v) && !matchVars.includes(vu)) {
+      throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+    }
+  }
 }
 
 /** 从查询文本中提取所有 MATCH 中绑定的变量名 */
