@@ -5017,6 +5017,10 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
     }
     const idx = _findTopLevelOp(t, op)
     if (idx > 0) {
+      // DEBUG: Precedence4[4] trace
+      if (t.includes('STARTS WITH') && t.includes('<>')) {
+        //console.log('_evalComparison trace:', {op, t: t.slice(0,100), idx, leftRaw: t.slice(0, idx), rightRaw: t.slice(idx + op.length)})
+      }
       const left = _resolveIsNull(t.slice(0, idx))
       let rawRight = t.slice(idx + op.length).trim()
       // Cypher 优先级：IS NULL/IS NOT NULL > 比较操作符
@@ -5272,7 +5276,15 @@ function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
 
 function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
-  if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) return _evalBinary(t.slice(1, -1), row)
+  if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) {
+    // 检查第一个 ( 的匹配 ) 是否在字符串末尾（确认是整个表达式被括号包裹，而非括号平衡的巧合）
+    let depth = 0, parenEnd = -1
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] === '(') depth++
+      if (t[i] === ')') { depth--; if (depth === 0 && parenEnd < 0) { parenEnd = i; break } }
+    }
+    if (parenEnd === t.length - 1) return _evalBinary(t.slice(1, -1), row)
+  }
   // 括号 + 后缀 IS NULL/IS NOT NULL： (expr) IS NULL → 先计算 expr，再判 null
   if (t.startsWith('(') && (t.endsWith(' IS NULL') || t.endsWith(' IS NOT NULL'))) {
     let depth = 0, parenEnd = -1

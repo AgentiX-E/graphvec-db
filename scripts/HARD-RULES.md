@@ -45,3 +45,14 @@
 2. 再 `git log -3` 看最近 commit 有没有已完成的代码
 3. 再 `git status` 看脏文件
 4. 汇报：已提交了什么、脏了什么、然后继续推进
+
+## Known Issues
+
+### Precedence4[4] — `true <> false` TCK 预期为 `null`
+
+**场景**: `(true OR null STARTS WITH 'abc') <> ((true OR null) STARTS WITH 'abc')`
+**TCK 预期**: `b=null, d=null` | **当前结果**: `b=true, d=true`
+**涉及文件**: `src/query/cypher-tck/features/expressions/precedence/Precedence4.feature`
+**修复方向**: `_evalComparison` 中 `<>` 操作符对 boolean 类型可能需要特殊处理
+**根因猜测**: Neo4j 中 `boolean <> boolean` 当两值不等时可能返回 `null`
+**状态**: ⏳ 待解决 — 全量回归时这个场景会报错
