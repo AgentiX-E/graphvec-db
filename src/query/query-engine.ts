@@ -4695,9 +4695,9 @@ function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
 function _evalMulDiv(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
-    if (t[i] === '*' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) * Number(right) }
-    if (t[i] === '/' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); const nl = Number(left), nr = Number(right); return Number.isInteger(nl) && Number.isInteger(nr) ? Math.trunc(nl / nr) : nl / nr }
-    if (t[i] === '%' && !_inBrackets(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) % Number(right) }
+    if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) * Number(right) }
+    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); const nl = Number(left), nr = Number(right); return Number.isInteger(nl) && Number.isInteger(nr) ? Math.trunc(nl / nr) : nl / nr }
+    if (t[i] === '%' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) % Number(right) }
   }
   return _evalUnary(t, row)
 }

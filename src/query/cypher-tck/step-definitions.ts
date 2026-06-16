@@ -229,13 +229,21 @@ function _stringifyVal(val: unknown): string {
   if (typeof val === 'string') {
     // 如果是边表示（[:T1] 格式），裸输出不含引号
     if (val.startsWith('[:"') || val.startsWith('[:')) return val
-    return "'" + val + "'"  // TCK expects quoted strings
+    // Cypher 字符串格式化：转义内部单引号和反斜杠
+    const escaped = val.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    return "'" + escaped + "'"  // TCK expects quoted strings
   }
-  if (typeof val === 'number') return String(val)
+  if (typeof val === 'number') {
+    // Cypher expects: integer literals as-is, floats with .0 suffix, no e+ (just e)
+    let s = String(val)
+    // Strip "+" from "e+" (TCK expects "e305" not "e+305")
+    s = s.replace(/e\+/g, 'e')
+    return s
+  }
   if (typeof val === 'boolean') return String(val)
   if (Array.isArray(val)) {
     return '[' + val.map(v => {
-      if (typeof v === 'string') return "'" + v + "'"
+      if (typeof v === 'string') return "'" + v.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"
       if (Array.isArray(v) || (typeof v === 'object' && v !== null)) return _stringifyVal(v)
       return String(v)
     }).join(', ') + ']'

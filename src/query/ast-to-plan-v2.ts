@@ -176,7 +176,176 @@ interface ParsedClause {
 
 export function parseCypherToPlan(query: string): QueryPlan {
   const plan = buildQueryPlan(query)
+  // Post-processing: fix ANTLR return columns that were truncated by unrecognized tokens
+  // (e.g., octal 0o77 → "0", sci notation 2E+01 → "2", list [1, 0o77] → "[1")
+  postProcessReturnColumns(plan, query)
   return plan
+}
+
+/**
+ * Fix return columns that ANTLR truncated due to unrecognized tokens.
+ * ANTLR Cypher grammar doesn't support octal (0o77) or scientific (2E+01) literals,
+ * so these get tokenized as e.g. "0" + "o77". The parser only gets "0" and the
+ * remaining token goes to error recovery, resulting in a truncated ReturnItemContext.
+ *
+ * This function uses the original query text to rebuild any truncated expressions.
+ */
+function postProcessReturnColumns(plan: QueryPlan, query: string): void {
+  // Only process plans with expressionColumns (RETURN or WITH)
+  if (!plan.expressionColumns?.length) return
+
+  // If plan has a UNION, recursively fix both sides
+  if (plan.type === 'QUERY' && plan.leftPlan && plan.rightPlan) {
+    postProcessReturnColumns(plan.leftPlan, query)
+    postProcessReturnColumns(plan.rightPlan, query)
+    return
+  }
+
+  // Find the RETURN clause region in the query
+  // Use [\s\S] to match across newlines (multi-line queries)
+  const returnMatch = query.match(/\bRETURN\s+([\s\S]+)/i)
+  if (!returnMatch) return
+
+  const returnPart = returnMatch[1]
+  const items = splitByTopLevelCommas(returnPart)
+
+  // ── Detect column count mismatch ──
+  // ANTLR's error recovery can produce either too few columns (dropped after unrecognized token)
+  // or too many columns (treating list/map internals as separate return items).
+  // Rebuild ALL columns from the query text when mismatch is detected.
+  let needsRebuild = false
+  if (items.length !== plan.expressionColumns.length) {
+    needsRebuild = true
+  } else {
+    // Same count: check if any expression is truncated
+    for (let i = 0; i < plan.expressionColumns.length; i++) {
+      const antlrExpr = plan.expressionColumns[i].expression
+      const queryItem = items[i]?.trim() || ''
+      if (!queryItem) continue
+      if (antlrExpr !== queryItem) {
+        // Check if it's a genuine truncation
+        const isTruncated =
+          (queryItem.startsWith(antlrExpr) && queryItem !== antlrExpr) ||
+          (/^\d+$/.test(antlrExpr) && queryItem.length > antlrExpr.length) ||
+          (queryItem.includes(',') && antlrExpr.includes(','))
+        if (isTruncated) { needsRebuild = true; break }
+      }
+    }
+  }
+
+  if (needsRebuild) {
+    rebuildReturnColumns(plan, items)
+    return
+  }
+
+  // ── No column count mismatch: fix individual truncated expressions ──
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i].trim()
+    if (!item) continue
+
+    const asMatch = item.match(/^([\s\S]+?)\s+AS\s+(\w+)$/i)
+    let rawExpr: string
+    let rawAlias: string | null
+    if (asMatch) {
+      rawExpr = asMatch[1].trim()
+      rawAlias = asMatch[2]
+    } else {
+      rawExpr = item
+      rawAlias = null
+    }
+
+    const antlrExpr = plan.expressionColumns[i].expression
+    if (!antlrExpr || antlrExpr === rawExpr) continue
+
+    const isTruncated =
+      (typeof antlrExpr === 'string' && typeof rawExpr === 'string' &&
+        rawExpr.startsWith(antlrExpr) && rawExpr !== antlrExpr) ||
+      (typeof antlrExpr === 'string' && /^\d+$/.test(antlrExpr) && rawExpr.length > antlrExpr.length) ||
+      (typeof antlrExpr === 'string' && typeof rawExpr === 'string' && !rawExpr.includes(antlrExpr))
+
+    if (isTruncated) {
+      plan.expressionColumns[i].expression = rawExpr
+      if (rawAlias) plan.expressionColumns[i].alias = rawAlias
+      const oldKey = plan.returnColumns[i]
+      const newKey = rawAlias ?? rawExpr
+      if (oldKey !== newKey) {
+        plan.returnColumns[i] = newKey
+        delete plan.returnAliasMap[oldKey]
+        plan.returnAliasMap[newKey] = rawExpr
+      } else {
+        plan.returnAliasMap[oldKey] = rawExpr
+      }
+    }
+  }
+}
+
+/**
+ * Rebuild all return columns from the query text when ANTLR parsed fewer columns
+ * due to error recovery dropping unrecognized tokens.
+ */
+function rebuildReturnColumns(plan: QueryPlan, items: string[]): void {
+  const newColumns: Array<{ expression: string; alias: string | null }> = []
+  const newAliasMap: Record<string, string> = {}
+  const newReturnCols: string[] = []
+
+  for (const item of items) {
+    const trimmed = item.trim()
+    if (!trimmed) continue
+
+    const asMatch = trimmed.match(/^([\s\S]+?)\s+AS\s+(\w+)$/i)
+    let expression: string
+    let alias: string | null
+    if (asMatch) {
+      expression = asMatch[1].trim()
+      alias = asMatch[2]
+    } else {
+      expression = trimmed
+      alias = null
+    }
+
+    const key = (alias ?? expression).replace(/^\w+\./, '')
+    newAliasMap[key] = expression
+    newReturnCols.push(alias ?? expression)
+    newColumns.push({ expression, alias: alias ?? expression })
+  }
+
+  plan.expressionColumns = newColumns
+  plan.returnAliasMap = newAliasMap
+  plan.returnColumns = newReturnCols
+}
+
+/**
+ * Split a string by top-level commas (not inside brackets, parens, or braces).
+ */
+function splitByTopLevelCommas(s: string): string[] {
+  const result: string[] = []
+  let depth = 0
+  let start = 0
+  const matching = { '(': ')', '[': ']', '{': '}' }
+  const openers = new Set(['(', '[', '{'])
+  const closers = new Set([')', ']', '}'])
+  const stack: string[] = []
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (openers.has(ch)) {
+      stack.push(ch)
+      depth++
+    } else if (closers.has(ch)) {
+      if (stack.length > 0) {
+        const last = stack[stack.length - 1]
+        if (matching[last as keyof typeof matching] === ch) {
+          stack.pop()
+          depth--
+        }
+      }
+    } else if (ch === ',' && depth === 0) {
+      result.push(s.substring(start, i))
+      start = i + 1
+    }
+  }
+  result.push(s.substring(start))
+  return result
 }
 
 /**
