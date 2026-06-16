@@ -2691,7 +2691,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── 多类型 edgeLabel 处理 ──
     // MATCH (n)-[r:KNOWS|HATES]->(x) — 分割为多个单标签查询合并结果
-    // DEBUG [5]: check filter state
     // ── 预分离边变量 filter（WHERE r.name = 'foo'） ──
     // GE 的 _matchFilter 只检查节点属性，无法处理 source="r" 的边属性 filter。
     // 从 plan.filters 中摘出边变量 filter，GE 执行时去掉它们，执行完后手动应用。
@@ -2720,8 +2719,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 当 steps.length > 1 或单步但有 range（变量长度）时，用 __edges 手动遍历
     const hasMultiStep = plan.steps && plan.steps.length > 1 && allNodes.length > 0
     const hasVarLen = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
-
-    // DEBUG [10]
     const rawRecords: any[] = (hasMultiStep || hasVarLen)
       ? (() => {
           const multiStepRaw: any[] = []
@@ -3296,14 +3293,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         const matchClauses = query.matchAll(/MATCH\s*\((\w+)\s*:\s*(\w+)\)/g)
         for (const mc of matchClauses) varLabelMap2[mc[1]] = mc[2]
       }
-      const returnCols2 = plan.returnColumns || []
-      const involvedVarSet2 = new Set<string>()
-      for (const rc of returnCols2) {
-        const varName = typeof rc === 'string' ? rc.split('.')[0] : ''
-        if (varName) involvedVarSet2.add(varName)
+      // 从 MATCH 变量中获取单变量名（支持有/无 label 两种写法），而非从 returnColumns
+      let matchVarKeys2 = Object.keys(varLabelMap2)
+      if (!matchVarKeys2.length) {
+        const anyMatchClause = query.match(/MATCH\s*\((\w+)/)
+        if (anyMatchClause) matchVarKeys2 = [anyMatchClause[1]]
       }
-      if (involvedVarSet2.size === 1) {
-        const singleVar2 = [...involvedVarSet2][0]
+      if (matchVarKeys2.length === 1) {
+        const singleVar2 = matchVarKeys2[0]
         const targetLabel2 = varLabelMap2[singleVar2]
         // 原始 filteredRecords 已是 GE 返回的节点，格式 {id, props, type, name}
         // 将其转换为 _formatResultRow 可用的格式
@@ -3497,10 +3494,19 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
     if (plan.whereBody && result.length && !plan.aggregate) {
       const filteredResult: QueryRow[] = []
-      for (const row of result) {
-        // 构建变量级映射：result 行中键名可能是节点变量名，值有 props 嵌套
-        // 将 {n: {props: {name: 'Alice'}, ...}} → {n: {name: 'Alice', ...}}
+      for (let ri = 0; ri < result.length; ri++) {
+        const row = result[ri]
+        // 构建变量级映射：先注入 rawWithEdges 中的变量上下文（__crossVarRows），
+        // 再覆盖 result row 中的扁平化/别名键
         const ctx: Record<string, unknown> = {}
+        // 从原始 GE 记录获取变量上下文（如 {a: {name: 'Foo', _label: 'TheLabel'}}）
+        const rawEntry = rawWithEdges?.[ri]
+        if (rawEntry?.__crossVarRows) {
+          for (const [varName, varNode] of Object.entries(rawEntry.__crossVarRows)) {
+            ctx[varName] = varNode as Record<string, unknown>
+          }
+        }
+        // 再注入 result row 的扁平化键（可能包含别名和变量名展开）
         for (const [key, val] of Object.entries(row)) {
           if (val && typeof val === 'object' && 'props' in (val as any)) {
             ctx[key] = { ...(val as any).props }
@@ -3508,14 +3514,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             ctx[key] = val
           }
         }
-        const val = _evaluateExpression(plan.whereBody, ctx)
-        if (val === true) {
+        const evalVal = _evaluateExpression(plan.whereBody, ctx)
+        if (evalVal === true) {
           filteredResult.push(row)
         }
         // false / null / undefined → 跳过
       }
       result.length = 0
-      result.push(...filteredResult); console.error('DEBUG WHERE end: result len', result.length, 'filteredResult len', filteredResult.length)
+      result.push(...filteredResult);
     }
 
     // If WHERE cleared everything but plan.filters exists, rebuild result from raw GE data
@@ -3569,7 +3575,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
         }
         const match = plan.filters.every((f: any) => {
-          const sourceNode = varNodes[f.source]
+          let sourceNode = varNodes[f.source]
           if (!sourceNode) {
             // row may not have variable keys (e.g. RETURN a.name AS name)
             // fallback: try __crossVarRows or raw row from rawWithEdges
