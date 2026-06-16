@@ -4862,6 +4862,31 @@ function _extractChain(expr: string): Array<{ left: string; op: string; right: s
 
 function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
+  // 辅助：截断操作数到第一个布尔操作符（OR/XOR/AND），用于 STARTS_WITH/CONTAINS/ENDS_WITH 右操作数
+  const _trimToOperand = (s2: string): string => {
+    let depth = 0, inStr = false, strChar = ''
+    for (let i = 0; i < s2.length; i++) {
+      if (inStr && s2[i] === '\\') { i++; continue }
+      if (inStr) { if (s2[i] === strChar) inStr = false; continue }
+      if (s2[i] === "'" || s2[i] === '"') { inStr = true; strChar = s2[i]; continue }
+      if (s2[i] === '(' || s2[i] === '[' || s2[i] === '{') { depth++; continue }
+      if (s2[i] === ')' || s2[i] === ']' || s2[i] === '}') { depth--; continue }
+      if (depth === 0) {
+        if (s2.slice(i, i + 3) === ' OR ' || s2.slice(i, i + 4) === ' XOR ' || s2.slice(i, i + 4) === ' AND ') return s2.slice(0, i).trim()
+      }
+    }
+    return s2.trim()
+  }
+  const _completeBoolean = (leftVal: unknown, after: string, row2?: Record<string, unknown>): unknown => {
+    const m = after.match(/^(AND|OR|XOR)\b/i)
+    if (!m) return _evalBinary(`${leftVal} ${after}`, row2)
+    const op = m[1].toLowerCase()
+    const rest = after.slice(m[0].length).trim()
+    if (op === 'and') return (leftVal && _evalBinary(rest, row2))
+    if (op === 'or') return (leftVal || _evalBinary(rest, row2))
+    if (op === 'xor') return ((leftVal ? 1 : 0) ^ (_evalBinary(rest, row2) ? 1 : 0)) !== 0
+    return _evalBinary(`${leftVal} ${after}`, row2)
+  }
   // 括号表达式直接下推（NOT 之后、进入比较操作符前）
   // 必须确认整个表达式被一对完整括号包围：第一个 '(' 对应的 ')' 正好在末尾
   if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) {
@@ -4872,14 +4897,49 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
     }
     if (matchIdx === t.length - 1) return _evalBinary(t.slice(1, -1), row)
   }
-  const sw = t.indexOf(' STARTS WITH ')
-  if (sw > 0) { const l = _evalAddSub(t.slice(0, sw), row); const r = _evalAddSub(t.slice(sw + 13), row); if (l == null || r == null) return null; return String(l).startsWith(String(r)) }
-  const ci = t.indexOf(' CONTAINS ')
-  if (ci > 0) { const l = _evalAddSub(t.slice(0, ci), row); const r = _evalAddSub(t.slice(ci + 10), row); if (l == null || r == null) return null; return String(l).includes(String(r)) }
-  const ew = t.indexOf(' ENDS WITH ')
-  if (ew > 0) { const l = _evalAddSub(t.slice(0, ew), row); const r = _evalAddSub(t.slice(ew + 11), row); if (l == null || r == null) return null; return String(l).endsWith(String(r)) }
   const re = t.indexOf(' =~ ')
   if (re > 0) { const l = String(_evalAddSub(t.slice(0, re), row)); const r = String(_evalAddSub(t.slice(re + 4), row)); try { return new RegExp(r).test(l) } catch { return false } }
+  // 预处理 IS NULL / IS NOT NULL：递归计算每个表达式中的 IS 后缀
+  const _resolveIsNull = (expr: string): unknown => {
+    const ex = expr.trim()
+    // 括号表达式：递归计算内部
+    if (ex.startsWith('(') && ex.endsWith(')') && _isBalanced(ex)) {
+      let depth = 0, matchIdx = -1
+      for (let i = 0; i < ex.length; i++) {
+        if (ex[i] === '(') depth++
+        if (ex[i] === ')') { depth--; if (depth === 0) { matchIdx = i; break } }
+      }
+      if (matchIdx === ex.length - 1) return _evalBinary(ex.slice(1, -1), row)
+    }
+    // 查找 IS NULL / IS NOT NULL（不在括号、字符串内）
+    let isPos = -1, depth = 0, inStr = false, strChar = ''
+    for (let i = 0; i < ex.length; i++) {
+      if (inStr && ex[i] === '\\') { i++; continue }
+      if (inStr) { if (ex[i] === strChar) inStr = false; continue }
+      if (ex[i] === "'" || ex[i] === '"') { inStr = true; strChar = ex[i]; continue }
+      if (ex[i] === '(' || ex[i] === '[' || ex[i] === '{') { depth++; continue }
+      if (ex[i] === ')' || ex[i] === ']' || ex[i] === '}') { depth--; continue }
+      if (depth === 0 && i + 2 < ex.length && ex[i] === 'I' && ex[i + 1] === 'S' && !/\w/.test(ex[i + 2] || '')) {
+        isPos = i; break
+      }
+    }
+    if (isPos > 0) {
+      const leftExpr = ex.slice(0, isPos).trim()
+      const rest = ex.slice(isPos).trim()
+      const isnMatch = rest.match(/^IS\s+(NOT\s+)?NULL/i)
+      if (isnMatch) {
+        const isNotNull = !!isnMatch[1]
+        const leftVal = _evalAddSub(leftExpr, row)
+        // Cypher: x IS NULL → (x == null), x IS NOT NULL → (x != null)
+        const isResult = leftVal == null ? !isNotNull : isNotNull
+        const after = rest.slice(isnMatch[0].length).trim()
+        if (after) return _evalComparison(`${isResult} ${after}`, row)
+        return isResult
+      }
+    }
+    // 无 IS 后缀，走正常 _evalAddSub
+    return _evalAddSub(ex, row)
+  }
   // IN 处理：找顶层（不在括号内）的 IN
   const inOp = (() => {
     let idx = t.lastIndexOf(' IN ')
@@ -4900,11 +4960,17 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       const r = _evalAddSub(t.slice(inOp + 4), row)
       // Cypher: null IN null = null, null IN [] = false
       if (!Array.isArray(r)) return l == null ? null : false
+      // null IN list: 如果 l 为 null，只需检查列表是否包含 null
+      if (l == null) {
+        for (const item of r) {
+          if (item == null) return null
+        }
+        return false
+      }
       let hasMatch = false
       let hasNull = false
       for (const item of r) {
-        if (l != null && item != null) {
-          // 深度比较（支持数组/对象的内容比较而非引用比较）
+        if (item != null) {
           const eq = _deepEqWithNull(l, item)
           if (eq.match === true && !eq.hasNull) { hasMatch = true }
           if (eq.hasNull) { hasNull = true }
@@ -4923,8 +4989,8 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
     let result: unknown = true
     for (let i = 0; i < chainOps.length; i++) {
       const { left: l, op: cop, right: r } = chainOps[i]
-      const leftVal = _evalAddSub(l.trim(), row)
-      const rightVal = _evalAddSub(r.trim(), row)
+      const leftVal = _resolveIsNull(l.trim())
+      const rightVal = _resolveIsNull(r.trim())
       const cmp = _compareValues(leftVal, rightVal, cop)
       if (cmp === false) return false
       if (cmp == null) result = null
@@ -4940,8 +5006,8 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       if (parts.length >= 3) {
         let result: unknown = true
         for (let i = 0; i < parts.length - 1; i++) {
-          const left = _evalAddSub(parts[i].trim(), row)
-          const right = _evalAddSub(parts[i + 1].trim(), row)
+          const left = _resolveIsNull(parts[i].trim())
+          const right = _resolveIsNull(parts[i + 1].trim())
           const cmp = _compareValues(left, right, op)
           if (cmp === false) return false
           if (cmp == null) result = null
@@ -4951,7 +5017,7 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
     }
     const idx = _findTopLevelOp(t, op)
     if (idx > 0) {
-      const left = _evalAddSub(t.slice(0, idx), row)
+      const left = _resolveIsNull(t.slice(0, idx))
       let rawRight = t.slice(idx + op.length).trim()
       // Cypher 优先级：IS NULL/IS NOT NULL > 比较操作符
       // 所以 a = b IS NULL 应解析为 a = (b IS NULL) 而非 (a = b) IS NULL
@@ -4993,6 +5059,21 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
     const innerVal = _evalAddSub(t.slice(0, t.length - 11).trim(), row)
     return innerVal !== null && innerVal !== undefined
   }
+  // 字符串谓语（STARTS WITH / CONTAINS / ENDS WITH）优先级低于比较操作符（= / <> / 链式）
+  // 因此放在比较操作符处理之后、回退到 _evalAddSub 之前
+  const _findTopLevelKw = (kw: string): number => {
+    let idx = t.indexOf(kw)
+    while (idx > 0 && _inBrackets(t, idx)) {
+      idx = t.indexOf(kw, idx + 1)
+    }
+    return idx
+  }
+  const sw = _findTopLevelKw(' STARTS WITH ')
+  if (sw > 0) { const l = _evalAddSub(t.slice(0, sw), row); const rPart = _trimToOperand(t.slice(sw + 13)); const r = _evalAddSub(rPart, row); if (l == null || r == null) return null; const swResult = String(l).startsWith(String(r)); const after = (t.slice(sw + 13).length > rPart.length) ? t.slice(sw + 13 + rPart.length).trim() : ''; return after ? _completeBoolean(swResult, after, row) : swResult }
+  const ci = _findTopLevelKw(' CONTAINS ')
+  if (ci > 0) { const l = _evalAddSub(t.slice(0, ci), row); const rPart = _trimToOperand(t.slice(ci + 10)); const r = _evalAddSub(rPart, row); if (l == null || r == null) return null; const ciResult = String(l).includes(String(r)); const after = (t.slice(ci + 10).length > rPart.length) ? t.slice(ci + 10 + rPart.length).trim() : ''; return after ? _completeBoolean(ciResult, after, row) : ciResult }
+  const ew = _findTopLevelKw(' ENDS WITH ')
+  if (ew > 0) { const l = _evalAddSub(t.slice(0, ew), row); const rPart = _trimToOperand(t.slice(ew + 11)); const r = _evalAddSub(rPart, row); if (l == null || r == null) return null; const ewResult = String(l).endsWith(String(r)); const after = (t.slice(ew + 11).length > rPart.length) ? t.slice(ew + 11 + rPart.length).trim() : ''; return after ? _completeBoolean(ewResult, after, row) : ewResult }
   return _evalAddSub(t, row)
 }
 
@@ -5004,25 +5085,26 @@ function _listLexCompare(a: unknown[], b: unknown[], op: string): boolean | null
     if (ai == null || bi == null) {
       return null  // null 在列表中 → 三值不确定
     }
-    const cmpResult = _compareValues(ai, bi, op)
-    if (cmpResult !== null) {
-      // 如果比较明确 false → 短路
-      if (cmpResult === false) return false
-      // 如果比较明确 true → 继续
-    } else {
-      // _compareValues 返回 null（三值不确定）→ 整体 null
-      return null
+    const isLeOrGe = (op === '<=' || op === '>=')
+
+    if (ai === bi) continue  // 相等 → 继续下一个元素
+
+    // 列表字典序：第一个不相等的元素决定结果
+    if (isLeOrGe) {
+      // <= 或 >=：先做 =（已由 ai===bi 处理），再做 < 或 >
+      // 如果 ai !== bi，退化到 < 或 >
+      const dir = op === '<=' ? '<' : '>'
+      return _compareValues(ai, bi, dir)
     }
+    // < 或 >：直接比较当前元素
+    return _compareValues(ai, bi, op)
   }
-  // 所有同索引元素都满足条件或相等
+  // 所有同索引元素相等
   if (a.length === b.length) return op === '>=' || op === '<=' ? true : false
-  // 长度不等 → 检查多出的元素是否包含 null
-  const longer = a.length > b.length ? a : b
-  const extraStart = a.length > b.length ? b.length : a.length
-  for (let i = extraStart; i < longer.length; i++) {
-    if (longer[i] == null) return null  // 多出元素有 null → 三值不确定
+  // 长度不等 → 短列表视为小于长列表（前提是多出元素不含 null）
+  for (let i = a.length > b.length ? b.length : a.length; i < (a.length > b.length ? a : b).length; i++) {
+    if ((a.length > b.length ? b : a)[i] == null) return null
   }
-  // 多出元素全都非 null → 按长度决定
   if (op === '>=' || op === '>') return a.length >= b.length
   if (op === '<=' || op === '<') return a.length <= b.length
   return false
@@ -5154,9 +5236,23 @@ function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
 function _evalMulDiv(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
-    if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) * Number(right) }
-    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); const nl = Number(left), nr = Number(right); return Number.isInteger(nl) && Number.isInteger(nr) ? Math.trunc(nl / nr) : nl / nr }
-    if (t[i] === '%' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalUnary(t.slice(i + 1), row); return Number(left) % Number(right) }
+    if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); return Number(left) * Number(right) }
+    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); const nl = Number(left), nr = Number(right); return Number.isInteger(nl) && Number.isInteger(nr) ? Math.trunc(nl / nr) : nl / nr }
+    if (t[i] === '%' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); return Number(left) % Number(right) }
+  }
+  return _evalExp(t, row)
+}
+
+/** 指数运算 `^`，优先级高于 * / %，左结合：2 ^ 3 ^ 2 = (2 ^ 3) ^ 2 */
+function _evalExp(s: string, row?: Record<string, unknown>): unknown {
+  const t = s.trim()
+  // 左结合：从左向右扫描，左操作数用 _evalUnary 或 _evalExp（处理左侧 ^）
+  for (let i = t.length - 1; i >= 0; i--) {
+    if (t[i] === '^' && !_inBrackets(t, i) && !_inString(t, i)) {
+      const left = _evalExp(t.slice(0, i).trim(), row)
+      const right = _evalUnary(t.slice(i + 1).trim(), row)
+      return Math.pow(Number(left), Number(right))
+    }
   }
   return _evalUnary(t, row)
 }
@@ -5190,6 +5286,56 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
       const innerVal = _evalBinary(innerExpr, row)
       if (suffix.toUpperCase() === 'IS NULL') return (innerVal === null || innerVal === undefined)
       if (suffix.toUpperCase() === 'IS NOT NULL') return (innerVal !== null && innerVal !== undefined)
+    }
+  }
+  // 括号表达式 + 下标后缀：(expr)[n] 或 (expr)[start..end]
+  if (t.startsWith('(') && !t.endsWith(')')) {
+    let depth = 0, parenEnd = -1
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] === '(') depth++
+      if (t[i] === ')') { depth--; if (depth === 0) { parenEnd = i; break } }
+    }
+    if (parenEnd > 0) {
+      const innerExpr = t.slice(1, parenEnd)
+      let val = _evalBinary(innerExpr, row)
+      let pos = parenEnd + 1
+      // 如果括号后不是 [ 下标，而是其他操作符（OR/AND/XOR 等），用 _evalBinary 继续计算
+      while (pos < t.length && t[pos] === ' ') pos++
+      if (pos < t.length && t[pos] !== '[') {
+        const suffix = t.slice(pos).trim()
+        if (suffix) return _evalBinary(`${val} ${suffix}`, row)
+        return val
+      }
+      while (pos < t.length && t[pos] === '[') {
+        const endBracket = t.indexOf(']', pos)
+        if (endBracket < 0) break
+        const inner = t.slice(pos + 1, endBracket)
+        const rangeIdx = inner.indexOf('..')
+        if (rangeIdx >= 0) {
+          const startStr = inner.slice(0, rangeIdx).trim()
+          const endStr = inner.slice(rangeIdx + 2).trim()
+          const len = Array.isArray(val) ? val.length : (typeof val === 'string' ? val.length : 0)
+          let startVal = startStr ? _evalBinary(startStr, row) : 0
+          let endVal = endStr ? _evalBinary(endStr, row) : len
+          if (startVal == null || endVal == null) { val = null; break }
+          let sliceStart = Number(startVal), sliceEnd = Number(endVal)
+          if (isNaN(sliceStart)) sliceStart = 0
+          if (isNaN(sliceEnd)) sliceEnd = len
+          if (sliceStart < 0) sliceStart = Math.max(len + sliceStart, 0)
+          if (sliceEnd < 0) sliceEnd = Math.max(len + sliceEnd, 0)
+          val = Array.isArray(val) ? val.slice(sliceStart, sliceEnd) : (typeof val === 'string' ? val.slice(sliceStart, sliceEnd) : null)
+        } else {
+          const idx = _evalBinary(inner, row)
+          if (Array.isArray(val)) { val = val[Number(idx)] ?? null }
+          else if (val && typeof val === 'object' && !Array.isArray(val)) {
+            if (idx == null) { val = null }
+            else if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
+            else val = (val as Record<string, unknown>)[idx] ?? null
+          } else { val = null }
+        }
+        pos = endBracket + 1
+      }
+      return val
     }
   }
   // 列表谓词（必须在 fnMatch 之前，因为 all/any/none/single 的 WHERE 子句与普通函数语法冲突）
@@ -5231,6 +5377,18 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   if (fnMatch) {
     const args = fnMatch[2].trim() ? _parseCommaList(fnMatch[2]).map(a => a.trim()) : []
     return _callFunction(fnMatch[1].toLowerCase(), args, row)
+  }
+  // 如果包含顶层 `^`，是表达式而非纯字面量，委托给 _evalExp
+  if (t.includes('^')) {
+    let depth = 0, inStr = false, strChar = ''
+    for (let i = 0; i < t.length; i++) {
+      if (inStr && t[i] === '\\') { i++; continue }
+      if (inStr) { if (t[i] === strChar) inStr = false; continue }
+      if (t[i] === "'" || t[i] === '"') { inStr = true; strChar = t[i]; continue }
+      if (t[i] === '(' || t[i] === '[' || t[i] === '{') { depth++; continue }
+      if (t[i] === ')' || t[i] === ']' || t[i] === '}') { depth--; continue }
+      if (depth === 0 && t[i] === '^') return _evalExp(t, row)
+    }
   }
   // 字面量先行（避免 . 被当属性访问）— 但如果字面量有后缀索引 [n]，先走下标分支
   if (t.startsWith("'") || t.startsWith('"') || t.startsWith('[') || t.startsWith('{') || /^-?\d/.test(t) || t.startsWith('.') || t.toLowerCase() === 'null' || t.toLowerCase() === 'true' || t.toLowerCase() === 'false') {
@@ -5753,7 +5911,7 @@ function _isPureLiteralExpr(s: string): boolean {
       if (s.slice(i, i + 2) === '<>' || s.slice(i, i + 2) === '>=' || s.slice(i, i + 2) === '<=') return false
       if (s[i] === '>' || s[i] === '<') return false
       // 算术操作符（不在括号/字符串内）
-      if (s[i] === '+' || s[i] === '-' || s[i] === '*' || s[i] === '/' || s[i] === '%') return false
+      if (s[i] === '+' || s[i] === '-' || s[i] === '*' || s[i] === '/' || s[i] === '%' || s[i] === '^') return false
       // 布尔操作符（IN, AND, OR, XOR, NOT 等）
       if (/\s/.test(s[i]) && i + 2 < s.length) {
         const sub = s.slice(i, i + 5)
