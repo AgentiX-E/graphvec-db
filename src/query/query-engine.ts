@@ -84,6 +84,12 @@ export function _clearDatabases(): void {
 
 // ── GE 实例注册表（多数据库隔离） ──
 const _geInstanceRegistry = new Map<string, GraphEngine>()
+
+/** BigInt JSON 序列化/反序列化辅助 */
+const _bigintReplacer = (_k: string, v: unknown): unknown =>
+  typeof v === 'bigint' ? { __bigint: v.toString() } : v
+const _bigintReviver = (_k: string, v: unknown): unknown =>
+  v && typeof v === 'object' && (v as any).__bigint !== undefined ? BigInt((v as any).__bigint) : v
 export function _clearGeInstances(): void {
   for (const [, ge] of _geInstanceRegistry) {
     try { ge.close() } catch {}
@@ -1429,9 +1435,31 @@ function _walkMultiSteps(
         if (!fn) continue
         let passes = true
         for (const rf of combinedSourceFilters) {
-          if (fn[rf.property] === undefined || String(fn[rf.property]) !== String(rf.value)) {
+          if (fn[rf.property] === undefined) {
             passes = false
             break
+          }
+          const actualStr = String(fn[rf.property])
+          const filterStr = String(rf.value)
+          if (actualStr !== filterStr) {
+            // 大整数精度补偿：ANTLR 把超出 Number 安全范围的整数字面量截断，
+            // 尝试用 BigInt 精确比较
+            if (/^\d+$/.test(actualStr) && /^-?\d+$/.test(filterStr)) {
+              try {
+                const actualBig = BigInt(actualStr)
+                const filterBig = BigInt(filterStr)
+                if (actualBig !== filterBig) {
+                  passes = false
+                  break
+                }
+              } catch {
+                passes = false
+                break
+              }
+            } else {
+              passes = false
+              break
+            }
           }
         }
         if (!passes) currentSet.delete(idx)
@@ -2311,6 +2339,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   try {
 
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
+    const originalNodeCount = nodes?.length || 0
     const allNodes: Array<Record<string, unknown>> = [...(nodes || [])]
     // 解包 typed 格式的 props（{type: 'STRING', value: 'ABCDEF'} → 'ABCDEF'）
     // 这种包装在 parseQuery 的 createNodes 中产生，GE 的 _matchFilter 只支持裸值
@@ -2441,7 +2470,24 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const val = (node as any)[f.property]
           const target = f.value
           switch (f.operator) {
-            case 'EQ':  return val === target
+            case 'EQ': {
+              // BigInt 精度：ANTLR 截断大整数，用 BigInt 精确比较
+              if (typeof val !== typeof target) {
+                if (/^-?\d+$/.test(String(val)) && /^-?\d+$/.test(String(target))) {
+                  try { if (BigInt(val) === BigInt(target)) return true } catch {}
+                }
+              }
+              // bigint vs bigint 精确比较
+              if (typeof val === 'bigint' && typeof target === 'bigint') return val === target
+              // bigint vs string: 用 BigInt 重建比较
+              if (typeof val === 'bigint' && typeof target === 'string') {
+                try { return val === BigInt(target) } catch { return false }
+              }
+              if (typeof val === 'string' && typeof target === 'bigint') {
+                try { return BigInt(val) === target } catch { return false }
+              }
+              return val === target
+            }
             case 'NEQ': return val !== target
             case 'GT':
             case 'GTE':
@@ -2489,7 +2535,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── 内联节点属性预过滤（从 query 解析 `(n {name: 'A'})`） ──
 
     if (query && !stepSourceFilters.length) {
-      const inlineMatch = query.match(/MATCH\s+\((\w+)\s*\{([^}]+)\}[^)]*\)/)
+      const inlineMatch = query.match(/MATCH\s+\((\w+)(?::\w+)?\s*\{([^}]+)\}[^)]*\)/)
       if (inlineMatch) {
         const inlineVar = inlineMatch[1]
         const inlinePropsRaw = inlineMatch[2]
@@ -2858,7 +2904,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const labels = multiTypeStep.edgeLabel!.split('|')
           const combined: Map<number, any> = new Map()
           for (const lbl of labels) {
-            const p2 = JSON.parse(JSON.stringify(plan))
+            const p2 = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
             p2.steps[0].edgeLabel = lbl
             p2.filters = (geFilters || []).filter(f => !crossVarFilters.includes(f))
             const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
@@ -2875,7 +2921,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const orFilters = (plan.filters || [])
           if (orFilters.length >= 2) {
             for (const f of orFilters) {
-              const p2 = JSON.parse(JSON.stringify(plan))
+              const p2 = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
               p2.filters = [f]
               const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
               for (const r of subRaw || []) combined.set(String(r.id), r)
@@ -2886,7 +2932,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             for (const m of typeRMatches) orLabels.push({ edgeVar: m[1], label: m[2] })
             if (orLabels.length >= 2) {
               for (const ol of orLabels) {
-                const p2 = JSON.parse(JSON.stringify(plan))
+                const p2 = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
                 p2.filters = []
                 if (p2.steps?.[0]) p2.steps[0].edgeLabel = ol.label
                 const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
@@ -2904,7 +2950,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           return [...combined.values()]
         })()
       : (() => {
-          const planForGe = JSON.parse(JSON.stringify(plan))
+          const planForGe = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
           // 排除跨变量属性引用 filter（GE 的 _matchFilter 无法做跨变量比较）
           planForGe.filters = (geFilters || []).filter(f => !crossVarFilters.includes(f))
 
@@ -3763,6 +3809,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── 后处理（ORDER BY / HAVING） ──
     return _postProcessResults(result, plan)
   } finally {
+    // DML 持久化：将 _executeViaGraphEngine 中创建的节点写回外部 nodes 数组，
+    // 确保后续查询（MATCH）能看到前面 CREATE/MERGE 的节点。
+    if ((plan.type === 'CREATE' || plan.type === 'MERGE' || plan.type === 'SET' || plan.type === 'DELETE') && nodes) {
+      for (let i = originalNodeCount; i < allNodes.length; i++) {
+        nodes.push(allNodes[i])
+      }
+    }
     // 注册池中的 GE 实例由 _clearGeInstances() 统一清理，不在 finally 中 close
     // 非注册临时 GE（当前不存在此场景）应在 finally 中 close + 清理
   }
@@ -4064,11 +4117,8 @@ export async function _executeQuery(
   nodes: Array<Record<string, unknown>>,
   query?: string,
 ): Promise<QueryResult> {
-  // ── Plan 自我保护：深拷贝防止 `_executeViaGraphEngine` 内部突变泄漏 ──
-  // _executeViaGraphEngine 会直接修改 plan 对象（清除 filters、改写 returnColumns 等），
-  // 当调用方重复使用同一 plan 时会导致结果错误。
-  // 深拷贝后，所有突变只发生在 local copy 上，调用方 plan 不受影响。
-  const planCopy = JSON.parse(JSON.stringify(plan)) as QueryPlan
+  // Plan 深拷贝
+  const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
 
   // 编译时语义验证
   try {
@@ -5303,6 +5353,13 @@ function _deepEq(a: unknown, b: unknown): boolean {
       if (!_deepEq((a as any)[keysA[i]], (b as any)[keysB[i]])) return false
     }
     return true
+  }
+  // 大整数精度补偿：string vs bigint 语义相等比较
+  if (typeof a === 'bigint' && typeof b === 'string') {
+    try { return a === BigInt(b) } catch { return false }
+  }
+  if (typeof b === 'bigint' && typeof a === 'string') {
+    try { return BigInt(a) === b } catch { return false }
   }
   return a === b
 }

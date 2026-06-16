@@ -129,6 +129,9 @@ async function run(q: string): Promise<void> {
       }
     }
     const plan = parseQuery(resolvedQ); assert.ok(plan); assert.ok(plan.type)
+    // 大整数精度修复：ANTLR 把超出 Number 安全范围的整数字面量截断，
+    // 从 WHERE 文本中重新提取精确值并写入 filter.value
+    _fixBigIntFilters(plan as any, resolvedQ)
     // 编译时语义验证（SyntaxError 检查）— 单独 try-catch
     try {
       _validatePlan(plan, resolvedQ)
@@ -139,7 +142,29 @@ async function run(q: string): Promise<void> {
   } catch (e: any) { st.err = e; st.res = [] }
 }
 
-/** Execute a query against the persistent GE and convert results to return-columns format */
+/** 大整数精度修复：从原始查询文本中提取 filter value 的精确整数字符串，覆盖截断的 Number。 */
+function _fixBigIntFilters(plan: { filters?: Array<{ value: unknown }> }, query: string): void {
+  if (!plan.filters?.length) return
+  // 从 WHERE 文本中提取所有形如 `= 4611686018427387905` 的字面量
+  const bigIntPattern = /=\s*(-?\d{16,})/g
+  let m: RegExpExecArray | null
+  const replacements = new Map<string, string>()
+  while ((m = bigIntPattern.exec(query)) !== null) {
+    const rawNum = m[1]
+    const asNumber = Number(rawNum)
+    // 如果 Number 截断后的字符串和 raw 不同，说明精度丢失
+    if (String(asNumber) !== rawNum) {
+      replacements.set(String(asNumber), rawNum)
+    }
+  }
+  // 替换 filters 中的值
+  for (const f of plan.filters) {
+    if (typeof f.value === 'number' && replacements.has(String(f.value))) {
+      const rawBigStr = replacements.get(String(f.value))!
+      f.value = BigInt(rawBigStr)
+    }
+  }
+}
 function _runOnPersistGe(q: string): void {
   try {
     const plan = parseQuery(q)
@@ -537,6 +562,18 @@ Given('having executed:', async function (query: string) {
           node[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
             ? (v as any).value
             : v
+          // 大整数精度保护：parseQuery 把超出 Number 安全范围的整数存储为 string，
+          // 但 TCK 期望 RETURN 时输出为数字。将纯数字字符串转回 number/bigint。
+          if (typeof node[k] === 'string' && /^-?\d+$/.test(node[k] as string)) {
+            try {
+              const asBig = BigInt(node[k] as string)
+              if (asBig > BigInt(Number.MAX_SAFE_INTEGER) || asBig < BigInt(Number.MIN_SAFE_INTEGER)) {
+                node[k] = asBig
+              } else {
+                node[k] = Number(node[k])
+              }
+            } catch {}
+          }
         } }
         st.nodes.push(node)
         seedGe(ge, node)
