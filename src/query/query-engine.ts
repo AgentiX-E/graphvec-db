@@ -4531,7 +4531,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   labels: (_, r) => r?._label ? String(r._label).split(':').filter(Boolean) : [],
   type: (_, r) => r?.__edgeLabel ?? r?._type ?? null,
   properties: (_, r) => { if (!r) return {}; const o: Record<string, unknown> = {}; for (const [k, v] of Object.entries(r)) if (!k.startsWith('_')) o[k] = v; return o },
-  keys: (_, r) => Object.keys(r || {}).filter(k => !k.startsWith('_')),
+  keys: ([a]) => { const v = _evalBinary(a); if (v == null) return null; if (typeof v === 'object') return Object.keys(v).filter(k => !k.startsWith('_')); return [] },
   id: ([a]) => { const v = _evalBinary(a); return v && typeof v === 'object' && '_id' in (v as any) ? (v as any)._id : 0 },
   head: ([a]) => { const v = _evalBinary(a); return Array.isArray(v) && v.length ? v[0] : null },
   last: ([a]) => { const v = _evalBinary(a); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
@@ -5038,9 +5038,9 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   }
   // 字面量先行（避免 . 被当属性访问）— 但如果字面量有后缀索引 [n]，先走下标分支
   if (t.startsWith("'") || t.startsWith('"') || t.startsWith('[') || t.startsWith('{') || /^-?\d/.test(t) || t.startsWith('.') || t.toLowerCase() === 'null' || t.toLowerCase() === 'true' || t.toLowerCase() === 'false') {
-    // 如果以字面量开头但后面有下标后缀 [[1]][0][0] 或 'hello'[0]
-    if ((t.startsWith('[') || t.startsWith("'") || t.startsWith('"')) && t.endsWith(']')) {
-      // 从最外层找到第一个匹配的 close，右侧剩余都是后缀下标
+    // 如果以字面量开头但后面有下标后缀 [[1]][0][0] 或 'hello'[0] 或 {name:'a'}[123]
+    if ((t.startsWith('[') || t.startsWith("'") || t.startsWith('"') || t.startsWith('{')) && t.endsWith(']')) {
+      // 从最外层找到第一个匹配的 close（支持 [] 和 {}），右侧剩余都是后缀下标
       let closePos = -1, depth = 0
       for (let i = 0; i < t.length; i++) {
         if (t[i] === "'" || t[i] === '"') {
@@ -5048,8 +5048,8 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
           while (i < t.length && t[i] !== q) { if (t[i] === '\\') i++; i++ }
           continue
         }
-        if (t[i] === '[') depth++
-        if (t[i] === ']') { depth--; if (depth === 0) { closePos = i; break } }
+        if (t[i] === '(' || t[i] === '[' || t[i] === '{') depth++
+        if (t[i] === ')' || t[i] === ']' || t[i] === '}') { depth--; if (depth === 0) { closePos = i; break } }
       }
       if (closePos === t.length - 1) return _evalLiteral(t, row) // 纯字面量，无后缀
       if (closePos > 0) {
@@ -5085,7 +5085,12 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
           } else {
             const idx = _evalBinary(inner, row)
             if (Array.isArray(val)) { val = val[Number(idx)] ?? null }
-            else if (val && typeof val === 'object') { val = (val as Record<string, unknown>)[String(idx)] ?? null }
+            else if (val && typeof val === 'object' && !Array.isArray(val)) {
+              // map 下标：null → null；非字符串 → TypeError
+              if (idx == null) { val = null }
+              else if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
+              else val = (val as Record<string, unknown>)[idx] ?? null
+            }
             else { val = null }
           }
           pos = endBracket + 1
@@ -5121,7 +5126,14 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     }
     const idx = _evalBinary(inner, row)
     if (Array.isArray(obj)) return obj[Number(idx)] ?? null
-    if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[String(idx)] ?? null
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      // map 类型下标：null → null；非字符串 → TypeError
+      if (idx == null) return null
+      if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
+      return (obj as Record<string, unknown>)[idx] ?? null
+    }
+    // 非 map/非 list 的基本类型下标抛 TypeError
+    if (obj != null) throw Object.assign(new Error('TypeError: Cannot index into non-map/non-list type'), { tckError: 'TypeError' })
     return null
   }
   // 属性访问 a.b
@@ -5129,8 +5141,11 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   if (dotIdx > 0 && !t.startsWith('.')) {
     const obj = _evalAtom(t.slice(0, dotIdx), row)
     const prop = t.slice(dotIdx + 1)
-    if (obj && typeof obj === 'object') return (obj as Record<string, unknown>)[prop] ?? null
-    return null
+    // Cypher: null.prop → null; nonMap.prop (非 map) → TypeError
+    if (obj == null) return null
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) return (obj as Record<string, unknown>)[prop] ?? null
+    // 对非 map 的基本类型抛 TypeError（列表也是非 map）
+    throw Object.assign(new Error('TypeError: Property access on non-map type'), { tckError: 'TypeError' })
   }
   // 变量引用
   if (t in (row || {})) return row![t]
