@@ -4398,17 +4398,24 @@ function _validateUndefinedVariables(query: string): void {
   if (matchVars.length === 0) return
   // 也提取 WITH 子句中定义的变量：WITH ... AS name
   const withVars: string[] = []
+  // 方式1：从 WITH ... AS 提取
   const withMatches = query.matchAll(/\bWITH\s+(.+?)(?:\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)
   for (const wm of withMatches) {
     const items = wm[1].split(',').map(s => s.trim())
     for (const item of items) {
       const asMatch = item.match(/\bAS\s+(\w+)\s*$/i)
       if (asMatch) withVars.push(asMatch[1])
-      // 收集 UNWIND 中的变量
-      const unwindMatch = wm[0].match(/\bUNWIND\s+.+\s+AS\s+(\w+)/i) || 
-                          (item.match(/\bUNWIND\s+.+\s+AS\s+(\w+)/i))
-      if (unwindMatch) withVars.push(unwindMatch[1])
     }
+  }
+  // 方式2：从整句 WITH/UNWIND 提取 AS 变量（包括子查询路径中的 WITH）
+  const allAsMatches = query.matchAll(/\b(?:WITH|UNWIND)\b[^]*?\bAS\s+(\w+)/gi)
+  for (const am of allAsMatches) {
+    withVars.push(am[1])
+  }
+  // 方式3：从 MATCH p = (n)-[r]->() 提取路径变量
+  const pathVars = query.matchAll(/\bMATCH\s+(\w+)\s*=/gi)
+  for (const pv of pathVars) {
+    withVars.push(pv[1])
   }
   // 合并 MATCH 变量和 WITH 变量
   const definedVars = [...new Set([...matchVars, ...withVars])]
