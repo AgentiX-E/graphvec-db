@@ -4231,50 +4231,33 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // OPTIONAL MATCH 后处理：OPTIONAL MATCH 设置的变量可能改变了 RETURN 表达式的求值结果。
     // 重新计算受影响的列。
-    if (plan.optionalMatchSteps?.length && result.length) {
-      // 收集所有 OPTIONAL MATCH 设置的变量名
+    if (plan.optionalMatchSteps?.length && result.length && plan.expressionColumns?.length) {
       const optMatchVarNames = new Set(plan.optionalMatchSteps.map(om => om.variableName).filter(Boolean))
-      // 构建 rc → 完整表达式的映射
-      const rcToExpr: Record<string, string> = {}
-      if (plan.expressionColumns?.length) {
-        for (const ec of plan.expressionColumns) {
-          const key = (ec as any).alias ?? (ec as any).expression ?? String(ec)
-          // 去掉变量前缀
-          const stripped = (typeof ec === 'string' ? ec : key).replace(/^\w+\./, '')
-          rcToExpr[stripped] = typeof ec === 'object' && (ec as any).expression
-            ? (ec as any).expression
-            : typeof ec === 'string' ? ec : key
-        }
-      } else if (plan.returnAliasMap) {
-        Object.assign(rcToExpr, plan.returnAliasMap)
-      }
-      if (!Object.keys(rcToExpr).length) { /* no columns to re-evaluate */ } else
-      for (const row of result) {
-        for (const rc of plan.returnColumns || []) {
-          if (!rc) continue
-          const rawexpr = rcToExpr[rc]
-          if (!rawexpr) continue
-          // 检查表达式中是否引用了 OPTIONAL MATCH 设置的变量
-          const varRefs = [...rawexpr.matchAll(/(\b[a-zA-Z_]\w*)\b/g)].map(m => m[1])
-          const hasOptMatchVar = varRefs.some(v => optMatchVarNames.has(v))
-          if (!hasOptMatchVar) continue
-          // 确保 OPTIONAL MATCH 确实设置了该变量
-          if (!optMatchVarNames.has(rawexpr) && !varRefs.some(v => optMatchVarNames.has(v) && v in row)) continue
-          // 构建 varCtx 重新求值
+      if (!optMatchVarNames.size) { /* skip */ } else
+      for (const ec of plan.expressionColumns) {
+        const alias = typeof ec === 'string' ? ec : (ec as any).alias ?? (ec as any).expression ?? String(ec)
+        const rawexpr = typeof ec === 'object' && (ec as any).expression ? String((ec as any).expression) : alias
+        if (!rawexpr) continue
+        const hasVar = [...optMatchVarNames].some(vn => rawexpr.includes(vn))
+        if (!hasVar) continue
+        for (const row of result) {
+          if (![...optMatchVarNames].some(vn => vn in row)) continue
+          // 构建 varCtx
           const varCtx: Record<string, unknown> = {}
           for (const [k, v] of Object.entries(row)) {
             if (!k.startsWith('_')) varCtx[k] = v
           }
-          // 添加 OPTIONAL MATCH 变量引用的节点数据（如果设置了）
           for (const vn of optMatchVarNames) {
-            if (vn in row) {
-              varCtx[vn] = row[vn]
+            if (vn in row) varCtx[vn] = row[vn]
+          }
+          // 检查 row[alias] 是否存在（由 _formatResultRow 设置）
+          if (!(alias in row)) continue
+          try {
+            const newVal = _evaluateExpression(rawexpr, varCtx)
+            if (newVal !== undefined && newVal !== null) {
+              row[alias] = newVal
             }
-          }
-          const newVal = _evaluateExpression(rawexpr, varCtx)
-          if (newVal !== undefined && newVal !== null) {
-            row[rc] = newVal
-          }
+          } catch (_e) { /* ignore evaluation error, keep original value */ }
         }
       }
     }
