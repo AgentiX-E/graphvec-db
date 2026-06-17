@@ -12,6 +12,41 @@ import {
   CypherListener,
 } from '@neo4j-cypher/antlr4'
 
+/**
+ * Splits a comma-separated list of values, handling nested brackets.
+ */
+function _splitListItems(s: string): string[] {
+  const items: string[] = []
+  let depth = 0
+  let current = ''
+  let inStr = false
+  let strChar = ''
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inStr) {
+      if (ch === strChar) inStr = false
+      current += ch
+    } else if (ch === "'" || ch === '"') {
+      inStr = true
+      strChar = ch
+      current += ch
+    } else if (ch === '[' || ch === '{') {
+      depth++
+      current += ch
+    } else if (ch === ']' || ch === '}') {
+      depth--
+      current += ch
+    } else if (ch === ',' && depth === 0) {
+      items.push(current.trim())
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  if (current.trim()) items.push(current.trim())
+  return items
+}
+
 // ═══════════════════════════════════════════════════════════════
 // QueryPlan 类型定义（与 query-engine.ts 接口兼容）
 // ═══════════════════════════════════════════════════════════════
@@ -1718,7 +1753,27 @@ function extractUnwind(unwindCtx: any): QueryPlan['unwind'] {
     try {
       list = JSON.parse(text)
     } catch {
-      list = text as any
+      // 如果 JSON.parse 失败（如使用单引号），手动解析列表
+      const inner = text.slice(1, -1).trim()
+      if (inner) {
+        // 先尝试用逗号分割，再去除引号和空格
+        const items = _splitListItems(inner)
+        list = items.map(item => {
+          const trimmed = item.trim()
+          if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+              (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+            return trimmed.slice(1, -1)
+          }
+          if (trimmed.toLowerCase() === 'true') return true
+          if (trimmed.toLowerCase() === 'false') return false
+          if (trimmed.toLowerCase() === 'null') return null
+          const num = Number(trimmed)
+          if (!isNaN(num)) return num
+          return trimmed
+        })
+      } else {
+        list = text as any
+      }
     }
   } else {
     // Variable reference

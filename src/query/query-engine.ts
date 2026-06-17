@@ -4446,6 +4446,17 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             varCtx[vn] = { ...row }
           }
         }
+        // 函数调用（如 toBoolean(s)）：提取函数参数中的变量名
+        const fnCallMatch = expr.match(/^\w+\((.+)\)$/)
+        if (fnCallMatch) {
+          const args = _parseCommaList(fnCallMatch[1])
+          for (const arg of args) {
+            const vn = arg.includes('.') ? arg.split('.')[0] : arg.trim()
+            if (vn && /^[a-zA-Z_]\w*$/.test(vn) && !(vn in varCtx)) {
+              varCtx[vn] = (row || {})[vn] !== undefined ? row![vn] : { ...row }
+            }
+          }
+        }
         // 如果 expr 是函数调用（如 coalesce(a.title, a.name)），通过提取所有 . 之前的标识符
         // 来找到变量名；如果 expr 是纯变量名（"a"）或属性访问（"a.name"），直接提取
         const varNameMatches = expr.match(/(\b[a-zA-Z_]\w*)\s*\./g)
@@ -4456,7 +4467,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
               varCtx[vn] = { ...row }
             }
           }
-        } else if (!labelPredMatch) {
+        } else if (!labelPredMatch && !fnCallMatch) {
           const varName = expr.includes('.') ? expr.split('.')[0] : expr
           if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx)) {
             varCtx[varName] = { ...row }
@@ -5057,19 +5068,24 @@ function _compileWherePatternPredicates(whereBody: string): string {
       const patternId = `_pe_${counter++}`
       let direction = 'out'
       let edgeContent = ''
-      if (alt1) {
-        // <-...- 模式（入边）
+      // 检测哪个 alternative 匹配了：alt1 是完整箭头文本
+      if (alt1 && alt1.startsWith('<-')) {
+        // alternative 1: <-...- 模式（入边）
         direction = 'in'
-        if (alt1.startsWith('<-')) {
-          edgeContent = alt1.startsWith('<-') ? (alt1.match(/\[([^\]]*)\]/)?.[1] || '') : ''
-        }
-      } else {
-        // -[...]-> 或 -[...]- 模式
-        direction = /\->/.test(dir || '') ? 'out' : /<-/.test(dir || '') ? 'in' : 'out'
+        edgeContent = alt1.match(/\[([^\]]*)\]/)?.[1] || ''
+      } else if (alt1 && alt1.startsWith('--')) {
+        // alternative 3: -- 模式（无向无括号）
+        direction = 'out'
+        edgeContent = ''
+      } else if (alt1 && alt1.startsWith('-[')) {
+        // alternative 2: -[...]-> 或 -[...]- 模式
+        if (/\->/.test(dir || '')) direction = 'out'
+        else if (/<-/.test(dir || '')) direction = 'in'
+        else direction = 'out' // -[...]- without arrow = undirected but we map to out
         edgeContent = label2 || ''
-      }
-      if (!alt1 && !edgeContent && dir && dir.includes('<-')) {
-        direction = 'in'
+      } else {
+        direction = 'out'
+        edgeContent = label2 || ''
       }
       // 提取标签和变长标记
       const labelMatch = edgeContent.match(/^:(\w+)/)
@@ -5939,7 +5955,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     }
     const v = _evalBinary(a, r)
     if (typeof v === 'string') {
-      // Remove surrounding quotes if present
       let str = v
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1)
       // Validate YYYY-MM-DD format and return as-is
@@ -6016,38 +6031,50 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (!a) return 'PT0S'
     const v = _evalBinary(a, r)
     if (v && typeof v === 'object') {
-      const map = v as Record<string, number>
+      const map = v as Record<string, unknown>
       // Cypher duration components: years, months, days, hours, minutes, seconds, nanoseconds
-      let years = map.years ?? map.year ?? 0
-      let months = map.months ?? map.month ?? 0
-      let days = map.days ?? map.day ?? 0
-      let hours = map.hours ?? map.hour ?? 0
-      let minutes = map.minutes ?? map.minute ?? 0
-      let seconds = map.seconds ?? map.second ?? 0
+      function _num(k: string): number { const v = map[k]; return v != null ? Number(v) : 0 }
+      let years = _num('years') || _num('year')
+      let months = _num('months') || _num('month')
+      let days = _num('days') || _num('day')
+      let hours = _num('hours') || _num('hour')
+      let minutes = _num('minutes') || _num('minute')
+      let seconds = _num('seconds') || _num('second')
       let nanos = _resolveNanoseconds(map)
-      // 处理 minutes 的分数部分：1.5min = 1min + 30s
+      // 处理各字段的分数部分，逐步向下分解
+      if (hours % 1 !== 0) {
+        const f = hours - Math.floor(hours)
+        minutes += f * 60
+        hours = Math.floor(hours)
+      }
       if (minutes % 1 !== 0) {
-        const fractionalMin = minutes - Math.floor(minutes)
-        seconds += fractionalMin * 60
+        const f = minutes - Math.floor(minutes)
+        seconds += f * 60
         minutes = Math.floor(minutes)
       }
-      // 处理 seconds 的分数部分：91.5s = 1min + 31.5s
       if (seconds % 1 !== 0) {
-        const fractionalSec = seconds - Math.floor(seconds)
-        nanos += Math.round(fractionalSec * 1e9)
+        const f = seconds - Math.floor(seconds)
+        nanos += Math.round(f * 1e9)
         seconds = Math.floor(seconds)
       }
-      // 进一：seconds >= 60 → 进到 minutes
-      if (seconds >= 60) {
-        minutes += Math.floor(seconds / 60)
-        seconds = seconds % 60
-      }
-      // 进一：nanos >= 1e9 → 进到 seconds
+      // 进一
       if (nanos >= 1e9) {
         seconds += Math.floor(nanos / 1e9)
         nanos = nanos % 1e9
       }
-      // 对齐纳秒的格式：去掉末尾多余的0
+      if (seconds >= 60) {
+        minutes += Math.floor(seconds / 60)
+        seconds = seconds % 60
+      }
+      if (minutes >= 60) {
+        hours += Math.floor(minutes / 60)
+        minutes = minutes % 60
+      }
+      if (hours >= 24) {
+        days += Math.floor(hours / 24)
+        hours = hours % 24
+      }
+      // 格式化纳秒
       let nanosFormatted = ''
       if (nanos > 0) {
         let nsStr = String(nanos).padStart(9, '0')
@@ -6073,10 +6100,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
 }
 
 /** 从 map 中解析纳秒值，考虑 nanosecond, microsecond, millisecond 字段的组合 */
-function _resolveNanoseconds(map: Record<string, number>): number {
-  const ms = map.millisecond != null ? Math.round(map.millisecond * 1000000) : 0
-  const us = map.microsecond != null ? Math.round(map.microsecond * 1000) : 0
-  const ns = map.nanosecond != null ? map.nanosecond : 0
+function _resolveNanoseconds(map: Record<string, unknown>): number {
+  const ms = map.millisecond != null ? Math.round(Number(map.millisecond) * 1000000) : 0
+  const us = map.microsecond != null ? Math.round(Number(map.microsecond) * 1000) : 0
+  const ns = map.nanosecond != null ? Number(map.nanosecond) : 0
   return ms + us + ns
 }
 
@@ -6102,19 +6129,19 @@ function _formatTime(hour: number, minute: number, second: number, nanosecond: n
 }
 
 /** 从 map 中提取时间组件 */
-function _extractTimeMap(map: Record<string, number>): { hour: number; minute: number; second: number; nanosecond: number } {
-  const hour = map.hour ?? 0
-  const minute = map.minute ?? 0
-  const second = map.second ?? 0
+function _extractTimeMap(map: Record<string, unknown>): { hour: number; minute: number; second: number; nanosecond: number } {
+  const hour = map.hour != null ? Number(map.hour) : 0
+  const minute = map.minute != null ? Number(map.minute) : 0
+  const second = map.second != null ? Number(map.second) : 0
   const nanosecond = _resolveNanoseconds(map)
   return { hour, minute, second, nanosecond }
 }
 
 /** 从 map 中提取日期组件并构造日期字符串 */
-function _formatDate(map: Record<string, number>): string {
-  const year = map.year ?? 0
-  const month = map.month ?? 1
-  const day = map.day ?? 1
+function _formatDate(map: Record<string, unknown>): string {
+  const year = map.year != null ? Number(map.year) : 0
+  const month = map.month != null ? Number(map.month) : 1
+  const day = map.day != null ? Number(map.day) : 1
   return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
@@ -6127,6 +6154,23 @@ function _formatTimezone(tz: string): string {
   return tz
 }
 
+/** 获取日期的 ISO 周年份（ISO week-year） */
+function _isoYear(d: Date): number {
+  // ISO week-year = the year containing Jan 4 of the ISO week containing d
+  // = getUTCFullYear of the Thursday of that week
+  // Thursday = d + (4 - 1 - d.getUTCDay())%7 ... simplified: add 3 - ((getUTCDay()+6)%7)
+  const temp = new Date(d.valueOf())
+  temp.setUTCDate(temp.getUTCDate() + 3 - ((temp.getUTCDay() + 6) % 7))
+  return temp.getUTCFullYear()
+}
+
+/** ISO week 1 的周一 */
+function _isoWeek1Monday(year: number): Date {
+  const jan4 = new Date(Date.UTC(year, 0, 4))
+  const d = jan4.getUTCDay() === 0 ? 7 : jan4.getUTCDay()
+  return new Date(Date.UTC(year, 0, 4 - d + 1))
+}
+
 /** 从 week/week 相关的 map 构建 Date 对象 */
 function _resolveDateFromMap(map: Record<string, unknown>): Date {
   // 先处理 date 属性（可能是字符串或另一个 date() 调用的结果）
@@ -6135,7 +6179,6 @@ function _resolveDateFromMap(map: Record<string, unknown>): Date {
     if (typeof map.date === 'string') {
       baseStr = map.date
     } else {
-      // date 属性可能来自嵌套函数，不是纯字符串
       baseStr = String(map.date)
     }
     // 解析 date 字符串为年月日
@@ -6144,30 +6187,19 @@ function _resolveDateFromMap(map: Record<string, unknown>): Date {
       const year = Number(parts[0])
       const month = Number(parts[1])
       const day = Number(parts[2])
-      // 从日期开始，然后 week 覆盖周数，dayOfWeek 覆盖星期几
-      if (map.week != null) {
-        // 找到该日期的 ISO 周信息，然后调整到指定周
-        const d = new Date(Date.UTC(year, month - 1, day))
-        const jan4 = new Date(Date.UTC(d.getUTCFullYear(), 0, 4))
-        const jan4Day = jan4.getUTCDay() || 7
-        const week1Monday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4 - jan4Day + 1))
-        // 当前日期在这一年的周数
-        const diffMs = d.valueOf() - week1Monday.valueOf()
-        const currentWeek = Math.floor(diffMs / (7 * 86400000)) + 1
-        // 根据 date 所在年和周，调整到目标周
+      const baseDate = new Date(Date.UTC(year, month - 1, day))
+      if (map.week != null || map.dayOfWeek != null) {
+        // 使用 ISO 周年来确定周所在的年份
+        const y = _isoYear(baseDate)
+        const w1Mon = _isoWeek1Monday(y)
+        // 默认 dayOfWeek = Monday (1) 除非有 date 的 dayOfWeek
+        const dow = typeof map.dayOfWeek === 'number' ? map.dayOfWeek : (map.dayOfWeek != null ? Number(map.dayOfWeek) : 1)
         const targetWeek = typeof map.week === 'number' ? map.week : Number(map.week)
-        const weekDiff = targetWeek - currentWeek
-        const adjusted = new Date(d)
-        adjusted.setUTCDate(d.getUTCDate() + weekDiff * 7)
-        // 如果有 dayOfWeek，调整到指定星期几
-        if (typeof map.dayOfWeek === 'number') {
-          const curDay = adjusted.getUTCDay() || 7
-          const targetDay = map.dayOfWeek
-          adjusted.setUTCDate(adjusted.getUTCDate() + (targetDay - curDay))
-        }
+        const adjusted = new Date(w1Mon)
+        adjusted.setUTCDate(w1Mon.getUTCDate() + (targetWeek - 1) * 7 + dow - 1)
         return adjusted
       }
-      return new Date(Date.UTC(year, month - 1, day))
+      return baseDate
     }
   }
 
@@ -6175,13 +6207,11 @@ function _resolveDateFromMap(map: Record<string, unknown>): Date {
   const year = yearNum
 
   if (map.week != null) {
-    const jan4 = new Date(Date.UTC(year, 0, 4))
-    const dayOfWeek = jan4.getUTCDay() === 0 ? 7 : jan4.getUTCDay()
-    const week1Start = new Date(Date.UTC(year, 0, 4 - dayOfWeek + 1))
+    const w1Mon = _isoWeek1Monday(year)
     const dayOfWeekTarget = typeof map.dayOfWeek === 'number' ? map.dayOfWeek : (map.dayOfWeek != null ? Number(map.dayOfWeek) : 1)
     const daysToAdd = (Number(map.week) - 1) * 7 + dayOfWeekTarget - 1
-    const result = new Date(week1Start)
-    result.setUTCDate(week1Start.getUTCDate() + daysToAdd)
+    const result = new Date(w1Mon)
+    result.setUTCDate(w1Mon.getUTCDate() + daysToAdd)
     return result
   }
   let month = typeof map.month === 'number' ? map.month : (map.month != null ? Number(map.month) : 1)
