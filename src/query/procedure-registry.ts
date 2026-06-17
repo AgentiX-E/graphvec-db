@@ -105,7 +105,17 @@ export class ProcedureRegistry {
 }
 
 // ── 全局单例 ──────────────────────────────────────────────
-const globalRegistry = new ProcedureRegistry()
+// 使用 globalThis 确保跨模块/跨加载上下文共享同一实例
+const GLOBAL_REGISTRY_KEY = '__CYPHER_PROCEDURE_REGISTRY__'
+function getGlobalRegistry(): ProcedureRegistry {
+  if ((globalThis as any)[GLOBAL_REGISTRY_KEY]) {
+    return (globalThis as any)[GLOBAL_REGISTRY_KEY] as ProcedureRegistry
+  }
+  const registry = new ProcedureRegistry()
+  ;(globalThis as any)[GLOBAL_REGISTRY_KEY] = registry
+  return registry
+}
+const globalRegistry = getGlobalRegistry()
 
 // ── 辅助函数 ──────────────────────────────────────────────
 

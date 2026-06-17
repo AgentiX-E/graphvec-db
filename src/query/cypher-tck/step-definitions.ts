@@ -779,27 +779,31 @@ Given('parameters are:', function (dt: any) {
     }
   }
 })
-Given(/^there exists a procedure .*$/, function (this: any) {
+Given(/^there exists a procedure .*$/, function (this: any, dt?: DataTable) {
+  console.error('📝 Given there exists a procedure called')
   // 解析 Gherkin 步骤文本获取 procedure 名称和签名
   // 步骤格式: "there exists a procedure <name>(<params>) :: (<returns>):"
   // data table 包含示例输入/输出行（可选，可能为空 | 单独一行）
   const text = this.getStep ? this.getStep().text || '' : ''
+  console.error('📝 Step text:', text)
   const match = text.match(/there exists a procedure\s+(\S+)\(([^)]*)\)\s*::\s*\(([^)]*)\)/)
   if (!match) {
     // 宽松匹配：只拿名字
     const nameMatch = text.match(/there exists a procedure\s+(\S+)/)
     if (!nameMatch) return
     const procName = nameMatch[1].toLowerCase()
+    console.error('📝 Registering (loose):', procName)
     _globalProcedureRegistry.register({ name: procName, signature: '', execute: () => [] })
+    console.error('📝 After register, get:', _globalProcedureRegistry.get(procName))
     return
   }
   const procName = match[1].toLowerCase()
+  console.error('📝 Registering:', procName, 'params:', match[2], 'returns:', match[3])
   const paramsSig = match[2].trim()
   const returnsSig = match[3].trim()
 
   // 获取 data table（如果有）
   let dataTable: any[] = []
-  const dt: DataTable | undefined = this.getDataTable && this.getDataTable()
   if (dt && dt.rows && dt.rows.length) {
     const rawRows = dt.rows()
     // 第一行是表头（参数列名）
@@ -920,6 +924,13 @@ Then(/^a (ConstraintError|CreateConstraintFailure) should be raised(?:.*)$/, fun
 })
 Then(/^a ArgumentError should be raised at runtime(?:.*)$/, function () {
   assert.ok(st.err, `no ArgumentError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
+})
+Then(/^a ProcedureError should be raised at compile time: ProcedureNotFound$/, function () {
+  // procedure not found – we expect compile-time error
+  assert.ok(st.err || st.compileError, `no ProcedureError\nQuery: ${st.q}`)
+})
+Then(/^a ParameterMissing should be raised at compile time: MissingParameter$/, function () {
+  assert.ok(st.err || st.compileError, `no ParameterMissing\nQuery: ${st.q}`)
 })
 Then('no side effects', function () {})
 Then(/^the side effects should be:\s*$/, function (_dt: DataTable) {})

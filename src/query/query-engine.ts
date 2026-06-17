@@ -888,24 +888,55 @@ export function parseQuery(query: string): QueryPlan {
     }
   }
 
-  // ── 多标签修复（AST 标签提取只取第一个，用 query 文本补全） ──
+  // ── 多标签修复 ──
+  // AST 只取第一个标签作为 scanLabel（如 :A:B → scanLabel='A'），
+  // _fixScanLabel 可能因 regex 匹配多标签而清空 scanLabel。
+  // 此处从 query 文本检测多标签并重建 scanLabel + labelExpr。
   const qText = query.trim()
-  // 修复 scanLabel（MATCH 的多标签）
-  if (plan.scanLabel && plan.hasMatch) {
+  if (plan.hasMatch) {
     const nodePatterns = qText.match(/\([^)]+\)/g) || []
-    for (const np of nodePatterns) {
-      const inner = np.slice(1, -1).trim()
-      const colIdx = inner.indexOf(':')
-      if (colIdx === -1) continue
-      let labelPart = inner.substring(colIdx + 1)
-      const braceIdx = labelPart.indexOf('{')
-      if (braceIdx >= 0) labelPart = labelPart.substring(0, braceIdx).trim()
-      const labels = labelPart.split(':').map(s => s.trim()).filter(Boolean)
-      if (labels.length > 1 && labels[0] === plan.scanLabel) {
-        // 填充 labelExpr（用于 engine 二次过滤），但 scanLabel 保留第一个标签
-        // （GE 用单标签扫描后再用 labelExpr AND 过滤）
-        plan.labelExpr = { type: 'LABEL_EXPR', items: labels.map(l => ({ exclude: false, name: l })) }
-        break
+    // 优先使用 scanLabel 未清空时的路径
+    let multiLabelFound = false
+    if (plan.scanLabel) {
+      for (const np of nodePatterns) {
+        const inner = np.slice(1, -1).trim()
+        const colIdx = inner.indexOf(':')
+        if (colIdx === -1) continue
+        let labelPart = inner.substring(colIdx + 1)
+        const braceIdx = labelPart.indexOf('{')
+        if (braceIdx >= 0) labelPart = labelPart.substring(0, braceIdx).trim()
+        const labels = labelPart.split(':').map(s => s.trim()).filter(Boolean)
+        if (labels.length > 1 && labels[0] === plan.scanLabel) {
+          // 填充 labelExpr（用于 engine 二次过滤），但 scanLabel 保留第一个标签
+          // （GE 用单标签扫描后再用 labelExpr AND 过滤）
+          plan.labelExpr = { type: 'LABEL_EXPR', items: labels.map(l => ({ exclude: false, name: l })) }
+          multiLabelFound = true
+          break
+        }
+      }
+    }
+    // 如果 scanLabel 被清空但仍有多标签，从 query 恢复
+    if (!multiLabelFound && !plan.labelExpr) {
+      for (const np of nodePatterns) {
+        const inner = np.slice(1, -1).trim()
+        const colIdx = inner.indexOf(':')
+        if (colIdx === -1) continue
+        // 检查变量名（冒号前的部分）
+        const varPart = inner.substring(0, colIdx).trim()
+        let labelPart = inner.substring(colIdx + 1)
+        const braceIdx = labelPart.indexOf('{')
+        if (braceIdx >= 0) labelPart = labelPart.substring(0, braceIdx).trim()
+        const labels = labelPart.split(':').map(s => s.trim()).filter(Boolean)
+        if (labels.length > 1) {
+          // 恢复 scanLabel 为第一个标签，设置 labelExpr
+          plan.scanLabel = labels[0]
+          plan.labelExpr = { type: 'LABEL_EXPR', items: labels.map(l => ({ exclude: false, name: l })) }
+          // 确保 scanLabel 不是变量名（仅在 steps 为空时指向标签）
+          if (!plan.steps?.length) {
+            // 保留 scanLabel
+          }
+          break
+        }
       }
     }
   }
@@ -2241,8 +2272,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         }] as any
       }
       default: {
+        console.error('🔍 Looking up procedure:', name)
         // 查询 procedure registry（支持 db.* 以外的自定义 procedure）
         const proc = _procedureRegistry.get(name)
+        console.error('🔍 Found:', proc ? proc.name : 'undefined')
+        console.error('🔍 Registry has test.doNothing:', _procedureRegistry.get('test.doNothing'))
+        console.error('🔍 All procedures:', _procedureRegistry.list().map(p => p.name))
         if (proc) {
           const ctx: import('./procedure-registry').ProcedureContext = {
             getAllNodes: () => nodes,
@@ -2527,7 +2562,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       }
     }
     if (plan.createNodes?.length) {
+      // 构建 MATCH 变量集合，用于判断 createNode 是否只是引用已匹配节点
+      const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
       for (const cn of plan.createNodes) {
+        // 跳过仅引用已匹配节点的 createNode（无 label 无 props，且变量名已存在 MATCH 中）
+        if (cn.alias && matchVars.has(cn.alias) && !cn.label && (!cn.props || !Object.keys(cn.props).length)) {
+          // 不创建新节点，但保留 _alias 引用
+          continue
+        }
         const props: Record<string, unknown> = { _label: cn.label || 'Default' }
         if (cn.props) { for (const [k, v] of Object.entries(cn.props)) {
           props[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
@@ -2855,12 +2897,59 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       }
     }
 
-    // ── CREATE 边（从 createEdges 创建 GE 关系） ──
+    // ── CREATE 边（从 createEdges 创建 GE 关系 + __edges 内存记录） ──
     if (plan.createEdges?.length && nodeGeIds.length >= 1) {
       for (const edge of plan.createEdges) {
-        // 通过 alias 或 sourceIdx/targetIdx 查找对应的节点索引
-        let srcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : (plan.createNodes || []).findIndex(cn => cn.alias === edge.source)
-        let dstIdx = edge.targetIdx !== undefined ? edge.targetIdx : (plan.createNodes || []).findIndex(cn => cn.alias === edge.target)
+        // 查找源/目标节点在 allNodes 中的实际索引
+        // 先尝试从 edge.sourceIdx/targetIdx 映射（这些是 createNodes 中的索引）
+        // 如果 createNodes[idx].alias 对应的是 MATCH 变量，需要找到 allNodes 中对应节点
+        // 如果 createNodes[idx].label 为空且 props 为空，说明这是 MATCH 变量的引用
+        let srcIdx = -1;
+        let dstIdx = -1;
+
+        // 映射 source
+        const cnSrcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : -1
+        if (cnSrcIdx >= 0 && cnSrcIdx < (plan.createNodes || []).length) {
+          const cnSrc = plan.createNodes![cnSrcIdx]
+          // 如果 createNode 无 label 无 props，可能是 MATCH 变量引用 → 在 allNodes 中找 _alias
+          if (!cnSrc.label && (!cnSrc.props || !Object.keys(cnSrc.props).length) && cnSrc.alias) {
+            srcIdx = allNodes.findIndex(n => n._alias === cnSrc.alias)
+          } else {
+            // 新创建的节点：createNodes 在 allNodes 末尾，偏移量 = nodes.length + 已分配的 create 节点
+            srcIdx = cnSrcIdx
+          }
+        } else {
+          // 无 sourceIdx：通过 alias 搜索
+          if (edge.source) {
+            srcIdx = allNodes.findIndex(n => n._alias === edge.source)
+            if (srcIdx < 0) srcIdx = (plan.createNodes || []).findIndex(cn => cn.alias === edge.source)
+          }
+        }
+
+        // 映射 target
+        const cnDstIdx = edge.targetIdx !== undefined ? edge.targetIdx : -1
+        if (cnDstIdx >= 0 && cnDstIdx < (plan.createNodes || []).length) {
+          const cnDst = plan.createNodes![cnDstIdx]
+          if (!cnDst.label && (!cnDst.props || !Object.keys(cnDst.props).length) && cnDst.alias) {
+            dstIdx = allNodes.findIndex(n => n._alias === cnDst.alias)
+          } else {
+            dstIdx = cnDstIdx
+          }
+        } else {
+          if (edge.target) {
+            dstIdx = allNodes.findIndex(n => n._alias === edge.target)
+            if (dstIdx < 0) dstIdx = (plan.createNodes || []).findIndex(cn => cn.alias === edge.target)
+          }
+        }
+
+        // 回退：通过 alias 名直接查找
+        if (srcIdx < 0 && edge.source) {
+          srcIdx = allNodes.findIndex(n => n._alias === edge.source)
+        }
+        if (dstIdx < 0 && edge.target) {
+          dstIdx = allNodes.findIndex(n => n._alias === edge.target)
+        }
+
         if (srcIdx >= 0 && dstIdx >= 0 && srcIdx < nodeGeIds.length && dstIdx < nodeGeIds.length) {
           const srcId = nodeGeIds[srcIdx]
           const dstId = nodeGeIds[dstIdx]
@@ -2868,6 +2957,16 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             // 使用 GE 的 _resolveEdgeType 获取统一的 typeId
             const typeId = (ge as any)._resolveEdgeType(edge.label || '')
             try { (ge as any).storage.upsertEdge(srcId, dstId, typeId) } catch {}
+
+            // 将边添加到 __edges 内存记录
+            for (const n of allNodes) {
+              if (!(n as any).__edges) (n as any).__edges = []
+            }
+            const edgeLabel = edge.label || ''
+            // 在 src 节点的 __edges 中添加出边
+            (allNodes[srcIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
+            // 在 dst 节点的 __edges 中添加入边
+            (allNodes[dstIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
           }
         }
       }
@@ -3561,65 +3660,103 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       }
     }
 
-    // ── 单变量无边 MATCH 处理（无 crossVarFilters 时） ──
+    // ── 单/多变量无边 MATCH 处理（无 crossVarFilters 时） ──
     // 当 crossVarFilters.length === 0 且 plan.steps?.length === 0 且 plan.hasMatch 时，
     // 上面的 crossVarFilters 分支不执行，filteredWithLabels 仍为 records。
     // 此处用 filteredRecords 重新构建正确格式的结果行。
+    // 支持多个 MATCH 变量（如 MATCH (n), (m) → 笛卡尔积）和单变量 MATCH。
     if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && filteredRecords?.length) {
       const varLabelMap2: Record<string, string> = {}
       if (query) {
         const matchClauses = query.matchAll(/MATCH\s*\((\w+)\s*:\s*(\w+)\)/g)
         for (const mc of matchClauses) varLabelMap2[mc[1]] = mc[2]
       }
-      // 从 MATCH 变量中获取单变量名（支持有/无 label 两种写法），而非从 returnColumns
+      // 从 MATCH 变量中提取所有变量名（支持有/无 label/有内联属性三种写法）
       let matchVarKeys2 = Object.keys(varLabelMap2)
       if (!matchVarKeys2.length && query) {
+        // 匹配所有 MATCH 中的节点变量： (n), (m), (a:Label), (b {prop})
+        const allMatchVars: string[] = [];
+        const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis);
+        for (const mc of matchClauses) {
+          const clause = mc[1];
+          const vars = [...clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)].map(x => x[1]).filter(Boolean);
+          allMatchVars.push(...vars);
+        }
+        matchVarKeys2 = [...new Set(allMatchVars)];
+      }
+      if (matchVarKeys2.length === 0 && query) {
         const anyMatchClause = query.match(/MATCH\s*\((\w+)/)
         if (anyMatchClause) matchVarKeys2 = [anyMatchClause[1]]
       }
-      if (matchVarKeys2.length === 1) {
-        const singleVar2 = matchVarKeys2[0]
-        const targetLabel2 = varLabelMap2[singleVar2]
-        // 原始 filteredRecords 已是 GE 返回的节点，格式 {id, props, type, name}
-        // 将其转换为 _formatResultRow 可用的格式
-        const formattedRows: any[] = []
-        for (const rec of filteredRecords) {
-          const nodeProps = rec.props || rec
-          if (targetLabel2 && String(nodeProps._label) !== targetLabel2) continue
-          // 应用 plan.filters 过滤（支持 negated: true）
-          const filterMatch = (plan.filters || []).every((f: any) => {
-            if (f.source && f.source !== singleVar2) return true
-            if (f.property && !(f.property in nodeProps)) return false
-            const actualVal = nodeProps[f.property]
-            const fv = f.value
-            // 先计算 filter 结果，再应用 negated
-            let baseResult = false
-            switch (f.operator) {
-              case 'EQ':   baseResult = actualVal === fv; break
-              case 'NEQ':  baseResult = actualVal !== fv; break
-              case 'GT':   baseResult = actualVal > fv; break
-              case 'GTE':  baseResult = actualVal >= fv; break
-              case 'LT':   baseResult = actualVal < fv; break
-              case 'LTE':  baseResult = actualVal <= fv; break
-              case 'IS_NULL':     baseResult = actualVal == null; break
-              case 'IS_NOT_NULL': baseResult = actualVal != null; break
-              case 'STARTS_WITH': baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break
-              case 'ENDS_WITH':   baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv); break
-              case 'CONTAINS':    baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break
-              default:            baseResult = actualVal === fv; break
-            }
-            return (f as any).negated ? !baseResult : baseResult
-          })
-          if (!filterMatch) continue
-          formattedRows.push({
-            id: rec.id || -1,
-            props: nodeProps,
-            type: rec.type || nodeProps._label || 'Default',
-            name: rec.name || '',
-            __crossVarRows: { [singleVar2]: nodeProps },
-          })
+      if (matchVarKeys2.length >= 1) {
+        // 为每个变量分配节点列表（按标签筛选）
+        const varNodeMap2: Record<string, Array<{ node: Record<string, unknown>; idx: number }>> = {}
+        for (const varName of matchVarKeys2) {
+          const targetLabel2 = varLabelMap2[varName]
+          varNodeMap2[varName] = filteredRecords
+            .map((rec: any, idx: number) => {
+              const nodeProps = rec.props || rec;
+              return { node: nodeProps, idx };
+            })
+            .filter(({ node }: { node: Record<string, unknown> }) => {
+              if (!targetLabel2) return true;
+              return String(node._label) === targetLabel2;
+            })
+            // 应用 plan.filters 过滤
+            .filter(({ node }: { node: Record<string, unknown> }) => {
+              return (plan.filters || []).every((f: any) => {
+                if (f.source && f.source !== varName) return true;
+                const actualVal = node[f.property as string];
+                if (f.property && actualVal === undefined) return false;
+                const fv = f.value;
+                let baseResult = false;
+                switch (f.operator) {
+                  case 'EQ':   baseResult = actualVal === fv; break;
+                  case 'NEQ':  baseResult = actualVal !== fv; break;
+                  case 'GT':   baseResult = Number(actualVal) > Number(fv); break;
+                  case 'GTE':  baseResult = Number(actualVal) >= Number(fv); break;
+                  case 'LT':   baseResult = Number(actualVal) < Number(fv); break;
+                  case 'LTE':  baseResult = Number(actualVal) <= Number(fv); break;
+                  case 'IS_NULL':     baseResult = actualVal == null; break;
+                  case 'IS_NOT_NULL': baseResult = actualVal != null; break;
+                  default:            baseResult = String(actualVal) === String(fv); break;
+                }
+                return (f as any).negated ? !baseResult : baseResult;
+              });
+            });
         }
-        filteredWithLabels = formattedRows
+        const formattedRows: any[] = []
+        if (matchVarKeys2.length >= 2) {
+          // 多变量：生成笛卡尔积（无 WHERE 条件时不限制 self-join）
+          const _cartesian = (idx: number, current: Record<string, { node: Record<string, unknown>; idx: number }>): void => {
+            if (idx >= matchVarKeys2.length) {
+              const firstVar = matchVarKeys2[0];
+              const row: any = { id: -1, props: current[firstVar].node, type: '', name: '', __crossVarRows: {} };
+              for (const vn of matchVarKeys2) row.__crossVarRows[vn] = current[vn].node;
+              formattedRows.push(row);
+              return;
+            }
+            const varName = matchVarKeys2[idx];
+            for (const entry of varNodeMap2[varName]) {
+              current[varName] = entry;
+              _cartesian(idx + 1, current);
+            }
+          };
+          _cartesian(0, {});
+        } else {
+          // 单变量 MATCH
+          const singleVar = matchVarKeys2[0];
+          for (const entry of varNodeMap2[singleVar]) {
+            formattedRows.push({
+              id: -1,
+              props: entry.node,
+              type: entry.node._label || 'Default',
+              name: '',
+              __crossVarRows: { [singleVar]: entry.node },
+            });
+          }
+        }
+        filteredWithLabels = formattedRows;
       }
     }
 
@@ -3773,6 +3910,24 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // Safety: ensure rawWithEdges is always an array
     if (!Array.isArray(rawWithEdges)) rawWithEdges = edgePropFilteredRecords
+
+    // ── 边属性列后处理 ──
+    // 对 `RETURN r.num` 这样的边属性访问，从 edgesPayload 查找边属性并设置到行记录
+    if (edgesPayload.length && rawWithEdges.length && (query || '').match(/\w+\.\w+/)) {
+      // 从 query 中提取可能的边属性访问列
+      const potentialEdgePropCols = extractEdgePropColumnsFromQuery(query || '')
+      if (potentialEdgePropCols.length) {
+        for (const rawRec of rawWithEdges) {
+          const nodeIdx = nodeGeIds.indexOf(rawRec.id)
+          if (nodeIdx < 0) continue
+          const matchingEdge = edgesPayload.find(e => (e.dstIdx === nodeIdx || e.srcIdx === nodeIdx) && e.props && Object.keys(e.props).length > 0)
+          if (matchingEdge?.props) {
+            if (!rawRec.__edgeProps) rawRec.__edgeProps = {}
+            Object.assign(rawRec.__edgeProps, matchingEdge.props)
+          }
+        }
+      }
+    }
 
     // ── 格式化结果 ──
     const result: QueryRow[] = rawWithEdges.map((r: any) => {
@@ -4507,27 +4662,41 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
 
   // ── SyntaxError: VariableAlreadyBound ──
   // 1. MATCH (n) CREATE (n:Person) — n 已在 MATCH 中绑定
+  // 注意：MATCH (x:X), (y:Y) CREATE (x)-[:R]->(y) 是合法的，x/y 在 createNodes 中
+  // 仅当 createNode 有 label 或 props（即试图重新定义节点）时才视为 VariableAlreadyBound
   if (plan.hasMatch && plan.createNodes?.length) {
     const matchVars = extractMatchVariables(query)
     for (const cn of plan.createNodes) {
       if (cn.alias && matchVars.includes(cn.alias)) {
-        throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+        // 如果 createNode 有 label 或 props，说明是在定义新节点，则报错
+        // 如果 createNode 仅有 alias（label=null, props=null），说明只是引用已匹配节点，合法
+        if (cn.label || (cn.props && Object.keys(cn.props).length > 0)) {
+          throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+        }
       }
     }
   }
   // 2. CREATE (n:Foo) CREATE (n:Bar) — n 在同一语句中被绑定两次
   // 从 query 文本直接扫描所有 CREATE 中的变量
+  // 注意：CREATE (a) CREATE (a)-[:R]->(b) 中的 a 是引用已创建的变量，不是重新绑定
+  // 只有节点定义中的变量（出现在 (...) 内）才算绑定，边引用中的变量不算
   {
     const createVarCounts = new Map<string, number>()
     const createMatches = query.matchAll(/CREATE\b\s*(.*?)(?:\s+(?:CREATE|SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\b|$)/gis)
     for (const cm of createMatches) {
       const clause = cm[1]
-      const vars = extractVariablesFromClause(clause)
-      for (const v of vars) {
-        if (v) {
-          createVarCounts.set(v, (createVarCounts.get(v) || 0) + 1)
-          if (createVarCounts.get(v)! > 1) {
-            throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+      // 判断子句中是否有边缘模式（包含 -> <- 等方向标记）
+      const hasEdgePattern = /-->|<-|<--|->/.test(clause)
+      // 只有无边缘模式的子句中的节点变量才算绑定（CREATE (a) CREATE (b)）
+      // 有边缘模式的子句中的节点是引用（CREATE (a)-[:R]->(b)）
+      if (!hasEdgePattern) {
+        const nodeVars = [...clause.matchAll(/\((\w+)\s*(?::|\))/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v))
+        for (const v of [...new Set(nodeVars)]) {
+          if (v) {
+            createVarCounts.set(v, (createVarCounts.get(v) || 0) + 1)
+            if (createVarCounts.get(v)! > 1) {
+              throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+            }
           }
         }
       }
@@ -4707,6 +4876,46 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       }
     }
   }
+
+  // ── CREATE SyntaxError: NoSingleRelationshipType（CREATE 关系无类型） ──
+  // CREATE ()-->() — 关系没有指定类型
+  if (plan.createEdges?.length || (query?.toUpperCase().includes('CREATE') && query?.includes('-->'))) {
+    if (query) {
+      // CREATE ()-->() 或 CREATE (a)-[]->(b) — 无关系类型
+      const createClause = query.match(/CREATE\s+(.*?)(?:\s+(?:SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\s|$)/is)?.[1] || query
+      if (createClause) {
+        // 检测无类型关系：--> 或 -[]-> 或 <-[]-
+        const noTypePattern = /-->|<-\[|\]-/  // untyped direction markers
+        if (noTypePattern.test(createClause)) {
+          // 检查是否有类型标签
+          const typedEdge = /\[.*?[:|].*?\]/
+          if (!typedEdge.test(createClause)) {
+            throw Object.assign(new Error('SyntaxError: NoSingleRelationshipType'), { tckError: 'NoSingleRelationshipType' })
+          }
+        }
+        // 检测无方向关系：-[R]-
+        const noDirPattern = /\)\s*-\s*\[.*?\]\s*-\s*\(/
+        if (noDirPattern.test(createClause)) {
+          // 如果只有 -[R]- 没有 > 或 <，且没有变量绑定（MATCH 中无向边允许 CREATE 不允许）
+          if (!/>|<|->/.test(createClause)) {
+            throw Object.assign(new Error('SyntaxError: RequiresDirectedRelationship'), { tckError: 'RequiresDirectedRelationship' })
+          }
+        }
+        // 检测双向关系：<-[:R]->
+        if (/<-.*\[.*\]\s*->/.test(createClause)) {
+          throw Object.assign(new Error('SyntaxError: RequiresDirectedRelationship'), { tckError: 'RequiresDirectedRelationship' })
+        }
+        // 检测多类型：CREATE ()-[:A|:B]->()
+        if (/\[[^\]]*\|[^\]]*\]/.test(createClause)) {
+          throw Object.assign(new Error('SyntaxError: NoSingleRelationshipType'), { tckError: 'NoSingleRelationshipType' })
+        }
+        // 检测可变长度：CREATE ()-[:FOO*2]->()
+        if (/\*\d+/.test(createClause)) {
+          throw Object.assign(new Error('SyntaxError: CreatingVarLength'), { tckError: 'CreatingVarLength' })
+        }
+      }
+    }
+  }
 }
 
 /** 从 Cypher 查询中提取 MATCH 子句的字符串 */
@@ -4718,10 +4927,56 @@ function extractMatchClause(query: string): string {
 /** 检测 WHERE 子句中引用未定义变量（SyntaxError: UndefinedVariable） */
 function _validateUndefinedVariables(query: string): void {
   const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
-  if (!whereMatch) return
-  const whereBody = whereMatch[1]
   const matchVars = extractMatchVariables(query)
-  if (matchVars.length === 0) return
+  // 也提取 CREATE/MERGE 中的变量（节点和边变量）作为已定义变量
+  const createEdgeVars: string[] = [...query.matchAll(/\[(\w+)\s*(?::|])/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v))
+  const createNodeVars: string[] = [...query.matchAll(/CREATE\s+(.*?)(?:\s+(?:SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\b|$)/gis)].flatMap(cm => {
+    const clause = cm[1];
+    return [...clause.matchAll(/\((\w+)\s*(?::|\))/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v));
+  })
+  // 检查 RETURN 列中的未定义变量（如 MATCH () RETURN foo）
+  const returnMatch = query.match(/RETURN\s+(.+?)(?:\s+(?:ORDER\s+BY|SKIP|LIMIT)|$)/is)
+  if (returnMatch) {
+    const returnColStr = returnMatch[1]
+    // 扫描所有在 RETURN 中引用但未在 MATCH 中定义的变量
+    // 正则：a, b, foo — 以逗号/空格分隔的标识符
+    const returnIdents = returnColStr.match(/\b([a-zA-Z_]\w*)\b/g) || []
+    if (matchVars.length === 0 && returnIdents.some(v => !v.toUpperCase().startsWith('AS'))) {
+      for (const v of returnIdents) {
+        const vu = v.toUpperCase()
+        if (['AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
+            'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
+            'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
+            'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
+            'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
+            'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH',
+            'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
+            'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
+            'COUNT','SUM','AVG','MAX','MIN','COLLECT',
+            'STARTS','CONTAINS','ENDS'].includes(vu)) continue
+        // 对于属性路径（如 r.num），只检查变量部分（r）
+        const varPart = v.split('.')[0]
+        if (!varPart || /^[\d]/.test(varPart)) continue
+        // 也要排除聚合函数名
+        if (['count','sum','avg','max','min','collect','size','length','keys',
+            'coalesce','head','last','tail','reverse','range',
+            'tointeger','tofloat','tostring','trim','replace','substring',
+            'left','right','startswith','endswith','contains',
+            'and','or','xor','not','in','is','null','true','false',
+            'distinct','all', 'any', 'none', 'single',
+            'case', 'when', 'then', 'else', 'end'].includes(varPart.toLowerCase())) continue
+        // 检查是否在 MATCH、CREATE 边变量、CREATE 节点变量中定义
+        const allDefinedVars = [...matchVars, ...createEdgeVars, ...createNodeVars]
+        if (!allDefinedVars.includes(varPart)) {
+          // 额外检查：如果看起来是一个属性表达式（有小数点），跳过属性名部分
+          if (v.includes('.') && allDefinedVars.includes(v.split('.')[0])) continue
+          throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+        }
+      }
+    }
+  }
+  if (whereMatch && matchVars.length === 0) return
+  const whereBody = whereMatch ? whereMatch[1] : ''
   // 也提取 WITH 子句中定义的变量：WITH ... AS name
   const withVars: string[] = []
   // 方式1：从 WITH ... AS 提取
@@ -4777,6 +5032,31 @@ function _validateUndefinedVariables(query: string): void {
   }
 }
 
+/** 从查询文本中提取 RETURN 列中的边属性访问（如 r.num 表示边变量 r 的属性 num） */
+function extractEdgePropColumnsFromQuery(query: string): string[] {
+  const edgeVars: string[] = []
+  // 从 MATCH 子句中提取边变量
+  const matchClause = query.match(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/is)
+  if (matchClause) {
+    const edgeVarMatches = matchClause[1].matchAll(/\[(\w+)\s*(?::|\]|\))/g)
+    for (const m of edgeVarMatches) {
+      if (m[1] && !/^[\d]/.test(m[1])) edgeVars.push(m[1])
+    }
+  }
+  // 从 RETURN 列中提取 var.prop 模式
+  const returnMatch = query.match(/RETURN\s+(.+?)(?:\s+(?:ORDER\s+BY|SKIP|LIMIT)|$)/is)
+  if (!returnMatch) return []
+  const returnCols = returnMatch[1].split(',').map(s => s.trim())
+  const cols: string[] = []
+  for (const col of returnCols) {
+    const propMatch = col.match(/^(\w+)\.(\w+)$/)
+    if (propMatch && edgeVars.includes(propMatch[1])) {
+      cols.push(propMatch[1])
+    }
+  }
+  return cols
+}
+
 /** 从查询文本中提取所有 MATCH 中绑定的变量名 */
 function extractMatchVariables(query: string): string[] {
   const vars: string[] = []
@@ -4784,13 +5064,13 @@ function extractMatchVariables(query: string): string[] {
   const matches = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
   for (const m of matches) {
     const clause = m[1]
-    // 从 (n:Label) 或简单的 (n) 中提取变量名
-    const nodeVars = clause.matchAll(/\((\w+)\s*(?::|\))/g)
+    // 从 (n:Label), (n) 或 (n {prop: val}) 中提取变量名
+    const nodeVars = clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)
     for (const v of nodeVars) {
       if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
     }
-    // 从 <-[r]- 或 -[r]-> 中提取边变量
-    const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\))/g)
+    // 从 <-[r]- 或 -[r]-> 或 [r:T] 中提取边变量
+    const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
     for (const v of edgeVars) {
       if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
     }
@@ -4801,11 +5081,11 @@ function extractMatchVariables(query: string): string[] {
 /** 从查询文本中提取所有引用过的变量名 */
 function extractVariablesFromQuery(query: string): string[] {
   const vars: string[] = []
-  const allNodes = query.matchAll(/\((\w+)\s*(?::|\))/g)
+  const allNodes = query.matchAll(/\((\w+)\s*(?::|\)|{)/g)
   for (const v of allNodes) {
     if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
   }
-  const allEdges = query.matchAll(/\[(\w+)\s*(?::|\))/g)
+  const allEdges = query.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
   for (const v of allEdges) {
     if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
   }
@@ -4815,11 +5095,11 @@ function extractVariablesFromQuery(query: string): string[] {
 /** 从一段 Cypher 子句文本中提取变量名 */
 function extractVariablesFromClause(clause: string): string[] {
   const vars: string[] = []
-  const nodes = clause.matchAll(/\((\w+)\s*(?::|\))/g)
+  const nodes = clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)
   for (const v of nodes) {
     if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
   }
-  const edges = clause.matchAll(/\[(\w+)\s*(?::|\))/g)
+  const edges = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
   for (const v of edges) {
     if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
   }
@@ -5648,6 +5928,8 @@ function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
     if (t[i] === '+' && !_inBrackets(t, i) && !_inString(t, i) && !(i > 0 && 'eE'.includes(t[i - 1]))) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
+      // Cypher: null 参与算术 → 返回 null
+      if (left == null || right == null) return null
       // Cypher + 语义: list+list(拼接), list+scalar(追加), scalar+list(前置), number+number(加法), string+any(连接)
       if (Array.isArray(left) && Array.isArray(right)) return [...left, ...right]
       if (Array.isArray(left) && !Array.isArray(right)) return [...left, right]
@@ -5657,6 +5939,7 @@ function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
     if (t[i] === '-' && !_inBrackets(t, i) && !_inString(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1]) && !'eE'.includes(t[i - 1])) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
+      if (left == null || right == null) return null
       return Number(left) - Number(right)
     }
   }
@@ -5666,9 +5949,9 @@ function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
 function _evalMulDiv(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
-    if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); return Number(left) * Number(right) }
-    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); const nl = Number(left), nr = Number(right); return Number.isInteger(nl) && Number.isInteger(nr) ? Math.trunc(nl / nr) : nl / nr }
-    if (t[i] === '%' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); return Number(left) % Number(right) }
+    if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; return Number(left) * Number(right) }
+    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; const nl = Number(left), nr = Number(right); return Number.isInteger(nl) && Number.isInteger(nr) ? Math.trunc(nl / nr) : nl / nr }
+    if (t[i] === '%' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; return Number(left) % Number(right) }
   }
   return _evalExp(t, row)
 }
@@ -5681,6 +5964,7 @@ function _evalExp(s: string, row?: Record<string, unknown>): unknown {
     if (t[i] === '^' && !_inBrackets(t, i) && !_inString(t, i)) {
       const left = _evalExp(t.slice(0, i).trim(), row)
       const right = _evalUnary(t.slice(i + 1).trim(), row)
+      if (left == null || right == null) return null
       return Math.pow(Number(left), Number(right))
     }
   }
@@ -5691,10 +5975,12 @@ function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
   if (t.startsWith('-')) {
     const inner = _evalUnary(t.slice(1), row)
+    if (inner == null) return null
     return typeof inner === 'bigint' ? -inner : -Number(inner)
   }
   if (t.startsWith('+')) {
     const inner = _evalUnary(t.slice(1), row)
+    if (inner == null) return null
     return typeof inner === 'bigint' ? inner : Number(inner)
   }
   return _evalAtom(t, row)
