@@ -4286,7 +4286,42 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   const ret = plan.expressionColumns?.length
     ? plan.expressionColumns.map((ec: any) => (typeof ec === 'string' ? ec : ec.alias || ec.expression))
     : plan.returnColumns
-  if (!ret?.length || plan.aggregate) return row
+  if (!ret?.length || plan.aggregate) {
+    // RETURN *：返回所有在作用域内的变量
+    if (plan.type === 'QUERY' && !plan.aggregate) {
+      const result: QueryRow = {}
+      // 从 r 收集所有变量（包括 __targetPropsMap 中的中间变量等）
+      if (r.__targetPropsMap) {
+        for (const vn of Object.keys(r.__targetPropsMap)) {
+          const nodeData = r.__targetPropsMap[vn]
+          if (nodeData && typeof nodeData === 'object' && '_label' in nodeData) {
+            const label = (nodeData as any)._label
+            result[vn] = label ? `(${label.startsWith(':') ? label : ':' + label})` : '()'
+          } else if (nodeData && typeof nodeData === 'object' && '__edgeLabel' in nodeData) {
+            result[vn] = `<(${(nodeData as any).__edgeLabel || '??'})>`
+          }
+        }
+      }
+      // source 节点变量
+      const firstStepSource = plan.steps?.[0]?.source
+      if (firstStepSource && r.props && '_label' in (r.props || {})) {
+        const label = (r.props as any)._label
+        result[firstStepSource] = label ? `(${label.startsWith(':') ? label : ':' + label})` : '()'
+      }
+      // 如果以上都没填充但 row 有数据，尽量用 row
+      if (!Object.keys(result).length && r.props) {
+        const label = (r.props as any)._label
+        result['_k'] = label ? `(${label.startsWith(':') ? label : ':' + label})` : '()'
+      }
+      // 路径变量 p
+      if (plan.steps?.length) {
+        // TODO: 路径变量表示
+        result['p'] = '<path>'
+      }
+      if (Object.keys(result).length) return result
+    }
+    return row
+  }
 
   // expressionColumns 模式下从 ec map 找原始表达式
   const ecMap: Record<string, string> = {}
@@ -4554,6 +4589,22 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
 
     // 阶段 4: 检查 rc 在 allPropKeys 中——如果在但没匹配到，是 null property
     if (!allPropKeys.has(rc)) {
+      // 阶段 4b: 检查 createEdges 的属性（如 RETURN r.num AS num）
+      const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+      if (aliasMap && rc in aliasMap) {
+        const expr = aliasMap[rc]
+        const propPart = expr.includes('.') ? expr.split('.').pop()! : expr
+        const edgeVar = expr.includes('.') ? expr.split('.')[0] : ''
+        // 在 createEdges 中找匹配的边变量 alias 或序号
+        for (const edge of plan.createEdges || []) {
+          const edgeProps = edge.props as Record<string, unknown> | undefined
+          if (edgeProps && propPart in edgeProps) {
+            row[rc] = edgeProps[propPart]
+            break
+          }
+        }
+        if (rc in row) continue
+      }
       // rc 是纯别名且无法映射——null property
       row[rc] = ''
       continue
@@ -4981,10 +5032,16 @@ function _validateUndefinedVariables(query: string): void {
     // 扫描所有在 RETURN 中引用但未在 MATCH 中定义的变量（排除 AS 后的别名）
     // 用 /\bAS\s+/i 分割出 AS 之前的表达式主体
     const beforeAs = returnColStr.replace(/\bAS\s+\w+\s*/ig, '').trim()
-    const returnIdents = beforeAs.match(/\b([a-zA-Z_]\w*)\b/g) || []
-    // 字符串字面量已经被清空，但数字字面量还在
-    const numIdents = returnIdents.filter(v => /^[\d]/.test(v) || !/^[a-zA-Z_]/.test(v))
-    const varIdents = returnIdents.filter(v => !/^[\d]/.test(v))
+    // 提取变量名：r.num → 只保留 r（变量），num 是属性名，排除在内
+    const varSet = new Set<string>()
+    const propRefs = [...beforeAs.matchAll(/(\b[a-zA-Z_]\w*)\.(\w+)/g)]
+    for (const pr of propRefs) {
+      varSet.add(pr[1])     // r.num → 'r' 是变量
+    }
+    // AS xxx 中的 xxx 可能也在 varNames 中，保留为别名
+    const aliasNames = [...beforeAs.matchAll(/\bAS\s+(\w+)/gi)].map(m => m[1])
+    for (const an of aliasNames) varSet.add(an)
+    const varIdents = [...varSet]
     if (matchVars.length === 0 && varIdents.length > 0) {
       for (const v of varIdents) {
         const vu = v.toUpperCase()
@@ -4998,21 +5055,10 @@ function _validateUndefinedVariables(query: string): void {
             'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
             'COUNT','SUM','AVG','MAX','MIN','COLLECT',
             'STARTS','CONTAINS','ENDS'].includes(vu)) continue
-        // 对于属性路径（如 r.num），只检查变量部分（r）
-        const varPart = v.split('.')[0]
-        if (!varPart || /^[\d]/.test(varPart)) continue
-        // 也要排除聚合函数名
-        if (['count','sum','avg','max','min','collect','size','length','keys',
-            'coalesce','head','last','tail','reverse','range',
-            'tointeger','tofloat','tostring','trim','replace','substring',
-            'left','right','startswith','endswith','contains',
-            'and','or','xor','not','in','is','null','true','false',
-            'distinct','all', 'any', 'none', 'single',
-            'case', 'when', 'then', 'else', 'end'].includes(varPart.toLowerCase())) continue
         // 检查是否在 MATCH、CREATE 边变量、CREATE 节点变量中定义
         const allDefinedVars = [...matchVars, ...createEdgeVars, ...createNodeVars]
-        if (!allDefinedVars.includes(varPart)) {
-          // 额外检查：如果看起来是一个属性表达式（有小数点），跳过属性名部分
+        if (!allDefinedVars.includes(v)) {
+          // 额外检查：如果 v 看起来是属性访问（有小数点），跳过
           if (v.includes('.') && allDefinedVars.includes(v.split('.')[0])) continue
           throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
         }
