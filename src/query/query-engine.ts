@@ -4233,6 +4233,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // OPTIONAL MATCH 后处理：OPTIONAL MATCH 设置的变量可能改变了 RETURN 表达式的求值结果。
     // 重新计算受影响的列。
+<<<<<<< Updated upstream
     if (plan.optionalMatchSteps?.length && result.length && plan.expressionColumns?.length) {
       const optMatchVarNames = new Set(plan.optionalMatchSteps.map(om => om.variableName).filter(Boolean))
       if (!optMatchVarNames.size) { /* skip */ } else
@@ -4251,6 +4252,40 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           }
           for (const vn of optMatchVarNames) {
             if (vn in row) varCtx[vn] = row[vn]
+=======
+    if (plan.optionalMatchSteps?.length && result.length) {
+      const optMatchVarNames = new Set(plan.optionalMatchSteps.map(om => om.variableName).filter(Boolean))
+      if (optMatchVarNames.size && plan.expressionColumns?.length) {
+        // expressionColumns 中的 alias 是完整的表达式（包括变量前缀），
+        // 它同时也是 result 中的键名（_formatResultRow 使用 alias 作为 key）
+        const aliasToExpr: Record<string, string> = {}
+        for (const ec of plan.expressionColumns) {
+          const alias = (typeof ec === 'string' ? ec : (ec as any).alias ?? (ec as any).expression ?? String(ec))
+          const expr = (typeof ec === 'object' && (ec as any).expression) ? String((ec as any).expression) : alias
+          aliasToExpr[alias] = expr
+        }
+        for (const row of result) {
+          for (const alias of Object.keys(aliasToExpr)) {
+            if (!alias) continue
+            const rawexpr = aliasToExpr[alias]
+            if (!rawexpr) continue
+            // 检查 OPTIONAL MATCH 变量是否在表达式中被引用且已存在于 row 中
+            const hasVar = [...optMatchVarNames].some(vn => rawexpr.includes(vn) && vn in row)
+            if (!hasVar) continue
+            const varCtx: Record<string, unknown> = {}
+            for (const [k, v] of Object.entries(row)) {
+              if (!k.startsWith('_')) varCtx[k] = v
+            }
+            for (const vn of optMatchVarNames) {
+              if (vn in row) varCtx[vn] = row[vn]
+            }
+            try {
+              const newVal = _evaluateExpression(rawexpr, varCtx)
+              if (newVal !== undefined && newVal !== null) {
+                row[alias] = newVal
+              }
+            } catch (_e) { /* ignore evaluation error, keep original value */ }
+>>>>>>> Stashed changes
           }
           // 检查 row[alias] 是否存在（由 _formatResultRow 设置）
           if (!(alias in row)) continue
