@@ -3344,10 +3344,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 不处理字符串比较。IS_NULL/IS_NOT_NULL 同样未处理（fallthrough 到 true）。
     // queryEngineFilters 中包含了 GE 排除的运算符，
     // 在 GE 返回后对 records 做二次过滤。
+    const _isBrokenFval = (v: any): boolean => typeof v === 'string' && /[<>=]/.test(v)
     if (queryEngineFilters.length && rawRecords?.length) {
       rawRecords = rawRecords.filter((r: any) => {
         const nodeProps = r.props || r
         return queryEngineFilters.every((f: any) => {
+          if (_isBrokenFval(f.value)) return true // skip broken chain values
           const actualVal = nodeProps[f.property]
           const fv = f.value
           switch (f.operator) {
@@ -4630,19 +4632,22 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           if (!(vn in fnVarCtx)) fnVarCtx[vn] = r.__targetPropsMap[vn]
         }
       }
-      // Debug: trace fn branch
-      if (rc.includes('labels')) {
-        require('fs').appendFileSync('/tmp/fn-debug.txt',
-          'ENTER fn branch: rc=' + rc + ' fnVarCtxKeys=' + Object.keys(fnVarCtx).join(',') +
-          ' r.__crossVarRows=' + JSON.stringify(Object.keys(r.__crossVarRows || {})) +
-          ' r.__edgeLabel=' + r.__edgeLabel + '\n'
+      // Debug: trace fn branch for labels(m)
+      if (rc.includes('labels(m)')) {
+        require('fs').appendFileSync('/tmp/fn-debug2.txt',
+          'ENTER fn branch: rc=' + rc + ' fnExpr=' + fnExpr + '\n' +
+          ' fnVarCtxKeys=[' + Object.keys(fnVarCtx).join(',') + ']\n' +
+          ' r.__crossVarRows=' + JSON.stringify(Object.keys(r.__crossVarRows || {})) + '\n' +
+          ' r.__edgeLabel=' + r.__edgeLabel + '\n' +
+          ' r.props=%j\n',
+          JSON.stringify(r.props || {}).substring(0, 200)
         )
       }
       if (Object.keys(fnVarCtx).length) {
         try {
           const fnResult = _evaluateExpression(fnExpr, fnVarCtx)
-          require('fs').appendFileSync('/tmp/fn-debug.txt',
-            ' eval: fnExpr=' + fnExpr + ' fnResult=' + JSON.stringify(fnResult).substring(0,100) + '\n'
+          require('fs').appendFileSync('/tmp/fn-debug2.txt',
+            ' eval: fnResult=' + JSON.stringify(fnResult).substring(0,100) + '\n'
           )
           if (fnResult !== null && fnResult !== undefined) {
             const cleaned = _deepStripInternal(fnResult)
@@ -4650,7 +4655,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             continue
           }
         } catch (e: any) {
-          require('fs').appendFileSync('/tmp/fn-debug.txt',
+          require('fs').appendFileSync('/tmp/fn-debug2.txt',
             ' ERROR: ' + String(e).substring(0,200) + '\n'
           )
         }
@@ -4734,6 +4739,26 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           const varName = expr.includes('.') ? expr.split('.')[0] : expr
           if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx)) {
             varCtx[varName] = { ...row }
+          }
+          // Extract function argument variables for type(), labels(), properties(), keys(), id()
+          // Edge variables in the raw GE row have __edgeLabel — need to be in varCtx for function evaluation
+          const fnArgMatch = expr.match(/^(type|labels|properties|keys|id)\s*\(\s*([a-zA-Z_]\w*)\s*\)$/i)
+          if (fnArgMatch) {
+            const argVar = fnArgMatch[2]
+            if (/^[a-zA-Z_]\w*$/.test(argVar) && !(argVar in varCtx)) {
+              // First check: is it in __crossVarRows or is argVar a key in the raw GE row?
+              if (r.__crossVarRows?.[argVar]) {
+                varCtx[argVar] = r.__crossVarRows[argVar]
+              } else if (r[argVar] !== undefined) {
+                varCtx[argVar] = r[argVar]
+              } else if (r.__edgeLabel && argVar.match(/^[a-z]\w*$/i)) {
+                // The raw GE row has __edgeLabel and the argument might be an edge variable
+                // For single-variable matches, the variable IS the raw row
+                varCtx[argVar] = { ...row, __edgeLabel: r.__edgeLabel, __edgeProps: r.__edgeProps }
+              } else {
+                varCtx[argVar] = { ...row }
+              }
+            }
           }
         }
       }
@@ -6123,7 +6148,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
   labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const raw = v._fullLabel || v._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
-  type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const edgeLabel = (v as any).__edgeLabel ?? (v as any)._type ?? ''; return edgeLabel },
+  type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); // Check __edgeLabel or _type on the evaluated value, or fall back to row's __edgeLabel
+  const edgeLabel = (v as any).__edgeLabel ?? (v as any)._type ?? ''; return edgeLabel },
   properties: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(v)) if (!k.startsWith('_')) o[k] = vv; return o },
   keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') return Object.keys(v).filter(k => !k.startsWith('_')); return [] },
   id: ([a], r) => { const v = _evalBinary(a, r); return v && typeof v === 'object' && '_id' in (v as any) ? (v as any)._id : 0 },
