@@ -1913,7 +1913,6 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
 
   // ── 中间 WITH 投影 ──
   if (query && rows.length && plan.hasMatch && plan.unwind) {
-    require('fs').writeFileSync('/tmp/dbg-midwith-run.txt', 'entered rows=' + rows.length + '\n');
     const nonListWithClauses: Array<{ cols: string; where: string | null }> = []
     {
       let i = 0
@@ -1935,21 +1934,11 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
       }
     }
     const middleWith = nonListWithClauses.length > 1 ? nonListWithClauses.slice(0, -1) : []
-    require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
-      'middleWith=' + middleWith.length + ' nonListWith=' + nonListWithClauses.length + '\n' +
-      '  nwc0=' + (nonListWithClauses[0] ? nonListWithClauses[0].cols.substring(0, 60) : '?') + '\n' +
-      '  nwc1=' + (nonListWithClauses[1] ? nonListWithClauses[1].cols.substring(0, 60) : '?') + '\n');
     for (const mwc of middleWith) {
       const columns = mwc.cols.split(',').map(s => s.trim()).filter(Boolean)
-      require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
-        '  mwc cols=' + JSON.stringify(columns) + ' where=' + mwc.where + '\n' +
-        '  rows before=' + rows.length + '\n' +
-        '  row0=' + (rows.length > 0 ? JSON.stringify(rows[0]).substring(0, 120) : 'empty') + '\n');
       rows = rows.map(row => {
         const newRow: Record<string, unknown> = { ...row }
         const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
-        require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
-          '  map: evalCtx keys=' + Object.keys(evalCtx).slice(0, 10).join(',') + '\n');
         for (const col of columns) {
           const asMatch = col.match(/^(.+?)\s+AS\s+(\w+)$/i)
           if (asMatch) {
@@ -1981,10 +1970,6 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
   }
 
     // Step 3: 应用 WITH 投影——逐行计算非聚合列，收集聚合列的值
-  // ── DEBUG: BEFORE Step 3 ──
-  require('fs').appendFileSync('/tmp/dbg-midwith-run.txt', 
-    'beforeS3 rows=' + rows.length + ' with.cols=' + (plan.with?.columns?.length || 0) + '\n' +
-    '  sample=' + (rows.length > 0 ? JSON.stringify(rows[0]).substring(0, 120) : 'empty') + '\n');
   if (plan.with?.columns?.length) {
     // 判断哪些列是聚合函数
     const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
@@ -2036,10 +2021,6 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
       rows = [aggRow]
     }
   }
-  // ── DEBUG: AFTER Step 3 ──
-  require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
-    'afterS3 rows=' + rows.length + '\n' +
-    '  sample=' + (rows.length > 0 ? JSON.stringify(rows[0]).substring(0, 120) : 'empty') + '\n');
 
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
   if (!plan.with?.columns?.length && !rows.length) {
@@ -4042,12 +4023,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
     // 注意：即使 plan.aggregate 存在，也必须先应用 WHERE 再聚合。
     if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind)) {
-      // Debug: trace WHERE entry for node equality tests
-      if (plan.whereBody.includes('=')) {
-        require('fs').appendFileSync('/tmp/where-enter.txt',
-          'ENTER WHERE: body=' + plan.whereBody + ' resLen=' + result.length + ' agg=' + !!plan.aggregate + '\n'
-        )
-      }
       const filteredResult: QueryRow[] = []
       for (let ri = 0; ri < result.length; ri++) {
         const row = result[ri]
@@ -4088,18 +4063,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         const evalVal = _evaluateExpression(plan.whereBody, ctx)
         if (evalVal === true) {
           filteredResult.push(row)
-        }
-        // DEBUG: trace WHERE failures for node equality
-        if (plan.whereBody?.includes('a = b') && evalVal !== true) {
-          require('fs').appendFileSync('/tmp/where-debug.txt',
-            'evalVal=' + JSON.stringify(evalVal) +
-            ' aType=' + typeof ctx['a'] +
-            ' bType=' + typeof ctx['b'] +
-            ' a===b=' + (ctx['a'] === ctx['b']) +
-            ' a=' + (typeof ctx['a'] === 'object' ? JSON.stringify(ctx['a']).substring(0,200) : String(ctx['a'])) +
-            ' b=' + (typeof ctx['b'] === 'object' ? JSON.stringify(ctx['b']).substring(0,200) : String(ctx['b'])) +
-            ' ctxKeys=' + Object.keys(ctx).join(',') + '\n'
-          )
         }
       }
       result.length = 0
@@ -4448,7 +4411,37 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       const pipelineRows = _executeWithUnwindPipeline(plan, [matchVarCtx] as any, query, matchVarCtx)
       if (Array.isArray(pipelineRows)) {
         result.length = 0
-        result.push(...pipelineRows)
+        for (const pr of pipelineRows) {
+          // 合并 MATCH 变量（如 n, r）到管道行
+          // _executeWithUnwindPipeline 可能丢弃了 initialVarCtx 中的 MATCH 变量
+          result.push({ ...matchVarCtx, ...pr })
+        }
+      }
+      // ── UNWIND + WITH 管道后再求值 WHERE ──
+      // 管道已合并 MATCH 变量和 UNWIND/WITH 变量，此时 whereBody 中的变量都可解析
+      // 避免 WHERE 引用了管道变量但在 MATCH 阶段未知（如 WITH arr[0] AS expected）
+      if (plan.whereBody && Array.isArray(result) && result.length) {
+        const filtered: QueryRow[] = []
+        for (const row of result) {
+          const ctx: Record<string, unknown> = { ...row }
+          for (const [k, v] of Object.entries(row)) {
+            if (v && typeof v === 'object' && 'props' in (v as any)) {
+              ctx[k] = (v as any).props
+            }
+          }
+          try {
+            const evalVal = _evaluateExpression(plan.whereBody, ctx)
+            if (evalVal === true) {
+              filtered.push(row)
+            }
+          } catch {
+            filtered.push(row)
+          }
+        }
+        if (filtered.length || !result.length) {
+          result.length = 0
+          result.push(...filtered)
+        }
       }
     }
 
@@ -4560,12 +4553,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   const result: QueryRow = {}
   for (const rc of ret) {
     if (!rc) continue
-    // Debug: check if we reach the for loop
-    if (rc.includes('labels')) {
-      require('fs').appendFileSync('/tmp/rc-fire.txt', 'rc=' + rc + '\n')
-    }
-
-    // ── 解析 "a.id" → { variable: "a", property: "id" } ──
+        // ── 解析 "a.id" → { variable: "a", property: "id" } ──
     const propMatch = rc.match(/^(\w+)\.(\w+)$/)
     if (propMatch) {
       const variable = propMatch[1]
@@ -4627,19 +4615,12 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     if (fnCallMatch) {
       // 构建变量上下文：优先从 returnAliasMap 获取原始表达式
       const fnExpr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
-      // ALWAYS fire debug to confirm branch is reached
-      if (rc.includes('labels')) {
-        require('fs').appendFileSync('/tmp/fire-debug.txt',
-          'FIRE: rc=' + rc + ' fnExpr=' + fnExpr + ' aliasMap=' + JSON.stringify(aliasMap || {}) + '\n' +
-          '  rKeys=' + Object.keys(r).join(',') + '\n' +
-          '  rowKeys=' + Object.keys(row).join(',') + '\n'
-        )
-      }
       const fnVarCtx: Record<string, unknown> = {}
       if (r.__crossVarRows) {
         for (const vn of Object.keys(r.__crossVarRows)) {
           fnVarCtx[vn] = r.__crossVarRows[vn]
         }
+      console.log("DBG-FNBRANCH: rc=" + rc + " match=" + JSON.stringify(rc.match(/^w+(/)));
       }
       if (r.__targetPropsMap) {
         for (const vn of Object.keys(r.__targetPropsMap)) {
