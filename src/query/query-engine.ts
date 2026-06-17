@@ -5261,6 +5261,8 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
     // 时态函数
     'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
     'FROMEPOCH','FROMEPOCHMILLIS',
+    // 额外图函数
+    'TYPE','PROPERTIES','ID','ELEMENTID',
     ])
   for (const v of idents) {
     const vu = v.toUpperCase()
