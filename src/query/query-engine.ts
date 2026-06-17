@@ -2450,8 +2450,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   }
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
+  // 注意：OPTIONAL MATCH 必须经过 GraphEngine，即使 hasMatch 为 false
   const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT'].includes(plan.type || '')
-  if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML) {
+  const hasOptionalMatch = plan.optionalMatchSteps?.length ? true : false
+  if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML && !hasOptionalMatch) {
     const row: QueryRow = {}
     if (plan.returnColumns?.length) {
       // 使用表达式引擎求值每个 returnColumn
@@ -4605,7 +4607,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         } else {
           result[rc] = evalResult
         }
-        continue
+                continue
       }
       // 回退：从 row 取值
       if (rc in row) {
