@@ -1704,7 +1704,14 @@ function extractRemoveClauses(removeCtx: any): QueryPlan['removeClauses'] {
 // ═══════════════════════════════════════════════════════════════
 
 function extractUnwind(unwindCtx: any): QueryPlan['unwind'] {
-  const varCtx = findChild(unwindCtx, 'VariableContext')
+  // 只搜索直接子节点中的 VariableContext，避免误采表达式内部的变量（如 range() 内的 types）
+  let varCtx: any = null
+  if (unwindCtx && unwindCtx.children) {
+    for (const child of unwindCtx.children) {
+      const childName = child.constructor?.name ?? ''
+      if (childName === 'VariableContext') { varCtx = child; break }
+    }
+  }
   const name = varCtx ? getTextRecursive(varCtx) : ''
 
   // List expression

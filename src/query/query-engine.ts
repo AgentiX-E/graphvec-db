@@ -1819,9 +1819,7 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
 
   // ── 中间 WITH 投影 ──
   if (query && rows.length && plan.hasMatch && plan.unwind) {
-    // ADD TRACE
-    require('fs').writeFileSync('/tmp/dbg-midwith-run.txt', 
-      'entered rows=' + rows.length + ' queryLen=' + query.length + '\n');
+    require('fs').writeFileSync('/tmp/dbg-midwith-run.txt', 'entered rows=' + rows.length + '\n');
     const nonListWithClauses: Array<{ cols: string; where: string | null }> = []
     {
       let i = 0
@@ -1877,6 +1875,10 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
   }
 
     // Step 3: 应用 WITH 投影——逐行计算非聚合列，收集聚合列的值
+  // ── DEBUG: BEFORE Step 3 ──
+  require('fs').appendFileSync('/tmp/dbg-midwith-run.txt', 
+    'beforeS3 rows=' + rows.length + ' with.cols=' + (plan.with?.columns?.length || 0) + '\n' +
+    '  sample=' + (rows.length > 0 ? JSON.stringify(rows[0]).substring(0, 120) : 'empty') + '\n');
   if (plan.with?.columns?.length) {
     // 判断哪些列是聚合函数
     const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
@@ -1928,6 +1930,10 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
       rows = [aggRow]
     }
   }
+  // ── DEBUG: AFTER Step 3 ──
+  require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
+    'afterS3 rows=' + rows.length + '\n' +
+    '  sample=' + (rows.length > 0 ? JSON.stringify(rows[0]).substring(0, 120) : 'empty') + '\n');
 
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
   if (!plan.with?.columns?.length && !rows.length) {
@@ -6340,4 +6346,184 @@ function _isPureLiteralExpr(s: string): boolean {
     }
   }
   return true
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 聚合函数辅助（Aggregation helpers for aggregate.spec.ts）
+// ═══════════════════════════════════════════════════════════════
+
+export type QueryRow = Record<string, unknown>
+
+export interface AggColumnInfo {
+  fn: string
+  field: string
+  prop: string
+  distinct: boolean
+  alias: string | null
+}
+
+/** 解析单个聚合表达式字符串，如 'count(*)', 'AVG(n.score)', 'SUM(DISTINCT age)' */
+export function _parseAggregate(expr: string): { fn: string; field: string; prop: string; distinct: boolean; alias: string | null } | null {
+  const trimmed = expr.trim()
+  // 需要至少一个字符作为 field（count 和 collect 允许 *）
+  const match = trimmed.match(/^(\w+)\s*\(\s*(DISTINCT\s+)?(.+?)?\s*\)\s*(?:AS\s+(\w+))?\s*$/i)
+  if (!match) return null
+  const fn = match[1].toUpperCase()
+  const distinct = !!match[2]
+  const rawField = (match[3] || '').trim()
+  // count() 无参数（空括号）无效
+  if (!rawField) return null
+  const field = rawField
+  const prop = field === '*' ? '*' : field.includes('.') ? field.split('.').pop()! : field
+  return { fn, field, prop, distinct, alias: match[4] || null }
+}
+
+/** 提取列列表中的聚合列和 GROUP BY 列 */
+export function _extractAggColumns(columns: string[]): { aggCols: AggColumnInfo[]; groupByCols: string[] } {
+  const aggCols: AggColumnInfo[] = []
+  const groupByCols: string[] = []
+  for (const col of columns) {
+    const parsed = _parseAggregate(col)
+    if (parsed) {
+      aggCols.push(parsed)
+    } else {
+      // Non-aggregate column → GROUP BY 列
+      // 移除 AS 别名
+      const bareCol = col.replace(/\s+AS\s+\w+\s*$/i, '').trim()
+      groupByCols.push(bareCol.includes('.') ? bareCol.split('.').pop()! : bareCol)
+    }
+  }
+  return { aggCols, groupByCols }
+}
+
+/** 检查列列表中是否包含聚合函数 */
+export function _hasAggregates(columns: string[]): boolean {
+  return columns.some(col => _parseAggregate(col) !== null)
+}
+
+/**
+ * 执行聚合逻辑：根据 aggCols 和 groupByCols 对 rows 进行分组并计算聚合值。
+ *
+ * AVG 精度处理：使用 sum / count 的 JS 浮点除法，对小数结果做 toFixed(15) 舍入，
+ * 消除 0.1 + 0.2 = 0.30000000000000004 类的浮点误差。
+ */
+export function _executeAggregation(rows: QueryRow[], aggCols: AggColumnInfo[], groupByCols: string[]): QueryRow[] {
+  if (!rows.length && aggCols.length) {
+    // 空数据集
+    const out: QueryRow = {}
+    for (const ac of aggCols) {
+      const key = ac.alias || ac.fn.toLowerCase()
+      if (ac.fn === 'COUNT') {
+        out[key] = 0
+      } else if (ac.fn === 'AVG') {
+        out[key] = null
+      } else {
+        out[key] = ac.fn === 'MIN' ? 0 : 0
+      }
+    }
+    return [out]
+  }
+
+  /** 从行中提取聚合字段的值：count(*) 和 collect(*) 忽略字段名（所有行计 1） */
+  function _extractValues(rows: QueryRow[], prop: string, distinct?: boolean): unknown[] {
+    if (prop === '*') {
+      // count(*) / collect(*) → 所有行都是有效值
+      return rows.map(_ => true) // placeholder; _computeAggregate 对 COUNT 只检查 length
+    }
+    const vals = rows
+      .map(r => r[prop])
+      .filter(v => v !== undefined && v !== null)
+    if (distinct) {
+      return [...new Set(vals)]
+    }
+    return vals
+  }
+
+  // No group-by → single aggregate row
+  if (!groupByCols.length) {
+    const out: QueryRow = {}
+    for (const ac of aggCols) {
+      const key = ac.alias || ac.fn.toLowerCase()
+      const values = _extractValues(rows, ac.prop, ac.distinct)
+      out[key] = _computeAggregate(ac.fn, values)
+    }
+    return [out]
+  }
+
+  // Has group-by → group rows by groupByCols values
+  const groups = new Map<string, QueryRow[]>()
+  for (const row of rows) {
+    const gk = groupByCols.map(gc => String(row[gc] ?? '__NULL__')).join('||')
+    if (!groups.has(gk)) groups.set(gk, [])
+    groups.get(gk)!.push(row)
+  }
+
+  const result: QueryRow[] = []
+  for (const [gk, groupRows] of groups) {
+    const out: QueryRow = {}
+    // Set group-by columns
+    const gkParts = gk.split('||')
+    for (let i = 0; i < groupByCols.length; i++) {
+      out[groupByCols[i]] = gkParts[i] === '__NULL__' ? null : groupRows[0][groupByCols[i]]
+    }
+    // Compute aggregates
+    for (const ac of aggCols) {
+      const key = ac.alias || ac.fn.toLowerCase()
+      const values = _extractValues(groupRows, ac.prop, ac.distinct)
+      out[key] = _computeAggregate(ac.fn, values)
+    }
+    result.push(out)
+  }
+  return result
+}
+
+/** 计算单个聚合值，包含 AVG 精度修复 */
+function _computeAggregate(fn: string, values: unknown[]): number | null {
+  if (!values.length) return fn === 'AVG' ? null : 0
+
+  if (fn === 'COUNT') return values.length
+  if (fn === 'COLLECT') return values
+
+  const nums = values.map(v => typeof v === 'number' ? v : Number(v)).filter(v => !isNaN(v))
+  if (!nums.length) return fn === 'AVG' ? null : 0
+
+  switch (fn) {
+    case 'SUM':
+      return nums.reduce((a, b) => a + b, 0)
+    case 'AVG': {
+      const sum = nums.reduce((a, b) => a + b, 0)
+      const avg = sum / nums.length
+      // 精度修复：对浮点结果做 toFixed(15)，消除 ±1e-15 级别的误差
+      return _cleanFloat(avg)
+    }
+    case 'MAX':
+      return Math.max(...nums)
+    case 'MIN':
+      return Math.min(...nums)
+    default:
+      return 0
+  }
+}
+
+/**
+ * 清理浮点精度误差：对 ±1e-14 级误差做舍入
+ * 例如 2.1999999999999997 → 2.2, 0.30000000000000004 → 0.3
+ */
+function _cleanFloat(n: number): number {
+  if (Number.isInteger(n)) return n
+  const s = n.toFixed(15)
+  // 去掉末尾多余的 0
+  return parseFloat(s)
+}
+
+/** 标记列是否包含聚合函数 */
+export function _enrichWithAggregates(cols: Array<{ expression: string; alias?: string | null }>): Array<{ expression: string; alias?: string | null; isAggregate: boolean; aggFn?: string; distinct?: boolean }> {
+  return cols.map(col => {
+    const parsed = _parseAggregate(col.expression)
+    return {
+      ...col,
+      isAggregate: !!parsed,
+      ...(parsed ? { aggFn: parsed.fn, distinct: parsed.distinct } : {}),
+    }
+  })
 }
