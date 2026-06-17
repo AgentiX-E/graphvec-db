@@ -991,16 +991,19 @@ export function parseQuery(query: string): QueryPlan {
         const cols = expr.split(',').map(c => c.trim()).filter(Boolean)
         if (cols.length) {
           plan.returnColumns = cols.map(c => {
-            // type(r) AS r → r（取 AS 后的别名）
+            // labels(node) AS l → l（取 AS 后的别名，保留表达式到 returnAliasMap）
             const asMatch = c.match(/\bAS\s+(\w+)\s*$/i)
-            if (asMatch) return asMatch[1]
-            // type(r) → r（取括号内的变量名）
-            const fnMatch = c.match(/^(\w+)\((\w+)\)$/)
-            if (fnMatch) return fnMatch[2]
+            if (asMatch) {
+              plan.returnAliasMap = plan.returnAliasMap || {}
+              plan.returnAliasMap[asMatch[1]] = c.replace(/\s+AS\s+\w+\s*$/i, '').trim()
+              return asMatch[1]
+            }
             return c
           })
-          plan.returnAliasMap = {}
-          for (const c of plan.returnColumns) plan.returnAliasMap[c] = c
+          if (!plan.returnAliasMap || Object.keys(plan.returnAliasMap).length === 0) {
+            plan.returnAliasMap = {}
+            for (const c of plan.returnColumns) plan.returnAliasMap[c] = c
+          }
         }
       }
     }
@@ -3150,10 +3153,19 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               geNode.__crossVarRows = {}
               if (plan.steps?.length) {
                 const thisStep = plan.steps[plan.steps.length - 1]
-                geNode.__crossVarRows[thisStep.targetAlias] = { ...targetNode, props: { ...targetNode }, _alias: thisStep.targetAlias }
+                // 绑定 targetAlias（如果有命名目标且非空）
+                if (thisStep.targetAlias) {
+                  geNode.__crossVarRows[thisStep.targetAlias] = { ...targetNode, props: { ...targetNode }, _alias: thisStep.targetAlias }
+                }
+                // 绑定 source 变量（起始节点）—— 使用当前 allNodes[i] 而不是 plan.scanLabel（已为 null）
                 if (thisStep.source) {
-                  const srcNode = allNodes.find(n => n._label === plan.scanLabel)
-                  if (srcNode) geNode.__crossVarRows[thisStep.source] = { ...srcNode, props: { ...srcNode } }
+                  const srcNode = allNodes[i]
+                  if (srcNode) {
+                    // 保留原始属性，确保 _label 可用
+                    const srcProps: Record<string, unknown> = { ...srcNode }
+                    if (srcNode._label !== undefined) srcProps._label = srcNode._label
+                    geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps }, _alias: thisStep.source }
+                  }
                 }
               }
               // ── 多步多 RETURN 变量支持 ──
@@ -4400,6 +4412,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // 使用 returnAliasMap 或 expressionColumns 解析原始表达式：统一走 _evaluateExpression
     let expr = (aliasMap && rc in aliasMap) ? aliasMap[rc] : (rc in ecMap ? ecMap[rc] : null)
+    // 如果没有表达式映射（aliasMap 为空），但 rc 是简单变量名且存在于 varCtx 中，直接用 rc 作为表达式
+    if (expr === null && rc && /^[a-zA-Z_]\w*$/.test(rc) && (rc in varCtx || rc in row)) {
+      expr = rc
+    }
     if (expr !== null) {
       // 如果 row[rc] 已经是边格式 [:xxx]（由 rawWithEdges 填充），不要覆盖
       if (typeof row[rc] === 'string' && row[rc].startsWith('[:')) {
@@ -4605,7 +4621,23 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
         }
         if (rc in row) continue
       }
-      // rc 是纯别名且无法映射——null property
+      // rc 是纯别名且无法映射——尝试函数调用表达式（如 labels(node)）
+      const fnCall = rc.match(/^(\w+)\((.+)\)$/)
+      if (fnCall) {
+        const varCtx: Record<string, unknown> = {}
+        for (const cn of insertNodes) {
+          if (cn.alias) {
+            const clean: Record<string, unknown> = {}
+            if (cn.props) Object.assign(clean, cn.props)
+            if (!Object.keys(clean).length && cn.label) clean['_label'] = cn.label
+            varCtx[cn.alias] = clean
+          }
+        }
+        try {
+          const fnResult = _evaluateExpression(rc, varCtx)
+          if (fnResult !== undefined) { row[rc] = fnResult; continue }
+        } catch (e: any) { console.log('DBG: catch in buildDmlRows fnCall: rc=' + rc + ' varCtx=' + JSON.stringify(varCtx) + ' err=' + e.message) }
+      }
       row[rc] = ''
       continue
     }
@@ -4853,7 +4885,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     const cleaned = query.replace(/\w+\s*=\s*\([^)]*\)/g, '()')
     const matchClauses = cleaned.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
     const matchNodeVars = [...new Set(matchClauses.flatMap((mc: string) => [...mc.matchAll(/\((\w+)(?::|\))/g)].map(m => m[1])))]
-    const edgeVars = [...new Set([...cleaned.matchAll(/\[(\w+)/g)].map(m => m[1]).filter((v: string) => v && v !== '*' && v !== '?'))]
+    const edgeVars = [...new Set([...cleaned.matchAll(/\[(\w+)\s*(?::|\])/g)].map(m => m[1]).filter((v: string) => v && v !== '*' && v !== '?'))]
     const pathAssignments = [...query.matchAll(/(\w+)\s*=\s*\(/g)].map(m => m[1])
 
     // 关系变量和路径分配变量冲突
@@ -4924,6 +4956,22 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       const pathMatch = query.match(/MATCH\s+(\w+)\s*=\s*\(/i)
       if (pathMatch?.[1] && whereClause.includes(`${pathMatch[1]}.`)) {
         throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+      }
+    }
+
+    // ── SyntaxError: InvalidArgumentType（labels() on path） ──
+    // MATCH p = (a)-[]-(b) RETURN labels(p)
+    if (query) {
+      const pathVar = query.match(/MATCH\s+(\w+)\s*=\s*\(/i)?.[1]
+      if (pathVar) {
+        const returnMatch = query.match(/RETURN\s+(.+)/i)
+        if (returnMatch) {
+          const returnText = returnMatch[1].replace(/\bAS\s+\w+/gi, '').trim()
+          const labelsOnPath = new RegExp(`\\blabels\\(\\s*${pathVar}\\s*\\)`, 'i')
+          if (labelsOnPath.test(returnText)) {
+            throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+          }
+        }
       }
     }
 
@@ -5048,7 +5096,7 @@ function _validateUndefinedVariables(query: string): void {
           'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
           'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
           'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-          'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH',
+          'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','LABELS',
           'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
           'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
           'COUNT','SUM','AVG','MAX','MIN','COLLECT'].includes(v.toUpperCase())) continue
@@ -5069,11 +5117,13 @@ function _validateUndefinedVariables(query: string): void {
             'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
             'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
             'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-            'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH',
+            'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','LABELS',
             'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
             'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
             'COUNT','SUM','AVG','MAX','MIN','COLLECT',
-            'STARTS','CONTAINS','ENDS'].includes(vu)) continue
+            'STARTS','CONTAINS','ENDS',
+            'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
+            'FROMEPOCH','FROMEPOCHMILLIS'].includes(vu)) continue
         // 检查是否在 MATCH、CREATE 边变量、CREATE 节点变量中定义
         const allDefinedVars = [...matchVars, ...createEdgeVars, ...createNodeVars]
         if (!allDefinedVars.includes(v)) {
@@ -5125,11 +5175,14 @@ function _validateUndefinedVariables(query: string): void {
     'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
     'UNION','ALL','OPTIONAL',
     // 已知函数名（避免误判函数名变量）
-    'TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','KEYS',
+    'TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','LABELS','KEYS',
     'COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
     'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
     'COUNT','SUM','AVG','MAX','MIN','COLLECT',
     'STARTS','CONTAINS','ENDS',
+    // 时态函数
+    'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
+    'FROMEPOCH','FROMEPOCHMILLIS',
     ])
   for (const v of idents) {
     const vu = v.toUpperCase()
@@ -5519,6 +5572,112 @@ function _parseCommaList(s: string): string[] {
 
 type _BuiltinFn = (args: string[], row?: Record<string, unknown>) => unknown
 
+/** Resolve nanoseconds from map combining millisecond, microsecond, nanosecond */
+function _resolveNanoseconds(map: Record<string, unknown>): number {
+  const ms = map.millisecond != null ? Math.round(Number(map.millisecond) * 1000000) : 0
+  const us = map.microsecond != null ? Math.round(Number(map.microsecond) * 1000) : 0
+  const ns = map.nanosecond != null ? Number(map.nanosecond) : 0
+  return ms + us + ns
+}
+
+/** Format time string per Cypher TCK */
+function _formatTime(hour: number, minute: number, second: number, nanosecond: number): string {
+  const base = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+  if (nanosecond > 0) {
+    let nsStr = String(nanosecond).padStart(9, '0').replace(/0+$/, '')
+    return `${base}:${String(second).padStart(2, '0')}.${nsStr}`
+  }
+  if (second > 0) return `${base}:${String(second).padStart(2, '0')}`
+  return base
+}
+
+function _extractTimeMap(map: Record<string, unknown>): { hour: number; minute: number; second: number; nanosecond: number } {
+  return {
+    hour: map.hour != null ? Number(map.hour) : 0,
+    minute: map.minute != null ? Number(map.minute) : 0,
+    second: map.second != null ? Number(map.second) : 0,
+    nanosecond: _resolveNanoseconds(map),
+  }
+}
+
+function _formatTimezone(tz: string): string {
+  return /^[+-]\d{2}:\d{2}:00$/.test(tz) ? tz.slice(0, -3) : tz
+}
+
+function _resolveNamedTimezone(tz: string, year?: number, month?: number, day?: number): string {
+  if (/^[+-]\d{2}:\d{2}/.test(tz)) return tz
+  if (tz.includes('[')) return tz
+  try {
+    const date = (year != null && month != null && day != null)
+      ? new Date(Date.UTC(year, month - 1, day)) : new Date()
+    const parts = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(date)
+    const tzPart = parts.find(p => p.type === 'timeZoneName')
+    if (tzPart && tzPart.value) {
+      const m = tzPart.value.match(/GMT([+-]?)(\d+)/)
+      if (m) return `${m[1] || '+'}${String(parseInt(m[2], 10)).padStart(2, '0')}:00[${tz}]`
+    }
+  } catch {}
+  return tz
+}
+
+function _isoYear(d: Date): number {
+  const t = new Date(d.valueOf())
+  t.setUTCDate(t.getUTCDate() + 3 - ((t.getUTCDay() + 6) % 7))
+  return t.getUTCFullYear()
+}
+
+function _isoWeek1Monday(year: number): Date {
+  const jan4 = new Date(Date.UTC(year, 0, 4))
+  const d = jan4.getUTCDay() === 0 ? 7 : jan4.getUTCDay()
+  return new Date(Date.UTC(year, 0, 4 - d + 1))
+}
+
+function _resolveDateFromMap(map: Record<string, unknown>): Date {
+  if (map.date != null) {
+    const baseStr = typeof map.date === 'string' ? map.date : String(map.date)
+    const parts = baseStr.split('-')
+    if (parts.length === 3) {
+      const year = Number(parts[0]), month2 = Number(parts[1]), day2 = Number(parts[2])
+      const base = new Date(Date.UTC(year, month2 - 1, day2))
+      if (map.week != null || map.dayOfWeek != null) {
+        const dateDow = base.getUTCDay() === 0 ? 7 : base.getUTCDay()
+        const isoY = map.year != null ? Number(map.year) : _isoYear(base)
+        const w1Mon = _isoWeek1Monday(isoY)
+        const dow = map.dayOfWeek != null ? Number(map.dayOfWeek) : dateDow
+        const tw = map.week != null ? Number(map.week) : 1
+        const adj = new Date(w1Mon)
+        adj.setUTCDate(w1Mon.getUTCDate() + (tw - 1) * 7 + dow - 1)
+        return adj
+      }
+      return base
+    }
+  }
+  const year = map.year != null ? Number(map.year) : 2000
+  if (map.week != null) {
+    const w1Mon = _isoWeek1Monday(year)
+    const dow = map.dayOfWeek != null ? Number(map.dayOfWeek) : 1
+    const adj = new Date(w1Mon)
+    adj.setUTCDate(w1Mon.getUTCDate() + (Number(map.week) - 1) * 7 + dow - 1)
+    return adj
+  }
+  let month = map.month != null ? Number(map.month) : 1
+  let day = map.day != null ? Number(map.day) : 1
+  if (map.quarter != null) {
+    month = (Number(map.quarter) - 1) * 3 + 1
+    if (map.dayOfQuarter != null) {
+      const q = new Date(Date.UTC(year, month - 1, 1))
+      q.setUTCDate(q.getUTCDate() + Number(map.dayOfQuarter) - 1)
+      return q
+    }
+  }
+  if (map.ordinalDay != null) {
+    const d = new Date(Date.UTC(year, 0, 1))
+    d.setUTCDate(d.getUTCDate() + Number(map.ordinalDay) - 1)
+    return d
+  }
+  return new Date(Date.UTC(year, month - 1, day))
+}
+
 const _builtinFunctions: Record<string, _BuiltinFn> = {
   abs: ([a], r) => Math.abs(Number(_evalBinary(a, r))),
   sqrt: ([a], r) => Math.sqrt(Number(_evalBinary(a, r))),
@@ -5541,7 +5700,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   tointeger: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return parseInt(String(v), 10) },
   tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return parseFloat(String(v)) },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
-  labels: (_, r) => r?._label ? String(r._label).split(':').filter(Boolean) : [],
+  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object') return null; const raw = v._fullLabel || v._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
   type: (_, r) => r?.__edgeLabel ?? r?._type ?? null,
   properties: (_, r) => { if (!r) return {}; const o: Record<string, unknown> = {}; for (const [k, v] of Object.entries(r)) if (!k.startsWith('_')) o[k] = v; return o },
   keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') return Object.keys(v).filter(k => !k.startsWith('_')); return [] },
@@ -5552,6 +5711,149 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   range: ([s, e, step], r) => { const start = Number(_evalBinary(s, r)), end = Number(_evalBinary(e, r)), st = step ? Math.abs(Number(_evalBinary(step, r))) : 1; const res: number[] = []; if (start <= end) for (let i = start; i <= end; i += st) res.push(i); else for (let i = start; i >= end; i -= st) res.push(i); return res },
   length: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.length : 0 },
   split: ([a, d], r) => String(_evalBinary(a, r)).split(String(_evalBinary(d, r))),
+  // ── Temporal Functions ──
+  "datetime.fromepoch": ([seconds, nanos], r) => {
+    const sec = Number(_evalBinary(seconds, r));
+    const ns = nanos ? Number(_evalBinary(nanos, r)) : 0;
+    const base = new Date(sec * 1000);
+    const iso = base.toISOString().replace("Z", "");
+    if (ns > 0) {
+      const nsStr = String(ns).padStart(9, "0");
+      return iso.slice(0, -4) + nsStr + "Z";
+    }
+    return iso + "Z";
+  },
+  "datetime.fromepochmillis": ([millis], r) => {
+    const ms = Number(_evalBinary(millis, r));
+    return new Date(ms).toISOString().replace("Z", "") + "Z";
+  },
+  date: ([a], r) => {
+    if (!a) {
+      const d = new Date();
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    }
+    const v = _evalBinary(a, r);
+    if (typeof v === "string") {
+      let str = v;
+      if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+      return str;
+    }
+    if (v && typeof v === "object") {
+      const map = v;
+      const d = _resolveDateFromMap(map);
+      return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+    }
+    return null;
+  },
+  localtime: ([a], r) => {
+    if (!a) {
+      const d = new Date();
+      return _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000);
+    }
+    const v = _evalBinary(a, r);
+    if (v && typeof v === "object") {
+      const map = v;
+      const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+      return _formatTime(hour, minute, second, nanosecond);
+    }
+    return null;
+  },
+  time: ([a], r) => {
+    if (!a) {
+      const d = new Date();
+      return _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000) + "Z";
+    }
+    const v = _evalBinary(a, r);
+    if (v && typeof v === "object") {
+      const map = v;
+      const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+      const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone))) : "Z";
+      return _formatTime(hour, minute, second, nanosecond) + tz;
+    }
+    return null;
+  },
+  localdatetime: ([a], r) => {
+    if (!a) {
+      const d = new Date();
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0")
+        + "T" + _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000);
+    }
+    const v = _evalBinary(a, r);
+    if (v && typeof v === "object") {
+      const map = v;
+      const d = _resolveDateFromMap(map);
+      const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+      const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+      return dateStr + "T" + _formatTime(hour, minute, second, nanosecond);
+    }
+    return null;
+  },
+  datetime: ([a], r) => {
+    if (!a) {
+      const d = new Date();
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0")
+        + "T" + _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000) + "Z";
+    }
+    const v = _evalBinary(a, r);
+    if (v && typeof v === "object") {
+      const map = v;
+      const d = _resolveDateFromMap(map);
+      const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+      const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+      const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone), d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate())) : "Z";
+      return dateStr + "T" + _formatTime(hour, minute, second, nanosecond) + tz;
+    }
+    return null;
+  },
+  duration: ([a], r) => {
+    if (!a) return "PT0S";
+    const v = _evalBinary(a, r);
+    if (v && typeof v === "object") {
+      const map = v;
+      const AVG_DAYS_PER_MONTH = 30.436875;
+      const _num = (k) => { const x = map[k]; return x != null ? Number(x) : 0; };
+      let years = _num("years") || _num("year");
+      let months = _num("months") || _num("month");
+      let weeks = _num("weeks") || _num("week");
+      let days = _num("days") || _num("day");
+      let hours = _num("hours") || _num("hour");
+      let minutes = _num("minutes") || _num("minute");
+      let seconds = _num("seconds") || _num("second");
+      let nanos = _resolveNanoseconds(map);
+      // weeks → days
+      if (weeks) { days += weeks * 7; weeks = 0; }
+      // 分数分解
+      if (years % 1 !== 0) { months += (years - Math.floor(years)) * 12; years = Math.floor(years); }
+      if (months % 1 !== 0) { days += (months - Math.floor(months)) * AVG_DAYS_PER_MONTH; months = Math.floor(months); }
+      if (days % 1 !== 0) { hours += (days - Math.floor(days)) * 24; days = Math.floor(days); }
+      if (hours % 1 !== 0) { minutes += (hours - Math.floor(hours)) * 60; hours = Math.floor(hours); }
+      if (minutes % 1 !== 0) { seconds += (minutes - Math.floor(minutes)) * 60; minutes = Math.floor(minutes); }
+      if (seconds % 1 !== 0) { nanos += Math.round((seconds - Math.floor(seconds)) * 1e9); seconds = Math.floor(seconds); }
+      // 进位
+      if (nanos >= 1e9) { seconds += Math.floor(nanos / 1e9); nanos = nanos % 1e9; }
+      if (seconds >= 60) { minutes += Math.floor(seconds / 60); seconds = seconds % 60; }
+      if (minutes >= 60) { hours += Math.floor(minutes / 60); minutes = minutes % 60; }
+      if (hours >= 24) { days += Math.floor(hours / 24); hours = hours % 24; }
+      let nanosFormatted = "";
+      if (nanos > 0) {
+        // Duration 的纳秒要求完整 9 位（时间函数用 _formatTime 去尾零）
+        nanosFormatted = "." + String(nanos).padStart(9, "0");
+      }
+      let result = "P";
+      if (years) result += years + "Y";
+      if (months) result += months + "M";
+      if (days) result += days + "D";
+      if (hours || minutes || seconds || nanos) {
+        result += "T";
+        if (hours) result += hours + "H";
+        if (minutes) result += minutes + "M";
+        if (seconds || nanos) result += seconds + nanosFormatted + "S";
+      }
+      return result || "PT0S";
+    }
+    return null;
+  },
 }
 
 function _callFunction(name: string, args: string[], row?: Record<string, unknown>): unknown {
