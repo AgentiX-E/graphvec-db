@@ -1102,6 +1102,14 @@ export function parseQuery(query: string): QueryPlan {
           }
         }
       }
+      // 同步修复 plan.unwinds 数组中的 name
+      if (plan.unwinds?.length) {
+        for (const [umIdx, m] of unwindMatches.entries()) {
+          if (umIdx < plan.unwinds.length && m[2] && m[2] !== plan.unwinds[umIdx].name) {
+            plan.unwinds[umIdx].name = m[2]
+          }
+        }
+      }
     } catch (e) {
       // ignore parse errors
     }
@@ -1763,7 +1771,7 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
     if (withListMatch) {
       const listExpr = withListMatch[1]
       const alias = withListMatch[2]
-      const val = _evaluateExpression(listExpr, {})
+      const val = _evaluateExpression(listExpr, varCtx)
       if (Array.isArray(val)) varCtx[alias] = val
     }
   }
@@ -1807,6 +1815,66 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
     }
   } else {
     rows = [{}]
+  }
+
+  // ── 中间 WITH 投影 ──
+  if (query && rows.length && plan.hasMatch && plan.unwind) {
+    // ADD TRACE
+    require('fs').writeFileSync('/tmp/dbg-midwith-run.txt', 
+      'entered rows=' + rows.length + ' queryLen=' + query.length + '\n');
+    const nonListWithClauses: Array<{ cols: string; where: string | null }> = []
+    {
+      let i = 0
+      while (i < query.length) {
+        const idx = query.substring(i).search(/\bWITH\s+(?!\s*\[)/i)
+        if (idx < 0) break
+        const absPos = i + idx
+        const afterWith = query.substring(absPos + 4).trimStart()
+        let endIdx = afterWith.search(/\b(?:UNWIND|WITH|RETURN|ORDER\s+BY|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE)\b/i)
+        if (endIdx < 0) endIdx = afterWith.length
+        const clauseBody = afterWith.substring(0, endIdx).trim()
+        const whereMatch = clauseBody.match(/^(.+?)\s+WHERE\s+(.+)$/is)
+        if (whereMatch) {
+          nonListWithClauses.push({ cols: whereMatch[1].trim(), where: whereMatch[2].trim() })
+        } else {
+          nonListWithClauses.push({ cols: clauseBody, where: null })
+        }
+        i = absPos + 4 + 1
+      }
+    }
+    const middleWith = nonListWithClauses.length > 1 ? nonListWithClauses.slice(0, -1) : []
+    for (const mwc of middleWith) {
+      const columns = mwc.cols.split(',').map(s => s.trim()).filter(Boolean)
+      rows = rows.map(row => {
+      rows = rows.map(row => {
+        const newRow: Record<string, unknown> = {}
+        const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+        for (const col of columns) {
+          const asMatch = col.match(/^(.+?)\s+AS\s+(\w+)$/i)
+          if (asMatch) {
+            const expr = asMatch[1].trim()
+            const alias = asMatch[2]
+            const val = _evaluateExpression(expr, evalCtx)
+            newRow[alias] = val !== undefined ? val : null
+          } else {
+            const trimmed = col.trim()
+            if (trimmed in evalCtx) {
+              newRow[trimmed] = evalCtx[trimmed]
+            } else {
+              const val = _evaluateExpression(trimmed, evalCtx)
+              newRow[trimmed] = val !== undefined ? val : null
+            }
+          }
+        }
+        return newRow
+      })
+      if (mwc.where) {
+        rows = rows.filter(row => {
+          const val = _evaluateExpression(mwc.where!, row)
+          return val === true
+        })
+      }
+    }
   }
 
     // Step 3: 应用 WITH 投影——逐行计算非聚合列，收集聚合列的值
@@ -3685,7 +3753,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── WHERE 子句后处理过滤（表达式引擎处理 GE 不支持的复杂 boolean 表达式） ──
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
-    if (plan.whereBody && result.length && !plan.aggregate) {
+    if (plan.whereBody && result.length && !plan.aggregate && !(plan.hasMatch && plan.unwind)) {
       const filteredResult: QueryRow[] = []
       for (let ri = 0; ri < result.length; ri++) {
         const row = result[ri]
@@ -3944,9 +4012,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     if (plan.hasMatch && plan.unwind && Array.isArray(result) && result.length) {
       // 用第一行 MATCH 结果构造变量上下文（所有 MATCH 行共享同一变量集）
       // WITH [n, r, p, ...] AS types — n,r,p 来自 MATCH
-      // 临时替换 nodes 为当前 MATCH 行，交给 _executeWithUnwindPipeline
-      // 注意：_executeWithUnwindPipeline 用 query 文本提取 WITH 列表，不受 nodes 影响
-      // 多个 MATCH 行时取第一个（所有行变量名相同）
       const matchVarCtx: Record<string, unknown> = {}
       for (const [key, val] of Object.entries(result[0])) {
         if (val && typeof val === 'object' && 'props' in (val as any)) {
@@ -3955,6 +4020,16 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           matchVarCtx[key] = val
         }
       }
+      // 从 rawWithEdges 中恢复 MATCH 变量（n, r, p 等）的原始引用
+      if (Array.isArray(rawWithEdges) && rawWithEdges[0]?.__crossVarRows) {
+        const crossVarRows = rawWithEdges[0].__crossVarRows as Record<string, unknown>
+        for (const [varName, varVal] of Object.entries(crossVarRows)) {
+          if (!(varName in matchVarCtx)) {
+            matchVarCtx[varName] = varVal
+          }
+        }
+      }
+      // 把 MATCH 变量合并到 nodes，传入 matchVarCtx
       // 把 MATCH 变量合并到 nodes（_executeWithUnwindPipeline 的 varCtx 来自 nodes）
       // 但 _executeWithUnwindPipeline 使用自己的 varCtx，不读 nodes
       // 需要改造：传入 matchVarCtx
@@ -5032,7 +5107,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
   last: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
   tail: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.slice(1) : null },
-  range: ([s, e, step]) => { const start = Number(_evalBinary(s)), end = Number(_evalBinary(e)), st = step ? Math.abs(Number(_evalBinary(step))) : 1; const r: number[] = []; if (start <= end) for (let i = start; i <= end; i += st) r.push(i); else for (let i = start; i >= end; i -= st) r.push(i); return r },
+  range: ([s, e, step], r) => { const start = Number(_evalBinary(s, r)), end = Number(_evalBinary(e, r)), st = step ? Math.abs(Number(_evalBinary(step, r))) : 1; const res: number[] = []; if (start <= end) for (let i = start; i <= end; i += st) res.push(i); else for (let i = start; i >= end; i -= st) res.push(i); return res },
   length: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.length : 0 },
   split: ([a, d], r) => String(_evalBinary(a, r)).split(String(_evalBinary(d, r))),
 }
