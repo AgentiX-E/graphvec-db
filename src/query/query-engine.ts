@@ -1545,9 +1545,13 @@ function _walkMultiSteps(
         } else if (step.direction === 'in' && e.dstIdx === idx) {
           neighborIdx = e.srcIdx
         }
-        if (neighborIdx >= 0 && neighborIdx < allNodes.length && neighborIdx !== idx) {
+        if (neighborIdx >= 0 && neighborIdx < allNodes.length) {
           // 边标签检查：如果 step 指定了 edgeLabel，边必须匹配（方向已经匹配）
-          if (step.edgeLabel && e.label !== step.edgeLabel) continue
+          // 支持多类型 | 分隔（如 :KNOWS|HATES）
+          if (step.edgeLabel) {
+            const targetLabels = step.edgeLabel.split('|')
+            if (!targetLabels.includes(e.label)) continue
+          }
           if (_stepMatchConstraint(neighborIdx, step, allNodes)) {
             nextSet.add(neighborIdx)
           }
@@ -1560,9 +1564,9 @@ function _walkMultiSteps(
           const other = allNodes[j] as any
           if (other.__edges) {
             for (const e of other.__edges) {
-              if (e.dstIdx === idx || e.srcIdx === idx) {
+              if ((e.dstIdx === idx || e.srcIdx === idx) && e.dstIdx !== e.srcIdx) {
                 const neighborIdx = e.dstIdx === idx ? e.srcIdx : e.dstIdx
-                if (neighborIdx !== idx && !nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
+                if (!nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
                   nextSet.add(neighborIdx)
                 }
               }
@@ -2473,6 +2477,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   }
 
   // ── DML 纯操作（无 RETURN）：直接返回空（side effects 由调用方处理） ──
+  // 注意：CREATE/MERGE 不能提前返回，因为后续代码会处理 createNodes 和 createEdges
   if (isDML && !plan.returnColumns?.length && !plan.aggregate) {
     // CREATE_CONSTRAINT: 验证现有数据唯一性并注册约束
     if (plan.type === 'CREATE_CONSTRAINT' && plan.constraint) {
@@ -2508,7 +2513,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       _registerConstraint(constraintName, label, property)
       return []
     }
-    return []
+    // DELETE/SET/REMOVE 可以直接返回空（它们不创建节点/边）
+    if (plan.type !== 'CREATE' && plan.type !== 'MERGE') {
+      return []
+    }
   }
 
   // ── 变量长度路径：直接 BFS 并返回，不依赖 GE ──
@@ -2564,10 +2572,24 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     if (plan.createNodes?.length) {
       // 构建 MATCH 变量集合，用于判断 createNode 是否只是引用已匹配节点
       const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
-      for (const cn of plan.createNodes) {
+      const cnToAllNodeMap = new Map<number, number>()  // createNode index → allNodes index
+      for (let ci = 0; ci < plan.createNodes.length; ci++) {
+        const cn = plan.createNodes[ci]
         // 跳过仅引用已匹配节点的 createNode（无 label 无 props，且变量名已存在 MATCH 中）
         if (cn.alias && matchVars.has(cn.alias) && !cn.label && (!cn.props || !Object.keys(cn.props).length)) {
           // 不创建新节点，但保留 _alias 引用
+          // 在 allNodes 中找到对应节点（按 _alias 或按位置）
+          const existingIdx = allNodes.findIndex(n => n._alias === cn.alias)
+          if (existingIdx >= 0) {
+            cnToAllNodeMap.set(ci, existingIdx)
+          } else {
+            // 已存在节点没有 _alias（从 seed nodes 来的），设置 _alias
+            // 按位置查找：createNodes[i] 对应 allNodes 中的 seed 节点
+            if (ci < allNodes.length) {
+              allNodes[ci]._alias = cn.alias
+              cnToAllNodeMap.set(ci, ci)
+            }
+          }
           continue
         }
         const props: Record<string, unknown> = { _label: cn.label || 'Default' }
@@ -2578,6 +2600,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         } }
         if (cn.alias) props['_alias'] = cn.alias
         allNodes.push(props)
+        cnToAllNodeMap.set(ci, allNodes.length - 1)
       }
     }
 
@@ -2901,59 +2924,50 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     if (plan.createEdges?.length && nodeGeIds.length >= 1) {
       for (const edge of plan.createEdges) {
         // 查找源/目标节点在 allNodes 中的实际索引
-        // 先尝试从 edge.sourceIdx/targetIdx 映射（这些是 createNodes 中的索引）
-        // 如果 createNodes[idx].alias 对应的是 MATCH 变量，需要找到 allNodes 中对应节点
-        // 如果 createNodes[idx].label 为空且 props 为空，说明这是 MATCH 变量的引用
+        // 先尝试从 cnToAllNodeMap 映射（createNode index → allNodes index）
         let srcIdx = -1;
         let dstIdx = -1;
 
         // 映射 source
         const cnSrcIdx = edge.sourceIdx !== undefined ? edge.sourceIdx : -1
-        if (cnSrcIdx >= 0 && cnSrcIdx < (plan.createNodes || []).length) {
-          const cnSrc = plan.createNodes![cnSrcIdx]
-          // 如果 createNode 无 label 无 props，可能是 MATCH 变量引用 → 在 allNodes 中找 _alias
-          if (!cnSrc.label && (!cnSrc.props || !Object.keys(cnSrc.props).length) && cnSrc.alias) {
-            srcIdx = allNodes.findIndex(n => n._alias === cnSrc.alias)
+        if (cnSrcIdx >= 0) {
+          if (cnToAllNodeMap.has(cnSrcIdx)) {
+            srcIdx = cnToAllNodeMap.get(cnSrcIdx)!
           } else {
-            // 新创建的节点：createNodes 在 allNodes 末尾，偏移量 = nodes.length + 已分配的 create 节点
+            // 如果 createNode 在新节点的索引偏移中（未在 cnToAllNodeMap 中，说明是跳过匹配后又创建了新节点）
+            // 回退：使用 offset，其中 originalNodeCount 是 seed node 数，cnSrcIdx 是 createNode 索引
             srcIdx = cnSrcIdx
           }
-        } else {
-          // 无 sourceIdx：通过 alias 搜索
-          if (edge.source) {
-            srcIdx = allNodes.findIndex(n => n._alias === edge.source)
-            if (srcIdx < 0) srcIdx = (plan.createNodes || []).findIndex(cn => cn.alias === edge.source)
-          }
+        }
+        if (srcIdx < 0 && edge.source) {
+          // 通过 alias 查找
+          srcIdx = allNodes.findIndex(n => n._alias === edge.source)
+        }
+        // 如果 srcIdx 还是 < 0，用 cnSrcIdx 直接作为 allNodes 索引（当 createNodes 与 allNodes 按位置对齐时）
+        if (srcIdx < 0 && cnSrcIdx >= 0 && cnSrcIdx < allNodes.length) {
+          srcIdx = cnSrcIdx
         }
 
         // 映射 target
         const cnDstIdx = edge.targetIdx !== undefined ? edge.targetIdx : -1
-        if (cnDstIdx >= 0 && cnDstIdx < (plan.createNodes || []).length) {
-          const cnDst = plan.createNodes![cnDstIdx]
-          if (!cnDst.label && (!cnDst.props || !Object.keys(cnDst.props).length) && cnDst.alias) {
-            dstIdx = allNodes.findIndex(n => n._alias === cnDst.alias)
+        if (cnDstIdx >= 0) {
+          if (cnToAllNodeMap.has(cnDstIdx)) {
+            dstIdx = cnToAllNodeMap.get(cnDstIdx)!
           } else {
             dstIdx = cnDstIdx
           }
-        } else {
-          if (edge.target) {
-            dstIdx = allNodes.findIndex(n => n._alias === edge.target)
-            if (dstIdx < 0) dstIdx = (plan.createNodes || []).findIndex(cn => cn.alias === edge.target)
-          }
-        }
-
-        // 回退：通过 alias 名直接查找
-        if (srcIdx < 0 && edge.source) {
-          srcIdx = allNodes.findIndex(n => n._alias === edge.source)
         }
         if (dstIdx < 0 && edge.target) {
           dstIdx = allNodes.findIndex(n => n._alias === edge.target)
+        }
+        if (dstIdx < 0 && cnDstIdx >= 0 && cnDstIdx < allNodes.length) {
+          dstIdx = cnDstIdx
         }
 
         if (srcIdx >= 0 && dstIdx >= 0 && srcIdx < nodeGeIds.length && dstIdx < nodeGeIds.length) {
           const srcId = nodeGeIds[srcIdx]
           const dstId = nodeGeIds[dstIdx]
-          if (srcId !== undefined && dstId !== undefined && srcId >= 0 && dstId >= 0) {
+          if (srcId !== undefined && srcId !== undefined && srcId >= 0 && dstId >= 0) {
             // 使用 GE 的 _resolveEdgeType 获取统一的 typeId
             const typeId = (ge as any)._resolveEdgeType(edge.label || '')
             try { (ge as any).storage.upsertEdge(srcId, dstId, typeId) } catch {}
@@ -3066,6 +3080,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           for (let i = 0; i < allNodes.length; i++) {
             if (skipNodeIndices.has(i)) {
               continue
+            }
+            // 根据 scanLabel 过滤起始节点
+            if (plan.scanLabel) {
+              const nodeLabel = String(allNodes[i]?.['_label'] || '')
+              if (nodeLabel !== plan.scanLabel) continue
             }
             let skipNode = false
             for (const sf of stepSourceFilters) {
@@ -4595,6 +4614,12 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   if (plan.returnColumns?.some((rc: string) => rc?.startsWith('$'))) {
     throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
   }
+
+  // ── SyntaxError: UnknownFunction ──
+  // 检测 RETURN 列中调用的函数是否已知（如 foo(a)）
+  if (query) {
+    _validateUnknownFunctions(query)
+  }
   // MATCH (n $param) — parameter as node predicate
   if (query && /MATCH\s*\(\s*\w+(?::\w+)?\s+\$\w+/i.test(query)) {
     throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
@@ -4937,12 +4962,19 @@ function _validateUndefinedVariables(query: string): void {
   // 检查 RETURN 列中的未定义变量（如 MATCH () RETURN foo）
   const returnMatch = query.match(/RETURN\s+(.+?)(?:\s+(?:ORDER\s+BY|SKIP|LIMIT)|$)/is)
   if (returnMatch) {
-    const returnColStr = returnMatch[1]
-    // 扫描所有在 RETURN 中引用但未在 MATCH 中定义的变量
-    // 正则：a, b, foo — 以逗号/空格分隔的标识符
-    const returnIdents = returnColStr.match(/\b([a-zA-Z_]\w*)\b/g) || []
-    if (matchVars.length === 0 && returnIdents.some(v => !v.toUpperCase().startsWith('AS'))) {
-      for (const v of returnIdents) {
+    let returnColStr = returnMatch[1]
+    // 去除字符串字面量和 map/list 字面量内部的内容，只保留变量引用
+    returnColStr = returnColStr.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '')
+    returnColStr = returnColStr.replace(/\{[^}]*\}/g, '')
+    // 扫描所有在 RETURN 中引用但未在 MATCH 中定义的变量（排除 AS 后的别名）
+    // 用 /\bAS\s+/i 分割出 AS 之前的表达式主体
+    const beforeAs = returnColStr.replace(/\bAS\s+\w+\s*/ig, '').trim()
+    const returnIdents = beforeAs.match(/\b([a-zA-Z_]\w*)\b/g) || []
+    // 字符串字面量已经被清空，但数字字面量还在
+    const numIdents = returnIdents.filter(v => /^[\d]/.test(v) || !/^[a-zA-Z_]/.test(v))
+    const varIdents = returnIdents.filter(v => !/^[\d]/.test(v))
+    if (matchVars.length === 0 && varIdents.length > 0) {
+      for (const v of varIdents) {
         const vu = v.toUpperCase()
         if (['AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
             'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
@@ -5028,6 +5060,28 @@ function _validateUndefinedVariables(query: string): void {
     if (/^\d/.test(v)) continue
     if (!definedVars.includes(v) && !definedVars.includes(vu)) {
       throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+    }
+  }
+}
+
+/** 验证 RETURN 列中的函数是已知的（SyntaxError: UnknownFunction） */
+function _validateUnknownFunctions(query: string): void {
+  // 提取 RETURN 子句
+  const returnMatch = query.match(/RETURN\s+((?:(?!\s+(?:ORDER\s+BY|SKIP|LIMIT|WHERE|CREATE|MERGE|MATCH|WITH|CALL|UNWIND)).)+)/is)
+  if (!returnMatch) return
+  const returnStr = returnMatch[1]
+  // 匹配 functionName(args) 模式
+  const fnPattern = /\b(\w+)\s*\(/g
+  let fnMatch: RegExpExecArray | null
+  while ((fnMatch = fnPattern.exec(returnStr)) !== null) {
+    const fnName = fnMatch[1].toLowerCase()
+    // 跳过已定义的函数和关键字
+    if (fnName in _builtinFunctions) continue
+    if (['and','or','xor','not','in','is','null','true','false','distinct',
+        'all','any','none','single','case','when','then','else','end',
+        'count','sum','avg','max','min','collect'].includes(fnName)) continue
+    if (!_builtinFunctions[fnName]) {
+      throw Object.assign(new Error('SyntaxError: UnknownFunction'), { tckError: 'UnknownFunction' })
     }
   }
 }
@@ -5998,6 +6052,41 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     if (parenEnd === t.length - 1) return _evalBinary(t.slice(1, -1), row)
   }
   // 括号 + 后缀 IS NULL/IS NOT NULL： (expr) IS NULL → 先计算 expr，再判 null
+  // ── 标签谓词：(n:Foo) → 检查 n 是否有标签 Foo ──
+  if (t.startsWith('(')) {
+    // 尝试匹配标签谓词模式：(variable:Label) 或 (:Label)，不会出现在被包裹表达式或后缀中
+    const labelPredMatch = t.match(/^\((\w*)\s*:\s*(\w+)\)$/)
+    if (labelPredMatch) {
+      const varName = labelPredMatch[1]
+      const labelName = labelPredMatch[2]
+      if (!varName) return null  // (:Foo) without variable → null
+      // 从 row 或 row 的子属性查找节点的标签
+      // 可能的情况：
+      // 1. row[varName] 是节点对象 {props: {_label: ...}}
+      // 2. row[varName] 是节点属性扁平化对象 {_label: ...}
+      // 3. row[varName] 是节点引用（存在于变量上下文中）
+      const nodeRef = row?.[varName] as Record<string, unknown> | undefined
+      if (nodeRef) {
+        // 检查是否有 props._label
+        if (typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
+          const props = (nodeRef as any).props
+          if (props && props._label) return props._label === labelName
+          // 直接检查 nodeRef 本身的 _label 属性（扁平化情况）
+          if (nodeRef._label) return nodeRef._label === labelName
+        }
+      }
+      // 回退：检查 varCtx 本身是否有 _label（当 varName 是唯一变量时）
+      if (row && typeof row === 'object' && '_label' in row) {
+        const label = (row as any)._label
+        const fullLabel = (row as any).__fullLabel
+        if (typeof fullLabel === 'string') {
+          return fullLabel.split(':').includes(labelName)
+        }
+        return label === labelName
+      }
+      return null
+    }
+  }
   if (t.startsWith('(') && (t.endsWith(' IS NULL') || t.endsWith(' IS NOT NULL'))) {
     let depth = 0, parenEnd = -1
     for (let i = 0; i < t.length; i++) {
