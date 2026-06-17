@@ -5132,6 +5132,28 @@ function _validateWhereSelfPattern(query: string): void {
   }
 }
 
+/** 共享的 Cypher 关键字 + 内置函数名 Set（用于 _validateUndefinedVariables 排除误判） */
+const _TCK_KEYWORDS: Set<string> = new Set([
+  'AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
+  'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
+  'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
+  'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
+  'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
+  'UNION','ALL','OPTIONAL',
+  // 已知标量/聚合/列表函数名
+  'TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','LABELS','KEYS',
+  'COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
+  'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
+  'COUNT','SUM','AVG','MAX','MIN','COLLECT',
+  // 数学函数
+  'ABS','SQRT','CEIL','FLOOR','ROUND','SIGN','RAND',
+  // 其他内置函数
+  'TOUPPER','TOLOWER','ISNAN','SPLIT','TYPE','PROPERTIES','ID','ELEMENTID',
+  // 时态函数
+  'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
+  'FROMEPOCH','FROMEPOCHMILLIS',
+])
+
 /** 检测 WHERE 子句中引用未定义变量（SyntaxError: UndefinedVariable） */
 function _validateUndefinedVariables(query: string, plan?: any): void {
   const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
@@ -5142,6 +5164,27 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
     const clause = cm[1];
     return [...clause.matchAll(/\((\w+)\s*(?::|\))/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v));
   })
+  // 提取 WITH/UNWIND 子句中定义的变量（提前，以便 RETURN 和 WHERE 检查都能使用）
+  const withVars: string[] = []
+  // 方式1：从 WITH ... AS 提取
+  const withMatches = query.matchAll(/\bWITH\s+(.+?)(?:\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)
+  for (const wm of withMatches) {
+    const items = wm[1].split(',').map(s => s.trim())
+    for (const item of items) {
+      const asMatch = item.match(/\bAS\s+(\w+)\s*$/i)
+      if (asMatch) withVars.push(asMatch[1])
+    }
+  }
+  // 方式2：从整句 WITH/UNWIND 提取 AS 变量（包括子查询路径中的 WITH）
+  const allAsMatches = query.matchAll(/\b(?:WITH|UNWIND)\b[^]*?\bAS\s+(\w+)/gi)
+  for (const am of allAsMatches) {
+    withVars.push(am[1])
+  }
+  // 方式3：从 MATCH p = (n)-[r]->() 提取路径变量
+  const pathVars = query.matchAll(/\bMATCH\s+(\w+)\s*=/gi)
+  for (const pv of pathVars) {
+    withVars.push(pv[1])
+  }
   // 检查 RETURN 列中的未定义变量（如 MATCH () RETURN foo）
   const returnMatch = query.match(/RETURN\s+(.+?)(?:\s+(?:ORDER\s+BY|SKIP|LIMIT)|$)/is)
   if (returnMatch) {
@@ -5168,15 +5211,7 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
     for (const v of bareVars) {
       // 排除数字、关键字、函数名
       if (/^\d/.test(v)) continue
-      if (['AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
-          'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
-          'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
-          'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
-          'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-          'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','LABELS',
-          'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
-          'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
-          'COUNT','SUM','AVG','MAX','MIN','COLLECT'].includes(v.toUpperCase())) continue
+      if (_TCK_KEYWORDS.has(v.toUpperCase())) continue
       // 排除 AS 别名
       const aliasNames = [...beforeAs.matchAll(/\bAS\s+(\w+)/gi)].map(m => m[1])
       if (aliasNames.includes(v)) continue
@@ -5189,19 +5224,7 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
     if (matchVars.length === 0 && varIdents.length > 0) {
       for (const v of varIdents) {
         const vu = v.toUpperCase()
-        if (['AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
-            'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
-            'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
-            'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
-            'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-            'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','LABELS',
-            'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
-            'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
-            'COUNT','SUM','AVG','MAX','MIN','COLLECT',
-            'STARTS','CONTAINS','ENDS',
-            'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
-            'FROMEPOCH','FROMEPOCHMILLIS',
-            'PROPERTIES','TYPE','ID','ELEMENTID'].includes(vu)) continue
+        if (_TCK_KEYWORDS.has(vu)) continue
         // 检查是否在 MATCH、WITH 变量、CREATE 边变量、CREATE 节点变量中定义
         const allDefinedVars = [...matchVars, ...withVars, ...createEdgeVars, ...createNodeVars]
         if (!allDefinedVars.includes(v)) {
@@ -5214,27 +5237,6 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
   }
   if (whereMatch && matchVars.length === 0) return
   const whereBody = whereMatch ? whereMatch[1] : ''
-  // 也提取 WITH 子句中定义的变量：WITH ... AS name
-  const withVars: string[] = []
-  // 方式1：从 WITH ... AS 提取
-  const withMatches = query.matchAll(/\bWITH\s+(.+?)(?:\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)
-  for (const wm of withMatches) {
-    const items = wm[1].split(',').map(s => s.trim())
-    for (const item of items) {
-      const asMatch = item.match(/\bAS\s+(\w+)\s*$/i)
-      if (asMatch) withVars.push(asMatch[1])
-    }
-  }
-  // 方式2：从整句 WITH/UNWIND 提取 AS 变量（包括子查询路径中的 WITH）
-  const allAsMatches = query.matchAll(/\b(?:WITH|UNWIND)\b[^]*?\bAS\s+(\w+)/gi)
-  for (const am of allAsMatches) {
-    withVars.push(am[1])
-  }
-  // 方式3：从 MATCH p = (n)-[r]->() 提取路径变量
-  const pathVars = query.matchAll(/\bMATCH\s+(\w+)\s*=/gi)
-  for (const pv of pathVars) {
-    withVars.push(pv[1])
-  }
   // 合并 MATCH 变量和 WITH 变量
   const definedVars = [...new Set([...matchVars, ...withVars])]
   // 去掉字符串常量
@@ -5245,28 +5247,9 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
   cleaned = cleaned.split(/\s+/).filter(word => !word.includes('.')).join(' ')
   // 提取裸标识符
   const idents = cleaned.match(/\b([a-zA-Z_]\w*)\b/g) || []
-  const keywords = new Set([
-    'AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
-    'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
-    'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
-    'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
-    'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-    'UNION','ALL','OPTIONAL',
-    // 已知函数名（避免误判函数名变量）
-    'TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','LABELS','KEYS',
-    'COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
-    'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
-    'COUNT','SUM','AVG','MAX','MIN','COLLECT',
-    'STARTS','CONTAINS','ENDS',
-    // 时态函数
-    'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
-    'FROMEPOCH','FROMEPOCHMILLIS',
-    // 额外图函数
-    'TYPE','PROPERTIES','ID','ELEMENTID',
-    ])
   for (const v of idents) {
     const vu = v.toUpperCase()
-    if (keywords.has(vu)) continue
+    if (_TCK_KEYWORDS.has(vu)) continue
     if (/^\d/.test(v)) continue
     if (!definedVars.includes(v) && !definedVars.includes(vu)) {
       throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
