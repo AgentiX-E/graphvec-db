@@ -1841,8 +1841,16 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
       }
     }
     const middleWith = nonListWithClauses.length > 1 ? nonListWithClauses.slice(0, -1) : []
+    require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
+      'middleWith=' + middleWith.length + ' nonListWith=' + nonListWithClauses.length + '\n' +
+      '  nwc0=' + (nonListWithClauses[0] ? nonListWithClauses[0].cols.substring(0, 60) : '?') + '\n' +
+      '  nwc1=' + (nonListWithClauses[1] ? nonListWithClauses[1].cols.substring(0, 60) : '?') + '\n');
     for (const mwc of middleWith) {
       const columns = mwc.cols.split(',').map(s => s.trim()).filter(Boolean)
+      require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
+        '  mwc cols=' + JSON.stringify(columns) + ' where=' + mwc.where + '\n' +
+        '  rows before=' + rows.length + '\n' +
+        '  row0=' + (rows.length > 0 ? JSON.stringify(rows[0]).substring(0, 120) : 'empty') + '\n');
       rows = rows.map(row => {
         const newRow: Record<string, unknown> = {}
         const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
