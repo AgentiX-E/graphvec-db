@@ -1508,16 +1508,24 @@ function _walkMultiSteps(
       }
     }
     // 当前 step 的 target filter（约束 step.targetAlias 变量）
-    const targetFilters = planFilters?.length ? planFilters.filter(f => f.source === step.targetAlias) : []
+    // 只预过滤 EQ/NEQ/IS_NULL/IS_NOT_NULL（GT/GTE/LT/LTE 等由 GE filter 补偿或后处理）
+    const simpleOps = new Set(['EQ', 'NEQ', 'IS_NULL', 'IS_NOT_NULL'])
+    const targetFilters = planFilters?.length ? planFilters.filter(f => f.source === step.targetAlias && simpleOps.has(f.operator)) : []
     if (targetFilters.length > 0) {
         for (const fidx of [...nextSet]) {
           const fn = allNodes[fidx]
           if (!fn) { nextSet.delete(fidx); continue }
           let passes = true
           for (const rf of targetFilters) {
-            if (fn[rf.property] === undefined || String(fn[rf.property]) !== String(rf.value)) {
-              passes = false
-              break
+            if (rf.operator === 'IS_NULL') {
+              if (fn[rf.property] != null) { passes = false; break }
+            } else if (rf.operator === 'IS_NOT_NULL') {
+              if (fn[rf.property] == null) { passes = false; break }
+            } else {
+              if (fn[rf.property] === undefined || String(fn[rf.property]) !== String(rf.value)) {
+                passes = false
+                break
+              }
             }
           }
           if (!passes) nextSet.delete(fidx)
@@ -2812,9 +2820,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── 多步跳转支持（MATCH (a)-->(b)-->(c) 或变量长度路径 (a)-[:X*1..3]->(b)）──
     // 当 steps.length > 1 或单步但有 range（变量长度）时，用 __edges 手动遍历
+    // 扩展：单步有边 MATCH（steps[0].edgeLabel 不为空）也走 __edges 遍历，
+    // 避免 GE 边存储与 allNodes.__edges 不同步的问题
     const hasMultiStep = plan.steps && plan.steps.length > 1 && allNodes.length > 0
     const hasVarLen = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
-    let rawRecords: any[] = (hasMultiStep || hasVarLen)
+    const hasEdgeStep = plan.steps?.length === 1 && allNodes.length > 0 && (plan.steps[0].edgeLabel != null || plan.steps[0].direction === 'out' || plan.steps[0].direction === 'in')
+    const useEdgeWalk = hasMultiStep || hasVarLen || hasEdgeStep
+    let rawRecords: any[] = (useEdgeWalk)
       ? (() => {
           const multiStepRaw: any[] = []
           for (let i = 0; i < allNodes.length; i++) {
@@ -2830,6 +2842,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             }
             if (skipNode) continue
             const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
+            // single debug — write to /tmp
+            if (i === 0 && plan.filters?.some((f: any) => f.property === 'var' && f.operator === 'GT')) {
+              require('fs').appendFileSync('/tmp/magic.log', 'MAGIC walks=' + pathResults.length + '\n')
+            }
         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
         // 防止后续 step 引入不相关的中间节点
         const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).find(rc => {
@@ -2838,7 +2854,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           return rc !== firstSrc && plan.steps?.some(s => s.targetAlias === rc)
         })
         let boundedTargetIndices = pathResults
-        if (retVar && plan.steps && !hasVarLen) {
+        if (retVar && plan.steps && !hasVarLen && !hasEdgeStep) {
           const defStep = plan.steps.find(s => s.targetAlias === retVar)
           if (defStep !== undefined) {
             const defStepIdx = plan.steps.indexOf(defStep)
@@ -2877,6 +2893,16 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   geNode.__targetProps[k] = targetNode[k]
                 }
               }
+              // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
+              geNode.__crossVarRows = {}
+              if (plan.steps?.length) {
+                const thisStep = plan.steps[plan.steps.length - 1]
+                geNode.__crossVarRows[thisStep.targetAlias] = { ...targetNode, props: { ...targetNode }, _alias: thisStep.targetAlias }
+                if (thisStep.source) {
+                  const srcNode = allNodes.find(n => n._label === plan.scanLabel)
+                  if (srcNode) geNode.__crossVarRows[thisStep.source] = { ...srcNode, props: { ...srcNode } }
+                }
+              }
               // ── 多步多 RETURN 变量支持 ──
               // 如果有多个 RETURN 的非 source 变量（如 `RETURN b, c`），
               // 对每个非最终步的 targetAlias，收集其节点属性存入 __targetPropsMap
@@ -2911,7 +2937,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   }
                 }
               }
-              if (hasVarLen) {
+              if (hasVarLen || hasEdgeStep) {
                 // 变量长度路径：简化结果格式，只保留目标节点属性+id
                 // 不走后处理边变量逻辑，直接从 __targetProps 取值
                 multiStepRaw.push({
@@ -3577,7 +3603,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       }
       return true
     })
-    const rawWithEdges = (edgeVarCols.length && (hasMatchingEdgeLabel || edgesPayload.length))
+    let rawWithEdges = (edgeVarCols.length && (hasMatchingEdgeLabel || edgesPayload.length))
       ? edgePropFilteredRecords.map((r: any) => {
           const row: Record<string, unknown> = {}
           if (r.props) Object.assign(row, r.props)

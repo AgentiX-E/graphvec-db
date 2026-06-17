@@ -129,15 +129,24 @@ async function run(q: string): Promise<void> {
       }
     }
     const plan = parseQuery(resolvedQ); assert.ok(plan); assert.ok(plan.type)
-    // 大整数精度修复：ANTLR 把超出 Number 安全范围的整数字面量截断，
-    // 从 WHERE 文本中重新提取精确值并写入 filter.value
+    // 大整数精度修复
     _fixBigIntFilters(plan as any, resolvedQ)
-    // 编译时语义验证（SyntaxError 检查）— 单独 try-catch
+    // 编译时语义验证
     try {
       _validatePlan(plan, resolvedQ)
     } catch (e: any) {
       st.err = e; st.res = []; return
     }
+
+    // 执行查询
+    const result = await _executeQuery(plan, st.nodes, resolvedQ)
+    st.err = null
+    st.res = result as any[]
+  } catch (e: any) {
+    st.err = e; st.res = []
+  }
+}
+function _fixBigIntFilters(plan: any, query: string): void {
   if (!plan.filters?.length) return
   // 从 WHERE 文本中提取所有形如 `= 4611686018427387905` 的字面量
   const bigIntPattern = /=\s*(-?\d{16,})/g
@@ -551,6 +560,7 @@ Given('having executed:', async function (query: string) {
           continue
         }
         const node: Record<string, unknown> = { _label: cn.label || 'Default' }
+        if (cn.alias) node['_alias'] = cn.alias
         if (cn.props) { for (const [k, v] of Object.entries(cn.props)) {
           // parseQuery 将 props 打包为 {type:'STRING', value:'val'}，需解包
           node[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
@@ -686,26 +696,40 @@ Given('having executed:', async function (query: string) {
             }
           }
           const edgesForStNodes: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }> = []
+          // 构建 cnsIdx → stNodesIdx 映射
+          // st.nodes 去重（重复 alias 不 push），但 createEdges 索引按 cns 原始索引
+          const cnsToStIdx: number[] = []
+          const stAliasToIdx = new Map<string, number>()
+          for (let si = 0; si < st.nodes.length; si++) {
+            const sn = st.nodes[si] as any
+            if (sn._alias) stAliasToIdx.set(sn._alias, si)
+          }
+          let anonymousCounter = 0
+          for (let ci = 0; ci < cns.length; ci++) {
+            const cn = cns[ci]
+            if (cn.alias && stAliasToIdx.has(cn.alias)) {
+              cnsToStIdx[ci] = stAliasToIdx.get(cn.alias)!
+            } else {
+              cnsToStIdx[ci] = stAliasToIdx.size + anonymousCounter
+              anonymousCounter++
+            }
+          }
           for (const edge of (plan as any).createEdges as Array<{ source: string; target: string; sourceIdx?: number; targetIdx?: number; label: string | null; direction: string }>) {
-            // 使用 alias 映射到 st.nodes 索引，匿名节点（alias=）fallback 到 sourceIdx/targetIdx
-            let srcIdx: number | undefined
-            let dstIdx: number | undefined
-            if (edge.source && aliasToNodeIdx.has(edge.source)) {
-              srcIdx = aliasToNodeIdx.get(edge.source)
-            } else if (edge.sourceIdx !== undefined) {
-              srcIdx = edge.sourceIdx < cns.length ? edge.sourceIdx : undefined
-            }
-            if (edge.target && aliasToNodeIdx.has(edge.target)) {
-              dstIdx = aliasToNodeIdx.get(edge.target)
-            } else if (edge.targetIdx !== undefined) {
-              dstIdx = edge.targetIdx < cns.length ? edge.targetIdx : undefined
-            }
-            if (srcIdx !== undefined && dstIdx !== undefined && srcIdx < cns.length && dstIdx < cns.length) {
+            // 使用 cnsToStIdx 映射到 st.nodes 索引
+            const srcIdx = edge.sourceIdx !== undefined ? cnsToStIdx[edge.sourceIdx] : undefined
+            const dstIdx = edge.targetIdx !== undefined ? cnsToStIdx[edge.targetIdx] : undefined
+            if (srcIdx !== undefined && dstIdx !== undefined && srcIdx < st.nodes.length && dstIdx < st.nodes.length) {
               edgesForStNodes.push({ srcIdx, dstIdx, label: edge.label || '', props: (edge as any).props || null })
             }
           }
             if (edgesForStNodes.length > 0) {
-            (st.nodes[0] as any).__edges = edgesForStNodes
+            // 为每个涉及边的节点附加 __edges
+            for (const ef of edgesForStNodes) {
+              if (!(st.nodes[ef.srcIdx] as any).__edges) (st.nodes[ef.srcIdx] as any).__edges = []
+              ;(st.nodes[ef.srcIdx] as any).__edges.push(ef)
+              if (!(st.nodes[ef.dstIdx] as any).__edges) (st.nodes[ef.dstIdx] as any).__edges = []
+              ;(st.nodes[ef.dstIdx] as any).__edges.push(ef)
+            }
           }
         }
       }
