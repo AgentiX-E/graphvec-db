@@ -5148,7 +5148,12 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
     let returnColStr = returnMatch[1]
     // 去除字符串字面量和 map/list 字面量内部的内容，只保留变量引用
     returnColStr = returnColStr.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '')
-    returnColStr = returnColStr.replace(/\{[^}]*\}/g, '')
+    // 反复去除 {} 和 [] 字面量以处理嵌套 {id: '0001', batters: {batter: [...]}}
+    let prev = ''
+    while (prev !== returnColStr) {
+      prev = returnColStr
+      returnColStr = returnColStr.replace(/\{[^{}]*\}/g, ' ').replace(/\[[^\[\]]*\]/g, ' ')
+    }
     // 扫描所有在 RETURN 中引用但未在 MATCH 中定义的变量（排除 AS 后的别名）
     // 用 /\bAS\s+/i 分割出 AS 之前的表达式主体
     const beforeAs = returnColStr.replace(/\bAS\s+\w+\s*/ig, '').trim()
@@ -5195,9 +5200,10 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
             'COUNT','SUM','AVG','MAX','MIN','COLLECT',
             'STARTS','CONTAINS','ENDS',
             'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
-            'FROMEPOCH','FROMEPOCHMILLIS'].includes(vu)) continue
-        // 检查是否在 MATCH、CREATE 边变量、CREATE 节点变量中定义
-        const allDefinedVars = [...matchVars, ...createEdgeVars, ...createNodeVars]
+            'FROMEPOCH','FROMEPOCHMILLIS',
+            'PROPERTIES','TYPE','ID','ELEMENTID'].includes(vu)) continue
+        // 检查是否在 MATCH、WITH 变量、CREATE 边变量、CREATE 节点变量中定义
+        const allDefinedVars = [...matchVars, ...withVars, ...createEdgeVars, ...createNodeVars]
         if (!allDefinedVars.includes(v)) {
           // 额外检查：如果 v 看起来是属性访问（有小数点），跳过
           if (v.includes('.') && allDefinedVars.includes(v.split('.')[0])) continue

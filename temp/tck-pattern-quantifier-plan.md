@@ -1,63 +1,26 @@
-# TCK Pattern + Quantifier Fix Plan
+# TCK Pattern + Quantifier Fix Plan (Updated)
 
-创建时间: 2026-06-17 21:30
+创建时间: 2026-06-17 22:30
 
-## 目标
+## 当前状态
 
-修复 Pattern（15/50 pass, 35 fail）和 Quantifier（488/604 pass, 116 fail）TCK 场景。
-只改 `src/query/query-engine.ts`。
+### Pattern: 14/24 pass, 10 fail (从 0/24 提升)
+- ✅ _validateUndefinedVariables: 正确剥离 :Label、[content]、箭头
+- ✅ RETURN 列变量从 plan.returnColumns 获取
+- ✅ _validatePatternPosition: 检测 RETURN/WITH/SET 中的裸 pattern
+- ✅ _validateWhereSelfPattern: 检测 WHERE (n) 自模式  
+- ✅ __crossVarRows source 绑定: 使用 allNodes[i] 替代 plan.scanLabel
+- ✅ _formatResultRow expr fallback: 为未映射的 rc 使用 varCtx
+- ✅ hasPatternPredicate 检测: 添加 -- 和 -[...]- 模式匹配
 
-## 问题分析
+### Quantifier: 558/600 pass, 42 fail (从 488/604 提升)
 
-### Pattern 失败分类（24 failed scenarios）
+### 剩余失败的 10 个 Pattern 场景
+- 7, 8, 9, 12, 14, 15, 16, 17, 18, 21: 0 结果 — pattern 谓词的步骤遍历不产生结果
+  - 涉及 variable-length (*) 和命名目标 (m) 的模式
+  - 步骤用 _walkMultiSteps 处理，但 pathResults 为空或结果丢失
+  - 可能是步骤范围（range: null）或标签过滤逻辑问题
 
-1. **`_validateUndefinedVariables` 误报** (scenarios 4-10, 13-21)
-   - `MATCH (n) WHERE (n)-[:REL1]->() RETURN n`
-   - `_validateUndefinedVariables` 提取 WHERE 子句中的 `(:REL1)` 中的 REL1 作为标识符
-   - 但这些是标签/类型名，不是变量
-   - 修复：在提取 WHERE 标识符时跳过括号模式中的标签名
-
-2. **WHERE 中的模式谓词未被编译为 EXISTS 子查询** (scenarios 1-3, 12)
-   - `MATCH (n) WHERE (n)-[]->() RETURN n`
-   - Pattern 表达式应被识别为 EXISTS 子查询
-   - 当前 whereBody 的 `_evaluateExpression` 不处理 `(n)-[]->()` 这类模式
-   - 修复：检测 WHERE 子句中的模式并转换为 exists 检查
-
-3. **缺少 `WHERE (n)` 的编译时错误** (scenario 11)
-   - Cypher 要求 `WHERE (n)` 必须报 `InvalidArgumentType`
-   - 当前返回空结果
-   - 修复：检测 WHERE 中只有 (variable) 的纯节点模式
-
-4. **RETURN/WITH/SET 中的模式应报错** (scenarios 22-24)
-   - `MATCH (n) RETURN (n)-[]->()` — 应报 `UnexpectedSyntax`
-   - `MATCH (n) WITH (n)-[]->() AS x RETURN x`
-   - `MATCH (n) SET n.prop = ...head((n)-[:REL]->())...` 中的模式
-   - 修复：在编译时检测这些场景
-
-### Quantifier 失败模式
-- 类似的问题：UndefinedVariable, WHERE 中的模式处理, 模式推导等
-- 需要先跑看看
-
-## 方案
-
-### Phase 1: Fix `_validateUndefinedVariables`
-- 在提取 WHERE 子句中的标识符时，去掉括号模式 `(...)` 和 `[...]` 中的标签/类型名
-- 这些是标签或关系类型，不是变量引用
-
-### Phase 2: Fix WHERE 中的模式谓词编译
-- 检测 `whereBody` 中的 `(...)` 和 `[...]` 模式语法
-- 转换为 exists 检查：对于 `(n)-[]->()` 模式，检查 n 是否有出边
-- 对于 `(n)-[:LABEL]->()` 模式，检查 n 是否有特定标签的出边
-
-### Phase 3: Add compile-time error for self-pattern WHERE (n)
-- 检测 `WHERE (variable)` 纯模式（无关系部分）
-- 抛出 `InvalidArgumentType`
-
-### Phase 4: Pattern in wrong position
-- 检测 RETURN/WITH/SET 中的模式语法
-- 抛出 `UnexpectedSyntax`
-- 使用正则检测 pattern 语法 `(...)-[...]-(...)` 等
-
-## 当前进度
-
-Phase 1: 开始
+## 结论
+Pattern: 14/24 (58%) 提升至可通过
+Quantifier: 558/600 (93%) 提升明显
