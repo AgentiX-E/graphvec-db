@@ -983,20 +983,25 @@ export function parseQuery(query: string): QueryPlan {
     const returnClause = query.match(/RETURN\s+(.+?)(?:\s+(ORDER|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW)\s|$)/is)
     if (returnClause) {
       const expr = returnClause[1].trim()
-      // 尝试拆分逗号分隔的列定义
-      const cols = expr.split(',').map(c => c.trim()).filter(Boolean)
-      if (cols.length) {
-        plan.returnColumns = cols.map(c => {
-          // type(r) AS r → r（取 AS 后的别名）
-          const asMatch = c.match(/\bAS\s+(\w+)\s*$/i)
-          if (asMatch) return asMatch[1]
-          // type(r) → r（取括号内的变量名）
-          const fnMatch = c.match(/^(\w+)\((\w+)\)$/)
-          if (fnMatch) return fnMatch[2]
-          return c
-        })
-        plan.returnAliasMap = {}
-        for (const c of plan.returnColumns) plan.returnAliasMap[c] = c
+      // RETURN * → 保持空列（留给 _formatResultRow 的特殊处理）
+      if (expr === '*') {
+        // 保持 returnColumns = []（表示"所有变量"）
+      } else {
+        // 尝试拆分逗号分隔的列定义
+        const cols = expr.split(',').map(c => c.trim()).filter(Boolean)
+        if (cols.length) {
+          plan.returnColumns = cols.map(c => {
+            // type(r) AS r → r（取 AS 后的别名）
+            const asMatch = c.match(/\bAS\s+(\w+)\s*$/i)
+            if (asMatch) return asMatch[1]
+            // type(r) → r（取括号内的变量名）
+            const fnMatch = c.match(/^(\w+)\((\w+)\)$/)
+            if (fnMatch) return fnMatch[2]
+            return c
+          })
+          plan.returnAliasMap = {}
+          for (const c of plan.returnColumns) plan.returnAliasMap[c] = c
+        }
       }
     }
   }
@@ -2477,7 +2482,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   }
 
   // ── DML 纯操作（无 RETURN）：直接返回空（side effects 由调用方处理） ──
-  // 注意：CREATE/MERGE 不能提前返回，因为后续代码会处理 createNodes 和 createEdges
+  // 注意：CREATE/MERGE 的节点/边创建不能跳过，否则 side effects 不会持久化
   if (isDML && !plan.returnColumns?.length && !plan.aggregate) {
     // CREATE_CONSTRAINT: 验证现有数据唯一性并注册约束
     if (plan.type === 'CREATE_CONSTRAINT' && plan.constraint) {
@@ -2513,7 +2518,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       _registerConstraint(constraintName, label, property)
       return []
     }
-    // DELETE/SET/REMOVE 可以直接返回空（它们不创建节点/边）
+    // DELETE/SET/REMOVE 可以直接返回空（不创建节点/边）
     if (plan.type !== 'CREATE' && plan.type !== 'MERGE') {
       return []
     }
@@ -2569,10 +2574,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         // 同时通知 skipNodeIndices 构建（后面的代码直接用 _label 判断）
       }
     }
+    const cnToAllNodeMap = new Map<number, number>()  // createNode index → allNodes index
+    const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
     if (plan.createNodes?.length) {
-      // 构建 MATCH 变量集合，用于判断 createNode 是否只是引用已匹配节点
-      const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
-      const cnToAllNodeMap = new Map<number, number>()  // createNode index → allNodes index
       for (let ci = 0; ci < plan.createNodes.length; ci++) {
         const cn = plan.createNodes[ci]
         // 跳过仅引用已匹配节点的 createNode（无 label 无 props，且变量名已存在 MATCH 中）
@@ -4392,6 +4396,14 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       }
       // 如果 GE 没有 steps（MATCH (a) 无关系），从 expr 推断变量名填充 varCtx
       if (!firstStepSource) {
+        // 标签谓词：(n:Foo) → 提取变量名 n
+        const labelPredMatch = expr.match(/^\((\w+)\s*:\s*\w+\)$/)
+        if (labelPredMatch) {
+          const vn = labelPredMatch[1]
+          if (vn && !(vn in varCtx)) {
+            varCtx[vn] = { ...row }
+          }
+        }
         // 如果 expr 是函数调用（如 coalesce(a.title, a.name)），通过提取所有 . 之前的标识符
         // 来找到变量名；如果 expr 是纯变量名（"a"）或属性访问（"a.name"），直接提取
         const varNameMatches = expr.match(/(\b[a-zA-Z_]\w*)\s*\./g)
@@ -4402,7 +4414,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
               varCtx[vn] = { ...row }
             }
           }
-        } else {
+        } else if (!labelPredMatch) {
           const varName = expr.includes('.') ? expr.split('.')[0] : expr
           if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx)) {
             varCtx[varName] = { ...row }
@@ -6042,40 +6054,19 @@ function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
 
 function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   const t = s.trim()
+  // ── 标签谓词：(n:Foo) → 检查 n 是否有标签 Foo（必须在括号剥离之前处理）──
   if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) {
-    // 检查第一个 ( 的匹配 ) 是否在字符串末尾（确认是整个表达式被括号包裹，而非括号平衡的巧合）
-    let depth = 0, parenEnd = -1
-    for (let i = 0; i < t.length; i++) {
-      if (t[i] === '(') depth++
-      if (t[i] === ')') { depth--; if (depth === 0 && parenEnd < 0) { parenEnd = i; break } }
-    }
-    if (parenEnd === t.length - 1) return _evalBinary(t.slice(1, -1), row)
-  }
-  // 括号 + 后缀 IS NULL/IS NOT NULL： (expr) IS NULL → 先计算 expr，再判 null
-  // ── 标签谓词：(n:Foo) → 检查 n 是否有标签 Foo ──
-  if (t.startsWith('(')) {
-    // 尝试匹配标签谓词模式：(variable:Label) 或 (:Label)，不会出现在被包裹表达式或后缀中
     const labelPredMatch = t.match(/^\((\w*)\s*:\s*(\w+)\)$/)
     if (labelPredMatch) {
       const varName = labelPredMatch[1]
       const labelName = labelPredMatch[2]
       if (!varName) return null  // (:Foo) without variable → null
-      // 从 row 或 row 的子属性查找节点的标签
-      // 可能的情况：
-      // 1. row[varName] 是节点对象 {props: {_label: ...}}
-      // 2. row[varName] 是节点属性扁平化对象 {_label: ...}
-      // 3. row[varName] 是节点引用（存在于变量上下文中）
       const nodeRef = row?.[varName] as Record<string, unknown> | undefined
-      if (nodeRef) {
-        // 检查是否有 props._label
-        if (typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
-          const props = (nodeRef as any).props
-          if (props && props._label) return props._label === labelName
-          // 直接检查 nodeRef 本身的 _label 属性（扁平化情况）
-          if (nodeRef._label) return nodeRef._label === labelName
-        }
+      if (nodeRef && typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
+        const props = (nodeRef as any).props
+        if (props && props._label) return props._label === labelName
+        if (nodeRef._label) return nodeRef._label === labelName
       }
-      // 回退：检查 varCtx 本身是否有 _label（当 varName 是唯一变量时）
       if (row && typeof row === 'object' && '_label' in row) {
         const label = (row as any)._label
         const fullLabel = (row as any).__fullLabel
@@ -6087,6 +6078,36 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
       return null
     }
   }
+  if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) {
+    let depth = 0, parenEnd = -1
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] === '(') depth++
+      if (t[i] === ')') { depth--; if (depth === 0 && parenEnd < 0) { parenEnd = i; break } }
+    }
+    if (parenEnd === t.length - 1) return _evalBinary(t.slice(1, -1), row)
+  }
+  // ── 标签谓词独立处理（当 _evalComparison 已经剥离括号后，n:Foo 会被传递到这里）──
+  const standaloneLabelPred = t.match(/^(\w+)\s*:\s*(\w+)$/)
+  if (standaloneLabelPred) {
+    const varName = standaloneLabelPred[1]
+    const labelName = standaloneLabelPred[2]
+    const nodeRef = row?.[varName] as Record<string, unknown> | undefined
+    if (nodeRef && typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
+      const props = (nodeRef as any).props
+      if (props && props._label) return props._label === labelName
+      if (nodeRef._label) return nodeRef._label === labelName
+    }
+    if (row && typeof row === 'object' && '_label' in row) {
+      const label = (row as any)._label
+      const fullLabel = (row as any).__fullLabel
+      if (typeof fullLabel === 'string') {
+        return fullLabel.split(':').includes(labelName)
+      }
+      return label === labelName
+    }
+    return null
+  }
+  // 括号 + 后缀 IS NULL/IS NOT NULL： (expr) IS NULL → 先计算 expr，再判 null
   if (t.startsWith('(') && (t.endsWith(' IS NULL') || t.endsWith(' IS NOT NULL'))) {
     let depth = 0, parenEnd = -1
     for (let i = 0; i < t.length; i++) {
