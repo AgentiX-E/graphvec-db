@@ -3987,7 +3987,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             ctx[key] = val
           }
         }
-        // 上下文需要包含 _allNodes 供模式谓词运行时检查
+        // 注入原始 GE 记录中的节点 ID（供 _callPatternExists 查找节点用）
+        if (rawEntry?.id !== undefined) {
+          ctx._geNodeId = rawEntry.id
+        }
+        // 上下文需要包含 _geInstance 和 _allNodes 供模式谓词运行时检查
         ctx._geInstance = ge
         ctx._allNodes = allNodes
         const evalVal = _evaluateExpression(compiledWhere, ctx)
@@ -5133,19 +5137,24 @@ function _callPatternExists(patternDef: string, row?: Record<string, unknown>): 
       }
     }
     
-    // 方法 2: 从 allNodes 中按 _alias 查找
+    // 方法 2: 使用 _geNodeId（由 WHERE 评估循环注入的 raw GE node ID）
+    if (!srcId && row && row._geNodeId !== undefined) {
+      srcId = String(row._geNodeId)
+    }
+    
+    // 方法 3: 从 allNodes 中按 _alias 查找
     if (!srcId) {
       for (const n of allNodes) {
         const alias = n._alias || n.alias || ''
         if (alias === srcVar) {
-          srcId = String(n._id || n.id || '')
+          srcId = String(n._id || n.id || (allNodes.indexOf(n)))
           srcNode = n as Record<string, unknown>
           break
         }
       }
     }
     
-    // 方法 3: 尝试通过 ge.getAllNodes() 或遍历 ge 的内部节点
+    // 方法 4: 尝试通过 ge.getAllNodes() 或遍历 ge 的内部节点
     if (!srcId && ge) {
       try {
         // 尝试获取 GE 的所有节点
@@ -5431,7 +5440,7 @@ function _validateUndefinedVariables(query: string): void {
           'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
           'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
           'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-          'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH',
+          'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH','LABELS',
           'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
           'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
           'COUNT','SUM','AVG','MAX','MIN','COLLECT',
@@ -5453,7 +5462,7 @@ function _validateUndefinedVariables(query: string): void {
             'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
             'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
             'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-            'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH',
+            'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH','LABELS',
             'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
             'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
             'COUNT','SUM','AVG','MAX','MIN','COLLECT',
@@ -5507,8 +5516,12 @@ function _validateUndefinedVariables(query: string): void {
   // 去掉属性访问（x.y 格式）
   cleaned = cleaned.split(/\s+/).filter(word => !word.includes('.')).join(' ')
   // 去掉括号模式中的标签和类型名（如 :REL1、:Label 在 WHERE (n)-[:REL1]->() 中
-  // 是关系类型和标签名，不是变量引用）
-  cleaned = cleaned.replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ')
+  // 是关系类型和标签名，不是变量引用），但保留变量名（如 [r], (a)）
+  // 对于 (n:Label) — 保留 n, 去掉 :Label
+  // 对于 [:LABEL*] — 去掉 :LABEL
+  cleaned = cleaned.replace(/:(\w+)/g, '').replace(/\{\s*\}/g, '')
+  // 去掉模式中的箭头符号和标点
+  cleaned = cleaned.replace(/<-/g, ' ').replace(/->/g, ' ').replace(/--/g, ' ')
   // 提取裸标识符
   const idents = cleaned.match(/\b([a-zA-Z_]\w*)\b/g) || []
   const keywords = new Set([
@@ -5519,7 +5532,7 @@ function _validateUndefinedVariables(query: string): void {
     'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
     'UNION','ALL','OPTIONAL',
     // 已知函数名（避免误判函数名变量）
-    'TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH','KEYS',
+    'TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH','LABELS','KEYS',
     'COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
     'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
     'COUNT','SUM','AVG','MAX','MIN','COLLECT',
@@ -6996,11 +7009,15 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     if (pred === 'single') return count === 1
   }
   // 函数调用（必须在 dot 之前）
-  const fnMatch = t.match(/^(\w+)\((.+?)\)$/s)
+  const fnMatch = t.match(/^((?:\w+\.)*\w+)\((.+?)\)$/s)
   if (fnMatch) {
     const args = fnMatch[2].trim() ? _parseCommaList(fnMatch[2]).map(a => a.trim()) : []
     return _callFunction(fnMatch[1].toLowerCase(), args, row)
   }
+  // 解析含 `.` 的函数表达式：先处理函数名部分，再处理点后的属性
+  // 例：datetime.fromepoch(416779, NaN) → 不匹配上述函数调用，所以会走到属性访问
+  // 增加一个更严格的测试：t 以单词字符开头，包含 .，包含 (，且以 ) 结尾
+  // 上面的 fnMatch 已经处理了含 . 的，不需要额外逻辑
   // 如果包含顶层 `^`，是表达式而非纯字面量，委托给 _evalExp
   if (t.includes('^')) {
     let depth = 0, inStr = false, strChar = ''
