@@ -4507,7 +4507,8 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   if (!ret?.length || plan.aggregate) {
     // RETURN *：返回所有在作用域内的变量
     if (plan.type === 'QUERY' && !plan.aggregate && !ret?.some((rc: string) => /^\w+\(/.test(rc))) {
-      const result: QueryRow = {}
+      console.log('DBG-EARLY-RETURN: entering early return, ret=' + JSON.stringify(ret) + ' ret.some=' + (ret && ret.some((rc: string) => /^\w+\(/.test(rc))))
+      const result: QueryRow = {}      const result: QueryRow = {}
       // 从 r 收集所有变量（包括 __targetPropsMap 中的中间变量等）
       if (r.__targetPropsMap) {
         for (const vn of Object.keys(r.__targetPropsMap)) {
