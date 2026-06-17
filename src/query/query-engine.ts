@@ -1852,7 +1852,7 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
         '  rows before=' + rows.length + '\n' +
         '  row0=' + (rows.length > 0 ? JSON.stringify(rows[0]).substring(0, 120) : 'empty') + '\n');
       rows = rows.map(row => {
-        const newRow: Record<string, unknown> = {}
+        const newRow: Record<string, unknown> = { ...row }
         const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
         require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
           '  map: evalCtx keys=' + Object.keys(evalCtx).slice(0, 10).join(',') + '\n');
@@ -1876,8 +1876,10 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
         return newRow
       })
       if (mwc.where) {
+        // 用完整 evalCtx（含原始 row 中的 i, j 等 UNWIND 变量）来过滤
         rows = rows.filter(row => {
-          const val = _evaluateExpression(mwc.where!, row)
+          const fullCtx: Record<string, unknown> = { ...varCtx, ...row }
+          const val = _evaluateExpression(mwc.where!, fullCtx)
           return val === true
         })
       }
@@ -1952,16 +1954,29 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
 
   // ── WITH WHERE 过滤 ──
   // WITH ... WHERE 的过滤在 parseQuery 中没有被提取到 filters。
-  // 从原始 query 文本提取 WHERE 子句，用表达式引擎逐行过滤。
+  // 从原始 query 文本提取最后一个 WITH 的 WHERE 子句，用表达式引擎逐行过滤。
   if (query && !plan.aggregate && rows.length > 1) {
-    const withWhereMatch = query.match(/\bWHERE\s+(.+?)(?:\s+(?:RETURN|WITH|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT)\s|$)/is)
-    if (withWhereMatch && !withWhereMatch[1].includes('[')) {
+    let whereText = ''
+    // 对于多级 WITH，提取最后一个 WITH 的 WHERE（如 WHERE result）
+    if (plan.unwind || plan.hasMatch) {
+      const withParts = query.split(/\bWITH\s+/i).filter(Boolean)
+      if (withParts.length > 1) {
+        const lastWith = withParts[withParts.length - 1]
+        const whereMatch = lastWith.match(/\bWHERE\s+(.+?)(?:\s+(?:RETURN|WITH|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT)\s|$)/is)
+        if (whereMatch && !whereMatch[1].includes('[')) whereText = whereMatch[1].trim()
+      }
+    }
+    // Fallback：全局第一个 WHERE（用于无多级 WITH 的场景）
+    if (!whereText) {
+      const globalWhereMatch = query.match(/\bWHERE\s+(.+?)(?:\s+(?:RETURN|WITH|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT)\s|$)/is)
+      if (globalWhereMatch && !globalWhereMatch[1].includes('[')) whereText = globalWhereMatch[1].trim()
+    }
+    if (whereText) {
       // 有 MATCH 的 WHERE 由 MATCH 路径处理（hasMatch=true），只有无 MATCH 的 WITH WHERE 才在此处理
-      if (!plan.hasMatch) {
-        const whereExpr = withWhereMatch[1].trim()
-        // 过滤：避免与 MATCH+WHERE 的 GE post-filter 重复（它只在 hasMatch 时执行）
+      // 但 pipeline 中的 WITH WHERE（如 WHERE result）需在此处理，不受 hasMatch 影响
+      if (!plan.hasMatch || (plan.hasMatch && plan.unwind)) {
         rows = rows.filter(row => {
-          const val = _evaluateExpression(whereExpr, row)
+          const val = _evaluateExpression(whereText, row)
           return val === true
         })
       }
