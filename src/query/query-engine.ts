@@ -351,6 +351,7 @@ export interface QueryPlan {
     scanLabel: string | null
     steps: TraverseStep[]
     filters: FilterClause[]
+    variableName?: string
   }>
   /** WITH 子句：管道中间投影 */
   with?: {
@@ -4140,16 +4141,20 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             const nodeProps: Record<string, unknown> = {}
             if (first && first.props) {
               for (const [k, v] of Object.entries(first.props)) {
-                if (k !== '__edges') nodeProps[k] = v
+                if (k !== '__edges' && !k.startsWith('_')) nodeProps[k] = v
               }
             }
             // 确定需要填充的变量名
             const sourceVar = opt.steps?.[0]?.source || ''
             const targetVar = opt.steps?.[0]?.targetAlias || ''
             const edgeVar = opt.steps?.[0]?.edgeAlias || ''
+            // 如果 steps 为空但有 variableName（单节点 OPTIONAL MATCH 如 (n)），使用 variableName
+            const optVarName = opt.variableName || ''
             // 将匹配到的节点属性填回 row
             if (sourceVar && !row[sourceVar]) {
               row[sourceVar] = nodeProps
+            } else if (optVarName && !row[optVarName] && !sourceVar) {
+              row[optVarName] = nodeProps
             }
             if (targetVar && !row[targetVar]) {
               row[targetVar] = nodeProps
@@ -4163,9 +4168,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             const sourceVar = opt.steps?.[0]?.source || ''
             const targetVar = opt.steps?.[0]?.targetAlias || ''
             const edgeVar = opt.steps?.[0]?.edgeAlias || ''
-            if (!sourceVar && !targetVar && !edgeVar && opt.scanLabel) {
+            const optVarName = opt.variableName || ''
+            if (optVarName && !sourceVar && !targetVar && !edgeVar) {
+              // 单节点模式：OPTIONAL MATCH (n) — 变量名来自 variableName
+              row[optVarName] = null
+            } else if (!sourceVar && !targetVar && !edgeVar && opt.scanLabel) {
               // 单节点模式：OPTIONAL MATCH (n:Label) — 变量名来自 scanLabel
-              ;[sourceVar, targetVar].filter(Boolean).forEach(v => { row[v] = null })
+              const scanVar = opt.scanLabel
+              if (scanVar && !row[scanVar]) row[scanVar] = null
             } else {
               if (sourceVar && !row[sourceVar]) row[sourceVar] = null
               if (targetVar && !row[targetVar]) row[targetVar] = null
@@ -4760,6 +4770,24 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
   }
 
+  // ── SyntaxError for size() on paths or patterns ──
+  if (query) {
+    // Detect size(p) where p is a path variable
+    const pathVarMatch = query.match(/MATCH\s+(\w+)\s*=\s*\(/i);
+    const pathVar = pathVarMatch ? pathVarMatch[1] : null;
+    if (pathVar) {
+      const sizePathMatch = query.match(new RegExp(`\\bsize\\s*\\(\\s*${pathVar}\\s*\\)`, 'i'));
+      if (sizePathMatch) {
+        throw Object.assign(new Error('SyntaxError'), { tckError: 'SyntaxError' });
+      }
+    }
+    // Detect size() with pattern predicate arguments
+    const sizeOnPattern = /size\s*\(\s*\([^)]*\)\s*(?:--|->|<-)/i;
+    if (sizeOnPattern.test(query)) {
+      throw Object.assign(new Error('SyntaxError'), { tckError: 'SyntaxError' });
+    }
+  }
+
   // ── SyntaxError: AmbiguousAggregationExpression ──
   // 当两个同名聚合在同一个 RETURN 中出现
   if (plan.aggregate && plan.returnColumns?.length > 1) {
@@ -5171,6 +5199,7 @@ const _TCK_KEYWORDS: Set<string> = new Set([
   'COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
   'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
   'COUNT','SUM','AVG','MAX','MIN','COLLECT',
+  'PERCENTILECONT','PERCENTILEDISC',
   // 数学函数
   'ABS','SQRT','CEIL','FLOOR','ROUND','SIGN','RAND',
   // 其他内置函数
@@ -5783,7 +5812,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   toupper: ([a], r) => String(_evalBinary(a, r)).toUpperCase(),
   tolower: ([a], r) => String(_evalBinary(a, r)).toLowerCase(),
   trim: ([a], r) => String(_evalBinary(a, r)).trim(),
-  reverse: ([a], r) => [...String(_evalBinary(a, r))].reverse().join(''),
+  reverse: ([a], r) => {
+    const v = _evalBinary(a, r);
+    if (Array.isArray(v)) return [...v].reverse();
+    return [...String(v)].reverse().join('');
+  },
   substring: ([a, s, l], r) => { const str = String(_evalBinary(a, r)); const st = Number(_evalBinary(s, r)); return l ? str.slice(st, st + Number(_evalBinary(l, r))) : str.slice(st) },
   left: ([a, l], r) => String(_evalBinary(a, r)).slice(0, Number(_evalBinary(l, r))),
   right: ([a, l], r) => String(_evalBinary(a, r)).slice(-Number(_evalBinary(l, r))),
@@ -5802,10 +5835,78 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
   last: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
   tail: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.slice(1) : null },
-  range: ([s, e, step], r) => { const start = Number(_evalBinary(s, r)), end = Number(_evalBinary(e, r)), st = step ? Math.abs(Number(_evalBinary(step, r))) : 1; const res: number[] = []; if (start <= end) for (let i = start; i <= end; i += st) res.push(i); else for (let i = start; i >= end; i -= st) res.push(i); return res },
+  range: ([s, e, step], r) => {
+    const start = Number(_evalBinary(s, r)), end = Number(_evalBinary(e, r));
+    const stepVal = step ? Number(_evalBinary(step, r)) : 1;
+    // Validate: step must not be zero
+    if (step && stepVal === 0) {
+      throw Object.assign(new Error('ArgumentError'), { tckError: 'ArgumentError' });
+    }
+    // Validate: all args must be integers
+    if (!Number.isInteger(start) || !Number.isInteger(end) || (step && !Number.isInteger(stepVal))) {
+      throw Object.assign(new Error('ArgumentError'), { tckError: 'ArgumentError' });
+    }
+    const res: number[] = [];
+    // If direction mismatch (end-start and step have opposite signs), return empty
+    if (stepVal > 0 && start > end) return res;
+    if (stepVal < 0 && start < end) return res;
+    for (let i = start; stepVal > 0 ? i <= end : i >= end; i += stepVal) {
+      res.push(i);
+    }
+    return res;
+  },
   length: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.length : 0 },
   split: ([a, d], r) => String(_evalBinary(a, r)).split(String(_evalBinary(d, r))),
-  // ── Temporal Functions ──
+  // ── Aggregation Functions ──
+  count: (args, r) => {
+    // count(*) counts all rows; count(null) returns 0; count(expr) skips nulls
+    if (args.length === 0 || args[0] === '*') return 1;
+    const v = _evalBinary(args[0], r);
+    return v == null || v === undefined ? 0 : 1;
+  },
+  collect: (args, r) => {
+    const v = _evalBinary(args[0], r);
+    if (v == null) return [];
+    return [v];
+  },
+  sum: (args, r) => {
+    const v = _evalBinary(args[0], r);
+    if (v == null) return null;
+    return Number(v);
+  },
+  avg: (args, r) => Number(_evalBinary(args[0], r)),
+  max: (args, r) => _evalBinary(args[0], r),
+  min: (args, r) => _evalBinary(args[0], r),
+  // ── Percentile Functions ──
+  percentiledisc: ([a, p], r) => {
+    // percentileDisc returns the nearest value from the sorted list at or above the percentile
+    // Simplified: returns the value at the floor index
+    const v = _evalBinary(a, r);
+    const perc = Number(_evalBinary(p, r));
+    if (Array.isArray(v) && v.length > 0 && typeof perc === 'number' && perc >= 0 && perc <= 1) {
+      const sorted = [...v].sort((a: any, b: any) => a - b);
+      const idx = Math.ceil(perc * sorted.length) - 1;
+      return sorted[Math.max(0, idx)];
+    }
+    return null;
+  },
+  percentilecont: ([a, p], r) => {
+    // percentileCont returns an interpolated value at the percentile between two values
+    const v = _evalBinary(a, r);
+    const perc = Number(_evalBinary(p, r));
+    if (Array.isArray(v) && v.length > 0 && typeof perc === 'number' && perc >= 0 && perc <= 1) {
+      const sorted = [...v].sort((a: any, b: any) => a - b);
+      const idx = perc * (sorted.length - 1);
+      const lo = Math.floor(idx);
+      const hi = Math.ceil(idx);
+      if (lo === hi) return sorted[lo];
+      const frac = idx - lo;
+      const valLo = Number(sorted[lo]);
+      const valHi = Number(sorted[hi]);
+      return valLo + frac * (valHi - valLo);
+    }
+    return null;
+  },
   "datetime.fromepoch": ([seconds, nanos], r) => {
     const sec = Number(_evalBinary(seconds, r));
     const ns = nanos ? Number(_evalBinary(nanos, r)) : 0;

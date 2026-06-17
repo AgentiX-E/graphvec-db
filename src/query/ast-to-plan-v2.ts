@@ -814,6 +814,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
             scanLabel: parsed.label,
             steps: parsed.edges,
             filters: [],
+            variableName: parsed.variable || undefined,
           })
         }
         break
