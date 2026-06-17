@@ -981,8 +981,7 @@ export function parseQuery(query: string): QueryPlan {
   // ANTLR 可能无法解析某些函数调用（如 type(r) AS alias），用正则提取
   if (!plan.returnColumns?.length && !plan.aggregate && !plan.with) {
     const returnClause = query.match(/RETURN\s+(.+?)(?:\s+(ORDER|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW)\s|$)/is)
-    if (returnClause) {
-      const expr = returnClause[1].trim()
+    if (returnClause) {       const expr = returnClause[1].trim()
       // RETURN * → 保持空列（留给 _formatResultRow 的特殊处理）
       if (expr === '*') {
         // 保持 returnColumns = []（表示"所有变量"）
@@ -4697,7 +4696,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   const qUpper = query.toUpperCase()
 
   // ── SyntaxError: UndefinedVariable ──
-  _validateUndefinedVariables(query)
+  _validateUndefinedVariables(query, plan)
 
   // ═══════════════════════════════════════════════════════════════
   // Literals SyntaxError (编译时字面量检查)
@@ -5071,8 +5070,70 @@ function extractMatchClause(query: string): string {
   return match ? match[1].trim() : ''
 }
 
+/**
+ * 检测 pattern 出现在错误的位置（RETURN, WITH, SET 列中）
+ * Cypher TCK: MATCH (n) RETURN (n)-[]->() 应报 UnexpectedSyntax
+ */
+function _validatePatternPosition(query: string): void {
+  // Pattern 语法 = `(...)-[...]-(...)` 或 `(...)-[...]->(...)` 或 `(...)<-[...]-(...)`
+  // 不能与 MATCH / WHERE / CREATE / MERGE 等子句开头混淆
+  const patternRE = /\([^)]*\)\s*(?:<-\s*\[[^\]]*\]\s*-|-\s*\[[^\]]*\]\s*(?:->|-)|\s*--\s*)\([^)]*\)/
+  // 检测 RETURN 列中的裸 pattern（不是在函数参数中）
+  const returnMatch = query.match(/RETURN\s+(.+?)(?:\s+(?:ORDER\s+BY|SKIP|LIMIT|WHERE|CREATE|MERGE|MATCH|WITH|CALL|UNWIND)\s|$)/is)
+  if (returnMatch) {
+    const returnBody = returnMatch[1]
+    const barePattern = patternRE.exec(returnBody)
+    if (barePattern) {
+      const before = returnBody.substring(0, barePattern.index)
+      // pattern 不在函数参数中 → 是裸 pattern
+      if (!before.includes('(') || before.lastIndexOf('(') < before.lastIndexOf(')')) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+    }
+  }
+  // 检测 WITH 列中的 pattern
+  const withMatch = query.match(/WITH\s+(.+?)(?:\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
+  if (withMatch) {
+    const withBody = withMatch[1]
+    const barePattern = patternRE.exec(withBody)
+    if (barePattern) {
+      const before = withBody.substring(0, barePattern.index)
+      if (!before.includes('(') || before.lastIndexOf('(') < before.lastIndexOf(')')) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+    }
+  }
+  // 检测 SET 列右值中的 pattern
+  const setMatch = query.match(/SET\s+(.+?)(?:\s+(?:RETURN|WITH|CREATE|MERGE|DELETE|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
+  if (setMatch) {
+    const setBody = setMatch[1]
+    const eqIdx = setBody.indexOf('=')
+    if (eqIdx >= 0) {
+      const rhs = setBody.substring(eqIdx + 1).trim()
+      if (patternRE.test(rhs)) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+    }
+  }
+}
+
+/**
+ * 检测 WHERE (n) 自我模式（InvalidArgumentType）
+ * MATCH (n) WHERE (n) RETURN n → 应报错
+ */
+function _validateWhereSelfPattern(query: string): void {
+  const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|ORDER\s+BY|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|CALL)\s|$)/is)
+  if (!whereMatch) return
+  const whereBody = whereMatch[1].trim()
+  // 检测 WHERE (n) 或 WHERE (n:Label) — 只有单个节点模式
+  const selfNodePattern = /^\s*\(\s*\w+(?::\w+)?\s*\)\s*$/
+  if (selfNodePattern.test(whereBody)) {
+    throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+  }
+}
+
 /** 检测 WHERE 子句中引用未定义变量（SyntaxError: UndefinedVariable） */
-function _validateUndefinedVariables(query: string): void {
+function _validateUndefinedVariables(query: string, plan?: any): void {
   const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
   const matchVars = extractMatchVariables(query)
   // 也提取 CREATE/MERGE 中的变量（节点和边变量）作为已定义变量
