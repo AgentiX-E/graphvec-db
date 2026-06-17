@@ -1846,7 +1846,6 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
     for (const mwc of middleWith) {
       const columns = mwc.cols.split(',').map(s => s.trim()).filter(Boolean)
       rows = rows.map(row => {
-      rows = rows.map(row => {
         const newRow: Record<string, unknown> = {}
         const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
         for (const col of columns) {
