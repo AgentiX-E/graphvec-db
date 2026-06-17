@@ -4014,8 +4014,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       ? edgePropFilteredRecords.map((r: any) => {
           const row: Record<string, unknown> = {}
           if (r.props) Object.assign(row, r.props)
-          for (const evc of edgeVarCols) {
-            // 通过 nodeGeIds 找到结果节点的索引
+          // 对于多边变量：按遍历步骤顺序分配边。edgeVarCols 的顺序对应遍历步骤顺序。
+          // edgesPayload 中边的顺序为遍历中匹配的顺序，如果有多个边变量且边数匹配，
+          // 则按顺序分配（适用于链式匹配如 ()-[r1:T1]->()-[r2:T2]->()）
+          const edgeVarCount = edgeVarCols.length
+          const sequentialMatch = (edgeVarCount === edgesPayload.length && edgeVarCount > 1 && edgesPayload.every((e: any) => e.label))
+          for (let eci = 0; eci < edgeVarCols.length; eci++) {
+            const evc = edgeVarCols[eci]
             const nodeIdx = nodeGeIds.indexOf(r.id)
             let edgeLabel = ''
             let edgeProps: Record<string, unknown> | null = null
@@ -4025,10 +4030,24 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             } else if (hasExplicitEdgeLabel) {
               edgeLabel = queryEdgeLabel!
             } else if (nodeIdx >= 0) {
-              // 查找匹配此源和目标节点的边（优先全字段匹配：label + props）
-              const matchingEdge = edgesPayload.find(e => e.dstIdx === nodeIdx || e.srcIdx === nodeIdx)
-              if (matchingEdge?.label) edgeLabel = matchingEdge.label
-              if (matchingEdge?.props && Object.keys(matchingEdge.props).length) edgeProps = matchingEdge.props as Record<string, unknown>
+              if (sequentialMatch) {
+                // 顺序匹配：第 eci 个边变量取 edgesPayload 的第 eci 个边
+                const matchingEdge = edgesPayload[eci]
+                if (matchingEdge?.label) edgeLabel = matchingEdge.label
+                if (matchingEdge?.props && Object.keys(matchingEdge.props).length) edgeProps = matchingEdge.props as Record<string, unknown>
+              } else {
+                // 非顺序匹配：通过 nodeIdx 查找（跳过已使用的边）
+                const usedEdgeCount = eci
+                const matchingEdgeIdx = edgesPayload.findIndex((e: any, i: number) => {
+                  if (i < usedEdgeCount) return false
+                  return e.dstIdx === nodeIdx || e.srcIdx === nodeIdx
+                })
+                if (matchingEdgeIdx >= 0) {
+                  const matchingEdge = edgesPayload[matchingEdgeIdx]
+                  if (matchingEdge?.label) edgeLabel = matchingEdge.label
+                  if (matchingEdge?.props && Object.keys(matchingEdge.props).length) edgeProps = matchingEdge.props as Record<string, unknown>
+                }
+              }
             }
             if (edgeLabel && edgeProps && Object.keys(edgeProps).length) {
               const propsStr = Object.entries(edgeProps)
@@ -4062,6 +4081,46 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           if (matchingEdge?.props) {
             if (!rawRec.__edgeProps) rawRec.__edgeProps = {}
             Object.assign(rawRec.__edgeProps, matchingEdge.props)
+          }
+        }
+      }
+    }
+
+    // ── WITH 子句后处理：对 GE 返回的 raw rows 应用 WITH 投影 ──
+    // 当 plan.with.columns 存在时（MATCH ... WITH [...] AS list RETURN ...），
+    // GE 的下层 _executeQueryPlan 不处理 WITH 子句（仅在 GE.query() 中处理），
+    // 而 _executeViaGraphEngine 直接调用 GE._executeQueryPlan 绕过了 WITH 处理。
+    // 此处用表达式引擎对 WITH 列求值，将结果放到 rawRow.props 中。
+    // 也会将 WITH 列表中的标识符字符串解析为实际节点值。
+    if (plan.with?.columns?.length) {
+      for (const rawRow of rawWithEdges) {
+        for (const wc of plan.with.columns) {
+          const alias = typeof wc === 'object' ? wc.alias : null
+          if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
+          const wcExpr = typeof wc.expression === 'string' ? wc.expression :
+            (wc.expression?.type === 'LIST'
+              ? '[' + (wc.expression.items || []).map((i: any) => i.name ?? i.value ?? '').join(', ') + ']'
+              : null)
+          if (!wcExpr) continue
+          // Build varCtx from rawRow
+          const rc: Record<string, unknown> = {}
+          if (rawRow.props) {
+            for (const [k, v] of Object.entries(rawRow.props)) {
+              if (!k.startsWith('_') && k !== alias) rc[k] = v
+            }
+          }
+          if (rawRow.__crossVarRows) {
+            for (const [k, v] of Object.entries(rawRow.__crossVarRows)) {
+              if (!(k in rc)) rc[k] = v
+            }
+          }
+          try {
+            const evaluated = _evalBinary(wcExpr, rc)
+            if (evaluated !== undefined && evaluated !== null) {
+              rawRow.props[alias] = evaluated
+            }
+          } catch {
+            // Fallback: keep GE's value
           }
         }
       }
@@ -6313,8 +6372,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; const n = parseFloat(String(v)); return isNaN(n) ? null : n },
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
-  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
-  type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw._type ?? ''; return edgeLabel },
+  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
+  type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
   properties: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_')) o[k] = vv; return o },
   keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); return Object.keys(uw).filter(k => !k.startsWith('_')); } return [] },
   id: ([a], r) => { const v = _evalBinary(a, r); if (v && typeof v === 'object') { const uw = _unwrapRecord(v); return '_id' in uw ? uw._id : (uw.id ?? 0); } return 0 },
