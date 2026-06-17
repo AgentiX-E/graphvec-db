@@ -1082,6 +1082,31 @@ export function parseQuery(query: string): QueryPlan {
     }
   }
 
+  // ── UNWIND name 修复 ──
+  // ANTLR 适配器可能将 UNWIND expr 中出现的变量名（如 size(types) 中的 types）
+  // 误作为 UNWIND name，而非 AS 后的真正变量名。
+  // 同时，双 UNWIND 场景下第二个 UNWIND 可能丢失。
+  if (plan.unwind && plan.hasMatch && query) {
+    try {
+      const unwindMatches = [...query.matchAll(/UNWIND\s+(.+?)\s+AS\s+(\w+)/gi)]
+      for (const [umIdx, m] of unwindMatches.entries()) {
+        if (umIdx === 0) {
+          if (m[2] && m[2] !== plan.unwind.name) {
+            plan.unwind.name = m[2]
+          }
+        } else if (umIdx === 1) {
+          plan.secondUnwind = {
+            list: [],
+            name: m[2],
+            var: m[1].trim(),
+          }
+        }
+      }
+    } catch (e) {
+      // ignore parse errors
+    }
+  }
+
   return plan
 }
 
@@ -1699,16 +1724,42 @@ function splitCsvLine(line: string, delimiter: string): string[] {
  * DSL 语义：WITH 先计算列表字面量（直接在 plan 中），然后 UNWIND 行展开，
  * WITH 列投影 + aggregate 聚合。
  */
-function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string, unknown>>, query?: string): QueryRow[] {
+function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string, unknown>>, query?: string, initialVarCtx?: Record<string, unknown>): QueryRow[] {
   // Step 1: 解析 WITH 列表字面量
   // plan.with.columns[0] 是 {expression: "[1, 3.14, ...]", alias: "operands"}
-  const varCtx: Record<string, unknown> = {}
+  const varCtx: Record<string, unknown> = { ...initialVarCtx }
 
   // 多个 WITH 子句时，plan.with 只存最后一个 WITH
   // 从原始 query 文本提取 WITH [...] AS var 的列表字面量
   if (query && plan.unwind?.var) {
     // 匹配所有 WITH [...] AS var 模式，取第一个
-    const withListMatch = query.match(/WITH\s+(\[.+?\])\s+AS\s+(\w+)/is)
+    // 用括号深度追踪正确识别嵌套的 [] 和 {}（列表内嵌空列表/空 map）
+    let withListMatch: RegExpMatchArray | null = null
+    {
+      let start = -1
+      let depth = 0
+      for (let i = 0; i < query.length; i++) {
+        const ch = query[i]
+        if (ch === '[' && depth === 0) {
+          const before = query.substring(0, i).trimEnd()
+          if (/\bWITH\s*$/i.test(before)) start = i
+          depth++
+        } else if (ch === '[' || ch === '{') {
+          depth++
+        } else if (ch === ']' || ch === '}') {
+          depth--
+          if (depth === 0 && start >= 0) {
+            const listExpr = query.substring(start, i + 1)
+            const after = query.substring(i + 1).trim()
+            const aliasMatch = after.match(/^AS\s+(\w+)/i)
+            if (aliasMatch) {
+              withListMatch = [listExpr, listExpr, aliasMatch[1]]
+            }
+            break
+          }
+        }
+      }
+    }
     if (withListMatch) {
       const listExpr = withListMatch[1]
       const alias = withListMatch[2]
@@ -2204,7 +2255,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   // ── WITH / UNWIND / aggregate 管道 ──
   // 处理 WITH [...] AS x → UNWIND x AS y → ... → RETURN agg, count(*) 链
   // 不涉及 MATCH/GE 图遍历，纯表达式 + 聚合
-  if (plan.unwind || (plan.with && !plan.hasMatch)) {
+  // 注意：MATCH + WITH + UNWIND 场景（如 MATCH ... WITH [...] AS x UNWIND ...）
+  // 的 WITH 列表包含 MATCH 变量，不能走纯表达式管道。走主路径处理。
+  const hasMatchWithList = plan.hasMatch && plan.unwind && query?.includes('WITH') && query?.includes('AS')
+  if (!hasMatchWithList && (plan.unwind || (plan.with && !plan.hasMatch))) {
     return _executeWithUnwindPipeline(plan, nodes, query)
   }
 
@@ -2711,7 +2765,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       for (const ep of edgesPayload) {
         const srcGeId = ep.srcIdx >= 0 && ep.srcIdx < nodeGeIds.length ? nodeGeIds[ep.srcIdx] : -1
         const dstGeId = ep.dstIdx >= 0 && ep.dstIdx < nodeGeIds.length ? nodeGeIds[ep.dstIdx] : -1
-        if (srcGeId <= 0 || dstGeId <= 0) continue // 跳过被预过滤的占位节点
+        if (srcGeId < 0 || dstGeId < 0) continue // 跳过被预过滤的占位节点
         if (!sourceTargetMap.has(dstGeId)) sourceTargetMap.set(dstGeId, [])
         sourceTargetMap.get(dstGeId)!.push(srcGeId)
         // 无向边也记录反向
@@ -2842,10 +2896,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             }
             if (skipNode) continue
             const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
-            // single debug — write to /tmp
-            if (i === 0 && plan.filters?.some((f: any) => f.property === 'var' && f.operator === 'GT')) {
-              require('fs').appendFileSync('/tmp/magic.log', 'MAGIC walks=' + pathResults.length + '\n')
-            }
         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
         // 防止后续 step 引入不相关的中间节点
         const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).find(rc => {
@@ -2944,6 +2994,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   id: geNode.id,
                   props: { ...geNode.__targetProps },
                   __targetProps: geNode.__targetProps,
+                  __crossVarRows: geNode.__crossVarRows,
                 })
               } else {
                 multiStepRaw.push(geNode)
@@ -3049,13 +3100,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       if (rc.startsWith(firstStep.source + '.')) return true
       return false
     })
-    if (needSourceVar && sourceTargetMap.size > 0 && records?.length) {
+    if (needSourceVar && sourceTargetMap.size > 0 && rawRecords?.length) {
       const sourceVar = plan.steps![0].source
       const targetAlias = plan.steps![0].targetAlias
       // 对每个 GE 返回的 target 节点，找到它对应的 source 节点
       // 使用 Map<srcId, targetProps> 去重，确保同一 source→target 只保留一条
       const dedupedRecords = new Map<string, { srcId: number; targetProps: Record<string, unknown> }>()
-      for (const r of records) {
+      for (const r of rawRecords) {
         const sourceIds = sourceTargetMap.get(r.id) || []
         if (!sourceIds.length) continue
         const targetProps = { ...(r.props || {}) }
@@ -3643,8 +3694,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     if (!Array.isArray(rawWithEdges)) rawWithEdges = edgePropFilteredRecords
 
     // ── 格式化结果 ──
-    if (query && query.includes("_MAGIC_DEBUG")) {
-    }
     const result: QueryRow[] = rawWithEdges.map((r: any) => {
       const fr = _formatResultRow(r, plan)
       return fr
@@ -3679,7 +3728,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         if (evalVal === true) {
           filteredResult.push(row)
         }
-        // false / null / undefined → 跳过
+        if (plan.returnColumns?.some(c => c === 'i.var' || c === 'var') || (plan.whereBody && plan.whereBody.includes('>') && plan.whereBody.includes('IS NOT NULL'))) {
+        }
       }
       result.length = 0
       result.push(...filteredResult);
@@ -3722,7 +3772,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // WHERE 后处理依赖 whereBody 字符串，但对于 STARTS_WITH / ENDS_WITH / CONTAINS
     // 等操作符，whereBody 可能被截断（ANTLR 适配器问题）。plan.filters 包含完整
     // 的结构化 filter 信息，在此处对所有未在 GE 预过滤中处理的结果做二次过滤。
-    if (plan.filters?.length && result.length && !plan.aggregate) {
+    // 注意：如果 whereBody 已经处理过（result 已被过滤），跳过此步避免重复过滤
+    // 破坏与 whereBody 语义一致的扁平化结果。
+    if (plan.filters?.length && result.length && !plan.aggregate && !plan.whereBody) {
+      if (plan.returnColumns?.some(c => c === 'i.var' || c === 'var') || (plan.whereBody && plan.whereBody.includes('>') && plan.whereBody.includes('IS NOT NULL'))) {
+      }
       const filteredResult: QueryRow[] = []
       for (const row of result) {
         // 构建变量→节点映射
@@ -3762,10 +3816,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           switch (f.operator) {
             case 'EQ':   baseFilterResult = String(actualVal) === String(fv); break
             case 'NEQ':  baseFilterResult = String(actualVal) !== String(fv); break
-            case 'GT':   baseFilterResult = Number(actualVal) > Number(fv); break
-            case 'GTE':  baseFilterResult = Number(actualVal) >= Number(fv); break
-            case 'LT':   baseFilterResult = Number(actualVal) < Number(fv); break
-            case 'LTE':  baseFilterResult = Number(actualVal) <= Number(fv); break
+            case 'GT':   baseFilterResult = actualVal > fv; break
+            case 'GTE':  baseFilterResult = actualVal >= fv; break
+            case 'LT':   baseFilterResult = actualVal < fv; break
+            case 'LTE':  baseFilterResult = actualVal <= fv; break
+            case 'IS_NULL':     baseFilterResult = actualVal == null; break
+            case 'IS_NOT_NULL': baseFilterResult = actualVal != null; break
             case 'STARTS_WITH': baseFilterResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break
             case 'ENDS_WITH':   baseFilterResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv); break
             case 'CONTAINS':    baseFilterResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break
@@ -3899,8 +3955,36 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       }
     }
 
+    // ── MATCH + WITH/UNWIND 管道 ──
+    // MATCH 结果已经构建在 result 中，但查询还有 WITH/UNWIND 需要处理。
+    // 对每一行 MATCH 结果，构造变量上下文，然后交给 WITH/UNWIND 管道处理。
+    if (plan.hasMatch && plan.unwind && Array.isArray(result) && result.length) {
+      // 用第一行 MATCH 结果构造变量上下文（所有 MATCH 行共享同一变量集）
+      // WITH [n, r, p, ...] AS types — n,r,p 来自 MATCH
+      // 临时替换 nodes 为当前 MATCH 行，交给 _executeWithUnwindPipeline
+      // 注意：_executeWithUnwindPipeline 用 query 文本提取 WITH 列表，不受 nodes 影响
+      // 多个 MATCH 行时取第一个（所有行变量名相同）
+      const matchVarCtx: Record<string, unknown> = {}
+      for (const [key, val] of Object.entries(result[0])) {
+        if (val && typeof val === 'object' && 'props' in (val as any)) {
+          matchVarCtx[key] = (val as any).props
+        } else {
+          matchVarCtx[key] = val
+        }
+      }
+      // 把 MATCH 变量合并到 nodes（_executeWithUnwindPipeline 的 varCtx 来自 nodes）
+      // 但 _executeWithUnwindPipeline 使用自己的 varCtx，不读 nodes
+      // 需要改造：传入 matchVarCtx
+      const pipelineRows = _executeWithUnwindPipeline(plan, [matchVarCtx] as any, query, matchVarCtx)
+      if (Array.isArray(pipelineRows)) {
+        result.length = 0
+        result.push(...pipelineRows)
+      }
+    }
+
     // ── 后处理（ORDER BY / HAVING） ──
-    return _postProcessResults(result, plan)
+    const evgeReturn = _postProcessResults(result, plan)
+    return evgeReturn
   } finally {
     // DML 持久化：将 _executeViaGraphEngine 中创建的节点写回外部 nodes 数组，
     // 确保后续查询（MATCH）能看到前面 CREATE/MERGE 的节点。
@@ -3974,7 +4058,9 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         // 从 __targetPropsMap 取该变量的节点属性
         const midNode = r.__targetPropsMap[variable]
         result[rc] = midNode && property in midNode ? midNode[property] : null
-      } else if (!isSourceVar && r.__targetProps && property in r.__targetProps) {
+      } else if (r.__targetProps && property in r.__targetProps) {
+        // 当 isSourceVar（如 RETURN i.var）但 r.props（source 节点）不含该属性时，
+        // 回退到 __targetProps（target 节点，如 Child 的 var 属性）
         result[rc] = r.__targetProps[property]
       } else if (r.props && property in r.props) {
         result[rc] = r.props[property]
@@ -4225,7 +4311,8 @@ export async function _executeQuery(
     planCopy.limit = DEFAULT_LIMIT
   }
   // 所有查询统一走 GraphEngine
-  return await _executeViaGraphEngine(planCopy, nodes, query)
+  const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
+  return execQueryResult
 }
 
 /**
@@ -5348,6 +5435,16 @@ function _listLexCompare(a: unknown[], b: unknown[], op: string): boolean | null
   return false
 }
 
+/** Check if two values are of comparable types (both numeric types treated as same) */
+function _comparableTypes(a: unknown, b: unknown): boolean {
+  const ta = typeof a
+  const tb = typeof b
+  if (ta === tb) return true
+  // bigint and number are both numeric — treat as comparable
+  if ((ta === 'bigint' && tb === 'number') || (ta === 'number' && tb === 'bigint')) return true
+  return false
+}
+
 function _compareValues(a: unknown, b: unknown, op: string): boolean | null {
   if (a == null || b == null) return null  // Cypher 三值逻辑：null 参与的比较返回 null，包括 <>（不等号也不例外）
   // List 字典序比较（>=, >, <=, <）
@@ -5358,22 +5455,22 @@ function _compareValues(a: unknown, b: unknown, op: string): boolean | null {
     case '=': { const __eq = _deepEqWithNull(a, b); return __eq.hasNull ? null : __eq.match }
     case '<>': return !_deepEq(a, b)
     case '<': {
-      if (typeof a !== typeof b) return null
+      if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') return a < b  // 字典序
       return Number(a) < Number(b)
     }
     case '>': {
-      if (typeof a !== typeof b) return null
+      if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') return a > b
       return Number(a) > Number(b)
     }
     case '<=': {
-      if (typeof a !== typeof b) return null
+      if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') return a <= b
       return Number(a) <= Number(b)
     }
     case '>=': {
-      if (typeof a !== typeof b) return null
+      if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') return a >= b
       return Number(a) >= Number(b)
     }
