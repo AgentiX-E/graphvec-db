@@ -2655,21 +2655,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     }
     const nodeGeIds: number[] = []
 
-    // seed 前检查 GE 中是否存在旧 seed 节点；如果存在，记录其 ID
-    // 避免 deleteNode + re-upsert 导致 _labelIndex 残留旧 ID（native C++ 无法清理）
-    const nameToGeId = new Map<string, number>()
-    if (ge) {
-      for (const id of (ge as any)._nodeIds || []) {
-        try {
-          const n = (ge as any).getNode(id)
-          if (n && typeof n.name === 'string') {
-            nameToGeId.set(n.name, id)
-          }
-        } catch {}
-      }
-    }
-
-
     let edgesPayload: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
     if (allNodes.length) {
       for (let i = 0; i < allNodes.length; i++) {
