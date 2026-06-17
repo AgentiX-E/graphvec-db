@@ -2693,11 +2693,16 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 所以在 seed 循环中条件跳过，而非过滤 allNodes。
     // 跨变量属性引用检测：f.value 格式为 `var.property`，不能在 seed 阶段用常数比较
     const _isVarRef = (v: any): boolean => typeof v === 'string' && /^\w+\.\w+$/.test(v) && !/^['"]/.test(v) && !/^\d/.test(v)
+    // 检测 filter 值是否为非法表达式（ANTLR 链式比较处理失败导致的字符串值）
+    const _isBrokenChainValue = (v: any): boolean =>
+      typeof v === 'string' && /[<>=]/.test(v)
     const crossVarFilters = (plan.filters || []).filter(f => f.source && f.property && _isVarRef(f.value))
     const stepSourceFilters = (plan.filters || []).filter(f => {
       const firstStep = plan.steps?.[0]
       // 排除跨变量引用 filter（seed 阶段无法做跨变量比较）
       if (crossVarFilters.includes(f)) return false
+      // 排除 ANTLR 链式比较解析失败的 filter（值中包含比较运算符）
+      if (_isBrokenChainValue(f.value)) return false
       const result = firstStep && f.source === firstStep.source && firstStep.source
       return result
     })
@@ -4024,12 +4029,18 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── WHERE 子句后处理过滤（表达式引擎处理 GE 不支持的复杂 boolean 表达式） ──
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
-    if (plan.whereBody && result.length && !plan.aggregate && !(plan.hasMatch && plan.unwind)) {
+    // 注意：即使 plan.aggregate 存在，也必须先应用 WHERE 再聚合。
+    if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind)) {
+      // Debug: trace WHERE entry for node equality tests
+      if (plan.whereBody.includes('=')) {
+        require('fs').appendFileSync('/tmp/where-enter.txt',
+          'ENTER WHERE: body=' + plan.whereBody + ' resLen=' + result.length + ' agg=' + !!plan.aggregate + '\n'
+        )
+      }
       const filteredResult: QueryRow[] = []
       for (let ri = 0; ri < result.length; ri++) {
         const row = result[ri]
-        // 构建变量级映射：先注入 rawWithEdges 中的变量上下文（__crossVarRows），
-        // 再覆盖 result row 中的扁平化/别名键
+        // 构建变量级映射
         const ctx: Record<string, unknown> = {}
         // 从原始 GE 记录获取变量上下文（如 {a: {name: 'Foo', _label: 'TheLabel'}}）
         const rawEntry = rawWithEdges?.[ri]
@@ -4038,7 +4049,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             ctx[varName] = varNode as Record<string, unknown>
           }
         }
-        // 再注入 result row 的扁平化键（可能包含别名和变量名展开）
+        // 再注入 result row 的扁平化键
         for (const [key, val] of Object.entries(row)) {
           if (val && typeof val === 'object' && 'props' in (val as any)) {
             ctx[key] = { ...(val as any).props }
@@ -4046,15 +4057,88 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             ctx[key] = val
           }
         }
+        // 注入 WITH/UNWIND 管道变量（WITH/UNWIND 在 MATCH 之前的情况）
+        // 尝试从 nodes 中获取 pipeline 执行结果
+        if (plan.with?.columns?.length && !Array.isArray(nodes?.[0]?.props)) {
+          for (const col of plan.with.columns) {
+            const alias = col.alias || col.expression
+            if (!(alias in ctx) && query && nodes?.length) {
+              // 对 WITH 表达式求值
+              const val = _evaluateExpression(col.expression, ctx)
+              if (val !== undefined) ctx[alias] = val
+            }
+          }
+        }
+        if (plan.unwind?.name && !(plan.unwind.name in ctx)) {
+          // Try to compute the unwind from query
+          const unwindVal = Array.isArray(nodes?.[0]) ? nodes[0] : null
+          if (unwindVal) ctx[plan.unwind.name] = unwindVal
+        }
         const evalVal = _evaluateExpression(plan.whereBody, ctx)
         if (evalVal === true) {
           filteredResult.push(row)
         }
-        if (plan.returnColumns?.some(c => c === 'i.var' || c === 'var') || (plan.whereBody && plan.whereBody.includes('>') && plan.whereBody.includes('IS NOT NULL'))) {
+        // DEBUG: trace WHERE failures for node equality
+        if (plan.whereBody?.includes('a = b') && evalVal !== true) {
+          require('fs').appendFileSync('/tmp/where-debug.txt',
+            'evalVal=' + JSON.stringify(evalVal) +
+            ' aType=' + typeof ctx['a'] +
+            ' bType=' + typeof ctx['b'] +
+            ' a===b=' + (ctx['a'] === ctx['b']) +
+            ' a=' + (typeof ctx['a'] === 'object' ? JSON.stringify(ctx['a']).substring(0,200) : String(ctx['a'])) +
+            ' b=' + (typeof ctx['b'] === 'object' ? JSON.stringify(ctx['b']).substring(0,200) : String(ctx['b'])) +
+            ' ctxKeys=' + Object.keys(ctx).join(',') + '\n'
+          )
         }
       }
       result.length = 0
       result.push(...filteredResult);
+    }
+
+    // ── 聚合处理 ──
+    // 对 MATCH + RETURN count/sum/avg/min/max 的结果做聚合
+    if (plan.aggregate && result.length) {
+      const agg = plan.aggregate as any
+      const aggFn = (agg.function || agg.type || '').toLowerCase()
+      const aggAlias = agg.alias || agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c'
+      const colMatch = (agg.column || '').match(/^\w+\((.+?)\)(?:\s+AS\s+\w+)?$/i)
+      const field = colMatch ? colMatch[1] : (agg.field || '*')
+
+      const aggRow: QueryRow = {}
+      if (aggFn === 'count') {
+        if (field === '*') {
+          aggRow[aggAlias] = result.length
+        } else {
+          // count(b) where b is a node/rel variable = count everything
+          // We need to check if the field is a MATCH variable (node/rel) vs a property
+          const isNodeOrRelVar = field && /^[a-zA-Z_]\w*$/.test(field) && result.every(r => !(field in r))
+          if (isNodeOrRelVar) {
+            aggRow[aggAlias] = result.length
+          } else {
+            const nonNull = result.filter(r => {
+              const v = r[field]
+              return v !== null && v !== undefined
+            })
+            aggRow[aggAlias] = nonNull.length
+          }
+        }
+      } else {
+        // sum/avg/min/max
+        const values = result
+          .map(r => r[field])
+          .filter((v: unknown) => v !== null && v !== undefined)
+          .map(Number)
+          .filter((v: number) => !isNaN(v))
+        switch (aggFn) {
+          case 'sum': aggRow[aggAlias] = values.reduce((a: number, b: number) => a + b, 0); break
+          case 'avg': aggRow[aggAlias] = values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0; break
+          case 'max': aggRow[aggAlias] = values.length ? Math.max(...values) : 0; break
+          case 'min': aggRow[aggAlias] = values.length ? Math.min(...values) : 0; break
+          default: aggRow[aggAlias] = 0
+        }
+      }
+      result.length = 0
+      result.push(aggRow)
     }
 
     // If WHERE cleared everything but plan.filters exists, rebuild result from raw GE data
@@ -4233,31 +4317,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // OPTIONAL MATCH 后处理：OPTIONAL MATCH 设置的变量可能改变了 RETURN 表达式的求值结果。
     // 重新计算受影响的列。
-<<<<<<< Updated upstream
-    if (plan.optionalMatchSteps?.length && result.length && plan.expressionColumns?.length) {
-      const optMatchVarNames = new Set(plan.optionalMatchSteps.map(om => om.variableName).filter(Boolean))
-      if (!optMatchVarNames.size) { /* skip */ } else
-      for (const ec of plan.expressionColumns) {
-        const alias = typeof ec === 'string' ? ec : (ec as any).alias ?? (ec as any).expression ?? String(ec)
-        const rawexpr = typeof ec === 'object' && (ec as any).expression ? String((ec as any).expression) : alias
-        if (!rawexpr) continue
-        const hasVar = [...optMatchVarNames].some(vn => rawexpr.includes(vn))
-        if (!hasVar) continue
-        for (const row of result) {
-          if (![...optMatchVarNames].some(vn => vn in row)) continue
-          // 构建 varCtx
-          const varCtx: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(row)) {
-            if (!k.startsWith('_')) varCtx[k] = v
-          }
-          for (const vn of optMatchVarNames) {
-            if (vn in row) varCtx[vn] = row[vn]
-=======
     if (plan.optionalMatchSteps?.length && result.length) {
       const optMatchVarNames = new Set(plan.optionalMatchSteps.map(om => om.variableName).filter(Boolean))
       if (optMatchVarNames.size && plan.expressionColumns?.length) {
-        // expressionColumns 中的 alias 是完整的表达式（包括变量前缀），
-        // 它同时也是 result 中的键名（_formatResultRow 使用 alias 作为 key）
         const aliasToExpr: Record<string, string> = {}
         for (const ec of plan.expressionColumns) {
           const alias = (typeof ec === 'string' ? ec : (ec as any).alias ?? (ec as any).expression ?? String(ec))
@@ -4285,16 +4347,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 row[alias] = newVal
               }
             } catch (_e) { /* ignore evaluation error, keep original value */ }
->>>>>>> Stashed changes
           }
-          // 检查 row[alias] 是否存在（由 _formatResultRow 设置）
-          if (!(alias in row)) continue
-          try {
-            const newVal = _evaluateExpression(rawexpr, varCtx)
-            if (newVal !== undefined && newVal !== null) {
-              row[alias] = newVal
-            }
-          } catch (_e) { /* ignore evaluation error, keep original value */ }
         }
       }
     }
@@ -4880,6 +4933,46 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // 检测 RETURN 列中调用的函数是否已知（如 foo(a)）
   if (query) {
     _validateUnknownFunctions(query)
+  }
+
+  // ── SyntaxError: InvalidArgumentType for type() on node ──
+  // type() 要求参数必须是关系类型，若传入节点变量则抛出 InvalidArgumentType
+  if (query && query.includes('type(')) {
+    const typeArgMatch = query.match(/type\s*\(\s*([a-zA-Z_]\w*)\s*\)/i)
+    if (typeArgMatch) {
+      const typeArg = typeArgMatch[1]
+      // 从 query 中提取 MATCH 变量及其类型
+      const matchNodeVars = new Set<string>()
+      const matchEdgeVars = new Set<string>()
+      // 从 MATCH 子句提取
+      const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)|$)/gis)
+      for (const mc of matchClauses) {
+        const clause = mc[1]
+        // 提取节点变量: (n:Label), (n), (n {prop})
+        const nodeVars = clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)
+        for (const v of nodeVars) if (v[1]) matchNodeVars.add(v[1])
+        // 提取边变量: [r:T], [r]
+        const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
+        for (const v of edgeVars) {
+          if (v[1]) {
+            matchEdgeVars.add(v[1])
+            // 边变量也在 MATCH 中，从节点变量中排除
+            matchNodeVars.delete(v[1])
+          }
+        }
+      }
+      // 如果是 OPTIONAL MATCH
+      const optClauses = query.matchAll(/OPTIONAL\s+MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)|$)/gis)
+      for (const oc of optClauses) {
+        const clause = oc[1]
+        const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
+        for (const v of edgeVars) if (v[1]) matchEdgeVars.add(v[1])
+      }
+      // 如果 type() 的参数是节点变量（在 MATCH 中绑定为节点，且不是边），抛出错误
+      if (matchNodeVars.has(typeArg) && !matchEdgeVars.has(typeArg)) {
+        throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+      }
+    }
   }
   // MATCH (n $param) — parameter as node predicate
   if (query && /MATCH\s*\(\s*\w+(?::\w+)?\s+\$\w+/i.test(query)) {
@@ -5978,8 +6071,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
   labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const raw = v._fullLabel || v._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
-  type: (_, r) => r?.__edgeLabel ?? r?._type ?? null,
-  properties: (_, r) => { if (!r) return {}; const o: Record<string, unknown> = {}; for (const [k, v] of Object.entries(r)) if (!k.startsWith('_')) o[k] = v; return o },
+  type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const edgeLabel = (v as any).__edgeLabel ?? (v as any)._type ?? ''; return edgeLabel },
+  properties: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(v)) if (!k.startsWith('_')) o[k] = vv; return o },
   keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') return Object.keys(v).filter(k => !k.startsWith('_')); return [] },
   id: ([a], r) => { const v = _evalBinary(a, r); return v && typeof v === 'object' && '_id' in (v as any) ? (v as any)._id : 0 },
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
