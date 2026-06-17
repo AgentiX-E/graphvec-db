@@ -837,6 +837,20 @@ export function parseQuery(query: string): QueryPlan {
     }
     if (subPlan.rightPlan) _fixScanLabel(subPlan.rightPlan)
     if (subPlan.callQuery) _fixScanLabel(subPlan.callQuery)
+    // 同时修复 optionalMatchSteps 中的 scanLabel（它们也可能被 ANTLR 误认为是标签名）
+    if (subPlan.optionalMatchSteps?.length && query) {
+      const rawQuery = query
+      const matchClauses = rawQuery.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
+      for (const oms of subPlan.optionalMatchSteps) {
+        if (oms.scanLabel && /^[a-z][0-9]?$/.test(oms.scanLabel)) {
+          const labelPattern = new RegExp(':' + oms.scanLabel + '(?=[\)\s{]|$)')
+          const isLabelInMatch = matchClauses.some((mc: string) => labelPattern.test(mc))
+          if (!isLabelInMatch) {
+            oms.scanLabel = null
+          }
+        }
+      }
+    }
   }
   _fixScanLabel(plan)
   _fixScanLabel(plan)
