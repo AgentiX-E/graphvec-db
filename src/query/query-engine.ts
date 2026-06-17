@@ -1534,12 +1534,21 @@ function _walkMultiSteps(
     }
     const nextSet = new Set<number>()
     // 构建 combinedSourceFilters：当前步的 source 节点属性约束
+    // 排除 ANTLR 链式比较解析失败的值（包含比较运算符的字符串值）
+    const _isBrokenFilterValue = (v: any): boolean =>
+      typeof v === 'string' && /[<>=]/.test(v)
     const combinedSourceFilters: Array<{source?: string; property: string; value: any}> = []
     if (planFilters?.length) {
-      for (const f of planFilters) { if (f.source === step.source) combinedSourceFilters.push(f) }
+      for (const f of planFilters) {
+        if (_isBrokenFilterValue(f.value)) continue
+        if (f.source === step.source) combinedSourceFilters.push(f)
+      }
     }
     if (stepSourceFilters?.length) {
-      for (const f of stepSourceFilters) { if (f.source === step.source) combinedSourceFilters.push(f) }
+      for (const f of stepSourceFilters) {
+        if (_isBrokenFilterValue(f.value)) continue
+        if (f.source === step.source) combinedSourceFilters.push(f)
+      }
     }
     // 在边遍历前应用 source filter：从 currentSet 中移除不满足 source 约束的节点
     // WHERE a.id = 1 — 在 seed 节点（step 0）和路径回溯（step 3+）中检查
@@ -4605,6 +4614,49 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       continue
     }
 
+    // ── 函数表达式（如 labels(m)、type(r)） ──
+    // 必须在边变量 RETURN r 分支之前，避免 labels(m) 被误输出为 [:R]
+    const fnCallMatch = rc.match(/^\w+\(/)
+    if (fnCallMatch && rc in (aliasMap || {})) {
+      const fnExpr = aliasMap![rc]
+      const fnVarCtx: Record<string, unknown> = {}
+      if (r.__crossVarRows) {
+        for (const vn of Object.keys(r.__crossVarRows)) {
+          fnVarCtx[vn] = r.__crossVarRows[vn]
+        }
+      }
+      if (r.__targetPropsMap) {
+        for (const vn of Object.keys(r.__targetPropsMap)) {
+          if (!(vn in fnVarCtx)) fnVarCtx[vn] = r.__targetPropsMap[vn]
+        }
+      }
+      // Debug: trace fn branch
+      if (rc.includes('labels')) {
+        require('fs').appendFileSync('/tmp/fn-debug.txt',
+          'ENTER fn branch: rc=' + rc + ' fnVarCtxKeys=' + Object.keys(fnVarCtx).join(',') +
+          ' r.__crossVarRows=' + JSON.stringify(Object.keys(r.__crossVarRows || {})) +
+          ' r.__edgeLabel=' + r.__edgeLabel + '\n'
+        )
+      }
+      if (Object.keys(fnVarCtx).length) {
+        try {
+          const fnResult = _evaluateExpression(fnExpr, fnVarCtx)
+          require('fs').appendFileSync('/tmp/fn-debug.txt',
+            ' eval: fnExpr=' + fnExpr + ' fnResult=' + JSON.stringify(fnResult).substring(0,100) + '\n'
+          )
+          if (fnResult !== null && fnResult !== undefined) {
+            const cleaned = _deepStripInternal(fnResult)
+            result[rc] = cleaned
+            continue
+          }
+        } catch (e: any) {
+          require('fs').appendFileSync('/tmp/fn-debug.txt',
+            ' ERROR: ' + String(e).substring(0,200) + '\n'
+          )
+        }
+      }
+    }
+
     // ── 边变量 RETURN r ──
     // rc 是边变量名（如 RETURN r），从 r.__edgeLabel 获取标签输出 [:LABEL] 格式
     if (r.__edgeLabel) {
@@ -5403,7 +5455,7 @@ function _validateWhereSelfPattern(query: string): void {
 const _TCK_KEYWORDS: Set<string> = new Set([
   'AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
   'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
-  'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
+  'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN','WITH',
   'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
   'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
   'UNION','ALL','OPTIONAL',
@@ -6439,7 +6491,7 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
       if (inStr) { if (s2[i] === strChar) inStr = false; continue }
       if (s2[i] === "'" || s2[i] === '"') { inStr = true; strChar = s2[i]; continue }
       if (s2[i] === '(' || s2[i] === '[' || s2[i] === '{') { depth++; continue }
-      if (s2[i] === ')' || s2[i] === ']' || s2[i] === '}') { depth--; continue }
+      if (s2[i] === ')' || s2[i] === ']' || s2[i] === '}') { depth--; if (depth < 0) depth = 0; continue }
       if (depth === 0) {
         if (s2.slice(i, i + 3) === ' OR ' || s2.slice(i, i + 4) === ' XOR ' || s2.slice(i, i + 4) === ' AND ') return s2.slice(0, i).trim()
       }
@@ -6637,11 +6689,11 @@ function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
     return idx
   }
   const sw = _findTopLevelKw(' STARTS WITH ')
-  if (sw > 0) { const l = _evalAddSub(t.slice(0, sw), row); const rPart = _trimToOperand(t.slice(sw + 13)); const r = _evalAddSub(rPart, row); if (l == null || r == null) return null; const swResult = String(l).startsWith(String(r)); const after = (t.slice(sw + 13).length > rPart.length) ? t.slice(sw + 13 + rPart.length).trim() : ''; return after ? _completeBoolean(swResult, after, row) : swResult }
+  if (sw > 0) { const l = _evalAddSub(t.slice(0, sw), row); const rPart = _trimToOperand(t.slice(sw + 13)); const r = _evalAddSub(rPart, row); if (l == null || r == null || typeof l !== 'string' || typeof r !== 'string') return null; const swResult = l.startsWith(r); const after = (t.slice(sw + 13).length > rPart.length) ? t.slice(sw + 13 + rPart.length).trim() : ''; return after ? _completeBoolean(swResult, after, row) : swResult }
   const ci = _findTopLevelKw(' CONTAINS ')
-  if (ci > 0) { const l = _evalAddSub(t.slice(0, ci), row); const rPart = _trimToOperand(t.slice(ci + 10)); const r = _evalAddSub(rPart, row); if (l == null || r == null) return null; const ciResult = String(l).includes(String(r)); const after = (t.slice(ci + 10).length > rPart.length) ? t.slice(ci + 10 + rPart.length).trim() : ''; return after ? _completeBoolean(ciResult, after, row) : ciResult }
+  if (ci > 0) { const l = _evalAddSub(t.slice(0, ci), row); const rPart = _trimToOperand(t.slice(ci + 10)); const r = _evalAddSub(rPart, row); if (l == null || r == null || typeof l !== 'string' || typeof r !== 'string') return null; const ciResult = l.includes(r); const after = (t.slice(ci + 10).length > rPart.length) ? t.slice(ci + 10 + rPart.length).trim() : ''; return after ? _completeBoolean(ciResult, after, row) : ciResult }
   const ew = _findTopLevelKw(' ENDS WITH ')
-  if (ew > 0) { const l = _evalAddSub(t.slice(0, ew), row); const rPart = _trimToOperand(t.slice(ew + 11)); const r = _evalAddSub(rPart, row); if (l == null || r == null) return null; const ewResult = String(l).endsWith(String(r)); const after = (t.slice(ew + 11).length > rPart.length) ? t.slice(ew + 11 + rPart.length).trim() : ''; return after ? _completeBoolean(ewResult, after, row) : ewResult }
+  if (ew > 0) { const l = _evalAddSub(t.slice(0, ew), row); const rPart = _trimToOperand(t.slice(ew + 11)); const r = _evalAddSub(rPart, row); if (l == null || r == null || typeof l !== 'string' || typeof r !== 'string') return null; const ewResult = l.endsWith(r); const after = (t.slice(ew + 11).length > rPart.length) ? t.slice(ew + 11 + rPart.length).trim() : ''; return after ? _completeBoolean(ewResult, after, row) : ewResult }
   return _evalAddSub(t, row)
 }
 
