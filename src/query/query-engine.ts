@@ -5192,6 +5192,7 @@ function extractEdgePropColumnsFromQuery(query: string): string[] {
 function extractMatchVariables(query: string): string[] {
   const vars: string[] = []
   // 提取 MATCH 子句中的所有括号模式中的变量
+  if (!query) return vars
   const matches = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
   for (const m of matches) {
     const clause = m[1]
