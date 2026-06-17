@@ -4513,7 +4513,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     : plan.returnColumns
   if (!ret?.length || plan.aggregate) {
     // RETURN *：返回所有在作用域内的变量
-    if (plan.type === 'QUERY' && !plan.aggregate) {
+    if (plan.type === 'QUERY' && !plan.aggregate && !ret?.some((rc: string) => /^\w+\(/.test(rc))) {
       const result: QueryRow = {}
       // 从 r 收集所有变量（包括 __targetPropsMap 中的中间变量等）
       if (r.__targetPropsMap) {
@@ -4560,6 +4560,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   const result: QueryRow = {}
   for (const rc of ret) {
     if (!rc) continue
+    // Debug: check if we reach the for loop
+    if (rc.includes('labels')) {
+      require('fs').appendFileSync('/tmp/rc-fire.txt', 'rc=' + rc + '\n')
+    }
 
     // ── 解析 "a.id" → { variable: "a", property: "id" } ──
     const propMatch = rc.match(/^(\w+)\.(\w+)$/)
@@ -4618,9 +4622,19 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // ── 函数表达式（如 labels(m)、type(r)） ──
     // 必须在边变量 RETURN r 分支之前，避免 labels(m) 被误输出为 [:R]
+    // 每当 rc 是函数调用表达式时，优先通过 _evaluateExpression 求值
     const fnCallMatch = rc.match(/^\w+\(/)
-    if (fnCallMatch && rc in (aliasMap || {})) {
-      const fnExpr = aliasMap![rc]
+    if (fnCallMatch) {
+      // 构建变量上下文：优先从 returnAliasMap 获取原始表达式
+      const fnExpr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
+      // ALWAYS fire debug to confirm branch is reached
+      if (rc.includes('labels')) {
+        require('fs').appendFileSync('/tmp/fire-debug.txt',
+          'FIRE: rc=' + rc + ' fnExpr=' + fnExpr + ' aliasMap=' + JSON.stringify(aliasMap || {}) + '\n' +
+          '  rKeys=' + Object.keys(r).join(',') + '\n' +
+          '  rowKeys=' + Object.keys(row).join(',') + '\n'
+        )
+      }
       const fnVarCtx: Record<string, unknown> = {}
       if (r.__crossVarRows) {
         for (const vn of Object.keys(r.__crossVarRows)) {
@@ -4632,34 +4646,28 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           if (!(vn in fnVarCtx)) fnVarCtx[vn] = r.__targetPropsMap[vn]
         }
       }
-      // Debug: trace fn branch for labels(m)
-      if (rc.includes('labels(m)')) {
-        require('fs').appendFileSync('/tmp/fn-debug2.txt',
-          'ENTER fn branch: rc=' + rc + ' fnExpr=' + fnExpr + '\n' +
-          ' fnVarCtxKeys=[' + Object.keys(fnVarCtx).join(',') + ']\n' +
-          ' r.__crossVarRows=' + JSON.stringify(Object.keys(r.__crossVarRows || {})) + '\n' +
-          ' r.__edgeLabel=' + r.__edgeLabel + '\n' +
-          ' r.props=%j\n',
-          JSON.stringify(r.props || {}).substring(0, 200)
-        )
+      // 补充 row 中的属性到变量上下文
+      for (const k of Object.keys(row)) {
+        if (!(k in fnVarCtx)) fnVarCtx[k] = row[k]
       }
-      if (Object.keys(fnVarCtx).length) {
-        try {
-          const fnResult = _evaluateExpression(fnExpr, fnVarCtx)
-          require('fs').appendFileSync('/tmp/fn-debug2.txt',
-            ' eval: fnResult=' + JSON.stringify(fnResult).substring(0,100) + '\n'
-          )
-          if (fnResult !== null && fnResult !== undefined) {
-            const cleaned = _deepStripInternal(fnResult)
-            result[rc] = cleaned
-            continue
-          }
-        } catch (e: any) {
-          require('fs').appendFileSync('/tmp/fn-debug2.txt',
-            ' ERROR: ' + String(e).substring(0,200) + '\n'
-          )
+      // 尝试通过 _evaluateExpression 求值
+      try {
+        const fnResult = _evaluateExpression(fnExpr, fnVarCtx)
+        if (fnResult !== null && fnResult !== undefined) {
+          const cleaned = _deepStripInternal(fnResult)
+          result[rc] = cleaned
+          continue
         }
-      }
+      } catch (e: any) {}
+      // 回退：检查 rc 是否是别名（rc 本身可求值）
+      try {
+        const fnResult = _evaluateExpression(rc, fnVarCtx)
+        if (fnResult !== null && fnResult !== undefined) {
+          const cleaned = _deepStripInternal(fnResult)
+          result[rc] = cleaned
+          continue
+        }
+      } catch (e: any) {}
     }
 
     // ── 边变量 RETURN r ──
@@ -4741,23 +4749,25 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             varCtx[varName] = { ...row }
           }
           // Extract function argument variables for type(), labels(), properties(), keys(), id()
-          // Edge variables in the raw GE row have __edgeLabel — need to be in varCtx for function evaluation
+          // Edge variables need __edgeLabel to be in varCtx for function body evaluation
+          // For unmatched OPTIONAL MATCH rows, edge variable should NOT get fallback data
           const fnArgMatch = expr.match(/^(type|labels|properties|keys|id)\s*\(\s*([a-zA-Z_]\w*)\s*\)$/i)
           if (fnArgMatch) {
             const argVar = fnArgMatch[2]
             if (/^[a-zA-Z_]\w*$/.test(argVar) && !(argVar in varCtx)) {
-              // First check: is it in __crossVarRows or is argVar a key in the raw GE row?
-              if (r.__crossVarRows?.[argVar]) {
+              // Check raw GE row for __edgeLabel (edge type data set during raw row building)
+              if (r.__edgeLabel) {
+                // Edge variable: create object with __edgeLabel for type() resolution
+                const edgeObj: Record<string, unknown> = { __edgeLabel: r.__edgeLabel, _type: r.__edgeLabel }
+                if (r.__edgeProps) edgeObj._props = r.__edgeProps
+                varCtx[argVar] = edgeObj
+              } else if (r.__crossVarRows?.[argVar]) {
                 varCtx[argVar] = r.__crossVarRows[argVar]
               } else if (r[argVar] !== undefined) {
                 varCtx[argVar] = r[argVar]
-              } else if (r.__edgeLabel && argVar.match(/^[a-z]\w*$/i)) {
-                // The raw GE row has __edgeLabel and the argument might be an edge variable
-                // For single-variable matches, the variable IS the raw row
-                varCtx[argVar] = { ...row, __edgeLabel: r.__edgeLabel, __edgeProps: r.__edgeProps }
-              } else {
-                varCtx[argVar] = { ...row }
               }
+              // When no edge data exists (e.g. unmatched OPTIONAL MATCH), DON'T add fallback
+              // The function will get undefined → null check → return null
             }
           }
         }
