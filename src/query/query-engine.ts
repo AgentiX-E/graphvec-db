@@ -991,22 +991,16 @@ export function parseQuery(query: string): QueryPlan {
         const cols = expr.split(',').map(c => c.trim()).filter(Boolean)
         if (cols.length) {
           plan.returnColumns = cols.map(c => {
-            // type(r) AS r → r（取 AS 后的别名，保留表达式到 returnAliasMap 用）
+            // type(r) AS r → r（取 AS 后的别名）
             const asMatch = c.match(/\bAS\s+(\w+)\s*$/i)
-            if (asMatch) {
-              // 保留 AS 的别名
-              plan.returnAliasMap = plan.returnAliasMap || {}
-              plan.returnAliasMap[asMatch[1]] = c.replace(/\s+AS\s+\w+\s*$/i, '').trim()
-              return asMatch[1]
-            }
+            if (asMatch) return asMatch[1]
+            // type(r) → r（取括号内的变量名）
+            const fnMatch = c.match(/^(\w+)\((\w+)\)$/)
+            if (fnMatch) return fnMatch[2]
             return c
           })
-          if (!plan.returnAliasMap || Object.keys(plan.returnAliasMap).length === 0) {
-            plan.returnAliasMap = {}
-            for (const c of plan.returnColumns) {
-              plan.returnAliasMap[c] = c
-            }
-          }
+          plan.returnAliasMap = {}
+          for (const c of plan.returnColumns) plan.returnAliasMap[c] = c
         }
       }
     }
@@ -3156,16 +3150,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               geNode.__crossVarRows = {}
               if (plan.steps?.length) {
                 const thisStep = plan.steps[plan.steps.length - 1]
-                // 绑定 targetAlias（如果有命名目标）
-                if (thisStep.targetAlias) {
-                  geNode.__crossVarRows[thisStep.targetAlias] = { ...targetNode, props: { ...targetNode }, _alias: thisStep.targetAlias }
-                }
-                // 绑定 source 变量（起始节点）—— 使用当前迭代的节点
+                geNode.__crossVarRows[thisStep.targetAlias] = { ...targetNode, props: { ...targetNode }, _alias: thisStep.targetAlias }
                 if (thisStep.source) {
-                  const srcNode = allNodes[i]
-                  if (srcNode) {
-                    geNode.__crossVarRows[thisStep.source] = { ...srcNode, props: { ...srcNode }, _alias: thisStep.source }
-                  }
+                  const srcNode = allNodes.find(n => n._label === plan.scanLabel)
+                  if (srcNode) geNode.__crossVarRows[thisStep.source] = { ...srcNode, props: { ...srcNode } }
                 }
               }
               // ── 多步多 RETURN 变量支持 ──
@@ -3974,10 +3962,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
     if (plan.whereBody && result.length && !plan.aggregate && !(plan.hasMatch && plan.unwind)) {
-      // ── 预处理：将 WHERE 中的模式谓词转换为 EXISTS 检查 ──
-      // 模式语法：(var)-[:LABEL*]->(var) 或 (var)-[]->() 或 (var)<-[]-(var) 等
-      // 这些在运行时需要检查图中是否存在匹配的边
-      const compiledWhere = _compileWherePatternPredicates(plan.whereBody)
       const filteredResult: QueryRow[] = []
       for (let ri = 0; ri < result.length; ri++) {
         const row = result[ri]
@@ -3999,14 +3983,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             ctx[key] = val
           }
         }
-        // 注入原始 GE 记录中的节点 ID（供 _callPatternExists 查找节点用）
-        if (rawEntry?.id !== undefined) {
-          ctx._geNodeId = rawEntry.id
-        }
-        // 上下文需要包含 _geInstance 和 _allNodes 供模式谓词运行时检查
-        ctx._geInstance = ge
-        ctx._allNodes = allNodes
-        const evalVal = _evaluateExpression(compiledWhere, ctx)
+        const evalVal = _evaluateExpression(plan.whereBody, ctx)
         if (evalVal === true) {
           filteredResult.push(row)
         }
@@ -4462,17 +4439,6 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             varCtx[vn] = { ...row }
           }
         }
-        // 函数调用（如 toBoolean(s)）：提取函数参数中的变量名
-        const fnCallMatch = expr.match(/^\w+\((.+)\)$/)
-        if (fnCallMatch) {
-          const args = _parseCommaList(fnCallMatch[1])
-          for (const arg of args) {
-            const vn = arg.includes('.') ? arg.split('.')[0] : arg.trim()
-            if (vn && /^[a-zA-Z_]\w*$/.test(vn) && !(vn in varCtx)) {
-              varCtx[vn] = (row || {})[vn] !== undefined ? row![vn] : { ...row }
-            }
-          }
-        }
         // 如果 expr 是函数调用（如 coalesce(a.title, a.name)），通过提取所有 . 之前的标识符
         // 来找到变量名；如果 expr 是纯变量名（"a"）或属性访问（"a.name"），直接提取
         const varNameMatches = expr.match(/(\b[a-zA-Z_]\w*)\s*\./g)
@@ -4483,7 +4449,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
               varCtx[vn] = { ...row }
             }
           }
-        } else if (!labelPredMatch && !fnCallMatch) {
+        } else if (!labelPredMatch) {
           const varName = expr.includes('.') ? expr.split('.')[0] : expr
           if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx)) {
             varCtx[varName] = { ...row }
@@ -4640,64 +4606,11 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
         if (rc in row) continue
       }
       // rc 是纯别名且无法映射——null property
-  
-      // 阶段 5: 检查是否为函数调用表达式（如 labels(node)），用 _evaluateExpression 求值
-      const aliasMap5 = plan.returnAliasMap as Record<string, string> | undefined
-      let funcVal: unknown = undefined
-      if (aliasMap5 && rc in aliasMap5) {
-        const expr5 = aliasMap5[rc]
-        const fnCall5 = expr5.match(/^\w+\(.+\)$/)
-        if (fnCall5) {
-          // 构建 varCtx: 从 createNodes 的别名-节点映射
-          const varCtx5: Record<string, unknown> = {}
-          for (const cn of insertNodes) {
-            if (cn.alias) {
-              const clean: Record<string, unknown> = {}
-              if (cn.props) Object.assign(clean, cn.props)
-              if (!Object.keys(clean).length && cn.label) clean['_label'] = cn.label
-              varCtx5[cn.alias] = clean
-            }
-          }
-          try {
-            funcVal = _evaluateExpression(expr5, varCtx5)
-            console.log('STAGE5: rc=' + rc + ' expr5=' + expr5 + ' varCtx5=' + JSON.stringify(varCtx5) + ' funcVal=' + JSON.stringify(funcVal))
-            if (funcVal !== undefined) {
-              row[rc] = funcVal
-              continue
-            }
-          } catch (e: any) { console.log('STAGE5 ERR: ' + e.message) }
-        } else {
-          console.log('STAGE5: no fnCall5 match for expr5=' + expr5)
-        }
-      } else {
-        console.log('STAGE5: no aliasMap or rc not in it. rc=' + rc + ' aliasMap=' + JSON.stringify(aliasMap5))
-      }
-      // 阶段 6: 检查 rc 是否为函数调用（无 AS 别名，如 labels(node) 直接作为 column name）
-      const fnCall6 = rc.match(/^(\w+)\((.+)\)$/)
-      if (fnCall6) {
-        console.log('STAGE6: rc=' + rc + ' fnCall6=' + JSON.stringify(fnCall6))
-        const varCtx6: Record<string, unknown> = {}
-        for (const cn of insertNodes) {
-          if (cn.alias) {
-            const clean: Record<string, unknown> = {}
-            if (cn.props) Object.assign(clean, cn.props)
-            if (!Object.keys(clean).length && cn.label) clean['_label'] = cn.label
-            varCtx6[cn.alias] = clean
-          }
-        }
-        try {
-          funcVal = _evaluateExpression(rc, varCtx6)
-          console.log('STAGE6: rc=' + rc + ' funcVal=' + JSON.stringify(funcVal))
-          if (funcVal !== undefined) {
-            row[rc] = funcVal
-            continue
-          }
-        } catch (e: any) { console.log('STAGE6 ERR: ' + e.message) }
-      } else {
-        console.log('STAGE6: no fnCall6 match for rc=' + rc)
-      }
-
-  return Object.keys(row).length ? [row] : []
+      row[rc] = ''
+      continue
+    }
+    row[rc] = ''
+  }
 
   return Object.keys(row).length ? [row] : []
 }
@@ -4742,14 +4655,6 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
 
   // ── SyntaxError: UndefinedVariable ──
   _validateUndefinedVariables(query)
-
-  // ── Pattern in wrong position: RETURN/WITH/SET ──
-  // Cypher TCK 要求 `MATCH (n) RETURN (n)-[]->()` 报 UnexpectedSyntax
-  // pattern 语法 `(...)-[...]-(...)` 出现在 RETURN/WITH/SET 列中
-  _validatePatternPosition(query)
-
-  // ── WHERE (n) self-pattern: 应报 InvalidArgumentType ──
-  _validateWhereSelfPattern(query)
 
   // ═══════════════════════════════════════════════════════════════
   // Literals SyntaxError (编译时字面量检查)
@@ -5101,341 +5006,10 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   }
 }
 
-/**
- * 将 WHERE 子句中的 Cypher 模式谓词转换为可通过 _evaluateExpression 求值的表达式。
- * 模式谓词语法：
- *   (var)-[:LABEL]->()        → 检查 var 是否有指定标签的出边
- *   (var)-[]->()              → 检查 var 是否有任意出边
- *   (var)<-[]-()              → 检查 var 是否有任意入边
- *   (var)-[]-()               → 检查 var 是否有任意边（无向）
- *   (var)-[:LABEL]->(var2)    → 检查 var 到 var2 是否存在指定标签的出边
- *   (var)-[:LABEL*]->(var2)   → 变长路径
- *   (var)-[:LABEL*2]-(var2)   → 无向变长路径，精确长度 2
- *   (var)<-[:LABEL]-()        → 检查 var 是否有指定标签的入边
- *   NOT (var)-[:LABEL]-()     → NOT 已经在表达式层处理
- *
- * 这些模式被转换为 _existsPattern(source, label, direction, target) 函数调用，
- * 其中 _existsPattern 是一个在运行时调用的内置函数。
- */
-function _compileWherePatternPredicates(whereBody: string): string {
-  let result = whereBody
-  // 匹配 pattern 谓词：NOT/AND/OR/XOR/BOL/EOL 之前的 (var)-[...]->(...)
-  // 必须匹配完整的模式三元组
-  const patternMap = new Map<string, string>()
-  let counter = 0
-
-  // 递归替换模式，最多 5 次（处理嵌套模式）
-  for (let iter = 0; iter < 5; iter++) {
-    // 查找模式： (varName?)-[...]->(...) 或 (varName?)<-[...]-(...) 或 (varName?)-[...]-(...) 或 (varName?)--(...)
-    // 捕获组: [1]=src, [2/3/4]=edgeContent(with brackets), [5]=direction(->,-,or empty), [6]=tgt
-    const patRE = /\((\w*)\)\s*(<-\s*\[([^\]]*)\]\s*-|-\s*\[([^\]]*)\]\s*((?:->)?-?)|\s*--\s*)\((\w*)\)/g
-    let found = false
-    result = result.replace(patRE, (match, src, alt1, label1, label2, dir, tgt) => {
-      // 如果已经被替换过，跳过
-      if (match.startsWith('_pe_')) return match
-      found = true
-      const patternId = `_pe_${counter++}`
-      let direction = 'out'
-      let edgeContent = ''
-      // 检测哪个 alternative 匹配了：alt1 是完整箭头文本
-      if (alt1 && alt1.startsWith('<-')) {
-        // alternative 1: <-...- 模式（入边）
-        direction = 'in'
-        edgeContent = alt1.match(/\[([^\]]*)\]/)?.[1] || ''
-      } else if (alt1 && alt1.startsWith('--')) {
-        // alternative 3: -- 模式（无向无括号）
-        direction = 'out'
-        edgeContent = ''
-      } else if (alt1 && alt1.startsWith('-[')) {
-        // alternative 2: -[...]-> 或 -[...]- 模式
-        if (/\->/.test(dir || '')) direction = 'out'
-        else if (/<-/.test(dir || '')) direction = 'in'
-        else direction = 'out' // -[...]- without arrow = undirected but we map to out
-        edgeContent = label2 || ''
-      } else {
-        direction = 'out'
-        edgeContent = label2 || ''
-      }
-      // 提取标签和变长标记
-      const labelMatch = edgeContent.match(/^:(\w+)/)
-      const label = labelMatch ? labelMatch[1] : ''
-      const varLen = edgeContent.includes('*') ? (edgeContent.match(/\*(\d+)?/)?.[1] || '*') : ''
-      patternMap.set(patternId, JSON.stringify({ src, label, direction, tgt, varLen }))
-      return patternId
-    })
-    if (!found) break
-  }
-
-  // 替换所有 _pe_N 占位符为 _existsPattern 函数调用
-  for (const [patternId, jsonData] of patternMap) {
-    result = result.replace(patternId, `_existsPattern(${jsonData})`)
-  }
-
-  return result
-}
-
-/**
- * 内置函数：在运行时检查模式谓词（pattern predicate）是否匹配。
- * 通过 row 上下文中的 _geInstance 访问 Graph Engine。
- */
-function _callPatternExists(patternDef: string, row?: Record<string, unknown>): boolean {
-  try {
-    const def: { src: string; label: string; direction: string; tgt: string; varLen: string } = JSON.parse(patternDef)
-    const allNodes = row?._allNodes as Array<Record<string, unknown>> || []
-
-    // 解析源节点：通过变量名在 allNodes 中查找
-    const srcVar = def.src
-    if (!srcVar) return false
-    
-    // 查找源节点在 allNodes 中的索引
-    let srcIdx = -1
-    
-    // 方法 1: 从 row["n"] 找到匹配的节点
-    if (row && allNodes.length > 0) {
-      const srcFromRow = row[srcVar]
-      if (srcFromRow && typeof srcFromRow === 'object' && !Array.isArray(srcFromRow)) {
-        const srcAsRecord = srcFromRow as Record<string, unknown>
-        const srcLabel = srcAsRecord._label
-        if (srcLabel) {
-          for (let i = 0; i < allNodes.length; i++) {
-            const n = allNodes[i]
-            if (n && n._label === srcLabel) {
-              srcIdx = i
-              break
-            }
-          }
-        }
-      }
-    }
-    
-    // 方法 2: 从 _geNodeId 使用 nodeGeIds 反向查找
-    if (srcIdx < 0 && row && row._geNodeId !== undefined) {
-      const geId = Number(row._geNodeId)
-      for (let i = 0; i < allNodes.length; i++) {
-        if (allNodes[i] && Number(allNodes[i]._id || i + 1) === geId) {
-          srcIdx = i
-          break
-        }
-      }
-    }
-    
-    // 方法 3: 用 _geNodeId 直接作为 allNodes 索引
-    if (srcIdx < 0 && row && row._geNodeId !== undefined) {
-      const geId = Number(row._geNodeId)
-      if (geId > 0 && geId <= allNodes.length) {
-        srcIdx = geId - 1
-      }
-    }
-    
-    if (srcIdx < 0) return false
-
-    // 解析目标节点索引（如果有）
-    let tgtIdx = -1
-    if (def.tgt) {
-      if (row) {
-        const tgtVal = row[def.tgt]
-        if (tgtVal && typeof tgtVal === 'object' && !Array.isArray(tgtVal)) {
-          const tgtNode = tgtVal as Record<string, unknown>
-          const tgtLabel = tgtNode._label
-          if (tgtLabel) {
-            for (let i = 0; i < allNodes.length; i++) {
-              if (allNodes[i] && allNodes[i]._label === tgtLabel) {
-                tgtIdx = i
-                break
-              }
-            }
-          }
-        }
-      }
-      if (tgtIdx < 0) {
-        for (let i = 0; i < allNodes.length; i++) {
-          const n = allNodes[i]
-          if (n._alias === def.tgt || n.alias === def.tgt) {
-            tgtIdx = i
-            break
-          }
-        }
-      }
-    }
-
-    const direction = def.direction
-    const label = def.label
-
-    // 变长路径
-    if (def.varLen) {
-      return _checkVarLenPathExistsFromEdges(srcIdx, label, direction, def.varLen, tgtIdx, allNodes)
-    }
-
-    // 使用 __edges 检查边存在性
-    try {
-      const srcNode = allNodes[srcIdx] as any
-      if (!srcNode) return false
-      const edges: Array<{ dstIdx: number; srcIdx: number; label: string }> = srcNode.__edges || []
-
-      // 找出所有匹配方向、标签、目标的边
-      for (const e of edges) {
-        // 方向匹配
-        let edgeMatches = false
-        if (direction === 'out' && e.srcIdx === srcIdx) edgeMatches = true
-        if (direction === 'in' && e.dstIdx === srcIdx) edgeMatches = true
-        if (direction !== 'in' && direction !== 'out') edgeMatches = true
-
-        if (!edgeMatches) continue
-        if (label && e.label !== label) continue
-        if (tgtIdx >= 0 && e.dstIdx !== tgtIdx && e.srcIdx !== tgtIdx) continue
-        return true
-      }
-
-      // 对于方向为 any/undirected：检查所有节点的反向边
-      if (direction !== 'in' && direction !== 'out') {
-        for (let j = 0; j < allNodes.length; j++) {
-          if (j === srcIdx) continue
-          const other = allNodes[j] as any
-          if (!other.__edges) continue
-          for (const e of other.__edges) {
-            if (e.dstIdx === srcIdx || e.srcIdx === srcIdx) {
-              if (label && e.label !== label) continue
-              if (tgtIdx >= 0 && e.dstIdx !== tgtIdx && e.srcIdx !== tgtIdx) continue
-              return true
-            }
-          }
-        }
-      }
-
-      return false
-    } catch {
-      return false
-    }
-  } catch {
-    return false
-  }
-}
-
-/**
- * 使用 __edges 检查变长路径是否存在。
- * BFS 从 srcIdx 出发，匹配方向/标签/长度。
- */
-function _checkVarLenPathExistsFromEdges(
-  srcIdx: number, label: string, direction: string, varLen: string, tgtIdx: number,
-  allNodes: Record<string, unknown>[]
-): boolean {
-  let minLen = 1, maxLen = -1
-  if (varLen === '*') { maxLen = 100 }
-  else if (/^\*\d+$/.test(varLen)) {
-    const m = varLen.match(/^\*(\d+)$/)
-    if (m) { minLen = Number(m[1]); maxLen = Number(m[1]) }
-  } else if (/^\*\d+\.\.\d+$/.test(varLen)) {
-    const m = varLen.match(/^\*(\d+)\.\.(\d+)$/)
-    if (m) { minLen = Number(m[1]); maxLen = Number(m[2]) }
-  }
-
-  const visited = new Set<number>()
-  const queue: Array<{ idx: number; depth: number }> = [{ idx: srcIdx, depth: 0 }]
-  visited.add(srcIdx)
-
-  const isAny = direction !== 'in' && direction !== 'out'
-
-  while (queue.length > 0) {
-    const { idx, depth } = queue.shift()!
-    if (depth + 1 > maxLen && maxLen > 0) continue
-
-    const node = allNodes[idx] as any
-    const edges: Array<{ dstIdx: number; srcIdx: number; label: string }> = node?.__edges || []
-
-    for (const e of edges) {
-      let neighborIdx = -1
-      if (isAny) {
-        neighborIdx = e.dstIdx === idx ? e.srcIdx : (e.srcIdx === idx ? e.dstIdx : -1)
-      } else if (direction === 'out' && e.srcIdx === idx) {
-        neighborIdx = e.dstIdx
-      } else if (direction === 'in' && e.dstIdx === idx) {
-        neighborIdx = e.srcIdx
-      }
-      if (neighborIdx < 0) continue
-      if (visited.has(neighborIdx)) continue
-      if (label && e.label !== label) continue
-
-      const newDepth = depth + 1
-      if (newDepth >= minLen) {
-        if (tgtIdx < 0 || neighborIdx === tgtIdx) return true
-      }
-      if (maxLen < 0 || newDepth < maxLen) {
-        if (tgtIdx < 0 || neighborIdx !== tgtIdx) {
-          visited.add(neighborIdx)
-          queue.push({ idx: neighborIdx, depth: newDepth })
-        }
-      }
-    }
-
-    if (isAny) {
-      for (let j = 0; j < allNodes.length; j++) {
-        if (j === idx || visited.has(j)) continue
-        const other = allNodes[j] as any
-        if (!other.__edges) continue
-        for (const e of other.__edges) {
-          if (e.dstIdx === idx || e.srcIdx === idx) {
-            if (label && e.label !== label) continue
-            visited.add(j)
-            const newDepth = depth + 1
-            if (newDepth >= minLen) {
-              if (tgtIdx < 0 || j === tgtIdx) return true
-            }
-            if (maxLen < 0 || newDepth < maxLen) {
-              queue.push({ idx: j, depth: newDepth })
-            }
-            break
-          }
-        }
-      }
-    }
-  }
-
-  return false
-}
-
-    }
-    // 更精确：检测 (...)-[...]-(...) 模式在 WITH 列中
-    const barePattern = patternRE.exec(withBody)
-    if (barePattern) {
-      const before = withBody.substring(0, barePattern.index)
-      if (!before.includes('(') || before.lastIndexOf('(') < before.lastIndexOf(')')) {
-        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
-      }
-    }
-  }
-  // 检测 SET 列的右值中的 pattern
-  // MATCH (n) SET n.prop = head(nodes(head((n)-[:REL]->()))).foo
-  const setMatch = query.match(/SET\s+(.+?)(?:\s+(?:RETURN|WITH|CREATE|MERGE|DELETE|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
-  if (setMatch) {
-    const setBody = setMatch[1]
-    // 检测 = 右边的值中是否有 pattern
-    const eqIdx = setBody.indexOf('=')
-    if (eqIdx >= 0) {
-      const rhs = setBody.substring(eqIdx + 1).trim()
-      // 检查是否包含 {...}-[...]-{...} 模式（不在函数嵌套中）
-      if (patternRE.test(rhs)) {
-        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
-      }
-    }
-  }
-}
-
-/**
- * 检测 WHERE (n) 自我模式（InvalidArgumentType）
- * MATCH (n) WHERE (n) RETURN n → 应报错
- */
-function _validateWhereSelfPattern(query: string): void {
-  const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
-  if (!whereMatch) return
-  const whereBody = whereMatch[1].trim()
-  // 检测 WHERE (n) — 只有单个节点模式，没有关系部分
-  // 也检测 WHERE (n:Label) — 带标签的节点模式
-  // 但不包括 WHERE (n)-[]->() 等带关系模式的
-  // 更精确：WHERE body 以 "( 开始，以 )" 结束，没有箭头或关系模式
-  const selfNodePattern = /^\s*\(\s*\w+(?::\w+)?\s*\)\s*$/
-  if (selfNodePattern.test(whereBody)) {
-    throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
-  }
+/** 从 Cypher 查询中提取 MATCH 子句的字符串 */
+function extractMatchClause(query: string): string {
+  const match = query.match(/MATCH\s+(.*?)(?:\s+(WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/is)
+  return match ? match[1].trim() : ''
 }
 
 /** 检测 WHERE 子句中引用未定义变量（SyntaxError: UndefinedVariable） */
@@ -5474,11 +5048,10 @@ function _validateUndefinedVariables(query: string): void {
           'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
           'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
           'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-          'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH','LABELS',
+          'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH',
           'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
           'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
-          'COUNT','SUM','AVG','MAX','MIN','COLLECT',
-          'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION'].includes(v.toUpperCase())) continue
+          'COUNT','SUM','AVG','MAX','MIN','COLLECT'].includes(v.toUpperCase())) continue
       // 排除 AS 别名
       const aliasNames = [...beforeAs.matchAll(/\bAS\s+(\w+)/gi)].map(m => m[1])
       if (aliasNames.includes(v)) continue
@@ -5496,20 +5069,13 @@ function _validateUndefinedVariables(query: string): void {
             'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
             'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
             'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
-            'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH','LABELS',
+            'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH',
             'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
             'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
             'COUNT','SUM','AVG','MAX','MIN','COLLECT',
-            'STARTS','CONTAINS','ENDS',
-            'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION'].includes(vu)) continue
+            'STARTS','CONTAINS','ENDS'].includes(vu)) continue
         // 检查是否在 MATCH、CREATE 边变量、CREATE 节点变量中定义
-        // 同时也提取 WITH/UNWIND 中定义的变量
-        const withVars2: string[] = []
-        const allWithAsMatches = query.matchAll(/\b(?:WITH|UNWIND)\b[^]*?\bAS\s+(\w+)/gi)
-        for (const am of allWithAsMatches) {
-          withVars2.push(am[1])
-        }
-        const allDefinedVars = [...matchVars, ...createEdgeVars, ...createNodeVars, ...withVars2]
+        const allDefinedVars = [...matchVars, ...createEdgeVars, ...createNodeVars]
         if (!allDefinedVars.includes(v)) {
           // 额外检查：如果 v 看起来是属性访问（有小数点），跳过
           if (v.includes('.') && allDefinedVars.includes(v.split('.')[0])) continue
@@ -5543,32 +5109,12 @@ function _validateUndefinedVariables(query: string): void {
   }
   // 合并 MATCH 变量和 WITH 变量
   const definedVars = [...new Set([...matchVars, ...withVars])]
-  // 额外：从 RETURN 列提取简单标识符（可能由 WHERE 模式引入）
-  const returnClause = query.match(/\bRETURN\s+(.+?)(?:\s+(?:ORDER\s+BY|SKIP|LIMIT|WHERE|CREATE|MERGE|MATCH|WITH|CALL|UNWIND)\s|$)/is)
-  if (returnClause) {
-    const returnBody = returnClause[1].trim()
-    // 提取所有标识符（不包含 . 的属性引用，不包含 ( 的函数调用）
-    const returnIdents = returnBody.match(/\b([a-zA-Z_]\w*)\b/g) || []
-    for (const ri of returnIdents) {
-      const riu = ri.toUpperCase()
-      if (!['AS','DISTINCT','ORDER','BY','SKIP','LIMIT'].includes(riu) && !definedVars.includes(ri)) {
-        definedVars.push(ri)
-      }
-    }
-  }
   // 去掉字符串常量
   let cleaned = whereBody
     .replace(/'[^']*'/g, '')
     .replace(/"[^"]*"/g, '')
   // 去掉属性访问（x.y 格式）
   cleaned = cleaned.split(/\s+/).filter(word => !word.includes('.')).join(' ')
-  // 去掉括号模式中的标签和类型名（如 :REL1、:Label 在 WHERE (n)-[:REL1]->() 中
-  // 是关系类型和标签名，不是变量引用），但保留变量名（如 [r], (a)）
-  // 对于 (n:Label) — 保留 n, 去掉 :Label
-  // 对于 [:LABEL*] — 去掉 :LABEL
-  cleaned = cleaned.replace(/:(\w+)/g, '').replace(/\{\s*\}/g, '')
-  // 去掉模式中的箭头符号和标点
-  cleaned = cleaned.replace(/<-/g, ' ').replace(/->/g, ' ').replace(/--/g, ' ')
   // 提取裸标识符
   const idents = cleaned.match(/\b([a-zA-Z_]\w*)\b/g) || []
   const keywords = new Set([
@@ -5579,13 +5125,11 @@ function _validateUndefinedVariables(query: string): void {
     'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
     'UNION','ALL','OPTIONAL',
     // 已知函数名（避免误判函数名变量）
-    'TOINTEGER','TOFLOAT','TOBOOLEAN','TOSTRING','SIZE','LENGTH','LABELS','KEYS',
+    'TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','KEYS',
     'COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
     'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
     'COUNT','SUM','AVG','MAX','MIN','COLLECT',
     'STARTS','CONTAINS','ENDS',
-    // 时态函数
-    'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
     ])
   for (const v of idents) {
     const vu = v.toUpperCase()
@@ -5976,12 +5520,6 @@ function _parseCommaList(s: string): string[] {
 type _BuiltinFn = (args: string[], row?: Record<string, unknown>) => unknown
 
 const _builtinFunctions: Record<string, _BuiltinFn> = {
-  // 内部函数：WHERE 模式谓词运行时检查
-  _existsPattern: ([jsonPattern], row) => {
-    if (!jsonPattern) return false
-    // jsonPattern 是 JSON.stringify 的字符串，直接解析
-    return _callPatternExists(jsonPattern, row)
-  },
   abs: ([a], r) => Math.abs(Number(_evalBinary(a, r))),
   sqrt: ([a], r) => Math.sqrt(Number(_evalBinary(a, r))),
   ceil: ([a], r) => Math.ceil(Number(_evalBinary(a, r))),
@@ -6002,9 +5540,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   tostring: ([a], r) => String(_evalBinary(a, r)),
   tointeger: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return parseInt(String(v), 10) },
   tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return parseFloat(String(v)) },
-  toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'boolean') return v; const s = String(v).toLowerCase().trim(); if (s === 'true') return true; if (s === 'false') return false; return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
-  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object') return null; const raw = v._fullLabel || v._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
+  labels: (_, r) => r?._label ? String(r._label).split(':').filter(Boolean) : [],
   type: (_, r) => r?.__edgeLabel ?? r?._type ?? null,
   properties: (_, r) => { if (!r) return {}; const o: Record<string, unknown> = {}; for (const [k, v] of Object.entries(r)) if (!k.startsWith('_')) o[k] = v; return o },
   keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') return Object.keys(v).filter(k => !k.startsWith('_')); return [] },
@@ -6015,357 +5552,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   range: ([s, e, step], r) => { const start = Number(_evalBinary(s, r)), end = Number(_evalBinary(e, r)), st = step ? Math.abs(Number(_evalBinary(step, r))) : 1; const res: number[] = []; if (start <= end) for (let i = start; i <= end; i += st) res.push(i); else for (let i = start; i >= end; i -= st) res.push(i); return res },
   length: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.length : 0 },
   split: ([a, d], r) => String(_evalBinary(a, r)).split(String(_evalBinary(d, r))),
-  // ── Temporal Functions ──
-  'datetime.fromepoch': ([seconds, nanos], r) => {
-    const sec = Number(_evalBinary(seconds, r))
-    const ns = nanos ? Number(_evalBinary(nanos, r)) : 0
-    const base = new Date(sec * 1000)
-    const iso = base.toISOString().replace('Z', '')
-    // 添加纳秒部分
-    if (ns > 0) {
-      const nsStr = String(ns).padStart(9, '0')
-      return `${iso.slice(0, -4)}${nsStr}Z`
-    }
-    return `${iso.replace('Z', '')}Z`
-  },
-  'datetime.fromepochmillis': ([millis], r) => {
-    const ms = Number(_evalBinary(millis, r))
-    const base = new Date(ms)
-    return base.toISOString().replace('Z', '') + 'Z'
-  },
-  date: ([a], r) => {
-    if (!a) {
-      // date() with no args → current date
-      const d = new Date()
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    }
-    const v = _evalBinary(a, r)
-    if (typeof v === 'string') {
-      let str = v
-      if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1)
-      // Validate YYYY-MM-DD format and return as-is
-      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str
-      return str
-    }
-    if (v && typeof v === 'object') {
-      const map = v as Record<string, unknown>
-      const d = _resolveDateFromMap(map)
-      // Use UTC getters since _resolveDateFromMap builds dates in UTC
-      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
-    }
-    return null
-  },
-  localtime: ([a], r) => {
-    if (!a) {
-      const d = new Date()
-      return _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000)
-    }
-    const v = _evalBinary(a, r)
-    if (v && typeof v === 'object') {
-      const map = v as Record<string, number>
-      const { hour, minute, second, nanosecond } = _extractTimeMap(map)
-      return _formatTime(hour, minute, second, nanosecond)
-    }
-    return null
-  },
-  time: ([a], r) => {
-    if (!a) {
-      const d = new Date()
-      return _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000) + 'Z'
-    }
-    const v = _evalBinary(a, r)
-    if (v && typeof v === 'object') {
-      const map = v as Record<string, number>
-      const { hour, minute, second, nanosecond } = _extractTimeMap(map)
-      const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone))) : 'Z'
-      return _formatTime(hour, minute, second, nanosecond) + tz
-    }
-    return null
-  },
-  localdatetime: ([a], r) => {
-    if (!a) {
-      const d = new Date()
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${_formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000)}`
-    }
-    const v = _evalBinary(a, r)
-    if (v && typeof v === 'object') {
-      const map = v as Record<string, number>
-      const d = _resolveDateFromMap(map)
-      const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
-      const { hour, minute, second, nanosecond } = _extractTimeMap(map)
-      return `${dateStr}T${_formatTime(hour, minute, second, nanosecond)}`
-    }
-    return null
-  },
-  datetime: ([a], r) => {
-    if (!a) {
-      const d = new Date()
-      const result = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${_formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000)}Z`
-      return result
-    }
-    const v = _evalBinary(a, r)
-    if (v && typeof v === 'object') {
-      const map = v as Record<string, number>
-      const d = _resolveDateFromMap(map)
-      const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
-      const { hour, minute, second, nanosecond } = _extractTimeMap(map)
-      const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone), d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate())) : 'Z'
-      const result = `${dateStr}T${_formatTime(hour, minute, second, nanosecond)}${tz}`
-      return result
-    }
-    return null
-  },
-  duration: ([a], r) => {
-    if (!a) return 'PT0S'
-    const v = _evalBinary(a, r)
-    if (v && typeof v === 'object') {
-      const map = v as Record<string, unknown>
-      // Cypher duration components: years, months, days, hours, minutes, seconds, nanoseconds
-      function _num(k: string): number { const v = map[k]; return v != null ? Number(v) : 0 }
-      let years = _num('years') || _num('year')
-      let months = _num('months') || _num('month')
-      let days = _num('days') || _num('day')
-      let hours = _num('hours') || _num('hour')
-      let minutes = _num('minutes') || _num('minute')
-      let seconds = _num('seconds') || _num('second')
-      let nanos = _resolveNanoseconds(map)
-      // 处理各字段的分数部分，逐步向下分解
-      if (hours % 1 !== 0) {
-        const f = hours - Math.floor(hours)
-        minutes += f * 60
-        hours = Math.floor(hours)
-      }
-      if (minutes % 1 !== 0) {
-        const f = minutes - Math.floor(minutes)
-        seconds += f * 60
-        minutes = Math.floor(minutes)
-      }
-      if (seconds % 1 !== 0) {
-        const f = seconds - Math.floor(seconds)
-        nanos += Math.round(f * 1e9)
-        seconds = Math.floor(seconds)
-      }
-      // 进一
-      if (nanos >= 1e9) {
-        seconds += Math.floor(nanos / 1e9)
-        nanos = nanos % 1e9
-      }
-      if (seconds >= 60) {
-        minutes += Math.floor(seconds / 60)
-        seconds = seconds % 60
-      }
-      if (minutes >= 60) {
-        hours += Math.floor(minutes / 60)
-        minutes = minutes % 60
-      }
-      if (hours >= 24) {
-        days += Math.floor(hours / 24)
-        hours = hours % 24
-      }
-      // 格式化纳秒
-      let nanosFormatted = ''
-      if (nanos > 0) {
-        let nsStr = String(nanos).padStart(9, '0')
-        nsStr = nsStr.replace(/0+$/, '')
-        nanosFormatted = `.${nsStr}`
-      }
-      let result = 'P'
-      if (years) result += `${years}Y`
-      if (months) result += `${months}M`
-      if (days) result += `${days}D`
-      if (hours || minutes || seconds || nanos) {
-        result += 'T'
-        if (hours) result += `${hours}H`
-        if (minutes) result += `${minutes}M`
-        if (seconds || nanos) {
-          result += `${seconds}${nanosFormatted}S`
-        }
-      }
-      return result || 'PT0S'
-    }
-    return null
-  },
-}
-
-/** 从 map 中解析纳秒值，考虑 nanosecond, microsecond, millisecond 字段的组合 */
-function _resolveNanoseconds(map: Record<string, unknown>): number {
-  const ms = map.millisecond != null ? Math.round(Number(map.millisecond) * 1000000) : 0
-  const us = map.microsecond != null ? Math.round(Number(map.microsecond) * 1000) : 0
-  const ns = map.nanosecond != null ? Number(map.nanosecond) : 0
-  return ms + us + ns
-}
-
-/**
- * 将时分秒和纳秒格式化为时间字符串（HH:MM:SS.sssssssss 格式）。
- * Cypher TCK 要求：
- * - 当 second=0 且 no fractional 时 omit second part: "12:00" 而不是 "12:00:00"
- * - 当有 fraction 时保留所有非零位，9位精度的末尾零去掉（但至少保留1位小数部分）
- */
-function _formatTime(hour: number, minute: number, second: number, nanosecond: number): string {
-  const base = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
-  if (nanosecond > 0) {
-    // 有小数秒时，必须显示秒和所有有效的分数部分
-    let nsStr = String(nanosecond).padStart(9, '0')
-    // 去掉末尾多余的 0
-    nsStr = nsStr.replace(/0+$/, '')
-    return `${base}:${String(second).padStart(2, '0')}.${nsStr}`
-  }
-  if (second > 0) {
-    return `${base}:${String(second).padStart(2, '0')}`
-  }
-  return base
-}
-
-/** 从 map 中提取时间组件 */
-function _extractTimeMap(map: Record<string, unknown>): { hour: number; minute: number; second: number; nanosecond: number } {
-  const hour = map.hour != null ? Number(map.hour) : 0
-  const minute = map.minute != null ? Number(map.minute) : 0
-  const second = map.second != null ? Number(map.second) : 0
-  const nanosecond = _resolveNanoseconds(map)
-  return { hour, minute, second, nanosecond }
-}
-
-/** 从 map 中提取日期组件并构造日期字符串 */
-function _formatDate(map: Record<string, unknown>): string {
-  const year = map.year != null ? Number(map.year) : 0
-  const month = map.month != null ? Number(map.month) : 1
-  const day = map.day != null ? Number(map.day) : 1
-  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-}
-
-/** 格式化时区偏移，去掉末尾的 :00 秒部分 */
-function _formatTimezone(tz: string): string {
-  // +02:05:00 → +02:05, -05:00:00 → -05:00
-  if (/^[+-]\d{2}:\d{2}:00$/.test(tz)) {
-    return tz.slice(0, -3) // 去掉 :00（秒）
-  }
-  return tz
-}
-
-/** 将 IANA 时区名称（如 'Europe/Stockholm'）解析为 ±HH:MM[名称] 格式 */
-function _resolveNamedTimezone(tz: string, year?: number, month?: number, day?: number): string {
-  // 如果已经是 ±HH:MM 格式，直接返回（不做组合）
-  if (/^[+-]\d{2}:\d{2}/.test(tz)) return tz
-  // 如果包含 [ 即已有 offset+name 组合，直接返回
-  if (tz.includes('[')) return tz
-  // 纯 IANA 时区名称：用 JS 计算指定日期的偏移
-  try {
-    const date = (year != null && month != null && day != null)
-      ? new Date(Date.UTC(year, month - 1, day))
-      : new Date()
-    const opts: Intl.DateTimeFormatOptions = {
-      timeZone: tz,
-      timeZoneName: 'shortOffset',
-    }
-    const formatter = new Intl.DateTimeFormat('en', opts)
-    const parts = formatter.formatToParts(date)
-    const tzPart = parts.find(p => p.type === 'timeZoneName')
-    if (tzPart && tzPart.value) {
-      const offsetStr = tzPart.value
-      const offsetMatch = offsetStr.match(/GMT([+-]?)(\d+)/)
-      if (offsetMatch) {
-        const sign = offsetMatch[1] || '+'
-        const hours = parseInt(offsetMatch[2], 10)
-        const formatted = `${sign}${String(hours).padStart(2, '0')}:00`
-        return `${formatted}[${tz}]`
-      }
-    }
-  } catch {}
-  return tz
-}
-
-/** 获取日期的 ISO 周年份（ISO week-year） */
-function _isoYear(d: Date): number {
-  // ISO week-year = the year containing Jan 4 of the ISO week containing d
-  // = getUTCFullYear of the Thursday of that week
-  // Thursday = d + (4 - 1 - d.getUTCDay())%7 ... simplified: add 3 - ((getUTCDay()+6)%7)
-  const temp = new Date(d.valueOf())
-  temp.setUTCDate(temp.getUTCDate() + 3 - ((temp.getUTCDay() + 6) % 7))
-  return temp.getUTCFullYear()
-}
-
-/** ISO week 1 的周一 */
-function _isoWeek1Monday(year: number): Date {
-  const jan4 = new Date(Date.UTC(year, 0, 4))
-  const d = jan4.getUTCDay() === 0 ? 7 : jan4.getUTCDay()
-  return new Date(Date.UTC(year, 0, 4 - d + 1))
-}
-
-/** 从 week/week 相关的 map 构建 Date 对象 */
-function _resolveDateFromMap(map: Record<string, unknown>): Date {
-  // 先处理 date 属性（可能是字符串或另一个 date() 调用的结果）
-  if (map.date != null) {
-    let baseStr: string
-    if (typeof map.date === 'string') {
-      baseStr = map.date
-    } else {
-      baseStr = String(map.date)
-    }
-    // 解析 date 字符串为年月日
-    const parts = baseStr.split('-')
-    if (parts.length === 3) {
-      const year = Number(parts[0])
-      const month = Number(parts[1])
-      const day = Number(parts[2])
-      const baseDate = new Date(Date.UTC(year, month - 1, day))
-      if (map.week != null || map.dayOfWeek != null) {
-        // date 提供了星期几信息（ISO: Mon=1..Sun=7）
-        const dateDow = baseDate.getUTCDay() === 0 ? 7 : baseDate.getUTCDay()
-        // 确定 ISO 周年份：如果有显式 year 则用它，否则从 date 推断
-        let y: number
-        if (map.year != null) {
-          y = typeof map.year === 'number' ? map.year : Number(map.year)
-        } else {
-          y = _isoYear(baseDate)
-        }
-        const w1Mon = _isoWeek1Monday(y)
-        // 如果 dayOfWeek 没有显式指定，从 date 的星期几推断
-        const dow = typeof map.dayOfWeek === 'number' ? map.dayOfWeek : (map.dayOfWeek != null ? Number(map.dayOfWeek) : dateDow)
-        const targetWeek = map.week != null ? (typeof map.week === 'number' ? map.week : Number(map.week)) : 1
-        const adjusted = new Date(w1Mon)
-        adjusted.setUTCDate(w1Mon.getUTCDate() + (targetWeek - 1) * 7 + dow - 1)
-        return adjusted
-      }
-      return baseDate
-    }
-  }
-
-  const yearNum = typeof map.year === 'number' ? map.year : (typeof map.year === 'bigint' ? Number(map.year) : (map.year != null ? Number(map.year) : 2000))
-  const year = yearNum
-
-  if (map.week != null) {
-    const w1Mon = _isoWeek1Monday(year)
-    const dayOfWeekTarget = typeof map.dayOfWeek === 'number' ? map.dayOfWeek : (map.dayOfWeek != null ? Number(map.dayOfWeek) : 1)
-    const daysToAdd = (Number(map.week) - 1) * 7 + dayOfWeekTarget - 1
-    const result = new Date(w1Mon)
-    result.setUTCDate(w1Mon.getUTCDate() + daysToAdd)
-    return result
-  }
-  let month = typeof map.month === 'number' ? map.month : (map.month != null ? Number(map.month) : 1)
-  let dayOp = typeof map.day === 'number' ? map.day : (map.day != null ? Number(map.day) : 1)
-  let day = dayOp
-  if (map.quarter != null) {
-    month = (Number(map.quarter) - 1) * 3 + 1
-    if (map.dayOfQuarter != null) {
-      const qStart = new Date(Date.UTC(year, month - 1, 1))
-      qStart.setUTCDate(qStart.getUTCDate() + Number(map.dayOfQuarter) - 1)
-      return qStart
-    }
-  }
-  if (map.ordinalDay != null) {
-    const d = new Date(Date.UTC(year, 0, 1))
-    d.setUTCDate(d.getUTCDate() + Number(map.ordinalDay) - 1)
-    return d
-  }
-  return new Date(Date.UTC(year, month - 1, day))
-}
-
-/** ISO 8601 week number for a date (1-53) */
-function _isoWeekNumber(d: Date): number {
-  const temp = new Date(d.valueOf())
-  temp.setDate(temp.getDate() + 3 - ((temp.getDay() + 6) % 7))
-  const week1 = new Date(temp.getFullYear(), 0, 4)
-  return 1 + Math.round(((temp.valueOf() - week1.valueOf()) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7)
 }
 
 function _callFunction(name: string, args: string[], row?: Record<string, unknown>): unknown {
@@ -7090,15 +6276,11 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     if (pred === 'single') return count === 1
   }
   // 函数调用（必须在 dot 之前）
-  const fnMatch = t.match(/^((?:\w+\.)*\w+)\((.+?)\)$/s)
+  const fnMatch = t.match(/^(\w+)\((.+?)\)$/s)
   if (fnMatch) {
     const args = fnMatch[2].trim() ? _parseCommaList(fnMatch[2]).map(a => a.trim()) : []
     return _callFunction(fnMatch[1].toLowerCase(), args, row)
   }
-  // 解析含 `.` 的函数表达式：先处理函数名部分，再处理点后的属性
-  // 例：datetime.fromepoch(416779, NaN) → 不匹配上述函数调用，所以会走到属性访问
-  // 增加一个更严格的测试：t 以单词字符开头，包含 .，包含 (，且以 ) 结尾
-  // 上面的 fnMatch 已经处理了含 . 的，不需要额外逻辑
   // 如果包含顶层 `^`，是表达式而非纯字面量，委托给 _evalExp
   if (t.includes('^')) {
     let depth = 0, inStr = false, strChar = ''
@@ -7290,11 +6472,7 @@ function _evalLiteral(s: string, row?: Record<string, unknown>): unknown {
     for (const pair of _parseCommaList(inner)) {
       const colonIdx = pair.indexOf(':')
       if (colonIdx === -1) continue
-      const key = pair.slice(0, colonIdx).trim().replace(/['"]/g, '')
-      const valueStr = pair.slice(colonIdx + 1).trim()
-      if (key === 'timezone') {
-      }
-      result[key] = _evalBinary(valueStr, row)
+      result[pair.slice(0, colonIdx).trim().replace(/['"]/g, '')] = _evalBinary(pair.slice(colonIdx + 1).trim(), row)
     }
     return result
   }
