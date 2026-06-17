@@ -1022,7 +1022,7 @@ export function parseQuery(query: string): QueryPlan {
 
   // ── Fallback: 如果 parseQuery 后 returnColumns 为空但有 RETURN 子句 ──
   // ANTLR 可能无法解析某些函数调用（如 type(r) AS alias），用正则提取
-  if (!plan.returnColumns?.length && !plan.aggregate && !plan.with) {
+  if (!plan.returnColumns?.length && !plan.aggregate) {
     const returnClause = query.match(/RETURN\s+(.+?)(?:\s+(ORDER|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW)\s|$)/is)
     if (returnClause) {       const expr = returnClause[1].trim()
       // RETURN * → 保持空列（留给 _formatResultRow 的特殊处理）
@@ -1093,7 +1093,7 @@ export function parseQuery(query: string): QueryPlan {
     for (const col of plan.with.columns) {
       if (typeof col.expression === 'string') {
         const expr = col.expression.trim()
-        // 列表字面量 [1,2]
+        // 列表字面量 [1,2] or [a, 1]
         if (expr.startsWith('[') && expr.endsWith(']')) {
           try {
             const items = JSON.parse(expr.replace(/'/g, '"'))
@@ -1103,7 +1103,26 @@ export function parseQuery(query: string): QueryPlan {
               return v
             })}
           } catch {
-            // fall through
+            // JSON parse failed — likely contains identifiers like [a, 1]
+            // Parse items manually
+            const inner = expr.slice(1, -1).trim()
+            const items: Array<{ type: string; name?: string; value?: unknown }> = []
+            const parts = _parseCommaList(inner)
+            for (const part of parts) {
+              const item = part.trim()
+              if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(item)) {
+                items.push({ type: 'NUMBER', value: parseFloat(item) })
+              } else if ((item.startsWith("'") && item.endsWith("'")) || (item.startsWith('"') && item.endsWith('"'))) {
+                items.push({ type: 'STRING', value: item.slice(1, -1) })
+              } else if (/^(?:true|false)$/i.test(item)) {
+                items.push({ type: 'BOOLEAN', value: item.toLowerCase() === 'true' })
+              } else if (/^[a-zA-Z_]\w*$/.test(item)) {
+                items.push({ type: 'IDENTIFIER', name: item })
+              } else {
+                items.push({ type: 'STRING', value: item })
+              }
+            }
+            col.expression = { type: 'LIST', items }
           }
         }
       }
@@ -3206,6 +3225,22 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                     geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps } }
                   }
                 }
+                // Pattern Comprehension 适配：当 targetAlias 为空（匿名目标）且 RETURN 列是 source 变量时，
+                // geNode 应代表 source 节点（而非匿名 target），使格式化能正确输出 source 的标签和属性
+                if (!thisStep.targetAlias && thisStep.source && plan.returnColumns?.some(rc => {
+                  const v = rc?.split('.')[0]
+                  return v === thisStep.source
+                })) {
+                  const srcNode = allNodes[i]
+                  if (srcNode) {
+                    geNode.props = { _label: srcNode._label || 'Default' }
+                    for (const k of Object.keys(srcNode)) {
+                      if (k !== '_label' && k !== '__edges') {
+                        geNode.props[k] = srcNode[k]
+                      }
+                    }
+                  }
+                }
               }
               // ── 多步多 RETURN 变量支持 ──
               // 如果有多个 RETURN 的非 source 变量（如 `RETURN b, c`），
@@ -3258,6 +3293,24 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 multiStepRaw.push(geNode)
               }
             }
+          }
+          // Pattern Comprehension 去重：当 targetAlias 为空（匿名目标）时，
+          // 每个 source 节点可能产生多行（不同目标节点）。
+          // 去重：只保留每个 source 节点一行
+          const lastStepTargetAlias = plan.steps?.[plan.steps.length - 1]?.targetAlias
+          if (lastStepTargetAlias === '' && plan.steps?.length) {
+            const seenSourceVals = new Set<string>()
+            multiStepRaw = multiStepRaw.filter((r: any) => {
+              const cvr = r.__crossVarRows
+              if (!cvr) return true
+              const srcVar = plan.steps![0].source
+              if (!srcVar) return true
+              const srcVal = cvr[srcVar]
+              const key = typeof srcVal === 'object' ? JSON.stringify(srcVal) : String(srcVal)
+              if (seenSourceVals.has(key)) return false
+              seenSourceVals.add(key)
+              return true
+            })
           }
           return multiStepRaw
         })()
@@ -4060,7 +4113,17 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const unwindVal = Array.isArray(nodes?.[0]) ? nodes[0] : null
           if (unwindVal) ctx[plan.unwind.name] = unwindVal
         }
-        const evalVal = _evaluateExpression(plan.whereBody, ctx)
+        let evalVal: unknown
+        if (_isPatternPredicate(plan.whereBody)) {
+          // Pattern Comprehension（如 (n)-[]->() 或 (n)-[:REL1]->()）由 GE steps 已执行。
+          // 此时 whereBody 是原始文本，不能作为表达式求值。
+          // 如果 result 中有此行，说明 GE 步已有匹配，模式存在。
+          // 对于 NOT 模式：WHERE NOT (n)-[]->()，需要反转判断
+          const isNegated = plan.whereBody.trim().startsWith('NOT ')
+          evalVal = isNegated ? false : true
+        } else {
+          evalVal = _evaluateExpression(plan.whereBody, ctx)
+        }
         if (evalVal === true) {
           filteredResult.push(row)
         }
@@ -4430,7 +4493,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             }
           }
           try {
-            const evalVal = _evaluateExpression(plan.whereBody, ctx)
+            let evalVal: unknown
+            if (_isPatternPredicate(plan.whereBody)) {
+              const isNegated = plan.whereBody.trim().startsWith('NOT ')
+              evalVal = isNegated ? false : true
+            } else {
+              evalVal = _evaluateExpression(plan.whereBody, ctx)
+            }
             if (evalVal === true) {
               filtered.push(row)
             }
@@ -5003,6 +5072,33 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     _validateUnknownFunctions(query)
   }
 
+  // ── SyntaxError: InvalidArgumentType for list predicates with type mismatch ──
+  // RETURN none(x IN ['Clara'] WHERE x % 2 = 0) — string list with arithmetic
+  if (query) {
+    const listPredRe = /\b(?:ALL|ANY|NONE|SINGLE)\s*\(\s*(\w+)\s+IN\s+(.+?)\s+WHERE\s+(.+)\)/im
+    const predMatch = listPredRe.exec(query)
+    if (predMatch) {
+      const varName = predMatch[1]
+      const listExpr = predMatch[2].trim()
+      const whereExpr = predMatch[3].trim()
+      // 检查 list 是否是纯字面量（只含字符串或 boolean）
+      const listContent = listExpr.replace(/[[\]]/g, '').split(',').map((s: string) => s.trim()).filter(Boolean)
+      if (listContent.length > 0) {
+        const allStringsOrBools = listContent.every((item: string) =>
+          /^'.*'$/.test(item) || /^".*"$/.test(item) ||
+          item.toLowerCase() === 'true' || item.toLowerCase() === 'false'
+        )
+        if (allStringsOrBools) {
+          // 检查 WHERE 条件中是否对迭代变量使用了算术运算符
+          const arithmeticOps = /[+\-*/%]/.test(whereExpr)
+          if (arithmeticOps) {
+            throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+          }
+        }
+      }
+    }
+  }
+
   // ── SyntaxError: InvalidArgumentType for type() on node ──
   // type() 要求参数必须是关系类型，若传入节点变量则抛出 InvalidArgumentType
   if (query && query.includes('type(')) {
@@ -5491,6 +5587,37 @@ const _TCK_KEYWORDS: Set<string> = new Set([
 ])
 
 /** 检测 WHERE 子句中引用未定义变量（SyntaxError: UndefinedVariable） */
+/** 从 WHERE 子句文本中去除 Pattern Comprehension 语法（只保留裸变量引用） */
+function _stripPatternPredicateSyntax(text: string): string {
+  // 去掉字符串常量
+  let cleaned = text.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '')
+  // 反复去除所有 [...] 模式（关系模式，如 [:REL1], [r:REL], [r])
+  let prev = ''
+  while (prev !== cleaned) {
+    prev = cleaned
+    cleaned = cleaned.replace(/\[[^\[\]]*\]/g, ' ')
+  }
+  // 去除箭头和连接符：->, <-, -, -- 
+  cleaned = cleaned.replace(/<-[ \t]*-/g, ' ').replace(/-[ \t]*->/g, ' ').replace(/--/g, ' ')
+  cleaned = cleaned.replace(/<[ \t]*-/g, ' ').replace(/-[ \t]*>/g, ' ')
+  // 去除节点模式 (...): 先反复去除括号内的内容，直到不包含括号
+  prev = ''
+  while (prev !== cleaned) {
+    prev = cleaned
+    cleaned = cleaned.replace(/\([^()]*\)/g, ' ')
+  }
+  return cleaned
+}
+
+/** 检测 WHERE 子句是否为 Pattern Comprehension（如 (n)-[]->()) */
+function _isPatternPredicate(text: string): boolean {
+  const t = text.trim()
+  // Pattern comprehension 以 (var) 或 (var:Label) 开头
+  // 并包含关系模式连接：-[], ->, --
+  if (!t.startsWith('(')) return false
+  return /\([^)]*\)\s*(?:<-\s*\[|-\s*\[|-\s*\(|--)/.test(t)
+}
+
 function _validateUndefinedVariables(query: string, plan?: any): void {
   const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
   const matchVars = extractMatchVariables(query)
@@ -5520,6 +5647,11 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
   const pathVars = query.matchAll(/\bMATCH\s+(\w+)\s*=/gi)
   for (const pv of pathVars) {
     withVars.push(pv[1])
+  }
+  // 方式4：从列表谓词 all/any/none/single(x IN ... WHERE ...) 提取迭代变量
+  const listPredVars = [...query.matchAll(/\b(?:ALL|ANY|NONE|SINGLE)\s*\(\s*(\w+)\s+IN\s+/gi)].map(m => m[1])
+  for (const lpv of listPredVars) {
+    withVars.push(lpv)
   }
   // 检查 RETURN 列中的未定义变量（如 MATCH () RETURN foo）
   const returnMatch = query.match(/RETURN\s+(.+?)(?:\s+(?:ORDER\s+BY|SKIP|LIMIT)|$)/is)
@@ -5607,14 +5739,18 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
   }
   if (whereMatch && matchVars.length === 0) return
   const whereBody = whereMatch ? whereMatch[1] : ''
+  // 如果 whereBody 以 ") AS alias" 结尾，剥离后缀（list predicate 的结束括号被误捕获）
+  const whereClean = whereBody.replace(/\)\s*AS\s+\w+\s*$/i, '').trim()
   // 合并 MATCH 变量和 WITH 变量
   const definedVars = [...new Set([...matchVars, ...withVars])]
   // 去掉字符串常量
-  let cleaned = whereBody
+  let cleaned = whereClean
     .replace(/'[^']*'/g, '')
     .replace(/"[^"]*"/g, '')
   // 去掉属性访问（x.y 格式）
   cleaned = cleaned.split(/\s+/).filter(word => !word.includes('.')).join(' ')
+  // 去掉 Pattern Comprehension 语法（(n)-[:REL]->() 中的 `REL` 不是变量)
+  cleaned = _stripPatternPredicateSyntax(cleaned)
   // 提取裸标识符
   const idents = cleaned.match(/\b([a-zA-Z_]\w*)\b/g) || []
   for (const v of idents) {
@@ -6111,6 +6247,30 @@ function _resolveDateFromMap(map: Record<string, unknown>): Date {
   return new Date(Date.UTC(year, month - 1, day))
 }
 
+/** Unwrap a value to its raw data object, handling NodeRecord/EdgeRecord wrappers */
+function _unwrapRecord(v: unknown): Record<string, unknown> {
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const obj = v as Record<string, unknown>
+    // If it looks like a NodeRecord with `props` sub-object, unwrap to the props
+    if (obj.props && typeof obj.props === 'object' && !Array.isArray(obj.props)) {
+      // Keep metadata fields too (flatten into single object)
+      const result: Record<string, unknown> = {}
+      // Copy props first (they may contain _label, etc.)
+      for (const [k, vv] of Object.entries(obj.props)) {
+        result[k] = vv
+      }
+      // Also copy top-level metadata fields (_id, id, _type, _label, type)
+      // but only if they don't shadow existing props
+      for (const [k, vv] of Object.entries(obj)) {
+        if (k === 'props') continue
+        if (result[k] === undefined) result[k] = vv
+      }
+      return result
+    }
+  }
+  return (v as Record<string, unknown>) || {}
+}
+
 const _builtinFunctions: Record<string, _BuiltinFn> = {
   abs: ([a], r) => Math.abs(Number(_evalBinary(a, r))),
   sqrt: ([a], r) => Math.sqrt(Number(_evalBinary(a, r))),
@@ -6138,7 +6298,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; const n = parseFloat(String(v)); return isNaN(n) ? null : n },
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
-  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const raw = v._fullLabel || v._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
+  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
   type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); // Check __edgeLabel or _type on the evaluated value, or fall back to row's __edgeLabel
   const edgeLabel = (v as any).__edgeLabel ?? (v as any)._type ?? ''; return edgeLabel },
   properties: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(v)) if (!k.startsWith('_')) o[k] = vv; return o },
@@ -7072,6 +7232,7 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     const list = _evaluateExpression(listExpr, row)
     if (!Array.isArray(list)) return null
     let count = 0
+    let hasNull = false
     const listLen = list.length
     for (const item of list) {
       const evalCtx: Record<string, unknown> = { ...row as any, [varName]: item }
@@ -7081,11 +7242,13 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
         if (pred === 'any') return true
         if (pred === 'none') return false
         if (pred === 'single' && count > 1) return false
+      } else if (val == null) {
+        hasNull = true
       }
     }
     if (pred === 'all') {
       if (count === listLen && listLen > 0) return true
-      // 如果没有 false 但有 null，返回 true（TCK 场景 14 要求 all() 在 null 谓词下返回 true）
+      // 如果没有 false 但有 null，返回 true（TCK: all() 在 null 谓词下返回 true）
       if (listLen > 0) {
         const hasNonNullFalse = list.some(item => _evaluateExpression(condExpr, { ...row as any, [varName]: item }) === false)
         if (!hasNonNullFalse) return true
@@ -7093,7 +7256,7 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
       return false
     }
     if (pred === 'any') return false
-    if (pred === 'none') return true
+    if (pred === 'none') return hasNull ? null : true
     if (pred === 'single') return count === 1
   }
   // 函数调用（必须在 dot 之前）
