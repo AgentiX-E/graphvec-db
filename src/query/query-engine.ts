@@ -3492,7 +3492,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       }
       // 从 MATCH 变量中获取单变量名（支持有/无 label 两种写法），而非从 returnColumns
       let matchVarKeys2 = Object.keys(varLabelMap2)
-      if (!matchVarKeys2.length) {
+      if (!matchVarKeys2.length && query) {
         const anyMatchClause = query.match(/MATCH\s*\((\w+)/)
         if (anyMatchClause) matchVarKeys2 = [anyMatchClause[1]]
       }
