@@ -869,9 +869,37 @@ export function parseQuery(query: string): QueryPlan {
 
   // ── WHERE 子句提取（用于后过滤） ──
   // 即使 ANTLR 没有生成 filters，也需要提取 WHERE 子句供 _evaluateExpression 后处理
-  const whereClause = (query || '').match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
+  // 注意：需要先屏蔽 list 谓词中的 WHERE（如 ALL(x IN list WHERE cond)），避免干扰正则
+  let safeQuery = (query || '')
+  // 使用平衡括号匹配，将 list 谓词替换为占位符
+  const listPredStarts = [...safeQuery.matchAll(/\b(ALL|ANY|NONE|SINGLE)\s*\(/gi)]
+  const placeholders: Array<{ start: number; end: number; text: string }> = []
+  if (listPredStarts.length > 0) {
+    for (const pMatch of listPredStarts) {
+      let depth = 1
+      let i = (pMatch.index || 0) + pMatch[0].length
+      while (i < safeQuery.length && depth > 0) {
+        if (safeQuery[i] === '(') depth++
+        else if (safeQuery[i] === ')') depth--
+        if (depth === 0) { i++; break }
+        i++
+      }
+      placeholders.push({ start: pMatch.index || 0, end: i, text: safeQuery.slice(pMatch.index || 0, i) })
+    }
+    // 从后往前替换为占位符（保持索引不变）
+    for (let pi = placeholders.length - 1; pi >= 0; pi--) {
+      const { start, end } = placeholders[pi]
+      const placeholder = ` __LPRED${pi}__ `
+      safeQuery = safeQuery.slice(0, start) + placeholder + safeQuery.slice(end)
+    }
+  }
+  const whereClause = safeQuery.match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
   if (whereClause) {
-    const whereBody = whereClause[1]
+    let whereBody = whereClause[1]
+    // 恢复占位符
+    for (let pi = 0; pi < placeholders.length; pi++) {
+      whereBody = whereBody.replace(`__LPRED${pi}__`, placeholders[pi].text)
+    }
     plan.whereBody = whereBody
     // 检测顶层 OR/XOR（不在括号内的 OR）——清空 filters（OR 需要运行时可短路评估）
     if (plan.filters?.length) {
@@ -4189,28 +4217,44 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // OPTIONAL MATCH 后处理：OPTIONAL MATCH 设置的变量可能改变了 RETURN 表达式的求值结果。
     // 重新计算受影响的列。
-    if (plan.optionalMatchSteps?.length && result.length && plan.returnAliasMap) {
+    if (plan.optionalMatchSteps?.length && result.length) {
+      // 收集所有 OPTIONAL MATCH 设置的变量名
+      const optMatchVarNames = new Set(plan.optionalMatchSteps.map(om => om.variableName).filter(Boolean))
+      // 构建 rc → 完整表达式的映射
+      const rcToExpr: Record<string, string> = {}
+      if (plan.expressionColumns?.length) {
+        for (const ec of plan.expressionColumns) {
+          const key = (ec as any).alias ?? (ec as any).expression ?? String(ec)
+          // 去掉变量前缀
+          const stripped = (typeof ec === 'string' ? ec : key).replace(/^\w+\./, '')
+          rcToExpr[stripped] = typeof ec === 'object' && (ec as any).expression
+            ? (ec as any).expression
+            : typeof ec === 'string' ? ec : key
+        }
+      } else if (plan.returnAliasMap) {
+        Object.assign(rcToExpr, plan.returnAliasMap)
+      }
+      if (!Object.keys(rcToExpr).length) { /* no columns to re-evaluate */ } else
       for (const row of result) {
         for (const rc of plan.returnColumns || []) {
           if (!rc) continue
-          const expr = (plan as any).returnAliasMap?.[rc]
-          if (!expr) continue
+          const rawexpr = rcToExpr[rc]
+          if (!rawexpr) continue
           // 检查表达式中是否引用了 OPTIONAL MATCH 设置的变量
-          const rawexpr = String(expr)
           const varRefs = [...rawexpr.matchAll(/(\b[a-zA-Z_]\w*)\b/g)].map(m => m[1])
-          const hasOptMatchVar = varRefs.some(v => {
-            return plan.optionalMatchSteps!.some(om => om.variableName === v)
-          })
+          const hasOptMatchVar = varRefs.some(v => optMatchVarNames.has(v))
           if (!hasOptMatchVar) continue
+          // 确保 OPTIONAL MATCH 确实设置了该变量
+          if (!optMatchVarNames.has(rawexpr) && !varRefs.some(v => optMatchVarNames.has(v) && v in row)) continue
           // 构建 varCtx 重新求值
           const varCtx: Record<string, unknown> = {}
           for (const [k, v] of Object.entries(row)) {
             if (!k.startsWith('_')) varCtx[k] = v
           }
           // 添加 OPTIONAL MATCH 变量引用的节点数据（如果设置了）
-          for (const om of plan.optionalMatchSteps!) {
-            if (om.variableName && om.variableName in row) {
-              varCtx[om.variableName] = row[om.variableName]
+          for (const vn of optMatchVarNames) {
+            if (vn in row) {
+              varCtx[vn] = row[vn]
             }
           }
           const newVal = _evaluateExpression(rawexpr, varCtx)
