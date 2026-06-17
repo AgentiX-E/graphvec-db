@@ -4187,6 +4187,40 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       }
     }
 
+    // OPTIONAL MATCH 后处理：OPTIONAL MATCH 设置的变量可能改变了 RETURN 表达式的求值结果。
+    // 重新计算受影响的列。
+    if (plan.optionalMatchSteps?.length && result.length && plan.returnAliasMap) {
+      for (const row of result) {
+        for (const rc of plan.returnColumns || []) {
+          if (!rc) continue
+          const expr = (plan as any).returnAliasMap?.[rc]
+          if (!expr) continue
+          // 检查表达式中是否引用了 OPTIONAL MATCH 设置的变量
+          const rawexpr = String(expr)
+          const varRefs = [...rawexpr.matchAll(/(\b[a-zA-Z_]\w*)\b/g)].map(m => m[1])
+          const hasOptMatchVar = varRefs.some(v => {
+            return plan.optionalMatchSteps!.some(om => om.variableName === v)
+          })
+          if (!hasOptMatchVar) continue
+          // 构建 varCtx 重新求值
+          const varCtx: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(row)) {
+            if (!k.startsWith('_')) varCtx[k] = v
+          }
+          // 添加 OPTIONAL MATCH 变量引用的节点数据（如果设置了）
+          for (const om of plan.optionalMatchSteps!) {
+            if (om.variableName && om.variableName in row) {
+              varCtx[om.variableName] = row[om.variableName]
+            }
+          }
+          const newVal = _evaluateExpression(rawexpr, varCtx)
+          if (newVal !== undefined && newVal !== null) {
+            row[rc] = newVal
+          }
+        }
+      }
+    }
+
     // ── type() 函数后处理 ──
     // 如果原查询包含 type(r) 且结果中该列是边表示 [:T]，替换为类型名 'T'
     const hasTypeReturnCol = (plan.returnColumns || []).some((rc: string) =>
@@ -4521,7 +4555,13 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       // 如果表达式中包含变量名（a.b 或 a），尝试通过 _evaluateExpression 求值
       const evalResult = _evaluateExpression(expr, varCtx)
       if (evalResult !== null && evalResult !== undefined) {
-        result[rc] = evalResult
+        // 对节点对象（_label、_alias 等内部属性）做深度清理，避免 TCK 输出中泄露
+        if (evalResult && typeof evalResult === 'object') {
+          const cleaned = _deepStripInternal(evalResult)
+          result[rc] = cleaned
+        } else {
+          result[rc] = evalResult
+        }
         continue
       }
       // 回退：从 row 取值
@@ -5264,7 +5304,37 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
     // 从 propRefs 收集所有属性名（即 .后面的词），它们不是变量
     const propNames = new Set(propRefs.map(m => m[2]))
     // 也提取裸变量名（如 RETURN foo 中的 foo）
-    const bareVars = [...beforeAs.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
+    // 移除 list predicate 模式 ALL(x IN ... WHERE cond)、ANY(...)、NONE(...)、SINGLE(...)
+    // 使用平衡括号匹配
+    let cleanedBeforeAs = beforeAs;
+    const listPredRe = /\b(ALL|ANY|NONE|SINGLE)\s*\(/gi;
+    let predMatch: RegExpExecArray | null;
+    const parts: string[] = [];
+    let lastIdx = 0;
+    const predStarts: Array<{ start: number; end: number }> = [];
+    while ((predMatch = listPredRe.exec(cleanedBeforeAs)) !== null) {
+      const start = predMatch.index;
+      let depth = 1;
+      let i = predMatch.index + predMatch[0].length;
+      while (i < cleanedBeforeAs.length && depth > 0) {
+        if (cleanedBeforeAs[i] === '(') depth++;
+        else if (cleanedBeforeAs[i] === ')') depth--;
+        if (depth === 0) break;
+        i++;
+      }
+      if (depth === 0) {
+        predStarts.push({ start, end: i + 1 });
+      }
+    }
+    if (predStarts.length > 0) {
+      for (const { start, end } of predStarts) {
+        parts.push(cleanedBeforeAs.slice(lastIdx, start));
+        lastIdx = end;
+      }
+      parts.push(cleanedBeforeAs.slice(lastIdx));
+      cleanedBeforeAs = parts.join(' ');
+    }
+    const bareVars = [...cleanedBeforeAs.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
     for (const v of bareVars) {
       // 排除数字、关键字、函数名
       if (/^\d/.test(v)) continue
@@ -5836,14 +5906,25 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   last: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
   tail: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.slice(1) : null },
   range: ([s, e, step], r) => {
-    const start = Number(_evalBinary(s, r)), end = Number(_evalBinary(e, r));
-    const stepVal = step ? Number(_evalBinary(step, r)) : 1;
+    const rawS = _evalBinary(s, r), rawE = _evalBinary(e, r);
+    const rawStep = step ? _evalBinary(step, r) : 1;
+    // Validate: all args must be integers (reject booleans, strings, floats, lists, maps)
+    if (typeof rawS !== 'number' || typeof rawE !== 'number' || (step && typeof rawStep !== 'number')) {
+      throw Object.assign(new Error('ArgumentError'), { tckError: 'ArgumentError' });
+    }
+    const start = rawS as number, end = rawE as number;
+    const stepVal = (step ? rawStep as number : 1) as number;
     // Validate: step must not be zero
     if (step && stepVal === 0) {
       throw Object.assign(new Error('ArgumentError'), { tckError: 'ArgumentError' });
     }
-    // Validate: all args must be integers
+    // Validate: all args must be integers (reject floats like 0.0, -0.0)
     if (!Number.isInteger(start) || !Number.isInteger(end) || (step && !Number.isInteger(stepVal))) {
+      throw Object.assign(new Error('ArgumentError'), { tckError: 'ArgumentError' });
+    }
+    // Additional check: reject if the original string contained a decimal point
+    const hasDecimal = (str: string) => /^-?\d+\.\d+$/.test(str.trim());
+    if (hasDecimal(s) || hasDecimal(e) || (step && hasDecimal(step))) {
       throw Object.assign(new Error('ArgumentError'), { tckError: 'ArgumentError' });
     }
     const res: number[] = [];
