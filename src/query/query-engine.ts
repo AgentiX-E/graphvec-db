@@ -4436,6 +4436,17 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           if (!(vn in varCtx)) varCtx[vn] = r.__targetPropsMap[vn]
         }
       }
+      // WITH 生成的自定义变量（如 list、map）：从 r 的顶层 key 和 __vridPropMap 提取
+      for (const k of Object.keys(r)) {
+        if (!k.startsWith('_') && !(k in varCtx)) {
+          varCtx[k] = r[k]
+        }
+      }
+      if (r.__vridPropMap) {
+        for (const k of Object.keys(r.__vridPropMap)) {
+          if (!(k in varCtx)) varCtx[k] = r.__vridPropMap[k]
+        }
+      }
       // source 变量：从 row 构建
       const firstStepSource = plan.steps?.[0]?.source
       if (firstStepSource && !(firstStepSource in varCtx)) {
@@ -4629,14 +4640,14 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
           if (cn.alias) {
             const clean: Record<string, unknown> = {}
             if (cn.props) Object.assign(clean, cn.props)
-            if (!Object.keys(clean).length && cn.label) clean['_label'] = cn.label
+            if (cn.label) clean['_label'] = cn.label
             varCtx[cn.alias] = clean
           }
         }
         try {
           const fnResult = _evaluateExpression(rc, varCtx)
           if (fnResult !== undefined) { row[rc] = fnResult; continue }
-        } catch (e: any) { console.log('DBG: catch in buildDmlRows fnCall: rc=' + rc + ' varCtx=' + JSON.stringify(varCtx) + ' err=' + e.message) }
+        } catch (e: any) {} // function call may fail for invalid args
       }
       row[rc] = ''
       continue
@@ -5700,7 +5711,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   tointeger: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return parseInt(String(v), 10) },
   tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return parseFloat(String(v)) },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
-  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object') return null; const raw = v._fullLabel || v._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
+  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const raw = v._fullLabel || v._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
   type: (_, r) => r?.__edgeLabel ?? r?._type ?? null,
   properties: (_, r) => { if (!r) return {}; const o: Record<string, unknown> = {}; for (const [k, v] of Object.entries(r)) if (!k.startsWith('_')) o[k] = v; return o },
   keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') return Object.keys(v).filter(k => !k.startsWith('_')); return [] },
