@@ -5116,38 +5116,72 @@ function _callPatternExists(patternDef: string, row?: Record<string, unknown>): 
     if (!ge) return false
     const allNodes = row?._allNodes as Array<Record<string, unknown>> || []
 
-    // 解析源节点
+    // 解析源节点：通过变量名在 allNodes 中查找
     const srcVar = def.src
+    if (!srcVar) return false
+    
+    // 查找源节点：先用 row 中的 __crossVarRows 映射，再查 allNodes
     let srcNode: Record<string, unknown> | undefined
-    if (srcVar) {
-      const srcRef = row?.[srcVar]
-      if (srcRef && typeof srcRef === 'object' && !Array.isArray(srcRef)) {
-        srcNode = srcRef as Record<string, unknown>
+    let srcId: string | undefined
+    
+    // 方法 1: 从 row 中查找变量
+    if (row) {
+      const val = row[srcVar]
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        srcNode = val as Record<string, unknown>
+        if (srcNode._id) srcId = String(srcNode._id)
       }
     }
-    if (!srcNode) return false
-
-    // 获取源节点的 ID
-    let srcId: string | undefined
-    if (srcNode._id) srcId = String(srcNode._id)
-    if (!srcId && (srcNode as any).props?.__id) srcId = String((srcNode as any).props.__id)
-    if (!srcId && (srcNode as any).id) srcId = String((srcNode as any).id)
-    if (!srcId && srcVar) {
+    
+    // 方法 2: 从 allNodes 中按 _alias 查找
+    if (!srcId) {
       for (const n of allNodes) {
-        if (n._alias === srcVar || n.alias === srcVar) {
+        const alias = n._alias || n.alias || ''
+        if (alias === srcVar) {
           srcId = String(n._id || n.id || '')
+          srcNode = n as Record<string, unknown>
           break
         }
       }
     }
+    
+    // 方法 3: 尝试通过 ge.getAllNodes() 或遍历 ge 的内部节点
+    if (!srcId && ge) {
+      try {
+        // 尝试获取 GE 的所有节点
+        const geNodes = ge._nodes || ge.nodes?.() || []
+        for (const n of geNodes) {
+          const alias = n._alias || n.alias || ''
+          if (alias === srcVar) {
+            srcId = String(n._id || n.id || '')
+            break
+          }
+        }
+      } catch {
+        // 静默忽略
+      }
+    }
+    
     if (!srcId) return false
 
     // 解析目标节点（如果有）
-    let tgtNode: Record<string, unknown> | undefined
+    let tgtId: string | undefined
     if (def.tgt) {
-      const tgtRef = row?.[def.tgt]
-      if (tgtRef && typeof tgtRef === 'object' && !Array.isArray(tgtRef)) {
-        tgtNode = tgtRef as Record<string, unknown>
+      if (row) {
+        const tgtVal = row[def.tgt]
+        if (tgtVal && typeof tgtVal === 'object' && !Array.isArray(tgtVal)) {
+          const tgtNode = tgtVal as Record<string, unknown>
+          tgtId = String(tgtNode._id || '')
+        }
+      }
+      if (!tgtId) {
+        for (const n of allNodes) {
+          const alias = n._alias || n.alias || ''
+          if (alias === def.tgt) {
+            tgtId = String(n._id || n.id || '')
+            break
+          }
+        }
       }
     }
 
@@ -5156,7 +5190,7 @@ function _callPatternExists(patternDef: string, row?: Record<string, unknown>): 
 
     // 变长路径
     if (def.varLen) {
-      return _checkVarLenPathExists(ge, srcId, label, direction, def.varLen, tgtNode ? String(tgtNode._id || '') : undefined)
+      return _checkVarLenPathExists(ge, srcId, label, direction, def.varLen, tgtId)
     }
 
     // 使用 GE neighbors() 检查邻居中的边
@@ -5170,8 +5204,6 @@ function _callPatternExists(patternDef: string, row?: Record<string, unknown>): 
       let typeFilteredEdges = edges
       if (label) {
         // 通过 edge type registry 反向查找 typeId
-        // _edgeTypeRegistry 是 Map<string, number>，需要反转
-        // 但它是 private 的，只能通过遍历 edges 查找匹配的 type
         const edgeTypeMap = new Map<number, string>()
         // 尝试从内部 registry 获取
         if (ge._edgeTypeRegistry && typeof ge._edgeTypeRegistry.entries === 'function') {
@@ -5188,42 +5220,19 @@ function _callPatternExists(patternDef: string, row?: Record<string, unknown>): 
       // 按方向过滤
       let directionFiltered: Array<Record<string, unknown>> = typeFilteredEdges
 
-      // 对于 neighbors() 返回的出边/入边，需要区分方向
-      // GE neighbors() 返回所有邻居，边缘可能是出边或入边
-      // 对于模式谓词中的方向，我们用不同的 strategy:
-      // - out: 检查是否有 type/edgeType 匹配的出边
-      // - in: 检查是否有入边（neighbors 返回的 edge 不区分方向）
-      // 我们只能通过比较 edge.src 和 srcId 来判断方向
-
       if (direction === 'in') {
-        // 只保留目标节点 = srcId 的边（即 srcId 是入边的目标）
-        directionFiltered = edges.filter((e: any) => {
-          // 尝试用 edge.src 判断：如果 edge.src !== srcId, 则边指向 srcId
+        directionFiltered = typeFilteredEdges.filter((e: any) => {
           return e.src !== srcId && e.dst === srcId
         })
       } else if (direction === 'out') {
-        // 只保留源节点 = srcId 的边（即 srcId 是出边的源）
-        directionFiltered = edges.filter((e: any) => e.src === srcId)
+        directionFiltered = typeFilteredEdges.filter((e: any) => e.src === srcId)
       }
-      // undirected: 所有边都算
 
       // 如果有目标节点，过滤出指向目标的边
-      if (def.tgt && tgtNode) {
-        let tgtId = String(tgtNode._id || '')
-        if (!tgtId) {
-          for (const n of allNodes) {
-            if (n._alias === def.tgt || n.alias === def.tgt) {
-              tgtId = String(n._id || n.id || '')
-              break
-            }
-          }
-        }
-        if (tgtId) {
-          directionFiltered = directionFiltered.filter((e: any) => {
-            const otherId = String(e.dst) === tgtId || String(e.src) === tgtId
-            return otherId
-          })
-        }
+      if (def.tgt && tgtId) {
+        directionFiltered = directionFiltered.filter((e: any) => {
+          return String(e.dst) === tgtId || String(e.src) === tgtId
+        })
       }
 
       return directionFiltered.length > 0
@@ -5947,6 +5956,23 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   length: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.length : 0 },
   split: ([a, d], r) => String(_evalBinary(a, r)).split(String(_evalBinary(d, r))),
   // ── Temporal Functions ──
+  'datetime.fromepoch': ([seconds, nanos], r) => {
+    const sec = Number(_evalBinary(seconds, r))
+    const ns = nanos ? Number(_evalBinary(nanos, r)) : 0
+    const base = new Date(sec * 1000)
+    const iso = base.toISOString().replace('Z', '')
+    // 添加纳秒部分
+    if (ns > 0) {
+      const nsStr = String(ns).padStart(9, '0')
+      return `${iso.slice(0, -4)}${nsStr}Z`
+    }
+    return `${iso.replace('Z', '')}Z`
+  },
+  'datetime.fromepochmillis': ([millis], r) => {
+    const ms = Number(_evalBinary(millis, r))
+    const base = new Date(ms)
+    return base.toISOString().replace('Z', '') + 'Z'
+  },
   date: ([a], r) => {
     if (!a) {
       // date() with no args → current date
@@ -6189,12 +6215,19 @@ function _resolveDateFromMap(map: Record<string, unknown>): Date {
       const day = Number(parts[2])
       const baseDate = new Date(Date.UTC(year, month - 1, day))
       if (map.week != null || map.dayOfWeek != null) {
-        // 使用 ISO 周年来确定周所在的年份
-        const y = _isoYear(baseDate)
+        // date 提供了星期几信息（ISO: Mon=1..Sun=7）
+        const dateDow = baseDate.getUTCDay() === 0 ? 7 : baseDate.getUTCDay()
+        // 确定 ISO 周年份：如果有显式 year 则用它，否则从 date 推断
+        let y: number
+        if (map.year != null) {
+          y = typeof map.year === 'number' ? map.year : Number(map.year)
+        } else {
+          y = _isoYear(baseDate)
+        }
         const w1Mon = _isoWeek1Monday(y)
-        // 默认 dayOfWeek = Monday (1) 除非有 date 的 dayOfWeek
-        const dow = typeof map.dayOfWeek === 'number' ? map.dayOfWeek : (map.dayOfWeek != null ? Number(map.dayOfWeek) : 1)
-        const targetWeek = typeof map.week === 'number' ? map.week : Number(map.week)
+        // 如果 dayOfWeek 没有显式指定，从 date 的星期几推断
+        const dow = typeof map.dayOfWeek === 'number' ? map.dayOfWeek : (map.dayOfWeek != null ? Number(map.dayOfWeek) : dateDow)
+        const targetWeek = map.week != null ? (typeof map.week === 'number' ? map.week : Number(map.week)) : 1
         const adjusted = new Date(w1Mon)
         adjusted.setUTCDate(w1Mon.getUTCDate() + (targetWeek - 1) * 7 + dow - 1)
         return adjusted
