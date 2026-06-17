@@ -3141,7 +3141,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     const useEdgeWalk = hasMultiStep || hasVarLen || hasEdgeStep
     let rawRecords: any[] = (useEdgeWalk)
       ? (() => {
-          const multiStepRaw: any[] = []
+          let multiStepRaw: any[] = []
           for (let i = 0; i < allNodes.length; i++) {
             if (skipNodeIndices.has(i)) {
               continue
@@ -3283,9 +3283,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               if (hasVarLen || hasEdgeStep) {
                 // 变量长度路径：简化结果格式，只保留目标节点属性+id
                 // 不走后处理边变量逻辑，直接从 __targetProps 取值
+                // Pattern Comprehension (targetAlias为空) 时 props 已经是 source 节点
+                const _patNoAlias = plan.steps?.[plan.steps.length - 1]?.targetAlias === ''
                 multiStepRaw.push({
                   id: geNode.id,
-                  props: { ...geNode.__targetProps },
+                  props: _patNoAlias ? { ...geNode.props } : { ...geNode.__targetProps },
                   __targetProps: geNode.__targetProps,
                   __crossVarRows: geNode.__crossVarRows,
                 })
@@ -4680,10 +4682,15 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // ── 函数表达式（如 labels(m)、type(r)） ──
     // 必须在边变量 RETURN r 分支之前，避免 labels(m) 被误输出为 [:R]
     // 每当 rc 是函数调用表达式时，优先通过 _evaluateExpression 求值
-    const fnCallMatch = rc.match(/^\w+\(/)
-    if (fnCallMatch) {
-      // 构建变量上下文：优先从 returnAliasMap 获取原始表达式
-      const fnExpr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
+    // 也支持 rc 是别名但 aliasMap 中对应当函数表达式（如 rc="l" → aliasMap["l"] = "labels(...)"）
+    const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+    let fnExpr: string | null = null
+    if (rc.match(/^\w+\(/)) {
+      fnExpr = rc
+    } else if (aliasMap && rc in aliasMap && aliasMap[rc].match(/^\w+\(/)) {
+      fnExpr = aliasMap[rc]
+    }
+    if (fnExpr) {
       const fnVarCtx: Record<string, unknown> = {}
       if (r.__crossVarRows) {
         for (const vn of Object.keys(r.__crossVarRows)) {
@@ -4745,6 +4752,14 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       if (r.__crossVarRows) {
         for (const vn of Object.keys(r.__crossVarRows)) {
           varCtx[vn] = r.__crossVarRows[vn]
+        }
+      }
+      // WITH 生成的自定义变量（如 list、map）：也从 r.props 提取
+      if (r.props && typeof r.props === 'object') {
+        for (const k of Object.keys(r.props)) {
+          if (!k.startsWith('_') && !(k in varCtx)) {
+            varCtx[k] = r.props[k]
+          }
         }
       }
       // 多步多 RETURN 变量：从 __targetPropsMap 构建
@@ -6299,11 +6314,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
   labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
-  type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); // Check __edgeLabel or _type on the evaluated value, or fall back to row's __edgeLabel
-  const edgeLabel = (v as any).__edgeLabel ?? (v as any)._type ?? ''; return edgeLabel },
-  properties: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(v)) if (!k.startsWith('_')) o[k] = vv; return o },
-  keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') return Object.keys(v).filter(k => !k.startsWith('_')); return [] },
-  id: ([a], r) => { const v = _evalBinary(a, r); return v && typeof v === 'object' && '_id' in (v as any) ? (v as any)._id : 0 },
+  type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw._type ?? ''; return edgeLabel },
+  properties: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_')) o[k] = vv; return o },
+  keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); return Object.keys(uw).filter(k => !k.startsWith('_')); } return [] },
+  id: ([a], r) => { const v = _evalBinary(a, r); if (v && typeof v === 'object') { const uw = _unwrapRecord(v); return '_id' in uw ? uw._id : (uw.id ?? 0); } return 0 },
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
   last: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
   tail: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.slice(1) : null },
