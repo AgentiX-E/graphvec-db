@@ -122,8 +122,9 @@ async function run(q: string): Promise<void> {
           // 数组 → JSON 字面量（不打引号）
           resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), JSON.stringify(val))
         } else {
-          // 纯数字不加引号，其他加引号
-          const escaped = /^-?\d+(\.\d+)?$/.test(String(val)) ? String(val) : `'${val}'`
+          // 纯数字（非字符串）不加引号，其他加引号
+          const isNumber = typeof val === 'number' && /^-?\d+(\.\d+)?$/.test(String(val))
+          const escaped = isNumber ? String(val) : `'${val}'`
           resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), escaped)
         }
       }
@@ -752,16 +753,28 @@ Given('parameters are:', function (dt: any) {
   if (dt?.raw) {
     const rows = dt.raw()
     for (const [key, val] of rows) {
+      // 判断原始值是否被引号包裹（字符串标记）
+      const hasQuotes = /^['"]/.test(val)
       // 去掉引号（'me' → me）
       const cleaned = val.replace(/^['"]|['"]$/g, '')
       // 尝试解析为 JS 字面量：数字、null、true/false、数组、映射
       let parsed: unknown = cleaned
-      if (cleaned === 'null') parsed = null
-      else if (cleaned === 'true') parsed = true
-      else if (cleaned === 'false') parsed = false
-      else if (/^-?\d+$/.test(cleaned)) parsed = Number(cleaned)
-      else if (/^-?\d+\.\d+$/.test(cleaned)) parsed = Number(cleaned)
-      else if (/^\[.*\]$/.test(cleaned)) { try { parsed = JSON.parse(cleaned.replace(/'/g, '"')) } catch { parsed = cleaned } }
+      // 如果原始值有引号包裹，保持为字符串（不尝试 parseInt）
+      if (hasQuotes) {
+        parsed = cleaned
+      } else if (cleaned === 'null') {
+        parsed = null
+      } else if (cleaned === 'true') {
+        parsed = true
+      } else if (cleaned === 'false') {
+        parsed = false
+      } else if (/^-?\d+$/.test(cleaned)) {
+        parsed = Number(cleaned)
+      } else if (/^-?\d+\.\d+$/.test(cleaned)) {
+        parsed = Number(cleaned)
+      } else if (/^\[.*\]$/.test(cleaned)) {
+        try { parsed = JSON.parse(cleaned.replace(/'/g, '"')) } catch { parsed = cleaned }
+      }
       st.params[key] = parsed
     }
   }

@@ -5676,8 +5676,11 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
           val = Array.isArray(val) ? val.slice(sliceStart, sliceEnd) : (typeof val === 'string' ? val.slice(sliceStart, sliceEnd) : null)
         } else {
           const idx = _evalBinary(inner, row)
-          if (Array.isArray(val)) { val = val[Number(idx)] ?? null }
-          else if (val && typeof val === 'object' && !Array.isArray(val)) {
+          if (Array.isArray(val)) {
+            if (idx == null) { val = null }
+            else if (typeof idx !== 'number' || !Number.isInteger(idx)) throw Object.assign(new Error('TypeError: List index must be an integer'), { tckError: 'TypeError' })
+            else val = val[Number(idx)] ?? null
+          } else if (val && typeof val === 'object' && !Array.isArray(val)) {
             if (idx == null) { val = null }
             else if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
             else val = (val as Record<string, unknown>)[idx] ?? null
@@ -5788,8 +5791,11 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
             else { val = null }
           } else {
             const idx = _evalBinary(inner, row)
-            if (Array.isArray(val)) { val = val[Number(idx)] ?? null }
-            else if (val && typeof val === 'object' && !Array.isArray(val)) {
+            if (Array.isArray(val)) {
+              if (idx == null) { val = null }
+              else if (typeof idx !== 'number' || !Number.isInteger(idx)) throw Object.assign(new Error('TypeError: List index must be an integer'), { tckError: 'TypeError' })
+              else val = val[Number(idx)] ?? null
+            } else if (val && typeof val === 'object' && !Array.isArray(val)) {
               // map 下标：null → null；非字符串 → TypeError
               if (idx == null) { val = null }
               else if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
@@ -5829,7 +5835,11 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
       return null
     }
     const idx = _evalBinary(inner, row)
-    if (Array.isArray(obj)) return obj[Number(idx)] ?? null
+    if (Array.isArray(obj)) {
+      if (idx == null) return null
+      if (typeof idx !== 'number' || !Number.isInteger(idx)) throw Object.assign(new Error('TypeError: List index must be an integer'), { tckError: 'TypeError' })
+      return obj[Number(idx)] ?? null
+    }
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
       // map 类型下标：null → null；非字符串 → TypeError
       if (idx == null) return null
