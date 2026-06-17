@@ -5038,6 +5038,25 @@ function _validateUndefinedVariables(query: string): void {
     for (const pr of propRefs) {
       varSet.add(pr[1])     // r.num → 'r' 是变量
     }
+    // 也提取裸变量名（如 RETURN foo 中的 foo）
+    const bareVars = [...beforeAs.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
+    for (const v of bareVars) {
+      // 排除数字、关键字、函数名
+      if (/^\d/.test(v)) continue
+      if (['AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE',
+          'STARTS','CONTAINS','ENDS','THEN','ELSE','END','CASE','WHEN',
+          'MATCH','CREATE','DELETE','SET','MERGE','REMOVE','UNWIND','RETURN',
+          'ORDER','BY','SKIP','LIMIT','DISTINCT','AS','ON','WHERE',
+          'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
+          'UNION','ALL','OPTIONAL','TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH',
+          'KEYS','COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
+          'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
+          'COUNT','SUM','AVG','MAX','MIN','COLLECT'].includes(v.toUpperCase())) continue
+      // 排除 AS 别名
+      const aliasNames = [...beforeAs.matchAll(/\bAS\s+(\w+)/gi)].map(m => m[1])
+      if (aliasNames.includes(v)) continue
+      varSet.add(v)
+    }
     // AS xxx 中的 xxx 可能也在 varNames 中，保留为别名
     const aliasNames = [...beforeAs.matchAll(/\bAS\s+(\w+)/gi)].map(m => m[1])
     for (const an of aliasNames) varSet.add(an)
