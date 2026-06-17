@@ -4335,7 +4335,8 @@ function _deepStripInternal(obj: unknown): unknown {
   if (obj && typeof obj === 'object') {
     const clean: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(obj)) {
-      if (k.startsWith('_')) continue
+      // 仅删除 _alias 和 __ 开头的内部属性，保留 _label（toNodeNotation 需要）
+      if (k === '_alias' || k.startsWith('__')) continue
       clean[k] = _deepStripInternal(v)
     }
     return clean
@@ -4354,9 +4355,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
   // GE 返回格式：{ props: { _label, _alias, name, p, ... } }
   // 过滤内部属性（以 _ 开头）以保持 TCK 兼容性，避免出现 _alias 等内部字段
+  // 但保留 _label（toNodeNotation 需要它来识别节点类型）
   if (r.props) {
     for (const k of Object.keys(r.props)) {
-      if (k.startsWith('_')) continue
+      if (k === '_alias' || k.startsWith('__')) continue
       row[k] = r.props[k]
     }
   }
