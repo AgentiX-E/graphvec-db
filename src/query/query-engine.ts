@@ -5744,7 +5744,9 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
     const beforeAs = returnColStr.replace(/\bAS\s+\w+\s*/ig, '').trim()
     // 提取变量名：r.num → 只保留 r（变量），num 是属性名，排除在内
     const varSet = new Set<string>()
-    const propRefs = [...beforeAs.matchAll(/(\b[a-zA-Z_]\w*)\.(\w+)/g)]
+    // 把括号/方括号等非单词字符替换为空格，去掉 . 前的空格，让 .prop 能被正确识别
+    const beforeAsClean = beforeAs.replace(/[()\]\[]/g, ' ').replace(/\s+\./g, '.').trim()
+    const propRefs = [...beforeAsClean.matchAll(/(\b[a-zA-Z_]\w*)\.(\w+)/g)]
     for (const pr of propRefs) {
       varSet.add(pr[1])     // r.num → 'r' 是变量
     }
@@ -5781,6 +5783,8 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
       parts.push(cleanedBeforeAs.slice(lastIdx));
       cleanedBeforeAs = parts.join(' ');
     }
+    // 去掉反引号标识符：`name` → 'name'（使反引号内的标识符不作为裸变量被提取）
+    cleanedBeforeAs = cleanedBeforeAs.replace(/`[^`]*`/g, "''")
     const bareVars = [...cleanedBeforeAs.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
     for (const v of bareVars) {
       // 排除数字、关键字、函数名
