@@ -1854,6 +1854,8 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
       rows = rows.map(row => {
         const newRow: Record<string, unknown> = {}
         const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+        require('fs').appendFileSync('/tmp/dbg-midwith-run.txt',
+          '  map: evalCtx keys=' + Object.keys(evalCtx).slice(0, 10).join(',') + '\n');
         for (const col of columns) {
           const asMatch = col.match(/^(.+?)\s+AS\s+(\w+)$/i)
           if (asMatch) {
