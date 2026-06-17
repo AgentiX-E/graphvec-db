@@ -2398,11 +2398,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     _geInstanceRegistry.set(_activeDatabase, ge)
     geOwned = true
   }
+  let originalNodeCount = 0
+  let allNodes: Array<Record<string, unknown>> = []
   try {
 
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
-    const originalNodeCount = nodes?.length || 0
-    const allNodes: Array<Record<string, unknown>> = [...(nodes || [])]
+    originalNodeCount = nodes?.length || 0
+    allNodes = [...(nodes || [])]
     // 解包 typed 格式的 props（{type: 'STRING', value: 'ABCDEF'} → 'ABCDEF'）
     // 这种包装在 parseQuery 的 createNodes 中产生，GE 的 _matchFilter 只支持裸值
     for (const node of allNodes) {
@@ -2653,23 +2655,18 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     }
     const nodeGeIds: number[] = []
 
-    // seed 前清理 GE 中的旧 seed 节点（name 以 n 开头或 sn- 开头）
-    // 这些节点是之前查询 seed 的，可能没有正确的边连接
+    // seed 前检查 GE 中是否存在旧 seed 节点；如果存在，记录其 ID
+    // 避免 deleteNode + re-upsert 导致 _labelIndex 残留旧 ID（native C++ 无法清理）
+    const nameToGeId = new Map<string, number>()
     if (ge) {
-      try {
-        for (const id of (ge as any)._nodeIds || []) {
+      for (const id of (ge as any)._nodeIds || []) {
+        try {
           const n = (ge as any).getNode(id)
-          if (n && typeof n.name === 'string' && (n.name.startsWith('n') || n.name.startsWith('sn-'))) {
-            try { (ge as any).storage.deleteNode(id) } catch {}
+          if (n && typeof n.name === 'string') {
+            nameToGeId.set(n.name, id)
           }
-        }
-        // 重建 _nodeIds
-        if ((ge as any)._nodeIds) {
-          (ge as any)._nodeIds = ((ge as any)._nodeIds || []).filter((id: number) => {
-            try { (ge as any).getNode(id); return true } catch { return false }
-          })
-        }
-      } catch {}
+        } catch {}
+      }
     }
 
 
@@ -2681,6 +2678,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           nodeGeIds[i] = 0 // 占位，不 seed 到 GE
           continue
         }
+        const nodeName = 'n' + i
         const item = allNodes[i]
         const label = String(item['_label'] || 'Default')
         const hasMultipleLabels = label.includes(':')
