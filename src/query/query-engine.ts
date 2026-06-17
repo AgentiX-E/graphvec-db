@@ -3154,7 +3154,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 const thisStep = plan.steps[plan.steps.length - 1]
                 // 绑定 targetAlias（如果有命名目标且非空）
                 if (thisStep.targetAlias) {
-                  geNode.__crossVarRows[thisStep.targetAlias] = { ...targetNode, props: { ...targetNode }, _alias: thisStep.targetAlias }
+                  geNode.__crossVarRows[thisStep.targetAlias] = { ...targetNode, props: { ...targetNode } }
                 }
                 // 绑定 source 变量（起始节点）—— 使用当前 allNodes[i] 而不是 plan.scanLabel（已为 null）
                 if (thisStep.source) {
@@ -3163,7 +3163,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                     // 保留原始属性，确保 _label 可用
                     const srcProps: Record<string, unknown> = { ...srcNode }
                     if (srcNode._label !== undefined) srcProps._label = srcNode._label
-                    geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps }, _alias: thisStep.source }
+                    geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps } }
                   }
                 }
               }
@@ -3192,6 +3192,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                       const interNode = allNodes[interTargets[0]]
                       if (interNode) {
                         targetPropsMap[nrv] = { ...interNode }
+                        // 去除内部属性（_alias, _label 等），TCK 兼容
+                        for (const ik of Object.keys(targetPropsMap[nrv])) {
+                          if (ik.startsWith('_')) delete targetPropsMap[nrv][ik]
+                        }
                         delete targetPropsMap[nrv].__edges
                       }
                     }
@@ -3753,6 +3757,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   case 'LTE':  baseResult = Number(actualVal) <= Number(fv); break;
                   case 'IS_NULL':     baseResult = actualVal == null; break;
                   case 'IS_NOT_NULL': baseResult = actualVal != null; break;
+                  case 'STARTS_WITH': baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break;
+                  case 'ENDS_WITH':   baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv); break;
+                  case 'CONTAINS':    baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break;
                   default:            baseResult = String(actualVal) === String(fv); break;
                 }
                 return (f as any).negated ? !baseResult : baseResult;
@@ -4276,6 +4283,23 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 }
 
 /**
+ * 递归过滤对象中的内部属性（以 _ 或 __ 开头），保持 TCK 兼容性。
+ * 深度过滤结果行和节点对象，确保外部看不到 _alias 等内部字段。
+ */
+function _deepStripInternal(obj: unknown): unknown {
+  if (Array.isArray(obj)) return obj.map(_deepStripInternal)
+  if (obj && typeof obj === 'object') {
+    const clean: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(obj)) {
+      if (k.startsWith('_')) continue
+      clean[k] = _deepStripInternal(v)
+    }
+    return clean
+  }
+  return obj
+}
+
+/**
  * 格式化单行 GE 返回结果。
  * - 展开 r.props 到顶层（GE 的格式）
  * - 如果 returnColumns 是单个变量名（RETURN n），包装为 {n: {props}}
@@ -4285,8 +4309,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   const row: QueryRow = {}
 
   // GE 返回格式：{ props: { _label, _alias, name, p, ... } }
+  // 过滤内部属性（以 _ 开头）以保持 TCK 兼容性，避免出现 _alias 等内部字段
   if (r.props) {
     for (const k of Object.keys(r.props)) {
+      if (k.startsWith('_')) continue
       row[k] = r.props[k]
     }
   }
@@ -5206,6 +5232,8 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
     for (const pr of propRefs) {
       varSet.add(pr[1])     // r.num → 'r' 是变量
     }
+    // 从 propRefs 收集所有属性名（即 .后面的词），它们不是变量
+    const propNames = new Set(propRefs.map(m => m[2]))
     // 也提取裸变量名（如 RETURN foo 中的 foo）
     const bareVars = [...beforeAs.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
     for (const v of bareVars) {
@@ -5215,6 +5243,8 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
       // 排除 AS 别名
       const aliasNames = [...beforeAs.matchAll(/\bAS\s+(\w+)/gi)].map(m => m[1])
       if (aliasNames.includes(v)) continue
+      // 排除属性名（.name 中的 name 不是变量）
+      if (propNames.has(v)) continue
       varSet.add(v)
     }
     // AS xxx 中的 xxx 可能也在 varNames 中，保留为别名
@@ -5759,9 +5789,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   right: ([a, l], r) => String(_evalBinary(a, r)).slice(-Number(_evalBinary(l, r))),
   replace: ([a, s, re], r) => String(_evalBinary(a, r)).split(String(_evalBinary(s, r))).join(String(_evalBinary(re, r))),
   size: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (Array.isArray(v)) return v.length; if (typeof v === 'string') return v.length; return 0 },
-  tostring: ([a], r) => String(_evalBinary(a, r)),
-  tointeger: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return parseInt(String(v), 10) },
-  tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return parseFloat(String(v)) },
+  tostring: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return String(v) },
+  tointeger: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; const n = parseInt(String(v), 10); return isNaN(n) ? null : n },
+  tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; const n = parseFloat(String(v)); return isNaN(n) ? null : n },
+  toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
   labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const raw = v._fullLabel || v._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
   type: (_, r) => r?.__edgeLabel ?? r?._type ?? null,
