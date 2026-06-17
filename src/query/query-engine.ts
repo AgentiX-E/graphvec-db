@@ -5848,8 +5848,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (hours >= 24) { days += Math.floor(hours / 24); hours = hours % 24; }
       let nanosFormatted = "";
       if (nanos > 0) {
-        // Duration 的纳秒要求完整 9 位（时间函数用 _formatTime 去尾零）
-        nanosFormatted = "." + String(nanos).padStart(9, "0");
+        // Duration 纳秒也需要去尾零（P22DT19H51M49.5S 而不是 .500000000S）
+        let nsStr = String(nanos).padStart(9, "0").replace(/0+$/, "");
+        nanosFormatted = "." + nsStr;
       }
       let result = "P";
       if (years) result += years + "Y";
