@@ -4721,9 +4721,13 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     for (const ec of plan.expressionColumns) {
       ecMap[ec.alias || ec.expression] = ec.expression
     }
-  }
-
-  // 构造输出行，每列正确映射
+  } else if (plan.returnAliasMap) {
+    for (const [rawKey, rawExpr] of Object.entries(plan.returnAliasMap)) {
+      if (rawExpr !== rawKey) {
+        ecMap[rawKey] = rawExpr
+      }
+    }
+  }  // 构造输出行，每列正确映射
   const result: QueryRow = {}
   for (const rc of ret) {
     if (!rc) continue
@@ -4765,7 +4769,8 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     }
 
     // 判断 rc 是否直接出现在 GE 返回的 props 中
-    if (rc in row) {
+    // 但如果是函数调用表达式（被 GE 错误当作属性赋值），跳过 GE 数据走函数求值
+    if ((rc in row) && !rc.match(/^\w+\(/)) {
       result[rc] = row[rc]
       continue
     }
@@ -4789,7 +4794,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
     let fnExpr: string | null = null
     if (rc.match(/^\w+\(/)) {
-      fnExpr = rc
+      fnExpr = rc.replace(/\s+AS\s+\w+(?:\s*\([^)]*\))?\s*$/i, '').trim()
     } else if (aliasMap && rc in aliasMap && aliasMap[rc].match(/^\w+\(/)) {
       fnExpr = aliasMap[rc]
     }
@@ -4804,6 +4809,24 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       if (r.__targetPropsMap) {
         for (const vn of Object.keys(r.__targetPropsMap)) {
           if (!(vn in fnVarCtx)) fnVarCtx[vn] = r.__targetPropsMap[vn]
+        }
+      }
+      // 补充变量名 → 节点数据映射：从 steps 推断变量引用关系
+      if (plan.steps?.length && (r.__targetProps || r.__targetPropsMap)) {
+        const steps = plan.steps as Array<{source: string; targetAlias: string}>
+        for (const step of steps) {
+          if (step.source && !(step.source in fnVarCtx) && r.props) {
+            fnVarCtx[step.source] = r.props
+          }
+          if (step.targetAlias && !(step.targetAlias in fnVarCtx)) {
+            if (r.__targetProps) {
+              fnVarCtx[step.targetAlias] = r.__targetProps
+            } else if (r.__targetPropsMap?.[step.targetAlias]) {
+              fnVarCtx[step.targetAlias] = r.__targetPropsMap[step.targetAlias]
+            } else if (r.props) {
+              fnVarCtx[step.targetAlias] = r.props
+            }
+          }
         }
       }
       // 补充 row 中的属性到变量上下文
@@ -5690,7 +5713,7 @@ const _TCK_KEYWORDS: Set<string> = new Set([
   'DETACH','FOREACH','CALL','YIELD','SHOW','INDEX','CONSTRAINT',
   'UNION','ALL','OPTIONAL',
   // 已知标量/聚合/列表函数名
-  'TOINTEGER','TOFLOAT','TOSTRING','SIZE','LENGTH','LABELS','KEYS',
+  'TOINTEGER','TOFLOAT','TOSTRING','TOBOOLEAN','SIZE','LENGTH','LABELS','KEYS',
   'COALESCE','HEAD','LAST','TAIL','REVERSE','RANGE',
   'LEFT','RIGHT','SUBSTRING','REPLACE','TRIM',
   'COUNT','SUM','AVG','MAX','MIN','COLLECT',
@@ -6428,10 +6451,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; const n = parseFloat(String(v)); return isNaN(n) ? null : n },
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
-  labels: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
-  type: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
-  properties: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_') && ['id', 'type', 'name'].indexOf(k) === -1) o[k] = vv; return o },
-  keys: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); return Object.keys(uw).filter(k => !k.startsWith('_')); } return [] },
+  labels: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
+  type: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
+  properties: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_') && ['id', 'type', 'name'].indexOf(k) === -1) o[k] = vv; return o },
+  keys: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); return Object.keys(uw).filter(k => !k.startsWith('_')); } return [] },
   id: ([a], r) => { const v = _evalBinary(a, r); if (v && typeof v === 'object') { const uw = _unwrapRecord(v); const uid = '_id' in uw ? uw._id : ('id' in uw && typeof uw.id === 'number' ? uw.id : 0); return typeof uid === 'number' ? uid : 0; } return 0 },
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
   last: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
