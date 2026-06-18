@@ -773,6 +773,32 @@ function _injectParamsToPlan(plan: QueryPlan, resolve: (name: string) => unknown
     }
   }
 
+  // 替换 with.columns 中的 $param 占位符
+  if (plan.with?.columns) {
+    for (const wc of plan.with.columns) {
+      if (typeof wc.expression === 'string' && wc.expression.startsWith('$')) {
+        const paramName = wc.expression.slice(1)
+        const provided = resolve(paramName)
+        if (provided !== undefined) {
+          wc.expression = provided
+        }
+      }
+    }
+  }
+
+  // 替换 expressionColumns 中的 $param 占位符
+  if (plan.expressionColumns?.length) {
+    for (const ec of plan.expressionColumns) {
+      if (typeof ec.expression === 'string' && ec.expression.startsWith('$')) {
+        const paramName = ec.expression.slice(1)
+        const provided = resolve(paramName)
+        if (provided !== undefined) {
+          ec.expression = provided
+        }
+      }
+    }
+  }
+
   // 递归处理 rightPlan（UNION/INTERSECT/SUBTRACT）
   if (plan.rightPlan) _injectParamsToPlan(plan.rightPlan, resolve)
   // 递归处理 callQuery
@@ -1116,6 +1142,9 @@ export function parseQuery(query: string): QueryPlan {
                 items.push({ type: 'STRING', value: item.slice(1, -1) })
               } else if (/^(?:true|false)$/i.test(item)) {
                 items.push({ type: 'BOOLEAN', value: item.toLowerCase() === 'true' })
+              } else if (/^\{/.test(item)) {
+                // map 字面量：保留原始字符串，让执行时解析
+                items.push({ type: 'STRING', value: item })
               } else if (/^[a-zA-Z_]\w*$/.test(item)) {
                 items.push({ type: 'IDENTIFIER', name: item })
               } else {
@@ -2125,10 +2154,17 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
   if (plan.returnColumns?.length) {
     return rows.map(row => {
       const out: QueryRow = {}
-      for (const rc of plan.returnColumns) {
+      for (let i = 0; i < plan.returnColumns.length; i++) {
+        const rc = plan.returnColumns[i]
         if (!rc) continue
         // 查找 returnAliasMap 原始表达式
-        const expr = plan.returnAliasMap?.[rc.replace(/^\w+\./, '')] || rc
+        let expr = plan.returnAliasMap?.[rc.replace(/^\w+\./, '')] || rc
+        // 括号表达式属性访问：(list[1]).existing 或 (expr).prop
+        // ANTLR 把 (list[1]).existing 拆成 returnColumn = "existing"（仅属性名）
+        // 而 expressionColumns[i].expression 是完整表达式
+        if (expr === rc && plan.expressionColumns?.[i]?.expression && plan.expressionColumns[i].expression !== rc) {
+          expr = plan.expressionColumns[i].expression
+        }
         const val = _evaluateExpression(expr, row)
         out[rc] = val !== null && val !== undefined ? val : null
       }
@@ -2464,6 +2500,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   const hasOptionalMatch = plan.optionalMatchSteps?.length ? true : false
   if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML && !hasOptionalMatch) {
     const row: QueryRow = {}
+    // 注入 WITH 列到 row（expressionColumns 可能引用 WITH 中定义的变量）
+    if (plan.with?.columns) {
+      for (const wc of plan.with.columns) {
+        if (wc.alias) {
+          row[wc.alias] = _evaluateExpression(wc.expression, row)
+        }
+      }
+    }
     if (plan.returnColumns?.length) {
       // 使用表达式引擎求值每个 returnColumn
       if (plan.expressionColumns?.length) {
@@ -5810,6 +5854,8 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
         if (!allDefinedVars.includes(v)) {
           // 额外检查：如果 v 看起来是属性访问（有小数点），跳过
           if (v.includes('.') && allDefinedVars.includes(v.split('.')[0])) continue
+          // 额外检查：参数变量（$xxx）不需要在查询中定义
+          if (v.startsWith('$')) continue
           throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
         }
       }
@@ -6110,11 +6156,17 @@ function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Record<str
     case 'NULL': return null
     case 'LIST': {
       const items = Array.isArray(expr.items) ? expr.items : []
-      return items.map((item: unknown) =>
-        typeof item === 'object' && item !== null && (item as Record<string, unknown>).type
-          ? _evalStructuredLiteral(item as Record<string, unknown>, _row)
-          : item
-      )
+      return items.map((item: unknown) => {
+        if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type) {
+          const typed = item as Record<string, unknown>
+          // STRING 类型但值以 { 开头 → map 字面量，用 _evalBinary 解析
+          if (String(typed.type).toUpperCase() === 'STRING' && typeof typed.value === 'string' && typed.value.startsWith('{')) {
+            return _evalBinary(typed.value, _row || {})
+          }
+          return _evalStructuredLiteral(typed, _row)
+        }
+        return item
+      })
     }
     case 'MAP': return Object.fromEntries(
       Object.entries(expr).filter(([k]) => k !== 'type').map(([k, v]) => [
@@ -7261,6 +7313,15 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
       while (pos < t.length && t[pos] === ' ') pos++
       if (pos < t.length && t[pos] !== '[') {
         const suffix = t.slice(pos).trim()
+        // 处理 .prop 属性访问（不拼接字符串，直接访问对象属性）
+        if (suffix.startsWith('.') && val && typeof val === 'object') {
+          const propName = suffix.slice(1).trim()
+          if (Array.isArray(val)) {
+            // 数组上的 .prop — 数组不支持属性访问
+            return null
+          }
+          return (val as Record<string, unknown>)[propName] ?? null
+        }
         if (suffix) return _evalBinary(`${val} ${suffix}`, row)
         return val
       }
@@ -7465,7 +7526,9 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   const dotIdx = t.indexOf('.')
   if (dotIdx > 0 && !t.startsWith('.')) {
     const obj = _evalAtom(t.slice(0, dotIdx), row)
-    const prop = t.slice(dotIdx + 1)
+    const propRaw = t.slice(dotIdx + 1)
+    // 去掉反引号：m.`name` → m.name
+    const prop = propRaw.replace(/^`|`$/g, '')
     // Cypher: null.prop → null; nonMap.prop (非 map) → TypeError
     if (obj == null) return null
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) return (obj as Record<string, unknown>)[prop] ?? null

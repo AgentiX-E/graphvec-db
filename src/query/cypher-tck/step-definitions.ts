@@ -121,6 +121,23 @@ async function run(q: string): Promise<void> {
         } else if (Array.isArray(val)) {
           // 数组 → JSON 字面量（不打引号）
           resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), JSON.stringify(val))
+        } else if (typeof val === 'object' && val !== null) {
+          // 对象/Map → Cypher map 字面量（{k: v} 格式，非 JSON {"k":"v"}）
+          // 递归处理嵌套 map（如 {address: {city: 'London'}}）
+          const _toCypherMap = (obj: Record<string, unknown>): string => {
+            return '{' + Object.entries(obj).map(([k, v]) => {
+              let vStr: string
+              if (v === null) vStr = 'null'
+              else if (typeof v === 'string') vStr = `'${v}'`
+              else if (typeof v === 'number' || typeof v === 'boolean') vStr = String(v)
+              else if (typeof v === 'object' && v !== null && !Array.isArray(v)) vStr = _toCypherMap(v as Record<string, unknown>)
+              else if (Array.isArray(v)) vStr = JSON.stringify(v)
+              else vStr = String(v)
+              return `${k}: ${vStr}`
+            }).join(', ') + '}'
+          }
+          const cypherMap = _toCypherMap(val as Record<string, unknown>)
+          resolvedQ = resolvedQ.replace(new RegExp('\\$' + key + '\\b', 'g'), cypherMap)
         } else {
           // 纯数字（非字符串）不加引号，其他加引号
           const isNumber = typeof val === 'number' && /^-?\d+(\.\d+)?$/.test(String(val))
@@ -774,6 +791,12 @@ Given('parameters are:', function (dt: any) {
         parsed = Number(cleaned)
       } else if (/^\[.*\]$/.test(cleaned)) {
         try { parsed = JSON.parse(cleaned.replace(/'/g, '"')) } catch { parsed = cleaned }
+      } else if (/^\{.+\}$/.test(cleaned) && !hasQuotes) {
+        // Map 字面量：{key: 'val', key2: 'val2'} 或 {key: val} 
+        try {
+          const jsonLike = cleaned.replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"')
+          parsed = JSON.parse(jsonLike)
+        } catch { parsed = cleaned }
       }
       st.params[key] = parsed
     }
