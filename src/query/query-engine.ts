@@ -4855,7 +4855,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // ── 边变量 RETURN r ──
     // rc 是边变量名（如 RETURN r），从 r.__edgeLabel 获取标签输出 [:LABEL] 格式
-    if (r.__edgeLabel && !rc.match(/^\\w+\\(/)) {
+    if (r.__edgeLabel && !rc.match(/^\w+\(/)) {
       result[rc] = '[:' + r.__edgeLabel + ']'
       continue
     }
