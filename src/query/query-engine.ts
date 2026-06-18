@@ -4855,7 +4855,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // ── 边变量 RETURN r ──
     // rc 是边变量名（如 RETURN r），从 r.__edgeLabel 获取标签输出 [:LABEL] 格式
-    if (r.__edgeLabel) {
+    if (r.__edgeLabel && !rc.match(/^\\w+\\(/)) {
       result[rc] = '[:' + r.__edgeLabel + ']'
       continue
     }
@@ -6453,7 +6453,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
   labels: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
   type: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
-  properties: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_') && ['id', 'type', 'name'].indexOf(k) === -1) o[k] = vv; return o },
+  properties: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_') && ['id', 'type'].indexOf(k) === -1) o[k] = vv; return o },
   keys: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); return Object.keys(uw).filter(k => !k.startsWith('_')); } return [] },
   id: ([a], r) => { const v = _evalBinary(a, r); if (v && typeof v === 'object') { const uw = _unwrapRecord(v); const uid = '_id' in uw ? uw._id : ('id' in uw && typeof uw.id === 'number' ? uw.id : 0); return typeof uid === 'number' ? uid : 0; } return 0 },
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
@@ -7277,7 +7277,7 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
       return null
     }
   }
-  if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) {
+  if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t) && !t.match(/^\w+\(/)) {
     let depth = 0, parenEnd = -1
     for (let i = 0; i < t.length; i++) {
       if (t[i] === '(') depth++
