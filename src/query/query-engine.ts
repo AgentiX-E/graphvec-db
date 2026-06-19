@@ -2071,7 +2071,7 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
   }
 
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
-  if (!plan.with?.columns?.length && !rows.length) {
+  if (!plan.with?.columns?.length && !rows.length && !plan.unwind) {
     rows = [{}]
   }
 
@@ -2489,8 +2489,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   // 不涉及 MATCH/GE 图遍历，纯表达式 + 聚合
   // 注意：MATCH + WITH + UNWIND 场景（如 MATCH ... WITH [...] AS x UNWIND ...）
   // 的 WITH 列表包含 MATCH 变量，不能走纯表达式管道。走主路径处理。
-  const hasMatchWithList = plan.hasMatch && plan.unwind && query?.includes('WITH') && query?.includes('AS')
-  if (!hasMatchWithList && (plan.unwind || (plan.with && !plan.hasMatch))) {
+  if (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) {
     return _executeWithUnwindPipeline(plan, nodes, query)
   }
 
@@ -4553,42 +4552,76 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // MATCH 结果已经构建在 result 中，但查询还有 WITH/UNWIND 需要处理。
     // 对每一行 MATCH 结果，构造变量上下文，然后交给 WITH/UNWIND 管道处理。
     if (plan.hasMatch && plan.unwind && Array.isArray(result) && result.length) {
-      // 用第一行 MATCH 结果构造变量上下文（所有 MATCH 行共享同一变量集）
-      // WITH [n, r, p, ...] AS types — n,r,p 来自 MATCH
-      const matchVarCtx: Record<string, unknown> = {}
-      for (const [key, val] of Object.entries(result[0])) {
-        if (val && typeof val === 'object' && 'props' in (val as any)) {
-          matchVarCtx[key] = (val as any).props
-        } else {
-          matchVarCtx[key] = val
-        }
-      }
-      // 从 rawWithEdges 中恢复 MATCH 变量（n, r, p 等）的原始引用
-      if (Array.isArray(rawWithEdges) && rawWithEdges[0]?.__crossVarRows) {
-        const crossVarRows = rawWithEdges[0].__crossVarRows as Record<string, unknown>
-        for (const [varName, varVal] of Object.entries(crossVarRows)) {
-          if (!(varName in matchVarCtx)) {
+      const allPipelineRows: QueryRow[] = []
+      for (let rowIdx = 0; rowIdx < result.length; rowIdx++) {
+        const matchVarCtx: Record<string, unknown> = {}
+        // 从 rawWithEdges.__crossVarRows 获取该行的 MATCH 节点变量
+        const rawEntry = Array.isArray(rawWithEdges) ? rawWithEdges[rowIdx] : undefined
+        if (rawEntry?.__crossVarRows) {
+          for (const [varName, varVal] of Object.entries(rawEntry.__crossVarRows as Record<string, unknown>)) {
             matchVarCtx[varName] = varVal
           }
         }
-      }
-      // 把 MATCH 变量合并到 nodes，传入 matchVarCtx
-      // 把 MATCH 变量合并到 nodes（_executeWithUnwindPipeline 的 varCtx 来自 nodes）
-      // 但 _executeWithUnwindPipeline 使用自己的 varCtx，不读 nodes
-      // 需要改造：传入 matchVarCtx
-      const pipelineRows = _executeWithUnwindPipeline(plan, [matchVarCtx] as any, query, matchVarCtx)
-      if (Array.isArray(pipelineRows)) {
-        result.length = 0
-        for (const pr of pipelineRows) {
-          // 合并 MATCH 变量（如 n, r）到管道行
-          // _executeWithUnwindPipeline 可能丢弃了 initialVarCtx 中的 MATCH 变量
-          result.push({ ...matchVarCtx, ...pr })
+        // 补充关系变量：从 query 提取 [r] 或 [r:Label] 语法
+        if (query) {
+          const relVars = [...query.matchAll(/\[(\w+)\s*(?::\s*\w+)?\]/g)].map(m => m[1]).filter(Boolean)
+          for (const rv of relVars) {
+            if (rv in matchVarCtx) continue
+            // 尝试从 __edgeProps 获取
+            if (rawEntry?.__edgeProps && typeof rawEntry.__edgeProps === 'object') {
+              matchVarCtx[rv] = rawEntry.__edgeProps
+            } else if (rawEntry && rawEntry.__edgeLabel && edgesPayload.length && rawEntry.id != null) {
+              // 从 edgesPayload 查找该行的匹配边属性
+              const nodeIdx = edgesPayload.findIndex(e => e.srcIdx === rawEntry.id || e.dstIdx === rawEntry.id)
+              if (nodeIdx >= 0 && edgesPayload[nodeIdx]?.props && typeof edgesPayload[nodeIdx].props === 'object') {
+                matchVarCtx[rv] = edgesPayload[nodeIdx].props
+              } else {
+                matchVarCtx[rv] = {}
+              }
+            } else {
+              matchVarCtx[rv] = {}
+            }
+          }
         }
+        // 回退：从 result row 推断变量
+        if (!Object.keys(matchVarCtx).length) {
+          const row = result[rowIdx]
+          for (const [key, val] of Object.entries(row)) {
+            if (val && typeof val === 'object' && 'props' in (val as any)) {
+              matchVarCtx[key] = (val as any).props
+            } else {
+              matchVarCtx[key] = val
+            }
+          }
+        }
+        const pipelineRows = _executeWithUnwindPipeline(plan, [matchVarCtx] as any, query, matchVarCtx)
+        if (Array.isArray(pipelineRows) && pipelineRows.length) {
+          for (const pr of pipelineRows) {
+            allPipelineRows.push({ ...matchVarCtx, ...pr })
+          }
+        }
+        // 空：原始行丢弃（UNWIND [] 产生 0 行）
+      }
+      // ── DISTINCT 处理 ──
+      if (allPipelineRows.length) {
+        result.length = 0
+        if (plan.distinct) {
+          const dedupSet = new Set<string>()
+          for (const row of allPipelineRows) {
+            const colKeys = plan.returnColumns?.length ? plan.returnColumns : Object.keys(row).filter(k => !k.startsWith('__'))
+            const sig = JSON.stringify(colKeys.map(k => row[k]))
+            if (dedupSet.has(sig)) continue
+            dedupSet.add(sig)
+            result.push(row)
+          }
+        } else {
+          result.push(...allPipelineRows)
+        }
+      } else {
+        result.length = 0
       }
       // ── UNWIND + WITH 管道后再求值 WHERE ──
-      // 管道已合并 MATCH 变量和 UNWIND/WITH 变量，此时 whereBody 中的变量都可解析
-      // 避免 WHERE 引用了管道变量但在 MATCH 阶段未知（如 WITH arr[0] AS expected）
-      if (plan.whereBody && Array.isArray(result) && result.length) {
+      if (plan.whereBody && result.length) {
         const filtered: QueryRow[] = []
         for (const row of result) {
           const ctx: Record<string, unknown> = { ...row }
@@ -6454,7 +6487,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   labels: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
   type: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
   properties: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_') && ['id', 'type'].indexOf(k) === -1) o[k] = vv; return o },
-  keys: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); return Object.keys(uw).filter(k => !k.startsWith('_')); } return [] },
+  keys: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); return Object.keys(uw).filter(k => !k.startsWith('_') && uw[k] != null); } return [] },
   id: ([a], r) => { const v = _evalBinary(a, r); if (v && typeof v === 'object') { const uw = _unwrapRecord(v); const uid = '_id' in uw ? uw._id : ('id' in uw && typeof uw.id === 'number' ? uw.id : 0); return typeof uid === 'number' ? uid : 0; } return 0 },
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
   last: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
