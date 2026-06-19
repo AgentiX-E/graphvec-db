@@ -1874,6 +1874,26 @@ function splitCsvLine(line: string, delimiter: string): string[] {
  * DSL 语义：WITH 先计算列表字面量（直接在 plan 中），然后 UNWIND 行展开，
  * WITH 列投影 + aggregate 聚合。
  */
+function _findWhereOutsideBrackets(text: string): number {
+  let depth = 0, parenDepth = 0
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '[' && parenDepth === 0) depth++
+    else if (text[i] === ']' && parenDepth === 0) depth = Math.max(0, depth - 1)
+    else if (text[i] === '(') parenDepth++
+    else if (text[i] === ')') parenDepth = Math.max(0, parenDepth - 1)
+    else if (text.substring(i, i + 6).toLowerCase() === ' where' && depth === 0 && parenDepth === 0) {
+      const before = i > 0 ? text[i - 1] : ' '
+      const after = i + 6 < text.length ? text[i + 6] : ' '
+      if (!/\w/.test(before) && !/\w/.test(after)) return i
+    }
+    else if (text.substring(i, i + 6).toLowerCase() === 'where ' && depth === 0 && parenDepth === 0) {
+      const before = i > 0 ? text[i - 1] : ' '
+      if (!/\w/.test(before)) return i
+    }
+  }
+  return -1
+}
+
 function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string, unknown>>, query?: string, initialVarCtx?: Record<string, unknown>): QueryRow[] {
   // Step 1: 解析 WITH 列表字面量
   // plan.with.columns[0] 是 {expression: "[1, 3.14, ...]", alias: "operands"}
@@ -1992,8 +2012,10 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
         if (endIdx < 0) endIdx = afterWith.length
         const clauseBody = afterWith.substring(0, endIdx).trim()
         const whereMatch = clauseBody.match(/^(.+?)\s+WHERE\s+(.+)$/is)
-        if (whereMatch) {
-          nonListWithClauses.push({ cols: whereMatch[1].trim(), where: whereMatch[2].trim() })
+        // 括号深度感知的 WHERE 检测：屏蔽列表推导 [y IN ... WHERE ...] 和函数调用内 WHERE
+        const wherePos = _findWhereOutsideBrackets(clauseBody)
+        if (wherePos >= 0) {
+          nonListWithClauses.push({ cols: clauseBody.substring(0, wherePos).trim(), where: clauseBody.substring(wherePos + 5).trim() })
         } else {
           nonListWithClauses.push({ cols: clauseBody, where: null })
         }
@@ -2058,9 +2080,12 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
         const col = plan.with.columns[i]
         const alias = col.alias || col.expression
         if (isAggCol[i]) {
-          const innerMatch = typeof col.expression === 'string' ? col.expression.match(/^\s*\w+\s*\((.+?)\)\s*$/is) : null
+          const colExpr = typeof col.expression === 'string' ? col.expression : ''
+          const innerMatch = colExpr.match(/^\s*\w+\s*\((.+?)\)\s*$/is)
           if (innerMatch) {
-            const val = _evaluateExpression(innerMatch[1], evalCtx)
+            // count(*) → 每个值都是 1
+            const innerExpr = innerMatch[1].trim()
+            const val = innerExpr === '*' ? 1 : _evaluateExpression(innerExpr, evalCtx)
             aggCols[aggIdx].rows.push(val !== undefined ? val : null)
           }
           aggIdx++
@@ -2103,6 +2128,14 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
       const aggRow: Record<string, unknown> = {}
       for (const ac of aggCols) {
         aggRow[ac.alias] = ac.rows  // collect → 整个数组
+      }
+      // 保留非聚合列（取第一行的值即可）
+      if (rows.length > 0) {
+        for (const key of Object.keys(rows[0])) {
+          if (!(key in aggRow)) {
+            aggRow[key] = rows[0][key]
+          }
+        }
       }
       rows = [aggRow]
     }
@@ -6246,8 +6279,18 @@ function _evaluateExpression(expr: string | Record<string, unknown>, row?: Recor
   if (typeof expr !== 'string') return null
   const t = expr.trim()
   if (t.startsWith('CASE ') || t.startsWith('case ')) {
-    const r = _evalCase(t, row)
-    return r
+    const endIdx = t.search(/\bEND\b/i)
+    if (endIdx >= 0) {
+      const casePart = t.slice(0, endIdx + 3)
+      const rest = t.slice(endIdx + 3).trim()
+      const r = _evalCase(casePart, row)
+      if (rest) {
+        const tmpKey = '___CASE_TMP'
+        const injectedRow = { ...row as any, [tmpKey]: r }
+        return _evalBinary(tmpKey + ' ' + rest, injectedRow)
+      }
+      return r
+    }
   }
   return _evalBinary(t, row)
 }
@@ -7705,7 +7748,34 @@ function _evalLiteral(s: string, row?: Record<string, unknown>): unknown {
     return val
   }
   if (v.startsWith('[') && v.endsWith(']')) {
+    // 检测列表推导： [var IN list WHERE cond | expr] 或 [var IN list WHERE cond] 或 [var IN list | expr]
+    const LC_RE = /^\s*(\w+)\s+IN\s+(.+?)(?:\s+WHERE\s+(.+?))?(?:\s*\|\s*(.+?))?\s*$/s
     const inner = v.slice(1, -1).trim()
+    if (!inner) return []
+    const lcMatch = inner.match(LC_RE)
+    if (lcMatch) {
+      const varName = lcMatch[1]
+      const listExpr = lcMatch[2].trim()
+      const condExpr = lcMatch[3]?.trim()
+      const retExpr = lcMatch[4]?.trim()
+      const list = _evaluateExpression(listExpr, row)
+      if (!Array.isArray(list)) return null
+      const result: unknown[] = []
+      for (const item of list) {
+        const evalCtx: Record<string, unknown> = { ...row as any, [varName]: item }
+        if (condExpr) {
+          const condVal = _evaluateExpression(condExpr, evalCtx)
+          if (condVal !== true) continue
+        }
+        if (retExpr) {
+          result.push(_evaluateExpression(retExpr, evalCtx))
+        } else {
+          result.push(item)
+        }
+      }
+      return result
+    }
+    // 普通列表字面量
     return inner ? _parseCommaList(inner).map(item => _evalBinary(item.trim(), row)) : []
   }
   if (v.startsWith('{') && v.endsWith('}')) {
