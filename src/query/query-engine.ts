@@ -1919,6 +1919,25 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
   }
 
   // Step 2: 执行 UNWIND 链（支持 N 级 UNWIND 笛卡尔积）
+  // 修复 UNWIND 变量名：parseQuery 有时将 name 设为源变量而非 AS 别名
+  if (query && plan.unwind?.var) {
+    const uv = plan.unwind.var.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const uaMatch = query.match(new RegExp('UNWIND\\s+' + uv + '\\s+AS\\s+(\\w+)', 'i'))
+    if (uaMatch && uaMatch[1] !== plan.unwind.name) {
+      plan.unwind.name = uaMatch[1]
+    }
+  }
+  if (query && plan.unwinds?.length) {
+    for (let ui = 0; ui < plan.unwinds.length; ui++) {
+      const u = plan.unwinds[ui]
+      if (!u.var) continue
+      const uv = u.var.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const uaMatch = query.match(new RegExp('UNWIND\\s+' + uv + '\\s+AS\\s+(\\w+)', 'i'))
+      if (uaMatch && uaMatch[1] !== u.name) {
+        plan.unwinds[ui].name = uaMatch[1]
+      }
+    }
+  }
   let rows: Array<Record<string, unknown>> = []
 
   if (plan.unwinds?.length) {
@@ -1928,7 +1947,7 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
       return Array.isArray(items) ? items : [items]
     })
     function _cartesianN(idx: number, current: Record<string, unknown>): void {
-      if (idx >= lists.length) { rows.push({ ...current }); return }
+      if (idx >= lists.length) { require("fs").appendFileSync("/tmp/dbg_pipe.log", "[CARTN] idx:" + idx + " lists:" + lists.length + " cur:" + JSON.stringify(current).slice(0,60) + "\n"); rows.push({ ...current }); return }
       for (const item of lists[idx]) {
         current[plan.unwinds![idx].name] = item
         _cartesianN(idx + 1, current)
@@ -1960,7 +1979,7 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
   }
 
   // ── 中间 WITH 投影 ──
-  if (query && rows.length && plan.hasMatch && plan.unwind) {
+  if (query && rows.length && plan.unwind) {
     const nonListWithClauses: Array<{ cols: string; where: string | null }> = []
     {
       let i = 0
@@ -2021,7 +2040,7 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
   if (plan.with?.columns?.length) {
     // 判断哪些列是聚合函数
     const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
-    const isAggCol: boolean[] = plan.with.columns.map(col => aggFnPattern.test(col.expression))
+    const isAggCol: boolean[] = plan.with.columns.map(col => typeof col.expression === 'string' ? aggFnPattern.test(col.expression) : false)
     const hasAgg = isAggCol.some(Boolean)
     const aggCols: Array<{ alias: string; rows: unknown[] }> = []
     if (hasAgg) {
@@ -2039,22 +2058,41 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
         const col = plan.with.columns[i]
         const alias = col.alias || col.expression
         if (isAggCol[i]) {
-          // 聚合列：提取参数表达式，逐行计算值，收集到 aggCols
-          const innerMatch = col.expression.match(/^\s*\w+\s*\((.+?)\)\s*$/is)
+          const innerMatch = typeof col.expression === 'string' ? col.expression.match(/^\s*\w+\s*\((.+?)\)\s*$/is) : null
           if (innerMatch) {
             const val = _evaluateExpression(innerMatch[1], evalCtx)
             aggCols[aggIdx].rows.push(val !== undefined ? val : null)
           }
           aggIdx++
-          // 不在 row 中放聚合结果（聚合后统一放）
         } else {
-          if (evalCtx[alias] !== undefined && col.alias) continue
+          // 保持 UNWIND 展开后的行变量值不被初始 WITH 列表字面量覆盖
+          // 保持 UNWIND 展开后的行变量值不被初始 WITH 列表字面量覆盖
+          if (alias in row && (col.expression == null || typeof col.expression !== 'string')) {
+            newRow[alias] = row[alias]
+            continue
+          }
+          // 当列别名在 evalCtx 中（如初始 WITH 列表字面量），且不是 UNWIND 变量时，
+          // 保留 row 中已有的 UNWIND 变量（如 x:1），跳过该列（由后续 RETURN 映射处理）
+          if (evalCtx[alias] !== undefined && col.alias) {
+            for (const rk of Object.keys(row)) {
+              if (!(rk in newRow)) {
+                newRow[rk] = row[rk]
+              }
+            }
+            if (typeof col.expression !== 'string') {
+              const literalVal = _evaluateExpression(col.expression, evalCtx)
+              newRow[alias] = literalVal !== undefined ? literalVal : null
+            }
+            continue
+          }
           if (col.alias === null && col.expression in evalCtx) {
-            // 无别名的列且已在 evalCtx 中（如 UNWIND 变量 a, b），传递值到新行
             newRow[col.expression] = evalCtx[col.expression]
             continue
           }
-          const val = _evaluateExpression(col.expression, evalCtx)
+          // 非字符串表达式的结构化字面量（如 {type:"LIST",...}）：直接求值
+          const val = typeof col.expression === 'string'
+            ? _evaluateExpression(col.expression, evalCtx)
+            : _evaluateExpression(col.expression, evalCtx)
           newRow[col.alias || col.expression] = val !== undefined ? val : null
         }
       }
@@ -2070,9 +2108,28 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
     }
   }
 
+
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
+  require('fs').appendFileSync('/tmp/dbg_pipe.log', '[FINAL_WITH] rows:' + rows.length + ' first:' + JSON.stringify(rows[0]).slice(0,80) + '\n');
   if (!plan.with?.columns?.length && !rows.length && !plan.unwind) {
     rows = [{}]
+  }
+
+  // ── RETURN 列映射 ──
+  if (plan.expressionColumns?.length && rows.length) {
+    rows = rows.map(row => {
+      const newRow: Record<string, unknown> = { ...row }
+      const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+      for (const ec of plan.expressionColumns) {
+        if (typeof ec.expression === 'string' && ec.expression in evalCtx) {
+          newRow[ec.alias] = evalCtx[ec.expression]
+        } else {
+          const val = typeof ec.expression === 'string' ? _evaluateExpression(ec.expression, evalCtx) : null
+          newRow[ec.alias] = val !== undefined ? val : null
+        }
+      }
+      return newRow
+    })
   }
 
   // ── WITH WHERE 过滤 ──
