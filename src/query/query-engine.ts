@@ -1947,7 +1947,7 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
       return Array.isArray(items) ? items : [items]
     })
     function _cartesianN(idx: number, current: Record<string, unknown>): void {
-      if (idx >= lists.length) { require("fs").appendFileSync("/tmp/dbg_pipe.log", "[CARTN] idx:" + idx + " lists:" + lists.length + " cur:" + JSON.stringify(current).slice(0,60) + "\n"); rows.push({ ...current }); return }
+      if (idx >= lists.length) { rows.push({ ...current }); return }
       for (const item of lists[idx]) {
         current[plan.unwinds![idx].name] = item
         _cartesianN(idx + 1, current)
@@ -2110,7 +2110,6 @@ function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string
 
 
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
-  require('fs').appendFileSync('/tmp/dbg_pipe.log', '[FINAL_WITH] rows:' + rows.length + ' first:' + JSON.stringify(rows[0]).slice(0,80) + '\n');
   if (!plan.with?.columns?.length && !rows.length && !plan.unwind) {
     rows = [{}]
   }
