@@ -7484,6 +7484,7 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     if (!Array.isArray(list)) return null
     let count = 0
     let hasNull = false
+    let hasFalse = false
     const listLen = list.length
     for (const item of list) {
       const evalCtx: Record<string, unknown> = { ...row as any, [varName]: item }
@@ -7493,22 +7494,28 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
         if (pred === 'any') return true
         if (pred === 'none') return false
         if (pred === 'single' && count > 1) return false
+      } else if (val === false) {
+        hasFalse = true
+        if (pred === 'all') {
+          // false 优先于 null：如果有 false，无论是否有 null 都返回 false
+          // 不需要继续循环
+        }
       } else if (val == null) {
         hasNull = true
       }
     }
     if (pred === 'all') {
-      if (count === listLen && listLen > 0) return true
-      // 如果没有 false 但有 null，返回 true（TCK: all() 在 null 谓词下返回 true）
-      if (listLen > 0) {
-        const hasNonNullFalse = list.some(item => _evaluateExpression(condExpr, { ...row as any, [varName]: item }) === false)
-        if (!hasNonNullFalse) return true
-      }
+      // 空列表：all() 返回 true（全称量化 vacuously true）
+      if (listLen === 0) return true
+      if (count === listLen) return true
+      // false 优先于 null（Cypher 三值逻辑：false ∧ null = false）
+      if (hasFalse) return false
+      if (hasNull) return null
       return false
     }
-    if (pred === 'any') return false
+    if (pred === 'any') return hasNull ? null : false
     if (pred === 'none') return hasNull ? null : true
-    if (pred === 'single') return count === 1
+    if (pred === 'single') return (hasNull && count <= 1) ? null : count === 1
   }
   // 函数调用（必须在 dot 之前）
   const fnMatch = t.match(/^(\w+)\((.+?)\)$/s)
