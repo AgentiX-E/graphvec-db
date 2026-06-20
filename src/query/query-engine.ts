@@ -1537,8 +1537,8 @@ function _walkMultiSteps(
   skipNodeIndices?: Set<number>,
   planFilters?: Array<{source?: string; property: string; value: any}>,
   stepSourceFilters?: Array<{source?: string; property: string; value: any}>
-): number[] {
-  let currentSet = new Set<number>([startIdx])
+): number[][] {
+  let paths: number[][] = [[startIdx]]
   for (let si = 0; si < steps.length; si++) {
     const step = steps[si]
     // ── 变量长度路径：step.range 存在时做 BFS 多跳 ──
@@ -1549,7 +1549,7 @@ function _walkMultiSteps(
       const varLenSet = new Set<number>()
       // 检查边标签是否配置（仅对匹配边做遍历）
       const hasEdgeLabel = !!(step as any).edgeLabel
-      for (const sidx of currentSet) {
+      for (const sidx of _pathEndIndices(paths)) {
         // BFS 从 sidx 出发，记录每层目标节点
         let frontier = new Set<number>([sidx])
         const visited = new Set<number>([sidx])
@@ -1606,7 +1606,7 @@ function _walkMultiSteps(
           if (frontier.size === 0) break
         }
       }
-      currentSet = varLenSet
+      paths = [...varLenSet].map(idx => [startIdx, idx])
       continue
     }
     const nextSet = new Set<number>()
@@ -1630,7 +1630,8 @@ function _walkMultiSteps(
     // 在边遍历前应用 source filter：从 currentSet 中移除不满足 source 约束的节点
     // WHERE a.id = 1 — 在 seed 节点（step 0）和路径回溯（step 3+）中检查
     if (combinedSourceFilters.length > 0) {
-      for (const idx of [...currentSet]) {
+      const curEnds = _pathEndIndices(paths)
+      for (const idx of [...curEnds]) {
         const fn = allNodes[idx]
         if (!fn) continue
         let passes = true
@@ -1662,11 +1663,12 @@ function _walkMultiSteps(
             }
           }
         }
-        if (!passes) currentSet.delete(idx)
+        if (!passes) curEnds.delete(idx)
       }
     }
     // 边遍历
-    for (const idx of currentSet) {
+    const curEnds = _pathEndIndices(paths)
+    for (const idx of curEnds) {
       const node = allNodes[idx]
       if (!node) continue
       const edges: Array<{ dstIdx: number; srcIdx: number; label: string; props?: any }> = (node as any).__edges || []
@@ -1741,12 +1743,35 @@ function _walkMultiSteps(
         nextSet.delete(sidx)
       }
     }
-    currentSet = nextSet
-    if (currentSet.size === 0) break
+    // 扩展路径：每个 nextSet 索引追加到每条路径末尾
+    const newPaths: number[][] = []
+    for (const idx of nextSet) {
+      for (const p of paths) {
+        // 检查路径末端节点是否通过边连接到 idx
+        const last = p[p.length - 1]
+        const lastNode = allNodes[last] as any
+        const connected = lastNode?.__edges?.some((e: any) => {
+          const neighborIdx = e.dstIdx === last ? e.srcIdx : (e.srcIdx === last ? e.dstIdx : -1)
+          return neighborIdx === idx
+        })
+        if (connected) {
+          newPaths.push([...p, idx])
+        }
+      }
+    }
+    paths = newPaths.length > 0 ? newPaths : [...nextSet].map(idx => [startIdx, idx])
+    if (paths.length === 0) break
   }
-  return [...currentSet]
+  return paths
 }
 
+function _pathEndIndices(paths: number[][]): Set<number> {
+  const ends = new Set<number>()
+  for (const p of paths) ends.add(p[p.length - 1])
+  return ends
+}
+
+/** 从路径数组中提取第一条路径（用于 _allVars 等需要完整路径的场景） */
 /** 检查 step 对目标节点的约束 */
 function _stepMatchConstraint(nodeIdx: number, step: TraverseStep, allNodes: Record<string, unknown>[]): boolean {
   const node = allNodes[nodeIdx]
@@ -3732,9 +3757,19 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     const hasMultiStep = plan.steps && plan.steps.length > 1 && allNodes.length > 0
     const hasVarLen = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
     const hasEdgeStep = plan.steps?.length === 1 && allNodes.length > 0 && (plan.steps[0].edgeLabel != null || plan.steps[0].direction === 'out' || plan.steps[0].direction === 'in')
+    const stepEdgesCache = new Map<number, string[]>()
     const useEdgeWalk = hasMultiStep || hasVarLen || hasEdgeStep
     let rawRecords: any[] = (useEdgeWalk)
       ? (() => {
+          const edgeVarColsLen = (plan.returnColumns || []).filter(rc => {
+            if (!rc || rc === '*' || rc.includes('.')) return false
+            const nodeAliases = new Set([
+              ...(plan.createNodes || []).map((n: any) => n.alias).filter(Boolean),
+              ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
+            ])
+            return !nodeAliases.has(rc)
+          }).length
+          const stepEdgesCache = new Map<number, string[]>()
           let multiStepRaw: any[] = []
           for (let i = 0; i < allNodes.length; i++) {
             if (skipNodeIndices.has(i)) {
@@ -3760,6 +3795,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             }
             if (skipNode) continue
             const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
+        const pathEnds = _pathEndIndices(pathResults)
         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
         // 防止后续 step 引入不相关的中间节点
         const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).find(rc => {
@@ -3767,7 +3803,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const firstSrc = plan.steps?.[0]?.source
           return rc !== firstSrc && plan.steps?.some(s => s.targetAlias === rc)
         })
-        let boundedTargetIndices = pathResults
+        let boundedTargetIndices: number[] = [...pathEnds]
+        let boundedPaths: number[][] = pathResults
         if (retVar && plan.steps && !hasVarLen && !hasEdgeStep) {
           const defStep = plan.steps.find(s => s.targetAlias === retVar)
           if (defStep !== undefined) {
@@ -3778,15 +3815,18 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 i, plan.steps.slice(0, defStepIdx + 1),
                 allNodes, undefined, plan.filters, stepSourceFilters
               )
+              const interEnds = _pathEndIndices(intermediate)
               // 如果 RETURN 变量等于最后一个 step 的 targetAlias，全路径的过滤约束
               // 会影响返回值（后续步的 filter 消除多余节点），需要用交集过滤。
               // 否则 pathResults 中的节点是后续步的 target，不相关，直接用 intermediate。
               const lastStep = plan.steps[plan.steps.length - 1]
               if (lastStep && lastStep.targetAlias === retVar) {
-                const defStepSet = new Set(intermediate)
-                boundedTargetIndices = pathResults.filter(idx => defStepSet.has(idx))
+                boundedTargetIndices = [...pathEnds].filter(idx => interEnds.has(idx))
+                // 同时筛选 boundedPaths
+                boundedPaths = pathResults.filter(p => interEnds.has(p[p.length - 1]))
               } else {
-                boundedTargetIndices = intermediate
+                boundedTargetIndices = [...interEnds]
+                boundedPaths = intermediate
               }
             }
           }
@@ -3809,6 +3849,39 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 allVars[lastStepV.targetAlias] = { _label: targetNode._label || 'Default' }
                 for (const k of Object.keys(targetNode)) {
                   if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[lastStepV.targetAlias][k] = targetNode[k]
+                }
+              }
+              // 用 boundedPaths 补充中间节点和边标签信息
+              if (boundedPaths?.length > 0) {
+                const matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
+                if (matchingPath && matchingPath.length >= 2) {
+                  const pathEdges: string[] = []
+                  for (let psi = 0; psi < plan.steps.length && psi < matchingPath.length - 1; psi++) {
+                    const step = plan.steps[psi]
+                    const fromNode = allNodes[matchingPath[psi]] as any
+                    if (fromNode?.__edges) {
+                      const edge = fromNode.__edges.find((e: any) => {
+                        const neighborIdx = e.dstIdx === matchingPath[psi] ? e.srcIdx : (e.srcIdx === matchingPath[psi] ? e.dstIdx : -1)
+                        return neighborIdx === matchingPath[psi + 1]
+                      })
+                      if (edge?.label) pathEdges.push(edge.label)
+                    }
+                    // 中间节点：填充 _allVars 中对应步骤的 targetAlias
+                    if (psi < plan.steps.length - 1 && matchingPath[psi + 1] !== targetIdx) {
+                      const midNode = allNodes[matchingPath[psi + 1]]
+                      const midAlias = plan.steps[psi]?.targetAlias
+                      if (midAlias && midNode) {
+                        allVars[midAlias] = { _label: midNode._label || 'Default' }
+                        for (const k of Object.keys(midNode)) {
+                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[midAlias][k] = midNode[k]
+                        }
+                      }
+                    }
+                  }
+                  if (pathEdges.length >= edgeVarColsLen) {
+                    geNode.props.__stepEdges = pathEdges
+                    stepEdgesCache.set(targetIdx, pathEdges)
+                  }
                 }
               }
               // source 节点
@@ -4664,17 +4737,19 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           // 则按顺序分配（适用于链式匹配如 ()-[r1:T1]->()-[r2:T2]->()）
           const edgeVarCount = edgeVarCols.length
           const sequentialMatch = (edgeVarCount === edgesPayload.length && edgeVarCount > 1 && edgesPayload.every((e: any) => e.label))
-          // 多步路径：从 plan.steps 按索引取边标签
-          const multiStepLabels: string[] = (plan.steps || []).map((s: any) => s.edgeLabel || '').filter(Boolean)
-          const stepEdges: string[] = multiStepLabels.length >= edgeVarCount ? multiStepLabels : []
+          // 多步路径：优先从 r.props.__stepEdges（geNode.props 中保存的真实匹配边标签），回退到 plan.steps
+                    const nodeIdx = nodeGeIds.indexOf(r.id)
+          const rawStepEdges: string[] = (nodeIdx >= 0 && stepEdgesCache.has(nodeIdx) && stepEdgesCache.get(nodeIdx)!.length === edgeVarCount)
+            ? stepEdgesCache.get(nodeIdx)!
+            : (plan.steps || []).map((s: any) => s.edgeLabel || '').filter(Boolean)
+          const actualStepEdges = rawStepEdges
           for (let eci = 0; eci < edgeVarCols.length; eci++) {
             const evc = edgeVarCols[eci]
-            const nodeIdx = nodeGeIds.indexOf(r.id)
             let edgeLabel = ''
             let edgeProps: Record<string, unknown> | null = null
             // 多步路径：按边变量索引对应步骤索引
-            if (eci < stepEdges.length) {
-              edgeLabel = stepEdges[eci]
+            if (eci < actualStepEdges.length) {
+              edgeLabel = actualStepEdges[eci]
             } else if (r.__edgeLabel) {
               edgeLabel = r.__edgeLabel
             } else if (hasExplicitEdgeLabel) {
