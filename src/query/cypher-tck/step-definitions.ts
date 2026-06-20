@@ -245,6 +245,27 @@ function toNodeNotation(val: unknown): string | undefined {
 }
 
 /** Normalize actual results: convert row objects to node notation strings */
+
+/** Convert a value to TCK edge notation: [:Label {prop: 'val'}] */
+function _toEdgeNotation(val: Record<string, unknown>): string {
+  const label = val._type || ''
+  const props: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(val)) {
+    if (k.startsWith('_')) continue
+    props[k] = v
+  }
+  const propKeys = Object.keys(props)
+  if (!propKeys.length && !label) return '[:]'
+  if (!propKeys.length) return `[:${label}]`
+  const propStr = propKeys.map(k => {
+    const v = props[k]
+    if (typeof v === 'string') return `${k}: '${v}'`
+    if (typeof v === 'number') return `${k}: ${v}`
+    return `${k}: ${_stringifyVal(v)}`
+  }).join(', ')
+  return label ? `[:${label} {${propStr}}]` : `[: {${propStr}}]`
+}
+
 /** 检测两个字符串是否表示同一个数字，但一个带 .0 一个不带 */
 function _isFloatZeroMatch(actual: string, expected: string): boolean {
   if (actual === expected) return false
@@ -308,12 +329,30 @@ function _stringifyVal(val: unknown): string {
   if (Array.isArray(val)) {
     return '[' + val.map(v => {
       if (typeof v === 'string') return "'" + v.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"
-      if (Array.isArray(v) || (typeof v === 'object' && v !== null)) return _stringifyVal(v)
       if (typeof v === 'bigint') return String(v)
+      // 数组元素是节点对象时 → 使用 toNodeNotation
+      if (typeof v === 'object' && v !== null && '_label' in (v as any)) {
+        const nn = toNodeNotation(v)
+        if (nn !== undefined) return nn
+      }
+      // 数组元素是关系对象时 → [:Label {props}]
+      if (typeof v === 'object' && v !== null && '_type' in (v as any)) {
+        return _toEdgeNotation(v as any)
+      }
+      if (Array.isArray(v) || (typeof v === 'object' && v !== null)) return _stringifyVal(v)
       return String(v)
     }).join(', ') + ']'
   }
   if (typeof val === 'object' && val !== null) {
+    // 节点对象 → toNodeNotation（避免输出 {_label: 'A', name: 'a'}）
+    if ('_label' in (val as any)) {
+      const nn = toNodeNotation(val)
+      if (nn !== undefined) return nn
+    }
+    // 关系对象 → [:Label {props}]
+    if ('_type' in (val as any)) {
+      return _toEdgeNotation(val as any)
+    }
     const entries = Object.entries(val as Record<string, unknown>)
       .map(([k, v]) => `${k}: ${_stringifyVal(v)}`)
       .join(', ')
@@ -733,10 +772,28 @@ Given('having executed:', async function (query: string) {
             }
           }
           for (const edge of (plan as any).createEdges as Array<{ source: string; target: string; sourceIdx?: number; targetIdx?: number; label: string | null; direction: string }>) {
-            // 使用 cnsToStIdx 映射到 st.nodes 索引
-            const srcIdx = edge.sourceIdx !== undefined ? cnsToStIdx[edge.sourceIdx] : undefined
-            const dstIdx = edge.targetIdx !== undefined ? cnsToStIdx[edge.targetIdx] : undefined
-            if (srcIdx !== undefined && dstIdx !== undefined && srcIdx < st.nodes.length && dstIdx < st.nodes.length) {
+            // 使用 alias 查找替代 sourceIdx/targetIdx（ANTLR 多行 CREATE 的索引错乱）
+            // 优先通过 alias 查找，如果 fail 则回退到 sourceIdx/targetIdx
+            let srcIdx = -1, dstIdx = -1
+            if (edge.source) {
+              for (let si = 0; si < st.nodes.length; si++) {
+                if ((st.nodes[si] as any)._alias === edge.source) { srcIdx = si; break }
+              }
+            }
+            if (srcIdx < 0 && edge.sourceIdx !== undefined) {
+              const mapped = cnsToStIdx[edge.sourceIdx]
+              if (mapped !== undefined) srcIdx = mapped
+            }
+            if (edge.target) {
+              for (let si = 0; si < st.nodes.length; si++) {
+                if ((st.nodes[si] as any)._alias === edge.target) { dstIdx = si; break }
+              }
+            }
+            if (dstIdx < 0 && edge.targetIdx !== undefined) {
+              const mapped = cnsToStIdx[edge.targetIdx]
+              if (mapped !== undefined) dstIdx = mapped
+            }
+            if (srcIdx !== undefined && dstIdx !== undefined && srcIdx >= 0 && dstIdx >= 0 && srcIdx < st.nodes.length && dstIdx < st.nodes.length) {
               edgesForStNodes.push({ srcIdx, dstIdx, label: edge.label || '', props: (edge as any).props || null })
             }
           }

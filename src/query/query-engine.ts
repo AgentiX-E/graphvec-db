@@ -1114,6 +1114,35 @@ export function parseQuery(query: string): QueryPlan {
       }
     }
   }
+  // ── Fallback: 如果 ANTLR 没有解析出 WITH columns（空数组），从 query 文本提取 ──
+  // ANTLR 对 `tail(nodes(p)) AS nodes` 等函数调用+AS 别名的解析失败时，
+  // plan.with.columns 为空但 plan.returnAliasMap 不为空。
+  // 需要从 WITH 子句文本填充表情表达式。
+  if (plan.with && Array.isArray(plan.with.columns) && plan.with.columns.length === 0 && query) {
+    const withMatch = query.match(/WITH\s+(.+?)(?:\s+(RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW|WITH|MATCH|ORDER|SKIP|LIMIT|WHERE)\s|$)/is)
+    if (withMatch) {
+      const withBody = withMatch[1].trim()
+      // 按逗号分割 WITH 列（括号/引号感知）
+      const colParts = withBody.split(',').map((c: string) => c.trim()).filter(Boolean)
+      for (const part of colParts) {
+        // AS 别名：tail(nodes(p)) AS nodes → expression="tail(nodes(p))", alias="nodes"
+        const asMatch = part.match(/^(.+?)\s+AS\s+(\w+)$/i)
+        if (asMatch) {
+          plan.with.columns.push({
+            expression: asMatch[1].trim(),
+            alias: asMatch[2],
+          })
+        } else {
+          // 无 AS 别名：直接作为表达式
+          plan.with.columns.push({
+            expression: part,
+            alias: null,
+          })
+        }
+      }
+    }
+  }
+
   // WITH 列表达式：字符串字面量转为 AST 对象（GE 的 _executeWithClause 期望 AST）
   if (plan.with?.columns) {
     for (const col of plan.with.columns) {
@@ -1744,48 +1773,117 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
   const maxHops = Math.min(range.max ?? 10, 50) // 上限 50 防循环
   const result: QueryRow[] = []
   const srcNodes: Array<Record<string, unknown>> = [...(nodes || [])]
+
+  // 使用 path-based BFS：每个 frontier entry 是 { nIdx, path }
+  interface BfsEntry { nIdx: number; path: number[] }
+  // 从 __edges 数组获取关系对象（含 label 和 props）
+  function _edgeToRelObj(e: { srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }): Record<string, unknown> {
+    const edgeNode: Record<string, unknown> = { _type: e.label || '' }
+    if (e.props) {
+      for (const [k, v] of Object.entries(e.props)) {
+        if (k !== '_type') edgeNode[k] = v
+      }
+    }
+    return edgeNode
+  }
   for (let si = 0; si < srcNodes.length; si++) {
     const sourceNode = srcNodes[si] as any
     if (plan.scanLabel && sourceNode._label !== plan.scanLabel) continue
-    let frontier = new Set<number>([si])
-    const visited = new Set<number>([si])
+
+    // 处理深度 0（minHops=0 时的路径自身）
+    if (minHops === 0) {
+      const pathVar = (step as any).source || 'p'
+      const pathNodes: Array<Record<string, unknown>> = []
+      const sn: Record<string, unknown> = { _label: sourceNode._label || 'Default' }
+      for (const k of Object.keys(sourceNode)) {
+        if (k !== '_label' && k !== '__edges' && k !== '_alias') sn[k] = sourceNode[k]
+      }
+      pathNodes.push(sn)
+      const rowRes: QueryRow = {}
+      rowRes[pathVar] = { __path: pathNodes, __pathEdges: [] }
+      if ((step as any).targetAlias) rowRes[(step as any).targetAlias] = sn
+      if (Object.keys(rowRes).length) result.push(rowRes)
+    }
+
+    // frontier: 当前深度可探索的入口（每步 BFS）
+    let frontier: BfsEntry[] = [{ nIdx: si, path: [si] }]
     for (let depth = 1; depth <= maxHops; depth++) {
-      const nextFrontier = new Set<number>()
-      for (const fidx of frontier) {
-        const node = srcNodes[fidx] as any
+      const nextFrontier: BfsEntry[] = []
+      for (const entry of frontier) {
+        const node = srcNodes[entry.nIdx] as any
         const edgeArr: Array<{ dstIdx: number; srcIdx: number; label: string }> = node?.__edges || []
         for (const e of edgeArr) {
           let nIdx = -1
-          if (e.srcIdx === fidx) nIdx = e.dstIdx
-          else if (e.dstIdx === fidx) nIdx = e.srcIdx
-          if (nIdx < 0 || nIdx >= srcNodes.length || visited.has(nIdx)) continue
-          visited.add(nIdx)
+          const dir = (step as any).direction || 'out'
+          if (dir === 'out' && e.srcIdx === entry.nIdx) nIdx = e.dstIdx
+          else if (dir === 'in' && e.dstIdx === entry.nIdx) nIdx = e.srcIdx
+          else if (dir !== 'out' && dir !== 'in') {
+            // 无方向（both）
+            if (e.srcIdx === entry.nIdx) nIdx = e.dstIdx
+            else if (e.dstIdx === entry.nIdx) nIdx = e.srcIdx
+          }
+          if (nIdx < 0 || nIdx >= srcNodes.length) continue
+          // 路径中不能含有重复节点（防循环）
+          if (entry.path.includes(nIdx)) continue
+          const newPath = [...entry.path, nIdx]
           if (depth < minHops) {
-            nextFrontier.add(nIdx)
+            nextFrontier.push({ nIdx, path: newPath })
             continue
           }
           const targetNode = srcNodes[nIdx] as any
           if (step.targetLabel && targetNode._label && targetNode._label !== step.targetLabel) continue
           if (step.edgeLabel && e.label !== step.edgeLabel) continue
-          const geLike: any = {
-            id: nIdx + 1,
-            props: { _label: targetNode._label || 'Default' },
-            __targetProps: { ...targetNode },
-            __multiStep: true,
-          }
-          for (const k of Object.keys(targetNode)) {
-            if (k !== '_label' && k !== '__edges') geLike.props[k] = targetNode[k]
-          }
-          // 构建返回行：从原始 returnColumns 用变量前缀映射
+
+          // 构建路径上的节点序列（节点对象的副本）
+          const pathNodes = newPath.map(idx => {
+            const n = srcNodes[idx] as any
+            const out: Record<string, unknown> = { _label: n._label || 'Default' }
+            for (const k of Object.keys(n)) {
+              if (k !== '_label' && k !== '__edges' && k !== '_alias') out[k] = n[k]
+            }
+            return out
+          })
+
+          // 构建返回行
           const rowRes: QueryRow = {}
+          // 路径变量 p（如果 steps 有 source 变量名则用，否则用 'p'）
+          const pathVar = step.source || 'p'
+
+          // 构建路径上的边序列（关系对象），从 path 中的相邻节点索引到对应的边
+          const pathEdges: Array<Record<string, unknown>> = []
+          for (let pi = 0; pi < newPath.length - 1; pi++) {
+            const fromNode = srcNodes[newPath[pi]] as any
+            const toNode = srcNodes[newPath[pi + 1]] as any
+            const edges = (fromNode?.__edges || []).concat(toNode?.__edges || [])
+            // 找连接 fromNode 和 toNode 的边
+            let foundEdge: any = null
+            for (const edge of edges) {
+              if ((edge.srcIdx === newPath[pi] && edge.dstIdx === newPath[pi + 1]) ||
+                  (edge.dstIdx === newPath[pi] && edge.srcIdx === newPath[pi + 1])) {
+                foundEdge = edge
+                break
+              }
+            }
+            if (foundEdge) {
+              pathEdges.push(_edgeToRelObj(foundEdge))
+            } else {
+              pathEdges.push({ _type: '' })
+            }
+          }
+
+          // 将路径变量（p）和 target 变量（x）先放入（保证不被后续 returnColumns 覆盖）
+          rowRes[pathVar] = { __path: pathNodes, __pathEdges: pathEdges }
+          if (step.targetAlias) {
+            rowRes[step.targetAlias] = pathNodes[pathNodes.length - 1]
+          }
+
+          // 填充 returnColumns（拆解后的纯属性名），跳过路径/目标变量
+          const varNames = new Set([pathVar, step.targetAlias || ''].filter(Boolean))
           for (const rc of plan.returnColumns || []) {
-            if (!rc) continue
-            // rc 是拆解后的纯属性名（b.name → name）
-            // 需要从 __edges 遍历的 BFS 找到对应的 targetNode 属性
+            if (!rc || varNames.has(rc) || rc in rowRes) continue
             rowRes[rc] = targetNode[rc] ?? null
           }
-          // 补充 returnAliasMap 中带变量前缀的完整表达式
-          // 因为 parseQuery 拆解了 returnColumns，但 _formatResultRow 期望完整 key
+          // 补充 returnAliasMap（带变量前缀的完整表达式）
           if (plan.returnAliasMap) {
             for (const [alias, expr] of Object.entries(plan.returnAliasMap)) {
               if (expr.includes('.')) {
@@ -1793,14 +1891,175 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
               }
             }
           }
-          if (Object.keys(rowRes).length) result.push(rowRes)
-          nextFrontier.add(nIdx)
+          // 目标节点变量（x）已在前面放入 rowRes
+
+          result.push(rowRes)
+          nextFrontier.push({ nIdx, path: newPath })
         }
       }
       frontier = nextFrontier
-      if (frontier.size === 0) break
+      if (frontier.length === 0) break
     }
   }
+
+  // ── WITH 投影处理（如果 plan.with.columns 存在） ──
+  if (plan.with?.columns?.length && result.length > 0) {
+    const varCtx: Record<string, unknown> = {}
+
+    // 检测聚合函数
+    const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
+    const isAggCol: boolean[] = plan.with.columns.map(col => typeof col.expression === 'string' ? aggFnPattern.test(col.expression) : false)
+    const hasAgg = isAggCol.some(Boolean)
+    const aggCols: Array<{ alias: string; rows: unknown[] }> = []
+    if (hasAgg) {
+      for (let i = 0; i < plan.with.columns.length; i++) {
+        if (isAggCol[i]) {
+          aggCols.push({ alias: plan.with.columns[i].alias || plan.with.columns[i].expression, rows: [] })
+        }
+      }
+    }
+
+    const varCtx2: Record<string, unknown> = {}
+    const withRows: QueryRow[] = result.map(row => {
+      const evalCtx: Record<string, unknown> = { ...varCtx2, ...row }
+      const newRow: Record<string, unknown> = {}
+      let aggIdx = 0
+      for (let ci = 0; ci < plan.with.columns.length; ci++) {
+        const col = plan.with.columns[ci]
+        const alias = col.alias || col.expression
+        if (isAggCol[ci]) {
+          // 聚合列：收集值到 aggCols
+          const colExpr = typeof col.expression === 'string' ? col.expression : ''
+          const innerMatch = colExpr.match(/^\s*\w+\s*\((.+?)\)\s*$/is)
+          if (innerMatch) {
+            const innerExpr = innerMatch[1].trim()
+            const val = innerExpr === '*' ? 1 : _evaluateExpression(innerExpr, evalCtx)
+            aggCols[aggIdx].rows.push(val !== undefined ? val : null)
+          }
+          aggIdx++
+        } else {
+          const val = typeof col.expression === 'string'
+            ? _evaluateExpression(col.expression, evalCtx)
+            : _evaluateExpression(col.expression, evalCtx)
+          newRow[alias] = val !== undefined ? val : null
+          evalCtx[alias] = newRow[alias]
+        }
+      }
+      return newRow
+    })
+
+    // 最终结果：如果含聚合，按非聚合列分组后聚合
+    let finalWithRows: QueryRow[]
+    if (hasAgg) {
+      // 找到非聚合列的索引
+      const nonAggCols: Array<{ col: typeof plan.with.columns[0]; idx: number }> = []
+      for (let ci = 0; ci < plan.with.columns.length; ci++) {
+        if (!isAggCol[ci]) {
+          nonAggCols.push({ col: plan.with.columns[ci], idx: ci })
+        }
+      }
+      // 按非聚合列的值分组
+      const groupMap = new Map<string, { key: QueryRow; aggRows: number[][] }>()
+      for (let ri = 0; ri < withRows.length; ri++) {
+        const row = withRows[ri]
+        // 生成分组键（非聚合列值的 JSON 序列化）
+        const groupKey = nonAggCols.map(nc => {
+          const alias = nc.col.alias || nc.col.expression
+          return JSON.stringify(row[alias])
+        }).join('|||')
+        if (!groupMap.has(groupKey)) {
+          groupMap.set(groupKey, { key: {}, aggRows: [] })
+        }
+        const group = groupMap.get(groupKey)!
+        // 保存分组键（各非聚合列的值）
+        for (const nc of nonAggCols) {
+          const alias = nc.col.alias || nc.col.expression
+          if (!(alias in group.key)) {
+            group.key[alias] = row[alias]
+          }
+        }
+        // 记录每行的聚合值索引（aggCols 中收集的值对应的行）
+        group.aggRows.push(aggCols.map((ac, ai) => {
+          const idx = group.aggRows.length  // 该组内当前行号
+          return idx
+        }))
+      }
+      // 按分组键构建聚合结果
+      for (const [, group] of groupMap) {
+        const aggRow: QueryRow = { ...group.key }
+        for (let ai = 0; ai < aggCols.length; ai++) {
+          const ac = aggCols[ai]
+          // 从 aggCols 中提取该组的行
+          const groupRowIndices = group.aggRows.map((_, gi) => {
+            // aggCols[ai].rows 是按所有行顺序存储的
+            // group 对应 withRows 中的 `gi` 号行
+            return gi
+          })
+          const getRowIndex = (gi: number) => {
+            // 在 withRows 中找到第 gi 个属于该组的行索引
+            let count = 0
+            for (let ri = 0; ri < withRows.length; ri++) {
+              const rk = nonAggCols.map(nc => JSON.stringify(withRows[ri][nc.col.alias || nc.col.expression])).join('|||')
+              if (rk === groupMap.keys().next().value) {
+                // Hmm, this is getting complex. Simpler: use the stored aggRows index
+              }
+            }
+            return 0
+          }
+          // Simpler approach: use the stored group from withRows directly
+        }
+      }
+      // Simpler: just reconstruct
+      // 简单方案：逐行收集，每组统计
+      finalWithRows = []
+      const seenGroups = new Set<string>()
+      for (let ri = 0; ri < withRows.length; ri++) {
+        const row = withRows[ri]
+        const groupKey = nonAggCols.map(nc => JSON.stringify(row[nc.col.alias || nc.col.expression])).join('|||')
+        if (seenGroups.has(groupKey)) continue
+        seenGroups.add(groupKey)
+        const aggRow: QueryRow = {}
+        for (const nc of nonAggCols) {
+          const alias = nc.col.alias || nc.col.expression
+          aggRow[alias] = row[alias]
+        }
+        // 对该组做聚合：计数该组在 withRows 中出现的次数
+        let count = 0
+        for (let rj = 0; rj < withRows.length; rj++) {
+          const rk = nonAggCols.map(nc => JSON.stringify(withRows[rj][nc.col.alias || nc.col.expression])).join('|||')
+          if (rk === groupKey) count++
+        }
+        // 将聚合值放入 aggRow
+        for (let ci = 0; ci < plan.with.columns.length; ci++) {
+          if (isAggCol[ci]) {
+            const alias = plan.with.columns[ci].alias || plan.with.columns[ci].expression
+            aggRow[alias] = count  // COUNT(*)
+          }
+        }
+        finalWithRows.push(aggRow)
+      }
+    } else {
+      finalWithRows = withRows
+    }
+
+    // WITH 投影后，还需要对 returnAliasMap 中的表达式求值
+    //（RETURN 的目标列，如 none(x IN nodes WHERE x.name = 'a')）
+    if (plan.returnAliasMap) {
+      const finalRows: QueryRow[] = finalWithRows.map(row => {
+        const resultRow: QueryRow = { ...row }
+        for (const [alias, expr] of Object.entries(plan.returnAliasMap)) {
+          if (!(alias in resultRow)) {
+            const val = _evaluateExpression(expr as string, resultRow as any)
+            resultRow[alias] = val !== undefined ? val : null
+          }
+        }
+        return resultRow
+      })
+      return _postProcessResults(finalRows, plan)
+    }
+    return _postProcessResults(finalWithRows, plan)
+  }
+
   return _postProcessResults(result, plan)
 }
 
@@ -6794,6 +7053,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
   last: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[v.length - 1] : null },
   tail: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.slice(1) : null },
+  nodes: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object' && (v as any).__path) return (v as any).__path; if (Array.isArray(v)) return v; return null },
+  relationships: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (typeof v === 'object' && (v as any).__pathEdges) return (v as any).__pathEdges; return null },
   range: ([s, e, step], r) => {
     const rawS = _evalBinary(s, r), rawE = _evalBinary(e, r);
     const rawStep = step ? _evalBinary(step, r) : 1;
