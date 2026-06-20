@@ -77,6 +77,7 @@ function parseCreateStmt(query: string): Array<Record<string, unknown>> {
       labels.push(...inner.substring(1).split(':').filter(Boolean))
     }
     const node: Record<string, unknown> = { _label: labels[0] || 'Default' }
+    if (labels.length > 1) node.__fullLabel = labels.join(':')
     for (const [k, v] of Object.entries(props)) node[k] = v
     nodes.push(node)
   }
@@ -533,6 +534,7 @@ function execCreateOnGe(ge: any, q: string): void {
       labels.push(...inner.substring(1).split(':').filter(Boolean))
     }
     const node: Record<string, unknown> = { _label: labels[0] || 'Default', ...props }
+    if (labels.length > 1) node.__fullLabel = labels.join(':')
     const label = String(node._label || 'Default')
     let h = 0; for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
     try { (ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'rn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
@@ -809,12 +811,14 @@ Given('having executed:', async function (query: string) {
         }
       }
 
+      _syncNodesFromGe()
       st.err = null
       return
     }
 
     // 无 createNodes 但查询可执行：run() 并读回结果
     await run(q)
+    _syncNodesFromGe()
     st.err = null
   } catch (e: any) {
     st.err = e

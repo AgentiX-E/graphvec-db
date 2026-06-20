@@ -1752,7 +1752,15 @@ function _stepMatchConstraint(nodeIdx: number, step: TraverseStep, allNodes: Rec
   const node = allNodes[nodeIdx]
   if (!node) return false
   // 标签约束
-  if (step.targetLabel && node._label !== step.targetLabel) return false
+  // 检查 targetLabel 匹配（如果节点有多标签 __fullLabel，检查是否包含 targetLabel）
+  if (step.targetLabel) {
+    const fullLabel = (node as any).__fullLabel
+    if (fullLabel && typeof fullLabel === 'string') {
+      if (!fullLabel.split(':').includes(step.targetLabel)) return false
+    } else if (node._label !== step.targetLabel) {
+      return false
+    }
+  }
   // 内联属性约束
   if (step.targetProps) {
     for (const [k, v] of Object.entries(step.targetProps)) {
@@ -1788,7 +1796,14 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
   }
   for (let si = 0; si < srcNodes.length; si++) {
     const sourceNode = srcNodes[si] as any
-    if (plan.scanLabel && sourceNode._label !== plan.scanLabel) continue
+    if (plan.scanLabel) {
+      const fullLabel = sourceNode.__fullLabel
+      if (fullLabel && typeof fullLabel === 'string') {
+        if (!fullLabel.split(':').includes(plan.scanLabel)) continue
+      } else if (sourceNode._label !== plan.scanLabel) {
+        continue
+      }
+    }
 
     // 处理深度 0（minHops=0 时的路径自身）
     if (minHops === 0) {
@@ -1831,7 +1846,14 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
             continue
           }
           const targetNode = srcNodes[nIdx] as any
-          if (step.targetLabel && targetNode._label && targetNode._label !== step.targetLabel) continue
+          // 多标签 target 检查：如果节点有 __fullLabel 则检查包含关系
+          if (step.targetLabel) {
+            if (targetNode.__fullLabel) {
+              if (!String(targetNode.__fullLabel).split(':').includes(step.targetLabel)) continue
+            } else if (targetNode._label !== step.targetLabel) {
+              continue
+            }
+          }
           if (step.edgeLabel && e.label !== step.edgeLabel) continue
 
           // 构建路径上的节点序列（节点对象的副本）
@@ -3166,6 +3188,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
     originalNodeCount = nodes?.length || 0
     allNodes = [...(nodes || [])]
+
+    // 确保多标签节点有 __fullLabel 属性（传入的 nodes 可能没有）
+    for (const node of allNodes) {
+      if (node._label && String(node._label).includes(':')) {
+        (node as any).__fullLabel = String(node._label)
+      }
+    }
+
     // 解包 typed 格式的 props（{type: 'STRING', value: 'ABCDEF'} → 'ABCDEF'）
     // 这种包装在 parseQuery 的 createNodes 中产生，GE 的 _matchFilter 只支持裸值
     for (const node of allNodes) {
@@ -3314,8 +3344,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       for (let ni = 0; ni < allNodes.length; ni++) {
         const node = allNodes[ni]
         const nodeLabel = String(node['_label'] || '')
-        if (plan.scanLabel && nodeLabel !== plan.scanLabel) {
-          continue // 非 scanLabel 的节点不参与过滤（GE 不会扫到它）
+        if (plan.scanLabel) {
+          const fullLabel = (node as any).__fullLabel
+          if (fullLabel && typeof fullLabel === 'string') {
+            if (!fullLabel.split(':').includes(plan.scanLabel)) continue
+          } else if (nodeLabel !== plan.scanLabel) {
+            continue
+          }
         }
         const match = stepSourceFilters.every((f: any) => {
           const val = (node as any)[f.property]
@@ -3705,10 +3740,16 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             if (skipNodeIndices.has(i)) {
               continue
             }
-            // 根据 scanLabel 过滤起始节点
+            // 根据 scanLabel 过滤起始节点（支持多标签 __fullLabel）
             if (plan.scanLabel) {
-              const nodeLabel = String(allNodes[i]?.['_label'] || '')
-              if (nodeLabel !== plan.scanLabel) continue
+              const node = allNodes[i]
+              const nodeLabel = String(node?.['_label'] || '')
+              const fullLabel = (node as any)?.__fullLabel
+              if (fullLabel && typeof fullLabel === 'string') {
+                if (!fullLabel.split(':').includes(plan.scanLabel)) continue
+              } else if (nodeLabel !== plan.scanLabel) {
+                continue
+              }
             }
             let skipNode = false
             for (const sf of stepSourceFilters) {
@@ -4287,7 +4328,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           varNodeMap[varName] = allNodes
             .map((node, idx) => ({ node, idx }))
             .filter(({ idx }) => !skipNodeIndices.has(idx))
-            .filter(({ node }) => !targetLabel || String(node._label) === targetLabel)
+            .filter(({ node }) => {
+              if (!targetLabel) return true
+              const fullLabel = (node as any).__fullLabel
+              if (fullLabel && typeof fullLabel === 'string') return fullLabel.split(':').includes(targetLabel)
+              return String(node._label) === targetLabel
+            })
         }
         const varNames = Object.keys(varNodeMap)
         const _evalCrossVar = (entryMap: Record<string, {node: any; idx: number}>, filters: any[]): boolean => {
@@ -4416,6 +4462,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             })
             .filter(({ node }: { node: Record<string, unknown> }) => {
               if (!targetLabel2) return true;
+              const fullLabel = (node as any).__fullLabel
+              if (fullLabel && typeof fullLabel === 'string') return fullLabel.split(':').includes(targetLabel2)
               return String(node._label) === targetLabel2;
             })
             // 应用 plan.filters 过滤
@@ -6130,8 +6178,9 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     }
 
     // ── SyntaxError: RelationshipUniquenessViolation ──
-    // MATCH (a)-[r]->()-[r]->(a) — 同一关系变量出现多次
-    if (query?.includes('MATCH')) {
+    // MATCH (a)-[r]->()-[r]->(a) — 同一关系变量出现在同一条 MATCH 子句中
+    // 跨 WITH 的 MATCH 复用边变量不应抛异常，而是返回空结果
+    if (query?.includes('MATCH') && !query?.includes('WITH')) {
       const edgeVars = [...query.matchAll(/\[(\w+)\]/g)].map(m => m[1])
       const dupEdgeVars = edgeVars.filter((v, i, a) => a.indexOf(v) !== i)
       if (dupEdgeVars.length) {
