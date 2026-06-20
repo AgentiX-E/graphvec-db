@@ -1743,6 +1743,7 @@ function _walkMultiSteps(
         nextSet.delete(sidx)
       }
     }
+    process.stderr.write(`[_WALK STEPS ${si}] nextSet=[${[...nextSet].join(',')}] paths=${JSON.stringify(paths)}\n`)
     // 扩展路径：每个 nextSet 索引追加到每条路径末尾
     const newPaths: number[][] = []
     for (const idx of nextSet) {
@@ -1760,6 +1761,7 @@ function _walkMultiSteps(
       }
     }
     paths = newPaths.length > 0 ? newPaths : [...nextSet].map(idx => [startIdx, idx])
+    process.stderr.write(`[_WALK STEPS after ${si}] newPaths=${JSON.stringify(newPaths)} paths=${JSON.stringify(paths)}\n`)
     if (paths.length === 0) break
   }
   return paths
@@ -3769,7 +3771,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             ])
             return !nodeAliases.has(rc)
           }).length
-          const stepEdgesCache = new Map<number, string[]>()
           let multiStepRaw: any[] = []
           for (let i = 0; i < allNodes.length; i++) {
             if (skipNodeIndices.has(i)) {
@@ -3798,29 +3799,37 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         const pathEnds = _pathEndIndices(pathResults)
         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
         // 防止后续 step 引入不相关的中间节点
-        const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).find(rc => {
+        const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).findLast(rc => {
           if (!rc) return false
           const firstSrc = plan.steps?.[0]?.source
           return rc !== firstSrc && plan.steps?.some(s => s.targetAlias === rc)
         })
+        // 对于多步，改用最后一个 targetAlias 变量（降级安全）
+        const lastTargetVar = plan.steps?.[plan.steps.length - 1]?.targetAlias
+        const effectiveRetVar = (lastTargetVar && (plan.returnColumns || []).map(rc => rc?.split('.')[0]).includes(lastTargetVar))
+          ? lastTargetVar
+          : (retVar || lastTargetVar)
         let boundedTargetIndices: number[] = [...pathEnds]
         let boundedPaths: number[][] = pathResults
-        if (retVar && plan.steps && !hasVarLen && !hasEdgeStep) {
-          const defStep = plan.steps.find(s => s.targetAlias === retVar)
+        if (effectiveRetVar && plan.steps && !hasVarLen && !hasEdgeStep) {
+          const defStep = plan.steps.find(s => s.targetAlias === effectiveRetVar)
           if (defStep !== undefined) {
             const defStepIdx = plan.steps.indexOf(defStep)
             // 对返回变量的定义步，重新走到该步的 target 节点。这是 RETURN 变量的实际值。
             if (defStepIdx >= 0) {
+    try{process.stderr.write(`[DEFSTEP] retVar=${retVar} defStep=${JSON.stringify(defStep)} defStepIdx=${defStepIdx} stepsLen=${plan.steps.length}\n`)}catch(e){}
+    if (plan.steps.length > 1) try{process.stderr.write(`[INTER] start intermediate (defStepIdx=${defStepIdx}, slice(0,${defStepIdx+1}))\n`)}catch(e){}
               const intermediate = _walkMultiSteps(
                 i, plan.steps.slice(0, defStepIdx + 1),
                 allNodes, undefined, plan.filters, stepSourceFilters
               )
+              try{process.stderr.write(`[INTER] result intermediate=${JSON.stringify(intermediate)}\n`)}catch(e){}
               const interEnds = _pathEndIndices(intermediate)
               // 如果 RETURN 变量等于最后一个 step 的 targetAlias，全路径的过滤约束
               // 会影响返回值（后续步的 filter 消除多余节点），需要用交集过滤。
               // 否则 pathResults 中的节点是后续步的 target，不相关，直接用 intermediate。
               const lastStep = plan.steps[plan.steps.length - 1]
-              if (lastStep && lastStep.targetAlias === retVar) {
+              if (lastStep && lastStep.targetAlias === effectiveRetVar) {
                 boundedTargetIndices = [...pathEnds].filter(idx => interEnds.has(idx))
                 // 同时筛选 boundedPaths
                 boundedPaths = pathResults.filter(p => interEnds.has(p[p.length - 1]))
@@ -3842,6 +3851,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 __targetProps: {},
                 __targetAlias: plan.steps?.[plan.steps.length - 1]?.targetAlias || '',
               }
+              try{process.stderr.write(`[GENODE_INIT] targetIdx=${targetIdx} allVarsInProps=${'_allVars' in geNode.props} propsKeys=${Object.keys(geNode.props).join(',')}\n`)}catch(e){}
               // 构建所有步骤变量的节点数据（存于 props._allVars 以避免属性丢失）
               const allVars: Record<string, unknown> = geNode.props._allVars as Record<string, unknown>
               const lastStepV = plan.steps?.[plan.steps.length - 1]
@@ -3899,6 +3909,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               // 用 boundedPaths 提取实际匹配的边标签（vs plan.steps 编译时标签）
               if ((plan.steps || []).length > 1 && boundedPaths?.length) {
                 const matchingPath = boundedPaths.find((p: number[]) => p[p.length - 1] === targetIdx)
+                try{process.stderr.write(`[CACHE_CHECK] targetIdx=${targetIdx} matchingPath=${JSON.stringify(matchingPath)} boundedPaths=${JSON.stringify(boundedPaths)}\n`)}catch(e){}
                 if (matchingPath && matchingPath.length >= 2) {
                   const pathEdges: string[] = []
                   for (let psi = 0; psi < plan.steps.length && psi < matchingPath.length - 1; psi++) {
@@ -3913,8 +3924,15 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   }
                   if (pathEdges.length >= edgeVarColsLen) {
                     stepEdgesCache.set(targetIdx, pathEdges)
+                    process.stderr.write(`[CACHE W] targetIdx=${targetIdx} pathEdges=${JSON.stringify(pathEdges)} paths=${JSON.stringify(boundedPaths)} matchingPath=${JSON.stringify(matchingPath)}\n`)
+                  } else {
+                    process.stderr.write(`[CACHE SKIP] pathEdges.len=${pathEdges.length} < edgeVarColsLen=${edgeVarColsLen}\n`)
                   }
+                } else {
+                  process.stderr.write(`[CACHE NO MATCH] targetIdx=${targetIdx} len=${matchingPath?.length} paths=${JSON.stringify(boundedPaths)}\n`)
                 }
+              } else {
+                process.stderr.write(`[CACHE SKIP] multiStep=${(plan.steps || []).length > 1} boundedPaths=${boundedPaths?.length}\n`)
               }
               // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
               geNode.__crossVarRows = {}
@@ -4763,6 +4781,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             ? stepEdgesCache.get(nodeIdx)!
             : (plan.steps || []).map((s: any) => s.edgeLabel || '').filter(Boolean)
           const actualStepEdges = rawStepEdges
+          if ((plan.steps || []).length > 1) {
+            process.stderr.write(`[CACHE R] nodeIdx=${nodeIdx} r.id=${r.id} has=${stepEdgesCache.has(nodeIdx)} raw=${JSON.stringify(rawStepEdges)} cacheSize=${stepEdgesCache.size}\n`)
+          }
           for (let eci = 0; eci < edgeVarCols.length; eci++) {
             const evc = edgeVarCols[eci]
             let edgeLabel = ''
@@ -5685,10 +5706,32 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         }
         varCtx[targetVar] = cleanTarget
       }
-      // 多步路径：从 props._allVars 补充所有步骤变量（避免 __crossVarRows / __targetPropsMap 丢失）
-      if (r.props?._allVars && typeof r.props._allVars === 'object') {
-        for (const vn of Object.keys(r.props._allVars as Record<string, unknown>)) {
-          if (!(vn in varCtx)) varCtx[vn] = (r.props._allVars as any)[vn]
+      // 多步路径：补充所有步骤变量的节点数据（从 __crossVarRows / __targetProps / 直接 row 属性推断）
+      // 当 RETUNR 包含多步路径的多个变量（如 x, r1, y, r2, z）时，varCtx 可能缺 z
+      const allStepAliases = (plan.steps || []).map(s => [s.source, s.targetAlias]).flat().filter(Boolean)
+      const allReturnVars = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).filter(Boolean)
+      const missingVars = [...new Set([...allStepAliases, ...allReturnVars])].filter((vn: string) => vn && !vn.startsWith('_') && !(vn in varCtx))
+      if (missingVars.length && plan.steps && plan.steps.length > 1) {
+        // 从 r.__targetProps 获取（如果有）
+        if (r.__targetProps) {
+          for (const vn of missingVars) {
+            if (r.__targetAlias === vn) {
+              const clean: Record<string, unknown> = {}
+              for (const k of Object.keys(r.__targetProps as Record<string, unknown>)) {
+                if (k !== 'props' && k !== '__edges' && !k.startsWith('__')) clean[k] = (r.__targetProps as any)[k]
+              }
+              if (Object.keys(clean).length) varCtx[vn] = clean
+            }
+          }
+        }
+        // 如果还有缺失，从 r.props（行级数据）取节点值
+        if (missingVars.some((vn: string) => !(vn in varCtx))) {
+          for (const vn of missingVars) {
+            if (!(vn in varCtx) && row && typeof row === 'object' && !Array.isArray(row) && !(row as any)[vn]) {
+              // 找不到：用 _label 兜底
+              varCtx[vn] = row._label ? { _label: row._label || 'Default' } : null
+            }
+          }
         }
       }
       // 如果 GE 没有 steps（MATCH (a) 无关系），从 expr 推断变量名填充 varCtx
