@@ -3800,6 +3800,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 type: targetNode._label || 'Default',
                 __multiStep: true,
                 __targetProps: {},
+                __targetAlias: plan.steps?.[plan.steps.length - 1]?.targetAlias || '',
               }
               for (const k of Object.keys(targetNode)) {
                 if (k !== '_label' && k !== '__edges' && k !== 'props') {
@@ -3807,6 +3808,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   geNode.__targetProps[k] = targetNode[k]
                 }
               }
+              // 确保 __targetProps 中有 _label（用于节点格式化和 varCtx）
+              if (targetNode._label) geNode.__targetProps['_label'] = targetNode._label
               // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
               geNode.__crossVarRows = {}
               if (plan.steps?.length) {
@@ -4648,13 +4651,18 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           // 则按顺序分配（适用于链式匹配如 ()-[r1:T1]->()-[r2:T2]->()）
           const edgeVarCount = edgeVarCols.length
           const sequentialMatch = (edgeVarCount === edgesPayload.length && edgeVarCount > 1 && edgesPayload.every((e: any) => e.label))
+          // 多步路径：从 plan.steps 按索引取边标签
+          const multiStepLabels: string[] = (plan.steps || []).map((s: any) => s.edgeLabel || '').filter(Boolean)
+          const stepEdges: string[] = multiStepLabels.length >= edgeVarCount ? multiStepLabels : []
           for (let eci = 0; eci < edgeVarCols.length; eci++) {
             const evc = edgeVarCols[eci]
             const nodeIdx = nodeGeIds.indexOf(r.id)
             let edgeLabel = ''
             let edgeProps: Record<string, unknown> | null = null
-            // 如果记录已有 __edgeLabel（OR 分支填充），优先使用
-            if (r.__edgeLabel) {
+            // 多步路径：按边变量索引对应步骤索引
+            if (eci < stepEdges.length) {
+              edgeLabel = stepEdges[eci]
+            } else if (r.__edgeLabel) {
               edgeLabel = r.__edgeLabel
             } else if (hasExplicitEdgeLabel) {
               edgeLabel = queryEdgeLabel!
@@ -4690,6 +4698,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             if (edgeLabel) r.__edgeLabel = edgeLabel
             if (edgeProps) r.__edgeProps = edgeProps
           }
+          delete (row as any)._stepEdges
+          delete (row as any).__stepEdges
           return { ...r, props: row }
         })
       : edgePropFilteredRecords
