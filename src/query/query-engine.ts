@@ -1757,7 +1757,7 @@ function _stepMatchConstraint(nodeIdx: number, step: TraverseStep, allNodes: Rec
     const fullLabel = (node as any).__fullLabel
     if (fullLabel && typeof fullLabel === 'string') {
       if (!fullLabel.split(':').includes(step.targetLabel)) return false
-    } else if (node._label !== step.targetLabel) {
+    } else if (node._label && node._label !== step.targetLabel) {
       return false
     }
   }
@@ -1850,7 +1850,7 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
           if (step.targetLabel) {
             if (targetNode.__fullLabel) {
               if (!String(targetNode.__fullLabel).split(':').includes(step.targetLabel)) continue
-            } else if (targetNode._label !== step.targetLabel) {
+            } else if (targetNode._label && targetNode._label !== step.targetLabel) {
               continue
             }
           }
