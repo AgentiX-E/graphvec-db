@@ -3896,6 +3896,26 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               }
               // 确保 __targetProps 中有 _label（用于节点格式化和 varCtx）
               if (targetNode._label) geNode.__targetProps['_label'] = targetNode._label
+              // 用 boundedPaths 提取实际匹配的边标签（vs plan.steps 编译时标签）
+              if ((plan.steps || []).length > 1 && boundedPaths?.length) {
+                const matchingPath = boundedPaths.find((p: number[]) => p[p.length - 1] === targetIdx)
+                if (matchingPath && matchingPath.length >= 2) {
+                  const pathEdges: string[] = []
+                  for (let psi = 0; psi < plan.steps.length && psi < matchingPath.length - 1; psi++) {
+                    const fromNode = allNodes[matchingPath[psi]] as any
+                    if (fromNode?.__edges) {
+                      const edge = fromNode.__edges.find((e: any) => {
+                        const neighborIdx = e.dstIdx === matchingPath[psi] ? e.srcIdx : (e.srcIdx === matchingPath[psi] ? e.dstIdx : -1)
+                        return neighborIdx === matchingPath[psi + 1]
+                      })
+                      if (edge?.label) pathEdges.push(edge.label)
+                    }
+                  }
+                  if (pathEdges.length >= edgeVarColsLen) {
+                    stepEdgesCache.set(targetIdx, pathEdges)
+                  }
+                }
+              }
               // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
               geNode.__crossVarRows = {}
               if (plan.steps?.length) {
@@ -4788,8 +4808,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           }
           delete (row as any)._stepEdges
           delete (row as any).__stepEdges
-          // 清理 _allVars（用于内部变量解析，不应暴露到 row 输出）
-          delete (row as any)._allVars
           return { ...r, props: row }
         })
       : edgePropFilteredRecords
@@ -5651,6 +5669,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       if (firstStepSource && !(firstStepSource in varCtx)) {
         const srcRow: Record<string, unknown> = {}
         for (const k of Object.keys(row)) {
+          if (k === '_allVars') continue
           if (typeof row[k] !== 'string' || !(row[k] as string).startsWith('[:')) {
             srcRow[k] = row[k]
           }
