@@ -224,14 +224,15 @@ function toNodeNotation(val: unknown): string | undefined {
   // 优先使用 __fullLabel（多标签），回退到 _label
   const labelSrc = (obj.__fullLabel && String(obj.__fullLabel) !== 'Default' ? String(obj.__fullLabel) : '') ||
     (obj._label && obj._label !== 'Default' ? String(obj._label) : '')
+  // 多标签节点：保持原始标签顺序（TCK 期望查询时的顺序）
+  const labels = labelSrc.split(':').filter(Boolean)
+  const label = labels.join(':')
   const props: Record<string, unknown> = {}
   for (const k of Object.keys(obj)) {
     if (k === '_label' || k === '__fullLabel' || k === '__edges' || k === 'props') continue
     if (typeof obj[k] !== 'function') props[k] = obj[k]
   }
   const propKeys = Object.keys(props)
-  // Use for labels below
-  const label = labelSrc
   if (!propKeys.length && !label) return '()'
   // If no props, just (:Label)
   if (!propKeys.length) return `(:${label})`
@@ -409,6 +410,16 @@ function cmp(dt: DataTable, ordered = false): void {
             if (actualVal === expVal) return true
             // 浮点 .0 格式容差
             if (_isFloatZeroMatch(actualVal, expVal)) return true
+            // 多标签节点脱序比较：(:A:B) == (:B:A)
+            if (typeof actualVal === 'string' && typeof expVal === 'string') {
+              const actualNode = actualVal.match(/^\(:([A-Z:]+)\)$/)
+              const expNode = expVal.match(/^\(:([A-Z:]+)\)$/)
+              if (actualNode && expNode) {
+                const aLabels = actualNode[1].split(':').sort().join(':')
+                const eLabels = expNode[1].split(':').sort().join(':')
+                if (aLabels === eLabels) return true
+              }
+            }
             // 如果值不同，尝试用 _stringifyVal 或 toNodeNotation
             return false
           })
@@ -811,7 +822,6 @@ Given('having executed:', async function (query: string) {
         }
       }
 
-      _syncNodesFromGe()
       st.err = null
       return
     }
