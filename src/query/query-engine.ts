@@ -1700,7 +1700,7 @@ function _walkMultiSteps(
           const other = allNodes[j] as any
           if (other.__edges) {
             for (const e of other.__edges) {
-              if ((e.dstIdx === idx || e.srcIdx === idx) && e.dstIdx !== e.srcIdx) {
+              if ((e.dstIdx === idx || e.srcIdx === idx)) {
                 const neighborIdx = e.dstIdx === idx ? e.srcIdx : e.dstIdx
                 if (!nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
                   nextSet.add(neighborIdx)
@@ -3761,7 +3761,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 __targetProps: {},
               }
               for (const k of Object.keys(targetNode)) {
-                if (k !== '_label' && k !== '__edges') {
+                if (k !== '_label' && k !== '__edges' && k !== 'props') {
                   geNode.props[k] = targetNode[k]
                   geNode.__targetProps[k] = targetNode[k]
                 }
@@ -3772,14 +3772,21 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 const thisStep = plan.steps[plan.steps.length - 1]
                 // 绑定 targetAlias（如果有命名目标且非空）
                 if (thisStep.targetAlias) {
-                  geNode.__crossVarRows[thisStep.targetAlias] = { ...targetNode, props: { ...targetNode } }
+                  const cvrNode: Record<string, unknown> = {}
+                  for (const k of Object.keys(targetNode)) {
+                    if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) cvrNode[k] = (targetNode as any)[k]
+                  }
+                  geNode.__crossVarRows[thisStep.targetAlias] = { ...cvrNode, props: { ...cvrNode } }
                 }
                 // 绑定 source 变量（起始节点）—— 使用当前 allNodes[i] 而不是 plan.scanLabel（已为 null）
                 if (thisStep.source) {
                   const srcNode = allNodes[i]
                   if (srcNode) {
                     // 保留原始属性，确保 _label 可用
-                    const srcProps: Record<string, unknown> = { ...srcNode }
+                    const srcProps: Record<string, unknown> = {}
+                    for (const k of Object.keys(srcNode)) {
+                      if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) srcProps[k] = (srcNode as any)[k]
+                    }
                     if (srcNode._label !== undefined) srcProps._label = srcNode._label
                     geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps } }
                   }
@@ -3794,7 +3801,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   if (srcNode) {
                     geNode.props = { _label: srcNode._label || 'Default' }
                     for (const k of Object.keys(srcNode)) {
-                      if (k !== '_label' && k !== '__edges') {
+                      if (k !== '_label' && k !== '__edges' && k !== 'props') {
                         geNode.props[k] = srcNode[k]
                       }
                     }
@@ -3831,6 +3838,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                           if (ik.startsWith('_')) delete targetPropsMap[nrv][ik]
                         }
                         delete targetPropsMap[nrv].__edges
+                        delete targetPropsMap[nrv].props
                       }
                     }
                   }
@@ -3983,7 +3991,20 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       for (const r of rawRecords) {
         const sourceIds = sourceTargetMap.get(r.id) || []
         if (!sourceIds.length) continue
-        const targetProps = { ...(r.props || {}) }
+        const rawProps = r.props || {}
+        const targetProps: Record<string, unknown> = {}
+        for (const k of Object.keys(rawProps)) {
+          if (k !== 'props' && !k.startsWith('__')) {
+            targetProps[k] = (rawProps as any)[k]
+          }
+        }
+        if (r.id !== undefined && !('_label' in targetProps) && nodeGeIds.length) {
+          const nodeIdx = nodeGeIds.indexOf(r.id)
+          if (nodeIdx >= 0 && allNodes[nodeIdx]) {
+            const l = (allNodes[nodeIdx] as any)._label
+            if (l !== undefined) targetProps._label = l
+          }
+        }
         for (const srcId of sourceIds) {
           const key = `${srcId}:${r.id}`
           if (!dedupedRecords.has(key)) {
@@ -3997,7 +4018,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         const srcNode = allNodes[srcIdx]
         const cleanProps: Record<string, unknown> = {}
         for (const [k, v] of Object.entries(srcNode)) {
-          if (k !== '__edges') cleanProps[k] = v
+          if (k !== '__edges' && k !== 'props') cleanProps[k] = v
         }
         return {
           id: srcId as number,
@@ -4006,6 +4027,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           name: (ge as any).getNode(srcId)?.name || '',
           deleteNodeKey: () => {},
           __targetProps: targetProps,
+          __targetAlias: plan.steps?.[0]?.targetAlias || undefined,
         }
       }).filter(Boolean)
     }
@@ -4676,7 +4698,16 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           try {
             const evaluated = _evalBinary(wcExpr, rc)
             if (evaluated !== undefined && evaluated !== null) {
-              rawRow.props[alias] = evaluated
+              // 清理节点对象中的内部属性（__edges、props 等），避免输出为 props: (...)
+              if (typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)) {
+                const cleanVal: Record<string, unknown> = {}
+                for (const [ek, ev] of Object.entries(evaluated as Record<string, unknown>)) {
+                  if (ek !== '__edges' && ek !== 'props' && !ek.startsWith('__')) cleanVal[ek] = ev
+                }
+                rawRow.props[alias] = cleanVal
+              } else {
+                rawRow.props[alias] = evaluated
+              }
             }
           } catch {
             // Fallback: keep GE's value
@@ -5405,8 +5436,21 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // ── 边变量 RETURN r ──
     // rc 是边变量名（如 RETURN r），从 r.__edgeLabel 获取标签输出 [:LABEL] 格式
     if (r.__edgeLabel && !rc.match(/^\w+\(/)) {
-      result[rc] = '[:' + r.__edgeLabel + ']'
-      continue
+      // 只在 rc 确实是 GE 记录的边变量时使用边标签（避免自环中节点被误输出为边格式）
+      let isEdgeVar = false
+      if (plan.returnColumns) {
+        const nodeAliases = new Set([
+          ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
+          ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
+        ])
+        isEdgeVar = !nodeAliases.has(rc)
+      } else {
+        isEdgeVar = typeof r[rc] === 'string' && r[rc].startsWith('[:')
+      }
+      if (isEdgeVar) {
+        result[rc] = '[:' + r.__edgeLabel + ']'
+        continue
+      }
     }
 
     // 使用 returnAliasMap 或 expressionColumns 解析原始表达式：统一走 _evaluateExpression
@@ -5454,14 +5498,25 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           if (!(k in varCtx)) varCtx[k] = r.__vridPropMap[k]
         }
       }
-      // source 变量：从 row 构建
+      // source 变量：从 row 构建（过滤掉边变量字符串，避免 [:xxx] 被混入节点属性）
       const firstStepSource = plan.steps?.[0]?.source
       if (firstStepSource && !(firstStepSource in varCtx)) {
-        varCtx[firstStepSource] = { ...row }
+        const srcRow: Record<string, unknown> = {}
+        for (const k of Object.keys(row)) {
+          if (typeof row[k] !== 'string' || !(row[k] as string).startsWith('[:')) {
+            srcRow[k] = row[k]
+          }
+        }
+        varCtx[firstStepSource] = srcRow
       }
-      // 其他 target 变量
-      if (r.__targetProps && firstStepSource && !(firstStepSource in varCtx)) {
-        varCtx[r.__targetAlias || firstStepSource] = { ...r.__targetProps }
+      // 其他 target 变量：从 __targetProps 构建（优先使用 __targetAlias）
+      const targetVar = (r.__targetAlias || firstStepSource) as string
+      if (r.__targetProps && !(targetVar in varCtx)) {
+        const cleanTarget: Record<string, unknown> = {}
+        for (const k of Object.keys(r.__targetProps as Record<string, unknown>)) {
+          if (k !== 'props' && k !== '__edges' && !k.startsWith('__')) cleanTarget[k] = (r.__targetProps as any)[k]
+        }
+        varCtx[targetVar] = cleanTarget
       }
       // 如果 GE 没有 steps（MATCH (a) 无关系），从 expr 推断变量名填充 varCtx
       if (!firstStepSource) {
