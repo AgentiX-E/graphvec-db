@@ -221,6 +221,8 @@ export class GraphEngine {
   private _frozenWrites: Array<{ resolve: () => void }> = []
   /** 字符串标签 → typeId 注册表（惰性分配） */
   private _labelRegistry: Map<string, number> = new Map()
+  /** 字符串标签 → nodeId 索引（用于快速 _scanNodesByLabel） */
+  private _labelStrIndex: Map<string, Set<NodeId>> = new Map()
   /** 字符串 edge 类型名 → typeId 注册表 */
   private _edgeTypeRegistry: Map<string, number> = new Map()
   private logger: Logger
@@ -592,6 +594,12 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       this._mvccVersions.set(id, opts._mvccVersion)
     }
     this._labelIndex.addNode(typeId, id)
+    // 维护字符串 label 索引（用于 _scanNodesByLabel 的 props._label 匹配路径）
+    const strLabel = opts?.props?._label ?? name
+    if (strLabel) {
+      if (!this._labelStrIndex.has(String(strLabel))) this._labelStrIndex.set(String(strLabel), new Set())
+      this._labelStrIndex.get(String(strLabel))!.add(id)
+    }
     this._fulltext?.addDocument(String(id), { name, ...(opts?.props ?? {}) })
     this.onRecordChange?.(name, { typeId, ...(opts?.props ?? {}) })
 
@@ -717,6 +725,12 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     }
 
     this._labelIndex.removeNode(node.typeId, id)
+    // 清除字符串 label 索引
+    const nodeLabel = node.props?._label ?? ''
+    if (nodeLabel && this._labelStrIndex.has(String(nodeLabel))) {
+      this._labelStrIndex.get(String(nodeLabel))!.delete(id)
+      if (this._labelStrIndex.get(String(nodeLabel))!.size === 0) this._labelStrIndex.delete(String(nodeLabel))
+    }
     // 清除节点缓存（Gap 12）
     this._nodeCache.delete(id)
     this._fulltext?.removeDocument(String(id))
@@ -2372,6 +2386,17 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /** 按 label (typeName) 扫描节点，可选 limit 早期截断 */
   private _scanNodesByLabel(label: string, limit?: number): NodeRecord[] {
     const records: NodeRecord[] = []
+    // 优先：使用字符串 label 索引（O(1) 查询，仅适用于 props._label 模式）
+    if (this._labelStrIndex.has(label)) {
+      for (const id of this._labelStrIndex.get(label)!) {
+        const node = this.getNode(id)
+        if (!node) continue
+        records.push(node)
+        if (limit !== undefined && records.length >= limit) break
+      }
+      return records
+    }
+    // 回退：全量扫描（数字 typeId 模式或无索引时）
     for (const id of this._nodeIds) {
       const node = this.getNode(id)
       if (!node) continue

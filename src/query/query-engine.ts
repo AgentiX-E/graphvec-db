@@ -1743,7 +1743,6 @@ function _walkMultiSteps(
         nextSet.delete(sidx)
       }
     }
-    process.stderr.write(`[_WALK STEPS ${si}] nextSet=[${[...nextSet].join(',')}] paths=${JSON.stringify(paths)}\n`)
     // 扩展路径：每个 nextSet 索引追加到每条路径末尾
     const newPaths: number[][] = []
     for (const idx of nextSet) {
@@ -1761,7 +1760,6 @@ function _walkMultiSteps(
       }
     }
     paths = newPaths.length > 0 ? newPaths : [...nextSet].map(idx => [startIdx, idx])
-    process.stderr.write(`[_WALK STEPS after ${si}] newPaths=${JSON.stringify(newPaths)} paths=${JSON.stringify(paths)}\n`)
     if (paths.length === 0) break
   }
   return paths
@@ -3817,13 +3815,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             const defStepIdx = plan.steps.indexOf(defStep)
             // 对返回变量的定义步，重新走到该步的 target 节点。这是 RETURN 变量的实际值。
             if (defStepIdx >= 0) {
-    try{process.stderr.write(`[DEFSTEP] retVar=${retVar} defStep=${JSON.stringify(defStep)} defStepIdx=${defStepIdx} stepsLen=${plan.steps.length}\n`)}catch(e){}
-    if (plan.steps.length > 1) try{process.stderr.write(`[INTER] start intermediate (defStepIdx=${defStepIdx}, slice(0,${defStepIdx+1}))\n`)}catch(e){}
               const intermediate = _walkMultiSteps(
                 i, plan.steps.slice(0, defStepIdx + 1),
                 allNodes, undefined, plan.filters, stepSourceFilters
               )
-              try{process.stderr.write(`[INTER] result intermediate=${JSON.stringify(intermediate)}\n`)}catch(e){}
               const interEnds = _pathEndIndices(intermediate)
               // 如果 RETURN 变量等于最后一个 step 的 targetAlias，全路径的过滤约束
               // 会影响返回值（后续步的 filter 消除多余节点），需要用交集过滤。
@@ -3851,7 +3846,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 __targetProps: {},
                 __targetAlias: plan.steps?.[plan.steps.length - 1]?.targetAlias || '',
               }
-              try{process.stderr.write(`[GENODE_INIT] targetIdx=${targetIdx} allVarsInProps=${'_allVars' in geNode.props} propsKeys=${Object.keys(geNode.props).join(',')}\n`)}catch(e){}
               // 构建所有步骤变量的节点数据（存于 props._allVars 以避免属性丢失）
               const allVars: Record<string, unknown> = geNode.props._allVars as Record<string, unknown>
               const lastStepV = plan.steps?.[plan.steps.length - 1]
@@ -3909,7 +3903,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               // 用 boundedPaths 提取实际匹配的边标签（vs plan.steps 编译时标签）
               if ((plan.steps || []).length > 1 && boundedPaths?.length) {
                 const matchingPath = boundedPaths.find((p: number[]) => p[p.length - 1] === targetIdx)
-                try{process.stderr.write(`[CACHE_CHECK] targetIdx=${targetIdx} matchingPath=${JSON.stringify(matchingPath)} boundedPaths=${JSON.stringify(boundedPaths)}\n`)}catch(e){}
                 if (matchingPath && matchingPath.length >= 2) {
                   const pathEdges: string[] = []
                   for (let psi = 0; psi < plan.steps.length && psi < matchingPath.length - 1; psi++) {
@@ -3924,15 +3917,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   }
                   if (pathEdges.length >= edgeVarColsLen) {
                     stepEdgesCache.set(targetIdx, pathEdges)
-                    process.stderr.write(`[CACHE W] targetIdx=${targetIdx} pathEdges=${JSON.stringify(pathEdges)} paths=${JSON.stringify(boundedPaths)} matchingPath=${JSON.stringify(matchingPath)}\n`)
                   } else {
-                    process.stderr.write(`[CACHE SKIP] pathEdges.len=${pathEdges.length} < edgeVarColsLen=${edgeVarColsLen}\n`)
                   }
                 } else {
-                  process.stderr.write(`[CACHE NO MATCH] targetIdx=${targetIdx} len=${matchingPath?.length} paths=${JSON.stringify(boundedPaths)}\n`)
                 }
               } else {
-                process.stderr.write(`[CACHE SKIP] multiStep=${(plan.steps || []).length > 1} boundedPaths=${boundedPaths?.length}\n`)
               }
               // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
               geNode.__crossVarRows = {}
@@ -4782,7 +4771,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             : (plan.steps || []).map((s: any) => s.edgeLabel || '').filter(Boolean)
           const actualStepEdges = rawStepEdges
           if ((plan.steps || []).length > 1) {
-            process.stderr.write(`[CACHE R] nodeIdx=${nodeIdx} r.id=${r.id} has=${stepEdgesCache.has(nodeIdx)} raw=${JSON.stringify(rawStepEdges)} cacheSize=${stepEdgesCache.size}\n`)
           }
           for (let eci = 0; eci < edgeVarCols.length; eci++) {
             const evc = edgeVarCols[eci]
