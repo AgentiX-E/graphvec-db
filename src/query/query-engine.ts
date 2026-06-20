@@ -3796,11 +3796,24 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               if (!targetNode) continue
               const geNode: any = {
                 id: nodeGeIds[targetIdx] || (targetIdx + 1),
-                props: { _label: targetNode._label || 'Default' },
+                props: { _label: targetNode._label || 'Default', _allVars: {} as Record<string, unknown> },
                 type: targetNode._label || 'Default',
                 __multiStep: true,
                 __targetProps: {},
                 __targetAlias: plan.steps?.[plan.steps.length - 1]?.targetAlias || '',
+              }
+              // 构建所有步骤变量的节点数据（存于 props._allVars 以避免属性丢失）
+              const allVars: Record<string, unknown> = geNode.props._allVars as Record<string, unknown>
+              const lastStepV = plan.steps?.[plan.steps.length - 1]
+              if (lastStepV?.targetAlias) {
+                allVars[lastStepV.targetAlias] = { _label: targetNode._label || 'Default' }
+                for (const k of Object.keys(targetNode)) {
+                  if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[lastStepV.targetAlias][k] = targetNode[k]
+                }
+              }
+              // source 节点
+              if (lastStepV?.source) {
+                allVars[lastStepV.source] = { _label: targetNode._label || 'Default' }
               }
               for (const k of Object.keys(targetNode)) {
                 if (k !== '_label' && k !== '__edges' && k !== 'props') {
@@ -4700,6 +4713,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           }
           delete (row as any)._stepEdges
           delete (row as any).__stepEdges
+          // 清理 _allVars（用于内部变量解析，不应暴露到 row 输出）
+          delete (row as any)._allVars
           return { ...r, props: row }
         })
       : edgePropFilteredRecords
@@ -5575,6 +5590,12 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           if (k !== 'props' && k !== '__edges' && !k.startsWith('__')) cleanTarget[k] = (r.__targetProps as any)[k]
         }
         varCtx[targetVar] = cleanTarget
+      }
+      // 多步路径：从 props._allVars 补充所有步骤变量（避免 __crossVarRows / __targetPropsMap 丢失）
+      if (r.props?._allVars && typeof r.props._allVars === 'object') {
+        for (const vn of Object.keys(r.props._allVars as Record<string, unknown>)) {
+          if (!(vn in varCtx)) varCtx[vn] = (r.props._allVars as any)[vn]
+        }
       }
       // 如果 GE 没有 steps（MATCH (a) 无关系），从 expr 推断变量名填充 varCtx
       if (!firstStepSource) {
