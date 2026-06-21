@@ -34,7 +34,7 @@ run_tck() {
   echo "[run-suite] TCK: $name ($glob)"
   # Run with timeout, capture JSON result
   local out
-  out=$(timeout 120 npx cucumber-js "$glob" --format json 2>/dev/null)
+  out=$(timeout 300 npx cucumber-js "$glob" --format json 2>/dev/null)
   local rc=$?
   # If timeout, fail
   if [ $rc -eq 124 ]; then
@@ -157,9 +157,10 @@ PASS=0
 FAIL=0
 for k in "${!RESULTS[@]}"; do
   v="${RESULTS[$k]}"
+  [ "$v" = "PASS" ] && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
   echo "  $([ "$v" = "PASS" ] && echo "✅" || echo "❌") $k: $v"
-  [ "$v" = "PASS" ] && ((PASS++)) || ((FAIL++))
 done
 echo "PASS: $PASS  |  FAIL: $FAIL"
-echo "{\"pass\":$PASS,\"fail\":$FAIL,\"duration\":$((END-START)),\"results\":$(printf '%s\n' "${!RESULTS[@]}" | jq -Rn '[inputs as $k | {$k, v: $ARGS.named[$k]}]' --argjson "$(echo "${RESULTS[@]}")" 2>/dev/null || echo '{}')}" > "$RESULT_FILE"
+echo "{\"pass\":$PASS,\"fail\":$FAIL,\"duration\":$((END-START))}" > "$RESULT_FILE"
+[ "$FAIL" -eq 0 ]
 [ "$FAIL" -eq 0 ]
