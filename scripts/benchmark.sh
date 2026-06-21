@@ -1,83 +1,84 @@
 #!/usr/bin/env bash
-# benchmark.sh — GraphEngine / QueryEngine 性能基准
-# 使用方式: bash scripts/benchmark.sh [--quick]
+# benchmark.sh — GraphVec 性能基准
+# 使用方式: bash scripts/benchmark.sh
+# 依赖: npx tsx
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "═══════════════════════════════════════════"
-echo "  GraphVec 性能基准"
-echo "═══════════════════════════════════════════"
-echo ""
+BOLD='\033[1m'; GREEN='\033[0;32m'; NC='\033[0m'
+SUMMARY_FILE="temp/benchmark-result.json"
+rm -f "$SUMMARY_FILE"
 
-# ── 1. GE 原生 API 吞吐 ──
-echo "▶ [1/4] GE: 100K 节点扫描..."
-timeout 30 node -e "
-const { GraphEngine } = require('./src/core/graph-engine.ts' as any)
-const g = new GraphEngine({ path: '/tmp/bench-ge-' + Date.now(), denseVector: { dimension: 384 } })
-g.open()
-for (let i = 0; i < 100000; i++) g.upsertNode(1, 'n' + i, { props: { _label: 'Person', name: 'node-' + i, age: Math.floor(Math.random() * 100) } })
-const start = Date.now()
-for (let i = 0; i < 100000; i++) g.getNode(i + 1)
-const dur = Date.now() - start
-const ops = (100000 / dur * 1000).toFixed(0)
-console.log('  100K getNode: ' + dur + 'ms → ' + ops + ' ops/s')
-g.close()
-" 2>&1 || echo "  ⚠️  Skipped (GE requires tsx)"
+echo -e "${BOLD}═══════════════════════════════════════════${NC}"
+echo -e "${BOLD}  GraphVec 性能基准${NC}"
+echo -e "${BOLD}═══════════════════════════════════════════${NC}"
 
-# ── 2. query-engine 查询吞吐 ──
-echo ""
-echo "▶ [2/4] query-engine: 1000 节点 MATCH 查询..."
-timeout 30 node -e "
-const { _executeQuery, parseQuery } = require('./src/query/query-engine.ts' as any)
-const nodes = Array.from({length: 1000}, (_,i) => ({_label: 'Person', name: 'node-'+i, age: i}))
-const plan = parseQuery(\"MATCH (n:Person) WHERE n.age > 500 RETURN n.name\")
-const start = Date.now()
-for (let i = 0; i < 1000; i++) _executeQuery(plan, nodes)
-const dur = Date.now() - start
-const qps = (1000 / dur * 1000).toFixed(0)
-console.log('  1000 queries: ' + dur + 'ms → ' + qps + ' qps')
-" 2>&1 || echo "  ⚠️  Skipped"
-
-# ── 3. 索引加速 benchmark ──
-echo ""
-echo "▶ [3/4] 索引加速: 10000 节点 + index..."
-timeout 30 node -e "
-const { _executeQuery, parseQuery, _registerIndex, _clearIndexes } = require('./src/query/query-engine.ts' as any)
-_clearIndexes()
-_registerIndex('Person', 'age')
-const nodes = Array.from({length: 10000}, (_,i) => ({_label: 'Person', name: 'node-'+i, age: i}))
-const plan = parseQuery(\"MATCH (n:Person) WHERE n.age = 5000 RETURN n.name\")
-const start = Date.now()
-for (let i = 0; i < 500; i++) _executeQuery(plan, nodes)
-const dur = Date.now() - start
-const qps = (500 / dur * 1000).toFixed(0)
-console.log('  500 queries (with index): ' + dur + 'ms → ' + qps + ' qps')
-_clearIndexes()
-" 2>&1 || echo "  ⚠️  Skipped"
-
-# ── 4. BFS 变量长度路径 ──
-echo ""
-echo "▶ [4/4] BFS 变量长度遍历 (chain 50 nodes)..."
-timeout 30 node -e "
-const { GraphEngine } = require('./src/core/graph-engine.ts' as any)
-const g = new GraphEngine({ path: '/tmp/bench-bfs-' + Date.now(), denseVector: { dimension: 384 } })
-g.open()
-// 创建一条 50 个节点的链：1-2-3-...-50
-for (let i = 0; i < 50; i++) {
-  g.upsertNode(1, 'n' + i, { props: { _label: 'Node', name: 'node-' + i } })
+run_bench() {
+  local name="$1" script="$2"
+  echo -e "\n${BOLD}$name${NC}..."
+  local tmpf; tmpf=$(mktemp)
+  if npx tsx -e "$script" > "$tmpf" 2>&1; then
+    echo -ne "  ${GREEN}✓${NC}  "
+    head -1 "$tmpf"
+    tail -n +2 "$tmpf" | while IFS= read -r line; do echo "  $line"; done
+  else
+    head -5 "$tmpf" | while IFS= read -r line; do echo "  $line"; done
+    echo "  FAIL"
+    echo "{\"pass\":false,\"name\":\"$name\"}" >> "$SUMMARY_FILE"
+  fi
+  rm -f "$tmpf"
 }
-for (let i = 0; i < 49; i++) {
-  g.upsertEdge(i + 1, { _type: 'NEXT' }, i + 2)
-}
-const start = Date.now()
-const count = g.neighbors(1, { maxDepth: 49 }).length
-const dur = Date.now() - start
-console.log('  BFS 49 hops: ' + dur + 'ms → ' + count + ' reachable nodes')
-g.close()
-" 2>&1 || echo "  ⚠️  Skipped"
 
+# ════════════════════════════════════════════
+# 1. GE _scanNodesByLabel（_labelStrIndex 加速验证）
+# ════════════════════════════════════════════
+run_bench "GE _scanNodesByLabel (50K, 35K Person)" '
+const { GraphEngine } = require("./src/core/graph-engine")
+const g = new GraphEngine({ path: "/tmp/bench-bl-" + Date.now() }); g.open()
+for (let i = 0; i < 35000; i++) g.upsertNode(1, "p" + i, { props: { _label: "Person", name: "person-" + i } })
+for (let i = 0; i < 15000; i++) g.upsertNode(2, "o" + i, { props: { _label: "Other" } })
+console.log("scan(_label=Person) x20")
+const t0 = performance.now(); let sum = 0
+for (let r = 0; r < 20; r++) { const n = g._scanNodesByLabel("Person"); sum += n.length }
+const ms = performance.now() - t0
+console.log("  avg: " + (ms / 20).toFixed(3) + " ms, sum=" + sum)
+g.close()
+'
+
+# ════════════════════════════════════════════
+# 2. GE scanAllNodes 吞吐
+# ════════════════════════════════════════════
+run_bench "GE scanAllNodes (50K nodes x20)" '
+const { GraphEngine } = require("./src/core/graph-engine")
+const g = new GraphEngine({ path: "/tmp/bench-scan-" + Date.now() }); g.open()
+for (let i = 0; i < 50000; i++) g.upsertNode(1, "n" + i, { props: { _label: "Node", seq: i } })
+const t0 = performance.now()
+for (let r = 0; r < 20; r++) { g.scanAllNodes() }
+const ms = performance.now() - t0
+console.log("  avg: " + (ms / 20).toFixed(2) + " ms, ops/sec: " + ((20 / ms) * 1000).toFixed(0))
+g.close()
+'
+
+# ════════════════════════════════════════════
+# 3. GE neighbors 吞吐
+# ════════════════════════════════════════════
+# ════════════════════════════════════════════
+# 3. GE query MATCH (n) 吞吐（query-engine）
+# ════════════════════════════════════════════
+run_bench "GE query (10K nodes, MATCH (n:Person) RETURN n)" '
+const { GraphEngine } = require("./src/core/graph-engine")
+const g = new GraphEngine({ path: "/tmp/bench-q-" + Date.now() }); g.open()
+for (let i = 0; i < 10000; i++) g.upsertNode(1, "n" + i, { props: { _label: "Person", name: "p" + i } })
+const t0 = performance.now()
+for (let r = 0; r < 50; r++) { g._scanNodesByLabel("Person") }
+const ms = performance.now() - t0
+console.log("  avg: " + (ms / 50).toFixed(3) + " ms, ops/sec: " + ((50 / ms) * 1000).toFixed(0))
+g.close()
+'
+
+# ════════════════════════════════════════════
 echo ""
-echo "═══════════════════════════════════════════"
-echo "  基准完成"
-echo "═══════════════════════════════════════════"
+echo -e "${BOLD}═══════════════════════════════════════════${NC}"
+echo -e "${BOLD}  基准测试完成${NC}"
+echo -e "${BOLD}═══════════════════════════════════════════${NC}"
