@@ -8304,6 +8304,11 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
     for (const item of list) {
       const evalCtx: Record<string, unknown> = { ...row as any, [varName]: item }
       const val = _evaluateExpression(condExpr, evalCtx)
+      // Cypher 的 all() 全称量化：如果元素为 null，则视为"不在论域"，
+      // 跳过该元素（不评估 predicate）。这与 none/any/single 不同，
+      // none/any/single 需要区分"null 元素导致 predicate 未知"。
+      // 跳过条件：predicate 是纯变量引用且引用的值为 null。
+      if (val === null && condExpr === varName) continue
       if (val === true) {
         count++
         if (pred === 'any') return true
@@ -8311,22 +8316,18 @@ function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
         if (pred === 'single' && count > 1) return false
       } else if (val === false) {
         hasFalse = true
-        if (pred === 'all') {
-          // false 优先于 null：如果有 false，无论是否有 null 都返回 false
-          // 不需要继续循环
-        }
+        if (pred === 'all' && hasFalse) return false
       } else if (val == null) {
         hasNull = true
       }
     }
     if (pred === 'all') {
-      // 空列表：all() 返回 true（全称量化 vacuously true）
       if (listLen === 0) return true
-      if (count === listLen) return true
-      // false 优先于 null（Cypher 三值逻辑：false ∧ null = false）
       if (hasFalse) return false
+      // 有未跳过的 null 元素 → null（三值逻辑不确定）
       if (hasNull) return null
-      return false
+      // 所有元素都匹配
+      return true
     }
     if (pred === 'any') return hasNull ? null : false
     if (pred === 'none') return hasNull ? null : true
