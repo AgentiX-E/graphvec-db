@@ -4892,10 +4892,27 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     }
 
     // ── 格式化结果 ──
-    const result: QueryRow[] = rawWithEdges.map((r: any) => {
+    const rawResult: QueryRow[] = rawWithEdges.map((r: any) => {
       const fr = _formatResultRow(r, plan)
       return fr
     })
+
+    // ── DISTINCT 去重（RETURN DISTINCT n） ──
+    // 在 WITH/UNWIND pipeline 之外，GE 直接执行路径也需要去重
+    let result: QueryRow[]
+    if (plan.distinct && rawResult.length) {
+      const dedupSet = new Set<string>()
+      result = []
+      for (const row of rawResult) {
+        const colKeys = plan.returnColumns?.length ? plan.returnColumns : Object.keys(row).filter(k => !k.startsWith('__'))
+        const sig = JSON.stringify(colKeys.map(k => row[k]))
+        if (dedupSet.has(sig)) continue
+        dedupSet.add(sig)
+        result.push(row)
+      }
+    } else {
+      result = rawResult
+    }
 
     // ── WHERE 子句后处理过滤（表达式引擎处理 GE 不支持的复杂 boolean 表达式） ──
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，

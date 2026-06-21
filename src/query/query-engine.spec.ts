@@ -1348,4 +1348,20 @@ describe('表达式引擎 — 纯 RETURN 求值', () => {
     const res = await _executeQuery(parseQuery('RETURN NOT null AS v'), []) as any[]
     expect(res[0]['v']).toBeNull()
   })
+
+  // ── RETURN DISTINCT ──
+  it('RETURN DISTINCT 去重', async () => {
+    // 准备 3 个有重复 label 的节点
+    const nodes = [
+      { _label: 'Node', name: 'a' },
+      { _label: 'Node', name: 'a' }, // 重复
+      { _label: 'Node', name: 'b' },
+    ]
+    const plan = parseQuery('MATCH (n:Node) RETURN DISTINCT n.name AS name')
+    plan.distinct = true
+    const res = await _executeQuery(plan, nodes) as any[]
+    // 只返回 2 个值：'a' 和 'b'（去重后）
+    const names = res.map(r => r.name).sort()
+    expect(names).toEqual(['a', 'b'])
+  })
 })

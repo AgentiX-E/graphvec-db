@@ -1,0 +1,68 @@
+[run-suite] vitest: src/core/graph-engine.spec.ts
+[run-suite] vitest: src/query/query-engine.spec.ts
+[run-suite] TCK: old-top-level (src/query/cypher-tck/features/0*.feature)
+17/17
+[run-suite] TCK: MatchWhere (src/query/cypher-tck/features/clauses/match-where/**/*.feature)
+34/34
+[run-suite] TCK: clauses-match-where (src/query/cypher-tck/features/clauses/match-where/**/*.feature)
+34/34
+[run-suite] TCK: clauses-match (src/query/cypher-tck/features/clauses/match/**/*.feature)
+381/381
+[run-suite] TCK: clauses-create (src/query/cypher-tck/features/clauses/create/**/*.feature)
+78/78
+[run-suite] TCK: clauses-delete (src/query/cypher-tck/features/clauses/delete/**/*.feature)
+41/41
+[run-suite] TCK: clauses-merge (src/query/cypher-tck/features/clauses/merge/**/*.feature)
+75/75
+[run-suite] TCK: clauses-set (src/query/cypher-tck/features/clauses/set/**/*.feature)
+53/53
+[run-suite] TCK: clauses-remove (src/query/cypher-tck/features/clauses/remove/**/*.feature)
+33/33
+[run-suite] TCK: clauses-return (src/query/cypher-tck/features/clauses/return/**/*.feature)
+63/63
+[run-suite] TCK: clauses-return-orderby (src/query/cypher-tck/features/clauses/return-orderby/**/*.feature)
+35/35
+[run-suite] TCK: clauses-return-skip-limit (src/query/cypher-tck/features/clauses/return-skip-limit/**/*.feature)
+31/31
+[run-suite] TCK: clauses-union (src/query/cypher-tck/features/clauses/union/**/*.feature)
+12/12
+[run-suite] TCK: clauses-unwind (src/query/cypher-tck/features/clauses/unwind/**/*.feature)
+14/14
+[run-suite] TCK: clauses-with (src/query/cypher-tck/features/clauses/with/**/*.feature)
+29/29
+[run-suite] TCK: clauses-with-orderBy (src/query/cypher-tck/features/clauses/with-orderBy/**/*.feature)
+292/292
+[run-suite] TCK: clauses-with-skip-limit (src/query/cypher-tck/features/clauses/with-skip-limit/**/*.feature)
+9/9
+[run-suite] TCK: clauses-with-where (src/query/cypher-tck/features/clauses/with-where/**/*.feature)
+19/19
+[run-suite] TCK: clauses-call (src/query/cypher-tck/features/clauses/call/**/*.feature)
+52/52
+[run-suite] TCK: expr-aggregation (src/query/cypher-tck/features/expressions/aggregation/**/*.feature)
+35/35
+[run-suite] TCK: expr-boolean (src/query/cypher-tck/features/expressions/boolean/**/*.feature)
+150/150
+[run-suite] TCK: expr-comparison (src/query/cypher-tck/features/expressions/comparison/**/*.feature)
+72/72
+[run-suite] TCK: expr-conditional (src/query/cypher-tck/features/expressions/conditional/**/*.feature)
+13/13
+[run-suite] TCK: expr-existentialSubqueries (src/query/cypher-tck/features/expressions/existentialSubqueries/**/*.feature)
+10/10
+[run-suite] TCK: expr-graph (src/query/cypher-tck/features/expressions/graph/**/*.feature)
+61/61
+[run-suite] TCK: expr-list (src/query/cypher-tck/features/expressions/list/**/*.feature)
+185/185
+[run-suite] TCK: expr-literals (src/query/cypher-tck/features/expressions/literals/**/*.feature)
+131/131
+[run-suite] TCK: expr-map (src/query/cypher-tck/features/expressions/map/**/*.feature)
+44/44
+[run-suite] TCK: expr-mathematical (src/query/cypher-tck/features/expressions/mathematical/**/*.feature)
+6/6
+[run-suite] TCK: expr-null (src/query/cypher-tck/features/expressions/null/**/*.feature)
+44/44
+[run-suite] TCK: expr-path (src/query/cypher-tck/features/expressions/path/**/*.feature)
+7/7
+[run-suite] TCK: expr-pattern (src/query/cypher-tck/features/expressions/pattern/**/*.feature)
+[=== PROCESS KILLED BY SIGTERM AT THIS POINT ===]
+[Reason: The initial exec had a 600s timeout, and the full suite takes longer.]
+[The run-suite.sh script was interrupted before completing expr-pattern and the remaining test suites (precedence, quantifier, string, temporal, typeConversion, useCases).]

@@ -1,0 +1,77 @@
+=== Regression Suite #2 ===
+[run-suite] vitest: src/core/graph-engine.spec.ts
+
+ RUN  v4.1.7 /home/admin/openclaw/workspace/agentiX-graphvec
+
+stderr | src/core/graph-engine.spec.ts > GraphEngine > Cypher-lite query > invalid query throws
+line 1:0 extraneous input 'NOT' expecting {':', CYPHER, EXPLAIN, PROFILE, USING, CREATE, DROP, LOAD, WITH, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, RETURN, START, CALL, CATALOG, SHOW, STOP, ALTER, GRANT, DENY, REVOKE, SP}
+line 1:4 mismatched input 'A' expecting {':', CYPHER, EXPLAIN, PROFILE, USING, CREATE, DROP, LOAD, WITH, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, RETURN, START, CALL, CATALOG, SHOW, STOP, ALTER, GRANT, DENY, REVOKE}
+
+stderr | src/core/graph-engine.spec.ts > Phase 2: EXISTS > TC-EXISTS-1: EXISTS with outgoing edge (any type)
+line 1:23 mismatched input '{' expecting {<EOF>, ';'}
+
+stderr | src/core/graph-engine.spec.ts > Phase 2: EXISTS > TC-EXISTS-3: EXISTS any direction (undirected)
+line 1:23 mismatched input '{' expecting {<EOF>, ';'}
+
+stderr | src/core/graph-engine.spec.ts > Phase 2: EXISTS > TC-EXISTS-4: EXISTS with AND condition
+line 1:38 mismatched input '{' expecting {<EOF>, ';'}
+
+stderr | src/core/graph-engine.spec.ts > Phase 2: CALL > TC-CALL-1: Simple CALL subquery
+line 1:5 mismatched input '{' expecting {CYPHER, EXPLAIN, PROFILE, USING, PERIODIC, COMMIT, UNION, ALL, CREATE, DROP, INDEX, ON, CONSTRAINT, ASSERT, IS, UNIQUE, EXISTS, LOAD, CSV, WITH, HEADERS, FROM, AS, FIELDTERMINATOR, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, IN, DISTINCT, RETURN, ORDER, BY, L_SKIP, LIMIT, ASCENDING, ASC, DESCENDING, DESC, JOIN, SCAN, START, NODE, RELATIONSHIP, REL, WHERE, SHORTESTPATH, ALLSHORTESTPATHS, OR, XOR, AND, NOT, STARTS, ENDS, CONTAINS, NULL, COUNT, FILTER, EXTRACT, ANY, NONE, SINGLE, TRUE, FALSE, REDUCE, CASE, ELSE, END, WHEN, THEN, CALL, YIELD, KEY, CATALOG, SHOW, DEFAULT, DBMS, DATABASE, DATABASES, GRAPH, GRAPHS, REPLACE, IF, STOP, ROLE, ROLES, USER, USERS, POPULATED, PASSWORD, CHANGE, REQUIRED, STATUS, ACTIVE, SUSPENDED, ALTER, CURRENT, TO, PRIVILEGES, GRANT, DENY, REVOKE, RELATIONSHIPS, NODES, ELEMENT, ELEMENTS, COPY, OF, TRAVERSE, READ, WRITE, ACCESS, INDEXES, MANAGEMENT, NEW, LABEL, LABELS, NAME, NAMES, TYPE, TYPES, PROPERTY, CONSTRAINTS, ASSIGN, BTREE, EXIST, FOR, OPTIONS, EXECUTE, DEFINED, FUNCTION, FUNCTIONS, BOOSTED, PROCEDURE, PROCEDURES, ADMIN, ADMINISTRATOR, BRIEF, VERBOSE, OUTPUT, HexLetter, UnescapedSymbolicName, EscapedSymbolicName}
+line 1:26 mismatched input '}' expecting {<EOF>, ';'}
+
+stderr | src/core/graph-engine.spec.ts > OpenCypher Phase 2: Aggregate Functions > TC-AGG-13: GROUP BY with COUNT(*)
+line 1:41 mismatched input 'GROUP' expecting {<EOF>, ';'}
+
+stderr | src/core/graph-engine.spec.ts > OpenCypher Phase 2: Aggregate Functions > TC-AGG-14: GROUP BY with SUM
+line 1:48 mismatched input 'GROUP' expecting {<EOF>, ';'}
+
+stderr | src/core/graph-engine.spec.ts > OpenCypher Phase 2: Aggregate Functions > TC-AGG-15: GROUP BY with AVG
+line 1:50 mismatched input 'GROUP' expecting {<EOF>, ';'}
+
+stderr | src/core/graph-engine.spec.ts > OpenCypher Phase 2: Aggregate Functions > TC-AGG-16: GROUP BY with MIN
+line 1:46 mismatched input 'GROUP' expecting {<EOF>, ';'}
+
+stderr | src/core/graph-engine.spec.ts > OpenCypher Phase 2: Aggregate Functions > TC-AGG-17: GROUP BY with MAX
+line 1:46 mismatched input 'GROUP' expecting {<EOF>, ';'}
+
+ ✓ src/core/graph-engine.spec.ts (622 tests) 12542ms
+     ✓ TC-1.5: upsert 10K 节点不抛出异常（性能退化作为参考）  732ms
+
+ Test Files  1 passed (1)
+      Tests  622 passed (622)
+   Start at  10:22:59
+   Duration  14.84s (transform 1.58s, setup 0ms, import 2.06s, tests 12.54s, environment 0ms)
+PASS
+
+ RUN  v4.1.7 /home/admin/openclaw/workspace/agentiX-graphvec
+
+stderr | src/query/query-engine.spec.ts > parseQuery — Cypher-lite 解析 + QueryPlan 转换 > 解析错误抛出有意义的错误
+line 1:0 extraneous input 'SELECT' expecting {':', CYPHER, EXPLAIN, PROFILE, USING, CREATE, DROP, LOAD, WITH, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, RETURN, START, CALL, CATALOG, SHOW, STOP, ALTER, GRANT, DENY, REVOKE, SP}
+line 1:7 mismatched input '*' expecting {':', CYPHER, EXPLAIN, PROFILE, USING, CREATE, DROP, LOAD, WITH, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, RETURN, START, CALL, CATALOG, SHOW, STOP, ALTER, GRANT, DENY, REVOKE}
+
+stderr | src/query/query-engine.spec.ts > parseQuery — DML 语句（CREATE / DELETE / SET / MERGE） > 语法错误 — CREAT (n)
+line 1:0 extraneous input 'CREAT' expecting {':', CYPHER, EXPLAIN, PROFILE, USING, CREATE, DROP, LOAD, WITH, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, RETURN, START, CALL, CATALOG, SHOW, STOP, ALTER, GRANT, DENY, REVOKE, SP}
+line 1:6 mismatched input '(' expecting {':', CYPHER, EXPLAIN, PROFILE, USING, CREATE, DROP, LOAD, WITH, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, RETURN, START, CALL, CATALOG, SHOW, STOP, ALTER, GRANT, DENY, REVOKE}
+
+stderr | src/query/query-engine.spec.ts > parseQuery — DML 语句（CREATE / DELETE / SET / MERGE） > 语法错误 — 非法关键字
+line 1:0 extraneous input 'DELET' expecting {':', CYPHER, EXPLAIN, PROFILE, USING, CREATE, DROP, LOAD, WITH, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, RETURN, START, CALL, CATALOG, SHOW, STOP, ALTER, GRANT, DENY, REVOKE, SP}
+line 1:6 mismatched input 'n' expecting {':', CYPHER, EXPLAIN, PROFILE, USING, CREATE, DROP, LOAD, WITH, OPTIONAL, MATCH, UNWIND, MERGE, SET, DETACH, DELETE, REMOVE, FOREACH, RETURN, START, CALL, CATALOG, SHOW, STOP, ALTER, GRANT, DENY, REVOKE}
+
+stdout | src/query/query-engine.spec.ts > 变量长度路径查询 > 单步变量长度—调试检查 range 是否传入
+VARLEN result: [{"a":{"__path":[{"_label":"Node","name":"node-0"},{"_label":"Default","name":"node-1"}],"__pathEdges":[{"_type":"NEXT"}]},"b":{"_label":"Default","name":"node-1"},"name":"node-1","b.name":"node-1"},{"a":{"__path":[{"_label":"Node","name":"node-0"},{"_label":"Default","name":"node-1"},{"_label":"Default","name":"node-2"}],"__pathEdges":[{"_type":"NEXT"},{"_type":"NEXT"}]},"b":{"_label":"Default","name":"node-2"},"name":"node-2","b.name":"node-2"},{"a":{"__path":[{"_label":"Node","name":"node-0"},{"_label":"Default","name":"node-1"},{"_label":"Default","name":"node-2"},{"_label":"Default","name":"node-3"}],"__pathEdges":[{"_type":"NEXT"},{"_type":"NEXT"},{"_type":"NEXT"}]},"b":{"_label":"Default","name":"node-3"},"name":"node-3","b.name":"node-3"}]
+
+ ✓ src/query/query-engine.spec.ts (122 tests) 944ms
+
+ Test Files  1 passed (1)
+      Tests  122 passed (122)
+   Start at  10:23:18
+   Duration  2.15s (transform 825ms, setup 0ms, import 1.09s, tests 944ms, environment 0ms)
+
+
+--- TCK: old-top-level ---
+17/17
+--- done TCK old-top-level ---
+--- TCK: MatchWhere ---
+34/34
+--- done TCK MatchWhere ---
