@@ -774,14 +774,19 @@ Given('having executed:', async function (query: string) {
             const sn = st.nodes[si] as any
             if (sn._alias) stAliasToIdx.set(sn._alias, si)
           }
-          let anonymousCounter = 0
+          let anonymousCount = 0
+          const stNonAliasIndices: number[] = []
+          for (let si = 0; si < st.nodes.length; si++) {
+            if (!(st.nodes[si] as any)._alias) stNonAliasIndices.push(si)
+          }
           for (let ci = 0; ci < cns.length; ci++) {
             const cn = cns[ci]
             if (cn.alias && stAliasToIdx.has(cn.alias)) {
               cnsToStIdx[ci] = stAliasToIdx.get(cn.alias)!
             } else {
-              cnsToStIdx[ci] = stAliasToIdx.size + anonymousCounter
-              anonymousCounter++
+              const anonIdx = stNonAliasIndices[anonymousCount]
+              cnsToStIdx[ci] = anonIdx !== undefined ? anonIdx : (stAliasToIdx.size + anonymousCount)
+              anonymousCount++
             }
           }
           for (const edge of (plan as any).createEdges as Array<{ source: string; target: string; sourceIdx?: number; targetIdx?: number; label: string | null; direction: string }>) {
@@ -811,12 +816,14 @@ Given('having executed:', async function (query: string) {
             }
           }
             if (edgesForStNodes.length > 0) {
-            // 为每个涉及边的节点附加 __edges
+            // 为每个涉及边的节点附加 __edges（自环只插一次）
             for (const ef of edgesForStNodes) {
               if (!(st.nodes[ef.srcIdx] as any).__edges) (st.nodes[ef.srcIdx] as any).__edges = []
               ;(st.nodes[ef.srcIdx] as any).__edges.push(ef)
-              if (!(st.nodes[ef.dstIdx] as any).__edges) (st.nodes[ef.dstIdx] as any).__edges = []
-              ;(st.nodes[ef.dstIdx] as any).__edges.push(ef)
+              if (ef.srcIdx !== ef.dstIdx) {
+                if (!(st.nodes[ef.dstIdx] as any).__edges) (st.nodes[ef.dstIdx] as any).__edges = []
+                ;(st.nodes[ef.dstIdx] as any).__edges.push(ef)
+              }
             }
           }
         }

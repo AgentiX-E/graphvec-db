@@ -1103,8 +1103,8 @@ export function parseQuery(query: string): QueryPlan {
   if (plan.aggregate) {
     const agg = plan.aggregate as any
     if (agg.field === undefined && agg.column) {
-      // 从 column 提取 field："sum(n.age) AS totalAge" → "n.age"；"count(*)" → "*"
-      const colMatch = agg.column.match(/^\w+\((.+?)\)(?:\s+AS\s+\w+)?$/)
+      // 从 column 提取 field："sum(n.age) AS totalAge" → "n.age"；"count(*)" → "*"；"count(DISTINCT r)" → "r"
+      const colMatch = agg.column.match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
       agg.field = colMatch ? colMatch[1] : (agg.column || '*')
     }
   }
@@ -3785,7 +3785,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 避免 GE 边存储与 allNodes.__edges 不同步的问题
     const hasMultiStep = plan.steps && plan.steps.length > 1 && allNodes.length > 0
     const hasVarLen = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
-    const hasEdgeStep = plan.steps?.length === 1 && allNodes.length > 0 && (plan.steps[0].edgeLabel != null || plan.steps[0].direction === 'out' || plan.steps[0].direction === 'in')
+    const hasEdgeStep = plan.steps?.length === 1 && allNodes.length > 0 && (plan.steps[0].edgeLabel != null || plan.steps[0].direction === 'out' || plan.steps[0].direction === 'in' || plan.steps[0].direction === 'any')
     const stepEdgesCache = new Map<number, string[]>()
     const useEdgeWalk = hasMultiStep || hasVarLen || hasEdgeStep
     let rawRecords: any[] = (useEdgeWalk)
@@ -4124,6 +4124,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           // 排除跨变量属性引用 filter（GE 的 _matchFilter 无法做跨变量比较）
           planForGe.filters = (geFiltered || []).filter(f => !crossVarFilters.includes(f))
 
+          // 无向边 direction any 时 GE 存储无节点数据，删掉 aggregate 让 QE 聚合
+          if (planForGe.steps?.[0]?.direction === 'any') delete planForGe.aggregate
           return (ge as any)._executeQueryPlan(planForGe)
         })()
     let records = rawRecords
@@ -4776,6 +4778,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     const edgeVarCols = (plan.returnColumns || []).filter(rc => {
       if (!rc || rc === '*' || rc.includes('.')) return false
       if (nodeAliases.has(rc)) return false
+      // 排除聚合函数参数列（如 'count(r)' 中 r 是参数，不是边变量 RETURN 列）
+      if (plan.aggregate) {
+        const aggCol = (plan.aggregate as any).column || ''
+        if (aggCol.includes(rc) && /^\w+\(/.test(aggCol)) return false
+      }
       // 如果属性名在所有节点 props 中作为键存在，说明是节点属性而非边变量
       // 回退方案：检查 query 中是否有原始变量前缀（如 i.var）对应此 rc
       if (queryHasColumnRef && query) {
@@ -5010,7 +5017,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
       const aggAlias = agg.alias || agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c'
-      const colMatch = (agg.column || '').match(/^\w+\((.+?)\)(?:\s+AS\s+\w+)?$/i)
+      const colMatch = (agg.column || '').match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
       const field = colMatch ? colMatch[1] : (agg.field || '*')
 
       const aggRow: QueryRow = {}
