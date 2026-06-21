@@ -637,10 +637,9 @@ function buildQueryPlan(query: string): QueryPlan {
           // Set matchAlias for the MATCH variable
           plan.matchAlias = matchVar
           // Scan mode for single-step MATCH
-          plan.steps = []
+          plan.steps = undefined
         }
       }
-      
       const feVar = feMatch2[1]
       let feListRaw = feMatch2[2].trim()
       const feBody = feMatch2[3].trim()

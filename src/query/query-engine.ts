@@ -3214,16 +3214,18 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   let geOwned = false  // true → 新创建的注册实例，finally 中不 close（由 _clearGeInstances 统一清理）
   let dir = ''
   if (_geInstanceRegistry.has(_activeDatabase)) {
-    ge = _geInstanceRegistry.get(_activeDatabase)!
-  } else {
-    dir = path.join('/tmp', 'tckge-' + process.pid + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'))
-    fs.mkdirSync(dir, { recursive: true })
-    const config: OverGraphConfig = { path: dir, denseVector: { dimension: 384 } }
-    ge = new GraphEngine(config)
-    ge.open()
-    _geInstanceRegistry.set(_activeDatabase, ge)
-    geOwned = true
+    // 关闭并移除旧的 GE 实例（防止跨测试 GE 节点残留）
+    const oldGe = _geInstanceRegistry.get(_activeDatabase)
+    try { oldGe.close() } catch {}
+    _geInstanceRegistry.delete(_activeDatabase)
   }
+  dir = path.join('/tmp', 'tckge-' + process.pid + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'))
+  fs.mkdirSync(dir, { recursive: true })
+  const config: OverGraphConfig = { path: dir, denseVector: { dimension: 384 } }
+  ge = new GraphEngine(config)
+  ge.open()
+  _geInstanceRegistry.set(_activeDatabase, ge)
+  geOwned = true
   let originalNodeCount = 0
   let allNodes: Array<Record<string, unknown>> = []
   try {
