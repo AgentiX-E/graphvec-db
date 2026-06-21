@@ -12,14 +12,8 @@
  *    - FOREACH + MATCH + RETURN 联合使用
  */
 import { describe, it, expect } from 'vitest'
-import {
-  parseQuery,
-  _executeQuery,
-  _executeForeach,
-  _evalForeachCondition,
-  ForEachClause,
-  QueryPlan,
-} from './query-engine'
+import { parseQuery, _executeQuery, QueryPlan } from './query-engine'
+import { _executeForeach, _evalForeachCondition, ForEachClause } from './foreach-exec'
 
 // =============================================================
 // 解析测试（维持原有 6 个不变）
@@ -74,10 +68,10 @@ describe('FOREACH 执行 — _executeQuery 集成', () => {
 
   // ── FOREACH + CREATE（字面量列表） ──
 
-  it('FOREACH + CREATE: 字面量列表 [1,2,3] 创建 3 个结果行', () => {
+  it('FOREACH + CREATE: 字面量列表 [1,2,3] 创建 3 个结果行', async () => {
     const plan = parseQuery('FOREACH (x IN [1,2,3] | CREATE (n:Node {id: x})) RETURN n')
     expect(plan.forEach).toBeDefined()
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     // FOREACH 展开列表，为每个元素创建一行
     // RETURN n 将整行包装在 n 键下
     expect(result).toHaveLength(3)
@@ -85,36 +79,36 @@ describe('FOREACH 执行 — _executeQuery 集成', () => {
     expect(result[0]).toHaveProperty('n')
   })
 
-  it('FOREACH + CREATE: 字符串列表创建对应数量的行', () => {
+  it('FOREACH + CREATE: 字符串列表创建对应数量的行', async () => {
     const plan = parseQuery("FOREACH (name IN ['Alice','Bob','Charlie'] | CREATE (n:Person {name: name})) RETURN n")
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(3)
   })
 
-  it('FOREACH + CREATE: 混合类型列表', () => {
+  it('FOREACH + CREATE: 混合类型列表', async () => {
     const plan = parseQuery('FOREACH (val IN [1, "hello", true] | CREATE (n:Node {val: val})) RETURN n')
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(3)
   })
 
   // ── FOREACH + SET ──
 
-  it('FOREACH + SET: 设置节点属性', () => {
+  it('FOREACH + SET: 设置节点属性', async () => {
     const nodes = [{ name: 'Alice', age: 30 }]
     const plan = parseQuery('MATCH (n) FOREACH (x IN [1] | SET n.flag = x) RETURN n')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result).toHaveLength(1)
   })
 
   // ── FOREACH + DELETE ──
 
-  it('FOREACH + DELETE: 删除匹配节点', () => {
+  it('FOREACH + DELETE: 删除匹配节点', async () => {
     const nodes = [
       { name: 'Alice', _alias: 'n' },
       { name: 'Bob', _alias: 'm' },
     ]
     const plan = parseQuery('MATCH (n:Person) FOREACH (x IN [1] | DELETE n) RETURN n')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     // DELETE 将 n 从 candidates 中移除，但 MATCH(n) 先过滤了
     // 只有 name 匹配的行存在
     // 当前实现中 FOREACH + DELETE 只有在有 targets 时才删除
@@ -123,9 +117,9 @@ describe('FOREACH 执行 — _executeQuery 集成', () => {
 
   // ── FOREACH 空列表 ──
 
-  it('FOREACH 空列表 []: 不生成任何新行', () => {
+  it('FOREACH 空列表 []: 不生成任何新行', async () => {
     const plan = parseQuery('FOREACH (x IN [] | CREATE (n:Node {id: x})) RETURN n')
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     // FOREACH 空列表：虽然我们为 FOREACH 创建了一个空上下文行，
     // 但空列表不产生任何迭代，所以 FOREACH 产出 0 个候选行
     // 由于没有 FOREACH 产生的行，RETURN 无数据可返回
@@ -133,10 +127,10 @@ describe('FOREACH 执行 — _executeQuery 集成', () => {
     expect(Array.isArray(result)).toBe(true)
   })
 
-  it('FOREACH 空列表 []: 不修改现有 MATCH 结果', () => {
+  it('FOREACH 空列表 []: 不修改现有 MATCH 结果', async () => {
     const nodes = [{ name: 'Alice' }, { name: 'Bob' }]
     const plan = parseQuery('MATCH (n) FOREACH (x IN [] | CREATE (m:Log {val: x})) RETURN n')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     // 空列表的 FOREACH 应该不影响 MATCH 的结果
     expect(result).toHaveLength(2)
     // RETURN n 返回的是候选行的完整记录，其中 n 是行对象
@@ -146,13 +140,13 @@ describe('FOREACH 执行 — _executeQuery 集成', () => {
 
   // ── FOREACH + MATCH + RETURN 联合使用 ──
 
-  it('FOREACH + MATCH + RETURN: 综合查询', () => {
+  it('FOREACH + MATCH + RETURN: 综合查询', async () => {
     const nodes = [
       { name: 'Alice', age: 30 },
       { name: 'Bob', age: 25 },
     ]
     const plan = parseQuery('MATCH (n) FOREACH (x IN [10, 20] | CREATE (m:Node {val: x})) RETURN n')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     // FOREACH CREATE 会为每个 MATCH 候选行 × 列表元素 创建新行
     // 所以 2 个候选 × 2 个元素 = 4 行 FOREACH 输出
     // 然后 RETURN n 从这 4 行中提取 name 属性
@@ -161,18 +155,18 @@ describe('FOREACH 执行 — _executeQuery 集成', () => {
 
   // ── FOREACH 单元素列表 ──
 
-  it('FOREACH 单元素列表: [42] 创建一个行', () => {
+  it('FOREACH 单元素列表: [42] 创建一个行', async () => {
     const plan = parseQuery('FOREACH (x IN [42] | CREATE (n:Node {id: x})) RETURN n')
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(1)
   })
 
   // ── FOREACH + MATCH 但无 RETURN ──
 
-  it('FOREACH + MATCH 更改但返回原始结果', () => {
+  it('FOREACH + MATCH 更改但返回原始结果', async () => {
     const nodes = [{ name: 'test' }]
     const plan = parseQuery('MATCH (n) FOREACH (x IN [1] | CREATE (m:Node {id: x})) RETURN n')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     // MATCH (n) + FOREACH + RETURN n：FOREACH CREATE 展开后
     // 每个 MATCH 行 × 1 个列表元素 = 1 行
     expect(result.length).toBeGreaterThanOrEqual(1)
@@ -180,11 +174,11 @@ describe('FOREACH 执行 — _executeQuery 集成', () => {
 
   // ── FOREACH 大列表 ──
 
-  it('FOREACH 大列表: 100 个元素迭代', () => {
+  it('FOREACH 大列表: 100 个元素迭代', async () => {
     const bigList = Array.from({ length: 100 }, (_, i) => i + 1)
     const listStr = '[' + bigList.join(',') + ']'
     const plan = parseQuery(`FOREACH (x IN ${listStr} | CREATE (n:Node {id: x})) RETURN n`)
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(100)
   })
 })
@@ -430,12 +424,12 @@ describe('嵌套 FOREACH', () => {
   })
 
   // — 测试 6：嵌套 FOREACH 集成测试（_executeQuery） —
-  it('嵌套 FOREACH CREATE 集成测试 (_executeQuery)', () => {
+  it('嵌套 FOREACH CREATE 集成测试 (_executeQuery)', async () => {
     const plan = parseQuery(
       'FOREACH (x IN [1,2] | FOREACH (y IN [3,4] | CREATE (n:Node {id: x + y}))) RETURN n'
     )
     expect(plan.forEach).toBeDefined()
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     // 笛卡尔积: 2 × 2 = 4 行
     expect(result).toHaveLength(4)
     // 每行应有 n 键
@@ -465,7 +459,7 @@ describe('嵌套 FOREACH', () => {
   })
 
   // — 测试 8：MATCH + FOREACH 条件执行，不破坏 MATCH 结果 —
-  it('FOREACH after MATCH 不破坏原 MATCH 结果', () => {
+  it('FOREACH after MATCH 不破坏原 MATCH 结果', async () => {
     const nodes = [
       { name: 'Alice', age: 30 },
       { name: 'Bob', age: 25 },
@@ -474,7 +468,7 @@ describe('嵌套 FOREACH', () => {
       'MATCH (n) FOREACH (x IN [1,2] | CREATE (m:Log {val: x})) RETURN n'
     )
     expect(plan.forEach).toBeDefined()
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     // 2 个 MATCH 候选 × 2 个 FOREACH 元素 = 4 行 FOREACH 输出
     // RETURN n 从每行提取 n 属性
     expect(result).toHaveLength(4)

@@ -612,6 +612,45 @@ function buildQueryPlan(query: string): QueryPlan {
   // Build plan from clauses
   const plan = clausesToPlan(clauses)
 
+  // ── Post-processing: FOREACH — ANTLR doesn't support FOREACH syntax ──
+  // FOREACH (var IN list | ...) uses | which ANTLR doesn't parse.
+  // Extract from original query text as a regex-based fallback.
+  if (!plan.forEach) {
+    // 使用更宽松的正则（不要求 ) 闭合）
+    const feMatch2 = trimmed.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*(.+?)\s*\)\s*(\w.*)?$/is) ||
+                     trimmed.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*(.*)/i)
+    if (feMatch2) {
+      const feVar = feMatch2[1]
+      let feListRaw = feMatch2[2].trim()
+      const feBody = feMatch2[3].trim()
+
+      // Extract WHERE from list expression: "list_expr WHERE cond" → list_expr
+      let feWhere: string | undefined
+      const whereInList = feListRaw.match(/^(.+?)\s+WHERE\s+(.+)$/i)
+      if (whereInList) {
+        feListRaw = whereInList[1].trim()
+        feWhere = whereInList[2].trim()
+      }
+
+      let feList: any[] = []
+      let feIsVarRef = false
+      if (feListRaw.startsWith('[') && feListRaw.endsWith(']')) {
+        try { feList = JSON.parse(feListRaw) }
+        catch { try { feList = JSON.parse(feListRaw.replace(/'/g, '"')) } catch { } }
+      } else {
+        feIsVarRef = true
+        feList = [feListRaw]
+      }
+
+      const cleanBody = feBody.replace(/\)\s*\w*\s*$/i, '').trim()
+      const operation = parseForeachBody(cleanBody)
+      if (operation) {
+        if (feWhere) operation.where = feWhere
+        plan.forEach = { variable: feVar, list: feList, isVarRef: feIsVarRef, operation }
+      }
+    }
+  }
+
   // ── Post-processing: CALL subqueries ──
   // ANTLR grammar doesn't support CALL { ... } subqueries natively (stops at '{').
   // Detect CALL subqueries from the original query text and fill in details.
@@ -964,8 +1003,40 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         break
       }
       case 'FOREACH': {
-        const f = extractForEach(clause.ctx)
-        plan.forEach = f
+        const ctxText = clause.ctx ? getTextRecursive(clause.ctx) : ''
+        const feMatch = ctxText.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*(.+)/is)
+        if (feMatch) {
+          const feVar = feMatch[1]
+          const feListRaw = feMatch[2].trim()
+          const feBody = feMatch[3].trim()
+          let feList: any[] = []
+          let feIsVarRef = false
+          let feWhere: string | undefined
+
+          // Strip WHERE from list expression: "list_expr WHERE cond" → list_expr
+          let cleanListRaw = feListRaw
+          const whereInList = feListRaw.match(/^(.+?)\s+WHERE\s+(.+)$/i)
+          if (whereInList) {
+            cleanListRaw = whereInList[1].trim()
+            feWhere = whereInList[2].trim()
+          }
+
+          if (cleanListRaw.startsWith('[') && cleanListRaw.endsWith(']')) {
+            try { feList = JSON.parse(cleanListRaw) }
+            catch { try { feList = JSON.parse(cleanListRaw.replace(/'/g, '"')) } catch {} }
+          } else {
+            feIsVarRef = true
+            feList = [cleanListRaw]
+          }
+          // Roll back closing paren from body if the whole clause ends with )
+          const cleanBody = feBody.replace(/\)\s*\w*\s*$/i, '').trim()
+          const operation = parseForeachBody(cleanBody)
+          if (operation) {
+            // If WHERE was in list expression, attach it to operation
+            if (feWhere) { operation.where = feWhere }
+            plan.forEach = { variable: feVar, list: feList, isVarRef: feIsVarRef, operation }
+          }
+        }
         break
       }
       case 'WITH': {
@@ -2068,4 +2139,118 @@ function createEmptyPlan(): QueryPlan {
  */
 export function parseQueryAntlr(query: string): QueryPlan {
   return parseCypherToPlan(query)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FOREACH body 解析
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * 解析 FOREACH 子句的 body 部分到 operation 对象。
+ * 支持: CREATE, SET, DELETE, REMOVE, 嵌套 FOREACH
+ */
+function parseForeachBody(body: string): any {
+  body = body.trim()
+
+  // 嵌套 FOREACH: FOREACH (... | ...) — 递归
+  const nestedMatch = body.match(/^FOREACH\s*\(/i)
+  if (nestedMatch) {
+    // Find matching paren
+    let depth = 0
+    let start = nestedMatch.index! + nestedMatch[0].length - 1 // position of '('
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] === '(') { if (i >= start) depth++ }
+      else if (body[i] === ')' && i >= start) {
+        depth--
+        if (depth === 0) {
+          const innerBody = body.substring(start + 1, i).trim()
+          // Parse inner FOREACH
+          const innerParts = innerBody.match(/^(\w+)\s+IN\s+(.+?)\s*\|\s*(.+?)$/)
+          if (innerParts) {
+            const innerListRaw = innerParts[2].trim()
+            let innerList: any[] = []
+            let innerIsVarRef = false
+            if (innerListRaw.startsWith('[') && innerListRaw.endsWith(']')) {
+              try { innerList = JSON.parse(innerListRaw) }
+              catch { try { innerList = JSON.parse(innerListRaw.replace(/'/g, '"')) } catch {} }
+            } else {
+              innerIsVarRef = true
+              innerList = [innerListRaw]
+            }
+            const innerOp = parseForeachBody(innerParts[3])
+            if (innerOp) {
+              return {
+                type: 'FOREACH',
+                foreach: {
+                  variable: innerParts[1],
+                  list: innerList,
+                  isVarRef: innerIsVarRef,
+                  operation: innerOp,
+                },
+              }
+            }
+          }
+          break
+        }
+      }
+    }
+    return null
+  }
+
+  // WHERE 从句提取
+  let whereFilter: string | undefined
+  let bodyWithoutWhere = body
+  const whereMatch = body.match(/^(.+?)\s+WHERE\s+(.+?)\s+\|/i)
+  if (whereMatch) {
+    bodyWithoutWhere = whereMatch[1]
+    whereFilter = whereMatch[2].trim()
+  } else {
+    // WHERE before | (in FOREACH syntax, WHERE is after list, before |)
+    // FOREACH (x IN [1,2,3] WHERE x > 1 | CREATE ...)
+    const whereParenMatch = body.match(/^(.*?)\s+WHERE\s+(.+?)\s*\|\s*(.+)/is)
+    if (whereParenMatch) {
+      bodyWithoutWhere = whereParenMatch[1].trim() + ' ' + whereParenMatch[3].trim()
+      whereFilter = whereParenMatch[2].trim()
+    }
+  }
+
+  // Check for MULTI: multiple operations separated by non-in-paren commas or newlines
+  // For now, only single operation is supported in basic parsing
+
+  // CREATE
+  const createMatch = bodyWithoutWhere.match(/^\s*CREATE\s+(.+)/i)
+  if (createMatch) {
+    return { type: 'CREATE', where: whereFilter }
+  }
+
+  // SET
+  const setMatch = bodyWithoutWhere.match(/^\s*SET\s+(.+)/i)
+  if (setMatch) {
+    const setExprs = setMatch[1].trim()
+    const setParts = setExprs.split(',')
+    const setClauses: Array<{ property: string; value: string }> = []
+    for (const sp of setParts) {
+      const [propPart, valPart] = sp.split('=').map((s: string) => s.trim())
+      if (propPart && valPart !== undefined) {
+        setClauses.push({ property: propPart, value: valPart.replace(/^['"]|['"]$/g, '') })
+      }
+    }
+    return { type: 'SET', where: whereFilter, setClauses }
+  }
+
+  // DELETE
+  const deleteMatch = bodyWithoutWhere.match(/^\s*DELETE\s+(.+)/i)
+  if (deleteMatch) {
+    const targets = deleteMatch[1].trim().split(/\s*,\s*/)
+    return { type: 'DELETE', where: whereFilter, targets }
+  }
+
+  // REMOVE
+  const removeMatch = bodyWithoutWhere.match(/^\s*REMOVE\s+(.+)/i)
+  if (removeMatch) {
+    const targets = removeMatch[1].trim().split(/\s*,\s*/)
+    return { type: 'REMOVE', where: whereFilter, targets }
+  }
+
+  return { type: 'CREATE', where: whereFilter }
 }
