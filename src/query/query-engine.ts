@@ -1763,6 +1763,19 @@ function _walkMultiSteps(
       }
     }
     paths = newPaths.length > 0 ? newPaths : [...nextSet].map(idx => [startIdx, idx])
+    // 无向边中排除自环回路：路径最后两位相等（通过自环回到自身）时跳过
+    // `MATCH ()--()` 单步自环匹配合法（paths[0].length===1 不触发）
+    // `(:A)-->()--()` 第二步无向边通过自环回到中间节点产生重复
+    if (step.direction === 'any' && paths.length > 0 && paths[0].length >= 2) {
+      const filtered: number[][] = []
+      for (const p of paths) {
+        const idx = p[p.length - 1]
+        const prev = p[p.length - 2]
+        if (idx === prev) continue
+        filtered.push(p)
+      }
+      if (filtered.length > 0) paths = filtered
+    }
     if (paths.length === 0) break
   }
   return paths
@@ -3838,7 +3851,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           : (retVar || lastTargetVar)
         let boundedTargetIndices: number[] = [...pathEnds]
         let boundedPaths: number[][] = pathResults
-        if (effectiveRetVar && plan.steps && !hasVarLen && !hasEdgeStep) {
+        // 多步匿名匹配（effectiveRetVar 为空，steps.length>1，非变量长度/非边变量）：保持 pathResults 全量
+        // pathEnds Set 去重会丢失不同路径到同一终点的匹配，如 `()--()--()` 中 source=Looper 产生 2 条路径到自身
+        if (!effectiveRetVar && plan.steps && plan.steps.length > 1 && !hasVarLen && !hasEdgeStep) {
+          boundedTargetIndices = pathResults.map(p => p[p.length - 1])
+          boundedPaths = pathResults
+        } else if (effectiveRetVar && plan.steps && !hasVarLen && !hasEdgeStep) {
           const defStep = plan.steps.find(s => s.targetAlias === effectiveRetVar)
           if (defStep !== undefined) {
             const defStepIdx = plan.steps.indexOf(defStep)
@@ -3864,7 +3882,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             }
           }
         }
-        for (const targetIdx of boundedTargetIndices) {
+        // 自环模式：当前 source 节点只保留到自身的 targetIdx
+        // 如 MATCH (n)-[r]->(n) 中，起始节点通过自环边只回到自身
+        const isSelfStep = plan.steps?.[0]?.source && plan.steps?.[0]?.targetAlias &&
+          plan.steps[0].source === plan.steps[0].targetAlias
+        const boundedTargets = isSelfStep
+          ? [...boundedTargetIndices].filter(tIdx => tIdx === i)
+          : [...boundedTargetIndices]
+        for (const targetIdx of boundedTargets) {
               const targetNode = allNodes[targetIdx]
               if (!targetNode) continue
               const geNode: any = {
