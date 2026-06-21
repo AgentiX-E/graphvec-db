@@ -617,9 +617,30 @@ function buildQueryPlan(query: string): QueryPlan {
   // Extract from original query text as a regex-based fallback.
   if (!plan.forEach) {
     // 使用更宽松的正则（不要求 ) 闭合）
+    // Detect MATCH from query text when ANTLR didn't parse it (FOREACH not in grammar)
+    const hasMatchInQuery = /MATCH/i.test(trimmed)
+    
     const feMatch2 = trimmed.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*(.+?)\s*\)\s*(\w.*)?$/is) ||
                      trimmed.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*(.*)/i)
     if (feMatch2) {
+      // If there's a MATCH but ANTLR didn't parse it, extract MATCH info from text
+      if (hasMatchInQuery && !plan.hasMatch && !plan.scanLabel) {
+        const matchPattern = trimmed.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*(\w+))?/)
+        if (matchPattern) {
+          const matchVar = matchPattern[1]
+          const matchLabel = matchPattern[2] || undefined
+          plan.hasMatch = true
+          plan.scanLabel = matchLabel
+          if (matchLabel) {
+            plan.labelExpr = matchLabel
+          }
+          // Set matchAlias for the MATCH variable
+          plan.matchAlias = matchVar
+          // Scan mode for single-step MATCH
+          plan.steps = []
+        }
+      }
+      
       const feVar = feMatch2[1]
       let feListRaw = feMatch2[2].trim()
       const feBody = feMatch2[3].trim()
@@ -646,7 +667,7 @@ function buildQueryPlan(query: string): QueryPlan {
       const operation = parseForeachBody(cleanBody)
       if (operation) {
         if (feWhere) operation.where = feWhere
-        plan.forEach = { variable: feVar, list: feList, isVarRef: feIsVarRef, operation }
+        plan.forEach = { variable: feVar, name: feVar, list: feList, isVarRef: feIsVarRef, operation }
       }
     }
   }
@@ -1034,7 +1055,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           if (operation) {
             // If WHERE was in list expression, attach it to operation
             if (feWhere) { operation.where = feWhere }
-            plan.forEach = { variable: feVar, list: feList, isVarRef: feIsVarRef, operation }
+            plan.forEach = { variable: feVar, name: feVar, list: feList, isVarRef: feIsVarRef, operation }
           }
         }
         break

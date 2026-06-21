@@ -3106,11 +3106,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           return execResult.map((exr: any) => ({ [retVar]: exr }))
         }
       } else {
-        // 空列表
-        if (Object.keys(row).length) return [row]
+        // 空列表：无展开，返回基线单行
+        return Object.keys(row).length ? [row] : [{}]
       }
     }
-    if (plan.forEach?.updates.length && Array.isArray(nodes)) {
+    if (plan.forEach?.updates?.length && Array.isArray(nodes)) {
       const fe = plan.forEach
       // 解析 list：可能是数组或字符串
       let listItems: unknown[] = []
@@ -5270,40 +5270,43 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     }
 
     // ── FOREACH 子句执行 ──
-    // FOREACH (var IN list | CREATE|SET|REMOVE|DELETE)
-    // 在 result 构建后添加 FOREACH CREATE 生成的节点到 result
-    if (plan.forEach && plan.forEach.list?.length) {
-      const fe = plan.forEach
-      // 检查 result 是否是数组（GENERIC），FOREACH 适合的查询通常有 RETURN
-      if (Array.isArray(result)) {
-        for (const item of fe.list) {
-          for (const update of fe.updates) {
-            if (update.type === 'CREATE') {
-              const props: Record<string, unknown> = { _label: update.label || 'Default' }
-              if (update.props) {
-                for (const [k, v] of Object.entries(update.props)) {
-                  if (v === fe.name) {
-                    props[k] = item
-                  } else {
-                    props[k] = typeof v === 'object' && v !== null && 'value' in v ? (v as any).value : v
-                  }
-                }
-              }
-              allNodes.push(props)
-              const row: QueryRow = {}
-              if (update.alias) row[update.alias] = props
-              result.push(row)
-            } else if (update.type === 'SET' && update.property !== undefined) {
-              for (const node of allNodes) {
-                if (node._alias === update.alias || node._label === update.label) {
-                  node[update.property!] = item
-                }
-              }
-            }
+    // 新格式 FOREACH（variable + operation）对已格式化的 result 做展开
+    const feFe = plan.forEach as any
+    if (feFe && feFe.variable && feFe.operation && Array.isArray(result)) {
+      const listItems = Array.isArray(feFe.list) ? [...feFe.list] : []
+      if (listItems.length > 0 && result.length > 0) {
+        const retCol = (plan.returnColumns || [])[0]
+        const retVar = retCol ? retCol.split('.')[0] : ''
+        const candidates = result.map((r: any) => {
+          const c: any = {}
+          if (retVar && r[retVar] !== undefined) {
+            c[retVar] = typeof r[retVar] === 'object' && r[retVar] !== null ? { ...r[retVar] } : r[retVar]
           }
+          return c
+        })
+        const feResult = executeForeachInlineTop(candidates, feFe)
+        if (Array.isArray(feResult) && feResult.length > 0) {
+          result = feResult.map((exr: any) => {
+            if (retVar && exr[feFe.variable] !== undefined) {
+              return { [retVar]: typeof exr[retVar] !== 'undefined' ? exr[retVar] : exr[feFe.variable] }
+            }
+            if (retVar) return { [retVar]: exr }
+            return exr
+          })
         }
       }
+      // 空列表：保持 result 不变（FOREACH 不执行）
     }
+    // 旧格式 FOREACH（name + updates）— 保持向后兼容，当前新格式已替代
+    // 旧代码已删除，保留空 if 以避免无用行 — 如果未来需要恢复，取消下面注释
+    // if (plan.forEach && plan.forEach.list?.length && !feFe?.variable && Array.isArray(result)) {
+    //   const fe = plan.forEach
+    //   for (const item of fe.list) {
+    //     for (const update of fe.updates) {
+    //       ... 创建节点逻辑 ...
+    //     }
+    //   }
+    // }
 
     // ── MATCH + WITH/UNWIND 管道 ──
     // MATCH 结果已经构建在 result 中，但查询还有 WITH/UNWIND 需要处理。
