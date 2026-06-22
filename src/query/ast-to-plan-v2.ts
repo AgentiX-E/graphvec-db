@@ -588,6 +588,19 @@ function buildQueryPlan(query: string): QueryPlan {
     return plan
   }
 
+  // ── USING INDEX 查询提示提取 ──
+  // 语法: MATCH (n:Person) USING INDEX n:Person(name)
+  // 在 ANTLR 解析前提取，解析完成后附加到 plan 上
+  let usingIndexHint: { var: string; label: string; property: string } | null = null
+  const usingIdxMatch = trimmed.match(/\bUSING\s+INDEX\s+(\w+):(\w+)\((\w+)\)/i)
+  if (usingIdxMatch) {
+    usingIndexHint = {
+      var: usingIdxMatch[1],
+      label: usingIdxMatch[2],
+      property: usingIdxMatch[3],
+    }
+  }
+
   const is = new antlr4.InputStream(trimmed)
   const lexer = new CypherLexer(is)
   const tokens = new antlr4.CommonTokenStream(lexer)
@@ -766,6 +779,11 @@ function buildQueryPlan(query: string): QueryPlan {
       const limitMatch = afterReturn.match(/LIMIT\s+(\d+)/i)
       if (limitMatch) plan.limit = parseInt(limitMatch[1], 10)
     }
+  }
+
+  // ── 附加 USING INDEX 提示 ──
+  if (usingIndexHint) {
+    ;(plan as any)._indexHint = usingIndexHint
   }
 
   return plan

@@ -509,6 +509,8 @@ export interface QueryPlan {
     property: string
     value: unknown
   }>
+  /** USING INDEX n:Label(prop) 查询提示 — 指定使用哪个索引加速 */
+  _indexHint?: { var: string; label: string; property: string }
   /** USING PERIODIC COMMIT 提示 — 分批提交批次大小 */
   periodicCommit?: {
     batchSize?: number
@@ -3407,12 +3409,31 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── hashIndex 构建：为 registered index + EQ filter 构建 O(1) 查找映射 ──
     // key = `${label}:${property}:${String(value)}` → nodeIndices[]
-    // 只构建当前 indexedEqFilters 需要的索引条目，不全部构建
+    // 只构建当前 indexedEqFilters 需要的索引条目，不全部构建。
+    // 如果查询指定了 USING INDEX hint，则优先使用 hint 指定的索引。
+    const indexHint = (plan as any)._indexHint as { var: string; label: string; property: string } | undefined
     const hashIndex = new Map<string, number[]>()
-    if (indexedEqFilters.length) {
+    if (indexedEqFilters.length || indexHint) {
       for (let ni = 0; ni < allNodes.length; ni++) {
         const node = allNodes[ni]
         const nodeLabel = String(node['_label'] || '')
+        // Hint 优先级：使用 hint 中指定的 label + property 构建
+        if (indexHint) {
+          if (nodeLabel !== indexHint.label) {
+            const fullLabel = (node as any).__fullLabel
+            if (!(fullLabel && typeof fullLabel === 'string' && fullLabel.split(':').includes(indexHint.label))) {
+              continue
+            }
+          }
+          const propVal = (node as any)[indexHint.property]
+          if (propVal !== undefined && propVal !== null) {
+            const key = `${indexHint.label}:${indexHint.property}:${String(propVal)}`
+            if (!hashIndex.has(key)) hashIndex.set(key, [])
+            hashIndex.get(key)!.push(ni)
+          }
+          continue // hint 存在时不构建其他索引键
+        }
+        // 无 hint：构建 indexedEqFilters 需要的索引
         for (const efi of indexedEqFilters) {
           if (!efi.index.label) continue
           // 检查节点标签是否匹配索引标签
