@@ -3405,9 +3405,57 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       }
     }
 
+    // ── hashIndex 构建：为 registered index + EQ filter 构建 O(1) 查找映射 ──
+    // key = `${label}:${property}:${String(value)}` → nodeIndices[]
+    // 只构建当前 indexedEqFilters 需要的索引条目，不全部构建
+    const hashIndex = new Map<string, number[]>()
+    if (indexedEqFilters.length) {
+      for (let ni = 0; ni < allNodes.length; ni++) {
+        const node = allNodes[ni]
+        const nodeLabel = String(node['_label'] || '')
+        for (const efi of indexedEqFilters) {
+          if (!efi.index.label) continue
+          // 检查节点标签是否匹配索引标签
+          if (nodeLabel !== efi.index.label) {
+            const fullLabel = (node as any).__fullLabel
+            if (!(fullLabel && typeof fullLabel === 'string' && fullLabel.split(':').includes(efi.index.label))) {
+              continue
+            }
+          }
+          const propVal = (node as any)[efi.filter.property]
+          if (propVal === undefined || propVal === null) continue
+          const key = `${efi.index.label}:${efi.filter.property}:${String(propVal)}`
+          if (!hashIndex.has(key)) hashIndex.set(key, [])
+          hashIndex.get(key)!.push(ni)
+        }
+      }
+    }
+
     // 构建需要跳过的节点索引集合
     const skipNodeIndices = new Set<number>()
     if (indexedEqFilters.length || stepSourceFilters.length || whereLabelFilters.length) {
+      // hashIndex 加速：如果 indexedEqFilters 有匹配，直接获取命中节点
+      if (indexedEqFilters.length && hashIndex.size > 0) {
+        const hashMatched = new Set<number>()
+        let allHashMatchable = true
+        for (const efi of indexedEqFilters) {
+          const key = `${efi.index.label!}:${efi.filter.property}:${String(efi.filter.value)}`
+          const hitIndices = hashIndex.get(key)
+          if (hitIndices) {
+            for (const hi of hitIndices) hashMatched.add(hi)
+          } else {
+            allHashMatchable = false
+            break
+          }
+        }
+        // 只有所有 indexedEqFilters 都能通过 hashIndex 定位时才使用
+        if (allHashMatchable && hashMatched.size > 0) {
+          // 反转：不在 hashMatched 中的节点全部跳过
+          for (let ni = 0; ni < allNodes.length; ni++) {
+            if (!hashMatched.has(ni)) skipNodeIndices.add(ni)
+          }
+        }
+      }
       for (let ni = 0; ni < allNodes.length; ni++) {
         const node = allNodes[ni]
         const nodeLabel = String(node['_label'] || '')
