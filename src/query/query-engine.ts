@@ -2978,8 +2978,48 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           }
           return proc.execute(ctx, args || []) as any
         }
-        // In-query CALL: 先不处理，标记给后面继续执行 GE 后再关联
-        // fallthrough 到下面的 GE 执行逻辑
+        // In-query CALL: 对每个 MATCH 行执行 proc，返回十字连接
+        const proc = _procedureRegistry.get(name)
+        if (proc) {
+          const ctx: import('./procedure-registry').ProcedureContext = {
+            getAllNodes: () => nodes,
+            getNodeCount: () => nodes.length,
+            getLabels: () => {
+              const labels = new Set<string>()
+              for (const node of nodes) {
+                const lbl = String(node._label || '')
+                if (lbl) for (const l of lbl.split(':').map(s => s.trim()).filter(Boolean)) labels.add(l)
+              }
+              return Array.from(labels)
+            },
+            getPropertyKeys: () => {
+              const keys = new Set<string>()
+              for (const node of nodes) {
+                for (const k of Object.keys(node)) if (!k.startsWith('_')) keys.add(k)
+              }
+              return Array.from(keys)
+            },
+          }
+          const procResult = proc.execute(ctx, args || []) as any[]
+          // 无结果返回时（void 函数如 doNothing），直接返回 MATCH 行
+          if (procResult.length === 0) {
+            process.stderr.write(`[DEBUG CALL nodes] nodes.length=${nodes.length} query_len=${query?.length}\n`)
+            // 用 _executeQuery 正确处理 MATCH plan
+            const matchPlan = { ...plan, callProcedure: undefined } as any
+            delete matchPlan.callProcedure
+            return _executeQuery(matchPlan, nodes, query)
+          }
+          // 有结果时十字连接
+          const geRows = await _executeQueryPlan(planCopy, nodes)
+          const joinedRows: any[] = []
+          for (const geRow of geRows) {
+            for (const pr of procResult) {
+              joinedRows.push({ ...geRow, ...pr })
+            }
+          }
+          return joinedRows
+        }
+        // 找不到 proc 时走 GE 路径
         break
       }
     }
@@ -3257,6 +3297,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
     originalNodeCount = nodes?.length || 0
     allNodes = [...(nodes || [])]
+    process.stderr.write(`[DEBUG ALLN] allNodes.len=${allNodes.length} n0=${JSON.stringify(allNodes[0])?.slice(0,60)}\n`)
 
     // 确保多标签节点有 __fullLabel 属性（传入的 nodes 可能没有）
     for (const node of allNodes) {
@@ -4253,6 +4294,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           if (planForGe.steps?.[0]?.direction === 'any') delete planForGe.aggregate
           return (ge as any)._executeQueryPlan(planForGe)
         })()
+    // Fallback: useEdgeWalk=false 且 hasMatch 时，从 GE 获取全部节点
+    process.stderr.write(`[DEBUG FB] useEdgeWalk=${useEdgeWalk} hasMatch=${plan.hasMatch} rawRcLen=${rawRecords?.length} allN=${allNodes.length}\n`)
+    if (!useEdgeWalk && plan.hasMatch && !rawRecords?.length && allNodes.length) {
+      const scanPlan = JSON.parse(JSON.stringify({ ...plan, scanLabel: null, callProcedure: undefined }, _bigintReplacer), _bigintReviver)
+      delete scanPlan.callProcedure
+      rawRecords = (ge as any)._executeQueryPlan(scanPlan) as any[]
+      process.stderr.write(`[DEBUG] rawRecords after fallback: ${rawRecords?.length} rows, allNodes: ${allNodes.length}\n`)
+    }
     let records = rawRecords
 
     // ── GE filter 补偿 ──
@@ -5596,6 +5645,7 @@ function _deepStripInternal(obj: unknown): unknown {
  * - 如果 returnColumns 是属性名（RETURN n.p, n.q），从完整节点数据中读取属性值
  */
 function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
+  process.stderr.write(`[DEBUG FORMAT] r=${JSON.stringify(r)?.slice(0,100)} retCols=${JSON.stringify(plan.returnColumns)} exprCols=${JSON.stringify((plan as any).expressionColumns)}\n`)
   const row: QueryRow = {}
 
   // GE 返回格式：{ props: { _label, _alias, name, p, ... } }
@@ -6159,6 +6209,47 @@ export async function _executeQuery(
     planCopy.limit = DEFAULT_LIMIT
   }
   // 所有查询统一走 GraphEngine
+  // ── bare CALL dispatch：CALL name（无括号语法）──
+  if (planCopy.type === 'CALL' && !(planCopy as any).callProcedure && query) {
+    const callMatch = query.match(/CALL\s+(\S+)(?:\s+|\s*$)/i)
+    if (callMatch && !query.match(/CALL\s+\S+\s*\(/i)) {
+      const bareName = callMatch[1].toLowerCase()
+      const proc = _procedureRegistry.get(bareName)
+      if (proc) {
+        const sigParens = proc.signature.match(/\(([^)]*)\)/)
+        const paramNames: string[] = []
+        if (sigParens) {
+          paramNames.push(...sigParens[1].split(',').map(s => s.split('::')[0].trim()).filter(Boolean))
+        }
+        const bareParams = (planCopy as any)._bareCallParams as Record<string, unknown> | undefined
+        const args: unknown[] = []
+        if (bareParams && paramNames.length) {
+          for (const pn of paramNames) {
+            args.push(bareParams[pn] !== undefined ? bareParams[pn] : null)
+          }
+        }
+        const ctx: import('./procedure-registry').ProcedureContext = {
+          getAllNodes: () => nodes as any[],
+          getNodeCount: () => nodes.length,
+          getLabels: () => {
+            const labels = new Set<string>()
+            for (const node of nodes) {
+              const lbl = String((node as any)._label || '')
+              if (lbl) for (const l of lbl.split(':').map(s => s.trim()).filter(Boolean)) labels.add(l)
+            }
+            return Array.from(labels)
+          },
+          getPropertyKeys: () => {
+            const keys = new Set<string>()
+            for (const node of nodes) { for (const k of Object.keys(node)) if (!k.startsWith('_')) keys.add(k) }
+            return Array.from(keys)
+          },
+        }
+        return proc.execute(ctx, args) as any
+      }
+    }
+  }
+  process.stderr.write(`[DEBUG EXECBEFORE] retCols=${JSON.stringify(planCopy.returnColumns)} exprCols=${JSON.stringify((planCopy as any).expressionColumns)}\n`)
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
   return execQueryResult
 }
@@ -6629,6 +6720,103 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       }
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // CALL 校验 — 编译时错误
+  // ═══════════════════════════════════════════════════════════════
+  if (plan.type === 'CALL' && query) {
+    const cp = plan.callProcedure as { name: string; args: any[]; yieldItems?: Array<{ name: string; alias: string | null }> } | undefined
+    let resolvedName: string | undefined
+    let resolvedArgs: string[] | undefined
+    let resolvedYieldItems: Array<{ name: string; alias: string | null }> | undefined
+
+    if (cp && cp.name) {
+      resolvedName = cp.name
+      resolvedArgs = cp.args?.map(a => String(a)) || []
+      resolvedYieldItems = cp.yieldItems
+    } else {
+      const callFullMatch = query.match(/CALL\s+(\S+?)\s*\(([^)]*)\)\s*(YIELD\s+(.+?))?(?:\s+(?:RETURN|WHERE|WITH|CALL)|$)/is)
+      if (callFullMatch) {
+        resolvedName = callFullMatch[1].toLowerCase()
+        const argsStr = callFullMatch[2].trim()
+        resolvedArgs = argsStr ? argsStr.split(',').map(s => s.trim()).filter(Boolean) : []
+        const yieldStr = callFullMatch[4]
+        if (yieldStr) {
+          resolvedYieldItems = yieldStr.split(',').map(s => {
+            const as = s.trim().match(/^(\w+)\s+AS\s+(\w+)$/i)
+            return as ? { name: as[1], alias: as[2] } : { name: s.trim(), alias: null }
+          }).filter(yi => yi.name)
+        }
+      }
+    }
+
+    if (resolvedName) {
+      const proc = _procedureRegistry.get(resolvedName)
+      if (!proc) {
+        throw Object.assign(new Error(`ProcedureError: ProcedureNotFound (${resolvedName})`), { tckError: 'ProcedureNotFound' })
+      }
+      const sigParens = proc.signature.match(/\(([^)]*)\)/)
+      const sigArgs = sigParens ? sigParens[1].split(',').filter(s => s.trim().length > 0) : []
+      if (resolvedArgs && resolvedArgs.length > sigArgs.length) {
+        throw Object.assign(new Error(`InvalidNumberOfArguments (${resolvedName}): expected ${sigArgs.length}, got ${resolvedArgs.length}`), { tckError: 'InvalidNumberOfArguments' })
+      }
+      if (resolvedArgs && query.match(/CALL\s+\S+\s*\(/i) && resolvedArgs.length !== 0 && resolvedArgs.length < sigArgs.length) {
+        throw Object.assign(new Error(`InvalidNumberOfArguments (${resolvedName}): expected ${sigArgs.length}, got ${resolvedArgs.length}`), { tckError: 'InvalidNumberOfArguments' })
+      }
+      if (resolvedArgs?.length) {
+        const aggFnPattern = /^\s*(?:collect|count|sum|avg|max|min)\s*\(/i
+        for (const arg of resolvedArgs) {
+          if (aggFnPattern.test(arg)) {
+            throw Object.assign(new Error(`SyntaxError: InvalidAggregation (${arg})`), { tckError: 'InvalidAggregation' })
+          }
+        }
+      }
+      if (resolvedYieldItems?.length) {
+        const boundVars = new Set<string>()
+        const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
+        for (const mc of matchClauses) {
+          const clause = mc[1]
+          const nodeVars = clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)
+          for (const v of nodeVars) if (v[1]) boundVars.add(v[1])
+          const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
+          for (const v of edgeVars) if (v[1]) boundVars.add(v[1])
+        }
+        const withClauses = query.matchAll(/WITH\s+(.+?)(?:\s+(?:WHERE|RETURN|MATCH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)
+        for (const wc of withClauses) {
+          const clause = wc[1]
+          const asAliases = clause.matchAll(/\bAS\s+(\w+)/gi)
+          for (const a of asAliases) boundVars.add(a[1])
+          const bareVars = clause.matchAll(/\b([a-zA-Z_]\w*)\b/g)
+          for (const v of bareVars) {
+            if (!/^(?:AS|null|true|false)$/i.test(v[1])) boundVars.add(v[1])
+          }
+        }
+        for (const yi of resolvedYieldItems) {
+          const yieldName = yi.alias || yi.name
+          if (boundVars.has(yieldName)) {
+            throw Object.assign(new Error(`SyntaxError: VariableAlreadyBound (${yieldName})`), { tckError: 'VariableAlreadyBound' })
+          }
+        }
+      }
+    } else {
+      const bareCallMatch = query.match(/CALL\s+(\S+)(?:\s|$)/i)
+      if (bareCallMatch) {
+        const bareName = bareCallMatch[1].toLowerCase()
+        const proc = _procedureRegistry.get(bareName)
+        if (!proc) {
+          throw Object.assign(new Error(`ProcedureError: ProcedureNotFound (${bareName})`), { tckError: 'ProcedureNotFound' })
+        }
+        // bare CALL 无括号且有参数定义但未通过 params 提供 — MissingParameter
+        const sigParens = proc.signature.match(/\(([^)]*)\)/)
+        if (sigParens) {
+          const sigArgs = sigParens[1].split(',').filter(s => s.trim().length > 0)
+          if (sigArgs.length > 0) {
+            throw Object.assign(new Error('ParameterMissing'), { tckError: 'MissingParameter' })
+          }
+        }
+      }
+    }
+  }
 }
 
 /** 从 Cypher 查询中提取 MATCH 子句的字符串 */
@@ -6762,6 +6950,14 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
   const createNodeVars: string[] = [...query.matchAll(/(?:CREATE|MERGE)\s+(.*?)(?:\s+(?:SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\b|$)/gis)].flatMap(cm => {
     const clause = cm[1];
     return [...clause.matchAll(/\((\w+)\s*(?::|\))/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v));
+  })
+  // 提取 CALL YIELD 定义的变量
+  const callYieldVars: string[] = [...query.matchAll(/YIELD\s+(.+?)(?:\s+(?:RETURN|WITH|WHERE|CALL)\s|$)/gis)].flatMap(ym => {
+    const clause = ym[1];
+    return clause.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+      const asMatch = s.match(/^(\w+)\s+AS\s+(\w+)$/i)
+      return asMatch ? asMatch[2] : s.match(/^\w+$/) ? s : ''
+    }).filter(Boolean)
   })
   // 提取 WITH/UNWIND 子句中定义的变量（提前，以便 RETURN 和 WHERE 检查都能使用）
   const withVars: string[] = []
@@ -6898,7 +7094,7 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
         const vu = v.toUpperCase()
         if (_TCK_KEYWORDS.has(vu)) continue
         // 检查是否在 MATCH、WITH 变量、CREATE 边变量、CREATE 节点变量中定义
-        const allDefinedVars = [...matchVars, ...withVars, ...createEdgeVars, ...createNodeVars]
+        const allDefinedVars = [...matchVars, ...withVars, ...createEdgeVars, ...createNodeVars, ...callYieldVars]
         if (!allDefinedVars.includes(v)) {
           // 额外检查：如果 v 看起来是属性访问（有小数点），跳过
           if (v.includes('.') && allDefinedVars.includes(v.split('.')[0])) continue
@@ -6914,7 +7110,7 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
   // 如果 whereBody 以 ") AS alias" 结尾，剥离后缀（list predicate 的结束括号被误捕获）
   const whereClean = whereBody.replace(/\)\s*AS\s+\w+\s*$/i, '').trim()
   // 合并 MATCH 变量和 WITH 变量
-  const definedVars = [...new Set([...matchVars, ...withVars])]
+  const definedVars = [...new Set([...matchVars, ...withVars, ...callYieldVars])]
   // 去掉字符串常量
   let cleaned = whereClean
     .replace(/'[^']*'/g, '')

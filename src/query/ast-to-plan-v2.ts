@@ -278,7 +278,8 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
     const item = items[i].trim()
     if (!item) continue
 
-    const asMatch = item.match(/^([\s\S]+?)\s+AS\s+(\w+)$/i)
+    const backtickAsMatch = item.match(/^([\s\S]+?)\s+AS\s+`(\w+)`$/i)
+    const asMatch = backtickAsMatch ?? item.match(/^([\s\S]+?)\s+AS\s+(\w+)$/i)
     let rawExpr: string
     let rawAlias: string | null
     if (asMatch) {
@@ -327,7 +328,9 @@ function rebuildReturnColumns(plan: QueryPlan, items: string[]): void {
     const trimmed = item.trim()
     if (!trimmed) continue
 
-    const asMatch = trimmed.match(/^([\s\S]+?)\s+AS\s+(\w+)$/i)
+    // 支持反引号别名（如 n.name AS `name`）
+    const backtickAsMatch = trimmed.match(/^([\s\S]+?)\s+AS\s+`(\w+)`$/i)
+    const asMatch = backtickAsMatch ?? trimmed.match(/^([\s\S]+?)\s+AS\s+(\w+)$/i)
     let expression: string
     let alias: string | null
     if (asMatch) {

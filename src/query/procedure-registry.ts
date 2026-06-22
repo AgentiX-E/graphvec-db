@@ -102,6 +102,10 @@ export class ProcedureRegistry {
   has(name: string): boolean {
     return this._procedures.has(name.toLowerCase())
   }
+
+  unregister(name: string): void {
+    this._procedures.delete(name.toLowerCase())
+  }
 }
 
 // ── 全局单例 ──────────────────────────────────────────────

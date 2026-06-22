@@ -21,6 +21,16 @@ Before(function () {
   if (st.pGe) { try { st.pGe.close() } catch {}; st.pGe = undefined }
   if (st.pDir) { try { fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}; st.pDir = undefined }
   _clearGeInstances()
+  // 清除 procedure registry（除了内置 proc），确保场景间隔离
+  // 内置 proc（db.labels, dbms.security.createUser 等）在 registerBuiltins 中注册，需要保留
+  // 但测试注册的 proc（test.my.proc, test.doNothing 等）需要清理
+  // 通过 Before 中重建 registry 实现
+  const registeredNames = _globalProcedureRegistry.list().map(p => p.name)
+  for (const n of registeredNames) {
+    if (!n.startsWith('db.') && !n.startsWith('dbms.')) {
+      _globalProcedureRegistry.unregister(n)
+    }
+  }
 })
 After(function () {
   try { st.pGe?.close() } catch {}
@@ -158,7 +168,12 @@ async function run(q: string): Promise<void> {
     }
 
     // 执行查询
+    if (plan.type === 'CALL' && !plan.callProcedure && resolvedQ && st.params && Object.keys(st.params).length) {
+      (plan as any)._bareCallParams = { ...st.params }
+    }
+    process.stderr.write(`[DEBUG RUN] nodes.len=${st.nodes.length} plan.type=${plan.type} plan.callProc=${!!plan.callProcedure} retCols=${JSON.stringify(plan.returnColumns)} exprCols=${JSON.stringify((plan as any).expressionColumns)}\n`)
     const result = await _executeQuery(plan, st.nodes, resolvedQ)
+    process.stderr.write(`[DEBUG RES] len=${result?.length} res0=${JSON.stringify(result?.[0])?.slice(0,80)}\n`)
     st.err = null
     st.res = result as any[]
   } catch (e: any) {
@@ -605,6 +620,48 @@ function _syncNodesFromGe(): void {
 
 Given('having executed:', async function (query: string) {
   const q = query.trim()
+  process.stderr.write(`[DEBUG HE] before exec st.nodes.len=${st.nodes.length} query=${q.slice(0,60)}\n`)
+  // 支持多语句：按行分割，逐条执行
+  const lines = q.split('\n').map(s => s.trim()).filter(Boolean)
+  if (lines.length > 1) {
+    // 多语句场景 → 逐条递归执行
+    for (const line of lines) {
+      try {
+        const subPlan = parseQuery(line)
+        if (!subPlan || !subPlan.type) continue
+        // 如果是 CREATE/MERGE，直接处理（注入 GE 和 st.nodes）
+        if ((subPlan.type === 'CREATE' || subPlan.type === 'MERGE') && (subPlan as any).createNodes?.length) {
+          const cns = (subPlan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
+          for (const cn of cns) {
+            const node: Record<string, unknown> = { _label: cn.label || 'Default' }
+            if (cn.alias) node['_alias'] = cn.alias
+            if (cn.props) {
+              for (const [k, v] of Object.entries(cn.props)) {
+                node[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
+                  ? (v as any).value
+                  : v
+                if (typeof node[k] === 'string' && /^-?\d+$/.test(node[k] as string)) {
+                  try {
+                    const asBig = BigInt(node[k] as string)
+                    if (asBig > BigInt(Number.MAX_SAFE_INTEGER) || asBig < BigInt(Number.MIN_SAFE_INTEGER)) {
+                      node[k] = asBig
+                    } else { node[k] = Number(node[k]) }
+                  } catch {}
+                }
+              }
+            }
+            st.nodes.push(node)
+            try { seedGe(persistGe(), node) } catch {}
+          }
+        } else {
+          // 非 CREATE 语句，用 run() 执行
+          await run(line)
+        }
+      } catch { /* 忽略单语句错误，继续下一个 */ }
+    }
+    st.err = null
+    return
+  }
   try {
     const plan = parseQuery(q)
     if (!plan || !plan.type) throw new Error('parseQuery failed for ' + q)
@@ -906,8 +963,8 @@ Given(/^there exists a procedure (.*)$/, function (this: any, procDesc: string, 
 
   // 获取 data table（如果有）
   let dataTable: any[] = []
-  if (dt && dt.rows && dt.rows.length) {
-    const rawRows = dt.rows()
+  if (dt && typeof dt.rows === 'function') {
+    const rawRows = dt.raw()
     // 第一行是表头（参数列名）
     const headers: string[] = rawRows[0] || []
     for (let i = 1; i < rawRows.length; i++) {
@@ -930,7 +987,7 @@ Given(/^there exists a procedure (.*)$/, function (this: any, procDesc: string, 
         const matched = dataTable.find(row => {
           return paramNames.every((pName, i) => {
             if (args[i] === undefined || args[i] === null) return row[pName] === null || row[pName] === undefined
-            return String(row[pName]) === String(args[i])
+            return String(row[pName]) === String(parseTckValue(String(args[i])))
           })
         })
         if (matched) {
