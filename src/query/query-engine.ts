@@ -4290,10 +4290,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               node[(sc as any).property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
             }
           }
-          // 同步更新 GE 存储层节点属性
+          // 同步更新 GE 存储层节点属性（await 确保持久化）
           if (ge) {
             try {
-              (ge as any).upsertNode(1, '', { props: node })
+              await (ge as any).upsertNode(1, '', { props: node })
             } catch (_) { /* ignore storage errors */ }
           }
         }
@@ -6659,7 +6659,7 @@ function _validateUndefinedVariables(query: string, plan?: any): void {
   const matchVars = extractMatchVariables(query)
   // 也提取 CREATE/MERGE 中的变量（节点和边变量）作为已定义变量
   const createEdgeVars: string[] = [...query.matchAll(/\[(\w+)\s*(?::|])/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v))
-  const createNodeVars: string[] = [...query.matchAll(/CREATE\s+(.*?)(?:\s+(?:SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\b|$)/gis)].flatMap(cm => {
+  const createNodeVars: string[] = [...query.matchAll(/(?:CREATE|MERGE)\s+(.*?)(?:\s+(?:SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\b|$)/gis)].flatMap(cm => {
     const clause = cm[1];
     return [...clause.matchAll(/\((\w+)\s*(?::|\))/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v));
   })
