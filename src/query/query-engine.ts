@@ -2780,6 +2780,32 @@ function _extractWithClausesAfterUnwind(query: string, plan: any): string[] {
   return parts.filter(p => /^WITH\s+/i.test(p))
 }
 
+/**
+ * 对 CALL YIELD 结果应用别名映射。
+ * proc 返回 {a: 1, b: 2}，YIELD a AS c, b AS a 应映射为 {c: 1, a: 2}。
+ */
+function _applyYieldAliases(
+  rows: Array<Record<string, unknown>>,
+  yieldItems: Array<{ name: string; alias: string | null }> | undefined,
+  query: string | undefined
+): Array<Record<string, unknown>> {
+  if (!yieldItems || yieldItems.length === 0) return rows
+  const needsRemap = yieldItems.some(yi => yi.alias && yi.alias !== yi.name)
+  if (!needsRemap) return rows
+  const aliasMap = new Map<string, string>()
+  for (const yi of yieldItems) {
+    aliasMap.set(yi.name, yi.alias || yi.name)
+  }
+  return rows.map(r => {
+    const mapped: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(r)) {
+      const newKey = aliasMap.get(k) ?? k
+      mapped[newKey] = v
+    }
+    return mapped
+  })
+}
+
 /** GraphEngine 原生执行入口 */
 async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
   // ── LOAD CSV ──
@@ -2954,7 +2980,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       default: {
         // Standalone CALL: nodes 为空时直接返回 proc 结果
         if (nodes.length === 0) {
-          console.error('🔍 Looking up procedure:', name)
           const proc = _procedureRegistry.get(name)
           if (!proc) throw new Error(`Unknown procedure: ${name}`)
           const ctx: import('./procedure-registry').ProcedureContext = {
@@ -2976,7 +3001,26 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               return Array.from(keys)
             },
           }
-          return proc.execute(ctx, args || []) as any
+          const raw = proc.execute(ctx, args || []) as any[]
+          const aliased = _applyYieldAliases(raw, plan.callProcedure.yieldItems, query)
+          if (plan.with?.columns?.length) {
+            let withRows = aliased
+            const aggFnPat = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
+            const withAggCols = []
+            for (const wc of plan.with.columns) {
+              if (aggFnPat.test(wc.expression)) {
+                if (/^\s*count\s*\(\s*\*\s*\)\s*$/i.test(wc.expression)) {
+                  withAggCols.push({ alias: wc.alias || wc.expression, val: withRows.length })
+                }
+              }
+            }
+            if (withAggCols.length > 0) {
+              withRows = [Object.fromEntries(withAggCols.map(a => [a.alias, a.val]))]
+            }
+            const secondPlan = { ...plan, with: undefined, returnColumns: plan.returnColumns || Object.keys(withRows[0] || {}) }
+            return _executeViaGraphEngine(secondPlan, withRows, query)
+          }
+          return aliased
         }
         // In-query CALL: 对每个 MATCH 行执行 proc，返回十字连接
         const proc = _procedureRegistry.get(name)
@@ -3009,7 +3053,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             return _executeQuery(matchPlan, nodes, query)
           }
           // 有结果时十字连接
-          const geRows = await _executeQueryPlan(planCopy, nodes)
+          let geRows
+          if (nodes.length > 0 && !plan.hasMatch && !plan.scanLabel && (!plan.steps || plan.steps.length === 0)) {
+            geRows = nodes
+          } else {
+            geRows = await _executeQueryPlan(planCopy, nodes)
+          }
           const joinedRows: any[] = []
           for (const geRow of geRows) {
             for (const pr of procResult) {
@@ -6221,6 +6270,19 @@ export async function _executeQuery(
         if (bareParams && paramNames.length) {
           for (const pn of paramNames) {
             args.push(bareParams[pn] !== undefined ? bareParams[pn] : null)
+          }
+        }
+        if (sigParens) {
+          const sigArgsBP = sigParens[1].split(',').map(s => s.trim()).filter(Boolean)
+          const hasRequiredUnprovided = sigArgsBP.some((a) => {
+            const trimmed = a.trim()
+            const pName = trimmed.split('::')[0].trim()
+            if (bareParams && pName in bareParams) return false
+            if (/DEFAULT\s/i.test(trimmed)) return false
+            return true
+          })
+          if (hasRequiredUnprovided) {
+            throw Object.assign(new Error('ParameterMissing'), { tckError: 'MissingParameter' })
           }
         }
         const ctx: import('./procedure-registry').ProcedureContext = {
