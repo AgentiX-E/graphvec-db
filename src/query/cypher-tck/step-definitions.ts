@@ -171,9 +171,7 @@ async function run(q: string): Promise<void> {
     if (plan.type === 'CALL' && !plan.callProcedure && resolvedQ && st.params && Object.keys(st.params).length) {
       (plan as any)._bareCallParams = { ...st.params }
     }
-    process.stderr.write(`[DEBUG RUN] nodes.len=${st.nodes.length} plan.type=${plan.type} plan.callProc=${!!plan.callProcedure} retCols=${JSON.stringify(plan.returnColumns)} exprCols=${JSON.stringify((plan as any).expressionColumns)}\n`)
     const result = await _executeQuery(plan, st.nodes, resolvedQ)
-    process.stderr.write(`[DEBUG RES] len=${result?.length} res0=${JSON.stringify(result?.[0])?.slice(0,80)}\n`)
     st.err = null
     st.res = result as any[]
   } catch (e: any) {
@@ -620,7 +618,6 @@ function _syncNodesFromGe(): void {
 
 Given('having executed:', async function (query: string) {
   const q = query.trim()
-  process.stderr.write(`[DEBUG HE] before exec st.nodes.len=${st.nodes.length} query=${q.slice(0,60)}\n`)
   // 支持多语句：按行分割，逐条执行
   const lines = q.split('\n').map(s => s.trim()).filter(Boolean)
   if (lines.length > 1) {

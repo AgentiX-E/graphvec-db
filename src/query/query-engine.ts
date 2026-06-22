@@ -3003,7 +3003,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const procResult = proc.execute(ctx, args || []) as any[]
           // 无结果返回时（void 函数如 doNothing），直接返回 MATCH 行
           if (procResult.length === 0) {
-            process.stderr.write(`[DEBUG CALL nodes] nodes.length=${nodes.length} query_len=${query?.length}\n`)
             // 用 _executeQuery 正确处理 MATCH plan
             const matchPlan = { ...plan, callProcedure: undefined } as any
             delete matchPlan.callProcedure
@@ -3297,7 +3296,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
     originalNodeCount = nodes?.length || 0
     allNodes = [...(nodes || [])]
-    process.stderr.write(`[DEBUG ALLN] allNodes.len=${allNodes.length} n0=${JSON.stringify(allNodes[0])?.slice(0,60)}\n`)
 
     // 确保多标签节点有 __fullLabel 属性（传入的 nodes 可能没有）
     for (const node of allNodes) {
@@ -4295,12 +4293,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           return (ge as any)._executeQueryPlan(planForGe)
         })()
     // Fallback: useEdgeWalk=false 且 hasMatch 时，从 GE 获取全部节点
-    process.stderr.write(`[DEBUG FB] useEdgeWalk=${useEdgeWalk} hasMatch=${plan.hasMatch} rawRcLen=${rawRecords?.length} allN=${allNodes.length}\n`)
     if (!useEdgeWalk && plan.hasMatch && !rawRecords?.length && allNodes.length) {
       const scanPlan = JSON.parse(JSON.stringify({ ...plan, scanLabel: null, callProcedure: undefined }, _bigintReplacer), _bigintReviver)
       delete scanPlan.callProcedure
       rawRecords = (ge as any)._executeQueryPlan(scanPlan) as any[]
-      process.stderr.write(`[DEBUG] rawRecords after fallback: ${rawRecords?.length} rows, allNodes: ${allNodes.length}\n`)
     }
     let records = rawRecords
 
@@ -5645,7 +5641,6 @@ function _deepStripInternal(obj: unknown): unknown {
  * - 如果 returnColumns 是属性名（RETURN n.p, n.q），从完整节点数据中读取属性值
  */
 function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
-  process.stderr.write(`[DEBUG FORMAT] r=${JSON.stringify(r)?.slice(0,100)} retCols=${JSON.stringify(plan.returnColumns)} exprCols=${JSON.stringify((plan as any).expressionColumns)}\n`)
   const row: QueryRow = {}
 
   // GE 返回格式：{ props: { _label, _alias, name, p, ... } }
@@ -6249,7 +6244,6 @@ export async function _executeQuery(
       }
     }
   }
-  process.stderr.write(`[DEBUG EXECBEFORE] retCols=${JSON.stringify(planCopy.returnColumns)} exprCols=${JSON.stringify((planCopy as any).expressionColumns)}\n`)
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
   return execQueryResult
 }
@@ -6750,30 +6744,59 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       }
     }
 
+
     if (resolvedName) {
       const proc = _procedureRegistry.get(resolvedName)
       if (!proc) {
-        throw Object.assign(new Error(`ProcedureError: ProcedureNotFound (${resolvedName})`), { tckError: 'ProcedureNotFound' })
+        throw Object.assign(new Error('ProcedureError: ProcedureNotFound (' + resolvedName + ')'), { tckError: 'ProcedureNotFound' })
       }
       const sigParens = proc.signature.match(/\(([^)]*)\)/)
       const sigArgs = sigParens ? sigParens[1].split(',').filter(s => s.trim().length > 0) : []
       if (resolvedArgs && resolvedArgs.length > sigArgs.length) {
-        throw Object.assign(new Error(`InvalidNumberOfArguments (${resolvedName}): expected ${sigArgs.length}, got ${resolvedArgs.length}`), { tckError: 'InvalidNumberOfArguments' })
+        throw Object.assign(new Error('InvalidNumberOfArguments (' + resolvedName + '): expected ' + sigArgs.length + ', got ' + resolvedArgs.length), { tckError: 'InvalidNumberOfArguments' })
       }
       if (resolvedArgs && query.match(/CALL\s+\S+\s*\(/i) && resolvedArgs.length !== 0 && resolvedArgs.length < sigArgs.length) {
-        throw Object.assign(new Error(`InvalidNumberOfArguments (${resolvedName}): expected ${sigArgs.length}, got ${resolvedArgs.length}`), { tckError: 'InvalidNumberOfArguments' })
+        throw Object.assign(new Error('InvalidNumberOfArguments (' + resolvedName + '): expected ' + sigArgs.length + ', got ' + resolvedArgs.length), { tckError: 'InvalidNumberOfArguments' })
       }
       if (resolvedArgs?.length) {
         const aggFnPattern = /^\s*(?:collect|count|sum|avg|max|min)\s*\(/i
         for (const arg of resolvedArgs) {
           if (aggFnPattern.test(arg)) {
-            throw Object.assign(new Error(`SyntaxError: InvalidAggregation (${arg})`), { tckError: 'InvalidAggregation' })
+            throw Object.assign(new Error('SyntaxError: InvalidAggregation (' + arg + ')'), { tckError: 'InvalidAggregation' })
+          }
+        }
+        // InvalidArgumentType: literal arg types against signature
+        const queryArgsArr = query.match(/CALL\s+\S+?\s*\(([^)]*)\)/i)
+        if (queryArgsArr && sigArgs.length > 0) {
+          const userArgs = queryArgsArr[1].split(',').map(s => s.trim()).filter(Boolean)
+          for (let ai = 0; ai < Math.min(userArgs.length, sigArgs.length); ai++) {
+            const sigArg = sigArgs[ai].trim()
+            const typeMatch2 = sigArg.match(/::\s*(\w+)/)
+            if (typeMatch2) {
+              const expType = typeMatch2[1].toUpperCase()
+              const userArg = userArgs[ai]
+              let userType
+              if (userArg === 'true' || userArg === 'false') userType = 'BOOLEAN'
+              else if (/^-?\d+\.\d+/.test(userArg)) userType = 'FLOAT'
+              else if (/^-?\d+$/.test(userArg)) userType = 'INTEGER'
+              else if (/^['"]/.test(userArg)) userType = 'STRING'
+              else if (userArg === 'null') userType = 'NULL'
+              else continue
+              if (expType === 'INTEGER' && (userType === 'BOOLEAN' || userType === 'FLOAT')) {
+                throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+              }
+              if (expType === 'BOOLEAN' && (userType === 'INTEGER' || userType === 'FLOAT')) {
+                throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+              }
+            }
           }
         }
       }
       if (resolvedYieldItems?.length) {
-        const boundVars = new Set<string>()
-        const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
+        const boundVars = new Set()
+        // Only scan variables before the CALL (MATCH/WITH etc., not after)
+        const beforeCall = query.slice(0, Math.max(0, query.toLowerCase().indexOf('call')))
+        const matchClauses = beforeCall.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
         for (const mc of matchClauses) {
           const clause = mc[1]
           const nodeVars = clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)
@@ -6781,7 +6804,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
           const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
           for (const v of edgeVars) if (v[1]) boundVars.add(v[1])
         }
-        const withClauses = query.matchAll(/WITH\s+(.+?)(?:\s+(?:WHERE|RETURN|MATCH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)
+        const withClauses = beforeCall.matchAll(/WITH\s+(.+?)(?:\s+(?:WHERE|RETURN|MATCH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)
         for (const wc of withClauses) {
           const clause = wc[1]
           const asAliases = clause.matchAll(/\bAS\s+(\w+)/gi)
@@ -6794,24 +6817,88 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         for (const yi of resolvedYieldItems) {
           const yieldName = yi.alias || yi.name
           if (boundVars.has(yieldName)) {
-            throw Object.assign(new Error(`SyntaxError: VariableAlreadyBound (${yieldName})`), { tckError: 'VariableAlreadyBound' })
+            throw Object.assign(new Error('SyntaxError: VariableAlreadyBound (' + yieldName + ')'), { tckError: 'VariableAlreadyBound' })
           }
+        }
+        // Check duplicate aliases within the same YIELD
+        const allYieldNames = resolvedYieldItems.map(yi => yi.alias || yi.name)
+        const seenNames = new Set()
+        for (const yn of allYieldNames) {
+          if (seenNames.has(yn)) {
+            throw Object.assign(new Error('SyntaxError: VariableAlreadyBound (' + yn + ')'), { tckError: 'VariableAlreadyBound' })
+          }
+          seenNames.add(yn)
         }
       }
     } else {
+      // In-query CALL without parentheses but with YIELD - check argument passing mode
+      const bareCallMatchY = query.match(/CALL\s+(\S+?)\s+YIELD\s+/i)
+      if (bareCallMatchY) {
+        const bareNameY = bareCallMatchY[1].toLowerCase()
+        const procY = _procedureRegistry.get(bareNameY)
+        if (procY) {
+          const sigParensY = procY.signature.match(/\(([^)]*)\)/)
+          if (sigParensY) {
+            const sigArgsY = sigParensY[1].split(',').filter(s => s.trim().length > 0)
+            if (sigArgsY.length > 0) {
+              throw Object.assign(new Error('SyntaxError: InvalidArgumentPassingMode'), { tckError: 'InvalidArgumentPassingMode' })
+            }
+          }
+        }
+      }
       const bareCallMatch = query.match(/CALL\s+(\S+)(?:\s|$)/i)
       if (bareCallMatch) {
         const bareName = bareCallMatch[1].toLowerCase()
         const proc = _procedureRegistry.get(bareName)
         if (!proc) {
-          throw Object.assign(new Error(`ProcedureError: ProcedureNotFound (${bareName})`), { tckError: 'ProcedureNotFound' })
+          throw Object.assign(new Error('ProcedureError: ProcedureNotFound (' + bareName + ')'), { tckError: 'ProcedureNotFound' })
         }
-        // bare CALL 无括号且有参数定义但未通过 params 提供 — MissingParameter
-        const sigParens = proc.signature.match(/\(([^)]*)\)/)
-        if (sigParens) {
-          const sigArgs = sigParens[1].split(',').filter(s => s.trim().length > 0)
-          if (sigArgs.length > 0) {
-            throw Object.assign(new Error('ParameterMissing'), { tckError: 'MissingParameter' })
+        // MissingParameter: only throw for required non-optional params
+        const sigPa = proc.signature.match(/\(([^)]*)\)/)
+        if (sigPa) {
+          const sigArgsB = sigPa[1].split(',').filter(s => s.trim().length > 0)
+          if (sigArgsB.length > 0) {
+            const hasRequiredParams = sigArgsB.some(a => {
+              const trimmed = a.trim()
+              return !trimmed.endsWith('?') && !/DEFAULT\s/i.test(trimmed)
+            })
+            if (hasRequiredParams) {
+              throw Object.assign(new Error('ParameterMissing'), { tckError: 'MissingParameter' })
+            }
+          }
+        }
+        // InvalidArgumentType for bare CALL with parentheses args
+        const bareCallArgs = query.match(/CALL\s+(\S+)\s*\(([^)]*)\)/i)
+        if (bareCallArgs) {
+          const bareName3 = bareCallArgs[1].toLowerCase()
+          const proc3 = _procedureRegistry.get(bareName3)
+          if (proc3) {
+            const sigPa3 = proc3.signature.match(/\(([^)]*)\)/)
+            if (sigPa3) {
+              const sigArgs3 = sigPa3[1].split(',').filter(s => s.trim().length > 0)
+              const userArgs3 = bareCallArgs[2].split(',').map(s => s.trim()).filter(Boolean)
+              for (let ai = 0; ai < Math.min(userArgs3.length, sigArgs3.length); ai++) {
+                const sigArg = sigArgs3[ai].trim()
+                const typeMatch3 = sigArg.match(/::\s*(\w+)/)
+                if (typeMatch3) {
+                  const expType = typeMatch3[1].toUpperCase()
+                  const userArg = userArgs3[ai]
+                  let userType
+                  if (userArg === 'true' || userArg === 'false') userType = 'BOOLEAN'
+                  else if (/^-?\d+\.\d+/.test(userArg)) userType = 'FLOAT'
+                  else if (/^-?\d+$/.test(userArg)) userType = 'INTEGER'
+                  else if (/^['"]/.test(userArg)) userType = 'STRING'
+                  else if (userArg === 'null') userType = 'NULL'
+                  else continue
+                  if (expType === 'INTEGER' && (userType === 'BOOLEAN' || userType === 'FLOAT')) {
+                    throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+                  }
+                  if (expType === 'BOOLEAN' && (userType === 'INTEGER' || userType === 'FLOAT')) {
+                    throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+                  }
+                }
+              }
+            }
           }
         }
       }
