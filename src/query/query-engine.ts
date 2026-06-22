@@ -2952,13 +2952,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         }] as any
       }
       default: {
-        console.error('🔍 Looking up procedure:', name)
-        // 查询 procedure registry（支持 db.* 以外的自定义 procedure）
-        const proc = _procedureRegistry.get(name)
-        console.error('🔍 Found:', proc ? proc.name : 'undefined')
-        console.error('🔍 Registry has test.doNothing:', _procedureRegistry.get('test.doNothing'))
-        console.error('🔍 All procedures:', _procedureRegistry.list().map(p => p.name))
-        if (proc) {
+        // Standalone CALL: nodes 为空时直接返回 proc 结果
+        if (nodes.length === 0) {
+          console.error('🔍 Looking up procedure:', name)
+          const proc = _procedureRegistry.get(name)
+          if (!proc) throw new Error(`Unknown procedure: ${name}`)
           const ctx: import('./procedure-registry').ProcedureContext = {
             getAllNodes: () => nodes,
             getNodeCount: () => nodes.length,
@@ -2980,7 +2978,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           }
           return proc.execute(ctx, args || []) as any
         }
-        throw new Error(`Unknown procedure: ${name}`)
+        // In-query CALL: 先不处理，标记给后面继续执行 GE 后再关联
+        // fallthrough 到下面的 GE 执行逻辑
+        break
       }
     }
   }

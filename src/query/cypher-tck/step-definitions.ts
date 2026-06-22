@@ -880,12 +880,13 @@ Given('parameters are:', function (dt: any) {
     }
   }
 })
-Given(/^there exists a procedure .*$/, function (this: any, dt?: DataTable) {
+Given(/^there exists a procedure (.*)$/, function (this: any, procDesc: string, dt?: DataTable) {
   console.error('📝 Given there exists a procedure called')
   // 解析 Gherkin 步骤文本获取 procedure 名称和签名
   // 步骤格式: "there exists a procedure <name>(<params>) :: (<returns>):"
   // data table 包含示例输入/输出行（可选，可能为空 | 单独一行）
-  const text = this.getStep ? this.getStep().text || '' : ''
+  // cucumber-js v10: 正则捕获的 procDesc 就是步骤描述部分
+  const text = `there exists a procedure ${procDesc}`
   console.error('📝 Step text:', text)
   const match = text.match(/there exists a procedure\s+(\S+)\(([^)]*)\)\s*::\s*\(([^)]*)\)/)
   if (!match) {
