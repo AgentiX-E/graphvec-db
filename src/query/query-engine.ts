@@ -3591,11 +3591,18 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             nodeEdgeMap[ep.dstIdx].push({dstIdx: ep.dstIdx, srcIdx: ep.srcIdx, label: ep.label, props: ep.props || undefined})
           }
         }
+        // 为每行分配 __edges（如果还没有），同时构建邻接索引
+        const adjIdx = new Map<number, Array<{dstIdx: number; srcIdx: number; label: string; props?: any}>>()
         for (let ni = 0; ni < allNodes.length; ni++) {
           if (!(allNodes[ni] as any).__edges || !(allNodes[ni] as any).__edges.length) {
             (allNodes[ni] as any).__edges = nodeEdgeMap[ni]
           }
+          if (nodeEdgeMap[ni].length > 1) {
+            adjIdx.set(ni, nodeEdgeMap[ni])
+          }
         }
+        // 把邻接索引挂在 allNodes 上供 _walkMultiSteps 使用
+        ;(allNodes as any).__adjIdx = adjIdx
       }
   
       if (edgesPayload.length) {
@@ -3791,6 +3798,30 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     const geFiltered = geFilters.filter(f => !geUnsupportedOps.has(f.operator))
 
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
+
+    // ── Plan 注解：预计算元数据供执行路径决策 ──
+    if (!(plan as any)._annotations) {
+      const labelCounts = new Map<string, number>()
+      for (const n of allNodes) {
+        const label = n._label ? String(n._label) : 'Default'
+        labelCounts.set(label, (labelCounts.get(label) || 0) + 1)
+      }
+      // 分类 WHERE 谓词
+      const eqFilters = (plan.filters || []).filter(f => f.operator === 'EQ' && !edgeFilters.includes(f as any))
+      const rangeFilters = (plan.filters || []).filter(f => ['GT', 'GTE', 'LT', 'LTE'].includes(f.operator || ''))
+      const indexEntries = Array.from(_indexRegistry.values())
+      const hasIndexedEq = eqFilters.some(f => f.source && indexEntries.some(idx =>
+        idx.property === f.property && (!idx.label || allNodes.some(n => String(n._label || '') === idx.label))
+      ))
+      ;(plan as any)._annotations = {
+        labelCounts: Object.fromEntries(labelCounts),
+        eqFilterCount: eqFilters.length,
+        rangeFilterCount: rangeFilters.length,
+        hasIndexedEq,
+        totalSeedNodes: allNodes.length,
+        edgeFilterCount: edgeFilters.length,
+      }
+    }
 
     // ── 多步跳转支持（MATCH (a)-->(b)-->(c) 或变量长度路径 (a)-[:X*1..3]->(b)）──
     // 当 steps.length > 1 或单步但有 range（变量长度）时，用 __edges 手动遍历
