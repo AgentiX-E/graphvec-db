@@ -1696,7 +1696,6 @@ function _walkMultiSteps(
         if (neighborIdx >= 0 && neighborIdx < allNodes.length) {
           // 自环检查：如果是自环边（neighborIdx === idx），走 isAny 或无方向约束时允许
           const isSelfLoop = (neighborIdx === idx) && (e.dstIdx === idx && e.srcIdx === idx)
-          if (step.edgeLabel) {
           // 边标签检查：如果 step 指定了 edgeLabel，边必须匹配（方向已经匹配）
           // 支持多类型 | 分隔（如 :KNOWS|HATES）
           if (step.edgeLabel) {
