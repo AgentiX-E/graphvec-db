@@ -1857,7 +1857,7 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
 
     // 处理深度 0（minHops=0 时的路径自身）
     if (minHops === 0) {
-      const pathVar = (step as any).source || 'p'
+      const pathVar = plan.pathVar || (step as any).source || 'p'
       const pathNodes: Array<Record<string, unknown>> = []
       const sn: Record<string, unknown> = { _label: sourceNode._label || 'Default' }
       for (const k of Object.keys(sourceNode)) {
@@ -1867,6 +1867,10 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
       const rowRes: QueryRow = {}
       rowRes[pathVar] = { __path: pathNodes, __pathEdges: [] }
       if ((step as any).targetAlias) rowRes[(step as any).targetAlias] = sn
+      // 当 plan.pathVar 存在时，step.source 是节点变量，需单独注入
+      if (plan.pathVar && (step as any).source) {
+        rowRes[(step as any).source] = sn
+      }
       if (Object.keys(rowRes).length) result.push(rowRes)
     }
 
@@ -1918,8 +1922,9 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
 
           // 构建返回行
           const rowRes: QueryRow = {}
-          // 路径变量 p（如果 steps 有 source 变量名则用，否则用 'p'）
-          const pathVar = step.source || 'p'
+          // 路径变量 p — 如果 plan.pathVar 存在（`MATCH p = ...`），则用它
+          // 否则回退到 step.source（如 `(a)-[*]->(b)` 中 a 是 source）
+          const pathVar = plan.pathVar || step.source || 'p'
 
           // 构建路径上的边序列（关系对象），从 path 中的相邻节点索引到对应的边
           const pathEdges: Array<Record<string, unknown>> = []
@@ -1948,12 +1953,24 @@ function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown
           if (step.targetAlias) {
             rowRes[step.targetAlias] = pathNodes[pathNodes.length - 1]
           }
+          // 当 plan.pathVar 存在（路径分配 `MATCH p = ...`）时，
+          // step.source 是节点变量（如 `a`），不是路径变量，需要单独注入
+          if (plan.pathVar && step.source) {
+            rowRes[step.source] = pathNodes[0]
+          }
 
           // 填充 returnColumns（拆解后的纯属性名），跳过路径/目标变量
           const varNames = new Set([pathVar, step.targetAlias || ''].filter(Boolean))
           for (const rc of plan.returnColumns || []) {
             if (!rc || varNames.has(rc) || rc in rowRes) continue
-            rowRes[rc] = targetNode[rc] ?? null
+            // 函数调用（如 relationships(p), nodes(p), length(p)）→ 用表达式引擎求值
+            if (rc.match(/^\w+\(/)) {
+              const evalCtx: Record<string, unknown> = { ...rowRes }
+              const val = _evaluateExpression(rc, evalCtx)
+              rowRes[rc] = val !== undefined ? val : null
+            } else {
+              rowRes[rc] = targetNode[rc] ?? null
+            }
           }
           // 补充 returnAliasMap（带变量前缀的完整表达式）
           if (plan.returnAliasMap) {
@@ -3320,7 +3337,25 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   // ── 变量长度路径：直接 BFS 并返回，不依赖 GE ──
   const hasVarLenGE = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
   if (hasVarLenGE) {
-    return _executeVarLenPath(plan, nodes)
+    let varLenResult = _executeVarLenPath(plan, nodes)
+    // ── 对 VLE 结果应用 expressionColumns 映射 ──
+    // _executeVarLenPath 返回 raw row（p, a, b 等），但不包含 length(p)/type(p) 等表达式列
+    if (plan.expressionColumns?.length && varLenResult.length) {
+      varLenResult = varLenResult.map((row: any) => {
+        const newRow: Record<string, unknown> = { ...row }
+        const evalCtx: Record<string, unknown> = { ...newRow }
+        for (const ec of plan.expressionColumns) {
+          if (typeof ec.expression === 'string' && ec.expression in evalCtx) {
+            newRow[ec.alias] = evalCtx[ec.expression]
+          } else {
+            const val = typeof ec.expression === 'string' ? _evaluateExpression(ec.expression, evalCtx) : null
+            newRow[ec.alias] = val !== undefined ? val : null
+          }
+        }
+        return newRow
+      })
+    }
+    return varLenResult
   }
 
   let ge: GraphEngine | null = null
@@ -6792,6 +6827,33 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       }
     }
 
+    // ── SyntaxError: InvalidArgumentType（length() on node/edge） ──
+    // MATCH (n) RETURN length(n) — length() only valid on paths/strings
+    // MATCH ()-[r]->() RETURN length(r) — same
+    if (query) {
+      const addLengthCheck = (textCaptures: RegExpMatchArray[], contextType: string) => {
+        for (const m of textCaptures) {
+          const varName = m[1]
+          if (contextType === 'node' || contextType === 'edge') {
+            throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+          }
+        }
+      }
+      // length(node_var): node variables appear as (var_name) in MATCH
+      const nodeVars = [...query.matchAll(/MATCH\s+(?:\((\w+)\)|\((\w+):)/g)].flatMap(m => m[1] || m[2] ? [m[1] || m[2]] : [])
+      const edgeVars = [...query.matchAll(/-\[(\w+)\s*(?::|\])/g)].map(m => m[1]).filter(v => v && v !== '*' && v !== '?')
+      for (const nv of nodeVars) {
+        if (nv && new RegExp(`\\blength\\(\\s*${nv}\\s*\\)`, 'i').test(query)) {
+          throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+        }
+      }
+      for (const ev of edgeVars) {
+        if (ev && new RegExp(`\\blength\\(\\s*${ev}\\s*\\)`, 'i').test(query)) {
+          throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+        }
+      }
+    }
+
     // ── SyntaxError: InvalidAggregation（WHERE 中使用聚合函数） ──
     // MATCH (a) WHERE count(a) > 10 RETURN a
     if (query?.includes('WHERE')) {
@@ -7898,6 +7960,43 @@ function _unwrapRecord(v: unknown): Record<string, unknown> {
 }
 
 const _builtinFunctions: Record<string, _BuiltinFn> = {
+  length: ([a], r) => {
+    const v = _evalBinary(a, r);
+    // 路径长度：路径对象以 {__path, __pathEdges} 形式存储
+    if (v && typeof v === 'object' && !Array.isArray(v) && (v as any).__path && (v as any).__pathEdges) {
+      return (v as any).__pathEdges.length;
+    }
+    // 字符串长度
+    if (typeof v === 'string') return v.length;
+    // 列表长度
+    if (Array.isArray(v)) return v.length;
+    return null;
+  },
+  type: ([a], r) => {
+    const v = _evalBinary(a, r);
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      // 边对象形如 { _type: 'REL', props: {...} }
+      if ((v as any)._type) return (v as any)._type;
+      if ((v as any).label) return (v as any).label;
+    }
+    // 字符串直接返回
+    if (typeof v === 'string') return v;
+    return null;
+  },
+  nodes: ([a], r) => {
+    const v = _evalBinary(a, r);
+    if (v && typeof v === 'object' && !Array.isArray(v) && (v as any).__path) {
+      return (v as any).__path;
+    }
+    return null;
+  },
+  relationships: ([a], r) => {
+    const v = _evalBinary(a, r);
+    if (v && typeof v === 'object' && !Array.isArray(v) && (v as any).__pathEdges) {
+      return (v as any).__pathEdges;
+    }
+    return null;
+  },
   abs: ([a], r) => Math.abs(Number(_evalBinary(a, r))),
   sqrt: ([a], r) => Math.sqrt(Number(_evalBinary(a, r))),
   ceil: ([a], r) => Math.ceil(Number(_evalBinary(a, r))),
@@ -7965,7 +8064,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     }
     return res;
   },
-  length: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) ? v.length : 0 },
   split: ([a, d], r) => String(_evalBinary(a, r)).split(String(_evalBinary(d, r))),
   // ── Aggregation Functions ──
   count: (args, r) => {
