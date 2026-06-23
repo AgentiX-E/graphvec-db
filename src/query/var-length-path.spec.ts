@@ -12,6 +12,35 @@ import {
 } from '../api/query-planner'
 import { NodeRecord } from '../types'
 
+// ── executeVarLenPath 直接测试 ──
+import { executeVarLenPath } from './var-length-path'
+import { registerEvaluateExpression, registerPostProcessResults } from './expression-helpers'
+
+// 使用 mock 函数注册（避免循环依赖：spec import QE → QE import VLE → VLE 注册未就绪）
+const mockEvaluateExpr = ((expr: any, row?: any) => {
+  // 最小化 mock：返回字段值或 null
+  if (typeof expr === 'string') {
+    const parts = expr.split('.')
+    if (parts.length === 2 && row && parts[1] in row) return row[parts[1]]
+    // 路径函数：length, nodes, relationships
+    if (expr.startsWith('length(') || expr.startsWith('nodes(') || expr.startsWith('relationships(')) {
+      // 对于基础 BFS 测试，路径函数不重要
+      return null
+    }
+    if (row && expr in row) return row[expr]
+    return null
+  }
+  return null
+}) as (expr: string | Record<string, unknown>, row?: Record<string, unknown>) => unknown
+
+const mockPostProcess = ((result: any[], plan: any) => {
+  // 最小化：直接返回（不排序/过滤）
+  return result
+}) as (result: any[], plan: any) => any[]
+
+registerEvaluateExpression(mockEvaluateExpr)
+registerPostProcessResults(mockPostProcess)
+
 // ──────────────────────────────────────────
 // Mock ShardManager
 // ──────────────────────────────────────────
@@ -496,5 +525,101 @@ describe('VariableLengthPath (GAP-20)', () => {
       // 应排除 4（起点的 out-neighbor 中没有 4）
       expect(ids).not.toContain(4)
     })
+  })
+})
+
+// ═══════════════════════════════════════════════════════
+// executeVarLenPath 直接单元测试
+// ═══════════════════════════════════════════════════════
+
+describe('executeVarLenPath 直接测试（从 query-engine 提取的 VLE 引擎）', () => {
+  /**
+   * 构建链式图：n0 -[:NEXT]-> n1 -[:NEXT]-> n2 -[:NEXT]-> n3 -[:NEXT]-> n4
+   */
+  function buildChain5(scanLabel: string = 'Node'): Array<Record<string, unknown>> {
+    const nodes: Array<Record<string, unknown>> = [
+      { _label: scanLabel, name: 'v0', __edges: [] },
+      { _label: '', name: 'v1', __edges: [] },
+      { _label: '', name: 'v2', __edges: [] },
+      { _label: '', name: 'v3', __edges: [] },
+      { _label: '', name: 'v4', __edges: [] },
+    ]
+    for (let i = 0; i < 4; i++) {
+      const edge = { dstIdx: i + 1, srcIdx: i, label: 'NEXT' }
+      ;(nodes[i] as any).__edges.push(edge)
+      ;(nodes[i + 1] as any).__edges.push(edge)
+    }
+    return nodes
+  }
+
+  function makePlan(overrides: Record<string, any> = {}): any {
+    return {
+      scanLabel: 'Node',
+      pathVar: undefined,
+      returnColumns: [],
+      steps: [{
+        source: 'a',
+        direction: 'out',
+        edgeLabel: 'NEXT',
+        targetAlias: 'b',
+        targetLabel: undefined,
+        range: { min: 1, max: 3 },
+        ...overrides,
+      }],
+    }
+  }
+
+  it('基础 1~3 跳 BFS — 应返回 3 条路径', () => {
+    const nodes = buildChain5()
+    const plan = makePlan({ range: { min: 1, max: 3 } })
+    const result = executeVarLenPath(plan, nodes)
+    expect(result.length).toBe(3)
+  })
+
+  it('2~4 跳 — 应返回 3 条', () => {
+    const nodes = buildChain5()
+    const plan = makePlan({ range: { min: 2, max: 4 } })
+    const result = executeVarLenPath(plan, nodes)
+    expect(result.length).toBe(3)
+  })
+
+  it('精确 3 跳 — 应返回 1 条', () => {
+    const nodes = buildChain5()
+    const plan = makePlan({ range: { min: 3, max: 3 } })
+    const result = executeVarLenPath(plan, nodes)
+    expect(result.length).toBe(1)
+  })
+
+  it('超出范围时返回空', () => {
+    const nodes = buildChain5()
+    const plan = makePlan({ range: { min: 10, max: 20 } })
+    const result = executeVarLenPath(plan, nodes)
+    expect(result.length).toBe(0)
+  })
+
+  it('targetLabel 过滤 — 目标节点标签必须匹配', () => {
+    const nodes = buildChain5()
+    nodes[1] = { ...nodes[1], _label: 'Filtered' }
+    const plan = makePlan({ targetLabel: 'NonExistent' })
+    const result = executeVarLenPath(plan, nodes)
+    expect(result.length).toBe(0)
+  })
+
+  it('edgeLabel 过滤 — 只遍历指定标签的边', () => {
+    const nodes = buildChain5()
+    ;(nodes[0] as any).__edges[0] = { dstIdx: 1, srcIdx: 0, label: 'OTHER' }
+    ;(nodes[1] as any).__edges[0] = { dstIdx: 1, srcIdx: 0, label: 'OTHER' }
+    const plan = makePlan({ edgeLabel: 'NEXT' })
+    const result = executeVarLenPath(plan, nodes)
+    expect(result.length).toBe(0)
+  })
+
+  it('扫描标签过滤 — 只有匹配 _label 的节点作为起点', () => {
+    const nodes = buildChain5()
+    // v0 的 _label 是 'Node'，设为 'Other' 后跳过
+    nodes[0]._label = 'Other'
+    const plan = makePlan({ scanLabel: 'Node' })
+    const result = executeVarLenPath(plan, nodes)
+    expect(result.length).toBe(0)
   })
 })
