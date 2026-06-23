@@ -44,22 +44,20 @@ AS 解析层：在 `buildQueryPlan` / `extractMatch` 中识别 `MATCH p = (` 前
 - HEAD: 67234412
 - --quick 4/4 ✅
 
-### Phase 2-3: Path 5 fail → 0
-- [ ] 2a: `p = (...)` 路径分配解析
-- [ ] 2b: length() 类型校验
-- [ ] 2c: `_executeVarLenPath` invoke + path binding
-- [ ] Phase 3: `relationships(p)` / `nodes(p)` function eval
-- [ ] git commit
-- [ ] --quick regression
+### ✅ Phase 2-3 done: Path 7/7 ✅
+- Path3 3/3 ✅ (length(n)校验 + length(p)求值)
+- Path2 3/3 ✅ (relationships(p)/nodes(p)求值)
+- HEAD: 3ee3c216
+- --quick 4/4 ✅
 
-## 验证
-- 每个子阶段独立 git commit
-- `--quick` 回归确认零退化
-- 最终全量回归
+### Phase 4 — 零退化回归
+- [x] --quick 4/4 ✅
+- [ ] --full 全量 TCK
+- [ ] quantifier 604/604 确认（8 fail 不退化）
 
 ## 验收标准
-1. Path1-3 全部 7/7 ✅（当前 2/7 → +5）
-2. Match2 86/86 ✅ 维持不退化
-3. `--quick` 全绿 ✅
-4. `--full` 全量 TCK 零退化
-5. quantifier 604/604 ✅（当前 596/604 = 8 fail 不退化）
+1. ✅ Path1-3 全部 7/7
+2. ✅ Match2 86/86 维持不退化
+3. ✅ --quick 全绿
+4. [ ] --full 全量 TCK 零退化
+5. [ ] quantifier 604/604
