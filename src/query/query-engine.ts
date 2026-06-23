@@ -1567,13 +1567,18 @@ function _walkMultiSteps(
             for (const e of edges) {
               let neighborIdx = -1
               if (isAny) {
+                // isAny 分支：自环边也需匹配（neighborIdx === fidx 时自环）
                 neighborIdx = e.dstIdx === fidx ? e.srcIdx : (e.srcIdx === fidx ? e.dstIdx : -1)
+                if (neighborIdx === fidx && e.dstIdx === fidx && e.srcIdx === fidx) {
+                  // 自环：src === dst === fidx，neighborIdx 被设为 fidx，但后面 neighborIdx !== fidx 会过滤掉
+                  // 这里保持 fidx 作为 self-loop 标记
+                }
               } else if (step.direction === 'out' && e.srcIdx === fidx) {
                 neighborIdx = e.dstIdx
               } else if (step.direction === 'in' && e.dstIdx === fidx) {
                 neighborIdx = e.srcIdx
               }
-              if (neighborIdx >= 0 && neighborIdx < allNodes.length && !visited.has(neighborIdx) && neighborIdx !== fidx) {
+              if (neighborIdx >= 0 && neighborIdx < allNodes.length && !visited.has(neighborIdx) && (neighborIdx !== fidx || (step.direction === 'any' && e.dstIdx === fidx && e.srcIdx === fidx))) {
                 if (hasEdgeLabel && (e.label !== step.edgeLabel)) continue
                 visited.add(neighborIdx)
                 if (depth >= minHops) {
@@ -1689,6 +1694,9 @@ function _walkMultiSteps(
           neighborIdx = e.srcIdx
         }
         if (neighborIdx >= 0 && neighborIdx < allNodes.length) {
+          // 自环检查：如果是自环边（neighborIdx === idx），走 isAny 或无方向约束时允许
+          const isSelfLoop = (neighborIdx === idx) && (e.dstIdx === idx && e.srcIdx === idx)
+          if (step.edgeLabel) {
           // 边标签检查：如果 step 指定了 edgeLabel，边必须匹配（方向已经匹配）
           // 支持多类型 | 分隔（如 :KNOWS|HATES）
           if (step.edgeLabel) {
@@ -6693,6 +6701,8 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     const matchClauses = cleaned.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
     const matchNodeVars = [...new Set(matchClauses.flatMap((mc: string) => [...mc.matchAll(/\((\w+)(?::|\))/g)].map(m => m[1])))]
     const edgeVars = [...new Set([...cleaned.matchAll(/\[(\w+)\s*(?::|\])/g)].map(m => m[1]).filter((v: string) => v && v !== '*' && v !== '?'))]
+    const varLenVars = [...cleaned.matchAll(/\[(\w+)\s*\*/g)].map(m => m[1]).filter(v => v)
+    edgeVars.push(...varLenVars)
     const pathAssignments = [...query.matchAll(/(\w+)\s*=\s*\(/g)].map(m => m[1])
 
     // 关系变量和路径分配变量冲突
