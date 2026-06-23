@@ -2814,23 +2814,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     return nodes
   }
 
-  // UNION — 递归执行
-  if (plan.unionType && plan.rightPlan) {
-    const leftResult = _executeViaGraphEngine({ ...plan, unionType: undefined, rightPlan: undefined }, nodes)
-    const rightResult = _executeViaGraphEngine(plan.rightPlan, nodes)
-    const left = await leftResult
-    const right = await rightResult
-    const merged = _mergeUnionResults(plan, left as any, right as any)
-    return _postProcessResults(merged as any[], plan)
-  }
-
   // ── DML（DELETE/SET/MERGE/REMOVE） ──
   // 非递归入口。DML 操作仅修改 allNodes，不同步 GE 存储（见 DML 持久化分析）
 
   // UNION — 递归执行
   if (plan.unionType && plan.rightPlan) {
-    const leftResult = _executeViaGraphEngine({ ...plan, unionType: undefined, rightPlan: undefined }, nodes)
-    const rightResult = _executeViaGraphEngine(plan.rightPlan, nodes)
+    const leftResult = await _executeViaGraphEngine({ ...plan, unionType: undefined, rightPlan: undefined }, nodes)
+    const rightResult = await _executeViaGraphEngine(plan.rightPlan, nodes)
     const leftRows = leftResult as QueryRow[]
     const rightRows = rightResult as QueryRow[]
     switch (plan.unionType) {
