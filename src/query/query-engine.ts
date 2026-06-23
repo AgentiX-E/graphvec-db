@@ -913,6 +913,27 @@ export function parseQuery(query: string): QueryPlan {
       return rc
     })
   }
+  // expressionColumns 的 alias/expression 也应同步更新
+  if (plan.expressionColumns?.length) {
+    plan.expressionColumns = plan.expressionColumns.map((ec: any) => {
+      const expr = typeof ec === 'string' ? ec : ec.expression || ec.alias || ec
+      const alias = ec.alias || expr
+      const dotIdx = expr.indexOf('.')
+      const cleanExpr = dotIdx >= 0 ? expr.substring(dotIdx + 1) : expr
+      const cleanAlias = alias.indexOf('.') >= 0 ? alias.split('.').pop()! : alias
+      return { expression: cleanExpr, alias: cleanAlias }
+    })
+    // 同步更新 returnAliasMap
+    if (plan.returnAliasMap) {
+      const newAliasMap: Record<string, string> = {}
+      for (const [key, val] of Object.entries(plan.returnAliasMap)) {
+        const cleanKey = key.indexOf('.') >= 0 ? key.split('.').pop()! : key
+        const cleanVal = val.indexOf('.') >= 0 ? val.split('.').pop()! : val
+        newAliasMap[cleanKey] = cleanVal
+      }
+      plan.returnAliasMap = newAliasMap
+    }
+  }
 
   // ── WHERE 子句提取（用于后过滤） ──
   // 即使 ANTLR 没有生成 filters，也需要提取 WHERE 子句供 _evaluateExpression 后处理
@@ -4045,12 +4066,15 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
           // 无向边 direction any 时 GE 存储无节点数据，删掉 aggregate 让 QE 聚合
           if (planForGe.steps?.[0]?.direction === 'any') delete planForGe.aggregate
+          // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
+          delete planForGe.skip; delete planForGe.limit
           return (ge as any)._executeQueryPlan(planForGe)
         })()
     // Fallback: useEdgeWalk=false 且 hasMatch 时，从 GE 获取全部节点
     if (!useEdgeWalk && plan.hasMatch && !rawRecords?.length && allNodes.length) {
       const scanPlan = JSON.parse(JSON.stringify({ ...plan, scanLabel: null, callProcedure: undefined }, _bigintReplacer), _bigintReviver)
       delete scanPlan.callProcedure
+      delete scanPlan.skip; delete scanPlan.limit
       rawRecords = (ge as any)._executeQueryPlan(scanPlan) as any[]
     }
     let records = rawRecords

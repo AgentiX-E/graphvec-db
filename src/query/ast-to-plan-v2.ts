@@ -238,7 +238,8 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
 
   // Find the RETURN clause region in the query
   // Use [\s\S] to match across newlines (multi-line queries)
-  const returnMatch = query.match(/\bRETURN\s+([\s\S]+)/i)
+  // Must exclude ORDER BY, GROUP BY, HAVING, LIMIT, SKIP clauses from the return part
+  const returnMatch = query.match(/\bRETURN\s+([\s\S]+?)(?:\s+(?:ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT|SKIP)|$)/i)
   if (!returnMatch) return
 
   const returnPart = returnMatch[1]
