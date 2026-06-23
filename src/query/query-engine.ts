@@ -3347,6 +3347,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     allNodes = [...(nodes || [])]
 
     // 确保多标签节点有 __fullLabel 属性（传入的 nodes 可能没有）
+    // 确保 __edges 存在（EXISTS 子查询需要）
+    for (const node of allNodes) {
+      if (!(node as any).__edges) (node as any).__edges = []
+    }
     for (const node of allNodes) {
       if (node._label && String(node._label).includes(':')) {
         (node as any).__fullLabel = String(node._label)
@@ -5177,6 +5181,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       const filteredResult: QueryRow[] = []
       for (let ri = 0; ri < result.length; ri++) {
         const row = result[ri]
+        if (ri === 0) process.stderr.write('[DBG_WHERE] result len=' + result.length + ' row keys=' + Object.keys(row).join(',') + ' row[n]=' + JSON.stringify(row['n']) + '\n')
         // 构建变量级映射
         const ctx: Record<string, unknown> = {}
         // 从原始 GE 记录获取变量上下文（如 {a: {name: 'Foo', _label: 'TheLabel'}}）
@@ -5219,46 +5224,49 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           // 对于 NOT 模式：WHERE NOT (n)-[]->()，需要反转判断
           const isNegated = plan.whereBody.trim().startsWith('NOT ')
           evalVal = isNegated ? false : true
-        } else if (/^exists\s*\{/i.test(plan.whereBody.trim())) {
-          // EXISTS { ... } 子查询：扫描 allNodes 所有边，检查当前节点是否有匹配的边
+                } else if (/^existss*{/i.test(plan.whereBody.trim())) {
+          // EXISTS { ... } 子查询
           const ebody = plan.whereBody.trim()
-          const srcMatch = ebody.match(/\((\w+)/)
+          const srcMatch = ebody.match(/((w+)/)
           let existsVal = false
           if (srcMatch && allNodes?.length) {
             const srcVar = srcMatch[1]
-            const srcNode = ctx[srcVar]
-            if (srcNode) {
-              const srcProps = srcNode.props || srcNode
-              const srcLabel = srcProps._label || ''
-              // 扫描 allNodes 中所有节点的 __edges
+            const srcNodeRef = ctx[srcVar]
+            if (srcNodeRef) {
+              const srcLabel = (srcNodeRef.props || srcNodeRef)._label || ''
+              const labelMatch = ebody.match(/[:(w+)]/)
+              const edgeLabel = labelMatch ? labelMatch[1] : null
               for (const anode of allNodes) {
                 if (anode._label !== srcLabel) continue
-                let pm = true
-                for (const k of Object.keys(srcProps)) {
-                  if (k.startsWith('_') || k === 'name' || k === '__edges') continue
-                  if (anode[k] !== srcProps[k]) { pm = false; break }
-                }
-                if (!pm) continue
-                // 检查该节点是否有边（__edges 可能在 any allNodes entry 中）
-                if (anode.__edges?.length) { existsVal = true; break }
-                // 也检查其他节点的 __edges 中是否有以此节点为 src/dst 的边
                 const anodeIdx = allNodes.indexOf(anode)
-                for (const other of allNodes) {
-                  if (other.__edges && Array.isArray(other.__edges)) {
-                    for (const e of other.__edges) {
-                      if (e.srcIdx === anodeIdx || e.dstIdx === anodeIdx) {
-                        existsVal = true; break
+                // 检查 anode 自身的 __edges
+                if (anode.__edges && Array.isArray(anode.__edges)) {
+                  for (const e of anode.__edges) {
+                    if (edgeLabel && e.label !== edgeLabel) continue
+                    existsVal = true; break
+                  }
+                }
+                // 也检查其他节点的 __edges 中引用此节点的边
+                if (!existsVal) {
+                  for (const other of allNodes) {
+                    if (other.__edges) {
+                      for (const e of other.__edges) {
+                        if (e.srcIdx === anodeIdx || e.dstIdx === anodeIdx) {
+                          if (edgeLabel && e.label !== edgeLabel) continue
+                          existsVal = true; break
+                        }
                       }
+                      if (existsVal) break
                     }
-                    if (existsVal) break
                   }
                 }
                 if (existsVal) break
               }
             }
           }
-          evalVal = existsVal
-} else {
+          const isNegatedExists = /^nots+exists/i.test(ebody)
+          evalVal = isNegatedExists ? !existsVal : existsVal
+        } else {
           evalVal = _evaluateExpression(plan.whereBody, ctx)
         }
         if (evalVal === true) {
@@ -5671,31 +5679,37 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             if (_isPatternPredicate(plan.whereBody)) {
               const isNegated = plan.whereBody.trim().startsWith('NOT ')
               evalVal = isNegated ? false : true
-            } else if (/^exists\s*\{/i.test(plan.whereBody.trim())) {
+            } else if (/^existss*{/i.test(plan.whereBody.trim())) {
               const ebody2 = plan.whereBody.trim()
-              const srcMatch2 = ebody2.match(/\((\w+)/)
+              const srcMatch2 = ebody2.match(/((w+)/)
               let existsVal2 = false
               if (srcMatch2 && allNodes?.length) {
                 const srcVar2 = srcMatch2[1]
-                const srcNode2 = ctx[srcVar2]
-                if (srcNode2) {
-                  const srcProps2 = srcNode2.props || srcNode2
-                  const srcLabel2 = srcProps2._label || ''
+                const srcNodeRef2 = ctx[srcVar2]
+                if (srcNodeRef2) {
+                  const srcLabel2 = (srcNodeRef2.props || srcNodeRef2)._label || ''
+                  const labelMatch2 = ebody2.match(/[:(w+)]/)
+                  const edgeLabel2 = labelMatch2 ? labelMatch2[1] : null
                   for (const anode of allNodes) {
                     if (anode._label !== srcLabel2) continue
-                    let pm2 = true
-                    for (const k of Object.keys(srcProps2)) {
-                      if (k.startsWith('_') || k === 'name' || k === '__edges') continue
-                      if (anode[k] !== srcProps2[k]) { pm2 = false; break }
+                    const anodeIdx2 = allNodes.indexOf(anode)
+                    if (anode.__edges && Array.isArray(anode.__edges)) {
+                      for (const e of anode.__edges) {
+                        if (edgeLabel2 && e.label !== edgeLabel2) continue
+                        existsVal2 = true; break
+                      }
                     }
-                    if (!pm2) continue
-                    const anodeIdx = allNodes.indexOf(anode)
-                    for (const other of allNodes) {
-                      if (other.__edges && Array.isArray(other.__edges)) {
-                        for (const e of other.__edges) {
-                          if (e.srcIdx === anodeIdx || e.dstIdx === anodeIdx) { existsVal2 = true; break }
+                    if (!existsVal2) {
+                      for (const other of allNodes) {
+                        if (other.__edges) {
+                          for (const e of other.__edges) {
+                            if (e.srcIdx === anodeIdx2 || e.dstIdx === anodeIdx2) {
+                              if (edgeLabel2 && e.label !== edgeLabel2) continue
+                              existsVal2 = true; break
+                            }
+                          }
+                          if (existsVal2) break
                         }
-                        if (existsVal2) break
                       }
                     }
                     if (existsVal2) break
@@ -5703,7 +5717,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 }
               }
               evalVal = existsVal2
-} else {
+            } else {
               evalVal = _evaluateExpression(plan.whereBody, ctx)
             }
             if (evalVal === true) {

@@ -618,8 +618,21 @@ function _syncNodesFromGe(): void {
 
 Given('having executed:', async function (query: string) {
   const q = query.trim()
-  // 支持多语句：按行分割，逐条执行
-  const lines = q.split('\n').map(s => s.trim()).filter(Boolean)
+  // 支持多语句：按行分割，逐条执行。
+  // 改进：合并以逗号结尾的行（多行 CREATE 链不被切碎）
+  const rawLines = q.split('\n').map(s => s.trim()).filter(Boolean)
+  const lines: string[] = []
+  let pending = ''
+  for (const line of rawLines) {
+    if (pending) {
+      pending += '\n' + line
+      if (!line.endsWith(',')) { lines.push(pending); pending = '' }
+    } else {
+      if (line.endsWith(',')) { pending = line }
+      else { lines.push(line) }
+    }
+  }
+  if (pending) lines.push(pending)
   if (lines.length > 1) {
     // 多语句场景 → 逐条递归执行
     for (const line of lines) {
