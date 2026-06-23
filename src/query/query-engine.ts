@@ -5181,8 +5181,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       const filteredResult: QueryRow[] = []
       for (let ri = 0; ri < result.length; ri++) {
         const row = result[ri]
-        if (ri === 0) process.stderr.write('[DBG_WHERE] result len=' + result.length + ' row keys=' + Object.keys(row).join(',') + ' row[n]=' + JSON.stringify(row['n']) + '\n')
-        // 构建变量级映射
+                // 构建变量级映射
         const ctx: Record<string, unknown> = {}
         // 从原始 GE 记录获取变量上下文（如 {a: {name: 'Foo', _label: 'TheLabel'}}）
         const rawEntry = rawWithEdges?.[ri]
@@ -5224,10 +5223,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           // 对于 NOT 模式：WHERE NOT (n)-[]->()，需要反转判断
           const isNegated = plan.whereBody.trim().startsWith('NOT ')
           evalVal = isNegated ? false : true
-                } else if (/^existss*{/i.test(plan.whereBody.trim())) {
+                } else if (/^exists\s*\{/i.test(plan.whereBody.trim())) {
           // EXISTS { ... } 子查询
           const ebody = plan.whereBody.trim()
-          const srcMatch = ebody.match(/((w+)/)
+          const srcMatch = ebody.match(/(\w+)/)
           let existsVal = false
           if (srcMatch && allNodes?.length) {
             const srcVar = srcMatch[1]
@@ -5264,7 +5263,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               }
             }
           }
-          const isNegatedExists = /^nots+exists/i.test(ebody)
+          const isNegatedExists = /^not\s+exists/i.test(ebody)
           evalVal = isNegatedExists ? !existsVal : existsVal
         } else {
           evalVal = _evaluateExpression(plan.whereBody, ctx)
@@ -5679,9 +5678,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             if (_isPatternPredicate(plan.whereBody)) {
               const isNegated = plan.whereBody.trim().startsWith('NOT ')
               evalVal = isNegated ? false : true
-            } else if (/^existss*{/i.test(plan.whereBody.trim())) {
+            } else if (/^exists\s*\{/i.test(plan.whereBody.trim())) {
               const ebody2 = plan.whereBody.trim()
-              const srcMatch2 = ebody2.match(/((w+)/)
+              const srcMatch2 = ebody2.match(/(\w+)/)
               let existsVal2 = false
               if (srcMatch2 && allNodes?.length) {
                 const srcVar2 = srcMatch2[1]

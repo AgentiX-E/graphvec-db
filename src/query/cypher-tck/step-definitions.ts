@@ -6,7 +6,7 @@
  * our _executeQuery(plan, seedNodes) API.
  */
 import { Given, When, Then, Before, After, DataTable } from '@cucumber/cucumber'
-import assert from 'assert'
+import * as assert from 'assert'
 import fs from 'fs'
 import crypto from 'crypto'
 import { parseQuery, _executeQuery, _validatePlan, _clearGeInstances } from '../query-engine'
