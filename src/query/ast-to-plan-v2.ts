@@ -390,8 +390,19 @@ function splitByTopLevelCommas(s: string): string[] {
  * Parse Cypher string into intermediate representation, then convert to QueryPlan.
  */
 function buildQueryPlan(query: string): QueryPlan {
-  const trimmed = query.trim()
+  let trimmed = query.trim()
   const upperQ = trimmed.toUpperCase()
+
+  // ── 路径分配预处理: MATCH p = (a)-[*]->(b) → pathVar: 'p' ──
+  // ANTLR 不认识 `p = (` 语法，需在 ANTLR 解析前从文本剥离路径变量前缀。
+  // 存储到返回值后，从 trimmed 中移除 `\w+ = ` 前缀以便 ANTLR 正常解析模式。
+  let pathVar: string | undefined
+  const pathMatch = trimmed.match(/^(MATCH\s+)(\w+)\s*=\s*\(/i)
+  if (pathMatch) {
+    pathVar = pathMatch[2]
+    // 替换 `MATCH p = (a)...` → `MATCH (a)...`（保留 MATCH 关键字）
+    trimmed = pathMatch[1] + '(' + trimmed.substring(pathMatch.index! + pathMatch[0].indexOf('('))
+  }
 
   // ── ADMIN COMMANDS: Handle before ANTLR parsing ──
   // These queries are not valid Cypher per the ANTLR grammar (SHOW, BEGIN, etc.)
@@ -627,6 +638,13 @@ function buildQueryPlan(query: string): QueryPlan {
 
   // Build plan from clauses
   const plan = clausesToPlan(clauses)
+
+  // ── Post-processing: ATTACH pathVar ──
+  // 当 buildQueryPlan 在 ANTLR 解析前剥离了 `p = ` 路径分配前缀时，
+  // 将路径变量名附加到 plan 以便执行层使用。
+  if (pathVar && !plan.pathVar) {
+    plan.pathVar = pathVar
+  }
 
   // ── Post-processing: FOREACH — ANTLR doesn't support FOREACH syntax ──
   // FOREACH (var IN list | ...) uses | which ANTLR doesn't parse.
@@ -870,6 +888,14 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
     switch (clause.type) {
       case 'MATCH': {
         hasMatch = true
+        // ── 路径分配检测: MATCH p = (a)-[*]->(b) → pathVar: 'p' ──
+        // ANTLR 不认识 `p = (` 语法，无法通过 extractMatch 提取路径分配模式。
+        // 直接从 clause text 中用正则提取。
+        const matchCtxText = clause.ctx.getText ? clause.ctx.getText() : ''
+        const pathAssignMatch = matchCtxText.match(/^(\w+)\s*=\s*\(/)
+        if (pathAssignMatch) {
+          plan.pathVar = pathAssignMatch[1]
+        }
         const parsed = extractMatch(clause.ctx)
         if (parsed) {
           // 如果是第一个 MATCH，设置 scanLabel 和 steps

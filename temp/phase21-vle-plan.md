@@ -3,53 +3,63 @@
 创建时间: 2026-06-23 13:07
 
 ## 目标
-实现变长路径（Variable Length Edge）查询支持，覆盖 TCK 中 `path/`、`quantifier/`、`match/Match2` 等场景。
+实现变长路径（Variable Length Edge）查询支持，覆盖 TCK 中 `path/`、`match/Match2` 场景。
 
 ## 范围
 
-### 第一阶段 — VLE 基础（`(n)-[*2..5]->(m)`）
-- [ ] 1a: GE 的 `_executeVariableLengthTraversal` 接入 query-engine
-- [ ] 1b: 解析层 `[*min..max]` 语法支持（AST → plan）
-- [ ] 1c: 基础固定长度 `[*n]` + 范围 `[*n..m]`
-- [ ] 1d: 无界 `[*]` / `[*n..]`
+### Phase 1 ✅ — Match2 86/86 ✅ (commit 82519d02 + 67234412)
+- `[var*]` 边变量正则 → VariableTypeConflict 编译时校验
+- isAny 自环边放行（VLE + 单跳）
 
-### 第二阶段 — VLE 增强
-- [ ] 2a: 标签过滤 `(n)-[:Label1|Label2*1..5]->(m)`
-- [ ] 2b: WHERE 过滤 + VLE 组合
-- [ ] 2c: 路径变量 `p = (n)-[*2..5]->(m)`
+### Phase 2 — Path 场景 5 fail → 0 ✅
 
-### 第三阶段 — 量化路径（Quantifier）
-- [ ] 3a: `{n,m}` 量化语法
-- [ ] 3b: `*` / `+` 量化简写
+#### 2a: 路径分配解析 `p = (...)`
+AS 解析层：在 `buildQueryPlan` / `extractMatch` 中识别 `MATCH p = (` 前缀
+- 提取路径变量名 `p`
+- 从 MATCH 文本移除 `p =` 前缀，继续 ANTLR 解析
+- 存储为 `plan.pathVar`
 
-## TCK 基线确认 (10:58 全量 regression)
-- Match2.feature: 86场景, 77 pass, **9 fail** (2 运行时 + 7 编译时)
-- Path1-3: 7场景, 2 pass, 5 fail（关联修复）
+#### 2b: length() 类型校验（场景 2 & 3）
+`_validatePlan` 中检 length(node) 和 length(edge) → SyntaxError: InvalidArgumentType
 
-## 9 fail 分解
+#### 2c: `_executeVarLenPath` 结果正确（场景 1）
+`p = (a)-[*0..1]->(b)` — 当 plan.pathVar 存在时：
+- 调用 `_executeVarLenPath` 执行 VLE
+- 将路径绑定到 plan.pathVar
+- length(p) 表达式求值 → 返回路径长度
 
-### 运行时 (2)
-1. **Self-loop undirected `()-[]-()`** — `isAny` 分支 `neighborIdx !== fidx` 过滤了自环边
-   - 修复：自环时让 `neighborIdx = fidx`
-2. **VLE 变量绑定 `[r*]`** — VLE BFS 的 `paths = [...varLenSet].map(idx => [startIdx, idx])` 只返回目标节点，不绑定边变量
+### Phase 3 — Path2 场景 2 fail ✅
+`MATCH p = (a)-[:REL*2..2]->(b) RETURN relationships(p)`
+- `relationships(p)` 函数求值
+- 路径绑定确保 p 包含所有边信息（pathEdges）
 
-### 编译时 (7)
-3-9. **`VariableTypeConflict` — `[r*]` 中 `r` 被 `v !== '*'` 过滤** — 边变量正则 `\[(\w+)\s*(?::|\])` 不匹配 `[r*]`
-   - 修复：添加 `\[(\w+)\s*\*` 匹配
+### Phase 4 — 零退化回归
+- `--quick` 4/4 ✅
+- full regression (全量 TCK)
+- quantifier 场景二次确认
 
 ## 当前进度
 
-Phase 1: Match2 9 fail → 2 fail（7/9 ✅）
+### ✅ Phase 1 done: Match2 86/86 ✅
+- HEAD: 67234412
+- --quick 4/4 ✅
 
-- [x] 分析 GE 现有 VLE API + 确认 TCK 基线
-- [x] 修复1: `[var*]` 边变量正则（编译时 7 fail → 0 ✅）
-- [x] 修复2: isAny VLE 自环放行（运行时 1 fail → 0）
-- [ ] 修复3: 非 VLE 自环 `type(r) AS r` 表达式未解析到 returnColumns（运行时 2 fail 待修）
-- [ ] fix+commit
-- [ ] `--quick` 回归确认零退化
-- [ ] 最终全量回归
+### Phase 2-3: Path 5 fail → 0
+- [ ] 2a: `p = (...)` 路径分配解析
+- [ ] 2b: length() 类型校验
+- [ ] 2c: `_executeVarLenPath` invoke + path binding
+- [ ] Phase 3: `relationships(p)` / `nodes(p)` function eval
+- [ ] git commit
+- [ ] --quick regression
 
 ## 验证
 - 每个子阶段独立 git commit
 - `--quick` 回归确认零退化
 - 最终全量回归
+
+## 验收标准
+1. Path1-3 全部 7/7 ✅（当前 2/7 → +5）
+2. Match2 86/86 ✅ 维持不退化
+3. `--quick` 全绿 ✅
+4. `--full` 全量 TCK 零退化
+5. quantifier 604/604 ✅（当前 596/604 = 8 fail 不退化）
