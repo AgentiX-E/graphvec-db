@@ -6,152 +6,152 @@ import { describe, it, test, expect } from 'vitest'
 import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations, normalize } from './tck-shared'
 
 describe('TCK EXT - DATETIME (15 tests)', () => {
-  test('DT-01 RETURN datetime()', () => {
+  test('DT-01 RETURN datetime()', async () => {
     const plan = execQuery('RETURN datetime() AS now')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-02 RETURN date()', () => {
+  test('DT-02 RETURN date()', async () => {
     const plan = execQuery('RETURN date() AS today')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-03 RETURN time()', () => {
+  test('DT-03 RETURN time()', async () => {
     const plan = execQuery('RETURN time() AS now_time')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-04 RETURN localdatetime()', () => {
+  test('DT-04 RETURN localdatetime()', async () => {
     const plan = execQuery('RETURN localdatetime() AS now_local')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-05 RETURN localtime()', () => {
+  test('DT-05 RETURN localtime()', async () => {
     const plan = execQuery('RETURN localtime() AS local_now')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-06 RETURN duration()', () => {
+  test('DT-06 RETURN duration()', async () => {
     const plan = execQuery('RETURN duration({days: 7}) AS week')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-07 RETURN datetime from string', () => {
+  test('DT-07 RETURN datetime from string', async () => {
     const plan = execQuery("RETURN datetime('2024-01-01T12:00:00') AS new_year")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-08 RETURN date from string', () => {
+  test('DT-08 RETURN date from string', async () => {
     const plan = execQuery("RETURN date('2024-12-25') AS xmas")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-09 RETURN date parts', () => {
+  test('DT-09 RETURN date parts', async () => {
     const plan = execQuery('RETURN date({year: 2024, month: 12, day: 25}) AS xmas')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 30000)
 
-  test('DT-10 RETURN time from string', () => {
+  test('DT-10 RETURN time from string', async () => {
     const plan = execQuery("RETURN time('14:30:00') AS meeting")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-11 RETURN datetime + duration', () => {
+  test('DT-11 RETURN datetime + duration', async () => {
     const plan = execQuery('RETURN datetime() + duration({hours: 1}) AS next_hour')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-12 RETURN datetime - duration', () => {
+  test('DT-12 RETURN datetime - duration', async () => {
     const plan = execQuery('RETURN datetime() - duration({days: 1}) AS yesterday')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-13 RETURN duration between', () => {
+  test('DT-13 RETURN duration between', async () => {
     const plan = execQuery("RETURN duration.between(date('2024-01-01'), date('2024-12-31')) AS period")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-14 RETURN date trunc', () => {
+  test('DT-14 RETURN date trunc', async () => {
     const plan = execQuery("RETURN date.truncate('month', date('2024-03-15')) AS month_start")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [])
+      const result = await _executeQuery(plan, [])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('DT-15 RETURN datetime + MATCH', () => {
+  test('DT-15 RETURN datetime + MATCH', async () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.created_at < datetime('2024-01-01') RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)

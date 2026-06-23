@@ -7,7 +7,7 @@ import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations
 
 describe('TCK — WITH 管道', () => {
 
-  it('[TCK-WITH-01] WITH 简单投影', () => {
+  it('[TCK-WITH-01] WITH 简单投影', async () => {
     // Feature: With
     // Scenario: Simple WITH projection
     //   When executing query: """MATCH (n:Person) WITH n.name AS name RETURN name"""
@@ -15,7 +15,7 @@ describe('TCK — WITH 管道', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-WITH-02] WITH WHERE 过滤', () => {
+  it('[TCK-WITH-02] WITH WHERE 过滤', async () => {
     // Feature: With
     // Scenario: WITH WHERE filter
     //   When executing query: """MATCH (n:Person) WITH n WHERE n.age > 18 RETURN n"""
@@ -23,7 +23,7 @@ describe('TCK — WITH 管道', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-WITH-03] WITH ORDER BY + LIMIT', () => {
+  it('[TCK-WITH-03] WITH ORDER BY + LIMIT', async () => {
     // Feature: With
     // Scenario: WITH ORDER BY
     //   When executing query: """MATCH (n:Person) WITH n ORDER BY n.name SKIP 1 LIMIT 2 RETURN n"""
@@ -31,7 +31,7 @@ describe('TCK — WITH 管道', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-WITH-04] WITH 聚合', () => {
+  it('[TCK-WITH-04] WITH 聚合', async () => {
     // Feature: With
     // Scenario: WITH aggregation
     //   When executing query: """MATCH (n:Person) WITH n.age AS age, count(*) AS cnt RETURN age, cnt"""
@@ -39,7 +39,7 @@ describe('TCK — WITH 管道', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-WITH-05] WITH DISTINCT', () => {
+  it('[TCK-WITH-05] WITH DISTINCT', async () => {
     // Feature: With
     // Scenario: WITH DISTINCT
     //   When executing query: """MATCH (n:Person) WITH DISTINCT n.age AS age RETURN age"""
@@ -47,7 +47,7 @@ describe('TCK — WITH 管道', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-WITH-06] WITH 链式传递', () => {
+  it('[TCK-WITH-06] WITH 链式传递', async () => {
     // Feature: With
     // Scenario: Chained WITH
     //   When executing query: """MATCH (n:Person) WITH n WHERE n.age > 18 WITH n.name AS name RETURN name"""

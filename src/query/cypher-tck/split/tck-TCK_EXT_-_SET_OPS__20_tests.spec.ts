@@ -6,202 +6,202 @@ import { describe, it, test, expect } from 'vitest'
 import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations, normalize } from './tck-shared'
 
 describe('TCK EXT - SET_OPS (20 tests)', () => {
-  test('SETOP-01 UNION two queries', () => {
+  test('SETOP-01 UNION two queries', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name UNION MATCH (m:Employee) RETURN m.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-02 UNION with WHERE', () => {
+  test('SETOP-02 UNION with WHERE', async () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.age > 30 RETURN n.name UNION MATCH (m:Person) WHERE m.age > 30 RETURN m.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-03 UNION ALL', () => {
+  test('SETOP-03 UNION ALL', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name UNION ALL MATCH (m:Employee) RETURN m.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-04 UNION ALL with WHERE', () => {
+  test('SETOP-04 UNION ALL with WHERE', async () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.city = 'NYC' RETURN n.name UNION ALL MATCH (m:Person) WHERE m.city = 'NYC' RETURN m.name")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-05 UNION + ORDER BY', () => {
+  test('SETOP-05 UNION + ORDER BY', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name UNION MATCH (m:Person) RETURN m.name ORDER BY n.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-06 UNION + LIMIT', () => {
+  test('SETOP-06 UNION + LIMIT', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name UNION MATCH (m:Employee) RETURN m.name LIMIT 10')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-07 UNION three queries', () => {
+  test('SETOP-07 UNION three queries', async () => {
     const plan = execQuery('MATCH (a:Person) RETURN a.name UNION MATCH (b:Employee) RETURN b.name UNION MATCH (c:Customer) RETURN c.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-08 UNION ALL + ORDER', () => {
+  test('SETOP-08 UNION ALL + ORDER', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name UNION ALL MATCH (m:Employee) RETURN m.name ORDER BY n.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-09 UNION + WHERE complex', () => {
+  test('SETOP-09 UNION + WHERE complex', async () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.age > 25 RETURN n.name UNION MATCH (m:Person) WHERE m.status = 'active' RETURN m.name")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-10 UNION ALL + LIMIT', () => {
+  test('SETOP-10 UNION ALL + LIMIT', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name UNION ALL MATCH (m:Person) RETURN m.name LIMIT 5')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-11 UNION + SKIP + LIMIT', () => {
+  test('SETOP-11 UNION + SKIP + LIMIT', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name UNION MATCH (m:Employee) RETURN m.name SKIP 3 LIMIT 5')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-12 UNION ALL + SKIP', () => {
+  test('SETOP-12 UNION ALL + SKIP', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name UNION ALL MATCH (m:Person) RETURN m.name SKIP 10 LIMIT 5')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-13 INTERSECT two queries', () => {
+  test('SETOP-13 INTERSECT two queries', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name INTERSECT MATCH (m:Employee) RETURN m.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-14 INTERSECT with WHERE', () => {
+  test('SETOP-14 INTERSECT with WHERE', async () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.age > 30 RETURN n.name INTERSECT MATCH (m:Person) WHERE m.city = 'NYC' RETURN m.name")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-15 INTERSECT + ORDER', () => {
+  test('SETOP-15 INTERSECT + ORDER', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name INTERSECT MATCH (m:Employee) RETURN m.name ORDER BY n.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-16 EXCEPT two queries', () => {
+  test('SETOP-16 EXCEPT two queries', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name EXCEPT MATCH (m:Employee) RETURN m.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-17 EXCEPT with WHERE', () => {
+  test('SETOP-17 EXCEPT with WHERE', async () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.active = true RETURN n.name EXCEPT MATCH (m:Person) WHERE m.inactive = true RETURN m.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-18 EXCEPT + ORDER', () => {
+  test('SETOP-18 EXCEPT + ORDER', async () => {
     const plan = execQuery('MATCH (n:Person) RETURN n.name EXCEPT MATCH (m:Employee) RETURN m.name ORDER BY n.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-19 UNION + compound WHERE', () => {
+  test('SETOP-19 UNION + compound WHERE', async () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.age > 18 AND n.status = 'active' RETURN n.name UNION MATCH (m:Person) WHERE m.age < 65 AND m.status = 'active' RETURN m.name")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SETOP-20 UNION ALL three + ORDER', () => {
+  test('SETOP-20 UNION ALL three + ORDER', async () => {
     const plan = execQuery('MATCH (a:Person) RETURN a.name UNION ALL MATCH (b:Employee) RETURN b.name UNION ALL MATCH (c:Customer) RETURN c.name ORDER BY a.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)

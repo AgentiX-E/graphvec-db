@@ -6,152 +6,152 @@ import { describe, it, test, expect } from 'vitest'
 import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations, normalize } from './tck-shared'
 
 describe('TCK EXT - SET_EXTENDED (15 tests)', () => {
-  test('SET-01 SET single property', () => {
+  test('SET-01 SET single property', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = 31")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-02 SET multiple properties', () => {
+  test('SET-02 SET multiple properties', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = 31, n.city = 'LA'")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-03 SET with expression', () => {
+  test('SET-03 SET with expression', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = n.age + 1")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-04 SET = replaces properties', () => {
+  test('SET-04 SET = replaces properties', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n = {age: 30, city: 'NYC'}")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-05 SET += augments properties', () => {
+  test('SET-05 SET += augments properties', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n += {status: 'active'}")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-06 SET + RETURN', () => {
+  test('SET-06 SET + RETURN', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n.age = 30 RETURN n")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-07 SET with WHERE', () => {
+  test('SET-07 SET with WHERE', async () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.age IS NULL SET n.age = 0')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-08 SET label', () => {
+  test('SET-08 SET label', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n:Employee")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-09 SET multiple labels', () => {
+  test('SET-09 SET multiple labels', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n:Employee:Manager")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-10 SET with CASE', () => {
+  test('SET-10 SET with CASE', async () => {
     const plan = execQuery("MATCH (n:Person) SET n.category = CASE WHEN n.age > 30 THEN 'senior' ELSE 'junior' END")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-11 SET with coalesce', () => {
+  test('SET-11 SET with coalesce', async () => {
     const plan = execQuery("MATCH (n:Person) SET n.name = coalesce(n.name, 'Unknown')")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-12 SET = with map literal', () => {
+  test('SET-12 SET = with map literal', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n = {name: 'Alice', age: 31, city: 'NYC'}")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-13 SET += with dynamic props', () => {
+  test('SET-13 SET += with dynamic props', async () => {
     const plan = execQuery("MATCH (n:Person {name: 'Alice'}) SET n += {last_updated: timestamp()}")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-14 SET + ORDER BY', () => {
+  test('SET-14 SET + ORDER BY', async () => {
     const plan = execQuery('MATCH (n:Person) WHERE n.age IS NULL SET n.age = 0 RETURN n.name ORDER BY n.name')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)
 
-  test('SET-15 SET with SKIP + LIMIT', () => {
+  test('SET-15 SET with SKIP + LIMIT', async () => {
     const plan = execQuery("MATCH (n:Person) WHERE n.status = 'new' SET n.processed = true RETURN n SKIP 10 LIMIT 50")
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
     if (plan) {
-      const result = _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
+      const result = await _executeQuery(plan, [{"_label":"Person","name":"Alice","age":30,"city":"NYC","status":"active","id":1}])
       expect(result).toBeDefined()
     }
   }, 10000)

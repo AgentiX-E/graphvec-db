@@ -7,7 +7,7 @@ import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations
 
 describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
 
-  it('[TCK-DML-01] CREATE 节点', () => {
+  it('[TCK-DML-01] CREATE 节点', async () => {
     // Feature: Create
     // Scenario: Create node
     //   When executing query: """CREATE (n:Person {name: "Alice"})"""
@@ -16,7 +16,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(plan.createNodes.length).toBeGreaterThan(0)
   })
 
-  it('[TCK-DML-02] CREATE 关系', () => {
+  it('[TCK-DML-02] CREATE 关系', async () => {
     // Feature: Create
     // Scenario: Create relationship
     //   When executing query: """MATCH (a:Person {name:"Alice"}), (b:Person {name:"Bob"}) CREATE (a)-[:KNOWS]->(b)"""
@@ -26,7 +26,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-DML-03] CREATE 并 RETURN', () => {
+  it('[TCK-DML-03] CREATE 并 RETURN', async () => {
     // Feature: Create
     // Scenario: Create node and return
     //   When executing query: """CREATE (n:Person {name: "Alice"}) RETURN n"""
@@ -35,7 +35,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(plan.returnColumns).toContain('n')
   })
 
-  it('[TCK-DML-04] DELETE 节点', () => {
+  it('[TCK-DML-04] DELETE 节点', async () => {
     // Feature: Delete
     // Scenario: Delete node
     //   Given a graph with (:Person {name: "Alice"})
@@ -46,7 +46,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(plan.deleteTargets.length).toBe(1)
   })
 
-  it('[TCK-DML-05] DETACH DELETE', () => {
+  it('[TCK-DML-05] DETACH DELETE', async () => {
     // Feature: Delete
     // Scenario: DETACH DELETE
     //   When executing query: """MATCH (n) DETACH DELETE n"""
@@ -54,7 +54,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-DML-06] SET 属性', () => {
+  it('[TCK-DML-06] SET 属性', async () => {
     // Feature: Set
     // Scenario: Set property
     //   When executing query: """MATCH (n:Person {name:"Alice"}) SET n.age = 30"""
@@ -64,7 +64,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(() => _executeQuery(plan, data)).not.toThrow()
   })
 
-  it('[TCK-DML-07] SET 多属性', () => {
+  it('[TCK-DML-07] SET 多属性', async () => {
     // Feature: Set
     // Scenario: Set multiple properties
     //   When executing query: """MATCH (n:Person) SET n.name = "Bob", n.age = 25"""
@@ -73,7 +73,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(() => _executeQuery(plan, [{ _label: 'Person', name: 'Alice' }])).not.toThrow()
   })
 
-  it('[TCK-DML-08] REMOVE 属性', () => {
+  it('[TCK-DML-08] REMOVE 属性', async () => {
     // Feature: Remove
     // Scenario: Remove property
     //   When executing query: """MATCH (n:Person) REMOVE n.deprecated"""
@@ -83,7 +83,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(() => _executeQuery(plan, data)).not.toThrow()
   })
 
-  it('[TCK-DML-09] MERGE 节点', () => {
+  it('[TCK-DML-09] MERGE 节点', async () => {
     // Feature: Merge
     // Scenario: Merge node
     //   When executing query: """MERGE (n:Person {name: "Alice"})"""
@@ -93,7 +93,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     expect(plan.mergeNodes.length).toBeGreaterThan(0)
   })
 
-  it('[TCK-DML-10] MERGE ON CREATE SET', () => {
+  it('[TCK-DML-10] MERGE ON CREATE SET', async () => {
     // Feature: Merge
     // Scenario: MERGE with ON CREATE SET
     //   When executing query: """MERGE (n:Person {name:"Alice"}) ON CREATE SET n.created = 1000"""

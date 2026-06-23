@@ -3,8 +3,16 @@
  * 提取自 openCypher-tck.spec.ts，供各分片文件引用。
  */
 
-import { parseQuery, _executeQuery, execQuery } from '../../query-engine'
 import { describe, it, test, expect } from 'vitest'
+import { _executeQuery as qeExecuteQuery, parseQuery, execQuery } from '../../query-engine'
+
+// ── _executeQuery 包装 ──
+// 直接代理到 query-engine 的 async _executeQuery。
+// 返回值是 Promise。spec 中需要 await 才能拿到结果数组。
+// 批量修复方案：在每个测试函数前加 async 关键字，再 await _executeQuery(...)。
+export function _executeQuery(plan: any, nodes: any[]): Promise<any[]> {
+  return qeExecuteQuery(plan, nodes)
+}
 
 /**
  * 创建全量节点和关系数据集
@@ -69,4 +77,5 @@ export function normalize(
   return sorted
 }
 
-export { parseQuery, _executeQuery, execQuery }
+// parseQuery 和 execQuery 不是 async——直接 re-export 它们
+export { parseQuery, execQuery }

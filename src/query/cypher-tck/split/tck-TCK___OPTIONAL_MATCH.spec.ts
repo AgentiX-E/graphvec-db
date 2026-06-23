@@ -7,7 +7,7 @@ import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations
 
 describe('TCK — OPTIONAL MATCH', () => {
 
-  it('[TCK-OPTMATCH-01] OPTIONAL MATCH 匹配成功', () => {
+  it('[TCK-OPTMATCH-01] OPTIONAL MATCH 匹配成功', async () => {
     // Feature: Optional Match
     // Scenario: OPTIONAL MATCH finds existing match
     //   Given (:Person {name:"Alice"})-[:KNOWS]->(:Person {name:"Bob"})
@@ -20,7 +20,7 @@ describe('TCK — OPTIONAL MATCH', () => {
     expect(plan.optionalMatchSteps).toBeDefined()
   })
 
-  it('[TCK-OPTMATCH-02] OPTIONAL MATCH 不匹配返回 null', () => {
+  it('[TCK-OPTMATCH-02] OPTIONAL MATCH 不匹配返回 null', async () => {
     // Feature: Optional Match
     // Scenario: OPTIONAL MATCH returns null for non-match
     //   Given (:Person {name:"Alice"}) who knows nobody
@@ -31,7 +31,7 @@ describe('TCK — OPTIONAL MATCH', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-OPTMATCH-03] OPTIONAL MATCH 带 WHERE', () => {
+  it('[TCK-OPTMATCH-03] OPTIONAL MATCH 带 WHERE', async () => {
     // Feature: Optional Match
     // Scenario: OPTIONAL MATCH with WHERE
     //   When: """MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) WHERE b.age > 25 RETURN a, b"""
@@ -41,7 +41,7 @@ describe('TCK — OPTIONAL MATCH', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-OPTMATCH-04] 多个 OPTIONAL MATCH', () => {
+  it('[TCK-OPTMATCH-04] 多个 OPTIONAL MATCH', async () => {
     // Feature: Optional Match
     // Scenario: Multiple OPTIONAL MATCH
     //   When: """MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) OPTIONAL MATCH (a)-[:WORKS_AT]->(c) RETURN a, b, c"""

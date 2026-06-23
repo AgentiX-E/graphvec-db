@@ -7,7 +7,7 @@ import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations
 
 describe('TCK — WHERE 过滤', () => {
 
-  it('[TCK-WHERE-01] WHERE 相等比较 — 字符串相等', () => {
+  it('[TCK-WHERE-01] WHERE 相等比较 — 字符串相等', async () => {
     // Feature: Where
     // Scenario: Equality comparison
     //   Given a graph with (:Person {name: "Alice"})
@@ -18,13 +18,13 @@ describe('TCK — WHERE 过滤', () => {
     expect(plan.filters[0].operator).toBe('EQ')
     expect(plan.filters[0].value).toBe('Alice')
     const data = [{ _label: 'Person', name: 'Alice', age: 30 }]
-    const result = _executeQuery(plan, data)
+    const result = await _executeQuery(plan, data)
     expect(result.length).toBeGreaterThanOrEqual(1)
     const row = result[0] as Record<string, any>
     expect(row.n.name).toBe('Alice')
   })
 
-  it('[TCK-WHERE-02] WHERE 大于比较 — 数字比较', () => {
+  it('[TCK-WHERE-02] WHERE 大于比较 — 数字比较', async () => {
     // Feature: Where
     // Scenario: Greater than comparison
     //   Given a graph with (:Person {age: 35})
@@ -33,11 +33,11 @@ describe('TCK — WHERE 过滤', () => {
     expect(plan.filters.length).toBeGreaterThan(0)
     expect(plan.filters[0].operator).toBe('GT')
     const data = [{ _label: 'Person', name: 'Alice', age: 35 }]
-    const result = _executeQuery(plan, data)
+    const result = await _executeQuery(plan, data)
     expect(result.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('[TCK-WHERE-03] WHERE 小于比较 — 数字比较', () => {
+  it('[TCK-WHERE-03] WHERE 小于比较 — 数字比较', async () => {
     // Feature: Where
     // Scenario: Less than comparison
     //   When executing query: """MATCH (n:Person) WHERE n.age < 25 RETURN n"""
@@ -47,12 +47,12 @@ describe('TCK — WHERE 过滤', () => {
       { _label: 'Person', name: 'Young', age: 20 },
       { _label: 'Person', name: 'Old', age: 40 },
     ]
-    const result = _executeQuery(plan, data) as Record<string, any>[]
+    const result = await _executeQuery(plan, data) as Record<string, any>[]
     expect(result.length).toBe(1)
     expect(result[0].n.name).toBe('Young')
   })
 
-  it('[TCK-WHERE-04] WHERE AND 复合条件', () => {
+  it('[TCK-WHERE-04] WHERE AND 复合条件', async () => {
     // Feature: Where
     // Scenario: AND conjunction
     //   When executing query: """MATCH (n:Person) WHERE n.age > 18 AND n.status = "active" RETURN n"""
@@ -63,12 +63,12 @@ describe('TCK — WHERE 过滤', () => {
       { _label: 'Person', name: 'B', age: 17, status: 'active' },
       { _label: 'Person', name: 'C', age: 25, status: 'inactive' },
     ]
-    const result = _executeQuery(plan, data) as Record<string, any>[]
+    const result = await _executeQuery(plan, data) as Record<string, any>[]
     expect(result.length).toBe(1)
     expect(result[0].n.name).toBe('A')
   })
 
-  it('[TCK-WHERE-05] WHERE OR 复合条件', () => {
+  it('[TCK-WHERE-05] WHERE OR 复合条件', async () => {
     // Feature: Where
     // Scenario: OR disjunction
     //   When executing query: """MATCH (n:Person) WHERE n.age > 30 OR n.status = "vip" RETURN n"""
@@ -76,7 +76,7 @@ describe('TCK — WHERE 过滤', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-WHERE-06] WHERE NOT 否定', () => {
+  it('[TCK-WHERE-06] WHERE NOT 否定', async () => {
     // Feature: Where
     // Scenario: NOT negation
     //   When executing query: """MATCH (n:Person) WHERE NOT n.name = "Alice" RETURN n"""
@@ -85,7 +85,7 @@ describe('TCK — WHERE 过滤', () => {
     expect(plan.filters.length).toBeGreaterThan(0)
   })
 
-  it('[TCK-WHERE-07] WHERE IN 列表', () => {
+  it('[TCK-WHERE-07] WHERE IN 列表', async () => {
     // Feature: Where
     // Scenario: IN list
     //   When executing query: """MATCH (n:Person) WHERE n.name IN ["Alice", "Bob"] RETURN n"""
@@ -95,11 +95,11 @@ describe('TCK — WHERE 过滤', () => {
       { _label: 'Person', name: 'Alice' },
       { _label: 'Person', name: 'Charlie' },
     ]
-    const result = _executeQuery(plan, data) as Record<string, any>[]
+    const result = await _executeQuery(plan, data) as Record<string, any>[]
     expect(result.length).toBeGreaterThan(0)
   })
 
-  it('[TCK-WHERE-08] WHERE IS NOT NULL', () => {
+  it('[TCK-WHERE-08] WHERE IS NOT NULL', async () => {
     // Feature: Where
     // Scenario: IS NOT NULL
     //   When executing query: """MATCH (n:Person) WHERE n.name IS NOT NULL RETURN n"""

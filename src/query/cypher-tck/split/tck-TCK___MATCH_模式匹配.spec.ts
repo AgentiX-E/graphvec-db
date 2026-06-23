@@ -7,7 +7,7 @@ import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations
 
 describe('TCK — MATCH 模式匹配', () => {
 
-  it('[TCK-MATCH-01] MATCH 任意节点 — 空图返回空', () => {
+  it('[TCK-MATCH-01] MATCH 任意节点 — 空图返回空', async () => {
     // Feature: Match
     // Scenario: Match any node
     //   Given an empty graph
@@ -15,11 +15,11 @@ describe('TCK — MATCH 模式匹配', () => {
     //   Then the result should be empty
     const plan = parseQuery('MATCH (n) RETURN n')
     expect(plan).toBeDefined()
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result.length).toBe(0)
   })
 
-  it('[TCK-MATCH-02] MATCH 标签节点 — 返回标签匹配的节点', () => {
+  it('[TCK-MATCH-02] MATCH 标签节点 — 返回标签匹配的节点', async () => {
     // Feature: Match
     // Scenario: Match node with label
     //   Given a graph with (:Person)
@@ -28,7 +28,7 @@ describe('TCK — MATCH 模式匹配', () => {
     const data = [{ _label: 'Person', name: 'Alice' }, { _label: 'Company', name: 'Acme' }]
     const plan = parseQuery('MATCH (n:Person) RETURN n')
     expect(plan.scanLabel).toBe('Person')
-    const result = _executeQuery(plan, data)
+    const result = await _executeQuery(plan, data)
     expect(result.length).toBe(1)
     expect(result[0]).toBeDefined()
     const n = result[0] as Record<string, any>
@@ -36,7 +36,7 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(n.n.name).toBe('Alice')
   })
 
-  it('[TCK-MATCH-03] MATCH 属性过滤 — 实现现状反映', () => {
+  it('[TCK-MATCH-03] MATCH 属性过滤 — 实现现状反映', async () => {
     // Feature: Match
     // Scenario: Match with property filter (node pattern)
     //   When executing query: """MATCH (n {name: "Alice"}) RETURN n"""
@@ -46,7 +46,7 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-MATCH-04] MATCH 单跳边 — 返回两个端点', () => {
+  it('[TCK-MATCH-04] MATCH 单跳边 — 返回两个端点', async () => {
     // Feature: Match
     // Scenario: Match relationship
     //   Given a graph with (:Person)-[:KNOWS]->(:Person)
@@ -58,7 +58,7 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(plan.steps[0].direction).toBe('out')
   })
 
-  it('[TCK-MATCH-05] MATCH 反向边 — ANTLR 原生支持 <-- 语法', () => {
+  it('[TCK-MATCH-05] MATCH 反向边 — ANTLR 原生支持 <-- 语法', async () => {
     // Feature: Match
     // Scenario: Match relationship with reversed direction
     //   When executing query: """MATCH (a)<-[:KNOWS]-(b) RETURN a, b"""
@@ -70,7 +70,7 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(plan.returnColumns).toContain('a')
   })
 
-  it('[TCK-MATCH-06] MATCH 多跳路径 — 支持两跳', () => {
+  it('[TCK-MATCH-06] MATCH 多跳路径 — 支持两跳', async () => {
     // Feature: Match
     // Scenario: Match multi-hop path
     //   When executing query: """MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN a, b, c"""
@@ -80,7 +80,7 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(plan.steps[1].edgeLabel).toBe('KNOWS')
   })
 
-  it('[TCK-MATCH-07] MATCH 逗号分隔多 pattern — 支持逗号模式', () => {
+  it('[TCK-MATCH-07] MATCH 逗号分隔多 pattern — 支持逗号模式', async () => {
     // Feature: Match
     // Scenario: Match multiple patterns (comma separated)
     //   When executing query: """MATCH (a:Person), (b:Company) RETURN a, b"""
@@ -88,7 +88,7 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(plan.scanLabel).toBe('Person')
   })
 
-  it('[TCK-MATCH-08] MATCH 无标签边 — 支持任意关系', () => {
+  it('[TCK-MATCH-08] MATCH 无标签边 — 支持任意关系', async () => {
     // Feature: Match
     // Scenario: Match any relationship (no label)
     //   When executing query: """MATCH (a)--(b) RETURN a, b"""
@@ -96,7 +96,7 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-MATCH-09] MATCH 多标签 — 已支持多标签语法', () => {
+  it('[TCK-MATCH-09] MATCH 多标签 — 已支持多标签语法', async () => {
     // Feature: Match
     // Scenario: Match with multiple labels
     //   When executing query: """MATCH (n:Person:Employee) RETURN n"""
@@ -104,7 +104,7 @@ describe('TCK — MATCH 模式匹配', () => {
     expect(() => parseQuery('MATCH (n:Person:Employee) RETURN n')).not.toThrow()
   })
 
-  it('[TCK-MATCH-10] MATCH 变长路径 — 支持区间语法', () => {
+  it('[TCK-MATCH-10] MATCH 变长路径 — 支持区间语法', async () => {
     // Feature: Match
     // Scenario: Match variable length path
     //   When executing query: """MATCH (a)-[:KNOWS*1..2]->(c) RETURN a, c"""

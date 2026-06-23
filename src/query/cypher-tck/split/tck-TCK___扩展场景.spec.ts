@@ -7,7 +7,7 @@ import { parseQuery, _executeQuery, execQuery, seedGraph, seedGraphWithRelations
 
 describe('TCK — 扩展场景', () => {
 
-  it('[TCK-EXT-01] SKIP + LIMIT', () => {
+  it('[TCK-EXT-01] SKIP + LIMIT', async () => {
     // Feature: Skip / Limit
     // Scenario: SKIP and LIMIT together
     //   When executing query: """MATCH (n:Person) RETURN n.name SKIP 1 LIMIT 3"""
@@ -16,7 +16,7 @@ describe('TCK — 扩展场景', () => {
     expect(plan.limit).toBe(3)
   })
 
-  it('[TCK-EXT-02] ORDER BY ASC + DESC', () => {
+  it('[TCK-EXT-02] ORDER BY ASC + DESC', async () => {
     // Feature: Order By
     // Scenario: ORDER BY with mixed ASC/DESC
     //   When: """MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age DESC, n.name ASC"""
@@ -26,7 +26,7 @@ describe('TCK — 扩展场景', () => {
     expect(plan.orderBy[1].direction).toBe('ASC')
   })
 
-  it('[TCK-EXT-03] 参数化查询 — $1 占位符', () => {
+  it('[TCK-EXT-03] 参数化查询 — $1 占位符', async () => {
     // Feature: Parameterized Query
     // Scenario: Parameterized query with $1 placeholder
     //   When: """MATCH (n:Person) WHERE n.name = $1 RETURN n""" with param "Alice"
@@ -35,7 +35,7 @@ describe('TCK — 扩展场景', () => {
     expect(plan.filters[0].value).toBe('Alice')
   })
 
-  it('[TCK-EXT-04] 多参数 $1, $2', () => {
+  it('[TCK-EXT-04] 多参数 $1, $2', async () => {
     // Feature: Parameterized Query
     // Scenario: Multiple parameters $1, $2
     //   When: """MATCH (n:Person) WHERE n.age > $1 AND n.status = $2 RETURN n"""
@@ -48,7 +48,7 @@ describe('TCK — 扩展场景', () => {
     expect(plan.filters[1].value).toBe('active')
   })
 
-  it('[TCK-EXT-05] 组合查询 — 正常解析', () => {
+  it('[TCK-EXT-05] 组合查询 — 正常解析', async () => {
     // Feature: Combo
     // Scenario: DISTINCT + ORDER BY + LIMIT combo
     //   When: """MATCH (n:Person) RETURN n.age ORDER BY n.age DESC LIMIT 5"""
@@ -58,7 +58,7 @@ describe('TCK — 扩展场景', () => {
     expect(plan.limit).toBe(5)
   })
 
-  it('[TCK-EXT-06] 空结果 + 无匹配', () => {
+  it('[TCK-EXT-06] 空结果 + 无匹配', async () => {
     // Feature: No match
     // Scenario: Query matching no nodes
     //   Given graph with (:Person)
@@ -69,7 +69,7 @@ describe('TCK — 扩展场景', () => {
     ]
     const plan = parseQuery('MATCH (n:Person) WHERE n.name = "NonExistent" RETURN n')
     expect(plan.filters[0].value).toBe('NonExistent')
-    const result = _executeQuery(plan, data)
+    const result = await _executeQuery(plan, data)
     expect(result.length).toBe(0)
   })
 })
