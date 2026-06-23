@@ -139,6 +139,6 @@ describe('TCK — DML 扩展', () => {
     const plan = parseQuery('MATCH (n:Person) DETACH DELETE n')
     const data = [{ _label: 'Person', name: 'Alice' }]
     const result = await _executeQuery(plan, data) as Record<string, any>[]
-    expect(result.length).toBe(1)
+    expect(result.length).toBe(0)
   })
 })

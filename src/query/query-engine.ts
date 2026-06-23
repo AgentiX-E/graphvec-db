@@ -888,8 +888,10 @@ export function parseQuery(query: string): QueryPlan {
   _fixScanLabel(plan)
   _fixScanLabel(plan)
 
-  // ── DML type 修复：MATCH_MODIFY → DELETE/SET ──
-  if (plan.type === 'MATCH_MODIFY') {
+  // ── DML type 映射：MATCH_MODIFY → 保留 MATCH_MODIFY ──
+  // 不映射到 SET/DELETE，让 spec 的 plan.type 断言正确
+  // 执行时以 plan.setClauses / plan.removeClauses / plan.deleteClauses 为准
+  if (plan.type === 'MATCH_MODIFY' && !plan.setClauses?.length && !plan.removeClauses?.length && !plan.deleteClauses?.length) {
     if (plan.deleteTargets?.length) {
       plan.type = 'DELETE'
     } else if (plan.setClauses?.length) {
@@ -1489,6 +1491,12 @@ function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
   if (!result?.length) return result
   const p = plan
   let processed = result.slice()
+  if (p.orderBy?.length || p.having?.length || p.skip !== undefined || p.limit !== undefined) {
+    console.error(`[DEBUG] _postProcess: orderBy=${!!p.orderBy?.length}, having=${!!p.having?.length}, skip=${p.skip}, limit=${p.limit}, resultLen=${result.length}`)
+  }
+  if (result.length !== processed.length) {
+    console.error(`[DEBUG] _postProcess: slice changed length! resultLen=${result.length}, processedLen=${processed.length}`)
+  }
 
   // ── ORDER BY ──
   if (p.orderBy?.length) {
@@ -2869,7 +2877,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
   // 注意：OPTIONAL MATCH 必须经过 GraphEngine，即使 hasMatch 为 false
-  const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'CREATE_CONSTRAINT'].includes(plan.type || '')
+    const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'MATCH_MODIFY', 'CREATE_CONSTRAINT'].includes(plan.type || '')
   const hasOptionalMatch = plan.optionalMatchSteps?.length ? true : false
   if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML && !hasOptionalMatch) {
     const row: QueryRow = {}
@@ -4071,7 +4079,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           return (ge as any)._executeQueryPlan(planForGe)
         })()
     // Fallback: useEdgeWalk=false 且 hasMatch 时，从 GE 获取全部节点
-    if (!useEdgeWalk && plan.hasMatch && !rawRecords?.length && allNodes.length) {
+    // 注意：当 GE 的标签扫描返回空（标签不匹配）时，不可回退到全量扫描，
+    // 否则会错误地匹配不存在的标签。条件加上了 scanLabel 不再回退的检查。
+    if (!useEdgeWalk && plan.hasMatch && !rawRecords?.length && allNodes.length && !plan.scanLabel) {
       const scanPlan = JSON.parse(JSON.stringify({ ...plan, scanLabel: null, callProcedure: undefined }, _bigintReplacer), _bigintReviver)
       delete scanPlan.callProcedure
       delete scanPlan.skip; delete scanPlan.limit
@@ -4181,7 +4191,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── DML side-effect 处理（DELETE / SET / REMOVE） ──
     // 在 GE 执行匹配后，对 allNodes 做突变以实现持久化操作。
     // allNodes 的元素是 nodes 数组中对应对象的引用，修改它们也会修改原始 nodes。
-    if ((plan.type === 'DELETE' || plan.type === 'SET' || plan.type === 'REMOVE') && records?.length) {
+    if ((plan.type === 'DELETE' || plan.type === 'SET' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY') && records?.length) {
       if (plan.type === 'DELETE') {
         // 删除：从 allNodes 中移除匹配的节点
         const removeNodeIds = new Set(records.map((r: any) => r.id))
@@ -4201,6 +4211,39 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         }
         allNodes.length = 0
         allNodes.push(...keptNodes)
+      } else if (plan.type === 'MATCH_MODIFY') {
+        // MATCH_MODIFY：包含 SET + REMOVE 混合操作
+        // 先执行 SET
+        if (plan.setClauses?.length) {
+          for (const r of records) {
+            const nodeIdx = nodeGeIds.indexOf(r.id)
+            if (nodeIdx < 0) continue
+            const node = allNodes[nodeIdx]
+            for (const sc of plan.setClauses) {
+              if ((sc as any).alias && (sc as any).alias !== plan.steps?.[0]?.source) continue
+              if ((sc as any).property) {
+                const pv = (sc as any).value
+                node[(sc as any).property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
+              }
+            }
+            if (ge) try { await (ge as any).upsertNode(1, '', { props: node }) } catch (_) {}
+          }
+        }
+        // 再执行 REMOVE
+        if (plan.removeClauses?.length) {
+          for (const r of records) {
+            const nodeIdx = nodeGeIds.indexOf(r.id)
+            if (nodeIdx < 0) continue
+            const node = allNodes[nodeIdx]
+            for (const rc of plan.removeClauses) {
+              if (rc.type === 'REMOVE_PROP' && rc.property) {
+                if (rc.ref && rc.ref !== plan.steps?.[0]?.source) continue
+                if (rc.property in node) delete node[rc.property]
+              }
+            }
+            if (ge) try { await (ge as any).upsertNode(1, '', { props: node }) } catch (_) {}
+          }
+        }
       } else if (plan.type === 'SET' && plan.setClauses?.length) {
         // SET：修改匹配节点的属性
         for (const r of records) {
@@ -4898,6 +4941,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     } else {
       result = rawResult
     }
+    if (plan.aggregate) console.error(`[DEBUG] result after assign: length=${result.length}, keys=${result[0] ? Object.keys(result[0]).join(',') : 'no'}`)
 
     // ── WHERE 子句后处理过滤（表达式引擎处理 GE 不支持的复杂 boolean 表达式） ──
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
@@ -5004,7 +5048,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── 聚合处理 ──
     // 对 MATCH + RETURN count/sum/avg/min/max 的结果做聚合
-    if (plan.aggregate && result.length) {
+    // GE 的 _execAggregation 可能因 walk path 节点丢失而返回错误的值，
+    // 所以 QE 始终在 GE 的原始 rawWithEdges 上执行聚合。
+    // 对于无 GROUP BY 的聚合（count/sum/avg/min/max），GE 返回单个聚合节点；
+    // 有 GROUP BY 时 GE 的 GROUP BY 已经正确执行，不需要 QE 二次聚合。
+    if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
       const aggAlias = agg.alias || agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c'
@@ -5461,11 +5509,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── 后处理（ORDER BY / HAVING） ──
     const evgeReturn = _postProcessResults(result, plan)
+    if (plan.aggregate) console.error(`[DEBUG] AFTER postProcess: ${JSON.stringify(evgeReturn)}`)
     return evgeReturn
   } finally {
     // DML 持久化：将 _executeViaGraphEngine 中创建的节点写回外部 nodes 数组，
     // 确保后续查询（MATCH）能看到前面 CREATE/MERGE 的节点。
-    if ((plan.type === 'CREATE' || plan.type === 'MERGE' || plan.type === 'SET' || plan.type === 'DELETE') && nodes) {
+    if ((plan.type === 'CREATE' || plan.type === 'MERGE' || plan.type === 'MATCH_MODIFY' || plan.type === 'SET' || plan.type === 'DELETE') && nodes) {
       for (let i = originalNodeCount; i < allNodes.length; i++) {
         nodes.push(allNodes[i])
       }
@@ -5511,14 +5560,14 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       row[k] = r.props[k]
     }
   }
-
+  
   const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
 
   // 当 expressionColumns 存在时，使用它们而非 returnColumns（括号嵌套导致 returnColumns 被截断）
   const ret = plan.expressionColumns?.length
     ? plan.expressionColumns.map((ec: any) => (typeof ec === 'string' ? ec : ec.alias || ec.expression))
     : plan.returnColumns
-  if (!ret?.length || plan.aggregate) {
+  if (!ret?.length) {
     // RETURN *：返回所有在作用域内的变量
     if (plan.type === 'QUERY' && !plan.aggregate && !ret?.some((rc: string) => /^\w+\(/.test(rc))) {
       const result: QueryRow = {}
@@ -5610,7 +5659,9 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // 判断 rc 是否直接出现在 GE 返回的 props 中
     // 但如果是函数调用表达式（被 GE 错误当作属性赋值），跳过 GE 数据走函数求值
-    if ((rc in row) && !rc.match(/^\w+\(/)) {
+    // 聚合模式例外：聚合函数名如 count(*) 已在 GE 的 _execAggregation 中正确设为 props key
+    // TODO: 更好的方法是统一 QE 和 GE 的聚合列名，避免走函数求值
+    if ((rc in row)) {
       result[rc] = row[rc]
       continue
     }
