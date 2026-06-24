@@ -33,14 +33,27 @@ import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from '
 
 // ── 内存索引注册表（CREATE INDEX / DROP INDEX）━━━━━━━━━━━━━━━
 
+// ── 持久化路径 ──
+const _storePath = path.resolve('.opengraph/index-constraint-store.json')
+
 // ── 内存索引注册表（CREATE INDEX / DROP INDEX） ──
 export interface IndexEntry { label: string; property: string }
 const _indexRegistry = new Map<string, IndexEntry>()
+function _saveStore(): void {
+  try {
+    const dir = path.dirname(_storePath)
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(_storePath, JSON.stringify({
+      indexes: Array.from(_indexRegistry.values()),
+      constraints: Array.from(_constraintRegistry.values()),
+    }, null, 2), 'utf8')
+  } catch { /* 非关键错误，静默处理 */ }
+}
 export function _registerIndex(label: string, property: string): void {
-  _indexRegistry.set(`${label}:${property}`, { label, property })
+  _indexRegistry.set(`${label}:${property}`, { label, property }); _saveStore()
 }
 export function _dropIndex(label: string, property: string): void {
-  _indexRegistry.delete(`${label}:${property}`)
+  _indexRegistry.delete(`${label}:${property}`); _saveStore()
 }
 export function _getAllIndexes(): IndexEntry[] {
   return Array.from(_indexRegistry.values())
@@ -48,19 +61,29 @@ export function _getAllIndexes(): IndexEntry[] {
 export function _getIndex(label: string, property: string): IndexEntry | undefined {
   return _indexRegistry.get(`${label}:${property}`)
 }
-export function _clearIndexes(): void { _indexRegistry.clear() }
+export function _clearIndexes(): void { _indexRegistry.clear(); _saveStore() }
 
 // ── 约束注册表（唯一性约束） ──
 export interface ConstraintEntry { name: string; label: string; property: string; type: 'UNIQUE' }
 const _constraintRegistry = new Map<string, ConstraintEntry>()
 export function _registerConstraint(name: string, label: string, property: string): void {
-  _constraintRegistry.set(name, { name, label, property, type: 'UNIQUE' })
+  _constraintRegistry.set(name, { name, label, property, type: 'UNIQUE' }); _saveStore()
 }
-export function _dropConstraint(name: string): void { _constraintRegistry.delete(name) }
+export function _dropConstraint(name: string): void { _constraintRegistry.delete(name); _saveStore() }
 export function _getAllConstraints(): ConstraintEntry[] {
   return Array.from(_constraintRegistry.values())
 }
-export function _clearConstraints(): void { _constraintRegistry.clear() }
+export function _clearConstraints(): void { _constraintRegistry.clear(); _saveStore() }
+
+// ── 启动时自动加载持久化索引/约束 ──
+try {
+  if (fs.existsSync(_storePath)) {
+    const raw = fs.readFileSync(_storePath, 'utf8')
+    const data = JSON.parse(raw)
+    if (data.indexes) for (const idx of data.indexes) { _indexRegistry.set(idx.label+':'+idx.property, idx) }
+    if (data.constraints) for (const c of data.constraints) { _constraintRegistry.set(c.name, c) }
+  }
+} catch { /* 启动恢复失败不阻塞 */ }
 
 // ── 数据库注册表（CATALOG 多图命名空间） ──
 // 默认数据库（neo4j）始终存在
