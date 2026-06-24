@@ -2147,6 +2147,14 @@ export function _orderByField(o: any): string {
 export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): QueryRow[] {
   if (!result?.length) return result
   const p = plan
+
+  // Quick path: no ORDER BY, no HAVING → skip slice + sort + filter overhead
+  if (!p.orderBy?.length && !p.having?.length) {
+    if (p.skip !== undefined && p.skip > 0) return result.slice(p.skip)
+    if (p.limit !== undefined && p.limit >= 0) return result.slice(0, p.limit)
+    return result
+  }
+
   let processed = result.slice()
 
   // ── ORDER BY ──
