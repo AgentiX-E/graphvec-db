@@ -633,7 +633,12 @@ export function _callFunction(name: string, args: string[], row?: Record<string,
   return fn ? fn(args, row) : null
 }
 
-export function _evalBinary(s: string, row?: Record<string, unknown>): unknown { return _evalOr(s, row) }
+export function _evalBinary(s: string, row?: Record<string, unknown>): unknown {
+  // Fast path: if no boolean operators or NOT, skip directly to comparison
+  const t = s.trim()
+  if (!/\b(OR|XOR|AND|NOT)\b/i.test(t)) return _evalComparison(t, row)
+  return _evalOr(t, row)
+}
 
 export function _assertBool(v: unknown, expr: string): void {
   if (typeof v !== 'boolean' && v != null) {
