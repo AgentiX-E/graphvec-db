@@ -180,7 +180,7 @@ describe('DML Benchmark', () => {
       ge.close()
     }
 
-    console.log('\n' + lines.join('\n'))
     process.stdout.write('\n' + lines.join('\n') + '\n')
+    console.log('\n' + lines.join('\n'))
   })
 })

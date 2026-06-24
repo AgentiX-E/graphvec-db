@@ -72,7 +72,8 @@ function parseTableFormat(output: string): BenchmarkResult[] {
 
 /** Extract benchmark metrics from vitest console output */
 function parseBenchMetrics(output: string): BenchmarkResult[] {
-  const results: BenchmarkResult[] = []
+  // Dedup: last-occurrence wins (handles duplicate lines from console.log + process.stdout.write)
+  const seen = new Map<string, BenchmarkResult>()
 
   // Format 1: vitest bench API output
   const lineRegex = /^\s{2,}(\S.+) \s+([\d,]+)\s+ops\/s\s+\((\d+)x\s+in\s+([\d.]+)ms\)/gm
@@ -82,13 +83,15 @@ function parseBenchMetrics(output: string): BenchmarkResult[] {
     const ops = parseInt(match[2].replace(/,/g, ''), 10)
     const samples = parseInt(match[3], 10)
     const durationMs = parseFloat(match[4])
-    results.push({ name, opsPerSecond: ops, samples, durationMs, timestamp: Date.now() })
+    seen.set(name, { name, opsPerSecond: ops, samples, durationMs, timestamp: Date.now() })
   }
 
   // Format 2: console.table output (query-benchmark style)
-  results.push(...parseTableFormat(output))
+  for (const r of parseTableFormat(output)) {
+    seen.set(r.name, r)
+  }
 
-  return results
+  return Array.from(seen.values())
 }
 
 import { type ExecSyncOptionsWithBufferEncoding } from 'child_process'

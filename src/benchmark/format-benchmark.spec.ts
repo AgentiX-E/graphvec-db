@@ -82,7 +82,7 @@ describe('Format & PostProcess Benchmark', () => {
     lines.push(benchmark("type conversion",           () => _evaluateExpression({ type: 'arithmetic', op: '+', left: { type: 'literal', value: 1 }, right: { type: 'prop', name: 'val' } } as any, { val: '42' }), R_EXPR))
     lines.push(benchmark("list literal",              () => _evaluateExpression({ type: 'list', items: [{ type: 'literal', value: 1 }, { type: 'literal', value: 'hello' }, { type: 'prop', name: 'val' }] } as any, { val: true }), R_EXPR))
 
-    console.log('\n' + lines.join('\n'))
     process.stdout.write('\n' + lines.join('\n') + '\n')
+    console.log('\n' + lines.join('\n'))
   })
 })

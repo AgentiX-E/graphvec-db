@@ -92,8 +92,7 @@ describe('AST Parse Benchmark', () => {
     const ops = Math.round((500 * queries.length) / (elapsed / 1000)).toLocaleString()
     lines.push(`  ${"batch parse: 10 unique queries (500x batch)".padEnd(48)} ${ops} ops/s  (${500 * queries.length}x in ${elapsed.toFixed(1)}ms)`)
 
-    console.log('\n' + lines.join('\n'))
-    // Also emit to stdout for runner.ts parsing
     process.stdout.write('\n' + lines.join('\n') + '\n')
+    console.log('\n' + lines.join('\n'))
   })
 })
