@@ -97,19 +97,47 @@ function parseBenchMetrics(output: string): BenchmarkResult[] {
 import { type ExecSyncOptionsWithBufferEncoding } from 'child_process'
 
 export async function perf(): Promise<BenchmarkBaseline> {
-  const allResults: BenchmarkResult[] = []
-  // PERF_FILES 合并成一个 vitest 命令（避免 ANTLR 多次初始化）
-  const files = PERF_FILES.join(' ')
-  const cmd = `npx vitest run ${files} --no-coverage 2>&1`
-  const out = execSync(cmd, { cwd: PROJECT_ROOT, timeout: 180_000, encoding: 'utf-8' })
-  const metrics = parseBenchMetrics(out)
-  allResults.push(...metrics)
+  // 多次运行取中位数，降低 run-to-run 方差
+  const RUNS = 3
+  const allRunMaps: Map<string, BenchmarkResult[]>[] = []
+
+  for (let run = 0; run < RUNS; run++) {
+    const files = PERF_FILES.join(' ')
+    const cmd = `npx vitest run ${files} --no-coverage 2>&1`
+    const out = execSync(cmd, { cwd: PROJECT_ROOT, timeout: 180_000, encoding: 'utf-8' })
+    const metrics = parseBenchMetrics(out)
+    allRunMaps.push(new Map(metrics.map(m => [m.name, m])))
+  }
+
+  // 对每个 benchmark 取中位数 ops/s
+  const allNames = new Set<string>()
+  for (const runMap of allRunMaps) for (const name of runMap.keys()) allNames.add(name)
+
+  const medianResults: BenchmarkResult[] = []
+  for (const name of allNames) {
+    const opsValues: number[] = []
+    for (const runMap of allRunMaps) {
+      if (runMap.has(name)) opsValues.push(runMap.get(name)!.opsPerSecond)
+    }
+    if (!opsValues.length) continue
+    opsValues.sort((a, b) => a - b)
+    const median = opsValues[Math.floor(opsValues.length / 2)]
+    // 取任意一次有效行的 samples/durationMs
+    const sample = allRunMaps[0].get(name) || allRunMaps[1]?.get(name)
+    medianResults.push({
+      name,
+      opsPerSecond: median,
+      samples: sample?.samples || 0,
+      durationMs: sample?.durationMs || 0,
+      timestamp: Date.now(),
+    })
+  }
 
   const baseline: BenchmarkBaseline = {
     createdAt: Date.now(),
     mode: 'perf',
     gitHash: execSync('git rev-parse HEAD', { cwd: PROJECT_ROOT, encoding: 'utf-8' }).trim(),
-    results: allResults,
+    results: medianResults,
   }
 
   const md = formatMarkdownReport(baseline)

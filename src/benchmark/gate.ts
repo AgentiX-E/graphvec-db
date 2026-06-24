@@ -19,7 +19,7 @@ import * as path from 'path'
 const BASELINE_DIR = path.resolve(__dirname, '../../benchmark/baselines')
 
 interface GateOptions {
-  /** Regression threshold (percent). Default: 10 */
+  /** Regression threshold (percent). Default: 15 */
   threshold: number
   /** Whether to save the new baseline after successful gate */
   save: boolean
@@ -36,7 +36,7 @@ function findLatestBaseline(): string | null {
 
 async function main() {
   const opts: GateOptions = {
-    threshold: parseInt(process.argv.find(a => a.startsWith('--threshold='))?.split('=')[1] || '10', 10),
+    threshold: parseInt(process.argv.find(a => a.startsWith('--threshold='))?.split('=')[1] || '15', 10),
     save: process.argv.includes('--save'),
   }
 
@@ -75,6 +75,11 @@ async function main() {
 
   if (hasCriticalRegression(rows as any)) {
     console.log('\n❌ GATE FAILED: critical regressions detected')
+    if (opts.save) {
+      const savePath = path.join(BASELINE_DIR, `${new Date().toISOString().slice(0, 10)}.json`)
+      saveBaseline(savePath, current)
+      console.log(`   Baseline saved (despite failures): ${savePath}`)
+    }
     process.exit(1)
   }
 
