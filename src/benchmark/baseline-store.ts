@@ -45,7 +45,9 @@ export interface ComparisonRow {
   regression: 'none' | 'warning' | 'critical'
 }
 
-export function compareResults(current: BenchmarkBaseline, previous: BenchmarkBaseline): ComparisonRow[] {
+export function compareResults(current: BenchmarkBaseline, previous: BenchmarkBaseline, threshold?: number): ComparisonRow[] {
+  const t = threshold ?? 10 // default 10%
+  const halfT = t / 2
   const prevMap = new Map<string, number>()
   for (const r of previous.results) prevMap.set(r.name, r.opsPerSecond)
 
@@ -55,8 +57,8 @@ export function compareResults(current: BenchmarkBaseline, previous: BenchmarkBa
     if (prev === undefined) continue // new test, skip
     const change = ((r.opsPerSecond - prev) / prev) * 100
     let regression: 'none' | 'warning' | 'critical' = 'none'
-    if (change < -10) regression = 'critical'
-    else if (change < -5) regression = 'warning'
+    if (change < -t) regression = 'critical'
+    else if (change < -halfT) regression = 'warning'
     rows.push({
       name: r.name,
       currentOps: r.opsPerSecond,

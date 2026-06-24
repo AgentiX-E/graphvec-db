@@ -34,8 +34,10 @@ export function formatMarkdownReport(baseline: BenchmarkBaseline): string {
   return lines.join('\n')
 }
 
-export function formatComparisonReport(current: BenchmarkBaseline, previous: BenchmarkBaseline): string {
-  const rows: ComparisonRow[] = compareResults(current, previous)
+export function formatComparisonReport(current: BenchmarkBaseline, previous: BenchmarkBaseline, threshold?: number): string {
+  const t = threshold ?? 10
+  const rows: ComparisonRow[] = compareResults(current, previous, t)
+  const halfT = t / 2
 
   const lines: string[] = []
   lines.push(`# Benchmark Comparison Report`)
@@ -52,8 +54,8 @@ export function formatComparisonReport(current: BenchmarkBaseline, previous: Ben
   const warning = rows.filter(r => r.regression === 'warning').length
   const passed = rows.filter(r => r.regression === 'none').length
   lines.push(`- ✅ Pass: ${passed}`)
-  if (warning > 0) lines.push(`- ⚠️ Warning (5-10%): ${warning}`)
-  if (critical > 0) lines.push(`- 🔴 Critical (>10%): ${critical}`)
+  if (warning > 0) lines.push(`- ⚠️ Warning (${t/2}-${t}%): ${warning}`)
+  if (critical > 0) lines.push(`- 🔴 Critical (>${t}%): ${critical}`)
   lines.push(``)
   lines.push(`## Detailed Comparison`)
   lines.push(``)

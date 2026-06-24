@@ -11,7 +11,7 @@
  */
 
 import { perf } from './runner'
-import { BenchmarkBaseline, loadBaseline, saveBaseline, hasCriticalRegression } from './baseline-store'
+import { BenchmarkBaseline, loadBaseline, saveBaseline, hasCriticalRegression, compareResults } from './baseline-store'
 import { formatComparisonReport } from './reporter'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -57,23 +57,12 @@ async function main() {
   console.log(`   Baseline git: ${previous.gitHash}`)
   console.log(`   Threshold: ${opts.threshold}%\n`)
 
-  const report = formatComparisonReport(current, previous)
+  const report = formatComparisonReport(current, previous, opts.threshold)
   console.log(report)
 
-  const rows = current.results.map(r => {
-    const prev = previous.results.find(p => p.name === r.name)
-    if (!prev) return null
-    const change = ((r.opsPerSecond - prev.opsPerSecond) / prev.opsPerSecond) * 100
-    return {
-      name: r.name,
-      currentOps: r.opsPerSecond,
-      previousOps: prev.opsPerSecond,
-      changePercent: Math.round(change * 100) / 100,
-      regression: (change < -opts.threshold ? 'critical' : change < -(opts.threshold / 2) ? 'warning' : 'none') as 'none' | 'warning' | 'critical',
-    }
-  }).filter(Boolean) as any[]
+  const rows = compareResults(current, previous, opts.threshold)
 
-  if (hasCriticalRegression(rows as any)) {
+  if (hasCriticalRegression(rows)) {
     console.log('\n❌ GATE FAILED: critical regressions detected')
     if (opts.save) {
       const savePath = path.join(BASELINE_DIR, `${new Date().toISOString().slice(0, 10)}.json`)
