@@ -6124,12 +6124,9 @@ export async function _executeQuery(
   nodes: Array<Record<string, unknown>>,
   query?: string,
 ): Promise<QueryResult> {
-  // Plan 深拷贝
-  const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
-
   // 编译时语义验证（跳过在某些复杂WITH+列表谓词场景下的误报）
   try {
-    _validatePlan(planCopy, query)
+    _validatePlan(plan, query)
   } catch (e: any) {
     // 如果是 UndefinedVariable 但 query 中存在 WITH+列表谓词模式，跳过
     // 否则抛出
@@ -6139,13 +6136,21 @@ export async function _executeQuery(
       throw e
     }
   }
+
   // 无显式 LIMIT 时应用 DEFAULT_LIMIT（批量数据集上默认截断防止 OOM）
-  if (planCopy.limit === undefined || planCopy.limit === null) {
-    planCopy.limit = DEFAULT_LIMIT
+  if (plan.limit === undefined || plan.limit === null) {
+    plan.limit = DEFAULT_LIMIT
   }
-  // 所有查询统一走 GraphEngine
+
+  // 对不需要 GE 的快捷路径，Plan 深拷贝可以延迟到真正需要时
+  // 注意：_executeViaGraphEngine 内部会 mutate plan.filters/plan.steps，
+  // 所以 GE 路径必须在执行前深拷贝
+  // 快捷路径（LOAD CSV, SHOW, catalog, DML, bare CALL）不 mutate plan → 无需拷贝
+
   // ── bare CALL dispatch：CALL name（无括号语法）──
-  if (planCopy.type === 'CALL' && !(planCopy as any).callProcedure && query) {
+  if (plan.type === 'CALL' && !(plan as any).callProcedure && query) {
+    const callMatch = query.match(/CALL\s+(\S+)(?:\s+|\s*$)/i)
+    if (callMatch && !query.match(/CALL\s+\S+\s*\(/i)) {
     const callMatch = query.match(/CALL\s+(\S+)(?:\s+|\s*$)/i)
     if (callMatch && !query.match(/CALL\s+\S+\s*\(/i)) {
       const bareName = callMatch[1].toLowerCase()
@@ -6156,7 +6161,7 @@ export async function _executeQuery(
         if (sigParens) {
           paramNames.push(...sigParens[1].split(',').map(s => s.split('::')[0].trim()).filter(Boolean))
         }
-        const bareParams = (planCopy as any)._bareCallParams as Record<string, unknown> | undefined
+        const bareParams = (plan as any)._bareCallParams as Record<string, unknown> | undefined
         const args: unknown[] = []
         if (bareParams && paramNames.length) {
           for (const pn of paramNames) {
@@ -6197,6 +6202,8 @@ export async function _executeQuery(
       }
     }
   }
+  // GE 执行路径 - 仅在需要时才深拷贝 plan（_executeViaGraphEngine 内会 mutate plan.filters/plan.steps）
+  const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
   return execQueryResult
 }
