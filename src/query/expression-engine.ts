@@ -636,8 +636,35 @@ export function _callFunction(name: string, args: string[], row?: Record<string,
 export function _evalBinary(s: string, row?: Record<string, unknown>): unknown {
   // Fast path: if no boolean operators or NOT, skip directly to comparison
   const t = s.trim()
-  if (!/\b(OR|XOR|AND|NOT)\b/i.test(t)) return _evalComparison(t, row)
+
+  // Expression cache: cache pure literal expressions (no row dependency)
+  const cacheKey = t
+  const cached = _exprCache.get(cacheKey)
+  if (cached !== undefined) return cached
+
+  if (!/\b(OR|XOR|AND|NOT)\b/i.test(t)) return _evalAndCache(t, row, cacheKey)
   return _evalOr(t, row)
+}
+
+// Expression cache: Map<exprString, pure constant value>
+// caches only side-effect-free constant expressions (1+2, 'hello', true)
+// to avoid re-parsing on every call
+const _exprCache = new Map<string, unknown>()
+
+function _evalAndCache(t: string, row: Record<string, unknown> | undefined, key: string): unknown {
+  if (row === undefined) return _evalComparison(t, row)
+  const result = _evalComparison(t, row)
+
+  // Cache pure constants: no row-dependent variables or quoted strings
+  if (t.length <= 100 && !/[({]/.test(t) && !/CASE\b/i.test(t) && !/EXISTS\b/i.test(t)) {
+    const stripped = t.replace(/['"\`][^'"\`]*['"\`]/g, '').replace(/\d+(?:\.\d+)?/g, '')
+    const hasVar = (stripped.match(/[a-zA-Z_]\w*/g) || []).some(v => {
+      const kw = ['true','false','null','undefined','NaN','Infinity','length','name','constructor','prototype','type','id','toLower','toUpper','trim','replace','substring','left','right','size','reverse','toString','keys','head','last','tail','floor','ceil','round','abs','rand','sqrt','sign','sin','cos','tan','log','exp','e','pi']
+      return !kw.includes(v.toLowerCase())
+    })
+    if (!hasVar) _exprCache.set(key, result)
+  }
+  return result
 }
 
 export function _assertBool(v: unknown, expr: string): void {
