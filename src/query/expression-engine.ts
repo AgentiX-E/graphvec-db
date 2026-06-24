@@ -2200,27 +2200,42 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
     return result
   }
 
-  let processed = result.slice()
-
-  // ── ORDER BY ──
+  // ── ORDER BY (index sort: avoid full row copy, sort only indices) ──
+  let processed: QueryRow[]
   if (p.orderBy?.length) {
-    processed.sort((a, b) => {
-      for (const o of p.orderBy) {
+    const indices = Array.from({ length: result.length }, (_, i) => i)
+    const orderBy = p.orderBy
+
+    const comparator = (ai: number, bi: number): number => {
+      const a = result[ai]
+      const b = result[bi]
+      for (let i = 0; i < orderBy.length; i++) {
+        const o = orderBy[i]
         const field = _orderByField(o)
         const dir = (o.direction || '').trim().toUpperCase()
         const va = a[field] ?? null, vb = b[field] ?? null
         let cmp = 0
         if (va === null && vb === null) cmp = 0
-        // openCypher 规范：ASC 排序中 null 排在最后（大于所有非 null 值）
-        // 原实现 null 排在最前，违反规范。参考代码审查 CVE-H6。
-        else if (va === null) cmp = 1  // null > non-null → last in ASC
-        else if (vb === null) cmp = -1 // non-null < null → last in ASC
+        else if (va === null) cmp = 1
+        else if (vb === null) cmp = -1
         else if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
         else cmp = String(va).localeCompare(String(vb))
         if (cmp !== 0) return dir === 'DESC' ? -cmp : cmp
       }
       return 0
-    })
+    }
+
+    indices.sort(comparator)
+
+    // Apply skip + limit on indices before slicing rows
+    let startIdx = 0
+    let endIdx = indices.length
+    if (p.skip !== undefined && p.skip > 0) startIdx = p.skip
+    if (p.limit !== undefined && p.limit >= 0) endIdx = Math.min(startIdx + p.limit, indices.length)
+
+    processed = indices.slice(startIdx, endIdx).map(i => result[i])
+  } else {
+    processed = result  // no ORDER BY, use reference directly (HAVING below can filter in-place)
   }
 
   // ── HAVING ──
