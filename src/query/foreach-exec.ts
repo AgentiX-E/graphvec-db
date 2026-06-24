@@ -1,237 +1,115 @@
 /**
- * FOREACH 执行引擎
+ * foreach-exec.ts — FOREACH 内联执行引擎
  *
- * 实现 _executeForeach 和 _evalForeachCondition，供 foreach.spec.ts 使用。
- * 与 query-engine.ts 分离以避免耦合。
+ * 从 query-engine.ts 提取的 FOREACH 执行函数。
+ * foreach 操作在构建查询计划时已经解析好（AST → Plan），
+ * 这里负责对候选行逐一遍历 FOREACH 列表并执行嵌套操作。
  */
-export { }
 
-// ═══════════════════════════════════════════════════════════════
-// ForEachClause 接口（与 query-engine.ts 中的接口兼容）
-// ═══════════════════════════════════════════════════════════════
-
-export interface ForEachOperation {
-  type: 'CREATE' | 'SET' | 'DELETE' | 'REMOVE' | 'FOREACH' | 'MULTI'
-  where?: string
-  targets?: string[]
-  setClauses?: Array<{ property: string; value: string }>
-  foreach?: ForEachClause
-  operations?: ForEachOperation[]
-}
-
-export interface ForEachClause {
-  variable: string
-  list: any[]
-  isVarRef?: boolean
-  operation: ForEachOperation
-}
-
-// ═══════════════════════════════════════════════════════════════
-// _evalForeachCondition
-// ═══════════════════════════════════════════════════════════════
-
-/**
- * 评估 FOREACH WHERE 条件表达式。
- * 支持: >, <, >=, <=, =, !=, IN
- */
-export function _evalForeachCondition(condition: string, varName: string, value: any): boolean {
-  const cond = condition.trim()
-
-  // IN 操作: x IN [list]
-  const inMatch = cond.match(new RegExp(`^\\s*${escapeRegex(varName)}\\s+IN\\s+\\[(.+)\\]\\s*$`, 'i'))
-  if (inMatch) {
-    const listStr = `[${inMatch[1]}]`
-    let list: any[]
-    try { list = JSON.parse(listStr) }
-    catch { return false }
-    return list.some(item => {
-      if (typeof item === 'number' && typeof value === 'string') return String(item) === value
-      return item === value
-    })
+/** 检查 FOREACH WHERE 条件 */
+export function evalForeachCondTop(cond: string, varName: string, val: any): boolean {
+  const c = cond.trim()
+  const inM = c.match(new RegExp(`^\\s*${varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+IN\\s+\\[(.+)\\]\\s*$`, 'i'))
+  if (inM) {
+    let list: any[]; try { list = JSON.parse(`[${inM[1]}]`); } catch { return false }
+    return list.some(it => typeof it === 'number' && typeof val === 'string' ? String(it) === val : it === val)
   }
-
-  // 二元操作符
   const ops = [
     { op: '>=', fn: (a: number, b: number) => a >= b },
     { op: '<=', fn: (a: number, b: number) => a <= b },
     { op: '!=', fn: (a: any, b: any) => a != b },
-    { op: '=', fn: (a: any, b: any) => a == b },
-    { op: '>', fn: (a: number, b: number) => a > b },
-    { op: '<', fn: (a: number, b: number) => a < b },
+    { op: '=',  fn: (a: any, b: any) => a == b },
+    { op: '>',  fn: (a: number, b: number) => a > b },
+    { op: '<',  fn: (a: number, b: number) => a < b },
   ]
-
   for (const { op, fn } of ops) {
-    const pattern = new RegExp(`^\\s*${escapeRegex(varName)}\\s*${escapeRegex(op)}\\s*(.+)$`, 'i')
-    const m = cond.match(pattern)
+    const p = new RegExp(`^\\s*${varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*${op.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(.+)$`, 'i')
+    const m = c.match(p)
     if (m) {
-      const rhs = m[1].trim()
-      const numVal = Number(rhs)
-      const eVal = Number(value)
-      if (!isNaN(numVal) && !isNaN(eVal)) {
-        return fn(eVal, numVal)
-      }
-      return fn(value, rhs)
+      const rhs = m[1].trim(); const nv = Number(rhs); const ev = Number(val)
+      if (!isNaN(nv) && !isNaN(ev)) return fn(ev, nv)
+      return fn(val, rhs)
     }
   }
-
   return true
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+/** 对单行应用 FOREACH 内的单个操作 */
+export function applyForeachOpTop(row: any, op: any, item: any): any | null {
+  if (!op) return { ...row }
+  switch (op.type) {
+    case 'CREATE': return { ...row }
+    case 'SET': {
+      const r = { ...row }
+      if (op.setClauses) for (const sc of op.setClauses) {
+        const propName = sc.property.split('.').length > 1 ? sc.property.split('.')[1] : sc.property
+        let val: any = sc.value
+        if (typeof val === 'string' && val.startsWith('$')) val = row[val.slice(1)] !== undefined ? row[val.slice(1)] : val
+        r[propName] = val
+      }
+      return r
+    }
+    case 'DELETE': {
+      if (op.targets) for (const t of op.targets) if (row._alias === t) return null
+      return row
+    }
+    case 'REMOVE': {
+      const r = { ...row }
+      if (op.targets) for (const t of op.targets) {
+        const propName = t.split('.').length > 1 ? t.split('.')[1] : t
+        delete r[propName]
+      }
+      return r
+    }
+    case 'FOREACH': {
+      if (op.foreach) {
+        return executeForeachInlineTop([row], op.foreach)
+      }
+      return row
+    }
+    case 'MULTI': {
+      if (op.operations) {
+        let cur: any[] = [row]
+        for (const so of op.operations) {
+          const nr: any[] = []
+          for (const r of cur) { const p = applyForeachOpTop(r, so, item); if (p !== null) Array.isArray(p) ? nr.push(...p) : nr.push(p) }
+          cur = nr; if (!cur.length) break
+        }
+        return cur.length === 1 ? cur[0] : cur.length === 0 ? null : cur
+      }
+      return row
+    }
+    default: return { ...row }
+  }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// _executeForeach
-// ═══════════════════════════════════════════════════════════════
-
 /**
- * 执行 FOREACH 子句。
- *
- * @param candidates 当前候选行列表（来自 MATCH / WITH 或上一步）
- * @param foreachClause FOREACH 配置
- * @returns 展开后的行列表
+ * Execute FOREACH inline operations (from buildQueryPlan).
+ * Processes each candidate row through the FOREACH list and operations.
  */
-export function _executeForeach(candidates: any[], foreachClause: ForEachClause): any[] {
-  // 空列表 → 返回原始候选行
-  if (!foreachClause.list.length) {
-    return [...candidates]
-  }
-
-  // 判断是变量引用还是字面量列表
+export function executeForeachInlineTop(candidates: any[], fe: any): any[] {
+  if (!fe.list.length) return [...candidates]
   let items: any[]
-  if (foreachClause.isVarRef && foreachClause.list.length > 0) {
-    // 变量引用: 从第 0 个候选行读取
-    const varName = foreachClause.list[0] as string
+  if (fe.isVarRef && fe.list.length > 0) {
+    const varName = fe.list[0] as string
     if (candidates.length > 0 && candidates[0][varName] !== undefined) {
       const refVal = candidates[0][varName]
       items = Array.isArray(refVal) ? refVal : [refVal]
-    } else {
-      items = [...foreachClause.list]
-    }
-  } else {
-    items = [...foreachClause.list]
-  }
-
-  // 对每个候选行 × 每个列表元素 展开
+    } else { items = [...fe.list] }
+  } else { items = [...fe.list] }
   const allResult: any[] = []
-
   for (const candidate of candidates) {
     const baseRow = { ...candidate }
-
     for (const item of items) {
       const newRow = { ...baseRow }
-      newRow[foreachClause.variable] = item
-
-      // 应用 WHERE 过滤
-      if (foreachClause.operation.where) {
-        if (!_evalForeachCondition(foreachClause.operation.where, foreachClause.variable, item)) {
-          continue
-        }
-      }
-
-      // 按操作类型处理
-      const processed = applyOperation(newRow, foreachClause.operation, item)
+      newRow[fe.variable] = item
+      if (fe.operation?.where && !evalForeachCondTop(fe.operation.where, fe.variable, item)) continue
+      const processed = applyForeachOpTop(newRow, fe.operation, item)
       if (processed !== null) {
-        if (Array.isArray(processed)) {
-          allResult.push(...processed)
-        } else {
-          allResult.push(processed)
-        }
+        if (Array.isArray(processed)) allResult.push(...processed)
+        else allResult.push(processed)
       }
     }
   }
-
-  // 如果全部被过滤掉，返回原始候选行
-  if (allResult.length === 0) {
-    return [...candidates]
-  }
-
-  return allResult
-}
-
-function applyOperation(row: any, op: ForEachOperation, item: any): any | null {
-  switch (op.type) {
-    case 'CREATE':
-      // CREATE 只展开行，保留变量绑定
-      return { ...row }
-
-    case 'SET': {
-      const result = { ...row }
-      if (op.setClauses) {
-        for (const sc of op.setClauses) {
-          // property: "n.flag", value: "$x" 或字面量
-          const propParts = sc.property.split('.')
-          const propName = propParts.length > 1 ? propParts[1] : propParts[0]
-          let val: any = sc.value
-          if (typeof val === 'string' && val.startsWith('$')) {
-            const varName = val.slice(1)
-            val = row[varName] !== undefined ? row[varName] : val
-          }
-          result[propName] = val
-        }
-      }
-      return result
-    }
-
-    case 'DELETE': {
-      if (op.targets) {
-        for (const target of op.targets) {
-          // 按 _alias 匹配删除
-          if (row._alias === target) {
-            return null // 移除该行
-          }
-        }
-      }
-      return row
-    }
-
-    case 'REMOVE': {
-      const result = { ...row }
-      if (op.targets) {
-        for (const target of op.targets) {
-          const propParts = target.split('.')
-          const propName = propParts.length > 1 ? propParts[1] : propParts[0]
-          delete result[propName]
-        }
-      }
-      return result
-    }
-
-    case 'FOREACH': {
-      if (op.foreach) {
-        // 递归处理内层 FOREACH
-        return _executeForeach([row], op.foreach)
-      }
-      return row
-    }
-
-    case 'MULTI': {
-      if (op.operations) {
-        let currentRows: any[] = [row]
-        for (const subOp of op.operations) {
-          const newRows: any[] = []
-          for (const r of currentRows) {
-            const processed = applyOperation(r, subOp, item)
-            if (processed !== null) {
-              if (Array.isArray(processed)) {
-                newRows.push(...processed)
-              } else {
-                newRows.push(processed)
-              }
-            }
-          }
-          currentRows = newRows
-          if (currentRows.length === 0) break
-        }
-        if (currentRows.length === 1) return currentRows[0]
-        if (currentRows.length === 0) return null
-        return currentRows // 返回多行
-      }
-      return row
-    }
-
-    default:
-      return { ...row }
-  }
+  return allResult.length > 0 ? allResult : [...candidates]
 }
