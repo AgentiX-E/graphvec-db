@@ -97,8 +97,8 @@ function parseBenchMetrics(output: string): BenchmarkResult[] {
 import { type ExecSyncOptionsWithBufferEncoding } from 'child_process'
 
 export async function perf(): Promise<BenchmarkBaseline> {
-  // 多次运行取中位数，降低 run-to-run 方差
-  const RUNS = 3
+  // 多次运行取中位数，降低 run-to-run 方差（5 runs ≥ 3 runs for stability）
+  const RUNS = 5
   const allRunMaps: Map<string, BenchmarkResult[]>[] = []
 
   for (let run = 0; run < RUNS; run++) {

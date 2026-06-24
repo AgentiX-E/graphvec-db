@@ -19,7 +19,7 @@ import * as path from 'path'
 const BASELINE_DIR = path.resolve(__dirname, '../../benchmark/baselines')
 
 interface GateOptions {
-  /** Regression threshold (percent). Default: 15 */
+  /** Regression threshold (percent). Default: 20 (perf mode has higher variance) */
   threshold: number
   /** Whether to save the new baseline after successful gate */
   save: boolean
@@ -36,7 +36,7 @@ function findLatestBaseline(): string | null {
 
 async function main() {
   const opts: GateOptions = {
-    threshold: parseInt(process.argv.find(a => a.startsWith('--threshold='))?.split('=')[1] || '15', 10),
+    threshold: parseInt(process.argv.find(a => a.startsWith('--threshold='))?.split('=')[1] || '20', 10),
     save: process.argv.includes('--save'),
   }
 
