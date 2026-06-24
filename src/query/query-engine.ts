@@ -2459,6 +2459,85 @@ function _applyYieldAliases(
   })
 }
 
+// ── fastDedup — 多级签名快速去重（替代 JSON.stringify 设键哈希） ──
+// 一级签名：typeof + 基本类型的直接拼接。二级：JSON.stringify（碰撞时 fallback）。
+
+const FP_TRIES = 3  // 扩容次数
+
+function _fpValues(row: Record<string, unknown>): string {
+  const keys = Object.keys(row)
+  // 多级签名：key 的类型签名 + 基本类型直接值
+  let sig = ''
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i]
+    const v = row[k]
+    const t = typeof v
+    sig += k + ':' + t + ':'
+    if (v === null) sig += 'null;'
+    else if (t === 'string') sig += v + ';'
+    else if (t === 'number') sig += (v as number).toString() + ';'
+    else if (t === 'boolean') sig += (v ? 'T' : 'F') + ';'
+    else if (t === 'bigint') sig += (v as bigint).toString() + ';'
+    else sig += t + ';'
+  }
+  return sig
+}
+
+function _tryFP(fp: string, seen: Set<string>): boolean {
+  if (seen.has(fp)) return true
+  seen.add(fp)
+  return false
+}
+
+function _fastDedup(rows: QueryRow[]): QueryRow[] {
+  if (rows.length <= 1) return rows
+  const seen = new Set<string>()
+  const out: QueryRow[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const fp = _fpValues(rows[i])
+    if (!_tryFP(fp, seen)) {
+      // 二级签名：JSON.stringify 确认（处理对象值碰撞）
+      const fp2 = JSON.stringify(rows[i])
+      if (!seen.has(fp2)) {
+        seen.add(fp2)
+        out.push(rows[i])
+      }
+    }
+  }
+  return out
+}
+
+function _fastIntersect(a: QueryRow[], b: QueryRow[]): QueryRow[] {
+  if (!a.length || !b.length) return []
+  const bSet = new Set<string>()
+  const bFallback = new Set<string>()
+  for (const row of b) {
+    const fp = _fpValues(row)
+    bSet.add(fp)
+    bFallback.add(JSON.stringify(row))
+  }
+  return a.filter(row => {
+    const fp = _fpValues(row)
+    return bSet.has(fp) && bFallback.has(JSON.stringify(row))
+  })
+}
+
+function _fastSubtract(a: QueryRow[], b: QueryRow[]): QueryRow[] {
+  if (!a.length) return []
+  if (!b.length) return a
+  const bSet = new Set<string>()
+  const bFallback = new Set<string>()
+  for (const row of b) {
+    const fp = _fpValues(row)
+    bSet.add(fp)
+    bFallback.add(JSON.stringify(row))
+  }
+  return a.filter(row => {
+    const fp = _fpValues(row)
+    return !bSet.has(fp) || !bFallback.has(JSON.stringify(row))
+  })
+}
+
 /** GraphEngine 原生执行入口 */
 async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
   // ── LOAD CSV ──
@@ -2783,15 +2862,10 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     const leftRows = leftResult as QueryRow[]
     const rightRows = rightResult as QueryRow[]
     switch (plan.unionType) {
-      case 'union': {
-        const seen = new Set<string>()
-        const merged: QueryRow[] = []
-        for (const row of [...leftRows, ...rightRows]) { const k = JSON.stringify(row); if (!seen.has(k)) { seen.add(k); merged.push(row) } }
-        return merged
-      }
+      case 'union': return _fastDedup([...leftRows, ...rightRows])
       case 'union_all': return [...leftRows, ...rightRows]
-      case 'intersect': { const rk = new Set(rightRows.map(r => JSON.stringify(r))); return leftRows.filter(r => rk.has(JSON.stringify(r))) }
-      case 'subtract': { const ek = new Set(rightRows.map(r => JSON.stringify(r))); return leftRows.filter(r => !ek.has(JSON.stringify(r))) }
+      case 'intersect': return _fastIntersect(leftRows, rightRows)
+      case 'subtract': return _fastSubtract(leftRows, rightRows)
       default: return [...leftRows, ...rightRows]
     }
   }
