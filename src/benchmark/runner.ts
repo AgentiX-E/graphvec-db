@@ -97,7 +97,7 @@ function parseBenchMetrics(output: string): BenchmarkResult[] {
 import { type ExecSyncOptionsWithBufferEncoding } from 'child_process'
 
 export async function perf(): Promise<BenchmarkBaseline> {
-  // 多次运行取中位数，降低 run-to-run 方差（5 runs ≥ 3 runs for stability）
+  // 多次运行：丢弃首尾极端值后取中位数（trimmed mean, 排除 cold-start 噪声）
   const RUNS = 5
   const allRunMaps: Map<string, BenchmarkResult[]>[] = []
 
@@ -109,7 +109,7 @@ export async function perf(): Promise<BenchmarkBaseline> {
     allRunMaps.push(new Map(metrics.map(m => [m.name, m])))
   }
 
-  // 对每个 benchmark 取中位数 ops/s
+  // 对每个 benchmark，丢弃最高和最低值后取平均（trimmed mean）
   const allNames = new Set<string>()
   for (const runMap of allRunMaps) for (const name of runMap.keys()) allNames.add(name)
 
@@ -121,12 +121,16 @@ export async function perf(): Promise<BenchmarkBaseline> {
     }
     if (!opsValues.length) continue
     opsValues.sort((a, b) => a - b)
-    const median = opsValues[Math.floor(opsValues.length / 2)]
-    // 取任意一次有效行的 samples/durationMs
+    // trimmed mean: 丢弃最高和最低，取剩余的平均
+    if (opsValues.length >= 4) {
+      opsValues.pop()
+      opsValues.shift()
+    }
+    const trimmedMean = Math.round(opsValues.reduce((a, b) => a + b, 0) / opsValues.length)
     const sample = allRunMaps[0].get(name) || allRunMaps[1]?.get(name)
     medianResults.push({
       name,
-      opsPerSecond: median,
+      opsPerSecond: trimmedMean,
       samples: sample?.samples || 0,
       durationMs: sample?.durationMs || 0,
       timestamp: Date.now(),

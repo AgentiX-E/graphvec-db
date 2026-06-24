@@ -1,469 +1,469 @@
 {
-  "createdAt": 1782324901593,
+  "createdAt": 1782325039588,
   "mode": "perf",
-  "gitHash": "bdc4108e866c2a4702f79f41c90bb89aa25232b6",
+  "gitHash": "75a07f51b2fed228722e3cc5213255b9ecd1f394",
   "results": [
     {
       "name": "empty plan, 100 rows",
-      "opsPerSecond": 3914296,
+      "opsPerSecond": 3300056,
       "samples": 5000,
-      "durationMs": 1.3,
-      "timestamp": 1782324901592
+      "durationMs": 2.3,
+      "timestamp": 1782325039588
     },
     {
       "name": "literal string 'hello'",
-      "opsPerSecond": 9371316,
+      "opsPerSecond": 7289113,
       "samples": 20000,
-      "durationMs": 2.1,
-      "timestamp": 1782324901592
+      "durationMs": 5.1,
+      "timestamp": 1782325039588
     },
     {
       "name": "literal number 42",
-      "opsPerSecond": 8368600,
+      "opsPerSecond": 9900049,
       "samples": 20000,
-      "durationMs": 2.4,
-      "timestamp": 1782324901592
+      "durationMs": 8,
+      "timestamp": 1782325039588
     },
     {
       "name": "literal float 3.14",
-      "opsPerSecond": 8443739,
+      "opsPerSecond": 7121962,
       "samples": 20000,
-      "durationMs": 3.3,
-      "timestamp": 1782324901592
+      "durationMs": 2.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "literal boolean true",
-      "opsPerSecond": 6738279,
+      "opsPerSecond": 7387235,
       "samples": 20000,
-      "durationMs": 2.2,
-      "timestamp": 1782324901592
+      "durationMs": 1.6,
+      "timestamp": 1782325039588
     },
     {
       "name": "literal null",
-      "opsPerSecond": 8295977,
+      "opsPerSecond": 3293609,
       "samples": 20000,
-      "durationMs": 2.5,
-      "timestamp": 1782324901592
+      "durationMs": 6.4,
+      "timestamp": 1782325039588
     },
     {
       "name": "1 + 2",
-      "opsPerSecond": 11742733,
+      "opsPerSecond": 8219767,
       "samples": 20000,
-      "durationMs": 1.5,
-      "timestamp": 1782324901592
+      "durationMs": 1.7,
+      "timestamp": 1782325039588
     },
     {
       "name": "x + 1 (row)",
-      "opsPerSecond": 171872,
+      "opsPerSecond": 161576,
       "samples": 20000,
-      "durationMs": 101.4,
-      "timestamp": 1782324901592
+      "durationMs": 123.8,
+      "timestamp": 1782325039588
     },
     {
       "name": "(a + b) * c",
-      "opsPerSecond": 121715,
+      "opsPerSecond": 123773,
       "samples": 20000,
-      "durationMs": 115,
-      "timestamp": 1782324901592
+      "durationMs": 161.6,
+      "timestamp": 1782325039588
     },
     {
       "name": "1 = 1",
-      "opsPerSecond": 11439305,
+      "opsPerSecond": 11400416,
       "samples": 20000,
-      "durationMs": 1.4,
-      "timestamp": 1782324901592
+      "durationMs": 1.8,
+      "timestamp": 1782325039588
     },
     {
       "name": "1 < 2",
-      "opsPerSecond": 10413201,
+      "opsPerSecond": 8303948,
       "samples": 20000,
-      "durationMs": 2.2,
-      "timestamp": 1782324901592
+      "durationMs": 2.7,
+      "timestamp": 1782325039588
     },
     {
       "name": "deepEqWithNull (primitive)",
-      "opsPerSecond": 11357177,
+      "opsPerSecond": 12177650,
       "samples": 20000,
-      "durationMs": 1.7,
-      "timestamp": 1782324901592
+      "durationMs": 1.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "deepEqWithNull (nested map)",
-      "opsPerSecond": 14561933,
+      "opsPerSecond": 13266083,
       "samples": 5000,
-      "durationMs": 0.2,
-      "timestamp": 1782324901592
+      "durationMs": 0.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "true AND true",
-      "opsPerSecond": 96619,
+      "opsPerSecond": 90429,
       "samples": 20000,
-      "durationMs": 185.3,
-      "timestamp": 1782324901592
+      "durationMs": 221.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "true OR false",
-      "opsPerSecond": 93145,
+      "opsPerSecond": 87827,
       "samples": 20000,
-      "durationMs": 214.7,
-      "timestamp": 1782324901592
+      "durationMs": 207.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "NOT true",
-      "opsPerSecond": 518077,
+      "opsPerSecond": 775984,
       "samples": 20000,
-      "durationMs": 24,
-      "timestamp": 1782324901592
+      "durationMs": 24.4,
+      "timestamp": 1782325039588
     },
     {
       "name": "'hello' + ' world'",
-      "opsPerSecond": 11351189,
+      "opsPerSecond": 9284676,
       "samples": 20000,
-      "durationMs": 1.1,
-      "timestamp": 1782324901592
+      "durationMs": 2.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "string STARTS WITH",
-      "opsPerSecond": 52228,
+      "opsPerSecond": 64506,
       "samples": 20000,
-      "durationMs": 315.4,
-      "timestamp": 1782324901592
+      "durationMs": 263.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "string CONTAINS",
-      "opsPerSecond": 67746,
+      "opsPerSecond": 74915,
       "samples": 20000,
-      "durationMs": 252.9,
-      "timestamp": 1782324901592
+      "durationMs": 303.9,
+      "timestamp": 1782325039588
     },
     {
       "name": "[1, 2, 3, 4, 5]",
-      "opsPerSecond": 11684878,
+      "opsPerSecond": 15248179,
       "samples": 20000,
       "durationMs": 1.1,
-      "timestamp": 1782324901592
+      "timestamp": 1782325039588
     },
     {
       "name": "{a: 1, b: 2}",
-      "opsPerSecond": 151493,
+      "opsPerSecond": 153070,
       "samples": 20000,
-      "durationMs": 132,
-      "timestamp": 1782324901592
+      "durationMs": 118.1,
+      "timestamp": 1782325039588
     },
     {
       "name": "list[0] on [1,2,3]",
-      "opsPerSecond": 12415227,
+      "opsPerSecond": 11184381,
       "samples": 20000,
-      "durationMs": 1.6,
-      "timestamp": 1782324901592
+      "durationMs": 1.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "CASE simple 3-branch",
-      "opsPerSecond": 374306,
+      "opsPerSecond": 507624,
       "samples": 20000,
-      "durationMs": 53.4,
-      "timestamp": 1782324901592
+      "durationMs": 39.4,
+      "timestamp": 1782325039588
     },
     {
       "name": "CASE searched true",
-      "opsPerSecond": 464214,
+      "opsPerSecond": 567125,
       "samples": 20000,
-      "durationMs": 46.8,
-      "timestamp": 1782324901592
+      "durationMs": 35.3,
+      "timestamp": 1782325039588
     },
     {
       "name": "ORDER BY 100 items",
-      "opsPerSecond": 42457,
+      "opsPerSecond": 59053,
       "samples": 5000,
-      "durationMs": 117.8,
-      "timestamp": 1782324901592
+      "durationMs": 73.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "simple MATCH-RETURN",
-      "opsPerSecond": 55263,
+      "opsPerSecond": 42464,
       "samples": 5000,
-      "durationMs": 112,
-      "timestamp": 1782324901592
+      "durationMs": 124.9,
+      "timestamp": 1782325039588
     },
     {
       "name": "CREATE 1 node",
-      "opsPerSecond": 8174,
+      "opsPerSecond": 13254,
       "samples": 200,
-      "durationMs": 14,
-      "timestamp": 1782324901592
+      "durationMs": 26.1,
+      "timestamp": 1782325039588
     },
     {
       "name": "CREATE with props",
-      "opsPerSecond": 8326,
+      "opsPerSecond": 9795,
       "samples": 200,
-      "durationMs": 18.5,
-      "timestamp": 1782324901592
+      "durationMs": 19.6,
+      "timestamp": 1782325039588
     },
     {
       "name": "CREATE with vector",
-      "opsPerSecond": 6627,
+      "opsPerSecond": 7772,
       "samples": 100,
-      "durationMs": 9.6,
-      "timestamp": 1782324901592
+      "durationMs": 11.8,
+      "timestamp": 1782325039588
     },
     {
       "name": "CREATE edge",
-      "opsPerSecond": 12464,
+      "opsPerSecond": 12297,
       "samples": 200,
-      "durationMs": 16,
-      "timestamp": 1782324901592
+      "durationMs": 10.9,
+      "timestamp": 1782325039588
     },
     {
       "name": "CREATE edge with props",
-      "opsPerSecond": 10007,
+      "opsPerSecond": 13418,
       "samples": 200,
-      "durationMs": 20,
-      "timestamp": 1782324901592
+      "durationMs": 9.9,
+      "timestamp": 1782325039588
     },
     {
       "name": "SET node property",
-      "opsPerSecond": 9501,
+      "opsPerSecond": 8745,
       "samples": 200,
-      "durationMs": 22.6,
-      "timestamp": 1782324901592
+      "durationMs": 22.9,
+      "timestamp": 1782325039588
     },
     {
       "name": "DELETE node",
-      "opsPerSecond": 9764,
+      "opsPerSecond": 7754,
       "samples": 100,
-      "durationMs": 15.6,
-      "timestamp": 1782324901592
+      "durationMs": 28.6,
+      "timestamp": 1782325039588
     },
     {
       "name": "scanAllNodes (100 nodes)",
-      "opsPerSecond": 21455,
+      "opsPerSecond": 19291,
       "samples": 500,
-      "durationMs": 11.1,
-      "timestamp": 1782324901592
+      "durationMs": 25.9,
+      "timestamp": 1782325039588
     },
     {
       "name": "scanAllNodes (1000 nodes)",
-      "opsPerSecond": 4250,
+      "opsPerSecond": 3410,
       "samples": 100,
-      "durationMs": 19.6,
-      "timestamp": 1782324901592
+      "durationMs": 25.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "ORDER BY DESC 100",
-      "opsPerSecond": 17289,
+      "opsPerSecond": 13666,
       "samples": 1000,
-      "durationMs": 53.3,
-      "timestamp": 1782324901592
+      "durationMs": 63.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "ORDER BY + SKIP + LIMIT",
-      "opsPerSecond": 28671,
+      "opsPerSecond": 29816,
       "samples": 5000,
-      "durationMs": 227.3,
-      "timestamp": 1782324901592
+      "durationMs": 167.7,
+      "timestamp": 1782325039588
     },
     {
       "name": "ORDER BY 1000 rows",
-      "opsPerSecond": 263,
+      "opsPerSecond": 286,
       "samples": 100,
-      "durationMs": 380.9,
-      "timestamp": 1782324901592
+      "durationMs": 349.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "ORDER BY 2 columns",
-      "opsPerSecond": 5304,
+      "opsPerSecond": 3860,
       "samples": 1000,
-      "durationMs": 282,
-      "timestamp": 1782324901592
+      "durationMs": 287.8,
+      "timestamp": 1782325039588
     },
     {
       "name": "SKIP only",
-      "opsPerSecond": 3173050,
+      "opsPerSecond": 2872203,
       "samples": 5000,
-      "durationMs": 1.6,
-      "timestamp": 1782324901592
+      "durationMs": 4.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "LIMIT only",
-      "opsPerSecond": 3695199,
+      "opsPerSecond": 3205383,
       "samples": 5000,
-      "durationMs": 1.3,
-      "timestamp": 1782324901592
+      "durationMs": 1.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "ORDER BY + HAVING + LIMIT",
-      "opsPerSecond": 3911,
+      "opsPerSecond": 3967,
       "samples": 1000,
-      "durationMs": 238.5,
-      "timestamp": 1782324901592
+      "durationMs": 251.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "empty input",
-      "opsPerSecond": 10566245,
+      "opsPerSecond": 10304774,
       "samples": 5000,
-      "durationMs": 0.4,
-      "timestamp": 1782324901592
+      "durationMs": 0.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "simple prop access",
-      "opsPerSecond": 7450832,
+      "opsPerSecond": 7427114,
       "samples": 5000,
       "durationMs": 0.7,
-      "timestamp": 1782324901592
+      "timestamp": 1782325039588
     },
     {
       "name": "arithmetic in row",
-      "opsPerSecond": 8887893,
+      "opsPerSecond": 8998470,
       "samples": 5000,
       "durationMs": 0.5,
-      "timestamp": 1782324901592
+      "timestamp": 1782325039588
     },
     {
       "name": "nested object prop",
-      "opsPerSecond": 9919001,
+      "opsPerSecond": 10736572,
       "samples": 5000,
       "durationMs": 0.5,
-      "timestamp": 1782324901592
+      "timestamp": 1782325039588
     },
     {
       "name": "null propagation",
-      "opsPerSecond": 8210450,
+      "opsPerSecond": 8531928,
       "samples": 5000,
       "durationMs": 0.6,
-      "timestamp": 1782324901592
+      "timestamp": 1782325039588
     },
     {
       "name": "type conversion",
-      "opsPerSecond": 9261437,
+      "opsPerSecond": 9585008,
       "samples": 5000,
-      "durationMs": 0.7,
-      "timestamp": 1782324901592
+      "durationMs": 0.5,
+      "timestamp": 1782325039588
     },
     {
       "name": "list literal",
-      "opsPerSecond": 1603093,
+      "opsPerSecond": 1637344,
       "samples": 5000,
-      "durationMs": 3.1,
-      "timestamp": 1782324901592
+      "durationMs": 3,
+      "timestamp": 1782325039588
     },
     {
       "name": "filter WHERE",
-      "opsPerSecond": 23537,
+      "opsPerSecond": 22458,
       "samples": 5000,
-      "durationMs": 212.4,
-      "timestamp": 1782324901592
+      "durationMs": 222.6,
+      "timestamp": 1782325039588
     },
     {
       "name": "2-hop pattern",
-      "opsPerSecond": 21478,
+      "opsPerSecond": 21142,
       "samples": 2000,
-      "durationMs": 133.8,
-      "timestamp": 1782324901592
+      "durationMs": 130.1,
+      "timestamp": 1782325039588
     },
     {
       "name": "CREATE node",
-      "opsPerSecond": 26987,
+      "opsPerSecond": 28306,
       "samples": 5000,
-      "durationMs": 190.4,
-      "timestamp": 1782324901592
+      "durationMs": 250.6,
+      "timestamp": 1782325039588
     },
     {
       "name": "MERGE",
-      "opsPerSecond": 16254,
+      "opsPerSecond": 16086,
       "samples": 5000,
-      "durationMs": 171.8,
-      "timestamp": 1782324901593
+      "durationMs": 183.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "SET properties",
-      "opsPerSecond": 58944,
+      "opsPerSecond": 66660,
       "samples": 5000,
-      "durationMs": 74.4,
-      "timestamp": 1782324901593
+      "durationMs": 73.8,
+      "timestamp": 1782325039588
     },
     {
       "name": "complex WITH + aggregation",
-      "opsPerSecond": 34173,
+      "opsPerSecond": 34421,
       "samples": 2000,
-      "durationMs": 58.5,
-      "timestamp": 1782324901593
+      "durationMs": 56.6,
+      "timestamp": 1782325039588
     },
     {
       "name": "parametrized query",
-      "opsPerSecond": 71512,
+      "opsPerSecond": 68681,
       "samples": 5000,
-      "durationMs": 71.3,
-      "timestamp": 1782324901593
+      "durationMs": 72.8,
+      "timestamp": 1782325039588
     },
     {
       "name": "DELETE",
-      "opsPerSecond": 129080,
+      "opsPerSecond": 132671,
       "samples": 5000,
-      "durationMs": 38.7,
-      "timestamp": 1782324901593
+      "durationMs": 37.7,
+      "timestamp": 1782325039588
     },
     {
       "name": "UNWIND",
-      "opsPerSecond": 47562,
+      "opsPerSecond": 50500,
       "samples": 5000,
-      "durationMs": 98.9,
-      "timestamp": 1782324901593
+      "durationMs": 99,
+      "timestamp": 1782325039588
     },
     {
       "name": "UNION",
-      "opsPerSecond": 46823,
+      "opsPerSecond": 44048,
       "samples": 5000,
-      "durationMs": 106.8,
-      "timestamp": 1782324901593
+      "durationMs": 157.6,
+      "timestamp": 1782325039588
     },
     {
       "name": "WITH pipeline",
-      "opsPerSecond": 49630,
+      "opsPerSecond": 49479,
       "samples": 5000,
-      "durationMs": 100.7,
-      "timestamp": 1782324901593
+      "durationMs": 199.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "CALL procedure",
-      "opsPerSecond": 66428,
+      "opsPerSecond": 65938,
       "samples": 5000,
-      "durationMs": 75.6,
-      "timestamp": 1782324901593
+      "durationMs": 76.2,
+      "timestamp": 1782325039588
     },
     {
       "name": "CREATE INDEX",
-      "opsPerSecond": 147422,
+      "opsPerSecond": 145218,
       "samples": 5000,
-      "durationMs": 34.3,
-      "timestamp": 1782324901593
+      "durationMs": 35.1,
+      "timestamp": 1782325039588
     },
     {
       "name": "FOREACH",
-      "opsPerSecond": 68340,
+      "opsPerSecond": 68498,
       "samples": 5000,
-      "durationMs": 73.1,
-      "timestamp": 1782324901593
+      "durationMs": 73.7,
+      "timestamp": 1782325039588
     },
     {
       "name": "OPTIONAL MATCH",
-      "opsPerSecond": 39486,
+      "opsPerSecond": 39620,
       "samples": 5000,
-      "durationMs": 126.6,
-      "timestamp": 1782324901593
+      "durationMs": 124.7,
+      "timestamp": 1782325039588
     },
     {
       "name": "nested MATCH with WHERE",
-      "opsPerSecond": 56781,
+      "opsPerSecond": 56998,
       "samples": 5000,
-      "durationMs": 88.1,
-      "timestamp": 1782324901593
+      "durationMs": 90.7,
+      "timestamp": 1782325039588
     },
     {
       "name": "batch parse: 10 unique queries (500x batch)",
-      "opsPerSecond": 48058,
+      "opsPerSecond": 48072,
       "samples": 4500,
       "durationMs": 93.4,
-      "timestamp": 1782324901593
+      "timestamp": 1782325039588
     }
   ]
 }
