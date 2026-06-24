@@ -1020,7 +1020,20 @@ export function _comparableTypes(a: unknown, b: unknown): boolean {
 }
 
 export function _compareValues(a: unknown, b: unknown, op: string): boolean | null {
-  if (a == null || b == null) return null  // Cypher 三值逻辑：null 参与的比较返回 null，包括 <>（不等号也不例外）
+  if (a == null || b == null) return null  // Cypher 三值逻辑
+
+  // Fast path: same-type number (most common comparison in practice)
+  if (typeof a === 'number' && typeof b === 'number') {
+    switch (op) {
+      case '=': return a === b
+      case '<>': return a !== b
+      case '<': return a < b
+      case '>': return a > b
+      case '<=': return a <= b
+      case '>=': return a >= b
+    }
+  }
+
   // List 字典序比较（>=, >, <=, <）
   if (Array.isArray(a) && Array.isArray(b) && (op === '>=' || op === '<=' || op === '>' || op === '<')) {
     return _listLexCompare(a, b, op)
