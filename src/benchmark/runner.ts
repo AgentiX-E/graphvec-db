@@ -140,7 +140,7 @@ export async function full(): Promise<BenchmarkBaseline> {
     createdAt: Date.now(),
     mode: 'full',
     gitHash: execSync('git rev-parse HEAD', { cwd: PROJECT_ROOT, encoding: 'utf-8' }).trim(),
-    results: metrics,
+    results: allResults,
   }
 
   // Save baseline to file

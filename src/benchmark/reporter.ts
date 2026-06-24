@@ -2,7 +2,7 @@
  * reporter.ts — Markdown report formatting for benchmark results
  */
 
-import { BenchmarkBaseline, ComparisonRow, hasCriticalRegression, hasAnyRegression } from './baseline-store'
+import { BenchmarkBaseline, ComparisonRow, hasCriticalRegression, hasAnyRegression, compareResults } from './baseline-store'
 
 export function formatMarkdownReport(baseline: BenchmarkBaseline): string {
   const lines: string[] = []
@@ -35,7 +35,6 @@ export function formatMarkdownReport(baseline: BenchmarkBaseline): string {
 }
 
 export function formatComparisonReport(current: BenchmarkBaseline, previous: BenchmarkBaseline): string {
-  const { compareResults } = require('./baseline-store')
   const rows: ComparisonRow[] = compareResults(current, previous)
 
   const lines: string[] = []
