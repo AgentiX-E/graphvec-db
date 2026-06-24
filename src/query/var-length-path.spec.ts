@@ -14,32 +14,31 @@ import { NodeRecord } from '../types'
 
 // ── executeVarLenPath 直接测试 ──
 import { executeVarLenPath } from './var-length-path'
-import { registerEvaluateExpression, registerPostProcessResults } from './expression-helpers'
 
-// 使用 mock 函数注册（避免循环依赖：spec import QE → QE import VLE → VLE 注册未就绪）
-const mockEvaluateExpr = ((expr: any, row?: any) => {
-  // 最小化 mock：返回字段值或 null
-  if (typeof expr === 'string') {
-    const parts = expr.split('.')
-    if (parts.length === 2 && row && parts[1] in row) return row[parts[1]]
-    // 路径函数：length, nodes, relationships
-    if (expr.startsWith('length(') || expr.startsWith('nodes(') || expr.startsWith('relationships(')) {
-      // 对于基础 BFS 测试，路径函数不重要
+// Mock expression-engine — factory is hoisted by vitest before imports
+vi.mock('./expression-engine', () => {
+  const mockEvaluateExpr = ((expr: any, row?: any) => {
+    if (typeof expr === 'string') {
+      const parts = expr.split('.')
+      if (parts.length === 2 && row && parts[1] in row) return row[parts[1]]
+      if (expr.startsWith('length(') || expr.startsWith('nodes(') || expr.startsWith('relationships(')) return null
+      if (row && expr in row) return row[expr]
       return null
     }
-    if (row && expr in row) return row[expr]
     return null
+  }) as any
+
+  const mockPostProcess = ((result: any[], plan: any) => result) as any
+
+  return {
+    _evaluateExpression: mockEvaluateExpr,
+    _postProcessResults: mockPostProcess,
+    _bigintReplacer: ((_k: string, v: unknown): unknown =>
+      typeof v === 'bigint' ? { __bigint: v.toString() } : v) as any,
+    _bigintReviver: ((_k: string, v: unknown): unknown =>
+      v && typeof v === 'object' && (v as any).__bigint !== undefined ? BigInt((v as any).__bigint) : v) as any,
   }
-  return null
-}) as (expr: string | Record<string, unknown>, row?: Record<string, unknown>) => unknown
-
-const mockPostProcess = ((result: any[], plan: any) => {
-  // 最小化：直接返回（不排序/过滤）
-  return result
-}) as (result: any[], plan: any) => any[]
-
-registerEvaluateExpression(mockEvaluateExpr)
-registerPostProcessResults(mockPostProcess)
+})
 
 // ──────────────────────────────────────────
 // Mock ShardManager

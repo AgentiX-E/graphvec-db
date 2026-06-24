@@ -33,6 +33,14 @@ export const _bigintReplacer = (_k: string, v: unknown): unknown =>
   typeof v === 'bigint' ? { __bigint: v.toString() } : v
 export const _bigintReviver = (_k: string, v: unknown): unknown =>
   v && typeof v === 'object' && (v as any).__bigint !== undefined ? BigInt((v as any).__bigint) : v
+
+/** Post-process plan type (subset of QueryPlan used by _postProcessResults) */
+interface PostProcessPlan {
+  orderBy?: Array<Record<string, unknown>>
+  having?: Array<{ aggregate?: string; operator?: string; value?: unknown }>
+  skip?: number
+  limit?: number
+}
 export function _evaluateExpression(expr: string | Record<string, unknown>, row?: Record<string, unknown>): unknown {
   if (expr == null) return null
   // 支持结构化表达式 {type, value, items}（从 AST 解析而来）
@@ -2121,4 +2129,88 @@ export function _enrichWithAggregates(cols: Array<{ expression: string; alias?: 
   })
 }
 
-// ══════════════════════════════════════════════════════════�
+// ══════════════════════════════════════════════════════════
+// _orderByField / _postProcessResults
+// ══════════════════════════════════════════════════════════
+
+export function _orderByField(o: any): string {
+  let field = o.field || o.property || o.column || o.expression || o.col
+  if (!field) {
+    for (const k of Object.keys(o)) {
+      if (k !== 'direction' && k !== 'type' && typeof o[k] === 'string') { field = o[k]; break }
+    }
+  }
+  if (field) field = field.replace(/^\w+\./, '')
+  return field || 'n'
+}
+
+export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): QueryRow[] {
+  if (!result?.length) return result
+  const p = plan
+  let processed = result.slice()
+
+  // ── ORDER BY ──
+  if (p.orderBy?.length) {
+    processed.sort((a, b) => {
+      for (const o of p.orderBy) {
+        const field = _orderByField(o)
+        const dir = (o.direction || '').trim().toUpperCase()
+        const va = a[field] ?? null, vb = b[field] ?? null
+        let cmp = 0
+        if (va === null && vb === null) cmp = 0
+        // openCypher 规范：ASC 排序中 null 排在最后（大于所有非 null 值）
+        // 原实现 null 排在最前，违反规范。参考代码审查 CVE-H6。
+        else if (va === null) cmp = 1  // null > non-null → last in ASC
+        else if (vb === null) cmp = -1 // non-null < null → last in ASC
+        else if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
+        else cmp = String(va).localeCompare(String(vb))
+        if (cmp !== 0) return dir === 'DESC' ? -cmp : cmp
+      }
+      return 0
+    })
+  }
+
+  // ── HAVING ──
+  if (p.having?.length && processed.length > 0) {
+    for (const h of p.having) {
+      let aggKey: string | null = null
+      const sampleKeys = Object.keys(processed[0])
+      const aggStripped = h.aggregate.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
+      for (const key of sampleKeys) {
+        if (key.toLowerCase() === h.aggregate.toLowerCase() ||
+            key.toLowerCase() === aggStripped ||
+            key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === aggStripped) { aggKey = key; break }
+      }
+      if (!aggKey) {
+        for (const key of sampleKeys) { if (typeof processed[0][key] === 'number') { aggKey = key; break } }
+      }
+
+      const op = h.operator, val = h.value
+      processed = processed.filter(row => {
+        const rowVal = aggKey ? row[aggKey] : undefined
+        if (rowVal === undefined) return true
+        switch (op) {
+          case 'GT': return rowVal > val
+          case 'GTE': return rowVal >= val
+          case 'LT': return rowVal < val
+          case 'LTE': return rowVal <= val
+          case 'EQ': return rowVal === val
+          case 'NEQ': return rowVal !== val
+          default: return true
+        }
+      })
+    }
+  }
+
+  // ── SKIP ──
+  if (p.skip !== undefined && p.skip > 0) {
+    processed = processed.slice(p.skip)
+  }
+  // ── LIMIT ──
+  if (p.limit !== undefined && p.limit >= 0) {
+    processed = processed.slice(0, p.limit)
+  }
+
+  return processed
+}
+

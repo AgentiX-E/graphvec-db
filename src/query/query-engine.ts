@@ -27,9 +27,8 @@ import { parseCypherToPlan } from './ast-to-plan-v2'
 import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
 import { globalRegistry as _procedureRegistry } from './procedure-registry'
+import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver } from './expression-engine'
 import { executeVarLenPath } from './var-length-path'
-import { _evaluateExpression, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver } from './expression-engine'
-import { registerEvaluateExpression, registerPostProcessResults } from './expression-helpers'
 
 // ── 内存索引注册表（CREATE INDEX / DROP INDEX）━━━━━━━━━━━━━━━
 
@@ -1471,90 +1470,7 @@ function _stripQuotes(s: string): string | number {
 }
 
 
-/** ORDER BY 字段解析：从 orderBy 对象提取字段名 */
-function _orderByField(o: any): string {
-  let field = o.field || o.property || o.column || o.expression || o.col
-  if (!field) {
-    for (const k of Object.keys(o)) {
-      if (k !== 'direction' && k !== 'type' && typeof o[k] === 'string') { field = o[k]; break }
-    }
-  }
-  if (field) field = field.replace(/^\w+\./, '')
-  return field || 'n'
-}
-
-function _postProcessResults(result: QueryRow[], plan: QueryPlan): QueryRow[] {
-  if (!result?.length) return result
-  const p = plan
-  let processed = result.slice()
-
-  // ── ORDER BY ──
-  if (p.orderBy?.length) {
-    processed.sort((a, b) => {
-      for (const o of p.orderBy) {
-        const field = _orderByField(o)
-        const dir = (o.direction || '').trim().toUpperCase()
-        const va = a[field] ?? null, vb = b[field] ?? null
-        let cmp = 0
-        if (va === null && vb === null) cmp = 0
-        // openCypher 规范：ASC 排序中 null 排在最后（大于所有非 null 值）
-        // 原实现 null 排在最前，违反规范。参考代码审查 CVE-H6。
-        else if (va === null) cmp = 1  // null > non-null → last in ASC
-        else if (vb === null) cmp = -1 // non-null < null → last in ASC
-        else if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
-        else cmp = String(va).localeCompare(String(vb))
-        if (cmp !== 0) return dir === 'DESC' ? -cmp : cmp
-      }
-      return 0
-    })
-  }
-
-  // ── HAVING ──
-  if (p.having?.length && processed.length > 0) {
-    for (const h of p.having) {
-      let aggKey: string | null = null
-      const sampleKeys = Object.keys(processed[0])
-      const aggStripped = h.aggregate.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
-      for (const key of sampleKeys) {
-        if (key.toLowerCase() === h.aggregate.toLowerCase() ||
-            key.toLowerCase() === aggStripped ||
-            key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === aggStripped) { aggKey = key; break }
-      }
-      if (!aggKey) {
-        for (const key of sampleKeys) { if (typeof processed[0][key] === 'number') { aggKey = key; break } }
-      }
-
-      const op = h.operator, val = h.value
-      processed = processed.filter(row => {
-        const rowVal = aggKey ? row[aggKey] : undefined
-        if (rowVal === undefined) return true
-        switch (op) {
-          case 'GT': return rowVal > val
-          case 'GTE': return rowVal >= val
-          case 'LT': return rowVal < val
-          case 'LTE': return rowVal <= val
-          case 'EQ': return rowVal === val
-          case 'NEQ': return rowVal !== val
-          default: return true
-        }
-      })
-    }
-  }
-
-  // ── SKIP ──
-  if (p.skip !== undefined && p.skip > 0) {
-    processed = processed.slice(p.skip)
-  }
-  // ── LIMIT ──
-  if (p.limit !== undefined && p.limit >= 0) {
-    processed = processed.slice(0, p.limit)
-  }
-
-  return processed
-}
-
-/**
- * 多步遍历：从 startIdx 节点开始，沿 plan.steps 逐跳导航到最终节点。
+/** 多步遍历：从 startIdx 节点开始，沿 plan.steps 逐跳导航到最终节点。
  * 每一步使用 __edges 来查找邻居节点。匹配标签/方向/属性约束。
  * 返回所有可达的最终节点索引列表。
  */
@@ -7498,7 +7414,3 @@ function executeForeachInlineTop(candidates: any[], fe: any): any[] {
   }
   return allResult.length > 0 ? allResult : [...candidates]
 }
-
-// 注册表达式引擎函数供外部模块使用（打破循环依赖）
-registerEvaluateExpression(_evaluateExpression)
-registerPostProcessResults(_postProcessResults)

@@ -2,23 +2,22 @@
  * var-length-path.ts — 变长路径（VLE）匹配执行引擎
  *
  * 完全独立 BFS 遍历引擎。
- * _evaluateExpression / _postProcessResults 通过 expression-helpers 注册表获取。
+ * 直接 import expression-engine 打破寄存器的循环依赖。
  */
 
-import { getEvaluateExpression, getPostProcessResults } from './expression-helpers'
+import { _evaluateExpression, _postProcessResults } from './expression-engine'
 
 type QueryRow = Record<string, unknown>
 type QueryResult = QueryRow[]
 
-// 延迟初始化锁：首次调用时从注册表获取并缓存
-let _evaluateExpr: any = undefined
-let _postProcess: any = undefined
+// 直接引用表达式引擎函数
+let _evaluateExpr: any = _evaluateExpression
+let _postProcess: any = _postProcessResults
 
 function _ensureDeps(): void {
   if (_evaluateExpr !== undefined && _postProcess !== undefined) return
-  _evaluateExpr = getEvaluateExpression()
-  _postProcess = getPostProcessResults()
-  // 如果还没注册，返回 null
+  _evaluateExpr = _evaluateExpression
+  _postProcess = _postProcessResults
 }
 
 interface BfsEntry { nIdx: number; path: number[] }
@@ -48,7 +47,7 @@ function _buildPathEdges(newPath: number[], srcNodes: Array<Record<string, unkno
 }
 
 function _buildRow(newPath: number[], srcNodes: Array<Record<string, unknown>>, step: any, plan: any, pathNodes: Array<Record<string, unknown>>): QueryRow {
-  const evaluateExpr = getEvaluateExpression()
+  const evaluateExpr = _evaluateExpression
   const pathVar = plan.pathVar || step.source || 'p'
   const pathEdges = _buildPathEdges(newPath, srcNodes)
   const rowRes: QueryRow = { [pathVar]: { __path: pathNodes, __pathEdges: pathEdges } }
@@ -80,8 +79,8 @@ function _matchesLabel(node: Record<string, unknown>, label: string): boolean {
 }
 
 export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown>>): QueryResult {
-  const evaluateExpr = getEvaluateExpression()
-  const postProcessResults = getPostProcessResults()
+  const evaluateExpr = _evaluateExpression
+  const postProcessResults = _postProcessResults
   const step = plan.steps[0]
   const range = (step as any).range
   const minHops = range.min ?? 1
@@ -145,8 +144,8 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
 }
 
 function _applyWithProjection(rows: QueryRow[], plan: any): QueryResult {
-  const evaluateExpr = getEvaluateExpression()
-  const postProcessResults = getPostProcessResults()
+  const evaluateExpr = _evaluateExpression
+  const postProcessResults = _postProcessResults
   const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
   const isAggCol: boolean[] = plan.with.columns.map((col: any) =>
     typeof col.expression === 'string' ? aggFnPattern.test(col.expression) : false)
