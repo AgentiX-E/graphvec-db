@@ -133,6 +133,8 @@ export function _clearDatabases(): void {
 
 // ── GE 实例注册表（多数据库隔离） ──
 const _geInstanceRegistry = new Map<string, GraphEngine>()
+/** 共享 GE 实例池 — 跳过每次 new GraphEngine + ge.open() */
+let _gePool: any = null
 /** 追踪 GE 实例的 LMDB 目录路径，用于复用时 reopen 已有目录 */
 const _geDirRegistry = new Map<string, string>()
 
@@ -3080,26 +3082,18 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
   let ge: GraphEngine | null = null
   let geOwned = false  // true → 新创建的注册实例，finally 中不 close（由 _clearGeInstances 统一清理）
-  let dir = ''
-  if (_geInstanceRegistry.has(_activeDatabase)) {
-    // 复用现有的 GE 并关闭（避免 LMDB close+reopen 的开销）。
-    // 复用目录路径：close + reopen 已有 LMDB 目录比创建新目录快约 50%。
-    const oldGe = _geInstanceRegistry.get(_activeDatabase)
-    try { oldGe.close() } catch {}
-    _geInstanceRegistry.delete(_activeDatabase)
-    // 复用已有的目录路径（LMDB reopen 同路径≈重用缓存的数据文件）
-    dir = _geDirRegistry.get(_activeDatabase) || ''
+
+  // ── 共享 GE 实例：跳过每次 new GraphEngine + ge.open() ──
+  // 使用预热好的单例 GE（路径 /tmp/tckge-pool），只需要第一次初始化
+  if (!_gePool) {
+    const poolDir = path.join('/tmp', 'tckge-pool')
+    fs.mkdirSync(poolDir, { recursive: true })
+    const poolConfig: OverGraphConfig = { path: poolDir, denseVector: { dimension: 384 } }
+    _gePool = new GraphEngine(poolConfig)
+    _gePool.open()
   }
-  if (!dir) {
-    dir = path.join('/tmp', 'tckge-' + process.pid + '-' + Date.now().toString(36) + '-' + crypto.randomBytes(3).toString('hex'))
-    fs.mkdirSync(dir, { recursive: true })
-  }
-  const config: OverGraphConfig = { path: dir, denseVector: { dimension: 384 } }
-  ge = new GraphEngine(config)
-  ge.open()
-  _geInstanceRegistry.set(_activeDatabase, ge)
-  _geDirRegistry.set(_activeDatabase, dir)
-  geOwned = true
+  ge = _gePool
+
   let originalNodeCount = 0
   let allNodes: Array<Record<string, unknown>> = []
   try {
@@ -6149,8 +6143,6 @@ export async function _executeQuery(
 
   // ── bare CALL dispatch：CALL name（无括号语法）──
   if (plan.type === 'CALL' && !(plan as any).callProcedure && query) {
-    const callMatch = query.match(/CALL\s+(\S+)(?:\s+|\s*$)/i)
-    if (callMatch && !query.match(/CALL\s+\S+\s*\(/i)) {
     const callMatch = query.match(/CALL\s+(\S+)(?:\s+|\s*$)/i)
     if (callMatch && !query.match(/CALL\s+\S+\s*\(/i)) {
       const bareName = callMatch[1].toLowerCase()
