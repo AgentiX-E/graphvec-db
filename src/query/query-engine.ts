@@ -31,6 +31,29 @@ import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _e
 import { executeVarLenPath } from './var-length-path'
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
 
+// ── parseQuery LRU 缓存 ──
+// 缓存最近使用的 100 个查询的解析结果
+// 同一个查询字符串的高频重复场景（benchmark / 批量请求）可跳过 ANTLR 解析 + Plan 适配
+const _parseCache = new Map<string, QueryPlan>()
+const _PARSE_CACHE_MAX = 100
+function _cachedParseQuery(query: string): QueryPlan {
+  const cached = _parseCache.get(query)
+  if (cached) {
+    // Deep copy to prevent cache poisoning from downstream mutations
+    return JSON.parse(JSON.stringify(cached, _bigintReplacer), _bigintReviver) as QueryPlan
+  }
+  const plan = _parseQueryImpl(query)
+  // Cache the parsed plan (before any param injection)
+  if (query.length < 10000) {
+    if (_parseCache.size >= _PARSE_CACHE_MAX) {
+      const firstKey = _parseCache.keys().next().value
+      if (firstKey !== undefined) _parseCache.delete(firstKey)
+    }
+    _parseCache.set(query, JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan)
+  }
+  return plan
+}
+
 // ── 内存索引注册表（CREATE INDEX / DROP INDEX）━━━━━━━━━━━━━━━
 
 // ── 持久化路径 ──
@@ -850,6 +873,10 @@ function _injectParamsToPlan(plan: QueryPlan, resolve: (name: string) => unknown
  */
 
 export function parseQuery(query: string): QueryPlan {
+  return _cachedParseQuery(query)
+}
+
+function _parseQueryImpl(query: string): QueryPlan {
   // ANTLR parser — direct QueryPlan output, no PEG AST intermediate
   let plan: QueryPlan
   try {
