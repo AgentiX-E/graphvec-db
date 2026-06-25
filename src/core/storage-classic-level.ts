@@ -163,6 +163,13 @@ export class ClassicLevelStorageProvider implements StorageProvider {
     const entry: NodeEntry = JSON.parse(raw)
     this._data.delete(PREFIX_NODE + id)
     this._data.delete(PREFIX_NODE_NAME + entry.typeId + ':' + entry.key)
+    // Remove all edge index entries for this node (outgoing + incoming)
+    for (const [key] of this._data) {
+      if (key.startsWith(PREFIX_EDGE_OUT + id + ':') || key.startsWith(PREFIX_EDGE_IN + id + ':')) {
+        this._data.delete(key)
+        this._flushDel(key)
+      }
+    }
     this._data.delete(PREFIX_DEG_OUT + id)
     this._data.delete(PREFIX_DEG_IN + id)
     this._flushDel(PREFIX_NODE + id)
@@ -217,6 +224,7 @@ export class ClassicLevelStorageProvider implements StorageProvider {
     weight?: number
   }): void {
     const edgeKey = PREFIX_EDGE + src + ':' + dst + ':' + typeId
+    const isNew = !this._data.has(edgeKey)
     const entry: EdgeEntry = {
       src, dst, typeId,
       props: opts?.props,
@@ -228,8 +236,11 @@ export class ClassicLevelStorageProvider implements StorageProvider {
     this._flush(edgeKey, JSON.stringify(entry))
     this._flush(PREFIX_EDGE_OUT + src + ':' + typeId + ':' + dst, '1')
     this._flush(PREFIX_EDGE_IN + dst + ':' + typeId + ':' + src, '1')
-    this._incrementDegree(src, 'out')
-    this._incrementDegree(dst, 'in')
+    // Only increment degree for new edges (not repeated upsert)
+    if (isNew) {
+      this._incrementDegree(src, 'out')
+      this._incrementDegree(dst, 'in')
+    }
   }
 
   getEdge(src: NodeId, dst: NodeId, typeId: number): {

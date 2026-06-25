@@ -2157,7 +2157,7 @@ describe('Latency Benchmarks', () => {
   }, 30000)
 
   // SKIP: GE upsertEdge is NOT idempotent — each call creates duplicate edge entry
-  it.skip('V57 latency: upsertEdge existing edge repeated 500 times', async () => {
+  it('V57 latency: upsertEdge existing edge repeated 500 times', async () => {
     const e = new GraphEngine({ path: '/tmp/v57-l166-' + Date.now() })
     await e.open(); try {
       const a = await e.upsertNode(1, 'a', { props: {} })
@@ -2250,7 +2250,7 @@ describe('Latency Benchmarks', () => {
       for (let i = 1; i <= 250; i++) await e.upsertEdge(ids[0], ids[i], 1, {})
       expect(e.neighbors(ids[0]).edges.length).toBe(250)
       const start = performance.now()
-      e.deleteNode(ids[0])
+      await e.deleteNode(ids[0])
       console.log(`[BENCH] delete hub node disconnects 250 edges: ${(performance.now() - start).toFixed(2)}ms`)
       expect(e.scanAllNodes().length).toBe(250)
     } finally { e.close() }
@@ -2472,7 +2472,7 @@ describe('Latency Benchmarks', () => {
   }, 30000)
 
   // SKIP: GE upsertEdge not idempotent (same as existing-edge-repeated test)
-  it.skip('V57 latency: re-upsert same edge many times', async () => {
+  it('V57 latency: re-upsert same edge many times', async () => {
     const e = new GraphEngine({ path: '/tmp/v57-l190-' + Date.now() })
     await e.open(); try {
       await e.upsertNode(1, 'a', { props: {} })

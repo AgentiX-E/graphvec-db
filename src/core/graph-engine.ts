@@ -716,12 +716,24 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     const node = this.storage.getNode(id, true)
     if (!node) return false
 
-    // 级联删除：先删除所有以该节点为起点的边
-    if (cascade) {
-      const entries = this.storage.neighbors(id)
-      for (const entry of entries) {
-        await this.deleteEdge(id, entry.nodeId, entry.edgeTypeId, skipReplication)
+    // 总是删除该节点的所有关联边（入边和出边）
+    const outEntries = this.storage.neighbors(id)
+    for (const entry of outEntries) {
+      await this.deleteEdge(id, entry.nodeId, entry.edgeTypeId, skipReplication)
+    }
+    // 删除入边：通过 OverGraph 入边查询
+    try {
+      const inOpts = { direction: 'in' as const }
+      const inEntries = this.storage.neighbors(id, inOpts as any)
+      for (const entry of inEntries) {
+        await this.deleteEdge(entry.nodeId, id, entry.edgeTypeId, skipReplication)
       }
+    } catch {
+      // 部分 storage 实现不支持 direction 参数，跳过
+    }
+    // 级联删除 cascade 模式下递归删除关联边
+    if (cascade) {
+      // 入边（其他节点指向本节点的边）在 deleteEdge 中已清理
     }
 
     this._labelIndex.removeNode(node.typeId, id)
@@ -740,6 +752,8 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     // 清除度数缓存（D-07）
     this._inDegrees.delete(id)
     this._outDegrees.delete(id)
+    // 清除邻居缓存
+    this._neighborCache.clear()
     this.onRecordChange?.(node.key, { _deleted: true, typeId: node.typeId })
     // 查询结果缓存失效（GAP-24）
     this._invalidateQueryCache(node.typeId, id)
@@ -786,6 +800,10 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       if (node) {
         nameToId[node.key] = id
         this._fulltext?.addDocument(String(id), { name: node.key, ...(node.props as Record<string, string | number | boolean | null>) })
+      }
+      if (!this._nodeIds.has(id)) {
+        this._nodeIds.add(id)
+        this._nodeCount++
       }
     }
     // Fallback: if any name is missing (e.g. duplicate overwrites),
@@ -855,26 +873,31 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       }
     }
 
-    this.storage.upsertEdge(src, dst, typeId, {
-      props: opts?.props as Record<string, unknown> | undefined,
-      temporalValidity: opts?.temporalValidity,
-      weight: opts?.weight,
-    })
+    // Idempotent upsert: only increment degrees for truly new edges
     const ek = `${src}:${dst}:${typeId}`
+    const isNewEdge = !this._edgeKeys.has(ek)
     // 清除边缓存（Gap 12）
     this._edgeCache.delete(ek)
-    const isNewEdge = !this._edgeKeys.has(ek)
     if (isNewEdge) {
+      this.storage.upsertEdge(src, dst, typeId, {
+        props: opts?.props as Record<string, unknown> | undefined,
+        temporalValidity: opts?.temporalValidity,
+        weight: opts?.weight,
+      })
       this._edgeKeys.add(ek)
       this._edgeCount++
-      // Update degree cache for new edge
       this._outDegreeCounts.set(src, (this._outDegreeCounts.get(src) ?? 0) + 1)
       this._inDegreeCounts.set(dst, (this._inDegreeCounts.get(dst) ?? 0) + 1)
-    }
-    // 更新度数缓存（D-07）— 仅在边真正新增时递增
-    if (isNewEdge) {
       this._outDegrees.set(src, (this._outDegrees.get(src) ?? 0) + 1)
       this._inDegrees.set(dst, (this._inDegrees.get(dst) ?? 0) + 1)
+    } else {
+      // Re-upsert: delete + re-create to avoid duplicate edges in OverGraph
+      this.storage.deleteEdge(src, dst, typeId)
+      this.storage.upsertEdge(src, dst, typeId, {
+        props: opts?.props as Record<string, unknown> | undefined,
+        temporalValidity: opts?.temporalValidity,
+        weight: opts?.weight,
+      })
     }
     this.onRecordChange?.(`edge:${src}->${dst}`, { typeId, src, dst, ...(opts?.props ?? {}) })
     // 查询结果缓存失效（GAP-24）
@@ -977,6 +1000,8 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     this.onRecordChange?.(`edge:${src}->${dst}:${typeId}`, { _deleted: true, src, dst, typeId })
     // 查询结果缓存失效（GAP-24）
     this._invalidateQueryCache(typeId)
+    // 清除邻居缓存
+    this._neighborCache.clear()
 
     if (this._mlReplication && result && !skipReplication) {
       const r = await this._mlReplication.replicate('edge:deleted', { src, dst, typeId })

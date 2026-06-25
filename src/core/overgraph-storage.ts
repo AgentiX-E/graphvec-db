@@ -714,7 +714,7 @@ export class OverGraphStorage implements StorageProvider {
     if (opts?.edgeTypeFilter && opts.edgeTypeFilter.length > 0) {
       ogOpts.edgeLabelFilter = opts.edgeTypeFilter.map(t => String(t))
     }
-    if (opts?.direction !== undefined) ogOpts.direction = opts.direction
+    if ((opts as any)?.direction !== undefined) ogOpts.direction = (opts as any).direction
     // 0.11.0 的 neighborEntry 有 label(string) 而非 edgeTypeId(number)
     const raw = this._db!.neighbors(id, ogOpts)
     return raw.map(n => ({

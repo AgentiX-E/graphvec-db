@@ -1856,7 +1856,7 @@ describe('Scalability Benchmarks', () => {
     } finally { e.close() }
   }, 30000)
   // SKIP: batchUpsertNodes doesn't update _nodeIds/_nodeCount on storage layer (GE layer bug)
-  it.skip('V57 scalability: 3k nodes with float props batch upsert', async () => {
+  it('V57 scalability: 3k nodes with float props batch upsert', async () => {
     const e = new GraphEngine({ path: '/tmp/v57-s155-' + Date.now() })
     await e.open(); try {
       const batchSize = 500; const total = 3000; const batches = total / batchSize
@@ -2063,7 +2063,7 @@ describe('Scalability Benchmarks', () => {
     } finally { e.close() }
   }, 30000)
   // SKIP: GE deleteNode doesn't remove edges from src's adjacency list (GE layer bug)
-  it.skip('V57 scalability: 2000 nodes edge then delete source', async () => {
+  it('V57 scalability: 2000 nodes edge then delete source', async () => {
     const e = new GraphEngine({ path: '/tmp/v57-s175-' + Date.now() })
     await e.open(); try {
       const src = await e.upsertNode(1, 'edsrc', { props: {} })
@@ -2075,7 +2075,7 @@ describe('Scalability Benchmarks', () => {
       }
       expect(e.scanAllNodes().length).toBe(501)
       expect(e.neighbors(src).edges.length).toBe(500)
-      for (const id of leafIds) e.deleteNode(id)
+      for (const id of leafIds) await e.deleteNode(id)
       expect(e.neighbors(src).edges.length).toBe(0)
       for (let i = 0; i < 1500; i++) await e.upsertNode(2, `edf${i}`, { props: {} })
       expect(e.scanAllNodes().length).toBe(1501)
