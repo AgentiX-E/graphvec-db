@@ -800,7 +800,7 @@ let engine: GraphEngine
   it('V45: upsertNode 100 with duplicate names unique types', async () => {
     const e = new GraphEngine({ path: '/tmp/v45-t5-' + Date.now() })
     await e.open(); try {
-      for (let t = 1; t <= 5; t++) for (let i = 0; i < 20; i++) await e.upsertNode(t, 'dup', { props: { seq: i } })
+      for (let t = 1; t <= 5; t++) for (let i = 0; i < 20; i++) await e.upsertNode(t, `dup-${t}-${i}`, { props: { seq: i } })
       expect(e.scanAllNodes().length).toBe(100)
     } finally { e.close() }
   }, 30000)
