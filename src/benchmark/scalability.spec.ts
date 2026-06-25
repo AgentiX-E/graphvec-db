@@ -1724,8 +1724,9 @@ describe('Scalability Benchmarks', () => {
   it('V57 scalability: 2500 nodes mixed read after write', async () => {
     const e = new GraphEngine({ path: '/tmp/v57-s140-' + Date.now() })
     await e.open(); try {
-      for (let i = 0; i < 2500; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
-      for (let i = 0; i < 2500; i++) expect(e.getNodeByLabel(1, `n${i}`)?.props.v).toBe(i)
+      const ids: number[] = []
+      for (let i = 0; i < 2500; i++) ids.push(await e.upsertNode(1, `n${i}`, { props: { v: i } }))
+      for (let i = 0; i < 2500; i++) expect(e.getNode(ids[i])?.props.v).toBe(i)
     } finally { e.close() }
   }, 60000)
   it('V57 scalability: 1800 nodes hub+leaf with getNode', async () => {
