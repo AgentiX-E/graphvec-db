@@ -97,19 +97,27 @@ function parseBenchMetrics(output: string): BenchmarkResult[] {
 import { type ExecSyncOptionsWithBufferEncoding } from 'child_process'
 
 export async function perf(): Promise<BenchmarkBaseline> {
-  // 多次运行：丢弃首尾极端值后取中位数（trimmed mean, 排除 cold-start 噪声）
-  const RUNS = 5
+  const files = PERF_FILES.join(' ')
+
+  // ── Warmup: vitest/v8 预热，丢弃冷启动数据 ──
+  const WARMUP_RUNS = 2
+  for (let w = 0; w < WARMUP_RUNS; w++) {
+    const cmd = `npx vitest run ${files} --no-coverage 2>&1`
+    execSync(cmd, { cwd: PROJECT_ROOT, timeout: 180_000, encoding: 'utf-8' })
+  }
+
+  // ── 正式测量：多次运行取 trimmed mean ──
+  const RUNS = 3
   const allRunMaps: Map<string, BenchmarkResult[]>[] = []
 
   for (let run = 0; run < RUNS; run++) {
-    const files = PERF_FILES.join(' ')
     const cmd = `npx vitest run ${files} --no-coverage 2>&1`
     const out = execSync(cmd, { cwd: PROJECT_ROOT, timeout: 180_000, encoding: 'utf-8' })
     const metrics = parseBenchMetrics(out)
     allRunMaps.push(new Map(metrics.map(m => [m.name, m])))
   }
 
-  // 对每个 benchmark，丢弃最高和最低值后取平均（trimmed mean）
+  // 对每个 benchmark 取中位数 ops/s
   const allNames = new Set<string>()
   for (const runMap of allRunMaps) for (const name of runMap.keys()) allNames.add(name)
 
@@ -121,16 +129,11 @@ export async function perf(): Promise<BenchmarkBaseline> {
     }
     if (!opsValues.length) continue
     opsValues.sort((a, b) => a - b)
-    // trimmed mean: 丢弃最高和最低，取剩余的平均
-    if (opsValues.length >= 4) {
-      opsValues.pop()
-      opsValues.shift()
-    }
-    const trimmedMean = Math.round(opsValues.reduce((a, b) => a + b, 0) / opsValues.length)
+    const median = opsValues[Math.floor(opsValues.length / 2)]
     const sample = allRunMaps[0].get(name) || allRunMaps[1]?.get(name)
     medianResults.push({
       name,
-      opsPerSecond: trimmedMean,
+      opsPerSecond: median,
       samples: sample?.samples || 0,
       durationMs: sample?.durationMs || 0,
       timestamp: Date.now(),
