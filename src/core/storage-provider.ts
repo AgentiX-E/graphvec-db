@@ -171,6 +171,9 @@ export interface StorageProvider {
 
   neighbors(id: NodeId, opts?: NeighborsOptions): NeighborEntry[]
 
+  /** 获取所有节点 ID（用于 persistence 恢复重建索引） */
+  getAllNodeIds(): number[]
+
   // ── 批量操作 ──────────────────────────────
 
   /**

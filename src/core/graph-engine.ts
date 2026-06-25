@@ -480,7 +480,30 @@ export class GraphEngine {
       })
     }
 
+    // 从已恢复的存储层重建节点索引
+    this._rebuildIndexesFromStorage()
+
     this._isOpen = true
+  }
+
+  /**
+   * open() 后从 storage 重建内存索引（_nodeIds, _nodeCount）
+   * 支持 persistence 恢复：second open 时扫描已有数据重建索引
+   */
+  private _rebuildIndexesFromStorage(): void {
+    try {
+      const ids = this.storage.getAllNodeIds()
+      if (ids && ids.length > 0) {
+        for (const id of ids) {
+          if (!this._nodeIds.has(id)) {
+            this._nodeIds.add(id)
+            this._nodeCount++
+          }
+        }
+      }
+    } catch {
+      // 部分 storage 实现可能不支持 getAllNodeIds
+    }
   }
 
   /** 关闭数据库 */

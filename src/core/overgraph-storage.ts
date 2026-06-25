@@ -708,6 +708,30 @@ export class OverGraphStorage implements StorageProvider {
     return true
   }
 
+  getAllNodeIds(): number[] {
+    // OverGraph 0.11 不提供全局 node ID 列表，
+    // 使用 stats 获取 nodeCount 后用 findNodesPaged 分批读取
+    const ids: number[] = []
+    try {
+      // findNodes 不带 filter 返回全部节点
+      const nodes = this._db!.findNodes({})
+      if (nodes && Array.isArray(nodes.pageItems)) {
+        for (const n of nodes.pageItems) {
+          if (typeof n.nodeId === 'number') ids.push(n.nodeId)
+        }
+      }
+    } catch {
+      // fallback: 遍历 node IDs 尝试读取（适用于小图）
+      const s = this._db!.stats()
+      const count = s.nodeCount || s.segmentCount || 0
+      for (let i = 1; i <= count + 1000; i++) {
+        const n = this._db!.getNode(i)
+        if (n) ids.push(i)
+      }
+    }
+    return ids
+  }
+
   neighbors(id: NodeId, opts?: NeighborsOptions): NeighborEntry[] {
     const ogOpts: Record<string, unknown> = {}
     if (opts?.maxDepth !== undefined) ogOpts.maxDepth = opts.maxDepth

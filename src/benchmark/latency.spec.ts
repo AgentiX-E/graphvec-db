@@ -2338,7 +2338,7 @@ describe('Latency Benchmarks', () => {
   }, 30000)
 
   // SKIP: persistence verification requires GE storage layer fix (scanAllNodes returns 0 after re-open)
-  it.skip('V57 latency: re-open and verify persistence of 100 nodes', async () => {
+  it('V57 latency: re-open and verify persistence of 100 nodes', async () => {
     const path = '/tmp/v57-l180-' + Date.now()
     const e = new GraphEngine({ path })
     await e.open(); try {

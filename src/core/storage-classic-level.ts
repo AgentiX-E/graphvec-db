@@ -32,6 +32,7 @@ const PREFIX_EDGE_IN = 'e:in:'
 const PREFIX_DEG_OUT = 'deg:out:'
 const PREFIX_DEG_IN = 'deg:in:'
 const KEY_META = 'meta'
+const SNAPSHOT_FILE = '__snapshot__.json'
 
 interface NodeEntry {
   id: NodeId
@@ -94,6 +95,19 @@ export class ClassicLevelStorageProvider implements StorageProvider {
   close(): void {
     if (!this._isOpen) return
     this._isOpen = false
+    // 将内存数据同步写入磁盘 snappshot（持久恢复用）
+    // 必须在 _data.clear() 之前完成
+    try {
+      const entries: [string, string][] = []
+      for (const [k, v] of this._data) entries.push([k, v])
+      const snapshotPath = this._path + '/' + SNAPSHOT_FILE
+      fs.writeFileSync(snapshotPath, JSON.stringify({
+        meta: this._meta,
+        entries,
+      }), 'utf-8')
+    } catch (e) {
+      // snapshot 失败不应影响正常关闭
+    }
     // flush 所有待写入
     const db = this._db
     const flushQueue = this._flushQueue
@@ -270,6 +284,18 @@ export class ClassicLevelStorageProvider implements StorageProvider {
     return true
   }
 
+  getAllNodeIds(): number[] {
+    const ids: number[] = []
+    for (const [key] of this._data) {
+      if (key.startsWith(PREFIX_NODE) && !key.startsWith(PREFIX_NODE_NAME)) {
+        const idStr = key.slice(2)
+        const id = parseInt(idStr, 10)
+        if (!isNaN(id) && String(id) === idStr) ids.push(id)
+      }
+    }
+    return ids
+  }
+
   neighbors(id: NodeId, opts?: NeighborsOptions): NeighborEntry[] {
     const results: NeighborEntry[] = []
     const typeFilter = opts?.edgeTypeFilter
@@ -442,21 +468,30 @@ export class ClassicLevelStorageProvider implements StorageProvider {
    */
   private _loadAllSync(): void {
     if (!this._db) return
-    // 使用迭代器方式：classic-level 的 keys()/values() 是 async，
-    // 但构造后 setImmediate 才真正异步 open。open() 还没完成时，
-    // 没有任何数据，所以 _loadAllSync() 在首次 open 时返回空。
-    // 持久化数据在后续 open 时通过异步方式加载。
-    // 因此该 provider 主要作为内存 KV 使用，持久化在 close 时写入。
-    //
-    // 但这里我们尝试从 LevelDB 的持久化文件同步加载：
-    // 如果之前有 close() 保存了数据，我们可以通过遍历存储目录来恢复。
+    // 从磁盘 snappshot 同步恢复持久化数据
     this._tryRestoreFromStorage()
   }
 
   private _tryRestoreFromStorage(): void {
-    // 由于 classic-level 是异步的，我们无法在 open() 完成前同步读取。
-    // 这里检查磁盘上是否有数据文件，如果有，则异步加载。
-    // 但写操作依赖于内存 Map，所以首次 open 没问题。
-    // 持久化通过异步 flush 完成。
+    const snapshotPath = this._path + '/' + SNAPSHOT_FILE
+    try {
+      if (fs.existsSync(snapshotPath)) {
+        const raw = fs.readFileSync(snapshotPath, 'utf-8')
+        const snap = JSON.parse(raw)
+        // 恢复 meta
+        if (snap.meta) {
+          this._meta.nextNodeId = snap.meta.nextNodeId ?? 1
+          this._meta.nextEdgeId = snap.meta.nextEdgeId ?? 1
+        }
+        // 恢复 data
+        if (Array.isArray(snap.entries)) {
+          for (const [k, v] of snap.entries) {
+            this._data.set(k, v)
+          }
+        }
+      }
+    } catch (e) {
+      // 恢复失败时保持空状态
+    }
   }
 }
