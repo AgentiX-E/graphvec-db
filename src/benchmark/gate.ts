@@ -9,9 +9,10 @@
  *   npx tsx src/benchmark/gate.ts --save       # compare + save new baseline
  *   npx tsx src/benchmark/gate.ts --threshold=15  # custom threshold
  *   npx tsx src/benchmark/gate.ts --flaky     # skip known-high-variance benchmarks
+ *   npx tsx src/benchmark/gate.ts --full      # run full benchmark suite
  */
 
-import { perf } from './runner'
+import { perf, full } from './runner'
 import { BenchmarkBaseline, loadBaseline, saveBaseline, hasCriticalRegression, compareResults } from './baseline-store'
 import { formatComparisonReport } from './reporter'
 import * as fs from 'fs'
@@ -44,6 +45,8 @@ interface GateOptions {
   save: boolean
   /** Skip known-flaky (high variance) benchmarks in gate check */
   flaky: boolean
+  /** Run full benchmark suite (vs perf mode) */
+  full: boolean
 }
 
 function findLatestBaseline(): string | null {
@@ -55,11 +58,44 @@ function findLatestBaseline(): string | null {
   return files.length > 0 ? path.join(BASELINE_DIR, files[0]) : null
 }
 
+function saveFullBaseline(baseline: BenchmarkBaseline): void {
+  const savePath = path.join(BASELINE_DIR, `${new Date().toISOString().slice(0, 10)}-full.json`)
+  if (!fs.existsSync(BASELINE_DIR)) fs.mkdirSync(BASELINE_DIR, { recursive: true })
+  saveBaseline(savePath, baseline)
+  console.log(`   Baseline saved: ${savePath}`)
+}
+
 async function main() {
   const opts: GateOptions = {
     threshold: parseInt(process.argv.find(a => a.startsWith('--threshold='))?.split('=')[1] || '100', 10),
     save: process.argv.includes('--save'),
     flaky: process.argv.includes('--flaky'),
+    full: process.argv.includes('--full'),
+  }
+
+  if (opts.full) {
+    console.log('📊 Running full benchmark suite...')
+    const current = await full()
+    const baselinePath = findLatestBaseline()
+    if (!baselinePath) {
+      console.log('ℹ️  No baseline found. Saving current as baseline.')
+      saveFullBaseline(current)
+      process.exit(0)
+    }
+    const previous = loadBaseline(baselinePath)
+    console.log(`\n📋 Comparing against baseline: ${baselinePath}`)
+    console.log(`   Baseline git: ${previous.gitHash}`)
+    const report = formatComparisonReport(current, previous, opts.threshold)
+    console.log(report)
+    const rows = compareResults(current, previous, opts.threshold)
+    if (hasCriticalRegression(rows)) {
+      console.log('\n❌ FULL GATE FAILED: critical regressions detected')
+      if (opts.save) saveFullBaseline(current)
+      process.exit(1)
+    }
+    console.log('\n✅ FULL GATE PASSED')
+    if (opts.save) saveFullBaseline(current)
+    process.exit(0)
   }
 
   console.log('📊 Running perf benchmarks...')

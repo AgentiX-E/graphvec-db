@@ -1,4 +1,4 @@
-# HARD RULES — 防卡死防重启（第六版，零容忍版）
+# HARD RULES — 防卡死防重启（第七版，零容忍版）
 
 > 违反任何一条都曾导致 session 崩溃或 TLE。此版本为根本解决方案。
 
@@ -8,6 +8,16 @@
 - 某些文件有 50+ open/close 循环（benchmark 套件），跑完需要数分钟
 - ❌ 命令示例：`vitest run src/`、`vitest run src/ --no-coverage`、`vitest run src/**/*.spec.ts`
 - ✅ 替代：显式列出核心文件名：`vitest run src/core/graph-engine.spec.ts src/query/query-engine.spec.ts src/query/query-engine-dml.spec.ts`
+
+## Rule 0.5: 禁制令——永不跑 `stability.spec.ts`（除非明确指出）
+**stability.spec.ts 有 503 个测试，最小 timeout 30 秒，最长 600 秒。**
+- 503 tests × 最少 30s = **4.2 小时**（实际跑 6-10 小时）
+- 包含：chain 260000 edges、hub 120000 leaf、scanAllNodes 960000、并发 open/close 大量
+- ❌ `vitest run src/benchmark/stability.spec.ts` — 至少 6 小时
+- ❌ 在 exec 中跑 stability（timeout 不到）
+- ✅ 如果要跑：必须在 sub-agent 中设置 `runTimeoutSeconds=36000`（10 小时）
+- ✅ 或者：显示列出具体 test：`vitest run src/benchmark/stability.spec.ts -t "V57-stab: 10 open/close"`
+- stability 是压力测试，不是功能验证，正常的 regression 不需要它
 
 ## Rule 1: 禁制令——永不串行 exec
 **`exec("cmd1 && cmd2")` 等 $SHELL 串行链导致 tool call 无输出时 TLE。**

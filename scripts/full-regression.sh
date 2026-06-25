@@ -3,6 +3,10 @@
 # 用法: bash scripts/full-regression.sh [--quick]
 #   --quick: 跳过 TCK 全量（只跑 vitest + MatchWhere + old top-level）
 set -uo pipefail
+
+# ── OOM 防护 ──
+export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=4096"
+
 cd "$(dirname "$0")/.."
 
 PASS=0

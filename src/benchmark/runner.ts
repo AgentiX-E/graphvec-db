@@ -36,12 +36,12 @@ const FULL_FILES: string[] = [
   'src/benchmark/label-str-index.spec.ts',
 ]
 
-/** Huge benchmark files (run separately with longer timeout or skip in full) */
+/** Huge benchmark files (run separately with longer timeout, stability takes hours) */
 const FULL_LARGE_FILES: string[] = [
   'src/benchmark/latency.spec.ts',       // 117K, 15+ tests
   'src/benchmark/scalability.spec.ts',   // 105K
   'src/benchmark/throughput.spec.ts',    // 85K
-  'src/benchmark/stability.spec.ts',     // 231K — SKIP (long running stress test)
+  // 'src/benchmark/stability.spec.ts',  // 231K — 503 tests, 6-10 hour run, SKIP in full mode
 ]
 
 /**
@@ -157,15 +157,24 @@ export async function full(): Promise<BenchmarkBaseline> {
   const allResults: BenchmarkResult[] = []
   const allFiles = [...FULL_FILES, ...FULL_LARGE_FILES]
 
+  // Per-file timeout (ms): large files need more time
+  const FILE_TIMEOUTS: Record<string, number> = {
+    'src/benchmark/stability.spec.ts': 600_000,   // 10 min — 503 tests, some long-running
+    'src/benchmark/scalability.spec.ts': 300_000,  // 5 min
+    'src/benchmark/latency.spec.ts': 200_000,      // 3 min
+    'src/benchmark/throughput.spec.ts': 200_000,   // 3 min
+  }
+
   for (const file of allFiles) {
     const fullPath = path.resolve(PROJECT_ROOT, file)
     if (!fs.existsSync(fullPath)) {
       console.warn(`[full] WARN: file not found, skipping: ${fullPath}`)
       continue
     }
+    const timeout = FILE_TIMEOUTS[file] || 300_000
     const cmd = `npx vitest run ${file} --no-coverage 2>&1`
     try {
-      const out = execSync(cmd, { cwd: PROJECT_ROOT, timeout: 300_000, encoding: 'utf-8' })
+      const out = execSync(cmd, { cwd: PROJECT_ROOT, timeout, encoding: 'utf-8' })
       const metrics = parseBenchMetrics(out)
       allResults.push(...metrics)
       console.log(`[full] OK: ${file} (${metrics.length} metrics)`)

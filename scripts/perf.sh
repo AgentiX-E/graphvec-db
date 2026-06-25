@@ -4,7 +4,8 @@
 # Usage:
 #   ./scripts/perf.sh                          # perf mode + gate
 #   ./scripts/perf.sh --save                   # perf mode + save baseline
-#   ./scripts/perf.sh --full --save             # full mode + save baseline
+#   ./scripts/perf.sh --full                   # full benchmark suite (no save)
+#   ./scripts/perf.sh --full --save            # full mode + save baseline
 #   ./scripts/perf.sh --threshold=30            # custom threshold%
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -16,11 +17,8 @@ for arg in "$@"; do
 done
 
 if $FULL; then
-  exec npx tsx -e "
-    import { full } from './src/benchmark/runner'
-    const baseline = await full()
-    console.log('✅ Full baseline completed:', baseline.results.length, 'metrics')
-  "
+  # Delegate to gate.ts --full which handles comparison + saving
+  exec npx tsx src/benchmark/gate.ts --full "${ARGS[@]}"
 else
   # Default: enable flaky-skip for stable gate
   if [[ "$*" != *"--threshold="* ]] && [[ "$*" != *"--flaky"* ]] && [[ "$*" != *"--no-flaky"* ]]; then

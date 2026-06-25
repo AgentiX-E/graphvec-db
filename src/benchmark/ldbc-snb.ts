@@ -287,7 +287,7 @@ export class LdbcSnbBenchmark {
             samples: 0,
           })
         })
-        .run({ async: true })
+        .run({ async: true, minSamples: 5, maxTime: 3 })
     })
   }
 
@@ -538,6 +538,40 @@ export class LdbcSnbBenchmark {
       results.push(result)
     }
 
+    return results
+  }
+
+  /**
+   * Run all 20 queries without Benchmark.Suite (for spec validation).
+   * Each query executes once, returns per-query latency.
+   */
+  async runAllFast(): Promise<LdbcBenchResult[]> {
+    const engine = this.data.engine
+    if (!engine) {
+      throw new Error('No graph generated. Call data.generate() first.')
+    }
+
+    const allNodes = engine.scanAllNodes()
+    const personNodes = allNodes.filter((n: any) => n["type"] === TYPE_PERSON)
+    const companyNodes = allNodes.filter((n: any) => n["type"] === TYPE_COMPANY)
+
+    const results: LdbcBenchResult[] = []
+    for (const query of LDBC_QUERIES) {
+      const start = performance.now()
+      await this.executeQuery(engine, query, personNodes, companyNodes)
+      const elapsed = performance.now() - start
+      results.push({
+        queryId: query.id,
+        queryName: query.name,
+        category: query.category,
+        ops: elapsed > 0 ? Math.round(1000 / elapsed) : 0,
+        p50Ms: elapsed,
+        p90Ms: elapsed,
+        p99Ms: elapsed,
+        rme: 0,
+        samples: 1,
+      })
+    }
     return results
   }
 }

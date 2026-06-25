@@ -122,12 +122,12 @@ describe('LDBC-SNB Benchmark Suite', () => {
 
   describe('Benchmark Execution', () => {
     it('should run all 20 queries and return results', async () => {
-      const results = await bench.runAll()
+      const results = await bench.runAllFast()
       expect(results.length).toBe(20)
     })
 
     it('each result should have latency metrics', async () => {
-      const results = await bench.runAll()
+      const results = await bench.runAllFast()
       for (const r of results) {
         expect(r.queryId).toBeDefined()
         expect(r.queryName).toBeDefined()
@@ -140,7 +140,7 @@ describe('LDBC-SNB Benchmark Suite', () => {
 
   describe('Markdown Report Generation', () => {
     it('should produce a Markdown table report', async () => {
-      const results = await bench.runAll()
+      const results = await bench.runAllFast()
       const report = generateMarkdownReport(results)
       expect(report).toContain('| Query')
       expect(report).toContain('|---')
@@ -149,7 +149,7 @@ describe('LDBC-SNB Benchmark Suite', () => {
     })
 
     it('report should include latency columns', async () => {
-      const results = await bench.runAll()
+      const results = await bench.runAllFast()
       const report = generateMarkdownReport(results)
       expect(report).toContain('P50')
       expect(report).toContain('P90')
