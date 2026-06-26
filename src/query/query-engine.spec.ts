@@ -905,7 +905,7 @@ describe('变量长度路径查询', () => {
     const nodes = buildChain(5) // 0→1→2→3→4
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
     const result = await _executeQuery(plan, nodes) as any[]
-    const names = result.map((r: any) => r['b.name']).sort()
+    const names = result.map((r: any) => r['name']).sort()
     // 从 a=node-0 出发，1跳=b1, 2跳=b2, 3跳=b3
     expect(names).toEqual(['node-1', 'node-2', 'node-3'])
   })
@@ -914,7 +914,7 @@ describe('变量长度路径查询', () => {
     const nodes = buildChain(6)
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*2..4]->(b:Node) RETURN b.name')
     const result = await _executeQuery(plan, nodes) as any[]
-    const names = result.map((r: any) => r['b.name']).sort()
+    const names = result.map((r: any) => r['name']).sort()
     expect(names).toEqual(['node-2', 'node-3', 'node-4'])
   })
 
@@ -922,7 +922,7 @@ describe('变量长度路径查询', () => {
     const nodes = buildChain(6)
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*3]->(b:Node) RETURN b.name')
     const result = await _executeQuery(plan, nodes) as any[]
-    const names = result.map((r: any) => r['b.name']).sort()
+    const names = result.map((r: any) => r['name']).sort()
     expect(names).toEqual(['node-3'])
   })
 
@@ -1321,6 +1321,8 @@ describe('表达式引擎 — 纯 RETURN 求值', () => {
 
   // ── RETURN DISTINCT ──
   it('RETURN DISTINCT 去重', async () => {
+    // 清理 GE 缓存，确保节点独立
+    _clearGeInstances()
     // 准备 3 个有重复 label 的节点
     const nodes = [
       { _label: 'Node', name: 'a' },

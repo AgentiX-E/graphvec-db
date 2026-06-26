@@ -61,7 +61,25 @@ function _buildRow(newPath: number[], srcNodes: Array<Record<string, unknown>>, 
       const val = evaluateExpr(rc, evalCtx)
       rowRes[rc] = val !== undefined ? val : null
     } else {
-      rowRes[rc] = (srcNodes[newPath[newPath.length - 1]] as any)[rc] ?? null
+      // 处理 variable.property 语法：b.name → 从 target 节点的 name 属性取值
+      const dotMatch = rc.match(/^(\w+)\.(.+)$/)
+      if (dotMatch) {
+        const varName = dotMatch[1]
+        const propName = dotMatch[2]
+        // 如果 varName 是 targetAlias → 从 path 终点取
+        if (varName === step.targetAlias) {
+          const targetNode = pathNodes[pathNodes.length - 1]
+          rowRes[rc] = (targetNode as any)[propName] ?? null
+        } else if (varName === step.source) {
+          const srcNode = pathNodes[0]
+          rowRes[rc] = (srcNode as any)[propName] ?? null
+        } else {
+          // 其他变量名→尝试从对应路径节点取
+          rowRes[rc] = (srcNodes[newPath[newPath.length - 1]] as any)[propName] ?? null
+        }
+      } else {
+        rowRes[rc] = (srcNodes[newPath[newPath.length - 1]] as any)[rc] ?? null
+      }
     }
   }
   if (plan.returnAliasMap) {
@@ -120,7 +138,6 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
           const newPath = [...entry.path, nIdx]
           if (depth < minHops) { nextFrontier.push({ nIdx, path: newPath }); continue }
           const targetNode = srcNodes[nIdx] as any
-          if (step.targetLabel && !_matchesLabel(targetNode, step.targetLabel)) continue
           if (step.edgeLabel && e.label !== step.edgeLabel) continue
           const pathNodes = newPath.map((idx) => {
             const n = srcNodes[idx] as any

@@ -112,6 +112,8 @@ export function _clearGeInstances(): void {
   }
   _geInstanceRegistry.clear()
   _geDirRegistry.clear()
+  // 清除 pool 中的 GE 实例引用（防止旧实例节点残留污染后续查询）
+  _gePool.value = null
 }
 
 export const DEFAULT_LIMIT = 1000

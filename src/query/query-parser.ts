@@ -359,15 +359,20 @@ function _parseQueryImpl(query: string): QueryPlan {
   _fixScanLabel(plan)
   _fixScanLabel(plan)
 
-  // ── DML type 映射：MATCH_MODIFY → 保留 MATCH_MODIFY ──
-  // 不映射到 SET/DELETE，让 spec 的 plan.type 断言正确
-  // 执行时以 plan.setClauses / plan.removeClauses / plan.deleteClauses 为准
-  if (plan.type === 'MATCH_MODIFY' && !plan.setClauses?.length && !plan.removeClauses?.length && !plan.deleteClauses?.length) {
-    if (plan.deleteTargets?.length) {
-      plan.type = 'DELETE'
-    } else if (plan.setClauses?.length) {
+  // ── DML type 映射：MATCH_MODIFY → SET/DELETE ──
+  // 如果 MATCH_MODIFY 只有一种 DML 操作，细化为准确类型
+  if (plan.type === 'MATCH_MODIFY') {
+    const hasSet = !!plan.setClauses?.length
+    const hasRemove = !!plan.removeClauses?.length
+    const hasDelete = !!plan.deleteClauses?.length || !!plan.deleteTargets?.length
+    if (hasSet && !hasRemove && !hasDelete) {
       plan.type = 'SET'
+    } else if (hasDelete && !hasSet && !hasRemove) {
+      plan.type = 'DELETE'
+    } else if (hasRemove && !hasSet && !hasDelete) {
+      plan.type = 'REMOVE'
     }
+    // 混合 DML 操作保持 MATCH_MODIFY
   }
 
   // ── MERGE: mergeNodes → createNodes（CREATE 路径复用） ──
