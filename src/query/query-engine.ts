@@ -29,8 +29,11 @@ export type {
 } from './query-types'
 // ── 执行器 ──
 export {
-  _executeQuery, _validatePlan,
+  _executeQuery,
 } from './query-executor'
+export {
+  _validatePlan,
+} from './executor-validate-plan'
 // ── 注册表 ──
 export {
   _registerIndex, _dropIndex, _getAllIndexes, _getIndex, _clearIndexes,
