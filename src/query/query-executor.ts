@@ -2500,16 +2500,6 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
   }
 }
 
-/**
- * 递归过滤对象中的内部属性（以 _ 或 __ 开头），保持 TCK 兼容性。
- * 深度过滤结果行和节点对象，确保外部看不到 _alias 等内部字段。
- */
-/**
- * 格式化单行 GE 返回结果。
- * - 展开 r.props 到顶层（GE 的格式）
- * - 如果 returnColumns 是单个变量名（RETURN n），包装为 {n: {props}}
- * - 如果 returnColumns 是属性名（RETURN n.p, n.q），从完整节点数据中读取属性值
- */
 
 
 export async function _executeQuery(
