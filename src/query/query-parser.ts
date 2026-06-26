@@ -1404,3 +1404,106 @@ function _cachedParseQuery(query: string): QueryPlan {
 
 // ── 导出执行函数（被 query-engine.ts 的 _executeViaGraphEngine 使用） ──
 export { _walkMultiSteps, _pathEndIndices, _stepMatchConstraint, _resolveUnwindList, _extractWithClausesAfterUnwind, _applyYieldAliases, resolveVariableNodeIdx, _findWhereOutsideBrackets }
+
+// ── fastDedup — 多级签名快速去重（替代 JSON.stringify 设键哈希） ──
+// 一级签名：typeof + 基本类型的直接拼接。二级：JSON.stringify（碰撞时 fallback）。
+
+const FP_TRIES = 3  // 扩容次数
+
+function _fastDedup(rows: QueryRow[]): QueryRow[] {
+  const _sig = new Map<string, number[]>()
+  const out: QueryRow[] = []
+  let _fp = 256
+  for (const row of rows) {
+    const key = _makeUniqueKey(row)
+    let id = _fp
+    let hashId = 0
+    // 用数组模拟 HashSet
+    let existing = _sig.get(key)
+    if (!existing) {
+      existing = []
+      _sig.set(key, existing)
+    } else {
+      // 碰撞检测：预计算对象 hash 避免全部 JSON.stringify
+      hashId = _calcRowHash(row)
+      let found = false
+      for (let t = 0; t < existing.length; t++) {
+        if (existing[t] === id) { found = true; break }
+      }
+      if (!found) {
+        // 计算二级 hash（对 row 的所有值计算）
+        // 如果现有项的关键属性都相同，视为重复
+        for (let t = 0; t < existing.length; t++) {
+          if (_rowsEqual(row, rows[existing[t]])) { found = true; break }
+        }
+      }
+      if (found) continue
+    }
+    existing.push(id)
+    _sig.set(key, existing)
+    out.push(row)
+  }
+  return out
+}
+
+/** 计算行特征 ID */
+function _calcRowHash(row: QueryRow): number {
+  let h = 0
+  for (const [, v] of Object.entries(row)) {
+    h = ((h << 5) - h + _hashVal(v)) | 0
+  }
+  return h
+}
+
+/** 计算值的 hash */
+function _hashVal(v: unknown): number {
+  if (v === null) return 0
+  if (typeof v === 'number') return v | 0
+  if (typeof v === 'string') {
+    let h = 0
+    for (let i = 0; i < v.length; i++) h = ((h << 5) - h + v.charCodeAt(i)) | 0
+    return h
+  }
+  if (typeof v === 'bigint') return Number(v & BigInt(0x7fffffff))
+  if (Array.isArray(v)) {
+    let h = 0
+    for (const item of v) h = ((h << 5) - h + _hashVal(item)) | 0
+    return h
+  }
+  return 1
+}
+
+function _rowsEqual(a: QueryRow, b: QueryRow): boolean {
+  const ka = Object.keys(a); const kb = Object.keys(b)
+  if (ka.length !== kb.length) return false
+  for (const k of ka) {
+    if (a[k] !== b[k]) return false
+  }
+  return true
+}
+
+function _makeUniqueKey(row: QueryRow): string {
+  // 按 key 排序以保证一致性；只针对所有 key 和值的基本类型做 toString
+  const keys = Object.keys(row).sort()
+  let s = ''
+  for (const k of keys) {
+    const v = row[k]
+    s += k + ':' + (typeof v) + (v === null ? 'null' : typeof v === 'bigint' ? String(v) : v === undefined ? 'undef' : String(v))
+  }
+  return s
+}
+
+function _fastIntersect(a: QueryRow[], b: QueryRow[]): QueryRow[] {
+  const bKeys = new Set<string>()
+  for (const r of b) bKeys.add(_makeUniqueKey(r))
+  // Build two sets for equality check
+  const bSet: QueryRow[] = b
+  return a.filter(ra => bSet.some(rb => _rowsEqual(ra, rb)))
+}
+
+function _fastSubtract(a: QueryRow[], b: QueryRow[]): QueryRow[] {
+  return a.filter(ra => !b.some(rb => _rowsEqual(ra, rb)))
+}
+
+// ── 重导全部公开符号 ──
+export { _fastDedup, _fastIntersect, _fastSubtract, _makeUniqueKey }
