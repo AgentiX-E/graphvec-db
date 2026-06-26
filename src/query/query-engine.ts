@@ -30,6 +30,9 @@ import { globalRegistry as _procedureRegistry } from './procedure-registry'
 import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver } from './expression-engine'
 import { executeVarLenPath } from './var-length-path'
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
+// ── 参数化查询 ──
+export { ParameterizedQuery, cypher, compileCypher } from './query-params'
+import { ParameterizedQuery } from './query-params'
 // ── 类型定义 ──
 export type {
   QueryAST, ConstraintClauseAST, WithClauseAST, CreateClauseAST, CreateNodeItemAST,
@@ -6895,104 +6898,3 @@ function extractEdgesFromNodes(nodes: Array<Record<string, unknown>>): Array<{ s
   return edges
 }
 
-// ── ParameterizedQuery 预编译参数化查询 ─────────────────────────────────
-
-/**
- * 编译缓存：template → 参数名称列表
- */
-const _compileCache = new Map<string, string[]>()
-
-/**
- * 从模板中提取所有 `$var` 参数名称
- */
-function _extractParamNames(template: string): string[] {
-  const names: string[] = []
-  const re = /\$([a-zA-Z_]\w*)/g
-  let match: RegExpExecArray | null
-  while ((match = re.exec(template)) !== null) {
-    names.push(match[1])
-  }
-  return names
-}
-
-/**
- * 将参数值注入到模板中，返回可直接解析的 Cypher-lite 字符串。
- */
-function _injectParams(template: string, params: Record<string, unknown>): string {
-  const re = /\$([a-zA-Z_]\w*)/g
-  return template.replace(re, (_, name: string) => {
-    if (!(name in params)) {
-      throw new Error(`Missing parameter: $${name}`)
-    }
-    return serializeParamValue(params[name])
-  })
-}
-
-/**
- * 预编译参数化查询类。
- *
- * 对模板进行一次编译（提取参数名称列表），可多次调用 `execute` 传入不同参数。
- */
-export class ParameterizedQuery {
-  private readonly template: string
-  private paramNames: string[] | null = null
-
-  constructor(template: string) {
-    this.template = template
-  }
-
-  /** 获取模板中所有的参数名称 */
-  getParamNames(): string[] {
-    if (this.paramNames === null) {
-      const cached = _compileCache.get(this.template)
-      if (cached) {
-        this.paramNames = cached
-      } else {
-        this.paramNames = _extractParamNames(this.template)
-        _compileCache.set(this.template, this.paramNames)
-      }
-    }
-    return [...this.paramNames]
-  }
-
-  /** 检查指定参数是否存在 */
-  hasParam(name: string): boolean {
-    return this.getParamNames().includes(name)
-  }
-
-  /** 填入参数并解析为 QueryPlan */
-  execute(params: Record<string, unknown>): QueryPlan {
-    const paramNames = this.getParamNames()
-    if (paramNames.length === 0) {
-      return parseQuery(this.template)
-    }
-    const injected = _injectParams(this.template, params)
-    return parseQuery(injected)
-  }
-}
-
-/**
- * 便捷函数：创建预编译参数化查询并立即执行。
- *
- * @param template  - Cypher-lite 模板字符串，参数占位符为 `$name`
- * @param params    - 参数对象
- * @returns 解析后的 QueryPlan
- */
-export function cypher(template: string, params?: Record<string, unknown>): QueryPlan {
-  if (!params || Object.keys(params).length === 0) {
-    return parseQuery(template)
-  }
-  const injected = _injectParams(template, params)
-  return parseQuery(injected)
-}
-
-/**
- * 静态工厂：创建 ParameterizedQuery 实例。
- *
- * @param template - Cypher-lite 模板字符串
- * @returns ParameterizedQuery 实例
- */
-export function compileCypher(template: string): ParameterizedQuery {
-  return new ParameterizedQuery(template)
-
-}
