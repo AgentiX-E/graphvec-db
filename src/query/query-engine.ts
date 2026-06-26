@@ -5,8 +5,9 @@
  * 实际实现在：
  *   - query-types.ts       — 类型定义
  *   - query-parser.ts      — 解析器（parseQuery, execQuery）
- *   - query-executor.ts    — 执行器（_executeQuery, _validatePlan, 注册表等）
- *   - query-params.ts      — 参数化查询（ParameterizedQuery, cypher, compileCypher）
+ *   - query-executor.ts    — 执行器（_executeQuery, _validatePlan）
+ *   - executor-registry.ts — 注册表（Index/Constraint/Database/GE）
+ *   - query-params.ts      — 参数化查询
  *   - expression-engine.ts — 表达式引擎
  *   - ast-to-plan-v2.ts    — ANTLR 适配器
  *   - foreach-exec.ts      — FOREACH 执行
@@ -29,9 +30,12 @@ export type {
 // ── 执行器 ──
 export {
   _executeQuery, _validatePlan,
+} from './query-executor'
+// ── 注册表 ──
+export {
   _registerIndex, _dropIndex, _getAllIndexes, _getIndex, _clearIndexes,
   _registerConstraint, _dropConstraint, _getAllConstraints, _clearConstraints,
   _getActiveDatabase, _setActiveDatabase, _createDatabase, _dropDatabase,
   _getAllDatabases, _clearDatabases, _clearGeInstances, DEFAULT_LIMIT,
   IndexEntry, ConstraintEntry,
-} from './query-executor'
+} from './executor-registry'
