@@ -94,8 +94,4 @@ describe('algorithms/index', () => {
     expect(mod.LinkPredictor).toBeDefined()
   })
 
-  it('exports empty re-export files (p1-6-edge-index-decision)', async () => {
-    const mod = await import('./index')
-    expect(mod).toBeDefined()
-  })
 })
