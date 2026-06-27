@@ -628,12 +628,13 @@ function buildQueryPlan(query: string): QueryPlan {
   // Do NOT use removeErrorListeners() — it interferes with ANTLR's internal error recovery
   // and causes parse failures that would otherwise be tolerated/compensated.
   const origStderrWrite = process.stderr.write.bind(process.stderr)
-  ;(process.stderr as any).write = () => true
+  // @ts-expect-error - ANTLR stderr redirect (temporarily suppress error output)
+  ;(process.stderr as unknown as { write: (...args: unknown[]) => boolean }).write = () => true
   let tree: any
   try {
     tree = parser.cypher()
   } finally {
-    ;(process.stderr as any).write = origStderrWrite
+    ;(process.stderr as unknown as { write: (...args: unknown[]) => boolean }).write = origStderrWrite
   }
   const clauses = collectClauses(tree)
 
@@ -1912,7 +1913,7 @@ function extractUnwind(unwindCtx: any): QueryPlan['unwind'] {
           return trimmed
         })
       } else {
-        list = text as any
+        list = text as unknown[]
       }
     }
   } else {
@@ -1936,7 +1937,7 @@ function extractForEach(foreachCtx: any): ForEachClause {
   const text = expr ? getTextRecursive(expr) : ''
   let list: any[] = []
   if (text.startsWith('[') && text.endsWith(']')) {
-    try { list = JSON.parse(text) } catch { try { list = JSON.parse(text.replace(/'/g, '"')) } catch { list = text as any } }
+    try { list = JSON.parse(text) } catch { try { list = JSON.parse(text.replace(/'/g, '"')) } catch { list = text as unknown[] } }
   }
 
   // Updates: find sub-clauses

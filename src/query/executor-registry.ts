@@ -101,8 +101,23 @@ export function _clearDatabases(): void {
 
 // ── GE 实例注册表（多数据库隔离） ──
 const _geInstanceRegistry = new Map<string, GraphEngine>()
-/** 共享 GE 实例池 — 跳过每次 new GraphEngine + ge.open() */
-const _gePool: { value: any } = { value: null }
+
+/**
+ * 共享 GE 实例池。
+ *
+ * 设计目标：跳过每次 query 执行时 new GraphEngine + ge.open() 的开销。
+ * 使用预热好的单例 GE（路径 /tmp/tckge-pool），只在第一次需要时初始化。
+ *
+ * 未来扩展（GE Pool 正式版）：
+ * - 支持最大实例数（maxPoolSize）和空闲回收（idleTimeout）
+ * - _executeViaGraphEngine 使用 getPoolConnection() 获取池化实例
+ * - 写操作使用独立连接，读操作复用池连接
+ * - 池化策略：最少使用 + 定期健康检查
+ */
+export interface GEPool {
+  value: GraphEngine | null
+}
+const _gePool: GEPool = { value: null }
 /** 追踪 GE 实例的 LMDB 目录路径，用于复用时 reopen 已有目录 */
 const _geDirRegistry = new Map<string, string>()
 
