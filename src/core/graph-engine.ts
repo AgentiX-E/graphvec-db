@@ -2257,7 +2257,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     }
 
     // 构造伪节点作为返回值，确保返回结果与现有的 query() 签名兼容
-    const alias = agg.column && agg.column !== agg.type ? agg.column : (agg.alias ?? agg.type)
+    const alias = agg.alias ?? (agg.column && agg.column !== agg.type ? agg.column : agg.type)
     return [{
       id: -1,
       name: alias,
@@ -2322,7 +2322,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       for (let i = 0; i < groupBy.length; i++) {
         props[groupBy[i]] = keyParts[i] === '__NULL__' ? null : keyParts[i]
       }
-      const alias = agg.column && agg.column !== agg.type ? agg.column : (agg.alias ?? agg.type)
+      const alias = agg.alias ?? (agg.column && agg.column !== agg.type ? agg.column : agg.type)
       props[alias] = aggValue
 
       const firstNode = groupNodes[0]

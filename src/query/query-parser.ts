@@ -610,6 +610,12 @@ function _parseQueryImpl(query: string): QueryPlan {
       const colMatch = agg.column.match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
       agg.field = colMatch ? colMatch[1] : (agg.column || '*')
     }
+    // GE 兼容：把 column 中的函数名也设为 alias（GE 用 alias 做 props key）
+    // count(*) → alias = 'count'，sum(n.age) → alias = 'sum'
+    if (!agg.alias && agg.column) {
+      const fnMatch = agg.column.match(/^(\w+)\(/i)
+      if (fnMatch) agg.alias = fnMatch[1]
+    }
   }
   // WITH 子句中的聚合
   if (plan.with?.aggregates) {
