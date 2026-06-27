@@ -534,6 +534,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       return _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000);
     }
     const v = _evalBinary(a, r);
+    if (typeof v === "string") {
+      let str = v;
+      if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      return str;
+    }
     if (v && typeof v === "object") {
       const map = v;
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
@@ -547,6 +552,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       return _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000) + "Z";
     }
     const v = _evalBinary(a, r);
+    if (typeof v === "string") {
+      let str = v;
+      if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      return str;
+    }
     if (v && typeof v === "object") {
       const map = v;
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
@@ -562,6 +572,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         + "T" + _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000);
     }
     const v = _evalBinary(a, r);
+    if (typeof v === "string") {
+      let str = v;
+      if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      return str;
+    }
     if (v && typeof v === "object") {
       const map = v;
       const d = _resolveDateFromMap(map);
@@ -578,6 +593,12 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         + "T" + _formatTime(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds() * 1000000) + "Z";
     }
     const v = _evalBinary(a, r);
+    if (typeof v === "string") {
+      let str = v;
+      if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      // 直接返回 ISO 格式（TCK 期望 datetime 完整传递字符串参数的原貌）
+      return str;
+    }
     if (v && typeof v === "object") {
       const map = v;
       const d = _resolveDateFromMap(map);
@@ -637,6 +658,95 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     }
     return null;
   },
+  // ── Truncate 函数 ──
+  "date.truncate": ([type, target], r) => {
+    const t = _evalBinary(target, r);
+    if (typeof t !== "string") return null;
+    const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
+    const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
+    if (["year","years"].includes(unit)) return str.slice(0, 4) + "-01-01";
+    if (["month","months"].includes(unit)) return str.slice(0, 7) + "-01";
+    if (["day","days"].includes(unit)) return str;
+    if (["week","weeks"].includes(unit)) {
+      const d = new Date(str); const day = d.getUTCDay();
+      d.setUTCDate(d.getUTCDate() + (day === 0 ? -6 : 1 - day));
+      return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2,"0") + "-" + String(d.getUTCDate()).padStart(2,"0");
+    }
+    return str;
+  },
+  "datetime.truncate": ([type, target], r) => {
+    const t = _evalBinary(target, r);
+    if (typeof t !== "string") return null;
+    let str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
+    const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
+    if (["year","years"].includes(unit)) return str.slice(0,4) + "-01-01T00:00:00Z";
+    if (["month","months"].includes(unit)) return str.slice(0,7) + "-01T00:00:00Z";
+    if (["day","days"].includes(unit)) return str;
+    if (["hour","hours"].includes(unit)) return str.slice(0,14) + "00:00Z";
+    if (["minute","minutes"].includes(unit)) return str.slice(0,17) + "00Z";
+    if (["second","seconds"].includes(unit)) return str;
+    if (["week","weeks"].includes(unit)) { const d = new Date(str.slice(0,10)); const day = d.getUTCDay(); d.setUTCDate(d.getUTCDate() + (day===0?-6:1-day)); return d.toISOString().replace("Z","") + "Z"; }
+    return str;
+  },
+  "localdatetime.truncate": ([type, target], r) => {
+    const t = _evalBinary(target, r);
+    if (typeof t !== "string") return null;
+    let str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
+    const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
+    if (["year","years"].includes(unit)) return str.slice(0,4) + "-01-01T00:00:00";
+    if (["month","months"].includes(unit)) return str.slice(0,7) + "-01T00:00:00";
+    if (["day","days"].includes(unit)) return str;
+    if (["hour","hours"].includes(unit)) return str.slice(0,14) + "00:00";
+    if (["minute","minutes"].includes(unit)) return str.slice(0,17) + "00";
+    if (["second","seconds"].includes(unit)) return str;
+    if (["week","weeks"].includes(unit)) { const d = new Date(str.slice(0,10)); const day = d.getUTCDay(); d.setUTCDate(d.getUTCDate() + (day===0?-6:1-day)); return d.getUTCFullYear()+"-"+String(d.getUTCMonth()+1).padStart(2,"0")+"-"+String(d.getUTCDate()).padStart(2,"0")+"T00:00:00"; }
+    return str;
+  },
+  "time.truncate": ([type, target], r) => {
+    const t = _evalBinary(target, r);
+    if (typeof t !== "string") return null;
+    const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
+    return str;
+  },
+  "localtime.truncate": ([type, target], r) => {
+    const t = _evalBinary(target, r);
+    if (typeof t !== "string") return null;
+    const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
+    return str;
+  },
+  // ── duration.between / inDays / inMonths / inSeconds ──
+  "duration.between": ([a, b], r) => {
+    const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
+    if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
+    const sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
+    const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime();
+    const db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime();
+    if (isNaN(da) || isNaN(db)) return null;
+    const diff = db - da; const abs = Math.abs(diff); const s = Math.floor(abs/1000);
+    const d = Math.floor(s/86400), h = Math.floor((s%86400)/3600), m = Math.floor((s%3600)/60), sec = s%60;
+    const ns = (abs%1000)*1000000;
+    const nss = ns > 0 ? "." + String(ns).padStart(9,"0").replace(/0+$/,"") : "";
+    const neg = diff < 0 ? "-" : "";
+    return "P"+neg+d+"DT"+neg+h+"H"+neg+m+"M"+neg+sec+nss+"S";
+  },
+  "duration.inDays": ([a], r) => {
+    const v = _evalBinary(a, r); if (typeof v !== "string") return null;
+    const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    if (!m) return null;
+    return Number(m[3]||0) + Number(m[4]||0)/24 + Number(m[5]||0)/1440 + Number(m[6]||0)/86400;
+  },
+  "duration.inMonths": ([a], r) => {
+    const v = _evalBinary(a, r); if (typeof v !== "string") return null;
+    const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    if (!m) return null;
+    return Number(m[1]||0)*12 + Number(m[2]||0) + Number(m[3]||0)/30.436875 + Number(m[4]||0)/730.485 + Number(m[5]||0)/43829.1;
+  },
+  "duration.inSeconds": ([a], r) => {
+    const v = _evalBinary(a, r); if (typeof v !== "string") return null;
+    const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    if (!m) return null;
+    return Number(m[1]||0)*31557600 + Number(m[2]||0)*2629800 + Number(m[3]||0)*86400 + Number(m[4]||0)*3600 + Number(m[5]||0)*60 + Number(m[6]||0);
+  },
 }
 
 export function _callFunction(name: string, args: string[], row?: Record<string, unknown>): ExprValue {
@@ -645,8 +755,27 @@ export function _callFunction(name: string, args: string[], row?: Record<string,
 }
 
 export function _evalBinary(s: string, row?: Record<string, unknown>): ExprValue {
-  // Fast path: if no boolean operators or NOT, skip directly to comparison
+  // 先尝试函数匹配（需在 fast path 之前，否则会跳到 _evalComparison 错过新函数匹配）
+  const _tryFnCall = (t: string): unknown => {
+    const fnParenIdx = t.indexOf('(')
+    if (fnParenIdx > 0 && t.endsWith(')') && /^[\w.]+$/.test(t.slice(0, fnParenIdx))) {
+      let depth = 0, matchEnd = -1
+      for (let i = fnParenIdx; i < t.length; i++) {
+        if (t[i] === '(') depth++
+        else if (t[i] === ')') { depth--; if (depth === 0) { matchEnd = i; break } }
+      }
+      if (matchEnd === t.length - 1) {
+        const fnName = t.slice(0, fnParenIdx)
+        const argsRaw = t.slice(fnParenIdx + 1, -1).trim()
+        const args = argsRaw ? _parseCommaList(argsRaw).map(a => a.trim()) : []
+        return _callFunction(fnName, args, row)
+      }
+    }
+    return undefined
+  }
   const t = s.trim()
+  const fnResult = _tryFnCall(t)
+  if (fnResult !== undefined) return fnResult
 
   // Expression cache: cache pure literal expressions (no row dependency)
   const cacheKey = t
@@ -1427,10 +1556,22 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
   }
   // 函数调用（必须在 dot 之前）
   // datetime.fromepoch(x) 需要 [\w.]+ 匹配带点的函数名
-  const fnMatch = t.match(/^([\w.]+)\((.+?)\)$/s)
-  if (fnMatch) {
-    const args = fnMatch[2].trim() ? _parseCommaList(fnMatch[2]).map(a => a.trim()) : []
-    return _callFunction(fnMatch[1].toLowerCase(), args, row)
+  // 使用括号深度感知匹配支持嵌套函数调用 duration.inDays(duration({...}))
+  const fnParenIdx = t.indexOf('(')
+  if (fnParenIdx > 0 && t.endsWith(')')) {
+    let depth = 0, matchEnd = -1
+    for (let i = fnParenIdx; i < t.length; i++) {
+      if (t[i] === '(') depth++
+      else if (t[i] === ')') { depth--; if (depth === 0) { matchEnd = i; break } }
+    }
+    if (matchEnd === t.length - 1) {
+      const fnName = t.slice(0, fnParenIdx)
+      const argsRaw = t.slice(fnParenIdx + 1, -1).trim()
+      if (/^[\w.]+$/.test(fnName)) {
+        const args = argsRaw ? _parseCommaList(argsRaw).map(a => a.trim()) : []
+        return _callFunction(fnName, args, row)
+      }
+    }
   }
   // 如果包含顶层 `^`，是表达式而非纯字面量，委托给 _evalExp
   if (t.includes('^')) {
