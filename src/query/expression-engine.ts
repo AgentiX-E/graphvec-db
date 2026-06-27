@@ -210,9 +210,9 @@ type _BuiltinFn = (args: string[], row?: Record<string, unknown>) => unknown
 
 /** Resolve nanoseconds from map combining millisecond, microsecond, nanosecond */
 export function _resolveNanoseconds(map: Record<string, unknown>): number {
-  const ms = map.millisecond != null ? Math.round(Number(map.millisecond) * 1000000) : 0
-  const us = map.microsecond != null ? Math.round(Number(map.microsecond) * 1000) : 0
-  const ns = map.nanosecond != null ? Number(map.nanosecond) : 0
+  const ms = map.milliseconds != null ? Math.round(Number(map.milliseconds) * 1000000) : map.millisecond != null ? Math.round(Number(map.millisecond) * 1000000) : 0
+  const us = map.microseconds != null ? Math.round(Number(map.microseconds) * 1000) : map.microsecond != null ? Math.round(Number(map.microsecond) * 1000) : 0
+  const ns = map.nanoseconds != null ? Number(map.nanoseconds) : map.nanosecond != null ? Number(map.nanosecond) : 0
   return ms + us + ns
 }
 
@@ -501,7 +501,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     const iso = base.toISOString().replace("Z", "");
     if (ns > 0) {
       const nsStr = String(ns).padStart(9, "0");
-      return iso.slice(0, -4) + nsStr + "Z";
+      return iso.slice(0, -4) + "." + nsStr + "Z";
     }
     return iso + "Z";
   },
@@ -1426,7 +1426,8 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     if (pred === 'single') return (hasNull && count <= 1) ? null : count === 1
   }
   // 函数调用（必须在 dot 之前）
-  const fnMatch = t.match(/^(\w+)\((.+?)\)$/s)
+  // datetime.fromepoch(x) 需要 [\w.]+ 匹配带点的函数名
+  const fnMatch = t.match(/^([\w.]+)\((.+?)\)$/s)
   if (fnMatch) {
     const args = fnMatch[2].trim() ? _parseCommaList(fnMatch[2]).map(a => a.trim()) : []
     return _callFunction(fnMatch[1].toLowerCase(), args, row)

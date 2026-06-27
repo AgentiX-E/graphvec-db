@@ -396,7 +396,11 @@ function _parseQueryImpl(query: string): QueryPlan {
     plan.expressionColumns = plan.expressionColumns.map((ec: any) => {
       const expr = typeof ec === 'string' ? ec : ec.expression || ec.alias || ec
       const alias = ec.alias || expr
-      const dotIdx = expr.indexOf('.')
+      // 只在顶层拆分 b.name → name，跳过表达式内的 .（如 1.5, func().prop）
+      let dotIdx = -1
+      if (/^[a-zA-Z_]\w*\.\w+$/.test(expr)) {
+        dotIdx = expr.indexOf('.')
+      }
       const cleanExpr = dotIdx >= 0 ? expr.substring(dotIdx + 1) : expr
       const cleanAlias = alias.indexOf('.') >= 0 ? alias.split('.').pop()! : alias
       return { expression: cleanExpr, alias: cleanAlias }
