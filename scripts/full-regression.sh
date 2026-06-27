@@ -38,101 +38,41 @@ QUICK=false
 
 # ── vitest ──
 check "graph-engine.spec.ts (622 tests)" \
-  "npx vitest run src/core/graph-engine.spec.ts --coverage.enabled=false 2>&1 | tail -5"
+  "npx vitest run src/core/graph-engine.spec.ts --coverage.enabled=false"
 
 check "query-engine.spec.ts (71 tests)" \
-  "npx vitest run src/query/query-engine.spec.ts --coverage.enabled=false 2>&1 | tail -5"
+  "npx vitest run src/query/query-engine.spec.ts --coverage.enabled=false"
 
 # ── old top-level features (JSON 模式) ──
 check "TCK old top-level (5 features)" \
   "npx cucumber-js 'src/query/cypher-tck/features/0*.feature' \
     --require-module tsx --require src/query/cypher-tck/step-definitions.ts \
-    --format json 2>/dev/null | python3 -c \"
-import json,sys
-data=json.load(sys.stdin)
-all=0;passed=0
-for f in data:
-    for e in f.get('elements',[]):
-        all+=1
-        steps=e.get('steps',[])
-        st=steps[-1].get('result',{}).get('status','') if steps else ''
-        if st=='passed': passed+=1
-print(f'{passed}/{all} passed')
-sys.exit(0 if all==passed else 1)
-\""
+--format json 2>/dev/null | python3 scripts/tck-verify.py"
 
 # ── MatchWhere (用 JSON 模式验证 pass count，避免 cucumber --summary 退出码误导) ──
 check "TCK MatchWhere (34 scenarios)" \
   "npx cucumber-js 'src/query/cypher-tck/features/clauses/match-where/**/*.feature' \
     --require-module tsx --require src/query/cypher-tck/step-definitions.ts \
-    --format json 2>/dev/null | python3 -c \"
-import json,sys
-data=json.load(sys.stdin)
-all=0;passed=0
-for f in data:
-    for e in f.get('elements',[]):
-        all+=1
-        steps=e.get('steps',[])
-        st=steps[-1].get('result',{}).get('status','') if steps else ''
-        if st=='passed': passed+=1
-print(f'{passed}/{all} passed')
-sys.exit(0 if all==passed else 1)
-\""
+--format json 2>/dev/null | python3 scripts/tck-verify.py"
 
 if [ "$QUICK" = false ]; then
   # ── clauses (JSON 模式) ──
   check "TCK clauses (17 dirs, ~1230 scenarios)" \
     "npx cucumber-js 'src/query/cypher-tck/features/clauses/{call,create,delete,match,match-where,merge,remove,return,return-orderby,return-skip-limit,set,union,unwind,with,with-orderBy,with-skip-limit,with-where}/**/*.feature' \
       --require-module tsx --require src/query/cypher-tck/step-definitions.ts \
-      --format json 2>/dev/null | python3 -c \"
-import json,sys
-data=json.load(sys.stdin)
-all=0;passed=0
-for f in data:
-    for e in f.get('elements',[]):
-        all+=1
-        steps=e.get('steps',[])
-        st=steps[-1].get('result',{}).get('status','') if steps else ''
-        if st=='passed': passed+=1
-print(f'{passed}/{all} passed')
-sys.exit(0 if all==passed else 1)
-\""
+--format json 2>/dev/null | python3 scripts/tck-verify.py"
 
   # ── expressions (JSON 模式) ──
   check "TCK expressions (18 dirs, ~2620 scenarios)" \
     "npx cucumber-js 'src/query/cypher-tck/features/expressions/{aggregation,boolean,comparison,conditional,existentialSubqueries,graph,list,literals,map,mathematical,null,path,pattern,precedence,quantifier,string,temporal,typeConversion}/**/*.feature' \
       --require-module tsx --require src/query/cypher-tck/step-definitions.ts \
-      --format json 2>/dev/null | python3 -c \"
-import json,sys
-data=json.load(sys.stdin)
-all=0;passed=0
-for f in data:
-    for e in f.get('elements',[]):
-        all+=1
-        steps=e.get('steps',[])
-        st=steps[-1].get('result',{}).get('status','') if steps else ''
-        if st=='passed': passed+=1
-print(f'{passed}/{all} passed')
-sys.exit(0 if all==passed else 1)
-\""
+--format json 2>/dev/null | python3 scripts/tck-verify.py"
 
   # ── useCases (JSON 模式) ──
   check "TCK useCases (30 scenarios)" \
     "npx cucumber-js 'src/query/cypher-tck/features/useCases/**/*.feature' \
       --require-module tsx --require src/query/cypher-tck/step-definitions.ts \
-      --format json 2>/dev/null | python3 -c \"
-import json,sys
-data=json.load(sys.stdin)
-all=0;passed=0
-for f in data:
-    for e in f.get('elements',[]):
-        all+=1
-        steps=e.get('steps',[])
-        st=steps[-1].get('result',{}).get('status','') if steps else ''
-        if st=='passed': passed+=1
-print(f'{passed}/{all} passed')
-sys.exit(0 if all==passed else 1)
-\""
+--format json 2>/dev/null | python3 scripts/tck-verify.py"
 
   # ── ANTLR stderr 干净验证 ──
   check "ANTLR stderr: 0 error lines" \
