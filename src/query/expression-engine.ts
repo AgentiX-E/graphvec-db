@@ -18,6 +18,17 @@
 // 类型定义
 // ============================================================
 
+/**
+ * ExprValue — 表达式引擎中的值类型。
+ *
+ * Cypher 表达式可以返回的值类型：
+ * - string, number, boolean, null（标量）
+ * - bigint（大整数精度）
+ * - ExprValue[]（嵌套列表）
+ * - { [key: string]: ExprValue }（嵌套映射）
+ */
+export type ExprValue = string | number | boolean | null | bigint | ExprValue[] | { [key: string]: ExprValue }
+
 export type QueryRow = Record<string, unknown>
 
 export interface AggColumnInfo {
@@ -41,7 +52,7 @@ interface PostProcessPlan {
   skip?: number
   limit?: number
 }
-export function _evaluateExpression(expr: string | Record<string, unknown>, row?: Record<string, unknown>): unknown {
+export function _evaluateExpression(expr: string | Record<string, unknown>, row?: Record<string, unknown>): ExprValue {
   if (expr == null) return null
   // 支持结构化表达式 {type, value, items}（从 AST 解析而来）
   if (typeof expr !== 'string' && typeof expr === 'object') {
@@ -67,7 +78,7 @@ export function _evaluateExpression(expr: string | Record<string, unknown>, row?
 }
 
 /** 从结构化 AST 字面量对象求值 */
-export function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Record<string, unknown>): unknown {
+export function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Record<string, unknown>): ExprValue {
   const type = String(expr.type || '')
   switch (type.toUpperCase()) {
     case 'STRING': return String(expr.value)
@@ -106,7 +117,7 @@ export function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Rec
   }
 }
 
-export function _evalCase(s: string, row?: Record<string, unknown>): unknown {
+export function _evalCase(s: string, row?: Record<string, unknown>): ExprValue {
   // CASE <value> WHEN <v1> THEN <r1> WHEN <v2> THEN <r2> ... ELSE <default> END
   // 或 CASE WHEN <cond1> THEN <r1> WHEN <cond2> THEN <r2> ... ELSE <default> END
   const t = s.replace(/\bEND\b\s*$/i, '').trim()  // 去掉尾部 END
@@ -628,12 +639,12 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   },
 }
 
-export function _callFunction(name: string, args: string[], row?: Record<string, unknown>): unknown {
+export function _callFunction(name: string, args: string[], row?: Record<string, unknown>): ExprValue {
   const fn = _builtinFunctions[name]
   return fn ? fn(args, row) : null
 }
 
-export function _evalBinary(s: string, row?: Record<string, unknown>): unknown {
+export function _evalBinary(s: string, row?: Record<string, unknown>): ExprValue {
   // Fast path: if no boolean operators or NOT, skip directly to comparison
   const t = s.trim()
 
@@ -673,7 +684,7 @@ export function _assertBool(v: unknown, expr: string): void {
   }
 }
 
-export function _evalOr(s: string, row?: Record<string, unknown>): unknown {
+export function _evalOr(s: string, row?: Record<string, unknown>): ExprValue {
   const parts = _splitTopLevel(s, 'OR')
   if (parts.length === 1) return _evalXor(s, row)
   const values = parts.map(p => _evalXor(p, row))
@@ -690,7 +701,7 @@ export function _evalOr(s: string, row?: Record<string, unknown>): unknown {
   return result
 }
 
-export function _evalXor(s: string, row?: Record<string, unknown>): unknown {
+export function _evalXor(s: string, row?: Record<string, unknown>): ExprValue {
   const parts = _splitTopLevel(s, 'XOR')
   if (parts.length === 1) return _evalAnd(s, row)
   const values = parts.map(p => _evalAnd(p, row))
@@ -708,7 +719,7 @@ export function _evalXor(s: string, row?: Record<string, unknown>): unknown {
   return left !== right
 }
 
-export function _evalAnd(s: string, row?: Record<string, unknown>): unknown {
+export function _evalAnd(s: string, row?: Record<string, unknown>): ExprValue {
   const parts = _splitTopLevel(s, 'AND')
   if (parts.length === 1) return _evalNot(s, row)
   // Cypher 要求：所有操作数必须验证布尔类型（即使短路）
@@ -727,7 +738,7 @@ export function _evalAnd(s: string, row?: Record<string, unknown>): unknown {
   return result
 }
 
-export function _evalNot(s: string, row?: Record<string, unknown>): unknown {
+export function _evalNot(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   if (t.startsWith('NOT ')) {
     const inner = _evalBinary(t.slice(4), row)
@@ -783,7 +794,7 @@ export function _extractChain(expr: string): Array<{ left: string; op: string; r
   return result
 }
 
-export function _evalComparison(s: string, row?: Record<string, unknown>): unknown {
+export function _evalComparison(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   // 辅助：截断操作数到第一个布尔操作符（OR/XOR/AND），用于 STARTS_WITH/CONTAINS/ENDS_WITH 右操作数
   const _trimToOperand = (s2: string): string => {
@@ -1173,7 +1184,7 @@ export function _deepEq(a: unknown, b: unknown): boolean {
   return a === b
 }
 
-export function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
+export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
     if (t[i] === '+' && !_inBrackets(t, i) && !_inString(t, i) && !(i > 0 && 'eE'.includes(t[i - 1]))) {
@@ -1197,7 +1208,7 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): unknown {
   return _evalMulDiv(t, row)
 }
 
-export function _evalMulDiv(s: string, row?: Record<string, unknown>): unknown {
+export function _evalMulDiv(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
     if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; return Number(left) * Number(right) }
@@ -1208,7 +1219,7 @@ export function _evalMulDiv(s: string, row?: Record<string, unknown>): unknown {
 }
 
 /** 指数运算 `^`，优先级高于 * / %，左结合：2 ^ 3 ^ 2 = (2 ^ 3) ^ 2 */
-export function _evalExp(s: string, row?: Record<string, unknown>): unknown {
+export function _evalExp(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   // 左结合：从左向右扫描，左操作数用 _evalUnary 或 _evalExp（处理左侧 ^）
   for (let i = t.length - 1; i >= 0; i--) {
@@ -1222,7 +1233,7 @@ export function _evalExp(s: string, row?: Record<string, unknown>): unknown {
   return _evalUnary(t, row)
 }
 
-export function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
+export function _evalUnary(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   if (t.startsWith('-')) {
     const inner = _evalUnary(t.slice(1), row)
@@ -1237,7 +1248,7 @@ export function _evalUnary(s: string, row?: Record<string, unknown>): unknown {
   return _evalAtom(t, row)
 }
 
-export function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
+export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   // ── 标签谓词：(n:Foo) → 检查 n 是否有标签 Foo（必须在括号剥离之前处理）──
   if (t.startsWith('(') && t.endsWith(')') && _isBalanced(t)) {
@@ -1558,7 +1569,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): unknown {
   return _evalLiteral(t, row)
 }
 
-export function _evalLiteral(s: string, row?: Record<string, unknown>): unknown {
+export function _evalLiteral(s: string, row?: Record<string, unknown>): ExprValue {
   const v = s.trim()
   if (v === 'null') return null
   if (v.toLowerCase() === 'true') return true
