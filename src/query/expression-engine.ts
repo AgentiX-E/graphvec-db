@@ -236,8 +236,72 @@ export function _extractTimeMap(map: Record<string, unknown>): { hour: number; m
   }
 }
 
+/** 从 ISO 持续时间字符串中提取指定属性的数值（如 duration('P1DT2H').days → 1） */
+export function _extractDurationProp(durStr: string, prop: string): number | null {
+  const m = durStr.match(/^([-])?P(?:(\d+(?:\.\d+)?)Y)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M(?!S))?(?:(\d+(?:\.\d+)?)S)?)?$/)
+  if (!m) return null
+  const [, signStr, years, months, days, hours, minutes, seconds] = m
+  const sign = signStr === '-' ? -1 : 1
+  const y = parseFloat(years || '0'), mo = parseFloat(months || '0')
+  const d = parseFloat(days || '0'), h = parseFloat(hours || '0')
+  const min = parseFloat(minutes || '0'), sec = parseFloat(seconds || '0')
+  const secInt = Math.floor(sec)
+  const nanos = Math.round((sec - secInt) * 1e9)
+  switch (prop) {
+    case 'years': return sign * y
+    case 'months': return sign * mo
+    case 'days': return sign * d
+    case 'hours': return sign * h
+    case 'minutes': return sign * min
+    case 'seconds': return sign * (y * 31557600 + mo * 2629800 + d * 86400 + h * 3600 + min * 60 + sec)
+    case 'milliseconds': return sign * (Math.floor(d * 86400e3 + h * 3600e3 + min * 60e3 + sec * 1e3) + Math.floor(nanos / 1e6))
+    case 'microseconds': return sign * (Math.floor(d * 86400e6 + h * 3600e6 + min * 60e6 + sec * 1e6) + Math.floor(nanos / 1e3))
+    case 'nanoseconds': return sign * (Math.floor(d * 86400e9 + h * 3600e9 + min * 60e9 + sec * 1e9) + nanos)
+    case 'nanosecondsOfSecond': return sign * nanos
+  }
+  return null
+}
+
 export function _formatTimezone(tz: string): string {
   return /^[+-]\d{2}:\d{2}:00$/.test(tz) ? tz.slice(0, -3) : tz
+}
+
+/** 将 map 中的覆盖字段（second, minute, hour 等）合并到时间字符串中 */
+function _mergeTimeStr(timeStr: string, map: Record<string, unknown>): string {
+  const hasOverrides = map.hour != null || map.minute != null || map.second != null || map.nanosecond != null || map.microsecond != null || map.millisecond != null
+  if (!hasOverrides) return timeStr
+  const parts = timeStr.match(/(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/)
+  if (!parts) return timeStr
+  const baseHour = Number(parts[1]), baseMinute = Number(parts[2])
+  const baseSecStr = parts[3] || '0'
+  let baseSecond = 0, baseNanosecond = 0
+  if (baseSecStr.includes('.')) { baseSecond = Number(baseSecStr.split('.')[0]); baseNanosecond = Math.round(parseFloat('0.' + baseSecStr.split('.')[1]) * 1e9) }
+  else { baseSecond = Number(baseSecStr) }
+  const merged = {
+    hour: map.hour != null ? Number(map.hour) : baseHour,
+    minute: map.minute != null ? Number(map.minute) : baseMinute,
+    second: map.second != null ? Number(map.second) : baseSecond,
+    nanosecond: map.nanosecond != null ? Number(map.nanosecond) : baseNanosecond,
+  }
+  const { hour, minute, second, nanosecond } = _extractTimeMap(merged)
+  return _formatTime(hour, minute, second, nanosecond)
+}
+
+/** 将 map 中的日期覆盖字段（year, month, day）合并到日期字符串中 */
+function _mergeDateStr(dateStr: string, map: Record<string, unknown>): string {
+  const hasOverrides = map.year != null || map.month != null || map.day != null || map.week != null || map.dayOfWeek != null || map.quarter != null || map.dayOfQuarter != null
+  if (!hasOverrides) return dateStr
+  const parts = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!parts) return dateStr
+  let year = Number(parts[1]), month = Number(parts[2]), day = Number(parts[3])
+  if (map.year != null) year = Number(map.year)
+  if (map.month != null) month = Number(map.month)
+  if (map.day != null) { day = Number(map.day) }
+  else if (map.week != null || map.dayOfWeek != null || map.quarter != null || map.dayOfQuarter != null) {
+    // 需要从 week/quarter 解析 → 用 JS Date 计算
+    // 兜底
+  }
+  return String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0")
 }
 
 export function _resolveNamedTimezone(tz: string, year?: number, month?: number, day?: number): string {
@@ -271,7 +335,9 @@ export function _isoWeek1Monday(year: number): Date {
 export function _resolveDateFromMap(map: Record<string, unknown>): Date {
   if (map.date != null) {
     const baseStr = typeof map.date === 'string' ? map.date : String(map.date)
-    const parts = baseStr.split('-')
+    // 提取纯净日期部分（去掉 T 后的时间部分）
+    const dateOnly = baseStr.indexOf('T') >= 0 ? baseStr.slice(0, baseStr.indexOf('T')) : baseStr
+    const parts = dateOnly.split('-')
     if (parts.length === 3) {
       const year = Number(parts[0]), month2 = Number(parts[1]), day2 = Number(parts[2])
       const base = new Date(Date.UTC(year, month2 - 1, day2))
@@ -518,11 +584,19 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof v === "string") {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      // datetime/time 字符串：date('1984-10-11T12:00') → 截取日期部分
+      if (str.includes('T')) str = str.slice(0, str.indexOf('T'))
       if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
       return str;
     }
     if (v && typeof v === "object") {
       const map = v;
+      // map.date 字符串穿透 + 覆盖字段合并
+      if (map.date != null && typeof map.date === 'string') {
+        let dateStr = map.date.includes('T') ? map.date.slice(0, map.date.indexOf('T')) : map.date
+        dateStr = _mergeDateStr(dateStr, map)
+        return dateStr
+      }
       const d = _resolveDateFromMap(map);
       return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
     }
@@ -537,10 +611,41 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof v === "string") {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      // datetime 字符串传入 localtime → 提取 T 后的时间部分
+      if (str.includes('T')) str = str.slice(str.indexOf('T') + 1)
       return str;
     }
     if (v && typeof v === "object") {
       const map = v;
+      // 优先：如果 map.time 是完整字符串（localtime({time: other}) → '12:31:14.645876123'）
+      if (map.time != null && typeof map.time === 'string') {
+        const timeStr = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+        // 如果有覆盖字段（second=42），只用这些字段覆盖时间值
+        const hasOverrides = map.hour != null || map.minute != null || map.second != null || map.nanosecond != null || map.microsecond != null || map.millisecond != null
+        if (!hasOverrides) return timeStr
+        // 有覆盖：从 timeStr 提取基础值，覆盖字段优先
+        const parts = timeStr.match(/(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/)
+        if (parts) {
+          const baseHour = Number(parts[1]), baseMinute = Number(parts[2])
+          const baseSecStr = parts[3] || '0'
+          let baseSecond = 0, baseNanosecond = 0
+          if (baseSecStr.includes('.')) {
+            baseSecond = Number(baseSecStr.split('.')[0])
+            baseNanosecond = Math.round(parseFloat('0.' + baseSecStr.split('.')[1]) * 1e9)
+          } else { baseSecond = Number(baseSecStr) }
+          // 覆盖字段优先：map.field 非 null 用 map.field，否则从 timeStr 提取
+          const merged = {
+            hour: map.hour != null ? Number(map.hour) : baseHour,
+            minute: map.minute != null ? Number(map.minute) : baseMinute,
+            second: map.second != null ? Number(map.second) : baseSecond,
+            nanosecond: map.nanosecond != null ? Number(map.nanosecond) : baseNanosecond,
+            microsecond: map.microsecond ?? undefined,
+            millisecond: map.millisecond ?? undefined,
+          }
+          const { hour, minute, second, nanosecond } = _extractTimeMap(merged)
+          return _formatTime(hour, minute, second, nanosecond)
+        }
+      }
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
       return _formatTime(hour, minute, second, nanosecond);
     }
@@ -555,10 +660,39 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof v === "string") {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      // datetime 字符串传入 time → 提取 T 后的时间部分
+      if (str.includes('T')) str = str.slice(str.indexOf('T') + 1)
+      // time 始终有时区后缀（默认 Z）
+      if (!/[Z+-]/.test(str.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))) str += 'Z'
       return str;
     }
     if (v && typeof v === "object") {
       const map = v;
+      // 优先：如果 map.time 是完整字符串（time({time: other})）
+      if (map.time != null && typeof map.time === 'string') {
+        const timeStr = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+        const hasOverrides = map.hour != null || map.minute != null || map.second != null || map.nanosecond != null || map.microsecond != null || map.millisecond != null
+        if (!hasOverrides) return timeStr + (timeStr.match(/[Z+-]/) ? '' : 'Z')
+        const parts = timeStr.match(/(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/)
+        if (parts) {
+          const baseHour = Number(parts[1]), baseMinute = Number(parts[2])
+          const baseSecStr = parts[3] || '0'
+          let baseSecond = 0, baseNanosecond = 0
+          if (baseSecStr.includes('.')) {
+            baseSecond = Number(baseSecStr.split('.')[0])
+            baseNanosecond = Math.round(parseFloat('0.' + baseSecStr.split('.')[1]) * 1e9)
+          } else { baseSecond = Number(baseSecStr) }
+          const merged = {
+            hour: map.hour != null ? Number(map.hour) : baseHour,
+            minute: map.minute != null ? Number(map.minute) : baseMinute,
+            second: map.second != null ? Number(map.second) : baseSecond,
+            nanosecond: map.nanosecond != null ? Number(map.nanosecond) : baseNanosecond,
+          }
+          const tm = _extractTimeMap(merged)
+          const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone))) : "Z"
+          return _formatTime(tm.hour, tm.minute, tm.second, tm.nanosecond) + tz
+        }
+      }
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
       const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone))) : "Z";
       return _formatTime(hour, minute, second, nanosecond) + tz;
@@ -579,6 +713,24 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     }
     if (v && typeof v === "object") {
       const map = v;
+      // 如果 map.date 是完整字符串，穿透
+      if (map.date != null && typeof map.date === 'string' && (map.date.includes('T') || map.time == null)) {
+        let dateStr = map.date.includes('T') ? map.date.slice(0, map.date.indexOf('T')) : map.date
+        dateStr = _mergeDateStr(dateStr, map)
+        if (map.time != null && typeof map.time === 'string') {
+          const timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+          return dateStr + 'T' + _mergeTimeStr(timePart, map)
+        }
+        const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+        return dateStr + "T" + _formatTime(hour, minute, second, nanosecond);
+      }
+      // map.time 是完整时间字符串但没有 map.date → 用 map 的 year/month/day 构造日期
+      if (map.time != null && typeof map.time === 'string') {
+        const timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+        const d = _resolveDateFromMap(map);
+        const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+        return dateStr + 'T' + _mergeTimeStr(timePart, map)
+      }
       const d = _resolveDateFromMap(map);
       const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
@@ -601,6 +753,37 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     }
     if (v && typeof v === "object") {
       const map = v;
+      // 如果 map.date 是完整字符串，穿透
+      if (map.date != null && typeof map.date === 'string' && (map.date.includes('T') || map.time == null)) {
+        let dateStr = map.date.includes('T') ? map.date.slice(0, map.date.indexOf('T')) : map.date
+        dateStr = _mergeDateStr(dateStr, map)
+        if (map.time != null && typeof map.time === 'string') {
+          let timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+          // timePart 是否已包含时区（+HH:MM/Z）
+          const hasOwnTz = /[Z+-]/.test(timePart.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))
+          if (!hasOwnTz && map.timezone != null) {
+            const tz = _formatTimezone(_resolveNamedTimezone(String(map.timezone), Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10))))
+            let merged = _mergeTimeStr(timePart, map)
+            return dateStr + 'T' + merged + tz
+          }
+          return dateStr + 'T' + _mergeTimeStr(timePart, map) + "Z"
+        }
+        const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+        const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone), Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10)))) : "Z"
+        return dateStr + "T" + _formatTime(hour, minute, second, nanosecond) + tz;
+      }
+      // map.time 是完整时间字符串但没有 map.date → 用 year/month/day 构造日期
+      if (map.time != null && typeof map.time === 'string') {
+        let timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+        const d = _resolveDateFromMap(map);
+        const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+        const hasOwnTz = /[Z+-]/.test(timePart.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))
+        if (!hasOwnTz && map.timezone != null) {
+          const tz = _formatTimezone(_resolveNamedTimezone(String(map.timezone), d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()))
+          return dateStr + 'T' + _mergeTimeStr(timePart, map) + tz
+        }
+        return dateStr + 'T' + _mergeTimeStr(timePart, map) + (hasOwnTz ? '' : 'Z')
+      }
       const d = _resolveDateFromMap(map);
       const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
@@ -664,8 +847,15 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof t !== "string") return null;
     const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
-    if (["year","years"].includes(unit)) return str.slice(0, 4) + "-01-01";
-    if (["month","months"].includes(unit)) return str.slice(0, 7) + "-01";
+    if (["millennium","millennia","century","centuries","decade","decades","year","years"].includes(unit)) {
+      let year = Number(str.slice(0,4));
+      if (unit === "millennium" || unit === "millennia") year = Math.floor(year / 1000) * 1000;
+      else if (unit === "century" || unit === "centuries") year = Math.floor(year / 100) * 100;
+      else if (unit === "decade" || unit === "decades") year = Math.floor(year / 10) * 10;
+      return String(year).padStart(4,"0") + "-01-01";
+    }
+    if (["quarter","quarters"].includes(unit)) return str.slice(0,7) + "-01";
+    if (["month","months"].includes(unit)) return str.slice(0,7) + "-01";
     if (["day","days"].includes(unit)) return str;
     if (["week","weeks"].includes(unit)) {
       const d = new Date(str); const day = d.getUTCDay();
@@ -679,21 +869,38 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof t !== "string") return null;
     let str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
-    if (["year","years"].includes(unit)) return str.slice(0,4) + "-01-01T00:00:00Z";
-    if (["month","months"].includes(unit)) return str.slice(0,7) + "-01T00:00:00Z";
+    if (["millennium","millennia","century","centuries","decade","decades","year","years"].includes(unit)) {
+      let year = Number(str.slice(0,4));
+      if (unit === "millennium" || unit === "millennia") year = Math.floor(year / 1000) * 1000;
+      else if (unit === "century" || unit === "centuries") year = Math.floor(year / 100) * 100;
+      else if (unit === "decade" || unit === "decades") year = Math.floor(year / 10) * 10;
+      const tz = str.includes('Z') ? 'Z' : str.match(/[+-]\d{2}:\d{2}/)?.[0] || '';
+      const isLocal = !str.includes('Z') && !str.match(/[+-]\d{2}:\d{2}/);
+      return String(year).padStart(4,"0") + "-01-01T00:00:00" + (isLocal ? '' : (tz || 'Z'));
+    }
+    if (["quarter","quarters"].includes(unit)) return str.slice(0,7) + "-01T00:00:00" + (tzFrom(str) || 'Z');
+    if (["month","months"].includes(unit)) return str.slice(0,7) + "-01T00:00:00" + (tzFrom(str) || 'Z');
     if (["day","days"].includes(unit)) return str;
-    if (["hour","hours"].includes(unit)) return str.slice(0,14) + "00:00Z";
-    if (["minute","minutes"].includes(unit)) return str.slice(0,17) + "00Z";
+    if (["hour","hours"].includes(unit)) return str.slice(0,14) + "00:00" + (tzFrom(str) || 'Z');
+    if (["minute","minutes"].includes(unit)) return str.slice(0,17) + "00" + (tzFrom(str) || 'Z');
     if (["second","seconds"].includes(unit)) return str;
     if (["week","weeks"].includes(unit)) { const d = new Date(str.slice(0,10)); const day = d.getUTCDay(); d.setUTCDate(d.getUTCDate() + (day===0?-6:1-day)); return d.toISOString().replace("Z","") + "Z"; }
     return str;
+    function tzFrom(s: string): string { const m = s.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/); return m ? m[0] : ''; }
   },
   "localdatetime.truncate": ([type, target], r) => {
     const t = _evalBinary(target, r);
     if (typeof t !== "string") return null;
     let str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
-    if (["year","years"].includes(unit)) return str.slice(0,4) + "-01-01T00:00:00";
+    if (["millennium","millennia","century","centuries","decade","decades","year","years"].includes(unit)) {
+      let year = Number(str.slice(0,4));
+      if (unit === "millennium" || unit === "millennia") year = Math.floor(year / 1000) * 1000;
+      else if (unit === "century" || unit === "centuries") year = Math.floor(year / 100) * 100;
+      else if (unit === "decade" || unit === "decades") year = Math.floor(year / 10) * 10;
+      return String(year).padStart(4,"0") + "-01-01T00:00:00";
+    }
+    if (["quarter","quarters"].includes(unit)) return str.slice(0,7) + "-01T00:00:00";
     if (["month","months"].includes(unit)) return str.slice(0,7) + "-01T00:00:00";
     if (["day","days"].includes(unit)) return str;
     if (["hour","hours"].includes(unit)) return str.slice(0,14) + "00:00";
@@ -718,30 +925,73 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   "duration.between": ([a, b], r) => {
     const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
     if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
-    const sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
-    const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime();
-    const db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime();
-    if (isNaN(da) || isNaN(db)) return null;
-    const diff = db - da; const abs = Math.abs(diff); const s = Math.floor(abs/1000);
-    const d = Math.floor(s/86400), h = Math.floor((s%86400)/3600), m = Math.floor((s%3600)/60), sec = s%60;
-    const ns = (abs%1000)*1000000;
+    let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
+    // 去掉 IANA 时区后缀 [Europe/Stockholm] 等，留纯 ISO 格式
+    if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '')
+    if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '')
+    // 处理跨类型 temporal：当一方是日期另一方是纯时间时组合
+    const isDateVal = (s: string) => /^\d{4}/.test(s) && !s.includes("T")
+    const isTimeVal = (s: string) => !s.includes("T") && s.includes(":")
+    const isDateTime = (s: string) => s.includes("T")
+    if (isDateVal(sa) && isTimeVal(sb)) { sb = sa + "T" + sb; sa = sa + "T00:00:00" }
+    else if (isDateVal(sb) && isTimeVal(sa)) { sa = sb + "T" + sa; sb = sb + "T00:00:00" }
+    // time vs datetime：从 datetime 提取日期部分作为 time 的基础
+    if (isTimeVal(sa) && isDateTime(sb)) { const base = sb.slice(0, sb.indexOf('T')); sa = base + "T" + sa }
+    else if (isTimeVal(sb) && isDateTime(sa)) { const base = sa.slice(0, sa.indexOf('T')); sb = base + "T" + sb }
+    // 双方都是纯时间：用 epoch 日期做基准
+    if (isTimeVal(sa) && isTimeVal(sb)) { sa = "1970-01-01T" + sa; sb = "1970-01-01T" + sb }
+    let da: number, db: number
+    try {
+      da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime()
+      db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime()
+    } catch { return null }
+    if (isNaN(da) || isNaN(db)) return null
+    const diff = db - da;
+    const absDiff = Math.abs(diff);
+    const totalSec = Math.floor(absDiff / 1000);
+    // 纳秒部分（毫秒内的余数）
+    const ns = (absDiff % 1000) * 1000000;
     const nss = ns > 0 ? "." + String(ns).padStart(9,"0").replace(/0+$/,"") : "";
-    const neg = diff < 0 ? "-" : "";
-    return "P"+neg+d+"DT"+neg+h+"H"+neg+m+"M"+neg+sec+nss+"S";
+    // ISO 8601 格式：PT22H 或 PT-22H（所有组件加负号前缀）
+    const sign = diff < 0;
+    const d = Math.floor(totalSec / 86400);
+    const h = Math.floor((totalSec % 86400) / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const sec = totalSec % 60;
+    // 当 diff < 0 时，每个组件加负号
+    const maybeSign = (v: number) => {
+      if (v === 0) return "0";
+      return sign ? ("-" + v) : String(v);
+    };
+    let result = "P";
+    if (d) result += maybeSign(d) + "D";
+    if (h || m || sec || ns > 0) {
+      result += "T";
+      if (h) result += maybeSign(h) + "H";
+      if (m) result += maybeSign(m) + "M";
+      if (sec || ns > 0) result += maybeSign(sec) + nss + "S";
+    }
+    return result;
   },
-  "duration.inDays": ([a], r) => {
+  "duration.inDays": ([a, b], r) => {
+    // 双参数：duration.inDays(x, y) 等价于 duration.between(x, y)（返回 ISO 持续时间）
+    if (b !== undefined && b !== null) return _callFunction("duration.between", [a, b], r)
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
     return Number(m[3]||0) + Number(m[4]||0)/24 + Number(m[5]||0)/1440 + Number(m[6]||0)/86400;
   },
-  "duration.inMonths": ([a], r) => {
+  "duration.inMonths": ([a, b], r) => {
+    // 双参数：duration.inMonths(x, y) 等价于 duration.between(x, y)
+    if (b !== undefined && b !== null) return _callFunction("duration.between", [a, b], r)
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
     return Number(m[1]||0)*12 + Number(m[2]||0) + Number(m[3]||0)/30.436875 + Number(m[4]||0)/730.485 + Number(m[5]||0)/43829.1;
   },
-  "duration.inSeconds": ([a], r) => {
+  "duration.inSeconds": ([a, b], r) => {
+    // 双参数：duration.inSeconds(x, y) 等价于 duration.between(x, y)
+    if (b !== undefined && b !== null) return _callFunction("duration.between", [a, b], r)
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
@@ -1702,6 +1952,9 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     // Cypher: null.prop → null; nonMap.prop (非 map) → TypeError
     if (obj == null) return null
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) return (obj as Record<string, unknown>)[prop] ?? null
+    // 持续时间 ISO 字符串属性访问：dur.days / dur.hours 等
+    // Cypher 中 duration('P1DT2H').days → 1
+    if (typeof obj === 'string' && /^P/i.test(obj)) return _extractDurationProp(obj, prop)
     // 对非 map 的基本类型抛 TypeError（列表也是非 map）
     throw Object.assign(new Error('TypeError: Property access on non-map type'), { tckError: 'TypeError' })
   }
