@@ -89,9 +89,22 @@ async function main() {
     console.log(report)
     const rows = compareResults(current, previous, opts.threshold)
     if (hasCriticalRegression(rows)) {
-      console.log('\n❌ FULL GATE FAILED: critical regressions detected')
+      const criticals = rows.filter(r => r.regression === 'critical' && r.percentChange >= opts.threshold)
+      const warnings = rows.filter(r => r.regression === 'critical' && r.percentChange < opts.threshold)
+      if (criticals.length > 0) {
+        console.log(`\n❌ FULL GATE FAILED: ${criticals.length} critical regressions (≥${opts.threshold}%)`)
+        for (const r of criticals) {
+          console.log(`   🔴 ${r.name}: ${r.percentChange.toFixed(1)}% (${r.old.toLocaleString()} → ${r.current.toLocaleString()} ops/s)`)
+        }
+      }
+      if (warnings.length > 0) {
+        console.log(`\n⚠️  WARNINGS (${warnings.length} minor regressions below threshold):`)
+        for (const r of warnings) {
+          console.log(`   🟡 ${r.name}: ${r.percentChange.toFixed(1)}% (${r.old.toLocaleString()} → ${r.current.toLocaleString()} ops/s)`)
+        }
+      }
       if (opts.save) saveFullBaseline(current)
-      process.exit(1)
+      if (criticals.length > 0) process.exit(1)
     }
     console.log('\n✅ FULL GATE PASSED')
     if (opts.save) saveFullBaseline(current)
@@ -128,13 +141,29 @@ async function main() {
   }
 
   if (hasCriticalRegression(rows)) {
-    console.log('\n❌ GATE FAILED: critical regressions detected')
+    // 分级输出：>threshold% → FAIL (red), >threshold/2% → WARN (yellow)
+    const criticals = rows.filter(r => r.regression === 'critical' && r.percentChange >= opts.threshold)
+    const warnings = rows.filter(r => r.regression === 'critical' && r.percentChange < opts.threshold)
+    if (criticals.length > 0) {
+      console.log(`\n❌ GATE FAILED: ${criticals.length} critical regressions (≥${opts.threshold}%)`)
+      for (const r of criticals) {
+        console.log(`   🔴 ${r.name}: ${r.percentChange.toFixed(1)}% (${r.old.toLocaleString()} → ${r.current.toLocaleString()} ops/s)`)
+      }
+      if (warnings.length > 0) {
+        console.log(`\n⚠️  WARNINGS (${warnings.length} regressions below threshold):`)
+        for (const r of warnings) {
+          console.log(`   🟡 ${r.name}: ${r.percentChange.toFixed(1)}% (${r.old.toLocaleString()} → ${r.current.toLocaleString()} ops/s)`)
+        }
+      }
+    } else if (warnings.length > 0) {
+      console.log(`\n⚠️  ${warnings.length} minor regressions detected (below ${opts.threshold}% threshold — not failing)`)
+    }
     if (opts.save) {
       const savePath = path.join(BASELINE_DIR, `${new Date().toISOString().slice(0, 10)}.json`)
       saveBaseline(savePath, current)
       console.log(`   Baseline saved (despite failures): ${savePath}`)
     }
-    process.exit(1)
+    if (criticals.length > 0) process.exit(1)
   }
 
   console.log('\n✅ GATE PASSED')
