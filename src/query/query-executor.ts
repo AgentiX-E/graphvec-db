@@ -15,7 +15,7 @@ import { globalRegistry as _procedureRegistry } from './procedure-registry'
 import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver } from './expression-engine'
 import { _walkMultiSteps, _pathEndIndices, _stepMatchConstraint, _resolveUnwindList, _extractWithClausesAfterUnwind, _applyYieldAliases, resolveVariableNodeIdx, _findWhereOutsideBrackets, _fastDedup, _fastIntersect, _fastSubtract } from './query-parser'
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
-import type { QueryPlan, FilterClause, TraverseStep, AggregateClause } from './query-types'
+import type { QueryPlan, FilterClause, TraverseStep, AggregateClause, SetClause, InternalNode } from './query-types'
 import { parseQuery } from './query-parser'
 import { _geInstanceRegistry, _gePool, _geDirRegistry, _indexRegistry, DEFAULT_DATABASE, DEFAULT_LIMIT, IndexEntry, ConstraintEntry, _registerIndex, _dropIndex, _getAllIndexes, _getIndex, _clearIndexes, _registerConstraint, _dropConstraint, _getAllConstraints, _clearConstraints, _getActiveDatabase, _setActiveDatabase, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances } from './executor-registry'
 import { GEPool } from './ge-pool'
@@ -26,11 +26,65 @@ import { _isPatternPredicate, _validateUndefinedVariables, _validateUnknownFunct
 import { _validatePlan } from './executor-validate-plan'
 import { _execNonGePaths } from './executor-non-ge'
 
+/** 判断值是否为 typed-format 对象 { type: 'STRING', value: '...' } */
+function isTypedValue(v: unknown): v is { type: string; value: unknown } {
+  return !!v && typeof v === 'object' && 'value' in v && 'type' in (v as any)
+}
+
+/** 从 typed-format 对象解包裸值 */
+function unwrapTyped(v: unknown): unknown {
+  return isTypedValue(v) ? v.value : v
+}
+
+/** 判断值是否为 props-format 对象 { props: {...} } */
+function hasProps(v: unknown): v is { props: Record<string, unknown> } {
+  return !!v && typeof v === 'object' && 'props' in v
+}
+
 /** 判断查询是否涉及写操作（需要独占 GE 连接） */
 function isWriteOp(plan: QueryPlan): boolean {
   return plan.type === 'CREATE' || plan.type === 'MERGE' ||
     plan.type === 'SET' || plan.type === 'DELETE' || plan.type === 'REMOVE' ||
     plan.type === 'MATCH_MODIFY'
+}
+
+// ── GE 封装函数：将私有/非类型化 GE 方法集中在有限范围内 ──
+
+/** GE 节点的类型：public API 缺失的类型补充 */
+interface GeNodeInfo { type: number; name: string }
+
+/** 执行 GE 查询计划（封装 _executeQueryPlan 私有方法） */
+function _geExecQueryPlan(ge: any, plan: any): any[] {
+  return (ge as any)._executeQueryPlan(plan)
+}
+
+/** upsertNode（GE public API 的类型补全） */
+function _geUpsertNode(ge: any, type: number, name: string, props: { props: Record<string, unknown> }): Promise<number> {
+  return (ge as any).upsertNode(type, name, props)
+}
+
+/** deleteNode（GE public API 的类型补全） */
+function _geDeleteNode(ge: any, id: number): Promise<void> {
+  return (ge as any).deleteNode(id)
+}
+
+/** getNode（GE public API 的类型补全） */
+function _geGetNode(ge: any, id: number): GeNodeInfo | undefined {
+  return (ge as any).getNode(id)
+}
+
+/** 解析边类型 ID（_resolveEdgeType 私有方法） */
+function _geResolveEdgeType(ge: any, label: string): number {
+  return (ge as any)._resolveEdgeType(label)
+}
+
+/** 插入边（storage.upsertEdge 私有方法） */
+function _geUpsertEdge(ge: any, srcId: number, dstId: number, typeId: number, props?: Record<string, unknown>): void {
+  if (props) {
+    (ge as any).storage.upsertEdge(srcId, dstId, typeId, { props })
+  } else {
+    _geUpsertEdge(ge, srcId, dstId, typeId)
+  }
 }
 
 /** GraphEngine 原生执行入口 */
@@ -82,11 +136,11 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 确保多标签节点有 __fullLabel 属性（传入的 nodes 可能没有）
     // 确保 __edges 存在（EXISTS 子查询需要）
     for (const node of allNodes) {
-      if (!(node as any).__edges) (node as any).__edges = []
+      if (!node.__edges) node.__edges = []
     }
     for (const node of allNodes) {
       if (node._label && String(node._label).includes(':')) {
-        (node as any).__fullLabel = String(node._label)
+        node.__fullLabel = String(node._label)
       }
     }
 
@@ -95,8 +149,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     for (const node of allNodes) {
       for (const k of Object.keys(node)) {
         const v = node[k]
-        if (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type) {
-          node[k] = (v as any).value
+        if (isTypedValue(v)) {
+          node[k] = v.value
         }
       }
     }
@@ -137,9 +191,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         }
         const props: Record<string, unknown> = { _label: cn.label || 'Default' }
         if (cn.props) { for (const [k, v] of Object.entries(cn.props)) {
-          props[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
-            ? (v as any).value
-            : v
+          props[k] = isTypedValue(v) ? v.value : v
         } }
         if (cn.alias) props['_alias'] = cn.alias
         allNodes.push(props)
@@ -161,9 +213,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const rawVal = node[constraint.property]
           if (rawVal === null || rawVal === undefined) continue
           // 解析 typed 格式：{type: 'STRING', value: 'xxx'} → 'xxx'
-          const propVal = (rawVal && typeof rawVal === 'object' && 'value' in (rawVal as any))
-            ? (rawVal as any).value
-            : rawVal
+          const propVal = isTypedValue(rawVal) ? rawVal.value : rawVal
           if (propVal === null || propVal === undefined) continue
           const prevIdx = seen.get(propVal)
           if (prevIdx !== undefined) {
@@ -236,7 +286,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // key = `${label}:${property}:${String(value)}` → nodeIndices[]
     // 只构建当前 indexedEqFilters 需要的索引条目，不全部构建。
     // 如果查询指定了 USING INDEX hint，则优先使用 hint 指定的索引。
-    const indexHint = (plan as any)._indexHint as { var: string; label: string; property: string } | undefined
+    const indexHint = plan._indexHint as { var: string; label: string; property: string } | undefined
     const hashIndex = new Map<string, number[]>()
     if (indexedEqFilters.length || indexHint) {
       for (let ni = 0; ni < allNodes.length; ni++) {
@@ -245,12 +295,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         // Hint 优先级：使用 hint 中指定的 label + property 构建
         if (indexHint) {
           if (nodeLabel !== indexHint.label) {
-            const fullLabel = (node as any).__fullLabel
+            const fullLabel = node.__fullLabel
             if (!(fullLabel && typeof fullLabel === 'string' && fullLabel.split(':').includes(indexHint.label))) {
               continue
             }
           }
-          const propVal = (node as any)[indexHint.property]
+          const propVal = node[indexHint.property]
           if (propVal !== undefined && propVal !== null) {
             const key = `${indexHint.label}:${indexHint.property}:${String(propVal)}`
             if (!hashIndex.has(key)) hashIndex.set(key, [])
@@ -263,12 +313,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           if (!efi.index.label) continue
           // 检查节点标签是否匹配索引标签
           if (nodeLabel !== efi.index.label) {
-            const fullLabel = (node as any).__fullLabel
+            const fullLabel = node.__fullLabel
             if (!(fullLabel && typeof fullLabel === 'string' && fullLabel.split(':').includes(efi.index.label))) {
               continue
             }
           }
-          const propVal = (node as any)[efi.filter.property]
+          const propVal = node[efi.filter.property]
           if (propVal === undefined || propVal === null) continue
           const key = `${efi.index.label}:${efi.filter.property}:${String(propVal)}`
           if (!hashIndex.has(key)) hashIndex.set(key, [])
@@ -306,7 +356,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         const node = allNodes[ni]
         const nodeLabel = String(node['_label'] || '')
         if (plan.scanLabel) {
-          const fullLabel = (node as any).__fullLabel
+          const fullLabel = node.__fullLabel
           if (fullLabel && typeof fullLabel === 'string') {
             if (!fullLabel.split(':').includes(plan.scanLabel)) continue
           } else if (nodeLabel !== plan.scanLabel) {
@@ -314,7 +364,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           }
         }
         const match = stepSourceFilters.every((f: any) => {
-          const val = (node as any)[f.property]
+          const val = node[f.property]
           const target = f.value
           switch (f.operator) {
             case 'EQ': {
@@ -352,7 +402,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         // 索引加速过滤：如果已注册索引匹配的 EQ filter 不满足，跳过该节点
         if (indexedEqFilters.length && !skipNodeIndices.has(ni)) {
           const idxMatch = indexedEqFilters.every(({ filter: f }) => {
-            return (node as any)[f.property] === f.value
+            return node[f.property] === f.value
           })
           if (!idxMatch) {
             skipNodeIndices.add(ni)
@@ -465,7 +515,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         const geTypeId = Math.abs(h) % 1000 + 1
         try {
                     // 异步执行：直接调用 GE 的 upsertNode（真正的 async API）
-          const actualId = await (ge as any).upsertNode(geTypeId, 'n' + i, { props })
+          const actualId = await _geUpsertNode(ge, geTypeId, 'n' + i, { props })
           nodeGeIds[i] = actualId
         } catch (e) {
           nodeGeIds[i] = i + 1
@@ -496,7 +546,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           }
         }
         // 把邻接索引挂在 allNodes 上供 _walkMultiSteps 使用
-        ;(allNodes as any).__adjIdx = adjIdx
+        // 把邻接索引挂在 allNodes 上供 _walkMultiSteps 使用
+        (allNodes as Array<Record<string, unknown> & { __adjIdx?: number[][] }>).__adjIdx = adjIdx
       }
   
       if (edgesPayload.length) {
@@ -510,19 +561,20 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const srcGeId = ep.srcIdx >= 0 && ep.srcIdx < nodeGeIds.length ? nodeGeIds[ep.srcIdx] : -1
           const dstGeId = ep.dstIdx >= 0 && ep.dstIdx < nodeGeIds.length ? nodeGeIds[ep.dstIdx] : -1
           if (srcGeId < 0 || dstGeId < 0) continue
-          const typeId = (ge as any)._resolveEdgeType(ep.label || '')
+          const typeId = _geResolveEdgeType(ge, ep.label || '')
           // upsertEdge 是 async 函数，但 _executeViaGraphEngine 是同步上下文。
           // 直接调用 storage.upsertEdge（同步 API）确保边在 MATCH 前已创建。
           try {
-            if ((ep as any).props) {
-              (ge as any).storage.upsertEdge(srcGeId, dstGeId, typeId, { props: (ep as any).props })
+            const epObj = ep as { props?: Record<string, unknown> }
+            if (epObj.props) {
+              _geUpsertEdge(ge, srcGeId, dstGeId, typeId, epObj.props)
             } else {
-              (ge as any).storage.upsertEdge(srcGeId, dstGeId, typeId)
+              _geUpsertEdge(ge, srcGeId, dstGeId, typeId)
             }
           } catch {}
           // 无向边双向
           if (anyDirection && srcGeId !== dstGeId) {
-            try { (ge as any).storage.upsertEdge(dstGeId, srcGeId, typeId) } catch {}
+            try { _geUpsertEdge(ge, dstGeId, srcGeId, typeId) } catch {}
           }
         }
       }
@@ -596,12 +648,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const dstId = nodeGeIds[dstIdx]
           if (srcId !== undefined && srcId !== undefined && srcId >= 0 && dstId >= 0) {
             // 使用 GE 的 _resolveEdgeType 获取统一的 typeId
-            const typeId = (ge as any)._resolveEdgeType(edge.label || '')
-            try { (ge as any).storage.upsertEdge(srcId, dstId, typeId) } catch {}
+            const typeId = _geResolveEdgeType(ge, edge.label || '')
+            try { _geUpsertEdge(ge, srcId, dstId, typeId) } catch {}
 
             // 将边添加到 __edges 内存记录
             for (const n of allNodes) {
-              if (!(n as any).__edges) (n as any).__edges = []
+              const nNode = n as InternalNode
+              if (!nNode.__edges) nNode.__edges = []
             }
             const edgeLabel = edge.label || ''
             // 在 src 节点的 __edges 中添加出边
@@ -694,20 +747,20 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     const multiTypeStep = plan.steps?.find(s => s.edgeLabel && s.edgeLabel.includes('|'))
 
     // ── Plan 注解：预计算元数据供执行路径决策 ──
-    if (!(plan as any)._annotations) {
+    if (!plan._annotations) {
       const labelCounts = new Map<string, number>()
       for (const n of allNodes) {
         const label = n._label ? String(n._label) : 'Default'
         labelCounts.set(label, (labelCounts.get(label) || 0) + 1)
       }
       // 分类 WHERE 谓词
-      const eqFilters = (plan.filters || []).filter(f => f.operator === 'EQ' && !edgeFilters.includes(f as any))
+      const eqFilters = (plan.filters || []).filter(f => f.operator === 'EQ' && !edgeFilters.includesf)
       const rangeFilters = (plan.filters || []).filter(f => ['GT', 'GTE', 'LT', 'LTE'].includes(f.operator || ''))
       const indexEntries = Array.from(_indexRegistry.values())
       const hasIndexedEq = eqFilters.some(f => f.source && indexEntries.some(idx =>
         idx.property === f.property && (!idx.label || allNodes.some(n => String(n._label || '') === idx.label))
       ))
-      ;(plan as any)._annotations = {
+      ;plan._annotations = {
         labelCounts: Object.fromEntries(labelCounts),
         eqFilterCount: eqFilters.length,
         rangeFilterCount: rangeFilters.length,
@@ -745,7 +798,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             if (plan.scanLabel) {
               const node = allNodes[i]
               const nodeLabel = String(node?.['_label'] || '')
-              const fullLabel = (node as any)?.__fullLabel
+              const fullLabel = node?.__fullLabel
               if (fullLabel && typeof fullLabel === 'string') {
                 if (!fullLabel.split(':').includes(plan.scanLabel)) continue
               } else if (nodeLabel !== plan.scanLabel) {
@@ -910,7 +963,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 if (thisStep.targetAlias) {
                   const cvrNode: Record<string, unknown> = {}
                   for (const k of Object.keys(targetNode)) {
-                    if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) cvrNode[k] = (targetNode as any)[k]
+                    if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) cvrNode[k] = targetNode[k as keyof typeof targetNode]
                   }
                   geNode.__crossVarRows[thisStep.targetAlias] = { ...cvrNode, props: { ...cvrNode } }
                 }
@@ -921,7 +974,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                     // 保留原始属性，确保 _label 可用
                     const srcProps: Record<string, unknown> = {}
                     for (const k of Object.keys(srcNode)) {
-                      if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) srcProps[k] = (srcNode as any)[k]
+                      if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) srcProps[k] = srcNode[k]
                     }
                     if (srcNode._label !== undefined) srcProps._label = srcNode._label
                     geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps } }
@@ -1027,7 +1080,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             const p2 = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
             p2.steps[0].edgeLabel = lbl
             p2.filters = (geFiltered || []).filter(f => !crossVarFilters.includes(f))
-            const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
+            const subRaw: any[] = _geExecQueryPlan(ge, p2)
             for (const r of subRaw || []) combined.set(r.id, r)
           }
           return [...combined.values()]
@@ -1043,7 +1096,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             for (const f of orFilters) {
               const p2 = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
               p2.filters = [f]
-              const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
+              const subRaw: any[] = _geExecQueryPlan(ge, p2)
               for (const r of subRaw || []) combined.set(String(r.id), r)
             }
           } else if (query && plan.steps?.[0]) {
@@ -1055,7 +1108,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 const p2 = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver)
                 p2.filters = []
                 if (p2.steps?.[0]) p2.steps[0].edgeLabel = ol.label
-                const subRaw: any[] = (ge as any)._executeQueryPlan(p2)
+                const subRaw: any[] = _geExecQueryPlan(ge, p2)
                 for (const r of subRaw || []) {
                   // 保存边标签信息用于 RETURN r 格式化
                   if (!combined.has(String(r.id) + '__' + ol.label)) {
@@ -1078,7 +1131,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           if (planForGe.steps?.[0]?.direction === 'any') delete planForGe.aggregate
           // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
           delete planForGe.skip; delete planForGe.limit
-          return (ge as any)._executeQueryPlan(planForGe)
+          return _geExecQueryPlan(ge, planForGe)
         })()
     // Fallback: useEdgeWalk=false 且 hasMatch 时，从 GE 获取全部节点
     // 注意：当 GE 的标签扫描返回空（标签不匹配）时，不可回退到全量扫描，
@@ -1087,7 +1140,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       const scanPlan = JSON.parse(JSON.stringify({ ...plan, scanLabel: null, callProcedure: undefined }, _bigintReplacer), _bigintReviver)
       delete scanPlan.callProcedure
       delete scanPlan.skip; delete scanPlan.limit
-      rawRecords = (ge as any)._executeQueryPlan(scanPlan) as any[]
+      rawRecords = _geExecQueryPlan(ge, scanPlan) as any[]
     }
     let records = rawRecords
 
@@ -1144,7 +1197,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         const targetProps: Record<string, unknown> = {}
         for (const k of Object.keys(rawProps)) {
           if (k !== 'props' && !k.startsWith('__')) {
-            targetProps[k] = (rawProps as any)[k]
+            targetProps[k] = rawProps[k as keyof typeof rawProps]
           }
         }
         if (r.id !== undefined && !('_label' in targetProps) && nodeGeIds.length) {
@@ -1172,8 +1225,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         return {
           id: srcId as number,
           props: cleanProps,
-          type: (ge as any).getNode(srcId)?.type || 0,
-          name: (ge as any).getNode(srcId)?.name || '',
+          type: _geGetNode(ge, srcId)?.type || 0,
+          name: _geGetNode(ge, srcId)?.name || '',
           deleteNodeKey: () => {},
           __targetProps: targetProps,
           __targetAlias: plan.steps?.[0]?.targetAlias || undefined,
@@ -1186,7 +1239,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       const isLabelInNodes = allNodes.some(n => String(n._label) === plan.scanLabel)
       if (isUsedAsVariable && !isLabelInNodes) {
         const fallbackPlan = { ...plan, scanLabel: null }
-        records = (ge as any)._executeQueryPlan(fallbackPlan)
+        records = _geExecQueryPlan(ge, fallbackPlan)
       }
     }
 
@@ -1206,7 +1259,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             // 同步删除 GE 存储层节点
             if (ge) {
               try {
-                await (ge as any).deleteNode(nodeGeIds[i])
+                await _geDeleteNode(ge, nodeGeIds[i])
               } catch (_) { /* ignore storage errors */ }
             }
           }
@@ -1222,13 +1275,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             if (nodeIdx < 0) continue
             const node = allNodes[nodeIdx]
             for (const sc of plan.setClauses) {
-              if ((sc as any).alias && (sc as any).alias !== plan.steps?.[0]?.source) continue
-              if ((sc as any).property) {
-                const pv = (sc as any).value
-                node[(sc as any).property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
+              if (sc.alias && sc.alias !== plan.steps?.[0]?.source) continue
+              if (sc.property) {
+                const pv = sc.value
+                node[sc.property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
               }
             }
-            if (ge) try { await (ge as any).upsertNode(1, '', { props: node }) } catch (_) {}
+            if (ge) try { await _geUpsertNode(ge, 1, "", { props: node }) } catch (_) {}
           }
         }
         // 再执行 REMOVE
@@ -1243,7 +1296,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 if (rc.property in node) delete node[rc.property]
               }
             }
-            if (ge) try { await (ge as any).upsertNode(1, '', { props: node }) } catch (_) {}
+            if (ge) try { await _geUpsertNode(ge, 1, "", { props: node }) } catch (_) {}
           }
         }
       } else if (plan.type === 'SET' && plan.setClauses?.length) {
@@ -1253,16 +1306,16 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           if (nodeIdx < 0) continue
           const node = allNodes[nodeIdx]
           for (const sc of plan.setClauses) {
-            if ((sc as any).alias && (sc as any).alias !== plan.steps?.[0]?.source) continue
-            if ((sc as any).property) {
-              const pv = (sc as any).value
-              node[(sc as any).property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
+            if (sc.alias && sc.alias !== plan.steps?.[0]?.source) continue
+            if (sc.property) {
+              const pv = sc.value
+              node[sc.property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
             }
           }
           // 同步更新 GE 存储层节点属性（await 确保持久化）
           if (ge) {
             try {
-              await (ge as any).upsertNode(1, '', { props: node })
+              await _geUpsertNode(ge, 1, "", { props: node })
             } catch (_) { /* ignore storage errors */ }
           }
         }
@@ -1283,7 +1336,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           // 同步更新 GE 存储层
           if (ge) {
             try {
-              await (ge as any).upsertNode(1, '', { props: node })
+              await _geUpsertNode(ge, 1, "", { props: node })
             } catch (_) { /* ignore storage errors */ }
           }
         }
@@ -1322,7 +1375,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── labelFilter（WHERE 中的标签谓词，如 `a:Employee`）过滤 ──
     // 对所有节点变量检查其 _label 是否匹配
-    const labelFilterItems: Array<{ variable: string; label: string; exclude: boolean }> | undefined = (plan as any).labelFilterItems
+    const labelFilterItems: Array<{ variable: string; label: string; exclude: boolean }> | undefined = plan.labelFilterItems
     let filteredWithLabels = filteredRecords
 
     if (labelFilterItems?.length && filteredRecords.length) {
@@ -1471,7 +1524,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             .filter(({ idx }) => !skipNodeIndices.has(idx))
             .filter(({ node }) => {
               if (!targetLabel) return true
-              const fullLabel = (node as any).__fullLabel
+              const fullLabel = node.__fullLabel
               if (fullLabel && typeof fullLabel === 'string') return fullLabel.split(':').includes(targetLabel)
               return String(node._label) === targetLabel
             })
@@ -1603,7 +1656,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             })
             .filter(({ node }: { node: Record<string, unknown> }) => {
               if (!targetLabel2) return true;
-              const fullLabel = (node as any).__fullLabel
+              const fullLabel = node.__fullLabel
               if (fullLabel && typeof fullLabel === 'string') return fullLabel.split(':').includes(targetLabel2)
               return String(node._label) === targetLabel2;
             })
@@ -1629,7 +1682,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   case 'CONTAINS':    baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break;
                   default:            baseResult = String(actualVal) === String(fv); break;
                 }
-                return (f as any).negated ? !baseResult : baseResult;
+                return f.negated ? !baseResult : baseResult;
               });
             });
         }
@@ -1845,8 +1898,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             if (edgeLabel) r.__edgeLabel = edgeLabel
             if (edgeProps) r.__edgeProps = edgeProps
           }
-          delete (row as any)._stepEdges
-          delete (row as any).__stepEdges
+          delete (row as QueryRow)._stepEdges
+          delete (row as QueryRow).__stepEdges
           return { ...r, props: row }
         })
       : edgePropFilteredRecords
@@ -1964,8 +2017,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         }
         // 再注入 result row 的扁平化键
         for (const [key, val] of Object.entries(row)) {
-          if (val && typeof val === 'object' && 'props' in (val as any)) {
-            ctx[key] = { ...(val as any).props }
+          if (hasProps(val)) {
+            ctx[key] = { ...val.props }
           } else {
             ctx[key] = val
           }
@@ -2124,7 +2177,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             case 'CONTAINS':    baseMatch = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break
             default:            baseMatch = String(actualVal) === String(fv); break
           }
-          return (f as any).negated ? !baseMatch : baseMatch
+          return f.negated ? !baseMatch : baseMatch
         })
         if (!filterMatch) continue
         result.push(_formatResultRow(rwe, plan))
@@ -2145,8 +2198,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         // 构建变量→节点映射
         const varNodes: Record<string, Record<string, unknown>> = {}
         for (const [key, val] of Object.entries(row)) {
-          if (val && typeof val === 'object' && 'props' in (val as any)) {
-            varNodes[key] = { ...(val as any).props }
+          if (hasProps(val)) {
+            varNodes[key] = { ...val.props }
           } else if (val && typeof val === 'object') {
             varNodes[key] = val as Record<string, unknown>
           }
@@ -2190,7 +2243,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             case 'CONTAINS':    baseFilterResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break
             default:            baseFilterResult = String(actualVal) === String(fv); break
           }
-          return (f as any).negated ? !baseFilterResult : baseFilterResult
+          return f.negated ? !baseFilterResult : baseFilterResult
         })
         if (match) filteredResult.push(row)
       }
@@ -2219,7 +2272,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             limit: undefined,
             skip: undefined,
           }
-          const geRecords = (ge as any)._executeQueryPlan(optPlan)
+          const geRecords = _geExecQueryPlan(ge, optPlan)
           if (geRecords?.length) {
             // 第一个匹配结果
             const first = geRecords[0]
@@ -2279,8 +2332,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       if (optMatchVarNames.size && plan.expressionColumns?.length) {
         const aliasToExpr: Record<string, string> = {}
         for (const ec of plan.expressionColumns) {
-          const alias = (typeof ec === 'string' ? ec : (ec as any).alias ?? (ec as any).expression ?? String(ec))
-          const expr = (typeof ec === 'object' && (ec as any).expression) ? String((ec as any).expression) : alias
+          const ecObj = ec as { alias?: string; expression?: any }
+          const alias = (typeof ec === 'string' ? ec : ecObj.alias ?? ecObj.expression ?? String(ec))
+          const expr = (typeof ec === 'object' && ecObj.expression) ? String(ecObj.expression) : alias
           aliasToExpr[alias] = expr
         }
         for (const row of result) {
@@ -2406,8 +2460,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         if (!Object.keys(matchVarCtx).length) {
           const row = result[rowIdx]
           for (const [key, val] of Object.entries(row)) {
-            if (val && typeof val === 'object' && 'props' in (val as any)) {
-              matchVarCtx[key] = (val as any).props
+            if (hasProps(val)) {
+              matchVarCtx[key] = val.props
             } else {
               matchVarCtx[key] = val
             }
@@ -2445,8 +2499,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         for (const row of result) {
           const ctx: Record<string, unknown> = { ...row }
           for (const [k, v] of Object.entries(row)) {
-            if (v && typeof v === 'object' && 'props' in (v as any)) {
-              ctx[k] = (v as any).props
+            if (hasProps(v)) {
+              ctx[k] = v.props
             }
           }
           try {
@@ -2563,7 +2617,7 @@ export async function _executeQuery(
   // 快捷路径（LOAD CSV, SHOW, catalog, DML, bare CALL）不 mutate plan → 无需拷贝
 
   // ── bare CALL dispatch：CALL name（无括号语法）──
-  if (plan.type === 'CALL' && !(plan as any).callProcedure && query) {
+  if (plan.type === 'CALL' && !plan.callProcedure && query) {
     const callMatch = query.match(/CALL\s+(\S+)(?:\s+|\s*$)/i)
     if (callMatch && !query.match(/CALL\s+\S+\s*\(/i)) {
       const bareName = callMatch[1].toLowerCase()
@@ -2574,7 +2628,7 @@ export async function _executeQuery(
         if (sigParens) {
           paramNames.push(...sigParens[1].split(',').map(s => s.split('::')[0].trim()).filter(Boolean))
         }
-        const bareParams = (plan as any)._bareCallParams as Record<string, unknown> | undefined
+        const bareParams = plan._bareCallParams as Record<string, unknown> | undefined
         const args: unknown[] = []
         if (bareParams && paramNames.length) {
           for (const pn of paramNames) {
@@ -2600,7 +2654,7 @@ export async function _executeQuery(
           getLabels: () => {
             const labels = new Set<string>()
             for (const node of nodes) {
-              const lbl = String((node as any)._label || '')
+              const lbl = String(node._label || '')
               if (lbl) for (const l of lbl.split(':').map(s => s.trim()).filter(Boolean)) labels.add(l)
             }
             return Array.from(labels)

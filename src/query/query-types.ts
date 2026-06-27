@@ -382,10 +382,7 @@ export interface QueryPlan {
   /** DETACH DELETE 标志：删除节点前先删除所有关联边 */
   detachDelete?: boolean
   /** SET 子句 */
-  setClauses?: Array<{
-    property: string
-    value: unknown
-  }>
+  setClauses?: SetClause[]
   /** REMOVE 子句 */
   removeClauses?: Array<{
     type: 'REMOVE_PROP' | 'REMOVE_LABEL'
@@ -426,6 +423,21 @@ export interface QueryPlan {
     label: string
     property: string
   }
+  /** 运行时注解（由执行引擎填充，用于缓存验证、标签过滤等） */
+  _annotations?: {
+    scanLabel?: string
+    nodeCount?: number
+    edgeCount?: number
+    cacheKey?: string
+  }
+  /** 标签过滤器条目（list label filter） */
+  labelFilterItems?: Array<{
+    variable: string
+    label: string
+    exclude: boolean
+  }>
+  /** CALL 裸参数字典（当 CALL 子句使用参数化调用时） */
+  _bareCallParams?: Record<string, unknown>
 }
 
 export interface TraverseStep {
@@ -457,3 +469,29 @@ export interface HavingClause {
 }
 
 export type { ForEachClause }
+
+// ── DML 子句类型 ────────────────────────────────────────────
+
+/** SET 子句：property=value 赋值，可选 alias 指定目标变量 */
+export interface SetClause {
+  property: string
+  value: unknown
+  /** 目标变量名（如 SET n.name='x' → alias='n'） */
+  alias?: string
+  /** 表达式字符串（原始 AST 文本） */
+  expression?: string
+}
+
+/** 内部节点：包含 _label、__edges 等运行时标记 */
+export interface InternalNode extends Record<string, unknown> {
+  _label: string
+  _alias?: string
+  __edges?: Array<{
+    dstIdx: number
+    srcIdx: number
+    label: string
+    props?: Record<string, unknown>
+  }>
+  /** 运行时标签全名（如 'Person' 而不是 GE 的短 ID） */
+  __fullLabel?: string
+}
