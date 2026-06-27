@@ -8,7 +8,6 @@
 
 import fs from 'fs'
 import path from 'path'
-import crypto from 'crypto'
 import { parseCypherToPlan } from './ast-to-plan-v2'
 import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
@@ -18,13 +17,22 @@ import { _walkMultiSteps, _pathEndIndices, _stepMatchConstraint, _resolveUnwindL
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
 import type { QueryPlan, FilterClause, TraverseStep, AggregateClause } from './query-types'
 import { parseQuery } from './query-parser'
-import { _geInstanceRegistry, _gePool, _geDirRegistry, _indexRegistry, DEFAULT_LIMIT, IndexEntry, ConstraintEntry, _registerIndex, _dropIndex, _getAllIndexes, _getIndex, _clearIndexes, _registerConstraint, _dropConstraint, _getAllConstraints, _clearConstraints, _getActiveDatabase, _setActiveDatabase, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances } from './executor-registry'
+import { _geInstanceRegistry, _gePool, _geDirRegistry, _indexRegistry, DEFAULT_DATABASE, DEFAULT_LIMIT, IndexEntry, ConstraintEntry, _registerIndex, _dropIndex, _getAllIndexes, _getIndex, _clearIndexes, _registerConstraint, _dropConstraint, _getAllConstraints, _clearConstraints, _getActiveDatabase, _setActiveDatabase, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances } from './executor-registry'
+import { GEPool } from './ge-pool'
 import { _formatResultRow, _deepStripInternal, _executeVarLenPath, parseCsvContent } from './executor-common'
 import { _executeWithUnwindPipeline } from './executor-unwind-pipeline'
 import { _buildDmlRows } from './executor-dml'
 import { _isPatternPredicate, _validateUndefinedVariables, _validateUnknownFunctions, extractEdgePropColumnsFromQuery, extractMatchVariables, extractVariablesFromClause, extractEdgesFromNodes } from './executor-validators'
 import { _validatePlan } from './executor-validate-plan'
 import { _execNonGePaths } from './executor-non-ge'
+
+/** 判断查询是否涉及写操作（需要独占 GE 连接） */
+function isWriteOp(plan: QueryPlan): boolean {
+  return plan.type === 'CREATE' || plan.type === 'MERGE' ||
+    plan.type === 'SET' || plan.type === 'DELETE' || plan.type === 'REMOVE' ||
+    plan.type === 'MATCH_MODIFY'
+}
+
 /** GraphEngine 原生执行入口 */
 async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
   // ── 非 GE 路径（early exit）──
@@ -33,18 +41,35 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
   // ── 共享 GE 实例 ──
   let ge: GraphEngine | null = null
-  let geOwned = false  // true → 新创建的注册实例，finally 中不 close（由 _clearGeInstances 统一清理）
 
-  // ── 共享 GE 实例：跳过每次 new GraphEngine + ge.open() ──
-  // 使用预热好的单例 GE（路径 /tmp/tckge-pool），只需要第一次初始化
-  if (!_gePool.value) {
-    const poolDir = path.join('/tmp', 'tckge-pool')
-    fs.mkdirSync(poolDir, { recursive: true })
-    const poolConfig: OverGraphConfig = { path: poolDir, denseVector: { dimension: 384 } }
-    _gePool.value = new GraphEngine(poolConfig)
-    _gePool.value.open()
+  // 优先使用 database-specific GE 实例（CATALOG 多图隔离）
+  const dbName = _getActiveDatabase()
+  if (dbName !== DEFAULT_DATABASE && _geInstanceRegistry.has(dbName)) {
+    ge = _geInstanceRegistry.get(dbName)!
+  } else if (dbName !== DEFAULT_DATABASE) {
+    // 按需创建 database 专属实例
+    const dbDir = _geDirRegistry.get(dbName) || `/tmp/ge-db-${dbName}-${Date.now()}`
+    _geDirRegistry.set(dbName, dbDir)
+    fs.mkdirSync(dbDir, { recursive: true })
+    const dbGe = new GraphEngine({ path: dbDir, denseVector: { dimension: 384 } } as OverGraphConfig)
+    dbGe.open()
+    _geInstanceRegistry.set(dbName, dbGe)
+    ge = dbGe
+  } else {
+    // 默认数据库：使用 GEPool 弹性连接池
+    // 如果 _gePool.value === null（_clearGeInstances 后被设置），创建独立 GE 实例
+    // 而非从池中获取（避免池中旧实例的残留数据影响后续查询）
+    if (_gePool.value) {
+      ge = _gePool.value
+    } else {
+      // 使用池连接（创建 GE 或复用空闲实例）
+      const poolConfig: OverGraphConfig = { path: '/tmp/tckge-pool', denseVector: { dimension: 384 } }
+      const pool = GEPool.getInstance({ warmup: true, config: poolConfig, maxSize: 4 })
+      ge = pool.getConnection(isWriteOp(plan))
+    }
   }
-  ge = _gePool.value
+  // 同步 _gePool.value 向后兼容
+  _gePool.value = ge
 
   let originalNodeCount = 0
   let allNodes: Array<Record<string, unknown>> = []
@@ -2497,6 +2522,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     }
     // 注册池中的 GE 实例由 _clearGeInstances() 统一清理，不在 finally 中 close
     // 非注册临时 GE（当前不存在此场景）应在 finally 中 close + 清理
+    // 释放 GEPool 连接（非 database-specific 实例）
+    if (dbName === DEFAULT_DATABASE && ge) {
+      try {
+        const pool = GEPool.getInstance()
+        pool.releaseConnection(ge)
+      } catch { /* 池尚未初始化或已销毁 */ }
+    }
   }
 }
 

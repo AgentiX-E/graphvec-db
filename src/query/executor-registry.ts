@@ -78,7 +78,7 @@ try {
 
 // ── 数据库注册表（CATALOG 多图命名空间） ──
 // 默认数据库（neo4j）始终存在
-const DEFAULT_DATABASE = 'neo4j'
+export const DEFAULT_DATABASE = 'neo4j'
 const _databaseRegistry = new Set<string>([DEFAULT_DATABASE])
 let _activeDatabase = DEFAULT_DATABASE
 export function _getActiveDatabase(): string { return _activeDatabase }
@@ -103,21 +103,18 @@ export function _clearDatabases(): void {
 const _geInstanceRegistry = new Map<string, GraphEngine>()
 
 /**
- * 共享 GE 实例池。
+ * 共享 GE 实例池 — 从单例 hack 到正式弹性连接池。
  *
- * 设计目标：跳过每次 query 执行时 new GraphEngine + ge.open() 的开销。
- * 使用预热好的单例 GE（路径 /tmp/tckge-pool），只在第一次需要时初始化。
+ * 使用 GEPool class（src/query/ge-pool.ts）：
+ * - 支持 maxSize（默认 4）和 idleTimeout（默认 60s）
+ * - getConnection(isWrite) / releaseConnection(ge)
+ * - 写操作独占实例，读操作复用最近最少使用的实例
+ * - 空闲超时自动回收
  *
- * 未来扩展（GE Pool 正式版）：
- * - 支持最大实例数（maxPoolSize）和空闲回收（idleTimeout）
- * - _executeViaGraphEngine 使用 getPoolConnection() 获取池化实例
- * - 写操作使用独立连接，读操作复用池连接
- * - 池化策略：最少使用 + 定期健康检查
+ * 向后兼容：_gePool.value 保持为快速引用（池中第一个实例或 null）
  */
-export interface GEPool {
-  value: GraphEngine | null
-}
-const _gePool: GEPool = { value: null }
+const _gePool: { value: GraphEngine | null } = { value: null }
+
 /** 追踪 GE 实例的 LMDB 目录路径，用于复用时 reopen 已有目录 */
 const _geDirRegistry = new Map<string, string>()
 
@@ -127,8 +124,16 @@ export function _clearGeInstances(): void {
   }
   _geInstanceRegistry.clear()
   _geDirRegistry.clear()
-  // 清除 pool 中的 GE 实例引用（防止旧实例节点残留污染后续查询）
+  // 清除 pool 中的 GE 实例引用
   _gePool.value = null
+  // 清理 GE Pool 磁盘存储（避免旧数据影响后续查询）
+  for (const dir of ['/tmp/tckge-pool', '/tmp/ge-pool-' + process.pid]) {
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    } catch { /* 静默 */ }
+  }
 }
 
 export const DEFAULT_LIMIT = 1000
