@@ -7,6 +7,25 @@
 import { parseQuery } from './query-parser'
 import type { QueryPlan, QueryRow } from './query-types'
 
+// TCK 验证用：内置函数白名单（不在正常执行路径中，仅用于 _validateUnknownFunctions）
+const BUILTIN_FN_NAMES = new Set([
+  'length', 'toboolean', 'tointeger', 'tofloat', 'tostring',
+  'keys', 'labels', 'nodes', 'relationships', 'type',
+  'id', 'properties', 'head', 'last', 'range', 'reverse', 'tail',
+  'trim', 'ltrim', 'rtrim', 'upper', 'lower', 'substring', 'replace',
+  'left', 'right', 'contains', 'startswith', 'endswith', 'size',
+  'reverse', 'toupper', 'tolower',
+  'replace', 'split', 'coalesce', 'exists', 'abs', 'ceil', 'floor',
+  'round', 'sign', 'rand', 'sqrt', 'exp', 'log', 'log10',
+  'sin', 'cos', 'tan', 'cot', 'asin', 'acos', 'atan', 'atan2',
+  'pi', 'degrees', 'radians', 'haversin',
+  'datetime', 'localtime', 'locatetime', 'time', 'date', 'localdatetime',
+  'duration',
+  'timestamp',
+  // temporal static methods accessed via dot notation
+  'fromepoch', 'fromepochmillis',
+])
+
 /** 从 Cypher 查询中提取 MATCH 子句的字符串 */
 export function extractMatchClause(query: string): string {
   const match = query.match(/MATCH\s+(.*?)(?:\s+(WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/is)
@@ -325,17 +344,23 @@ export function _validateUnknownFunctions(query: string): void {
   const returnMatch = query.match(/RETURN\s+((?:(?!\s+(?:ORDER\s+BY|SKIP|LIMIT|WHERE|CREATE|MERGE|MATCH|WITH|CALL|UNWIND)).)+)/is)
   if (!returnMatch) return
   const returnStr = returnMatch[1]
+  // 跳过 temporal 静态方法调用（date.truncate(), datetime.fromepoch() 等），
+  // 这些函数名由运行时 dispatch 解析，编译期无法穷举
+  if (/^(date|datetime|time|localtime|localdatetime|duration)\(/i.test(returnStr.trim())) return
   // 匹配 functionName(args) 模式
   const fnPattern = /\b(\w+)\s*\(/g
   let fnMatch: RegExpExecArray | null
   while ((fnMatch = fnPattern.exec(returnStr)) !== null) {
     const fnName = fnMatch[1].toLowerCase()
+    // 跳过点号调用（datetime.truncate(x) → truncate 被 datetime. 前缀修饰）
+    const beforeFn = returnStr.slice(Math.max(0, fnMatch.index - 1), fnMatch.index)
+    if (beforeFn === '.') continue
     // 跳过已定义的函数和关键字
-    if (fnName in _builtinFunctions) continue
+    if (BUILTIN_FN_NAMES.has(fnName)) continue
     if (['and','or','xor','not','in','is','null','true','false','distinct',
         'all','any','none','single','case','when','then','else','end',
         'count','sum','avg','max','min','collect'].includes(fnName)) continue
-    if (!_builtinFunctions[fnName]) {
+    if (!BUILTIN_FN_NAMES.has(fnName)) {
       throw Object.assign(new Error('SyntaxError: UnknownFunction'), { tckError: 'UnknownFunction' })
     }
   }

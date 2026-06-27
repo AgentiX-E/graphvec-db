@@ -19,7 +19,7 @@ import type { QueryPlan, QueryRow } from './query-types'
  * DSL 语义：WITH 先计算列表字面量（直接在 plan 中），然后 UNWIND 行展开，
  * WITH 列投影 + aggregate 聚合。
  */
-function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string, unknown>>, query?: string, initialVarCtx?: Record<string, unknown>): QueryRow[] {
+export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string, unknown>>, query?: string, initialVarCtx?: Record<string, unknown>): QueryRow[] {
   // Step 1: 解析 WITH 列表字面量
   // plan.with.columns[0] 是 {expression: "[1, 3.14, ...]", alias: "operands"}
   const varCtx: Record<string, unknown> = { ...initialVarCtx }

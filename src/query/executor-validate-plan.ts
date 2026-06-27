@@ -5,8 +5,8 @@
  */
 
 import type { QueryPlan } from './query-types'
-import { _validateUndefinedVariables, _validateUnknownFunctions } from './executor-validators'
-import { _validateLiterals } from './expression-engine'
+import { _validateUndefinedVariables, _validateUnknownFunctions, extractVariablesFromClause } from './executor-validators'
+import { _validateLiterals, _splitTopLevel } from './expression-engine'
 
 export function _validatePlan(plan: QueryPlan, query?: string): void {
   if (!plan || !plan.type) return
@@ -259,6 +259,9 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // CREATE (b {name: missing}) RETURN b — missing 未定义（在 map literal 中）
   {
     const boundVars = extractVariablesFromClause(query)
+    // 增强：提取 WITH clause alias（WITH date(x) AS d → d 是有效变量）
+    const withAliases = query.matchAll(/WITH\s+.+?\s+AS\s+(\w+)/gi)
+    for (const wa of withAliases) boundVars.push(wa[1])
     // 从 returnColumns 检查未定义变量
     if (plan.returnColumns?.length) {
       for (const rc of plan.returnColumns) {
