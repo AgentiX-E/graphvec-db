@@ -262,6 +262,14 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     // 增强：提取 WITH clause alias（WITH date(x) AS d → d 是有效变量）
     const withAliases = query.matchAll(/WITH\s+.+?\s+AS\s+(\w+)/gi)
     for (const wa of withAliases) boundVars.push(wa[1])
+    // 逗号分隔的多个 WITH alias（WITH ... AS otherDate, ... AS otherTime）
+    const withAliasesMulti = query.matchAll(/AS\s+(\w+)/gi)
+    for (const wa of withAliasesMulti) {
+      const idx = query.slice(0, wa.index).lastIndexOf("WITH")
+      const afterWith = idx >= 0 ? query.slice(idx + 4, wa.index) : ""
+      if (afterWith.includes("MATCH") || afterWith.includes("RETURN") || afterWith.includes("WHERE") || afterWith.includes("CREATE") || afterWith.includes("MERGE")) continue
+      boundVars.push(wa[1])
+    }
     // 从 returnColumns 检查未定义变量
     if (plan.returnColumns?.length) {
       for (const rc of plan.returnColumns) {

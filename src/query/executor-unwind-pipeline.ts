@@ -5,6 +5,7 @@
  */
 
 import type { QueryPlan, QueryRow } from './query-types'
+import { _evaluateExpression } from './expression-engine'
 
 /**
  * 处理 WITH/UNWIND/aggregate 管道（不含 MATCH 图遍历）。
