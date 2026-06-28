@@ -238,7 +238,8 @@ export function _extractTimeMap(map: Record<string, unknown>): { hour: number; m
 
 /** 从 ISO 持续时间字符串中提取指定属性的数值（如 duration('P1DT2H').days → 1） */
 export function _extractDurationProp(durStr: string, prop: string): number | null {
-  const m = durStr.match(/^([-])?P(?:(\d+(?:\.\d+)?)Y)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M(?!S))?(?:(\d+(?:\.\d+)?)S)?)?$/)
+  // 尝试标准格式：P...T...（组件前可能带 - 符号）
+  const m = durStr.match(/^([-])?P(?:(\d+(?:\.\d+)?)Y)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?\d+(?:\.\d+)?)S)?)?$/)
   if (!m) return null
   const [, signStr, years, months, days, hours, minutes, seconds] = m
   const sign = signStr === '-' ? -1 : 1
@@ -289,7 +290,7 @@ function _mergeTimeStr(timeStr: string, map: Record<string, unknown>): string {
 
 /** 将 map 中的日期覆盖字段（year, month, day）合并到日期字符串中 */
 function _mergeDateStr(dateStr: string, map: Record<string, unknown>): string {
-  const hasOverrides = map.year != null || map.month != null || map.day != null || map.week != null || map.dayOfWeek != null || map.quarter != null || map.dayOfQuarter != null
+  const hasOverrides = map.year != null || map.month != null || map.day != null || map.week != null || map.dayOfWeek != null || map.quarter != null || map.dayOfQuarter != null || map.ordinalDay != null
   if (!hasOverrides) return dateStr
   const parts = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/)
   if (!parts) return dateStr
@@ -297,11 +298,266 @@ function _mergeDateStr(dateStr: string, map: Record<string, unknown>): string {
   if (map.year != null) year = Number(map.year)
   if (map.month != null) month = Number(map.month)
   if (map.day != null) { day = Number(map.day) }
-  else if (map.week != null || map.dayOfWeek != null || map.quarter != null || map.dayOfQuarter != null) {
-    // 需要从 week/quarter 解析 → 用 JS Date 计算
-    // 兜底
+  else if (map.week != null || map.dayOfWeek != null || map.quarter != null || map.dayOfQuarter != null || map.ordinalDay != null) {
+    // week/quarter/ordinalDay 从已知 year 计算
+    const y = map.year != null ? Number(map.year) : year
+    // week: 计算 ISO 周 y-Www-1（周一）
+    if (map.week != null) {
+      const w = Number(map.week)
+      // week 0 = 上一年的最后一周
+      const actualYear = w <= 0 ? y - 1 : y
+      const actualWeek = w <= 0 ? _isoWeeksInYear(actualYear) : w
+      const w1 = _isoWeek1Monday(actualYear)
+      const targetDate = new Date(w1.getTime() + (actualWeek - 1) * 7 * 86400000)
+      month = targetDate.getUTCMonth() + 1
+      day = targetDate.getUTCDate()
+      // dayOfWeek 覆盖：调整到指定周几（1=Monday, 7=Sunday）
+      if (map.dayOfWeek != null) {
+        const dow = Number(map.dayOfWeek)
+        const currentDow = targetDate.getUTCDay() === 0 ? 7 : targetDate.getUTCDay()
+        const diff = dow - currentDow
+        const adj = new Date(targetDate.getTime() + diff * 86400000)
+        month = adj.getUTCMonth() + 1
+        day = adj.getUTCDate()
+      }
+    } else if (map.dayOfWeek != null) {
+      // 无 week 覆盖，只有 dayOfWeek：从当前日期计算出在所在周中移动到指定周几
+      const d = new Date(dateStr);
+      const currentDow = d.getUTCDay() === 0 ? 7 : d.getUTCDay();
+      const diff = Number(map.dayOfWeek) - currentDow;
+      const adj = new Date(d.getTime() + diff * 86400000);
+      month = adj.getUTCMonth() + 1;
+      day = adj.getUTCDate();
+    } else if (map.quarter != null) {
+      const q = Number(map.quarter)
+      month = (q - 1) * 3 + 1
+      day = 1
+      // dayOfQuarter 覆盖：quarter 第一天 + (dayOfQuarter-1) 天
+      if (map.dayOfQuarter != null) {
+        const dq = Number(map.dayOfQuarter)
+        const d = new Date(Date.UTC(y, month - 1, 1 + dq - 1))
+        month = d.getUTCMonth() + 1
+        day = d.getUTCDate()
+      }
+    } else if (map.ordinalDay != null) {
+      const od = Number(map.ordinalDay)
+      const d = new Date(Date.UTC(y, 0, od))
+      month = d.getUTCMonth() + 1
+      day = d.getUTCDate()
+    }
   }
   return String(year).padStart(4, "0") + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0")
+}
+
+/** 对日期字符串按 unit 进行截断。str 可以是纯日期或完整 datetime/localdatetime 字符串。
+ * 参数 dateOnly=true 表示只返回日期部分（用于 date.truncate）。*/
+function _truncateDateStr(str: string, unit: string, dateOnly = false): string {
+  // 提取日期部分
+  const datePart = str.includes('T') ? str.slice(0, str.indexOf('T')) : str;
+  const timePart = str.includes('T') ? str.slice(str.indexOf('T')) : 'T00:00:00';
+  const origTz = _extractTz(str);
+  const cleanTime = timePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/, '');
+  if (["millennium","millennia","century","centuries","decade","decades","weekyear","weekyears","year","years"].includes(unit)) {
+    let year = Number(datePart.slice(0,4));
+    if (unit === "millennium" || unit === "millennia") year = Math.floor(year / 1000) * 1000;
+    else if (unit === "century" || unit === "centuries") year = Math.floor(year / 100) * 100;
+    else if (unit === "decade" || unit === "decades") year = Math.floor(year / 10) * 10;
+    else if (["weekyear","weekyears"].includes(unit)) {
+      const d = new Date(datePart);
+      const iy = _isoYear(d);
+      const w1 = _isoWeek1Monday(iy);
+      const truncated = w1.getUTCFullYear() + "-" + String(w1.getUTCMonth() + 1).padStart(2, "0") + "-" + String(w1.getUTCDate()).padStart(2, "0");
+      return _withTime(truncated, 'T00:00' + (origTz || 'Z'));
+    }
+    const truncated = String(year).padStart(4,"0") + "-01-01";
+    return _withTime(truncated, 'T00:00' + (origTz || 'Z'));
+  }
+  if (["quarter","quarters"].includes(unit)) {
+    const m = Number(datePart.slice(5,7));
+    const q = Math.ceil(m / 3);
+    const qm = String((q - 1) * 3 + 1).padStart(2,"0");
+    const truncated = datePart.slice(0,5) + qm + "-01";
+    return _withTime(truncated, 'T00:00' + (origTz || 'Z'));
+  }
+  if (["month","months"].includes(unit)) {
+    const truncated = datePart.slice(0,7) + "-01";
+    return _withTime(truncated, 'T00:00' + (origTz || 'Z'));
+  }
+  if (["day","days"].includes(unit)) {
+    const truncated = datePart;
+    return _withTime(truncated, 'T00:00:00' + (origTz || 'Z'));
+  }
+  if (["hour","hours"].includes(unit)) {
+    const truncated = datePart;
+    return _withTime(truncated, 'T' + cleanTime.slice(1,3) + ':00:00' + (origTz || 'Z'));
+  }
+  if (["minute","minutes"].includes(unit)) {
+    const truncated = datePart;
+    return _withTime(truncated, cleanTime.slice(0,6) + ':00' + (origTz || 'Z'));
+  }
+  if (["second","seconds"].includes(unit)) {
+    const truncated = datePart;
+    return _withTime(truncated, cleanTime);
+  }
+  if (["week","weeks"].includes(unit)) {
+    const d = new Date(datePart); const day = d.getUTCDay();
+    d.setUTCDate(d.getUTCDate() + (day === 0 ? -6 : 1 - day));
+    const truncated = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2,"0") + "-" + String(d.getUTCDate()).padStart(2,"0");
+    return _withTime(truncated, 'T00:00' + (origTz || 'Z'));
+  }
+  // 未知 unit — 返回原值
+  return str;
+  // 内部函数：根据 dateOnly 决定是否追加时间部分
+  function _withTime(date: string, time: string): string {
+    if (dateOnly || !str.includes('T')) return date;
+    // 如果原字符串无时区后缀，不加 Z（localdatetime/localtime）
+    if (!origTz) {
+      const timeNoTz = time.replace(/Z$/, '');
+      return date + timeNoTz;
+    }
+    return date + time;
+  }
+}
+
+/** 对时间字符串按 unit 进行截断。str 可以是纯时间或带时区的时间字符串。 */
+function _truncateTimeStr(str: string, unit: string): string {
+  // 提取时区后缀
+  const tzMatch = str.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/);
+  const tz = tzMatch ? tzMatch[0] : '';
+  const cleanTime = str.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/, '');
+  const parts = cleanTime.split(':');
+  if (parts.length < 2) return str;
+  const hh = parts[0];
+  const mm = parts.length >= 2 ? parts[1] : '00';
+  const ssRaw = parts.length >= 3 ? parts.slice(2).join(':') : '';
+  // 解析秒 + 纳秒部分
+  let ss = '', nanos = '';
+  if (ssRaw.includes('.')) {
+    ss = ssRaw.split('.')[0];
+    nanos = ssRaw.split('.')[1];
+  } else {
+    ss = ssRaw;
+  }
+  if (["hour","hours"].includes(unit)) return hh + ':00' + (ss.includes('00') && mm === '00' ? '' : '') + tz;
+  if (["minute","minutes"].includes(unit)) return hh + ':' + mm + tz;
+  if (["second","seconds"].includes(unit)) return hh + ':' + mm + ':' + ss + tz;
+  if (["millisecond","milliseconds"].includes(unit)) {
+    const truncatedNanos = nanos ? nanos.slice(0, 3).padEnd(3, '0') : '000';
+    return hh + ':' + mm + ':' + ss + '.' + truncatedNanos.replace(/0+$/, '') + tz;
+  }
+  if (["microsecond","microseconds"].includes(unit)) {
+    const truncatedNanos = nanos ? nanos.slice(0, 6).padEnd(6, '0') : '000000';
+    return hh + ':' + mm + ':' + ss + '.' + truncatedNanos.replace(/0+$/, '') + tz;
+  }
+  if (["nanosecond","nanoseconds"].includes(unit)) {
+    const truncatedNanos = nanos ? nanos.padEnd(9, '0') : '000000000';
+    const trimmed = truncatedNanos.replace(/0+$/, '');
+    if (!trimmed) return hh + ':' + mm + ':' + ss + tz;
+    return hh + ':' + mm + ':' + ss + '.' + trimmed + tz;
+  }
+  // 未知 unit — 返回原值
+  return str;
+}
+
+/** 将 truncate 结果（date 格式）转为 datetime 格式 */
+/** 将 truncation 结果的日期字段用 config 中的 day/month 等覆盖 */
+function _applyTruncateConfig(result: string, configArg: string, r: Record<string, unknown> | undefined): string {
+  // configArg 可能被引号包裹（字符串字面量），需要 strip 后重新 eval
+  let cleanArg = configArg.trim()
+  if ((cleanArg.startsWith("'") && cleanArg.endsWith("'")) || (cleanArg.startsWith('"') && cleanArg.endsWith('"')))
+    cleanArg = cleanArg.slice(1, -1)
+  const cv = _evalBinary(cleanArg, r);
+  if (!cv || typeof cv !== 'object') return result;
+  const config = cv as Record<string, unknown>;
+  // 检查是否有可用的日期覆盖字段
+  const hasDateOverrides = config.day != null || config.month != null || config.year != null ||
+    config.week != null || config.dayOfWeek != null || config.quarter != null || config.dayOfQuarter != null;
+  // 检查是否有时间覆盖字段
+  const hasTimeOverrides = config.hour != null || config.minute != null || config.second != null ||
+    config.nanosecond != null || config.microsecond != null || config.millisecond != null;
+  if (!hasDateOverrides && !hasTimeOverrides) {
+    // 只检查时区覆盖
+    if (config.timezone != null) {
+      // 从 result 提取年、月、日以获取正确的时区 offset（夏令时/冬令时）
+      const parts = result.split('-');
+      const tzYear = parseInt(parts[0], 10) || undefined;
+      const tzMonth = parts.length >= 2 ? parseInt(parts[1], 10) : undefined;
+      const tzDay = parts.length >= 3 ? parseInt(parts[2].split('T')[0], 10) : undefined;
+      const tz = _formatTimezone(_resolveNamedTimezone(String(config.timezone), tzYear, tzMonth, tzDay));
+      const datePart = result.includes('T') ? result.slice(0, result.indexOf('T')) : result;
+      const timePartRaw = result.includes('T') ? result.slice(result.indexOf('T')) : 'T00:00:00';
+      // Strip existing timezone from time part before appending new one
+      const timePart = timePartRaw.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '');
+      return datePart + timePart + tz;
+    }
+    return result;
+  }
+  // 处理时间覆盖字段（hour/minute/second/nanosecond/microsecond/millisecond）
+  let currentTime = result.includes('T') ? result.slice(result.indexOf('T')) : result.includes(':') ? 'T' + result.split(/[+-]/)[0].trim() : '';
+  // 如果结果不包含时间部分（纯日期），不要添加时间部分
+  const isDateOnly = !result.includes('T') && !result.includes(':');
+  let currentOriginTz = result.replace(/^[^T]*T/, '').match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/);
+  let currentTz = currentOriginTz ? currentOriginTz[0] : '';
+  let cleanTimePart = currentTime;
+  if (currentTime) {
+    cleanTimePart = currentTime.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '');
+  }
+  if (hasTimeOverrides && !isDateOnly) {
+    // Extract current time components
+    const timeParts = cleanTimePart ? cleanTimePart.slice(1).split(':') : [];
+    if (timeParts.length < 2) timeParts.push('00', '00');
+    let hh = timeParts[0] || '00';
+    let mm = timeParts[1] || '00';
+    let ssRaw = timeParts.slice(2).join(':') || '00';
+    let ss = ssRaw, nanos = '';
+    if (ssRaw.includes('.')) { ss = ssRaw.split('.')[0]; nanos = ssRaw.split('.')[1]; }
+    // Apply overrides
+    if (config.hour != null) hh = String(Number(config.hour)).padStart(2, '0');
+    if (config.minute != null) mm = String(Number(config.minute)).padStart(2, '0');
+    if (config.second != null) ss = String(Number(config.second)).padStart(2, '0');
+    if (config.nanosecond != null) {
+      nanos = String(Number(config.nanosecond)).padStart(9, '0');
+    }
+    if (config.microsecond != null) {
+      const us = String(Number(config.microsecond)).padStart(6, '0');
+      nanos = nanos ? nanos.slice(0, 3) + us : us + '000';
+    }
+    if (config.millisecond != null) {
+      const ms = String(Number(config.millisecond)).padStart(3, '0');
+      nanos = nanos ? ms + nanos.slice(3) : ms + '000000';
+    }
+    // Build time string with appropriate precision
+    let timeStr;
+    if (nanos) {
+      const trimmedNanos = nanos.replace(/0+$/, '');
+      timeStr = hh + ':' + mm + ':' + ss + '.' + trimmedNanos;
+    } else {
+      timeStr = hh + ':' + mm + ':' + ss;
+      // If original had no fractional part, don't add one
+    }
+    cleanTimePart = 'T' + timeStr;
+  }
+  // 合并日期覆盖字段到 truncation 结果的日期部分
+  let datePart = isDateOnly || !result.includes('T') ? (result.includes(':') ? '' : result) : result.slice(0, result.indexOf('T'));
+  if (hasDateOverrides) {
+    datePart = _mergeDateStr(datePart, config);
+  }
+  // 如果有 timezone 覆盖且 config 中指定了 timezone，附加它
+  if (config.timezone != null) {
+    const parts = datePart.split('-');
+    const tzYear = parseInt(parts[0], 10) || undefined;
+    const tzMonth = parts.length >= 2 ? parseInt(parts[1], 10) : undefined;
+    const tzDay = parts.length >= 3 ? parseInt(parts[2].split('T')[0], 10) : undefined;
+    currentTz = _formatTimezone(_resolveNamedTimezone(String(config.timezone), tzYear, tzMonth, tzDay));
+  }
+  return (datePart || '') + (cleanTimePart ? (datePart ? cleanTimePart : cleanTimePart.replace(/^T/, '')) : '') + currentTz;
+}
+
+/** 从字符串中提取时区后缀（Z / +HH:MM 等） */
+function _extractTz(str: string): string {
+  if (str.includes('Z')) return 'Z';
+  const m = str.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/);
+  return m ? m[0] : '';
 }
 
 export function _resolveNamedTimezone(tz: string, year?: number, month?: number, day?: number): string {
@@ -332,6 +588,20 @@ export function _isoWeek1Monday(year: number): Date {
   return new Date(Date.UTC(year, 0, 4 - d + 1))
 }
 
+/** ISO 8601 一年的周数（52 或 53） */
+export function _isoWeeksInYear(year: number): number {
+  const w1 = _isoWeek1Monday(year)
+  const w1Next = _isoWeek1Monday(year + 1)
+  return Math.round((w1Next.getTime() - w1.getTime()) / (7 * 86400000))
+}
+
+/** 获取日期对应的 ISO 周数 */
+export function _isoWeekNumber(d: Date): number {
+  const iy = _isoYear(d)
+  const w1 = _isoWeek1Monday(iy)
+  return Math.floor((d.getTime() - w1.getTime()) / (7 * 86400000)) + 1
+}
+
 export function _resolveDateFromMap(map: Record<string, unknown>): Date {
   if (map.date != null) {
     const baseStr = typeof map.date === 'string' ? map.date : String(map.date)
@@ -341,12 +611,31 @@ export function _resolveDateFromMap(map: Record<string, unknown>): Date {
     if (parts.length === 3) {
       const year = Number(parts[0]), month2 = Number(parts[1]), day2 = Number(parts[2])
       const base = new Date(Date.UTC(year, month2 - 1, day2))
-      if (map.week != null || map.dayOfWeek != null) {
+      if (map.week != null || map.dayOfWeek != null || map.quarter != null || map.ordinalDay != null) {
         const dateDow = base.getUTCDay() === 0 ? 7 : base.getUTCDay()
         const isoY = map.year != null ? Number(map.year) : _isoYear(base)
+        // quarter / ordinalDay 处理
+        if (map.quarter != null) {
+          const q = Number(map.quarter)
+          const qm = (q - 1) * 3 + 1
+          // quarter: 保持 other 的 dayOfQuarter（从 Q1 开始的天数偏移）
+          if (map.dayOfQuarter != null) {
+            const dq = Number(map.dayOfQuarter)
+            const qDate = new Date(Date.UTC(isoY, qm - 1, dq))
+            return qDate
+          }
+          // 保留 other 的 dayOfQuarter（不是简单改 month！）
+          const otherDoQ = Math.ceil((new Date(Date.UTC(isoY, month2 - 1, day2)).getTime() - new Date(Date.UTC(isoY, Math.floor((month2 - 1) / 3) * 3, 1)).getTime()) / 86400000) + 1
+          return new Date(Date.UTC(isoY, qm - 1, 1 + otherDoQ - 1))
+        }
+        if (map.ordinalDay != null) {
+          const od = Number(map.ordinalDay)
+          return new Date(Date.UTC(isoY, 0, od))
+        }
+        // week/dayOfWeek 处理
         const w1Mon = _isoWeek1Monday(isoY)
+        const tw = map.week != null ? Number(map.week) : _isoWeekNumber(base)
         const dow = map.dayOfWeek != null ? Number(map.dayOfWeek) : dateDow
-        const tw = map.week != null ? Number(map.week) : 1
         const adj = new Date(w1Mon)
         adj.setUTCDate(w1Mon.getUTCDate() + (tw - 1) * 7 + dow - 1)
         return adj
@@ -593,6 +882,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       const map = v;
       // map.date 字符串穿透 + 覆盖字段合并
       if (map.date != null && typeof map.date === 'string') {
+        // 如果有 week/quarter/ordinalDay 需要走 _resolveDateFromMap（保留 other 的 dayOfWeek）
+        if (map.week != null || map.quarter != null || map.ordinalDay != null || map.dayOfWeek != null) {
+          const d = _resolveDateFromMap(map)
+          return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+        }
         let dateStr = map.date.includes('T') ? map.date.slice(0, map.date.indexOf('T')) : map.date
         dateStr = _mergeDateStr(dateStr, map)
         return dateStr
@@ -842,84 +1136,54 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     return null;
   },
   // ── Truncate 函数 ──
-  "date.truncate": ([type, target], r) => {
+  "date.truncate": ([type, target, ...extra], r) => {
     const t = _evalBinary(target, r);
     if (typeof t !== "string") return null;
     const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
-    if (["millennium","millennia","century","centuries","decade","decades","year","years"].includes(unit)) {
-      let year = Number(str.slice(0,4));
-      if (unit === "millennium" || unit === "millennia") year = Math.floor(year / 1000) * 1000;
-      else if (unit === "century" || unit === "centuries") year = Math.floor(year / 100) * 100;
-      else if (unit === "decade" || unit === "decades") year = Math.floor(year / 10) * 10;
-      return String(year).padStart(4,"0") + "-01-01";
-    }
-    if (["quarter","quarters"].includes(unit)) return str.slice(0,7) + "-01";
-    if (["month","months"].includes(unit)) return str.slice(0,7) + "-01";
-    if (["day","days"].includes(unit)) return str;
-    if (["week","weeks"].includes(unit)) {
-      const d = new Date(str); const day = d.getUTCDay();
-      d.setUTCDate(d.getUTCDate() + (day === 0 ? -6 : 1 - day));
-      return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2,"0") + "-" + String(d.getUTCDate()).padStart(2,"0");
-    }
-    return str;
+    // date.truncate 只截断日期部分，不添加时间部分
+    const result = _truncateDateStr(str, unit, true);
+    if (extra.length > 0) return _applyTruncateConfig(result, extra[0], r);
+    return result;
   },
-  "datetime.truncate": ([type, target], r) => {
+  "datetime.truncate": ([type, target, ...extra], r) => {
     const t = _evalBinary(target, r);
     if (typeof t !== "string") return null;
     let str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
-    if (["millennium","millennia","century","centuries","decade","decades","year","years"].includes(unit)) {
-      let year = Number(str.slice(0,4));
-      if (unit === "millennium" || unit === "millennia") year = Math.floor(year / 1000) * 1000;
-      else if (unit === "century" || unit === "centuries") year = Math.floor(year / 100) * 100;
-      else if (unit === "decade" || unit === "decades") year = Math.floor(year / 10) * 10;
-      const tz = str.includes('Z') ? 'Z' : str.match(/[+-]\d{2}:\d{2}/)?.[0] || '';
-      const isLocal = !str.includes('Z') && !str.match(/[+-]\d{2}:\d{2}/);
-      return String(year).padStart(4,"0") + "-01-01T00:00:00" + (isLocal ? '' : (tz || 'Z'));
-    }
-    if (["quarter","quarters"].includes(unit)) return str.slice(0,7) + "-01T00:00:00" + (tzFrom(str) || 'Z');
-    if (["month","months"].includes(unit)) return str.slice(0,7) + "-01T00:00:00" + (tzFrom(str) || 'Z');
-    if (["day","days"].includes(unit)) return str;
-    if (["hour","hours"].includes(unit)) return str.slice(0,14) + "00:00" + (tzFrom(str) || 'Z');
-    if (["minute","minutes"].includes(unit)) return str.slice(0,17) + "00" + (tzFrom(str) || 'Z');
-    if (["second","seconds"].includes(unit)) return str;
-    if (["week","weeks"].includes(unit)) { const d = new Date(str.slice(0,10)); const day = d.getUTCDay(); d.setUTCDate(d.getUTCDate() + (day===0?-6:1-day)); return d.toISOString().replace("Z","") + "Z"; }
-    return str;
-    function tzFrom(s: string): string { const m = s.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/); return m ? m[0] : ''; }
+    // 如果 target 是纯日期（如 date 函数返回），转为 datetime 格式
+    if (!str.includes('T') && /^\d{4}-\d{2}-\d{2}$/.test(str)) str = str + 'T00:00Z';
+    const dtResult = _truncateDateStr(str, unit);
+    if (extra.length > 0) return _applyTruncateConfig(dtResult, extra[0], r);
+    return dtResult;
   },
-  "localdatetime.truncate": ([type, target], r) => {
+  "localdatetime.truncate": ([type, target, ...extra], r) => {
     const t = _evalBinary(target, r);
     if (typeof t !== "string") return null;
     let str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
-    if (["millennium","millennia","century","centuries","decade","decades","year","years"].includes(unit)) {
-      let year = Number(str.slice(0,4));
-      if (unit === "millennium" || unit === "millennia") year = Math.floor(year / 1000) * 1000;
-      else if (unit === "century" || unit === "centuries") year = Math.floor(year / 100) * 100;
-      else if (unit === "decade" || unit === "decades") year = Math.floor(year / 10) * 10;
-      return String(year).padStart(4,"0") + "-01-01T00:00:00";
-    }
-    if (["quarter","quarters"].includes(unit)) return str.slice(0,7) + "-01T00:00:00";
-    if (["month","months"].includes(unit)) return str.slice(0,7) + "-01T00:00:00";
-    if (["day","days"].includes(unit)) return str;
-    if (["hour","hours"].includes(unit)) return str.slice(0,14) + "00:00";
-    if (["minute","minutes"].includes(unit)) return str.slice(0,17) + "00";
-    if (["second","seconds"].includes(unit)) return str;
-    if (["week","weeks"].includes(unit)) { const d = new Date(str.slice(0,10)); const day = d.getUTCDay(); d.setUTCDate(d.getUTCDate() + (day===0?-6:1-day)); return d.getUTCFullYear()+"-"+String(d.getUTCMonth()+1).padStart(2,"0")+"-"+String(d.getUTCDate()).padStart(2,"0")+"T00:00:00"; }
-    return str;
+    if (!str.includes('T') && /^\d{4}-\d{2}-\d{2}$/.test(str)) str = str + 'T00:00:00';
+    const dtResult = _truncateDateStr(str, unit);
+    if (extra.length > 0) return _applyTruncateConfig(dtResult, extra[0], r);
+    return dtResult;
   },
-  "time.truncate": ([type, target], r) => {
+  "time.truncate": ([type, target, ...extra], r) => {
     const t = _evalBinary(target, r);
     if (typeof t !== "string") return null;
     const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
-    return str;
+    const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
+    const result = _truncateTimeStr(str, unit);
+    if (extra.length > 0) return _applyTruncateConfig(result, extra[0], r);
+    return result;
   },
-  "localtime.truncate": ([type, target], r) => {
+  "localtime.truncate": ([type, target, ...extra], r) => {
     const t = _evalBinary(target, r);
     if (typeof t !== "string") return null;
     const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
-    return str;
+    const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
+    const result = _truncateTimeStr(str, unit);
+    if (extra.length > 0) return _applyTruncateConfig(result, extra[0], r);
+    return result;
   },
   // ── duration.between / inDays / inMonths / inSeconds ──
   "duration.between": ([a, b], r) => {

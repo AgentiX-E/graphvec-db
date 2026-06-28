@@ -259,11 +259,15 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
       const queryItem = items[i]?.trim() || ''
       if (!queryItem) continue
       if (antlrExpr !== queryItem) {
+        // 提取 AS 前的原始表达式文本
+        const rawExpr = queryItem.replace(/\s+AS\s+`?(`)?[^`]+`?$/i, '').trim()
         // Check if it's a genuine truncation
         const isTruncated =
-          (queryItem.startsWith(antlrExpr) && queryItem !== antlrExpr) ||
-          (/^\d+$/.test(antlrExpr) && queryItem.length > antlrExpr.length) ||
-          (queryItem.includes(',') && antlrExpr.includes(','))
+          (rawExpr.startsWith(antlrExpr) && rawExpr !== antlrExpr) ||
+          (rawExpr.endsWith('.' + antlrExpr) && rawExpr !== antlrExpr) ||
+          (/^\d+$/.test(antlrExpr) && rawExpr.length > antlrExpr.length) ||
+          (rawExpr.includes(',') && antlrExpr.includes(','))
+        if (rawExpr.endsWith('.' + antlrExpr)) console.error('DEBUG truncation: should be true, raw:', rawExpr, 'antlr:', antlrExpr, 'isTruncated:', isTruncated, 'needsRebuild pre:', needsRebuild)
         if (isTruncated) { needsRebuild = true; break }
       }
     }
@@ -297,6 +301,8 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
     const isTruncated =
       (typeof antlrExpr === 'string' && typeof rawExpr === 'string' &&
         rawExpr.startsWith(antlrExpr) && rawExpr !== antlrExpr) ||
+      (typeof antlrExpr === 'string' && typeof rawExpr === 'string' &&
+        rawExpr.endsWith('.' + antlrExpr) && rawExpr !== antlrExpr) ||
       (typeof antlrExpr === 'string' && /^\d+$/.test(antlrExpr) && rawExpr.length > antlrExpr.length) ||
       (typeof antlrExpr === 'string' && typeof rawExpr === 'string' && !rawExpr.includes(antlrExpr))
 

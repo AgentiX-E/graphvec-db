@@ -7,7 +7,7 @@
 import { executeVarLenPath } from './var-length-path'
 import type { QueryPlan, QueryRow } from './query-types'
 import { _makeUniqueKey } from './query-parser'
-import { _evaluateExpression } from './expression-engine'
+import { _evaluateExpression, _extractDurationProp } from './expression-engine'
 
 function _executeVarLenPath(plan: QueryPlan, nodes: Array<Record<string, unknown>>): QueryRow[] {
   return executeVarLenPath(plan, nodes)
@@ -179,6 +179,9 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         result[rc] = r.props[property]
       } else if (property in row) {
         result[rc] = row[property]
+      } else if (row[variable] && typeof row[variable] === 'string' && /^P/i.test(row[variable] as string)) {
+        // ISO duration 字符串属性访问（如 dur.days 中 dur='PT22H'）
+        result[rc] = _extractDurationProp(row[variable] as string, property)
       } else {
         result[rc] = null
       }
