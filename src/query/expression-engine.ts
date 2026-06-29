@@ -410,11 +410,11 @@ function _truncateDateStr(str: string, unit: string, dateOnly = false): string {
   }
   if (["day","days"].includes(unit)) {
     const truncated = datePart;
-    return _withTime(truncated, 'T00:00:00' + (origTz || 'Z'));
+    return _withTime(truncated, 'T00:00' + (origTz || 'Z'));
   }
   if (["hour","hours"].includes(unit)) {
     const truncated = datePart;
-    return _withTime(truncated, 'T' + cleanTime.slice(1,3) + ':00:00' + (origTz || 'Z'));
+    return _withTime(truncated, 'T' + cleanTime.slice(1,3) + ':00' + (origTz || 'Z'));
   }
   if (["minute","minutes"].includes(unit)) {
     const truncated = datePart;
@@ -422,7 +422,9 @@ function _truncateDateStr(str: string, unit: string, dateOnly = false): string {
   }
   if (["second","seconds"].includes(unit)) {
     const truncated = datePart;
-    return _withTime(truncated, cleanTime);
+    // second truncation 去掉小数部分（纳秒/微秒/毫秒），保留时区后缀
+    const cleanSec = cleanTime.includes('.') ? cleanTime.slice(0, cleanTime.indexOf('.')) : cleanTime;
+    return truncated + cleanSec + origTz;
   }
   if (["week","weeks"].includes(unit)) {
     const d = new Date(datePart); const day = d.getUTCDay();
@@ -513,7 +515,9 @@ function _applyTruncateConfig(result: string, configArg: string, r: Record<strin
       const timePartRaw = result.includes('T') ? result.slice(result.indexOf('T')) : 'T00:00:00';
       // Strip existing timezone from time part before appending new one
       const timePart = timePartRaw.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '');
-      return datePart + timePart + tz;
+      // 格式规范化：T00:00:00 → T00:00；T00:00:00.000 → T00:00
+      const fmtTime = timePart.replace(/T00:00:00(?:\.0+)?$/, 'T00:00');
+      return datePart + fmtTime + tz;
     }
     return result;
   }
@@ -1256,9 +1260,14 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     let str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
     // 如果 target 是纯日期（如 date 函数返回），转为 datetime 格式
+    const hasTz = /[Z+]/.test(str);
     if (!str.includes('T') && /^\d{4}-\d{2}-\d{2}$/.test(str)) str = str + 'T00:00Z';
-    const dtResult = _truncateDateStr(str, unit);
-    if (extra.length > 0) return _applyTruncateConfig(dtResult, extra[0], r);
+    let dtResult = _truncateDateStr(str, unit);
+    // datetime 类型必须有时区 suffix。如果截断后没有时区且输入有 T 部分，加 Z（UTC 约定）
+    if (!dtResult.match(/[Z+]/) && !/(?:T\d{2}:\d{2}.*)?[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/.test(dtResult)) {
+      dtResult = dtResult + 'Z';
+    }
+    if (extra.length > 0) dtResult = _applyTruncateConfig(dtResult, extra[0], r);
     return dtResult;
   },
   "localdatetime.truncate": ([type, target, ...extra], r) => {
@@ -1276,7 +1285,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof t !== "string") return null;
     const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
-    const result = _truncateTimeStr(str, unit);
+    // 如果输入包含 T（datetime/date 类型），提取 T 后的时间部分
+    const timeOnlyStr = str.includes('T') ? str.slice(str.indexOf('T') + 1) : str;
+    const result = _truncateTimeStr(timeOnlyStr, unit);
     if (extra.length > 0) return _applyTruncateConfig(result, extra[0], r);
     return result;
   },
@@ -1285,7 +1296,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof t !== "string") return null;
     const str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
-    const result = _truncateTimeStr(str, unit);
+    // 如果输入包含 T（datetime/date 类型），提取 T 后的时间部分
+    const timeOnlyStr = str.includes('T') ? str.slice(str.indexOf('T') + 1) : str;
+    let result = _truncateTimeStr(timeOnlyStr, unit);
+    // localtime 无时区后缀，去掉可能从 datetime 输入带入的时区
+    result = result.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/, '');
     if (extra.length > 0) return _applyTruncateConfig(result, extra[0], r);
     return result;
   },
