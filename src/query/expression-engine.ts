@@ -585,12 +585,12 @@ function _extractTz(str: string): string {
   return m ? m[0] : '';
 }
 
-export function _resolveNamedTimezone(tz: string, year?: number, month?: number, day?: number): string {
+export function _resolveNamedTimezone(tz: string, year?: number, month?: number, day?: number, hour?: number, minute?: number): string {
   if (/^[+-]\d{2}:\d{2}/.test(tz)) return tz
   if (tz.includes('[')) return tz
   try {
     const date = (year != null && month != null && day != null)
-      ? new Date(Date.UTC(year, month - 1, day)) : new Date()
+      ? new Date(Date.UTC(year, month - 1, day, hour ?? 12, minute ?? 0)) : new Date()
     const parts = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(date)
     const tzPart = parts.find(p => p.type === 'timeZoneName')
     if (tzPart && tzPart.value) {
@@ -599,6 +599,43 @@ export function _resolveNamedTimezone(tz: string, year?: number, month?: number,
     }
   } catch {}
   return tz
+}
+
+// 将无时区的本地时间字符串（如 "2017-10-29T04:00"）转换为 IANA 时区的 Date 对象
+export function _tzLocalToUTC(localStr: string, ianaTz: string): Date | null {
+  try {
+    const dateRe = localStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    const timeRe = localStr.match(/T(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
+    if (!dateRe) return null;
+    const year = parseInt(dateRe[1],10), month = parseInt(dateRe[2],10), day = parseInt(dateRe[3],10);
+    let hour = 0, minute = 0, second = 0, nsFrac = 0;
+    if (timeRe) {
+      hour = parseInt(timeRe[1],10); minute = parseInt(timeRe[2],10);
+      if (timeRe[3]) { second = parseFloat(timeRe[3]); nsFrac = Math.round((second - Math.floor(second)) * 1e9); second = Math.floor(second); }
+    }
+    const targetLocal = { year, month, day, hour, minute };
+    for (let hAdj = -14; hAdj <= 14; hAdj++) {
+      const utcH = ((hour - hAdj) % 24 + 24) % 24;
+      const dayAdj = hAdj > hour ? -1 : (hour - hAdj >= 24 ? 1 : 0);
+      const utcD = day + dayAdj;
+      const testDate = new Date(Date.UTC(year, month-1, utcD, utcH, minute, second, Math.round(nsFrac/1e6)));
+      const parts = new Intl.DateTimeFormat('en', {
+        timeZone: ianaTz, timeZoneName: 'shortOffset',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false
+      }).formatToParts(testDate);
+      const map: Record<string, string> = {};
+      parts.forEach(p => map[p.type] = p.value);
+      if (parseInt(map.hour) === targetLocal.hour &&
+          parseInt(map.minute) === targetLocal.minute &&
+          parseInt(map.day) === targetLocal.day &&
+          parseInt(map.month) === targetLocal.month) {
+        return testDate;
+      }
+    }
+    return null;
+  } catch { return null }
 }
 
 export function _isoYear(d: Date): number {
@@ -1148,7 +1185,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       const d = _resolveDateFromMap(map);
       const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
-      const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone), d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate())) : (map.time != null && typeof map.time === 'string' ? (map.time.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/) || [''])[0] || 'Z' : 'Z');
+      const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone), d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), Number(hour), Number(minute))) : (map.time != null && typeof map.time === 'string' ? (map.time.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/) || [''])[0] || 'Z' : 'Z');
       return dateStr + "T" + _formatTime(hour, minute, second, nanosecond) + tz;
     }
     return null;
@@ -1419,6 +1456,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '')
       const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
       if (isTimeOnly(sa) || isTimeOnly(sb)) return 'PT0S';
+      const ianaPrefix = sa.match(/\[([A-Za-z_/]+)\]/) || sb.match(/\[([A-Za-z_/]+)\]/);
+      const ianaTzName = ianaPrefix ? ianaPrefix[1] : undefined;
       // 用 epoch diff
       try {
         const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime()
@@ -1443,8 +1482,94 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     return Number(m[1]||0)*12 + Number(m[2]||0) + Number(m[3]||0)/30.436875 + Number(m[4]||0)/730.485 + Number(m[5]||0)/43829.1;
   },
   "duration.inSeconds": ([a, b], r) => {
-    // 双参数：duration.inSeconds(x, y) — 以秒为单位的 diff（返回 ISO duration 字符串）
-    if (b !== undefined && b !== null) return _callFunction("duration.between", [a, b], r);
+    // 双参数：duration.inSeconds(x, y) — 以秒为单位的 epoch diff
+    if (b !== undefined && b !== null) {
+      const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
+      if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
+      let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
+      // 在 strip [IANA] 前检测 DST 场景
+      const isTimeOnly_inSec = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
+      const ianaTzMatch = (sa + sb).match(/\[([A-Za-z_/]+)\]/);
+      if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '')
+      if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '')
+      // 纯时间类型
+      const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
+      // 记录原始 sa/sb（纯时间修复前），用于后续时区检测
+      const origSaForTz = sa.replace(/\[.*\]$/, '');
+      const origSbForTz = sb.replace(/\[.*\]$/, '');
+      if (isTimeOnly(sa) && isTimeOnly(sb)) {
+        sa = "1970-01-01T" + sa; sb = "1970-01-01T" + sb;
+      } else if (isTimeOnly(sa)) {
+        const base = sb.includes("T") ? sb.slice(0, sb.indexOf('T')) : sb.slice(0, 10);
+        sa = base + "T" + sa;
+      } else if (isTimeOnly(sb)) {
+        const base = sa.includes("T") ? sa.slice(0, sa.indexOf('T')) : sa.slice(0, 10);
+        sb = base + "T" + sb;
+      }
+      // 检测是否有 IANA 时区在操作数中（用于 DST 计算），跳过纯时间
+      const hasIana = !!ianaTzMatch;
+      const sia = sa.replace(/\[.*\]$/, '');
+      const sib = sb.replace(/\[.*\]$/, '');
+      // 有 IANA 时区且一方带时区一方不带（包括 localtime 的 Z 后缀），或者双方都有时区但有 IANA
+      const haTz = /[Z+]/.test(origSaForTz) || /[Z+]/.test(sia);
+      const hbTz = /[Z+]/.test(origSbForTz) || /[Z+]/.test(sib);
+      const isTimeOnlyA = isTimeOnly(sa), isTimeOnlyB = isTimeOnly(sb);
+      // 对于 IANA 场景：只要 isTimeOnly 不把双方都变成纯时间且一方是纯 local (只有Z或无时区)，就算 mixedTz
+      let mixedTz = false;
+      if (hasIana) {
+        mixedTz = !isTimeOnlyA && !isTimeOnlyB; // 有 IANA 时区则总是 DST diff
+      } else {
+        mixedTz = !isTimeOnlyA && !isTimeOnlyB && (haTz !== hbTz);
+      }
+      if (hasIana && mixedTz) {
+        // DST-aware diff：用 Intl 工具计算包含 DST 的精确 epoch diff
+        try {
+          const ianaTz = ianaTzMatch[1];
+          // 把无时区的值视为 IANA 时区的对应时间
+          const aDate = haTz ? new Date(sia) : _tzLocalToUTC(sia, ianaTz);
+          const bDate = hbTz ? new Date(sib) : _tzLocalToUTC(sib, ianaTz);
+          if (aDate && bDate && !isNaN(aDate.getTime()) && !isNaN(bDate.getTime())) {
+            const diffMs = bDate.getTime() - aDate.getTime();
+            const sign = diffMs < 0 ? -1 : 1;
+            const maybeSignInSec = (v: number) => v === 0 ? '0' : (sign < 0 ? String(sign * v) : String(v));
+            const absSec = Math.abs(diffMs) / 1000;
+            const h = Math.floor(absSec / 3600);
+            const m = Math.floor((absSec % 3600) / 60);
+            const s = absSec % 60;
+            const secInt = Math.floor(s);
+            const ns = Math.round((s - secInt) * 1e9);
+            let result = 'PT';
+            if (h) result += maybeSignInSec(h) + 'H';
+            if (m) result += maybeSignInSec(m) + 'M';
+            const nss = ns > 0 ? '.' + String(ns).padStart(9, '0').replace(/0+$/, '') : '';
+            if (secInt || ns > 0) result += maybeSignInSec(secInt) + nss + 'S';
+            if (result === 'PT') result = 'PT0S';
+            return result;
+          }
+        } catch {}
+      }
+      // 非 IANA 或 DST 场景：standard epoch diff
+      try {
+        const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime()
+        const db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime()
+        if (isNaN(da) || isNaN(db)) return _callFunction("duration.between", [a, b], r);
+        const diffMs = db - da;
+        const sign = diffMs < 0 ? -1 : 1;
+        const absSec = Math.abs(diffMs) / 1000;
+        const h = Math.floor(absSec / 3600);
+        const m = Math.floor((absSec % 3600) / 60);
+        const s = absSec % 60;
+        const secInt = Math.floor(s);
+        const ns = Math.round((s - secInt) * 1e9);
+        let result = 'PT';
+        if (h) result += maybeSign(sign * h) + 'H';
+        if (m) result += maybeSign(sign * m) + 'M';
+        const nss = ns > 0 ? '.' + String(ns).padStart(9, '0').replace(/0+$/, '') : '';
+        if (secInt || ns > 0) result += maybeSign(sign * secInt) + nss + 'S';
+        if (result === 'PT') result = 'PT0S';
+        return result;
+      } catch { return _callFunction("duration.between", [a, b], r); }
+    }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
