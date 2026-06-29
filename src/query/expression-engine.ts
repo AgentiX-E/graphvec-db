@@ -418,7 +418,8 @@ function _truncateDateStr(str: string, unit: string, dateOnly = false): string {
   }
   if (["minute","minutes"].includes(unit)) {
     const truncated = datePart;
-    return _withTime(truncated, cleanTime.slice(0,6) + ':00' + (origTz || 'Z'));
+    // minute truncation 输出 HH:MM（不带 :00 秒）
+    return _withTime(truncated, cleanTime.slice(0,6) + (origTz || 'Z'));
   }
   if (["second","seconds"].includes(unit)) {
     const truncated = datePart;
@@ -431,6 +432,36 @@ function _truncateDateStr(str: string, unit: string, dateOnly = false): string {
     d.setUTCDate(d.getUTCDate() + (day === 0 ? -6 : 1 - day));
     const truncated = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2,"0") + "-" + String(d.getUTCDate()).padStart(2,"0");
     return _withTime(truncated, 'T00:00' + (origTz || 'Z'));
+  }
+  // millisecond/microsecond/nanosecond truncation — 保留到对应精度
+  function _truncNanos(rawNanos: string, precision: 'ms'|'us'|'ns'): string {
+    if (!rawNanos) return '';
+    const len = precision === 'ms' ? 3 : precision === 'us' ? 6 : 9;
+    return rawNanos.slice(0, len).padEnd(len, '0');
+  }
+  if (["millisecond","milliseconds"].includes(unit)) {
+    let rawNanos = '';
+    if (timePart) { const m = timePart.match(/\.(\d+)/); if (m) rawNanos = m[1]; }
+    const trunc = _truncNanos(rawNanos, 'ms');
+    const trimmed = trunc.replace(/0+$/, '');
+    const timePrefix = cleanTime.includes('.') ? cleanTime.slice(0, cleanTime.indexOf('.')) : cleanTime;
+    return datePart + (trimmed ? timePrefix + '.' + trimmed : timePrefix) + origTz;
+  }
+  if (["microsecond","microseconds"].includes(unit)) {
+    let rawNanos = '';
+    if (timePart) { const m = timePart.match(/\.(\d+)/); if (m) rawNanos = m[1]; }
+    const trunc = _truncNanos(rawNanos, 'us');
+    const trimmed = trunc.replace(/0+$/, '');
+    const timePrefix = cleanTime.includes('.') ? cleanTime.slice(0, cleanTime.indexOf('.')) : cleanTime;
+    return datePart + (trimmed ? timePrefix + '.' + trimmed : timePrefix) + origTz;
+  }
+  if (["nanosecond","nanoseconds"].includes(unit)) {
+    let rawNanos = '';
+    if (timePart) { const m = timePart.match(/\.(\d+)/); if (m) rawNanos = m[1]; }
+    const trunc = _truncNanos(rawNanos, 'ns');
+    const trimmed = trunc.replace(/0+$/, '');
+    const timePrefix = cleanTime.includes('.') ? cleanTime.slice(0, cleanTime.indexOf('.')) : cleanTime;
+    return datePart + (trimmed ? timePrefix + '.' + trimmed : timePrefix) + origTz;
   }
   // 未知 unit — 返回原值
   return str;
@@ -465,6 +496,7 @@ function _truncateTimeStr(str: string, unit: string): string {
   } else {
     ss = ssRaw;
   }
+  if (["day","days"].includes(unit)) return '00:00' + tz;
   if (["hour","hours"].includes(unit)) return hh + ':00' + (ss.includes('00') && mm === '00' ? '' : '') + tz;
   if (["minute","minutes"].includes(unit)) return hh + ':' + mm + tz;
   if (["second","seconds"].includes(unit)) return hh + ':' + mm + ':' + ss + tz;
@@ -488,7 +520,7 @@ function _truncateTimeStr(str: string, unit: string): string {
 
 /** 将 truncate 结果（date 格式）转为 datetime 格式 */
 /** 将 truncation 结果的日期字段用 config 中的 day/month 等覆盖 */
-function _applyTruncateConfig(result: string, configArg: string, r: Record<string, unknown> | undefined): string {
+function _applyTruncateConfig(result: string, configArg: string, r: Record<string, unknown> | undefined, origStr?: string): string {
   // configArg 可能被引号包裹（字符串字面量），需要 strip 后重新 eval
   let cleanArg = configArg.trim()
   if ((cleanArg.startsWith("'") && cleanArg.endsWith("'")) || (cleanArg.startsWith('"') && cleanArg.endsWith('"')))
@@ -505,6 +537,12 @@ function _applyTruncateConfig(result: string, configArg: string, r: Record<strin
   if (!hasDateOverrides && !hasTimeOverrides) {
     // 只检查时区覆盖
     if (config.timezone != null) {
+      // 如果 result 是纯时间格式（无日期部分，只有 HH:MM[:SS...] 和可选的时区），直接替换时区后缀
+      if (!result.includes('T') && !/^\d{4}/.test(result)) {
+        const noTz = result.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/, '');
+        const tz = _formatTimezone(_resolveNamedTimezone(String(config.timezone)));
+        return noTz + tz;
+      }
       // 从 result 提取年、月、日以获取正确的时区 offset（夏令时/冬令时）
       const parts = result.split('-');
       const tzYear = parseInt(parts[0], 10) || undefined;
@@ -545,15 +583,16 @@ function _applyTruncateConfig(result: string, configArg: string, r: Record<strin
     if (config.minute != null) mm = String(Number(config.minute)).padStart(2, '0');
     if (config.second != null) ss = String(Number(config.second)).padStart(2, '0');
     if (config.nanosecond != null) {
-      nanos = String(Number(config.nanosecond)).padStart(9, '0');
+      const nsPadded = nanos.padEnd(9, '0');
+      nanos = nsPadded.slice(0, 6) + String(Number(config.nanosecond)).padStart(3, '0');
     }
     if (config.microsecond != null) {
-      const us = String(Number(config.microsecond)).padStart(6, '0');
-      nanos = nanos ? nanos.slice(0, 3) + us : us + '000';
+      const usPadded = nanos.padEnd(9, '0');
+      nanos = String(Number(config.microsecond)).padStart(6, '0') + usPadded.slice(6);
     }
     if (config.millisecond != null) {
-      const ms = String(Number(config.millisecond)).padStart(3, '0');
-      nanos = nanos ? ms + nanos.slice(3) : ms + '000000';
+      const msPadded = nanos.padEnd(9, '0');
+      nanos = String(Number(config.millisecond)).padStart(3, '0') + msPadded.slice(3);
     }
     // Build time string with appropriate precision
     let timeStr;
@@ -1267,7 +1306,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (!dtResult.match(/[Z+]/) && !/(?:T\d{2}:\d{2}.*)?[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/.test(dtResult)) {
       dtResult = dtResult + 'Z';
     }
-    if (extra.length > 0) dtResult = _applyTruncateConfig(dtResult, extra[0], r);
+    if (extra.length > 0) dtResult = _applyTruncateConfig(dtResult, extra[0], r, str);
     return dtResult;
   },
   "localdatetime.truncate": ([type, target, ...extra], r) => {
@@ -1275,9 +1314,12 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof t !== "string") return null;
     let str = t.startsWith("'") || t.startsWith('"') ? t.slice(1, -1) : t;
     const unit = typeof type === "string" ? type.replace(/['"]/g, "").toLowerCase() : String(_evalBinary(type, r) || "").toLowerCase();
+    // localdatetime 无时区，strip 掉输入中的时区后缀
+    const rawStr = str;
+    str = str.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/, '');
     if (!str.includes('T') && /^\d{4}-\d{2}-\d{2}$/.test(str)) str = str + 'T00:00:00';
     const dtResult = _truncateDateStr(str, unit);
-    if (extra.length > 0) return _applyTruncateConfig(dtResult, extra[0], r);
+    if (extra.length > 0) return _applyTruncateConfig(dtResult, extra[0], r, rawStr);
     return dtResult;
   },
   "time.truncate": ([type, target, ...extra], r) => {
@@ -1288,8 +1330,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     // 如果输入包含 T（datetime/date 类型），提取 T 后的时间部分
     const timeOnlyStr = str.includes('T') ? str.slice(str.indexOf('T') + 1) : str;
     const result = _truncateTimeStr(timeOnlyStr, unit);
-    if (extra.length > 0) return _applyTruncateConfig(result, extra[0], r);
-    return result;
+    // time 类型必须有 Z 或偏移后缀。如果 truncation 结果没有时区后缀，加 Z
+    const resultHasTz = /[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/.test(result);
+    const finalResult = resultHasTz ? result : result + 'Z';
+    if (extra.length > 0) return _applyTruncateConfig(finalResult, extra[0], r);
+    return finalResult;
   },
   "localtime.truncate": ([type, target, ...extra], r) => {
     const t = _evalBinary(target, r);
