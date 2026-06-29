@@ -1288,7 +1288,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (doCalendarDiff) {
       // Calendar-based diff：解析年月日小时分钟秒纳秒做字段减
       const parseDT = (s: string) => {
-        const dateRe = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        const dateRe = s.match(/^([+-]?\d+)-(\d{2})-(\d{2})/);
         const timeRe = s.match(/T(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
         const y = dateRe ? parseInt(dateRe[1],10) : 0, mo = dateRe ? parseInt(dateRe[2],10) : 1, d = dateRe ? parseInt(dateRe[3],10) : 1;
         const h = timeRe ? parseInt(timeRe[1],10) : 0, mi = timeRe ? parseInt(timeRe[2],10) : 0;
@@ -1388,24 +1388,63 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     return result;
   },
   "duration.inDays": ([a, b], r) => {
-    // 双参数：duration.inDays(x, y) 等价于 duration.between(x, y)（返回 ISO 持续时间）
-    if (b !== undefined && b !== null) return _callFunction("duration.between", [a, b], r)
+    if (b !== undefined && b !== null) {
+      // 纯时间类型（无日期部分）走 epoch diff
+      const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
+      if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
+      let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
+      if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '')
+      if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '')
+      const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
+      if (isTimeOnly(sa) || isTimeOnly(sb)) return 'PT0S';
+      try {
+        const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime()
+        const db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime()
+        if (isNaN(da) || isNaN(db)) return null
+        const diffDays = Math.round((db - da) / 86400000)
+        return 'P' + String(diffDays) + 'D'
+      } catch { return null }
+    }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
     return Number(m[3]||0) + Number(m[4]||0)/24 + Number(m[5]||0)/1440 + Number(m[6]||0)/86400;
   },
   "duration.inMonths": ([a, b], r) => {
-    // 双参数：duration.inMonths(x, y) 等价于 duration.between(x, y)
-    if (b !== undefined && b !== null) return _callFunction("duration.between", [a, b], r)
+    if (b !== undefined && b !== null) {
+      const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
+      if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
+      let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
+      if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '')
+      if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '')
+      const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
+      if (isTimeOnly(sa) || isTimeOnly(sb)) return 'PT0S';
+      // 用 epoch diff
+      try {
+        const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime()
+        const db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime()
+        if (isNaN(da) || isNaN(db)) return null
+        const diffMs = db - da;
+        const diffMonths = diffMs / (2629746000);
+        const sign = diffMonths < 0 ? -1 : 1;
+        const absMonths = Math.round(Math.abs(diffMonths));
+        if (absMonths === 0) return 'PT0S';
+        const years = Math.floor(absMonths / 12);
+        const months = absMonths % 12;
+        let result = 'P';
+        if (years) result += String(sign * years) + 'Y';
+        if (months) result += String(sign * months) + 'M';
+        return result;
+      } catch { return null }
+    }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
     return Number(m[1]||0)*12 + Number(m[2]||0) + Number(m[3]||0)/30.436875 + Number(m[4]||0)/730.485 + Number(m[5]||0)/43829.1;
   },
   "duration.inSeconds": ([a, b], r) => {
-    // 双参数：duration.inSeconds(x, y) 等价于 duration.between(x, y)
-    if (b !== undefined && b !== null) return _callFunction("duration.between", [a, b], r)
+    // 双参数：duration.inSeconds(x, y) — 以秒为单位的 diff（返回 ISO duration 字符串）
+    if (b !== undefined && b !== null) return _callFunction("duration.between", [a, b], r);
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
