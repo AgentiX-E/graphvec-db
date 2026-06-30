@@ -1647,7 +1647,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (b !== undefined && b !== null) {
       if (a === b && a !== 'null') return 'PT0S';
       const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
-      if (String(va).includes('2014-07-21T21:40:36.143+0200')) console.error('HELLO from inSeconds');
       if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
       let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
       const origSa = sa, origSb = sb;
@@ -1662,7 +1661,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       const anyIana = hasIana(origSa) || hasIana(origSb);
       // 策略：双方都有 TZ（且都含时间）或任一方有 IANA 时区 → between + 公式
       // IANA 场景（DST）必须走 between 以正确处理 DST 偏移
-      console.error('DEBUG bothHaveTz='+bothHaveTz+' bothHaveTime='+bothHaveTime+' anyIana='+anyIana+' origSa='+origSa+' origSb='+origSb+' hasTzSa='+hasTz(origSa)+' hasTzSb='+hasTz(origSb));
       if ((bothHaveTz || anyIana) && bothHaveTime) {
         // 走 duration.between 的日历 diff + 公式
         const durStr = _callFunction("duration.between", [a, b], r);
@@ -1701,7 +1699,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         const minNs = 60n * 1000000000n;
         const oneSecNs = 1000000000n;
         const _dbg_y = Number(y), _dbg_mo = Number(mo), _dbg_d = Number(d), _dbg_h = Number(h), _dbg_mi = Number(mi), _dbg_sInt = Number(sInt), _dbg_ns = Number(ns), _dbg_totalNs = Number(totalNsBig);
-        console.error('YMDHMINSSNS=',_dbg_y,_dbg_mo,_dbg_d,_dbg_h,_dbg_mi,_dbg_sInt,_dbg_ns,'totalNsBig=',_dbg_totalNs);
         let totalHN = Number(absNsBig / hourNs);
         let rem = absNsBig % hourNs;
         let totalMN = Number(rem / minNs);
@@ -1725,7 +1722,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           else rr += (isNeg ? '-' : '') + String(Math.abs(totalSN)) + nss + 'S';
         }
         if (rr === 'PT') rr = 'PT0S';
-        console.error('BETWEEN PATH returning:', rr);
         return rr;
       }
       // localdatetime+localdatetime 等无时区组合（bothHaveTime && !anyIana && !bothHaveTz）→       // 超大年份// 超大年份（超出 Date 范围）走 between BigInt + 格里历年系数
