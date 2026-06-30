@@ -246,10 +246,10 @@ export function _extractDurationProp(durStr: string, prop: string): number | nul
   const y = parseFloat(years || '0'), mo = parseFloat(months || '0')
   const d = parseFloat(days || '0'), h = parseFloat(hours || '0')
   const min = parseFloat(minutes || '0'), sec = parseFloat(seconds || '0')
-  // 分离纳秒：小数秒 -> 纳秒（如 59.9 的整数部分 59，纳秒 900000000）
-  const secMatch = seconds?.match(/^(-?\d+)\.(\d+)$/)
-  const secInt = secMatch ? parseInt(secMatch[1], 10) : Math.floor(Math.abs(parseFloat(seconds || '0')) * Math.sign(parseFloat(seconds || '0') || 1))
-  const secFrac = secMatch ? parseFloat('0.' + secMatch[2]) : (parseFloat(seconds || '0') - secInt)
+  // 分离纳秒：小数秒 -> 纳秒（Cypher 用 ceil 拆分为整秒 + 正 ns）
+  const secVal = parseFloat(seconds || '0')
+  const secInt = secVal < 0 ? Math.ceil(secVal) - 1 : Math.floor(secVal)
+  const secFrac = secVal - secInt
   const nanos = Math.round(Math.abs(secFrac) * 1e9)
   switch (prop) {
     case 'years': return sign * y
@@ -1359,30 +1359,64 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     // 去掉 IANA 时区后缀 [Europe/Stockholm] 等，留纯 ISO 格式
     if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '')
     if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '')
-    // 纯时间类型（无日期部分）不走 calendar diff
+    // 双方都是纯时间（无日期、无时区）时用 epoch diff
     const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
-    const timeOnlyLookup = isTimeOnly(origSa) || isTimeOnly(origSb);
+    const anyTimeHasTz = (s: string, t: string) => /[Z+]/.test(s) || /[Z+]/.test(t);
+    const allTimeOnly = isTimeOnly(origSa) && isTimeOnly(origSb) && !anyTimeHasTz(origSa, origSb);
     // 处理跨类型 temporal：当一方是日期另一方是纯时间时组合
     const isDateVal = (s: string) => /^\d{4}/.test(s) && !s.includes("T")
     const isTimeVal = (s: string) => !s.includes("T") && s.includes(":")
     const isDateTime = (s: string) => s.includes("T")
-    if (isDateVal(sa) && isTimeVal(sb)) { sb = sa + "T" + sb; sa = sa + "T00:00:00" }
-    else if (isDateVal(sb) && isTimeVal(sa)) { sa = sb + "T" + sa; sb = sb + "T00:00:00" }
+    if (isDateVal(sa) && isTimeVal(sb)) {
+      sb = sa + "T" + sb;
+      // date 升格为 datetime 时，借 time 的时区偏移（支持 +0100 和 +01:00 两种格式）
+      const timeTz = sb.match(/[+-]\d{2}:?\d{2}(?:\[[^\]]+\])?$/);
+      if (timeTz) sa = sa + "T00:00:00" + timeTz[0];
+      else sa = sa + "T00:00:00";
+      console.log('=== DUR DATE+TIME === sa:', sa, 'sb:', sb, 'timeTz:', timeTz);
+    } else if (isDateVal(sb) && isTimeVal(sa)) {
+      sa = sb + "T" + sa;
+      const timeTz = sa.match(/[+-]\d{2}:?\d{2}(?:\[[^\]]+\])?$/);
+      if (timeTz) sb = sb + "T00:00:00" + timeTz[0];
+      else sb = sb + "T00:00:00";
+    }
     // time vs datetime：从 datetime 提取日期部分作为 time 的基础
-    if (isTimeVal(sa) && isDateTime(sb)) { const base = sb.slice(0, sb.indexOf('T')); sa = base + "T" + sa }
-    else if (isTimeVal(sb) && isDateTime(sa)) { const base = sa.slice(0, sa.indexOf('T')); sb = base + "T" + sb }
+    if (isTimeVal(sa) && isDateTime(sb)) {
+      const base = sb.includes('T') ? sb.slice(0, sb.indexOf('T')) : sb.slice(0, 10);
+      sa = base + "T" + sa;
+      // time 不带时区，datetime 的时区只在统一时区时才考虑
+    } else if (isTimeVal(sb) && isDateTime(sa)) {
+      const base = sa.includes('T') ? sa.slice(0, sa.indexOf('T')) : sa.slice(0, 10);
+      sb = base + "T" + sb;
+    }
     // 双方都是纯时间：用 epoch 日期做基准
-    if (isTimeVal(sa) && isTimeVal(sb)) { sa = "1970-01-01T" + sa; sb = "1970-01-01T" + sb }
+    if (isTimeVal(sa) && isTimeVal(sb)) {
+      sa = "1970-01-01T" + sa; sb = "1970-01-01T" + sb;
+    }
     
     // 判断是否可以做 calendar-based diff：只要一方是 localdatetime/date（无时区），就用 calendar diff
     const hasTimezone = (s: string) => {
       const afterT = s.includes('T') ? s.slice(s.indexOf('T')+1) : '';
       return /[Z+-]/.test(afterT.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''));
     };
-    const bothNoTz = !timeOnlyLookup && !hasTimezone(sa) && !hasTimezone(sb);
-    const mixedTz = !timeOnlyLookup && hasTimezone(sa) !== hasTimezone(sb);
-    const doCalendarDiff = bothNoTz || mixedTz;
+    const bothNoTz = !allTimeOnly && !hasTimezone(sa) && !hasTimezone(sb);
+    const mixedTz = !allTimeOnly && hasTimezone(sa) !== hasTimezone(sb);
+    const hasPureDate = isDateVal(origSa) || isDateVal(origSb);
+    // datetime+datetime 走 calendar diff（YMD 拆解需求）
+    const bothDateTime = sa.includes('T') && sb.includes('T') && !allTimeOnly;
+    const doCalendarDiff = bothNoTz || mixedTz || hasPureDate || bothDateTime;
     if (doCalendarDiff) {
+      // 统一时区：对两边带时区的 datetime 先转 UTC（仅时区不同时）
+      const saTz = sa.match(/[+-]\d{2}:?\d{2}(?:\[[^\]]+\])?$|Z$/);
+      const sbTz = sb.match(/[+-]\d{2}:?\d{2}(?:\[[^\]]+\])?$|Z$/);
+      if (saTz && sbTz && saTz[0] !== sbTz[0]) {
+        // 两边都有时区且不同 → 统一到 UTC
+        const d1 = new Date(sa), d2 = new Date(sb);
+        if (!isNaN(d1.getTime()) && !isNaN(d2.getTime())) {
+          sa = d1.toISOString().replace('Z', 'Z');
+          sb = d2.toISOString().replace('Z', 'Z');
+        }
+      }
       // Calendar-based diff：解析年月日小时分钟秒纳秒做字段减
       const parseDT = (s: string) => {
         const dateRe = s.match(/^([+-]?\d+)-(\d{2})-(\d{2})/);
@@ -1399,11 +1433,14 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           } else { sec = parseInt(secStr,10); }
         }
         return { y, mo, d, h, mi, sec, ns };
-      };
+      }
       let aDT = parseDT(sa), bDT = parseDT(sb);
-      const sign = (bDT.y > aDT.y || (bDT.y === aDT.y && bDT.mo > aDT.mo) || (bDT.y === aDT.y && bDT.mo === aDT.mo && bDT.d > aDT.d)) ? 1 : -1;
-      // 确保 a <= b
+
+      const sign = (bDT.y > aDT.y || (bDT.y === aDT.y && bDT.mo > aDT.mo) || (bDT.y === aDT.y && bDT.mo === aDT.mo && bDT.d > aDT.d) || (bDT.y === aDT.y && bDT.mo === aDT.mo && bDT.d === aDT.d && bDT.h > aDT.h) || (bDT.y === aDT.y && bDT.mo === aDT.mo && bDT.d === aDT.d && bDT.h === aDT.h && bDT.mi > aDT.mi) || (bDT.y === aDT.y && bDT.mo === aDT.mo && bDT.d === aDT.d && bDT.h === aDT.h && bDT.mi === aDT.mi && bDT.sec > aDT.sec) || (bDT.y === aDT.y && bDT.mo === aDT.mo && bDT.d === aDT.d && bDT.h === aDT.h && bDT.mi === aDT.mi && bDT.sec === aDT.sec && bDT.ns >= aDT.ns)) ? 1 : -1;
+      // 确保 a <= b，swap 后 sign 肯定为负
       if (sign < 0) { [aDT, bDT] = [bDT, aDT]; }
+      // sign 现在反映方向：-1 表示结果应该是负的（当原始 b < a 时输出负值）
+      // 注意：sign 是原始方向，在格式化输出时用于前缀负号
       
       // 字段减（带借位）
       let nsDiff = bDT.ns - aDT.ns;
@@ -1428,9 +1465,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       }
       if (moDiff < 0) { moDiff += 12; yDiff--; }
       
-      const maybeSignS = (v: number) => {
+            const maybeSignS = (v: number) => {
         if (v === 0) return "0";
-        return sign < 0 && v > 0 ? ("-" + v) : String(v);
+        // sign < 0 表示 b < a（原始方向），即结果是负的
+        // 但因为可能 swap 过了，sign 保持原始方向
+        return v > 0 && sign < 0 ? ("-" + v) : String(v);
       };
       // 对于纯时间只输出时间部分（P 不含 D）
       const isPureTime = !isDateVal(sa) && !sa.includes('-'); // simple heuristic
@@ -1458,9 +1497,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (isNaN(da) || isNaN(db)) return null
     const diff = db - da;
     const absDiff = Math.abs(diff);
-    const totalSec = Math.floor(absDiff / 1000);
-    // 纳秒部分（毫秒内的余数）
-    const ns = (absDiff % 1000) * 1000000;
+    const totalSec = Math.floor((absDiff + 999) / 1000); // ceil division for negative durations
+    // 纳秒部分：ceil 后的余量（正数），单位 ns
+    const nsMs = totalSec * 1000 - absDiff; // 毫秒级别（可能负）
+    const ns = Math.abs(nsMs) * 1000000;
     const nss = ns > 0 ? "." + String(ns).padStart(9,"0").replace(/0+$/,"") : "";
     // ISO 8601 格式：PT22H 或 PT-22H（所有组件加负号前缀）
     const sign = diff < 0;
@@ -1479,14 +1519,20 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       result += "T";
       if (h) result += maybeSign(h) + "H";
       if (m) result += maybeSign(m) + "M";
-      if (sec || ns > 0) result += maybeSign(sec) + nss + "S";
+      if (sec || ns > 0) {
+        if (sec === 0 && ns > 0 && sign) {
+          // 纯亚秒 diff 且为负：need "-0.xxxS"
+          result += "-0" + nss + "S";
+        } else {
+          result += maybeSign(sec) + nss + "S";
+        }
+      }
     }
     if (result === 'P') return 'PT0S';
     return result;
   },
   "duration.inDays": ([a, b], r) => {
     if (b !== undefined && b !== null) {
-      // 纯时间类型（无日期部分）走 epoch diff
       const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
       if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
       let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
@@ -1495,145 +1541,154 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
       if (isTimeOnly(sa) || isTimeOnly(sb)) return 'PT0S';
       try {
-        const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime()
-        const db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime()
+        // 纯日期值加 Z 避免系统时区扰动
+        const normalize = (s: string) => s.includes('T') ? s : s + 'T00:00:00Z';
+        const da = new Date(normalize(sa)).getTime()
+        const db = new Date(normalize(sb)).getTime()
         if (isNaN(da) || isNaN(db)) return null
-        const diffDays = Math.round((db - da) / 86400000)
+        const diffDays = Math.floor(Math.abs(db - da) / 86400000) * (db - da < 0 ? -1 : 1);
+        if (diffDays === 0) return 'PT0S';
         return 'P' + String(diffDays) + 'D'
       } catch { return null }
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
-    const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
-    return Number(m[3]||0) + Number(m[4]||0)/24 + Number(m[5]||0)/1440 + Number(m[6]||0)/86400;
+    const sign = v.replace(/['"]/g,"").startsWith('-') || v.replace(/['"]/g,"").indexOf('P-') >= 0 ? -1 : 1;
+    const d = Number(m[3]||0), h = Number(m[4]||0), mi = Number(m[5]||0), s = Number(m[6]||0);
+    if (sign < 0) return -(d + h/24 + mi/1440 + s/86400);
+    return d + h/24 + mi/1440 + s/86400;
   },
   "duration.inMonths": ([a, b], r) => {
     if (b !== undefined && b !== null) {
-      const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
-      if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
-      let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
-      if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '')
-      if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '')
-      const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
-      if (isTimeOnly(sa) || isTimeOnly(sb)) return 'PT0S';
-      const ianaPrefix = sa.match(/\[([A-Za-z_/]+)\]/) || sb.match(/\[([A-Za-z_/]+)\]/);
-      const ianaTzName = ianaPrefix ? ianaPrefix[1] : undefined;
-      // 用 epoch diff
-      try {
-        const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime()
-        const db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime()
-        if (isNaN(da) || isNaN(db)) return null
-        const diffMs = db - da;
-        const diffMonths = diffMs / (2629746000);
-        const sign = diffMonths < 0 ? -1 : 1;
-        const absMonths = Math.round(Math.abs(diffMonths));
-        if (absMonths === 0) return 'PT0S';
-        const years = Math.floor(absMonths / 12);
-        const months = absMonths % 12;
+      // 委托给 duration.between 取得 duration 字符串，再提取月数
+      const durStr = _callFunction("duration.between", [a, b], r);
+      if (typeof durStr === "string" && durStr !== null) {
+        const m = durStr.replace(/['"]/g,"").match(/-?P(?:(-?\d+)Y)?(?:(-?\d+)M)?(?:(-?\d+\.?\d*)D)?(?:T(?:(-?\d+\.?\d*)H)?(?:(-?\d+\.?\d*)M)?(?:(-?[\d.]+)S)?)?/);
+        if (!m) return 'PT0S';
+        const sgn = durStr.replace(/['"]/g,"").startsWith('-') || durStr.replace(/['"]/g,"").includes('P-') ? -1 : 1;
+        const years = Math.abs(Number(m[1]||0)), months = Math.abs(Number(m[2]||0));
+        const totalMonths = (years * 12 + months) * sgn;
+        if (Math.abs(totalMonths) < 0.5) return 'PT0S';
+        const sign = totalMonths < 0 ? -1 : 1;
+        const absMonths = Math.round(Math.abs(totalMonths));
+        const years_out = Math.floor(absMonths / 12);
+        const months_out = absMonths % 12;
         let result = 'P';
-        if (years) result += String(sign * years) + 'Y';
-        if (months) result += String(sign * months) + 'M';
+        if (years_out) result += String(sign * years_out) + 'Y';
+        if (months_out) result += String(sign * months_out) + 'M';
         return result;
-      } catch { return null }
+      }
+      return 'PT0S';
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
-    const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
-    return Number(m[1]||0)*12 + Number(m[2]||0) + Number(m[3]||0)/30.436875 + Number(m[4]||0)/730.485 + Number(m[5]||0)/43829.1;
+    const sign = v.replace(/['"]/g,"").startsWith('-') || v.replace(/['"]/g,"").indexOf('P-') >= 0 ? -1 : 1;
+    const y = Number(m[1]||0), mo = Number(m[2]||0), d = Number(m[3]||0);
+    const h = Number(m[4]||0), mi = Number(m[5]||0), s = Number(m[6]||0);
+    if (sign < 0) return -(y*12 + mo + d/30.436875 + h/730.485 + mi/43829.1);
+    return y*12 + mo + d/30.436875 + h/730.485 + mi/43829.1;
   },
   "duration.inSeconds": ([a, b], r) => {
-    // 双参数：duration.inSeconds(x, y) — 以秒为单位的 epoch diff
+    // 双参数：duration.inSeconds(x, y) — 委托 duration.between 再分段提取 Y→h, D→h, T 原生
     if (b !== undefined && b !== null) {
-      const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
-      if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
-      let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
-      // 在 strip [IANA] 前检测 DST 场景
-      const isTimeOnly_inSec = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
-      const ianaTzMatch = (sa + sb).match(/\[([A-Za-z_/]+)\]/);
-      if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '')
-      if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '')
-      // 纯时间类型
-      const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
-      // 记录原始 sa/sb（纯时间修复前），用于后续时区检测
-      const origSaForTz = sa.replace(/\[.*\]$/, '');
-      const origSbForTz = sb.replace(/\[.*\]$/, '');
-      if (isTimeOnly(sa) && isTimeOnly(sb)) {
-        sa = "1970-01-01T" + sa; sb = "1970-01-01T" + sb;
-      } else if (isTimeOnly(sa)) {
-        const base = sb.includes("T") ? sb.slice(0, sb.indexOf('T')) : sb.slice(0, 10);
-        sa = base + "T" + sa;
-      } else if (isTimeOnly(sb)) {
-        const base = sa.includes("T") ? sa.slice(0, sa.indexOf('T')) : sa.slice(0, 10);
-        sb = base + "T" + sb;
-      }
-      // 检测是否有 IANA 时区在操作数中（用于 DST 计算），跳过纯时间
-      const hasIana = !!ianaTzMatch;
-      const sia = sa.replace(/\[.*\]$/, '');
-      const sib = sb.replace(/\[.*\]$/, '');
-      // 有 IANA 时区且一方带时区一方不带（包括 localtime 的 Z 后缀），或者双方都有时区但有 IANA
-      const haTz = /[Z+]/.test(origSaForTz) || /[Z+]/.test(sia);
-      const hbTz = /[Z+]/.test(origSbForTz) || /[Z+]/.test(sib);
-      const isTimeOnlyA = isTimeOnly(sa), isTimeOnlyB = isTimeOnly(sb);
-      // 对于 IANA 场景：只要 isTimeOnly 不把双方都变成纯时间且一方是纯 local (只有Z或无时区)，就算 mixedTz
-      let mixedTz = false;
-      if (hasIana) {
-        mixedTz = !isTimeOnlyA && !isTimeOnlyB; // 有 IANA 时区则总是 DST diff
-      } else {
-        mixedTz = !isTimeOnlyA && !isTimeOnlyB && (haTz !== hbTz);
-      }
-      if (hasIana && mixedTz) {
-        // DST-aware diff：用 Intl 工具计算包含 DST 的精确 epoch diff
+      const vA = _evalBinary(a, r); const vB = _evalBinary(b, r);
+      const origSa = typeof vA === 'string' ? String(vA).replace(/['"]/g,"") : '';
+      const origSb = typeof vB === 'string' ? String(vB).replace(/['"]/g,"") : '';
+      const durStr = _callFunction("duration.between", [a, b], r);
+      if (typeof durStr !== "string" || durStr === null) {
+        // fallback：纯时间场景用 epoch diff
+        const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
+        if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
+        let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
+        if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, ''); if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '');
+        const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
+        if (isTimeOnly(sa) && isTimeOnly(sb)) {
+          sa = '1970-01-01T' + sa + 'Z'; sb = '1970-01-01T' + sb + 'Z';
+        }
         try {
-          const ianaTz = ianaTzMatch[1];
-          // 把无时区的值视为 IANA 时区的对应时间
-          const aDate = haTz ? new Date(sia) : _tzLocalToUTC(sia, ianaTz);
-          const bDate = hbTz ? new Date(sib) : _tzLocalToUTC(sib, ianaTz);
-          if (aDate && bDate && !isNaN(aDate.getTime()) && !isNaN(bDate.getTime())) {
-            const diffMs = bDate.getTime() - aDate.getTime();
-            const sign = diffMs < 0 ? -1 : 1;
-            const maybeSignInSec = (v: number) => v === 0 ? '0' : (sign < 0 ? String(sign * v) : String(v));
-            const absSec = Math.abs(diffMs) / 1000;
-            const h = Math.floor(absSec / 3600);
-            const m = Math.floor((absSec % 3600) / 60);
-            const s = absSec % 60;
-            const secInt = Math.floor(s);
-            const ns = Math.round((s - secInt) * 1e9);
-            let result = 'PT';
-            if (h) result += maybeSignInSec(h) + 'H';
-            if (m) result += maybeSignInSec(m) + 'M';
-            const nss = ns > 0 ? '.' + String(ns).padStart(9, '0').replace(/0+$/, '') : '';
-            if (secInt || ns > 0) result += maybeSignInSec(secInt) + nss + 'S';
-            if (result === 'PT') result = 'PT0S';
-            return result;
+          const da = Math.round(new Date(sa).getTime()), db = Math.round(new Date(sb).getTime());
+          if (!isNaN(da) && !isNaN(db)) {
+            const diffMs = db - da, sign = diffMs < 0 ? -1 : 1, absMs = Math.abs(diffMs);
+            const totalH = Math.floor(absMs / 3600000), rm = absMs - totalH * 3600000;
+            const totalM = Math.floor(rm / 60000), svMs = rm - totalM * 60000;
+            const secInt = Math.floor(svMs / 1000), ns = Math.round((svMs - secInt * 1000) * 1000000);
+            const ms = (v:number) => sign < 0 ? '-' + String(v) : String(v);
+            let r='PT'; if(totalH)r+=ms(totalH)+'H'; if(totalM)r+=ms(totalM)+'M';
+            const nss=ns>0?'.'+String(ns).padStart(9,'0').replace(/0+$/,''):'';
+            if(secInt||ns>0){if(secInt===0&&ns>0&&sign<0)r+='-0'+nss+'S';else r+=ms(secInt)+nss+'S';}
+            if(r==='PT')r='PT0S'; return r;
           }
         } catch {}
+        return null;
       }
-      // 非 IANA 或 DST 场景：standard epoch diff
-      try {
-        const da = new Date(sa.includes("T") ? sa : sa+"T00:00:00").getTime()
-        const db = new Date(sb.includes("T") ? sb : sb+"T00:00:00").getTime()
-        if (isNaN(da) || isNaN(db)) return _callFunction("duration.between", [a, b], r);
-        const diffMs = db - da;
-        const sign = diffMs < 0 ? -1 : 1;
-        const absSec = Math.abs(diffMs) / 1000;
-        const h = Math.floor(absSec / 3600);
-        const m = Math.floor((absSec % 3600) / 60);
-        const s = absSec % 60;
-        const secInt = Math.floor(s);
-        const ns = Math.round((s - secInt) * 1e9);
-        let result = 'PT';
-        if (h) result += maybeSign(sign * h) + 'H';
-        if (m) result += maybeSign(sign * m) + 'M';
-        const nss = ns > 0 ? '.' + String(ns).padStart(9, '0').replace(/0+$/, '') : '';
-        if (secInt || ns > 0) result += maybeSign(sign * secInt) + nss + 'S';
-        if (result === 'PT') result = 'PT0S';
-        return result;
-      } catch { return _callFunction("duration.between", [a, b], r); }
+      // 如果 durStr 含 Y/M 且一方是纯日期（epoch diff 更准确），走 epoch diff
+      const isDateOnly = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+      const useEpoch = durStr.match(/[YM]/) && (isDateOnly(origSa) || isDateOnly(origSb));
+      // 使用 duration.calendar 公式：Y*31557600 + M*2629800 + D*86400 + H*3600 + M*60 + S
+      let sign = 1;
+      { const n = durStr.replace(/['"]/g,"");
+        const yM = n.match(/(\d+)Y/);
+        const moM = n.match(/(\d+)M(?=\d*[DT])/); // M 后跟 D 或 T 之前的才是月
+        const dM = n.match(/(\d+)D/);
+        const tPart = n.indexOf('T') >= 0 ? n.slice(n.indexOf('T')) : '';
+        const hM = tPart.match(/([\d.]+)H/);
+        const miM = tPart.match(/([\d.]+)M(?!S)/); // T 域中 M 后不跟 S 的才是分钟
+        const sM = tPart.match(/([\d.]+)S/);
+        const isNeg = n.startsWith('-') || n.includes('P-');
+        const sg = isNeg ? -1 : 1;
+        sign = sg;
+        const y = (Number(yM?.[1]||0)) * sg;
+        const mo = (Number(moM?.[1]||0)) * sg;
+        const d = (Number(dM?.[1]||0)) * sg;
+        const h = Number(hM?.[1]||0);
+        const mi = Number(miM?.[1]||0);
+        const sRaw = Number(sM?.[1]||0);
+        const tNeg = tPart.startsWith('-') ? -1 : 1;
+        const totalSec = y*31557600 + mo*2629800 + d*86400 + h*3600*tNeg + mi*60*tNeg + sRaw*tNeg;
+        const absH = Math.floor(Math.abs(totalSec) / 3600);
+        const signSec = totalSec < 0 ? -1 : 1;
+        const absMs = Math.abs(totalSec * 1000);
+        totalH = absH;
+        totalM = Math.floor((absMs - totalH*3600000) / 60000);
+        totalS = Math.floor((absMs - totalH*3600000 - totalM*60000) / 1000);
+        totalNs = absMs - totalH*3600000 - totalM*60000 - totalS*1000;
+        totalNs = Math.round(totalNs * 1000000);
+        if (signSec < 0) {
+          // 负秒借位
+          if (totalNs > 0) { totalNs = 1e9 - totalNs; totalS++; }
+          totalH = -totalH;
+          totalM = totalM > 0 ? -totalM : 0;
+          totalS = totalS > 0 ? -totalS : 0;
+        }
+      }
+      // 规范化负值
+      if (totalNs < 0) { totalNs += 1e9; totalS--; }
+      if (totalS < 0) { totalS += 60; totalM--; }
+      if (totalM < 0) { totalM += 60; totalH--; }
+      if (totalNs >= 1e9) { totalNs -= 1e9; totalS++; }
+      if (totalS >= 60) { totalS -= 60; totalM++; }
+      if (totalM >= 60) { totalM -= 60; totalH++; }
+      const ms = (v:number) => sign < 0 ? '-' + String(v) : String(v);
+      let result = 'PT';
+      if (totalH) result += ms(Math.abs(totalH)) + 'H';
+      if (totalM) result += ms(Math.abs(totalM)) + 'M';
+      const nss = totalNs > 0 ? '.' + String(totalNs).padStart(9,'0').replace(/0+$/,'') : '';
+      if (totalS || totalNs > 0) {
+        if (totalS === 0 && totalNs > 0 && sign < 0) result += '-0' + nss + 'S';
+        else result += ms(Math.abs(totalS)) + nss + 'S';
+      }
+      if (result === 'PT') result = 'PT0S';
+      return result;
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
-    const m = v.replace(/['"]/g,"").match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
-    return Number(m[1]||0)*31557600 + Number(m[2]||0)*2629800 + Number(m[3]||0)*86400 + Number(m[4]||0)*3600 + Number(m[5]||0)*60 + Number(m[6]||0);
+    const sign = v.replace(/['"]/g,"").startsWith('-') || v.replace(/['"]/g,"").indexOf('P-') >= 0 ? -1 : 1;
+    const y = Number(m[1]||0), mo = Number(m[2]||0), d = Number(m[3]||0), h = Number(m[4]||0), mi = Number(m[5]||0), s = Number(m[6]||0);
+    if (sign < 0) return -(y*31557600 + mo*2629800 + d*86400 + h*3600 + mi*60 + s);
+    return y*31557600 + mo*2629800 + d*86400 + h*3600 + mi*60 + s;
   },
 }
 
