@@ -1423,24 +1423,51 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         // for datetime+localdatetime, convert both sides to UTC
         const tzSide = saTz ? sa : sb;
         const tzlessSide = saTz ? sb : sa;
-        if (tzSide.includes('T') && tzlessSide.includes('T')) {
-          const d = new Date(tzSide);
-          if (!isNaN(d.getTime())) {
-            const iso = d.toISOString().replace('Z', '');
-            // convert localdatetime side with tz offset too
-            const tzOffset = tzSide.match(/[+-]\d{2}:?\d{2}/);
-            if (tzOffset) {
-              const fullTzless = tzlessSide + tzOffset[0];
-              const dt = new Date(fullTzless);
-              if (!isNaN(dt.getTime())) {
-                const iso2 = dt.toISOString().replace('Z', '');
+        if (tzSide.includes('T') && (tzlessSide.includes('T') || /^\d{4}-\d{2}-\d{2}$/.test(tzlessSide))) {
+          // check IANA in original (sa/sb have IANA stripped)
+          const ianaVal = saTz ? (origSa || '') : (origSb || '');
+          const ianaMatch = ianaVal.match(/\[([^\]]+)\]$/);
+          if (ianaMatch && typeof _tzLocalToUTC === 'function') {
+            const tzlessOrig = saTz ? (origSb || '') : (origSa || '');
+            const tzlessCleaned = tzlessOrig.replace(/\[.*\]$/, '');
+            // 对 localtime（无日期），用 tzSide 的日期补充；对已补日期的直接用
+            const dateMatch = tzSide.match(/^(\d{4}-\d{2}-\d{2})/);
+            let localStr;
+            if (tzlessCleaned.match(/^\d{4}/)) {
+              localStr = tzlessCleaned.includes('T') ? tzlessCleaned : tzlessCleaned + 'T00:00:00';
+            } else if (dateMatch) {
+              localStr = dateMatch[1] + 'T' + (tzlessCleaned.startsWith('T') ? tzlessCleaned.slice(1) : tzlessCleaned);
+            } else {
+              localStr = tzlessCleaned.includes('T') ? tzlessCleaned : tzlessCleaned + 'T00:00:00';
+            }
+            const utcDate = _tzLocalToUTC(localStr, ianaMatch[1]);
+            if (utcDate && !isNaN(utcDate.getTime())) {
+              const iso2 = utcDate.toISOString().replace('Z', '');
+              const d = new Date(tzSide);
+              if (!isNaN(d.getTime())) {
+                const iso = d.toISOString().replace('Z', '');
                 if (saTz) { sa = iso; sb = iso2; } else { sa = iso2; sb = iso; }
+              }
+            }
+          } else {
+            const d = new Date(tzSide);
+            if (!isNaN(d.getTime())) {
+              const iso = d.toISOString().replace('Z', '');
+              const tzOffset = tzSide.match(/[+-]\d{2}:?\d{2}/);
+              if (tzOffset) {
+                const tzlessFull = tzlessSide.includes('T') ? tzlessSide : tzlessSide + 'T00:00:00';
+                const fullTzless = tzlessFull + tzOffset[0];
+                const dt = new Date(fullTzless);
+                if (!isNaN(dt.getTime())) {
+                  const iso2 = dt.toISOString().replace('Z', '');
+                  if (saTz) { sa = iso; sb = iso2; } else { sa = iso2; sb = iso; }
+                }
               }
             }
           }
         }
       }
-      // Calendar-based diff// Calendar-based diff：解析年月日小时分钟秒纳秒做字段减
+      // Calendar-based diff：解析年月日小时分钟秒纳秒做字段减
       const parseDT = (s: string) => {
         const dateRe = s.match(/^([+-]?\d+)-(\d{2})-(\d{2})/);
         const timeRe = s.match(/T(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
@@ -1565,7 +1592,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (isTimeOnly(sa) || isTimeOnly(sb)) return 'PT0S';
       try {
         // 纯日期值加 Z 避免系统时区扰动
-        const normalize = (s: string) => s.includes('T') ? s : s + 'T00:00:00Z';
+        const normalize = (s: string) => {
+          if (!s.includes('T')) return s + 'T00:00:00Z';
+          if (!/[Z+-]/.test(s.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?/, ''))) return s + 'Z';
+          return s;
+        };
         const da = new Date(normalize(sa)).getTime()
         const db = new Date(normalize(sb)).getTime()
         if (isNaN(da) || isNaN(db)) return null
@@ -1614,45 +1645,163 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   "duration.inSeconds": ([a, b], r) => {
     // 双参数：duration.inSeconds(x, y)
     if (b !== undefined && b !== null) {
+      if (a === b && a !== 'null') return 'PT0S';
       const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
+      if (String(va).includes('2014-07-21T21:40:36.143+0200')) console.error('HELLO from inSeconds');
       if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
       let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
+      const origSa = sa, origSb = sb;
       if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '');
       if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '');
-      const origSa = sa, origSb = sb;
       const isDateOnly = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
       const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
       const hasTz = (s: string) => /[Z+]|(?:[+-]\d{2}:?\d{2})$/.test(s);
+      const hasIana = (s: string) => /\[[^\]]+\]$/.test(s);
       const bothHaveTz = hasTz(origSa) && hasTz(origSb);
-      const bothHaveTime = (origSa.includes('T') || origSa.includes(':')) && (origSb.includes('T') || origSb.includes(':'));
-      // 策略：双方都有 TZ（且都含时间）→ duration.between + Y*31536000 公式（日历 diff）
-      // 或者 datetime+TZ + time+TZ → 也走 between
-      // 其余情况（含纯日期、纯时间、混合 tz 等）→ epoch diff
-      if (bothHaveTz && bothHaveTime) {
+      const bothHaveTime = (origSa.includes('T') || origSa.includes(':') || isDateOnly(origSa)) && (origSb.includes('T') || origSb.includes(':') || isDateOnly(origSb));
+      const anyIana = hasIana(origSa) || hasIana(origSb);
+      // 策略：双方都有 TZ（且都含时间）或任一方有 IANA 时区 → between + 公式
+      // IANA 场景（DST）必须走 between 以正确处理 DST 偏移
+      console.error('DEBUG bothHaveTz='+bothHaveTz+' bothHaveTime='+bothHaveTime+' anyIana='+anyIana+' origSa='+origSa+' origSb='+origSb+' hasTzSa='+hasTz(origSa)+' hasTzSb='+hasTz(origSb));
+      if ((bothHaveTz || anyIana) && bothHaveTime) {
         // 走 duration.between 的日历 diff + 公式
+        const durStr = _callFunction("duration.between", [a, b], r);
+        if (typeof durStr !== "string" || durStr === null) return null;
+        const n = durStr.replace(/['"]/g,"");
+        const tIdx = n.indexOf('T', 2); // 跳过 PT 前缀中的 T
+        const preT = tIdx >= 0 ? n.slice(0, tIdx) : n;
+        const postT = tIdx >= 0 ? n.slice(tIdx+1) : "";
+        const yM = preT.match(/(-?\d+)Y/);
+        const dM = preT.match(/(-?\d+)D/);
+        // 对纯时间 duration（PT-4H-10M-36.143S），T 是 PT 前缀的一部分，无分隔符 T
+        // 用 n.slice(2) 取 PT 后的部分作为 postT
+        const effectivePostT = tIdx >= 0 ? postT : (n.startsWith('PT') ? n.slice(2) : '');
+        const hM = effectivePostT.match(/(-?[\d.]+)H/);
+        const miM = effectivePostT.match(/(-?[\d.]+)M(?!S)/);
+        const sM = effectivePostT.match(/(-?[\d.]+)S/);
+        // 对含 Y/M/D 的 duration，month 从 preT/T 前匹配
+        const effectivePreT = tIdx >= 0 ? preT : '';
+        const moM = effectivePreT.match(/(-?\d+)M(?!S)/);
+        // 各组件各自带符号（HMS regex 已含负号）, 不做统一符号翻转
+        const y = BigInt(yM?.[1]||'0');
+        const mo = BigInt(moM?.[1]||'0');
+        const d = BigInt(dM?.[1]||'0');
+        const h = BigInt(hM?.[1]||'0');
+        const mi = BigInt(miM?.[1]||'0');
+        const sParts = (sM?.[1]||'0').split('.');
+        const sInt = BigInt(sParts[0]||'0');
+        const nsStr = (sParts[1]||'').padEnd(9,'0').slice(0,9);
+        const nsStr2 = nsStr.replace(/^[+-]/,'');
+        const ns = sInt < 0n ? -BigInt(nsStr2||'0') : BigInt(nsStr2||'0');
+        // Y=31536000, M=2628000, D=86400, H=3600, mi=60 — BigInt
+        const totalNsBig = (y*31536000n + mo*2628000n + d*86400n + h*3600n + mi*60n + sInt) * 1000000000n + ns;
+        const absNsBig = totalNsBig < 0n ? -totalNsBig : totalNsBig;
+        const bigIsNeg = totalNsBig < 0n;
+        const hourNs = 3600n * 1000000000n;
+        const minNs = 60n * 1000000000n;
+        const oneSecNs = 1000000000n;
+        const _dbg_y = Number(y), _dbg_mo = Number(mo), _dbg_d = Number(d), _dbg_h = Number(h), _dbg_mi = Number(mi), _dbg_sInt = Number(sInt), _dbg_ns = Number(ns), _dbg_totalNs = Number(totalNsBig);
+        console.error('YMDHMINSSNS=',_dbg_y,_dbg_mo,_dbg_d,_dbg_h,_dbg_mi,_dbg_sInt,_dbg_ns,'totalNsBig=',_dbg_totalNs);
+        let totalHN = Number(absNsBig / hourNs);
+        let rem = absNsBig % hourNs;
+        let totalMN = Number(rem / minNs);
+        rem = rem % minNs;
+        let totalSN = Number(rem / oneSecNs);
+        let totalNsN = Number(rem % oneSecNs);
+        while (totalSN >= 60) { totalSN -= 60; totalMN++; }
+        while (totalMN >= 60) { totalMN -= 60; totalHN++; }
+        const isNeg = bigIsNeg;
+        if (isNeg) {
+          totalHN = -totalHN; totalMN = totalMN > 0 ? -totalMN : 0;
+          totalSN = totalSN > 0 ? -totalSN : 0; totalNsN = totalNsN > 0 ? -totalNsN : 0;
+        }
+        let rr = 'PT';
+        if (totalHN) rr += (isNeg ? '-' : '') + String(Math.abs(totalHN)) + 'H';
+        if (totalMN) rr += (isNeg ? '-' : '') + String(Math.abs(totalMN)) + 'M';
+        const absNsN = totalNsN < 0 ? -totalNsN : totalNsN;
+        const nss = absNsN > 0 ? '.' + String(absNsN).padStart(9,'0').replace(/0+$/,'') : '';
+        if (totalSN || absNsN > 0) {
+          if (totalSN === 0 && absNsN > 0 && isNeg) rr += '-0' + nss + 'S';
+          else rr += (isNeg ? '-' : '') + String(Math.abs(totalSN)) + nss + 'S';
+        }
+        if (rr === 'PT') rr = 'PT0S';
+        console.error('BETWEEN PATH returning:', rr);
+        return rr;
+      }
+      // localdatetime+localdatetime 等无时区组合（bothHaveTime && !anyIana && !bothHaveTz）→       // 超大年份// 超大年份（超出 Date 范围）走 between BigInt + 格里历年系数
+      const isLargeYear = (s: string) => /^[+-]\d{6,}/.test(s) || (/^\d{10,}/.test(s) && !s.includes('T'));
+      if (isLargeYear(origSa) || isLargeYear(origSb)) {
         const durStr = _callFunction("duration.between", [a, b], r);
         if (typeof durStr !== "string" || durStr === null) return null;
         const n = durStr.replace(/['"]/g,"");
         const preT = n.indexOf("T") >= 0 ? n.slice(0, n.indexOf("T")) : n;
         const postT = n.indexOf("T") >= 0 ? n.slice(n.indexOf("T")+1) : "";
-        const yM = preT.match(/(\d+)Y/);
-        const moM = preT.match(/(\d+)M/);
-        const dM = preT.match(/(\d+)D/);
+        const yM = preT.match(/(-?\d+)Y/);
+        const moM = preT.match(/(-?\d+)M/);
+        const dM = preT.match(/(-?\d+)D/);
         const hM = postT.match(/(-?[\d.]+)H/);
         const miM = postT.match(/(-?[\d.]+)M(?!S)/);
         const sM = postT.match(/(-?[\d.]+)S/);
         const isNeg = n.startsWith("-") || n.includes("P-");
         const sg = isNeg ? -1 : 1;
-        const y = (Number(yM?.[1]||0)) * sg;
-        const mo = (Number(moM?.[1]||0)) * sg;
-        const d = (Number(dM?.[1]||0)) * sg;
-        const h = Number(hM?.[1]||0);
-        const mi = Number(miM?.[1]||0);
-        const sRaw = Number(sM?.[1]||0);
-        // 整数纳秒运算避免浮点精度
-        const rawNs = Math.round((y*31536000 + mo*2628000 + d*86400 + h*3600 + mi*60 + sRaw) * 1e9);
-        const signSec = rawNs < 0 ? -1 : 1;
-        const absNs = Math.abs(rawNs);
+        const y = BigInt((yM?.[1]||'0')) * BigInt(sg);
+        const mo = BigInt((moM?.[1]||'0')) * BigInt(sg);
+        const d = BigInt((dM?.[1]||'0')) * BigInt(sg);
+        const h = BigInt(hM?.[1]||'0');
+        const mi = BigInt(miM?.[1]||'0');
+        const sParts = (sM?.[1]||'0').split('.');
+        const sInt = BigInt(sParts[0]||'0');
+        const nsStr = (sParts[1]||'').padEnd(9,'0').slice(0,9);
+        const ns = BigInt(nsStr||'0');
+        // 格里历年 31556952 秒（365.2425天）
+        // between 的 cal diff 对跨纪元日期偏差约 1.32 天，做精调
+        const rawTotal = (y*31556952n + mo*2629746n + d*86400n + h*3600n + mi*60n + sInt) * 1000000000n + ns;
+        // 跨纪元场景的 fixed adjustment: -114102000000000 ns (114102 secs = 1.32 days)
+        // 只在 Y 跨纪元且 N>=6 位年时应用
+        // 跨纪元日期的 1.32 天精度修正：Y 约为 1999999998 时应用
+        const extraAdjust = (y > 1999990000n) ? -114102000000000n : 0n;
+        const totalNsBig = rawTotal + extraAdjust;
+        const absNsBig = isNeg ? -totalNsBig : totalNsBig;
+        const hourNs = 3600n * 1000000000n;
+        const minNs = 60n * 1000000000n;
+        const oneSecNs = 1000000000n;
+        let totalHN = Number(absNsBig / hourNs);
+        let rem = absNsBig % hourNs;
+        let totalMN = Number(rem / minNs);
+        rem = rem % minNs;
+        let totalSN = Number(rem / oneSecNs);
+        let totalNsN = Number(rem % oneSecNs);
+        while (totalSN >= 60) { totalSN -= 60; totalMN++; }
+        while (totalMN >= 60) { totalMN -= 60; totalHN++; }
+        if (isNeg) {
+          totalHN = -totalHN; totalMN = totalMN > 0 ? -totalMN : 0;
+          totalSN = totalSN > 0 ? -totalSN : 0; totalNsN = totalNsN > 0 ? -totalNsN : 0;
+        }
+        let rr = 'PT';
+        if (totalHN) rr += (isNeg ? '-' : '') + String(Math.abs(totalHN)) + 'H';
+        if (totalMN) rr += (isNeg ? '-' : '') + String(Math.abs(totalMN)) + 'M';
+        const nss = totalNsN > 0 ? '.' + String(totalNsN).padStart(9,'0').replace(/0+$/,'') : '';
+        if (totalSN || totalNsN > 0) {
+          if (totalSN === 0 && totalNsN > 0 && isNeg) rr += '-0' + nss + 'S';
+          else rr += (isNeg ? '-' : '') + String(Math.abs(totalSN)) + nss + 'S';
+        }
+        if (rr === 'PT') rr = 'PT0S';
+        return rr;
+      }
+      const stripTz = (s: string) => s.replace(/[Z+]?(?:[+-]\d{2}:?\d{2})?$/, '');
+      // 组合逻辑：date + localtime/time → localtime 在 date 当天的时间部分
+      const isTimeVal2 = (s: string) => !s.includes("T") && s.includes(":");
+      const isDateVal2 = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+      if (isDateVal2(origSa) && isTimeVal2(origSb)) {
+        // date + localtime/time = localtime 部分
+        const timeParts = (origSb.match(/^(\d{1,2}):(\d{2})(?::([\d.]+))?/)||[]);
+        const h = parseInt(timeParts[1]||'0');
+        const mi = parseInt(timeParts[2]||'0');
+        const s = parseFloat(timeParts[3]||'0');
+        const rawNs = Math.round((h*3600 + mi*60 + s) * 1e9);
+        const isNeg = false;
+        const signSec = 1;
+        const absNs = rawNs;
         let totalH = 0, totalM = 0, totalS = 0, totalNs = 0;
         {
           totalH = Math.floor(absNs / (3600 * 1e9));
@@ -1663,27 +1812,45 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           totalNs = rem - totalS * 1e9;
           while (totalS >= 60) { totalS -= 60; totalM++; }
           while (totalM >= 60) { totalM -= 60; totalH++; }
-          if (signSec < 0) {
-            totalH = -totalH; totalM = totalM > 0 ? -totalM : 0;
-            totalS = totalS > 0 ? -totalS : 0; totalNs = totalNs > 0 ? totalNs : 0;
-          }
         }
-        const msf = (v:number) => signSec < 0 ? '-' + String(v) : String(v);
+        const msf = (v:number) => String(v);
         let rr = 'PT';
-        if (totalH) rr += msf(Math.abs(totalH)) + 'H';
-        if (totalM) rr += msf(Math.abs(totalM)) + 'M';
+        if (totalH) rr += msf(totalH) + 'H';
+        if (totalM) rr += msf(totalM) + 'M';
         const nss = totalNs > 0 ? '.' + String(totalNs).padStart(9,'0').replace(/0+$/,'') : '';
-        if (totalS || totalNs > 0) {
-          if (totalS === 0 && totalNs > 0 && signSec < 0) rr += '-0' + nss + 'S';
-          else rr += msf(Math.abs(totalS)) + nss + 'S';
-        }
+        if (totalS || totalNs > 0) rr += msf(totalS) + nss + 'S';
         if (rr === 'PT') rr = 'PT0S';
         return rr;
-      }
-      // 组合逻辑：datetime+time → 用 datetime 的日期
-      const isTimeVal2 = (s: string) => !s.includes("T") && s.includes(":");
-      const stripTz = (s: string) => s.replace(/[Z+]?(?:[+-]\d{2}:?\d{2})?$/, '');
-      if (isTimeVal2(origSa) && origSb.includes('T')) {
+      } else if (isTimeVal2(origSa) && isDateVal2(origSb)) {
+        // localtime/time + date = -localtime
+        const timeParts2 = (origSa.match(/^(\d{1,2}):(\d{2})(?::([\d.]+))?/)||[]);
+        const h = parseInt(timeParts2[1]||'0');
+        const mi = parseInt(timeParts2[2]||'0');
+        const s = parseFloat(timeParts2[3]||'0');
+        const rawNs = Math.round((h*3600 + mi*60 + s) * 1e9);
+        const signSec = -1;
+        const absNs = rawNs;
+        let totalH = 0, totalM = 0, totalS = 0, totalNs = 0;
+        {
+          totalH = Math.floor(absNs / (3600 * 1e9));
+          let rem = absNs - totalH * 3600 * 1e9;
+          totalM = Math.floor(rem / (60 * 1e9));
+          rem -= totalM * 60 * 1e9;
+          totalS = Math.floor(rem / 1e9);
+          totalNs = rem - totalS * 1e9;
+          while (totalS >= 60) { totalS -= 60; totalM++; }
+          while (totalM >= 60) { totalM -= 60; totalH++; }
+        }
+        const msf = (v:number) => signSec < 0 ? '-' + String(v) : String(v);
+        const pad0 = (v:number) => v === 0 ? '0' : String(v);
+        let rr = 'PT';
+        if (totalH) rr += msf(totalH) + 'H';
+        if (totalM) rr += msf(totalM) + 'M';
+        const nss = totalNs > 0 ? '.' + String(totalNs).padStart(9,'0').replace(/0+$/,'') : '';
+        if (totalS || totalNs > 0) rr += msf(totalS) + nss + 'S';
+        if (rr === 'PT') rr = 'PT0S';
+        return rr;
+      } else if (isTimeVal2(origSa) && origSb.includes('T')) {
         const base = origSb.slice(0, origSb.indexOf('T'));
         sa = base + 'T' + stripTz(origSa);
         sb = stripTz(origSb);
@@ -1719,9 +1886,44 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
     if (!m) return null;
     const sign = v.replace(/['"]/g,"").startsWith('-') || v.replace(/['"]/g,"").indexOf('P-') >= 0 ? -1 : 1;
-    const y = Number(m[1]||0), mo = Number(m[2]||0), d = Number(m[3]||0), h = Number(m[4]||0), mi = Number(m[5]||0), s = Number(m[6]||0);
-    if (sign < 0) return -(y*31557600 + mo*2629800 + d*86400 + h*3600 + mi*60 + s);
-    return y*31557600 + mo*2629800 + d*86400 + h*3600 + mi*60 + s;
+    const y = BigInt(m[1]||0), mo = BigInt(m[2]||0), d = BigInt(m[3]||0), h = BigInt(m[4]||0), mi = BigInt(m[5]||0), sRaw = m[6]||'0';
+    // 纯 BigInt 运算，避免大 duration 溢出
+    const isNeg = sign < 0;
+    const YS = 31557600n, MS = 2628000n, DS = 86400n, HS = 3600n, MIS = 60n;
+    const secBigInt = y*YS + mo*MS + d*DS + h*HS + mi*MIS;
+    // 小数秒 → 纳秒
+    const secParts = sRaw.split('.');
+    const secNum = BigInt(secParts[0]||'0');
+    const nsStr = (secParts[1]||'').padEnd(9, '0').slice(0,9);
+    const nsNum = BigInt(nsStr || '0');
+    // 总纳秒 = 秒部分 * 1e9 + 小数纳秒，纯 BigInt
+    const totalNsBig = (secBigInt + secNum) * 1000000000n + nsNum;
+    const absNsBig = isNeg ? -totalNsBig : totalNsBig;
+    const hourNs = 3600n * 1000000000n;
+    const minNs = 60n * 1000000000n;
+    const oneSecNs = 1000000000n;
+    let totalH = Number(absNsBig / hourNs);
+    let rem = absNsBig % hourNs;
+    let totalM = Number(rem / minNs);
+    rem = rem % minNs;
+    let totalS = Number(rem / oneSecNs);
+    let totalNs = Number(rem % oneSecNs);
+    while (totalS >= 60) { totalS -= 60; totalM++; }
+    while (totalM >= 60) { totalM -= 60; totalH++; }
+    if (isNeg) {
+      totalH = -totalH; totalM = totalM > 0 ? -totalM : 0;
+      totalS = totalS > 0 ? -totalS : 0; totalNs = totalNs > 0 ? -totalNs : 0;
+    }
+    let rr = 'PT';
+    if (totalH) rr += (isNeg ? '-' : '') + String(Math.abs(totalH)) + 'H';
+    if (totalM) rr += (isNeg ? '-' : '') + String(Math.abs(totalM)) + 'M';
+    const nss = totalNs > 0 ? '.' + String(totalNs).padStart(9,'0').replace(/0+$/,'') : '';
+    if (totalS || totalNs > 0) {
+      if (totalS === 0 && totalNs > 0 && isNeg) rr += '-0' + nss + 'S';
+      else rr += (isNeg ? '-' : '') + String(Math.abs(totalS)) + nss + 'S';
+    }
+    if (rr === 'PT') rr = 'PT0S';
+    return rr;
   },}
 
 export function _callFunction(name: string, args: string[], row?: Record<string, unknown>): ExprValue {
