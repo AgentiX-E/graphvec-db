@@ -1026,6 +1026,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
       // datetime 字符串传入 localtime → 提取 T 后的时间部分
       if (str.includes('T')) str = str.slice(str.indexOf('T') + 1)
+      // localtime 不含时区 → strip [+-]HH:MM 或 [IANA] 后缀
+      str = str.replace(/\[[^\]]+\]$/, '')  // strip [Europe/Stockholm]
+      str = str.replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')  // strip +01:00
       return str;
     }
     if (v && typeof v === "object") {
@@ -1033,9 +1036,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       // 优先：如果 map.time 是完整字符串（localtime({time: other}) → '12:31:14.645876123'）
       if (map.time != null && typeof map.time === 'string') {
         const timeStr = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+        // localtime 不含时区 → strip [+-]HH:MM 或 [IANA] 后缀
+        const cleanTimeStr = timeStr.replace(/\[[^\]]+\]$/, '').replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')
         // 如果有覆盖字段（second=42），只用这些字段覆盖时间值
         const hasOverrides = map.hour != null || map.minute != null || map.second != null || map.nanosecond != null || map.microsecond != null || map.millisecond != null || map.timezone != null
-        if (!hasOverrides) return timeStr
+        if (!hasOverrides) return cleanTimeStr
         // 有覆盖：从 timeStr 提取基础值，覆盖字段优先
         const parts = timeStr.match(/(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/)
         if (parts) {
@@ -1131,6 +1136,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof v === "string") {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      // localdatetime 不含时区 → strip [+-]HH:MM 或 [IANA] 后缀
+      str = str.replace(/\[[^\]]+\]$/, '')  // strip [Europe/Stockholm]
+      str = str.replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')  // strip +01:00
       return str;
     }
     if (v && typeof v === "object") {
@@ -1152,6 +1160,19 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         const d = _resolveDateFromMap(map);
         const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
         return dateStr + 'T' + _mergeTimeStr(timePart, map)
+      }
+      if (map.datetime != null && typeof map.datetime === 'string') {
+        const dt = map.datetime.includes('T') ? map.datetime : map.datetime + 'T00:00:00'
+        // strip tz for localdatetime
+        const cleanDt = dt.replace(/\[[^\]]+\]$/, '').replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')
+        const dtDatePart = cleanDt.includes('T') ? cleanDt.slice(0, cleanDt.indexOf('T')) : cleanDt
+        const dtTimePart = cleanDt.includes('T') ? cleanDt.slice(cleanDt.indexOf('T') + 1) : ''
+        const dateStr = _mergeDateStr(dtDatePart, map)
+        if (dtTimePart) {
+          return dateStr + 'T' + _mergeTimeStr(dtTimePart, map)
+        }
+        const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+        return dateStr + "T" + _formatTime(hour, minute, second, nanosecond);
       }
       const d = _resolveDateFromMap(map);
       const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
