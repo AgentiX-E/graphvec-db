@@ -324,24 +324,38 @@ function _mergeDateStr(dateStr: string, map: Record<string, unknown>): string {
   if (map.month != null) month = Number(map.month)
   if (map.day != null) { day = Number(map.day) }
   else if (map.week != null || map.dayOfWeek != null || map.quarter != null || map.dayOfQuarter != null || map.ordinalDay != null) {
-    // week/quarter/ordinalDay 从已知 year 计算
     const y = map.year != null ? Number(map.year) : year
-    // week: 计算 ISO 周 y-Www-1（周一）
+    // week/quarter/ordinalDay 必须使用 ISO 周年份，而非日历年份
+    const isoYearForWeek = map.year != null ? Number(map.year) : _isoYear(new Date(dateStr))
+    // week: 计算 ISO 周
     if (map.week != null) {
       const w = Number(map.week)
       // week 0 = 上一年的最后一周
-      const actualYear = w <= 0 ? y - 1 : y
+      const actualYear = w <= 0 ? isoYearForWeek - 1 : isoYearForWeek
       const actualWeek = w <= 0 ? _isoWeeksInYear(actualYear) : w
       const w1 = _isoWeek1Monday(actualYear)
       const targetDate = new Date(w1.getTime() + (actualWeek - 1) * 7 * 86400000)
+      year = targetDate.getUTCFullYear()
       month = targetDate.getUTCMonth() + 1
       day = targetDate.getUTCDate()
       // dayOfWeek 覆盖：调整到指定周几（1=Monday, 7=Sunday）
+      // 无 dayOfWeek 时继承 date 的 dayOfWeek（不是默认周一！）
       if (map.dayOfWeek != null) {
         const dow = Number(map.dayOfWeek)
         const currentDow = targetDate.getUTCDay() === 0 ? 7 : targetDate.getUTCDay()
         const diff = dow - currentDow
         const adj = new Date(targetDate.getTime() + diff * 86400000)
+        year = adj.getUTCFullYear()
+        month = adj.getUTCMonth() + 1
+        day = adj.getUTCDate()
+      } else {
+        // 继承原始 date 的 dayOfWeek
+        const origDate = new Date(dateStr)
+        const origDow = origDate.getUTCDay() === 0 ? 7 : origDate.getUTCDay()
+        const currentDow = targetDate.getUTCDay() === 0 ? 7 : targetDate.getUTCDay()
+        const diff = origDow - currentDow
+        const adj = new Date(targetDate.getTime() + diff * 86400000)
+        year = adj.getUTCFullYear()
         month = adj.getUTCMonth() + 1
         day = adj.getUTCDate()
       }
