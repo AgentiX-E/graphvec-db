@@ -1416,6 +1416,21 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           sa = d1.toISOString().replace('Z', 'Z');
           sb = d2.toISOString().replace('Z', 'Z');
         }
+      } else if (saTz && !sbTz && sb.includes('T') && hasTimezone(sb)) {
+        // localdatetime 实际无 tz，什么都不做
+      } else if ((saTz || sbTz) && !(saTz && sbTz)) {
+        // mixedTz：一方有 tz，一方无 tz
+        // 仅一方有 T 部分时（datetime+localdatetime），做 UTC 归一化
+        // date + datetime 不做归一化（直接字段减）
+        const tzSide = saTz ? sa : sb;
+        const tzlessSide = saTz ? sb : sa;
+        if (tzSide.includes('T') && tzlessSide.includes('T')) {
+          const d = new Date(tzSide);
+          if (!isNaN(d.getTime())) {
+            const iso = d.toISOString().replace('Z', '');
+            if (saTz) { sa = iso; } else { sb = iso; }
+          }
+        }
       }
       // Calendar-based diff：解析年月日小时分钟秒纳秒做字段减
       const parseDT = (s: string) => {
@@ -1591,126 +1606,108 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     return y*12 + mo + d/30.436875 + h/730.485 + mi/43829.1;
   },
   "duration.inSeconds": ([a, b], r) => {
-    // 双参数：duration.inSeconds(x, y) — 委托 duration.between 再分段提取 Y→h, D→h, T 原生
+    // 双参数：duration.inSeconds(x, y)
     if (b !== undefined && b !== null) {
-      const vA = _evalBinary(a, r); const vB = _evalBinary(b, r);
-      const origSa = typeof vA === 'string' ? String(vA).replace(/['"]/g,"") : '';
-      const origSb = typeof vB === 'string' ? String(vB).replace(/['"]/g,"") : '';
-      const durStr = _callFunction("duration.between", [a, b], r);
-      if (typeof durStr !== "string" || durStr === null) {
-        // fallback：纯时间场景用 epoch diff
-        const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
-        if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
-        let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
-        if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, ''); if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '');
-        const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
-        if (isTimeOnly(sa) && isTimeOnly(sb)) {
-          sa = '1970-01-01T' + sa + 'Z'; sb = '1970-01-01T' + sb + 'Z';
-        }
-        try {
-          const da = Math.round(new Date(sa).getTime()), db = Math.round(new Date(sb).getTime());
-          if (!isNaN(da) && !isNaN(db)) {
-            const diffMs = db - da, sign = diffMs < 0 ? -1 : 1, absMs = Math.abs(diffMs);
-            const totalH = Math.floor(absMs / 3600000), rm = absMs - totalH * 3600000;
-            const totalM = Math.floor(rm / 60000), svMs = rm - totalM * 60000;
-            const secInt = Math.floor(svMs / 1000), ns = Math.round((svMs - secInt * 1000) * 1000000);
-            const ms = (v:number) => sign < 0 ? '-' + String(v) : String(v);
-            let r='PT'; if(totalH)r+=ms(totalH)+'H'; if(totalM)r+=ms(totalM)+'M';
-            const nss=ns>0?'.'+String(ns).padStart(9,'0').replace(/0+$/,''):'';
-            if(secInt||ns>0){if(secInt===0&&ns>0&&sign<0)r+='-0'+nss+'S';else r+=ms(secInt)+nss+'S';}
-            if(r==='PT')r='PT0S'; return r;
-          }
-        } catch {}
-        return null;
-      }
-      // 如果 durStr 含 Y/M 且一方是纯日期（epoch diff 更准确），走 epoch diff
+      const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
+      if (!va || !vb || typeof va !== "string" || typeof vb !== "string") return null;
+      let sa = String(va).replace(/['"]/g,""), sb = String(vb).replace(/['"]/g,"");
+      if (sa.includes('[')) sa = sa.replace(/\[.*\]$/, '');
+      if (sb.includes('[')) sb = sb.replace(/\[.*\]$/, '');
+      const origSa = sa, origSb = sb;
       const isDateOnly = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
-      const useEpoch = durStr.match(/[YM]/) && (isDateOnly(origSa) || isDateOnly(origSb));
-      if (useEpoch) {
-        // epoch diff: date+localdatetime/datetime 用 UTC epoch 差
-        const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
-        if (va && vb && typeof va === "string" && typeof vb === "string") {
-          let sA = String(va).replace(/['"]/g,""), sB = String(vb).replace(/['"]/g,"");
-          if (sA.includes('[')) sA = sA.replace(/\[.*\]$/, '');
-          if (sB.includes('[')) sB = sB.replace(/\[.*\]$/, '');
-          const norm = (s: string) => {
-            if (isDateOnly(s)) return s + 'T00:00:00Z';
-            if (s.includes('T') && !s.includes('Z') && !s.match(/[+-]\d{2}:?\d{2}$/)) return s + 'Z';
-            return s;
-          };
-          sA = norm(sA); sB = norm(sB);
-          try {
-            const da = Math.round(new Date(sA).getTime()), db = Math.round(new Date(sB).getTime());
-            if (!isNaN(da) && !isNaN(db)) {
-              const diffMs = db - da, sg = diffMs < 0 ? -1 : 1, aMs = Math.abs(diffMs);
-              const tH = Math.floor(aMs / 3600000), rm = aMs - tH * 3600000;
-              const tM = Math.floor(rm / 60000), svMs = rm - tM * 60000;
-              const sI = Math.floor(svMs / 1000), ns = Math.round((svMs - sI * 1000) * 1000000);
-              const msf = (v:number) => sg < 0 ? '-' + String(v) : String(v);
-              let r='PT'; if(tH)r+=msf(tH)+'H'; if(tM)r+=msf(tM)+'M';
-              const nss=ns>0?'.'+String(ns).padStart(9,'0').replace(/0+$/,''):'';
-              if(sI||ns>0){if(sI===0&&ns>0&&sg<0)r+='-0'+nss+'S';else r+=msf(sI)+nss+'S';}
-              if(r==='PT')r='PT0S'; return r;
-            }
-          } catch {}
-        }
-      }
-      // 使用 duration.calendar 公式：Y*31557600 + M*2629800 + D*86400 + H*3600 + M*60 + S
-      let totalH = 0, totalM = 0, totalS = 0, totalNs = 0, sign = 1;
-      {
+      const isTimeOnly = (s: string) => !s.match(/^\d{4}/) && s.includes(":");
+      const hasTz = (s: string) => /[Z+]|(?:[+-]\d{2}:?\d{2})$/.test(s);
+      const bothHaveTz = hasTz(origSa) && hasTz(origSb);
+      const bothHaveTime = (origSa.includes('T') || origSa.includes(':')) && (origSb.includes('T') || origSb.includes(':'));
+      // 策略：双方都有 TZ（且都含时间）→ duration.between + Y*31536000 公式（日历 diff）
+      // 或者 datetime+TZ + time+TZ → 也走 between
+      // 其余情况（含纯日期、纯时间、混合 tz 等）→ epoch diff
+      if (bothHaveTz && bothHaveTime) {
+        // 走 duration.between 的日历 diff + 公式
+        const durStr = _callFunction("duration.between", [a, b], r);
+        if (typeof durStr !== "string" || durStr === null) return null;
         const n = durStr.replace(/['"]/g,"");
         const preT = n.indexOf("T") >= 0 ? n.slice(0, n.indexOf("T")) : n;
         const postT = n.indexOf("T") >= 0 ? n.slice(n.indexOf("T")+1) : "";
         const yM = preT.match(/(\d+)Y/);
         const moM = preT.match(/(\d+)M/);
         const dM = preT.match(/(\d+)D/);
-        const hM = postT.match(/([\d.]+)H/);
-        const miM = postT.match(/([\d.]+)M(?!S)/);
-        const sM = postT.match(/([\d.]+)S/);
+        const hM = postT.match(/(-?[\d.]+)H/);
+        const miM = postT.match(/(-?[\d.]+)M(?!S)/);
+        const sM = postT.match(/(-?[\d.]+)S/);
         const isNeg = n.startsWith("-") || n.includes("P-");
         const sg = isNeg ? -1 : 1;
-        sign = sg;
         const y = (Number(yM?.[1]||0)) * sg;
         const mo = (Number(moM?.[1]||0)) * sg;
         const d = (Number(dM?.[1]||0)) * sg;
         const h = Number(hM?.[1]||0);
         const mi = Number(miM?.[1]||0);
         const sRaw = Number(sM?.[1]||0);
-        const totalSec = y*31557600 + mo*2629800 + d*86400 + h*3600 + mi*60 + sRaw;
-        const absSec = Math.abs(totalSec);
-        const signSec = totalSec < 0 ? -1 : 1;
-        totalH = Math.floor(absSec / 3600);
-        totalM = Math.floor((absSec - totalH*3600) / 60);
-        totalS = Math.floor(Math.round((absSec - totalH*3600 - totalM*60) * 1e9) / 1e9);
-        totalNs = Math.round((absSec - totalH*3600 - totalM*60 - totalS) * 1e9);
-        while (totalNs >= 1e9) { totalNs -= 1e9; totalS++; }
-        while (totalS >= 60) { totalS -= 60; totalM++; }
-        while (totalM >= 60) { totalM -= 60; totalH++; }
-        if (signSec < 0) {
-          totalH = -totalH;
-          totalM = totalM > 0 ? -totalM : 0;
-          totalS = totalS > 0 ? -totalS : 0;
-          totalNs = totalNs > 0 ? totalNs : 0;
+        // 整数纳秒运算避免浮点精度
+        const rawNs = Math.round((y*31536000 + mo*2628000 + d*86400 + h*3600 + mi*60 + sRaw) * 1e9);
+        const signSec = rawNs < 0 ? -1 : 1;
+        const absNs = Math.abs(rawNs);
+        let totalH = 0, totalM = 0, totalS = 0, totalNs = 0;
+        {
+          totalH = Math.floor(absNs / (3600 * 1e9));
+          let rem = absNs - totalH * 3600 * 1e9;
+          totalM = Math.floor(rem / (60 * 1e9));
+          rem -= totalM * 60 * 1e9;
+          totalS = Math.floor(rem / 1e9);
+          totalNs = rem - totalS * 1e9;
+          while (totalS >= 60) { totalS -= 60; totalM++; }
+          while (totalM >= 60) { totalM -= 60; totalH++; }
+          if (signSec < 0) {
+            totalH = -totalH; totalM = totalM > 0 ? -totalM : 0;
+            totalS = totalS > 0 ? -totalS : 0; totalNs = totalNs > 0 ? totalNs : 0;
+          }
         }
+        const msf = (v:number) => signSec < 0 ? '-' + String(v) : String(v);
+        let rr = 'PT';
+        if (totalH) rr += msf(Math.abs(totalH)) + 'H';
+        if (totalM) rr += msf(Math.abs(totalM)) + 'M';
+        const nss = totalNs > 0 ? '.' + String(totalNs).padStart(9,'0').replace(/0+$/,'') : '';
+        if (totalS || totalNs > 0) {
+          if (totalS === 0 && totalNs > 0 && signSec < 0) rr += '-0' + nss + 'S';
+          else rr += msf(Math.abs(totalS)) + nss + 'S';
+        }
+        if (rr === 'PT') rr = 'PT0S';
+        return rr;
       }
-      // 规范化负值
-      if (totalNs < 0) { totalNs += 1e9; totalS--; }
-      if (totalS < 0) { totalS += 60; totalM--; }
-      if (totalM < 0) { totalM += 60; totalH--; }
-      if (totalNs >= 1e9) { totalNs -= 1e9; totalS++; }
-      if (totalS >= 60) { totalS -= 60; totalM++; }
-      if (totalM >= 60) { totalM -= 60; totalH++; }
-      const ms = (v:number) => sign < 0 ? '-' + String(v) : String(v);
-      let result = 'PT';
-      if (totalH) result += ms(Math.abs(totalH)) + 'H';
-      if (totalM) result += ms(Math.abs(totalM)) + 'M';
-      const nss = totalNs > 0 ? '.' + String(totalNs).padStart(9,'0').replace(/0+$/,'') : '';
-      if (totalS || totalNs > 0) {
-        if (totalS === 0 && totalNs > 0 && sign < 0) result += '-0' + nss + 'S';
-        else result += ms(Math.abs(totalS)) + nss + 'S';
+      // 组合逻辑：datetime+time → 用 datetime 的日期
+      const isTimeVal2 = (s: string) => !s.includes("T") && s.includes(":");
+      const stripTz = (s: string) => s.replace(/[Z+]?(?:[+-]\d{2}:?\d{2})?$/, '');
+      if (isTimeVal2(origSa) && origSb.includes('T')) {
+        const base = origSb.slice(0, origSb.indexOf('T'));
+        sa = base + 'T' + stripTz(origSa);
+        sb = stripTz(origSb);
       }
-      if (result === 'PT') result = 'PT0S';
-      return result;
+      else if (isTimeVal2(origSb) && origSa.includes('T')) {
+        const base = origSa.slice(0, origSa.indexOf('T'));
+        sb = base + 'T' + stripTz(origSb);
+        sa = stripTz(origSa);
+      }
+      const n2 = (s: string): string => {
+        if (isDateOnly(s)) return s + 'T00:00:00Z';
+        const st = stripTz(s);
+        if (isTimeOnly(s)) return '1970-01-01T' + st + 'Z';
+        return st.includes('T') ? st + 'Z' : st;
+      };
+      sa = n2(sa); sb = n2(sb);      try {
+        const da = Math.round(new Date(sa).getTime()), db = Math.round(new Date(sb).getTime());
+        if (!isNaN(da) && !isNaN(db)) {
+          const diffMs = db - da, sg = diffMs < 0 ? -1 : 1, aMs = Math.abs(diffMs);
+          const tH = Math.floor(aMs / 3600000), rm = aMs - tH * 3600000;
+          const tM = Math.floor(rm / 60000), svMs = rm - tM * 60000;
+          const sI = Math.floor(svMs / 1000), ns = Math.round((svMs - sI * 1000) * 1000000);
+          const msf = (v:number) => sg < 0 ? '-' + String(v) : String(v);
+          let rr='PT'; if(tH)rr+=msf(tH)+'H'; if(tM)rr+=msf(tM)+'M';
+          const nss=ns>0?'.'+String(ns).padStart(9,'0').replace(/0+$/,''):'';
+          if(sI||ns>0){if(sI===0&&ns>0&&sg<0)rr+='-0'+nss+'S';else rr+=msf(sI)+nss+'S';}
+          if(rr==='PT')rr='PT0S'; return rr;
+        }
+      } catch {}
+      return null;
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
@@ -1719,8 +1716,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     const y = Number(m[1]||0), mo = Number(m[2]||0), d = Number(m[3]||0), h = Number(m[4]||0), mi = Number(m[5]||0), s = Number(m[6]||0);
     if (sign < 0) return -(y*31557600 + mo*2629800 + d*86400 + h*3600 + mi*60 + s);
     return y*31557600 + mo*2629800 + d*86400 + h*3600 + mi*60 + s;
-  },
-}
+  },}
 
 export function _callFunction(name: string, args: string[], row?: Record<string, unknown>): ExprValue {
   const fn = _builtinFunctions[name]
