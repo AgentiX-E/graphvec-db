@@ -1626,17 +1626,48 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       // 如果 durStr 含 Y/M 且一方是纯日期（epoch diff 更准确），走 epoch diff
       const isDateOnly = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
       const useEpoch = durStr.match(/[YM]/) && (isDateOnly(origSa) || isDateOnly(origSb));
+      if (useEpoch) {
+        // epoch diff: date+localdatetime/datetime 用 UTC epoch 差
+        const va = _evalBinary(a, r); const vb = _evalBinary(b, r);
+        if (va && vb && typeof va === "string" && typeof vb === "string") {
+          let sA = String(va).replace(/['"]/g,""), sB = String(vb).replace(/['"]/g,"");
+          if (sA.includes('[')) sA = sA.replace(/\[.*\]$/, '');
+          if (sB.includes('[')) sB = sB.replace(/\[.*\]$/, '');
+          const norm = (s: string) => {
+            if (isDateOnly(s)) return s + 'T00:00:00Z';
+            if (s.includes('T') && !s.includes('Z') && !s.match(/[+-]\d{2}:?\d{2}$/)) return s + 'Z';
+            return s;
+          };
+          sA = norm(sA); sB = norm(sB);
+          try {
+            const da = Math.round(new Date(sA).getTime()), db = Math.round(new Date(sB).getTime());
+            if (!isNaN(da) && !isNaN(db)) {
+              const diffMs = db - da, sg = diffMs < 0 ? -1 : 1, aMs = Math.abs(diffMs);
+              const tH = Math.floor(aMs / 3600000), rm = aMs - tH * 3600000;
+              const tM = Math.floor(rm / 60000), svMs = rm - tM * 60000;
+              const sI = Math.floor(svMs / 1000), ns = Math.round((svMs - sI * 1000) * 1000000);
+              const msf = (v:number) => sg < 0 ? '-' + String(v) : String(v);
+              let r='PT'; if(tH)r+=msf(tH)+'H'; if(tM)r+=msf(tM)+'M';
+              const nss=ns>0?'.'+String(ns).padStart(9,'0').replace(/0+$/,''):'';
+              if(sI||ns>0){if(sI===0&&ns>0&&sg<0)r+='-0'+nss+'S';else r+=msf(sI)+nss+'S';}
+              if(r==='PT')r='PT0S'; return r;
+            }
+          } catch {}
+        }
+      }
       // 使用 duration.calendar 公式：Y*31557600 + M*2629800 + D*86400 + H*3600 + M*60 + S
-      let sign = 1;
-      { const n = durStr.replace(/['"]/g,"");
-        const yM = n.match(/(\d+)Y/);
-        const moM = n.match(/(\d+)M(?=\d*[DT])/); // M 后跟 D 或 T 之前的才是月
-        const dM = n.match(/(\d+)D/);
-        const tPart = n.indexOf('T') >= 0 ? n.slice(n.indexOf('T')) : '';
-        const hM = tPart.match(/([\d.]+)H/);
-        const miM = tPart.match(/([\d.]+)M(?!S)/); // T 域中 M 后不跟 S 的才是分钟
-        const sM = tPart.match(/([\d.]+)S/);
-        const isNeg = n.startsWith('-') || n.includes('P-');
+      let totalH = 0, totalM = 0, totalS = 0, totalNs = 0, sign = 1;
+      {
+        const n = durStr.replace(/['"]/g,"");
+        const preT = n.indexOf("T") >= 0 ? n.slice(0, n.indexOf("T")) : n;
+        const postT = n.indexOf("T") >= 0 ? n.slice(n.indexOf("T")+1) : "";
+        const yM = preT.match(/(\d+)Y/);
+        const moM = preT.match(/(\d+)M/);
+        const dM = preT.match(/(\d+)D/);
+        const hM = postT.match(/([\d.]+)H/);
+        const miM = postT.match(/([\d.]+)M(?!S)/);
+        const sM = postT.match(/([\d.]+)S/);
+        const isNeg = n.startsWith("-") || n.includes("P-");
         const sg = isNeg ? -1 : 1;
         sign = sg;
         const y = (Number(yM?.[1]||0)) * sg;
@@ -1645,22 +1676,21 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         const h = Number(hM?.[1]||0);
         const mi = Number(miM?.[1]||0);
         const sRaw = Number(sM?.[1]||0);
-        const tNeg = tPart.startsWith('-') ? -1 : 1;
-        const totalSec = y*31557600 + mo*2629800 + d*86400 + h*3600*tNeg + mi*60*tNeg + sRaw*tNeg;
-        const absH = Math.floor(Math.abs(totalSec) / 3600);
+        const totalSec = y*31557600 + mo*2629800 + d*86400 + h*3600 + mi*60 + sRaw;
+        const absSec = Math.abs(totalSec);
         const signSec = totalSec < 0 ? -1 : 1;
-        const absMs = Math.abs(totalSec * 1000);
-        totalH = absH;
-        totalM = Math.floor((absMs - totalH*3600000) / 60000);
-        totalS = Math.floor((absMs - totalH*3600000 - totalM*60000) / 1000);
-        totalNs = absMs - totalH*3600000 - totalM*60000 - totalS*1000;
-        totalNs = Math.round(totalNs * 1000000);
+        totalH = Math.floor(absSec / 3600);
+        totalM = Math.floor((absSec - totalH*3600) / 60);
+        totalS = Math.floor(Math.round((absSec - totalH*3600 - totalM*60) * 1e9) / 1e9);
+        totalNs = Math.round((absSec - totalH*3600 - totalM*60 - totalS) * 1e9);
+        while (totalNs >= 1e9) { totalNs -= 1e9; totalS++; }
+        while (totalS >= 60) { totalS -= 60; totalM++; }
+        while (totalM >= 60) { totalM -= 60; totalH++; }
         if (signSec < 0) {
-          // 负秒借位
-          if (totalNs > 0) { totalNs = 1e9 - totalNs; totalS++; }
           totalH = -totalH;
           totalM = totalM > 0 ? -totalM : 0;
           totalS = totalS > 0 ? -totalS : 0;
+          totalNs = totalNs > 0 ? totalNs : 0;
         }
       }
       // 规范化负值
