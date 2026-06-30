@@ -1418,21 +1418,29 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         }
       } else if (saTz && !sbTz && sb.includes('T') && hasTimezone(sb)) {
         // localdatetime 实际无 tz，什么都不做
-      } else if ((saTz || sbTz) && !(saTz && sbTz)) {
-        // mixedTz：一方有 tz，一方无 tz
-        // 仅一方有 T 部分时（datetime+localdatetime），做 UTC 归一化
-        // date + datetime 不做归一化（直接字段减）
+            } else if ((saTz || sbTz) && !(saTz && sbTz)) {
+        // mixedTz: one has tz, one does not
+        // for datetime+localdatetime, convert both sides to UTC
         const tzSide = saTz ? sa : sb;
         const tzlessSide = saTz ? sb : sa;
         if (tzSide.includes('T') && tzlessSide.includes('T')) {
           const d = new Date(tzSide);
           if (!isNaN(d.getTime())) {
             const iso = d.toISOString().replace('Z', '');
-            if (saTz) { sa = iso; } else { sb = iso; }
+            // convert localdatetime side with tz offset too
+            const tzOffset = tzSide.match(/[+-]\d{2}:?\d{2}/);
+            if (tzOffset) {
+              const fullTzless = tzlessSide + tzOffset[0];
+              const dt = new Date(fullTzless);
+              if (!isNaN(dt.getTime())) {
+                const iso2 = dt.toISOString().replace('Z', '');
+                if (saTz) { sa = iso; sb = iso2; } else { sa = iso2; sb = iso; }
+              }
+            }
           }
         }
       }
-      // Calendar-based diff：解析年月日小时分钟秒纳秒做字段减
+      // Calendar-based diff// Calendar-based diff：解析年月日小时分钟秒纳秒做字段减
       const parseDT = (s: string) => {
         const dateRe = s.match(/^([+-]?\d+)-(\d{2})-(\d{2})/);
         const timeRe = s.match(/T(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
@@ -1578,23 +1586,21 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (b !== undefined && b !== null) {
       // 委托给 duration.between 取得 duration 字符串，再提取月数
       const durStr = _callFunction("duration.between", [a, b], r);
-      if (typeof durStr === "string" && durStr !== null) {
-        const m = durStr.replace(/['"]/g,"").match(/-?P(?:(-?\d+)Y)?(?:(-?\d+)M)?(?:(-?\d+\.?\d*)D)?(?:T(?:(-?\d+\.?\d*)H)?(?:(-?\d+\.?\d*)M)?(?:(-?[\d.]+)S)?)?/);
-        if (!m) return 'PT0S';
-        const sgn = durStr.replace(/['"]/g,"").startsWith('-') || durStr.replace(/['"]/g,"").includes('P-') ? -1 : 1;
-        const years = Math.abs(Number(m[1]||0)), months = Math.abs(Number(m[2]||0));
-        const totalMonths = (years * 12 + months) * sgn;
-        if (Math.abs(totalMonths) < 0.5) return 'PT0S';
-        const sign = totalMonths < 0 ? -1 : 1;
-        const absMonths = Math.round(Math.abs(totalMonths));
-        const years_out = Math.floor(absMonths / 12);
-        const months_out = absMonths % 12;
-        let result = 'P';
-        if (years_out) result += String(sign * years_out) + 'Y';
-        if (months_out) result += String(sign * months_out) + 'M';
-        return result;
-      }
-      return 'PT0S';
+      if (typeof durStr !== "string" || durStr === null) return null;
+      const m = durStr.replace(/['"]/g,"").match(/-?P(?:(-?\d+)Y)?(?:(-?\d+)M)?(?:(-?\d+\.?\d*)D)?(?:T(?:(-?\d+\.?\d*)H)?(?:(-?\d+\.?\d*)M)?(?:(-?[\d.]+)S)?)?/);
+      if (!m) return 'PT0S';
+      const sgn = durStr.replace(/['"]/g,"").startsWith('-') || durStr.replace(/['"]/g,"").includes('P-') ? -1 : 1;
+      const years = Math.abs(Number(m[1]||0)), months = Math.abs(Number(m[2]||0));
+      const totalMonths = (years * 12 + months) * sgn;
+      if (Math.abs(totalMonths) < 0.5) return 'PT0S';
+      const sign = totalMonths < 0 ? -1 : 1;
+      const absMonths = Math.round(Math.abs(totalMonths));
+      const years_out = Math.floor(absMonths / 12);
+      const months_out = absMonths % 12;
+      let result = 'P';
+      if (years_out) result += String(sign * years_out) + 'Y';
+      if (months_out) result += String(sign * months_out) + 'M';
+      return result;
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
     const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
