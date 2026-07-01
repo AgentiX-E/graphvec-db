@@ -728,7 +728,10 @@ export function _resolveDateFromMap(map: Record<string, unknown>): Date {
     const dateOnly = baseStr.indexOf('T') >= 0 ? baseStr.slice(0, baseStr.indexOf('T')) : baseStr
     const parts = dateOnly.split('-')
     if (parts.length === 3) {
-      const year = Number(parts[0]), month2 = Number(parts[1]), day2 = Number(parts[2])
+      let year = Number(parts[0]), month2 = Number(parts[1]), day2 = Number(parts[2])
+      if (map.year != null) year = Number(map.year)
+      if (map.month != null) month2 = Number(map.month)
+      if (map.day != null) day2 = Number(map.day)
       const base = new Date(Date.UTC(year, month2 - 1, day2))
       if (map.week != null || map.dayOfWeek != null || map.quarter != null || map.ordinalDay != null) {
         const dateDow = base.getUTCDay() === 0 ? 7 : base.getUTCDay()
@@ -1080,6 +1083,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
       // datetime 字符串传入 time → 提取 T 后的时间部分
       if (str.includes('T')) str = str.slice(str.indexOf('T') + 1)
+      // strip IANA tag 但保留 offset（如 +01:00）
+      str = str.replace(/\[[^\]]+\]$/, '')
       // time 始终有时区后缀（默认 Z）
       if (!/[Z+-]/.test(str.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))) str += 'Z'
       return str;
@@ -1088,7 +1093,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       const map = v;
       // 优先：如果 map.time 是完整字符串（time({time: other})）
       if (map.time != null && typeof map.time === 'string') {
-        const timeStr = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+        const timeStr = (map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time).replace(/\[[^\]]+\]$/, '')
         const hasOverrides = map.hour != null || map.minute != null || map.second != null || map.nanosecond != null || map.microsecond != null || map.millisecond != null || map.timezone != null
         if (!hasOverrides) return timeStr + (timeStr.match(/[Z+-]/) ? '' : 'Z')
         const parts = timeStr.match(/(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/)
@@ -1148,7 +1153,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         let dateStr = map.date.includes('T') ? map.date.slice(0, map.date.indexOf('T')) : map.date
         dateStr = _mergeDateStr(dateStr, map)
         if (map.time != null && typeof map.time === 'string') {
-          const timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+          const timePart = (map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time).replace(/\[[^\]]+\]$/, '').replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')
           return dateStr + 'T' + _mergeTimeStr(timePart, map)
         }
         const { hour, minute, second, nanosecond } = _extractTimeMap(map);
@@ -1156,7 +1161,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       }
       // map.time 是完整时间字符串但没有 map.date → 用 map 的 year/month/day 构造日期
       if (map.time != null && typeof map.time === 'string') {
-        const timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+        const timePart = (map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time).replace(/\[[^\]]+\]$/, '').replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')
         const d = _resolveDateFromMap(map);
         const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
         return dateStr + 'T' + _mergeTimeStr(timePart, map)
@@ -1192,6 +1197,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
       // 直接返回 ISO 格式（TCK 期望 datetime 完整传递字符串参数的原貌）
+      // 无时区后缀时加 Z（localdatetime→datetime 补 Z）
+      if (!/[Z+-]/.test(str.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?/, ''))) str += 'Z'
       return str;
     }
     if (v && typeof v === "object") {
@@ -1225,7 +1232,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
             }
             return dateStr + 'T' + merged + dstTz
           }
-          return dateStr + 'T' + _mergeTimeStr(timePart, map) + (hasOwnTz ? '' : 'Z')
+          // strip tz from timePart before merge (tz will be restored separately)
+          const cleanTimeForMerge = timePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '')
+          const merged = _mergeTimeStr(cleanTimeForMerge, map)
+          const restoredTzPart = hasOwnTz ? (timeTz || 'Z') : 'Z'
+          return dateStr + 'T' + merged + restoredTzPart
         }
         const { hour, minute, second, nanosecond } = _extractTimeMap(map);
         const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone), Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10)))) : (map.time != null && typeof map.time === 'string' ? (map.time.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/) || [''])[0] || 'Z' : 'Z')
@@ -1258,7 +1269,31 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           }
           return dateStr + 'T' + merged + dstTz
         }
-        return dateStr + 'T' + _mergeTimeStr(timePart, map) + (hasOwnTz ? '' : 'Z')
+        const cleanTimeForMerge2 = timePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '')
+        return dateStr + 'T' + _mergeTimeStr(cleanTimeForMerge2, map) + (hasOwnTz ? (timeTz || 'Z') : 'Z')
+      }
+      if (map.datetime != null && typeof map.datetime === 'string') {
+        const dt = map.datetime.includes('T') ? map.datetime : map.datetime + 'T00:00:00'
+        const dtDatePart = dt.includes('T') ? dt.slice(0, dt.indexOf('T')) : dt
+        const dtTimePart = dt.includes('T') ? dt.slice(dt.indexOf('T') + 1) : ''
+        const dateStr = _mergeDateStr(dtDatePart, map)
+        // 保留原始时区（无时区则 Z）
+        const origTz = (dt.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/) || [''])[0] || 'Z'
+        if (map.timezone != null) {
+          const dstTz = _formatTimezone(_resolveNamedTimezone(String(map.timezone), Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10))))
+          if (dtTimePart) {
+            const cleanTime = dtTimePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '')
+            return dateStr + 'T' + _mergeTimeStr(cleanTime, map) + dstTz
+          }
+          const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+          return dateStr + "T" + _formatTime(hour, minute, second, nanosecond) + dstTz
+        }
+        if (dtTimePart) {
+          const cleanTime = dtTimePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '')
+          return dateStr + 'T' + _mergeTimeStr(cleanTime, map) + origTz
+        }
+        const { hour, minute, second, nanosecond } = _extractTimeMap(map);
+        return dateStr + "T" + _formatTime(hour, minute, second, nanosecond) + origTz
       }
       const d = _resolveDateFromMap(map);
       const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
