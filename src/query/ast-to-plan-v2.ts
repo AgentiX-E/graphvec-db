@@ -2162,12 +2162,37 @@ function extractMapLiteral(propsCtx: any): Record<string, unknown> | null {
   return Object.keys(result).length > 0 ? result : null
 }
 
+/** 智能分割列表字面量（考虑括号/引号内的逗号） */
+function smartSplit(text: string): string[] {
+  const result: string[] = []
+  let depth = 0, inQuote = false, quoteChar = '', cur = ''
+  for (const ch of text) {
+    if (inQuote) {
+      if (ch === quoteChar) inQuote = false
+      cur += ch
+    } else if (ch === "'" || ch === '"') {
+      inQuote = true; quoteChar = ch
+      cur += ch
+    } else if (ch === '(' || ch === '{' || ch === '[') {
+      depth++; cur += ch
+    } else if (ch === ')' || ch === '}' || ch === ']') {
+      depth--; cur += ch
+    } else if (ch === ',' && depth === 0) {
+      result.push(cur.trim()); cur = ''
+    } else {
+      cur += ch
+    }
+  }
+  const rem = cur.trim()
+  if (rem) result.push(rem)
+  return result
+}
+
 /** 解析 Cypher 列表字面量 `[1, 2, 3]` 为 JS 数组 */
 function parseListLiteral(text: string): unknown[] {
   const inner = text.slice(1, -1).trim()
   if (!inner) return []
-  return inner.split(',').map(s => {
-    const t = s.trim()
+  return smartSplit(inner).map(t => {
     if ((t.startsWith("'") && t.endsWith("'")) || (t.startsWith('"') && t.endsWith('"'))) {
       return t.slice(1, -1)
     }

@@ -12,7 +12,7 @@ import { parseCypherToPlan } from './ast-to-plan-v2'
 import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
 import { globalRegistry as _procedureRegistry } from './procedure-registry'
-import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver } from './expression-engine'
+import { _evalBinary, _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver } from './expression-engine'
 import { _walkMultiSteps, _pathEndIndices, _stepMatchConstraint, _resolveUnwindList, _extractWithClausesAfterUnwind, _applyYieldAliases, resolveVariableNodeIdx, _findWhereOutsideBrackets, _fastDedup, _fastIntersect, _fastSubtract } from './query-parser'
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
 import type { QueryPlan, FilterClause, TraverseStep, AggregateClause, SetClause, InternalNode } from './query-types'
@@ -39,6 +39,11 @@ function unwrapTyped(v: unknown): unknown {
 /** 判断值是否为 props-format 对象 { props: {...} } */
 function hasProps(v: unknown): v is { props: Record<string, unknown> } {
   return !!v && typeof v === 'object' && 'props' in v
+}
+
+/** 判断字符串是否为表达式值（函数调用或运算符表达式） */
+function _isExprValue(s: string): boolean {
+  return /^[a-z_]\w*\s*\(.*\)\s*$/i.test(s) || /^(?:[-+!]|[\w.]+)\s+/.test(s) || /\s+(?:AND|OR|XOR|IN|IS|=|<>|<=?|>=?|[+\-*/%])\s/.test(s)
 }
 
 /** 判断查询是否涉及写操作（需要独占 GE 连接） */
@@ -191,7 +196,21 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         }
         const props: Record<string, unknown> = { _label: cn.label || 'Default' }
         if (cn.props) { for (const [k, v] of Object.entries(cn.props)) {
-          props[k] = isTypedValue(v) ? v.value : v
+          const raw = isTypedValue(v) ? v.value : v
+          if (typeof raw === 'string' && (_isExprValue(raw) || raw.startsWith('[') || raw.startsWith('(') || raw.startsWith('{') || raw.startsWith('date') || raw.startsWith('time') || raw.startsWith('datetime') || raw.startsWith('localtime') || raw.startsWith('localdatetime') || raw.startsWith('duration'))) {
+            try { props[k] = _evalBinary(raw, {}); continue } catch { /* 如果不是合法表达式则用原值 */ }
+          }
+          // 数组元素级求值：每个元素如果是表达式字符串，求值
+          if (Array.isArray(raw)) {
+            props[k] = raw.map(el => {
+              if (typeof el === 'string' && (_isExprValue(el) || el.startsWith('date') || el.startsWith('time') || el.startsWith('datetime') || el.startsWith('localtime') || el.startsWith('localdatetime') || el.startsWith('duration'))) {
+                try { return _evalBinary(el, {}) } catch { return el }
+              }
+              return el
+            })
+            continue
+          }
+          props[k] = raw
         } }
         if (cn.alias) props['_alias'] = cn.alias
         allNodes.push(props)
@@ -2672,6 +2691,11 @@ export async function _executeQuery(
   // GE 执行路径 - 仅在需要时才深拷贝 plan（_executeViaGraphEngine 内会 mutate plan.filters/plan.steps）
   const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
+  // DML 语句无 RETURN 时不返回结果（Cypher 规范）
+  const isDML = ['CREATE', 'MERGE', 'DELETE', 'SET', 'REMOVE'].includes(plan.type || '')
+  if (isDML && !plan.returnColumns?.length && !plan.expressionColumns?.length) {
+    return []
+  }
   return execQueryResult
 }
 

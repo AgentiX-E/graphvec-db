@@ -1968,9 +1968,15 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         sb = base + 'T' + stripTz(origSb);
         sa = stripTz(origSa);
       }
+      
+      // 有偏移的输入保留原字符串（含 +02:00），Date 自动转 UTC
+      // 无偏移的输入 strip 后加 Z，强制 Date 当作 UTC 解析
+      const hasTzSuffix = (s: string) => /[Z+]|(?:[+-]\d{2}:?\d{2})(?:\[[^\]]*\])?$/.test(s);
       const n2 = (s: string): string => {
+        const cleaned = s.includes('[') ? s.replace(/\[.*\]$/, '') : s;
         if (isDateOnly(s)) return s + 'T00:00:00Z';
-        const st = stripTz(s);
+        if (hasTzSuffix(cleaned)) return cleaned;  // has offset, Date auto-parses to UTC
+        const st = stripTz(cleaned);
         if (isTimeOnly(s)) return '1970-01-01T' + st + 'Z';
         return st.includes('T') ? st + 'Z' : st;
       };
