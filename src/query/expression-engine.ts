@@ -266,6 +266,108 @@ export function _extractDurationProp(durStr: string, prop: string): number | nul
   return null
 }
 
+/** 规范化各种日期字符串格式为标准 ISO 日期输出（YYYY-MM-DD） */
+function _normalizeDateStr(s: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  const yyyymmdd = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (yyyymmdd) return yyyymmdd[1] + '-' + yyyymmdd[2] + '-' + yyyymmdd[3]
+  const yyyyMm = s.match(/^(\d{4})-(\d{2})$/);
+  if (yyyyMm) return yyyyMm[1] + '-' + yyyyMm[2] + '-01'
+  const yyyymm = s.match(/^(\d{4})(\d{2})$/);
+  if (yyyymm) return yyyymm[1] + '-' + yyyymm[2] + '-01'
+  const yyyy = s.match(/^(\d{4})$/);
+  if (yyyy) return yyyy[1] + '-01-01'
+  const isoWeekDay = s.match(/^(\d{4})-?W(\d{2})-?(\d)?$/i);
+  if (isoWeekDay) {
+    const year = parseInt(isoWeekDay[1], 10), week = parseInt(isoWeekDay[2], 10), dow = isoWeekDay[3] ? parseInt(isoWeekDay[3], 10) : 1
+    const jan4 = new Date(Date.UTC(year, 0, 4))
+    const jan4Dow = jan4.getUTCDay() || 7
+    const isoWeek1Start = new Date(Date.UTC(year, 0, 4 - (jan4Dow - 1)))
+    const targetDate = new Date(isoWeek1Start.getTime() + (week - 1) * 7 * 86400000 + (dow - 1) * 86400000)
+    return targetDate.getUTCFullYear() + '-' + String(targetDate.getUTCMonth() + 1).padStart(2, '0') + '-' + String(targetDate.getUTCDate()).padStart(2, '0')
+  }
+  const ordinal = s.match(/^(\d{4})-?(\d{3})$/);
+  if (ordinal) {
+    const year = parseInt(ordinal[1], 10), dayOfYear = parseInt(ordinal[2], 10)
+    const d = new Date(Date.UTC(year, 0, dayOfYear))
+    return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0')
+  }
+  return s
+}
+
+/** 规范化各种时间字符串格式为标准 ISO 时间输出（HH:MM:SS.fff） */
+function _normalizeTimeStr(s: string): string {
+  // 已标准化的 HH:MM 或 HH:MM:SS[.sss]，时区可能是 ±HH:MM（冒号格式），也可能是 ±HHMM 或 ±HH（无冒号格式）
+  if (/^\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-]\d{2}:\d{2}(?:\[[^\]]+\])?|Z|[+-]\d{2,4}(?:\[[^\]]+\])?)?$/.test(s)) {
+    // 即使时间部分已标准，仍需归一化时区（如 +0100 → +01:00, -00:00 → Z）
+    const tzMatch = s.match(/([+-]\d{2,4}(?:\.[^Z\[\]]+)?(?:\[[^\]]+\])?|Z)$/)
+    if (tzMatch) {
+      const beforeTz = s.slice(0, tzMatch.index)
+      const normalizedTz = _normalizeTz(tzMatch[1])
+      return beforeTz + normalizedTz
+    }
+    return s
+  }
+  // HHMMSS.sss[tz]
+  const hmsNoColon = s.match(/^(\d{2})(\d{2})(\d{2}(?:\.\d+)?)([+-]\d{2,4}(?:\[[^\]]+\])?|Z)?$/);
+  if (hmsNoColon) {
+    let r = hmsNoColon[1] + ':' + hmsNoColon[2] + ':' + hmsNoColon[3]
+    if (hmsNoColon[4]) r += _normalizeTz(hmsNoColon[4])
+    return r
+  }
+  // HHMM[tz]（时区可能含冒号如 -00:00）
+  const hmNoColon = s.match(/^(\d{2})(\d{2})(?:([+-]\d{1,2}:\d{2}(?:\[[^\]]+\])?|Z|[+-]\d{2,4}(?:\[[^\]]+\])?))?$/)
+  if (hmNoColon) {
+    let r = hmNoColon[1] + ':' + hmNoColon[2]
+    if (hmNoColon[3]) r += _normalizeTz(hmNoColon[3])
+    return r
+  }
+  // HH[tz]（时区可能含冒号）
+  const hOnly = s.match(/^(\d{2})(?:([+-]\d{1,2}:\d{2}(?:\[[^\]]+\])?|Z|[+-]\d{2,4}(?:\[[^\]]+\])?))?$/)
+  if (hOnly) {
+    let r = hOnly[1] + ':00'
+    if (hOnly[2]) r += _normalizeTz(hOnly[2])
+    return r
+  }
+  // HH:MM[tz] 无秒 → 加 :00（时区可能含/不含冒号）
+  const hmTz = s.match(/^(\d{2}:\d{2})([+-]\d{1,2}:\d{2}(?:\[[^\]]+\])?|Z|[+-]\d{2,4}(?:\[[^\]]+\])?)$/)
+  if (hmTz) return hmTz[1] + ':00' + _normalizeTz(hmTz[2])
+  return s
+}
+function _normalizeTz(tz: string): string {
+  if (tz === 'Z') {
+    // standalone Z, no IANA context — stays Z
+    return 'Z'
+  }
+  // Z with IANA suffix: Z[Europe/London] → +00:00[Europe/London]
+  if (tz === 'Z' || tz.startsWith('Z')) {
+    const ianaMatch = tz.match(/Z\[([^\]]+)\]/)
+    if (ianaMatch) return '+00:00[' + ianaMatch[1] + ']'
+    return 'Z'
+  }
+  // ±HH:MM (already normalized)
+  if (/^[+-]\d{2}:\d{2}/.test(tz)) {
+    // -00:00 should be normalized to Z (zero offset flagged)
+    if (tz === '-00:00') return 'Z'
+    return tz
+  }
+  // ±HHMM → ±HH:MM
+  const m4 = tz.match(/^([+-])(\d{2})(\d{2})(\.\d+)?(.*)?$/)
+  if (m4) {
+    const result = m4[1] + m4[2] + ':' + m4[3] + (m4[4] || '') + (m4[5] || '')
+    // -00:00 → Z
+    if (result === '-00:00') return 'Z'
+    return result
+  }
+  // ±HH → ±HH:00 (and normalize -00 → Z)
+  const m2 = tz.match(/^([+-])(\d{2})(\.\d+)?(.*)?$/)
+  if (m2) {
+    if (m2[1] === '-' && m2[2] === '00') return 'Z' + (m2[4] || '')
+    return m2[1] + m2[2] + ':00' + (m2[3] || '') + (m2[4] || '')
+  }
+  return tz
+}
+
 /** 解析时区 offset 字符串为分钟数（+01:00 → 60, Z → 0） */
 function _parseTzOffset(tz: string): number {
   if (tz === 'Z' || tz === '') return 0;
@@ -301,6 +403,110 @@ function _adjustTz(hour: number, minute: number, srcTz: string, dstTz: string, d
   const dayDelta = Math.floor(totalMinutes / 1440);
   const adjustedMinutes = ((totalMinutes % 1440) + 1440) % 1440;
   return { hour: Math.floor(adjustedMinutes / 60), minute: Math.round(adjustedMinutes % 60), dayDelta };
+}
+
+/** 归一化 duration ISO 字符串：分解分数值、进位溢出、处理非标准格式 */
+function _normalizeDurationStr(str: string): string {
+  const upper = str.toUpperCase()
+  // 处理非标准格式 P2012-02-02T14:37:21.545 → parse date/time
+  const dateForm = upper.match(/^P(\d{4})-(\d{2})-(\d{2})T(.+)$/)
+  if (dateForm) {
+    const years = parseInt(dateForm[1], 10)
+    const months = parseInt(dateForm[2], 10)
+    const days = parseInt(dateForm[3], 10)
+    // parse time part
+    const timeStr = dateForm[4]
+    const timeParts = timeStr.match(/^(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)$/)
+    if (timeParts) {
+      const hours = parseInt(timeParts[1], 10)
+      const minutes = parseInt(timeParts[2], 10)
+      let seconds = parseFloat(timeParts[3])
+      return _formatDuration(years, months, 0, days, hours, minutes, seconds, 0)
+    }
+  }
+  // 标准或非标准化 ISO 持续期间格式
+  // P[n]Y[n]M[n]DT[n]H[n]M[n]S 或 P[n]W 等
+  let years = 0, months = 0, weeks = 0, days = 0
+  let hours = 0, minutes = 0, seconds = 0
+  const AVG_DAYS_PER_MONTH = 30.436875
+
+  // 分离日期部分和时间部分
+  const tIdx = upper.indexOf('T')
+  const datePart = tIdx >= 0 ? str.slice(1, tIdx) : str.slice(1)
+  const timePart = tIdx >= 0 ? str.slice(tIdx + 1) : ''
+
+  // 解析日期部分
+  const yearMatch = datePart.match(/([\d.]+)Y/i)
+  if (yearMatch) years = parseFloat(yearMatch[1])
+  const monthMatch = datePart.match(/([\d.]+)M/i)
+  if (monthMatch) months = parseFloat(monthMatch[1])
+  const weekMatch = datePart.match(/([\d.]+)W/i)
+  if (weekMatch) weeks = parseFloat(weekMatch[1])
+  const dayMatch = datePart.match(/([\d.]+)D/i)
+  if (dayMatch) days = parseFloat(dayMatch[1])
+
+  // 解析时间部分
+  const hourMatch = timePart.match(/([\d.]+)H/i)
+  if (hourMatch) hours = parseFloat(hourMatch[1])
+  const minMatch = timePart.match(/([\d.]+)M/i)
+  if (minMatch) minutes = parseFloat(minMatch[1])
+  const secMatch = timePart.match(/([\d.]+)S/i)
+  if (secMatch) seconds = parseFloat(secMatch[1])
+
+  // weeks → days
+  if (weeks) { days += weeks * 7; weeks = 0 }
+
+  // 分数分解
+  if (years % 1 !== 0) { months += (years - Math.floor(years)) * 12; years = Math.floor(years) }
+  if (months % 1 !== 0) { days += (months - Math.floor(months)) * AVG_DAYS_PER_MONTH; months = Math.floor(months) }
+  if (days % 1 !== 0) { hours += (days - Math.floor(days)) * 24; days = Math.floor(days) }
+  if (hours % 1 !== 0) { minutes += (hours - Math.floor(hours)) * 60; hours = Math.floor(hours) }
+  if (minutes % 1 !== 0) { seconds += (minutes - Math.floor(minutes)) * 60; minutes = Math.floor(minutes) }
+  // 秒的分数 → 保留为秒的小数部分（不剥离）
+  // 如果 seconds 有小数，不做 floor，让 _formatDuration 保留其小数形式
+  let nanos = 0
+
+  // 进位（注意 seconds 可能有小数，进位前取整）
+  let secInt = Math.floor(seconds)
+  const secFrac = seconds - secInt
+  if (secInt >= 60) { minutes += Math.floor(secInt / 60); secInt = secInt % 60 }
+  if (minutes >= 60) { hours += Math.floor(minutes / 60); minutes = minutes % 60 }
+  if (hours >= 24) { days += Math.floor(hours / 24); hours = hours % 24 }
+  // 恢复小数部分（精度修整：最多保留 9 位小数，去除尾零）
+  seconds = secInt + Math.round(secFrac * 1e9) / 1e9
+
+  return _formatDuration(Math.floor(years), Math.floor(months), 0, Math.floor(days),
+    Math.floor(hours), Math.floor(minutes), seconds, 0)
+}
+
+/** 格式化 duration 组件为标准字符串 */
+function _formatDuration(years: number, months: number, _weeks: number, days: number,
+  hours: number, minutes: number, seconds: number, nanos: number): string {
+  // 秒的小数部分：如果 seconds 有小数，保留其小数形式
+  let secStr = ''
+  if (seconds || nanos) {
+    if (Number.isInteger(seconds)) {
+      secStr = String(seconds)
+      if (nanos > 0) {
+        let nsStr = String(nanos).padStart(9, '0').replace(/0+$/, '')
+        secStr += '.' + nsStr
+      }
+    } else {
+      // 有小数秒（如 49.5），保留原样
+      secStr = String(seconds)
+    }
+  }
+  let result = 'P'
+  if (years) result += years + 'Y'
+  if (months) result += months + 'M'
+  if (days) result += days + 'D'
+  if (hours || minutes || secStr) {
+    result += 'T'
+    if (hours) result += hours + 'H'
+    if (minutes) result += minutes + 'M'
+    if (secStr) result += secStr + 'S'
+  }
+  return result || 'PT0S'
 }
 
 export function _formatTimezone(tz: string): string {
@@ -663,11 +869,12 @@ export function _resolveNamedTimezone(tz: string, year?: number, month?: number,
   try {
     const date = (year != null && month != null && day != null)
       ? new Date(Date.UTC(year, month - 1, day, hour ?? 12, minute ?? 0)) : new Date()
-    const parts = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(date)
+    const parts = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'longOffset' }).formatToParts(date)
     const tzPart = parts.find(p => p.type === 'timeZoneName')
     if (tzPart && tzPart.value) {
-      const m = tzPart.value.match(/GMT([+-]?)(\d+)/)
-      if (m) return `${m[1] || '+'}${String(parseInt(m[2], 10)).padStart(2, '0')}:00[${tz}]`
+      // longOffset 格式: GMT+HH:MM:SS 或 GMT+HH:MM
+      const m = tzPart.value.match(/^GMT([+-]\d{2}:\d{2}(?::\d{2})?)$/)
+      if (m) return m[1] + '[' + tz + ']'
     }
   } catch {}
   return tz
@@ -1012,8 +1219,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
       // datetime/time 字符串：date('1984-10-11T12:00') → 截取日期部分
       if (str.includes('T')) str = str.slice(0, str.indexOf('T'))
-      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
-      return str;
+      return _normalizeDateStr(str);
     }
     if (v && typeof v === "object") {
       const map = v;
@@ -1047,7 +1253,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       // localtime 不含时区 → strip [+-]HH:MM 或 [IANA] 后缀
       str = str.replace(/\[[^\]]+\]$/, '')  // strip [Europe/Stockholm]
       str = str.replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')  // strip +01:00
-      return str;
+      return _normalizeTimeStr(str);
     }
     if (v && typeof v === "object") {
       const map = v;
@@ -1102,7 +1308,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       str = str.replace(/\[[^\]]+\]$/, '')
       // time 始终有时区后缀（默认 Z）
       if (!/[Z+-]/.test(str.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))) str += 'Z'
-      return str;
+      return _normalizeTimeStr(str);
     }
     if (v && typeof v === "object") {
       const map = v;
@@ -1159,7 +1365,17 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       // localdatetime 不含时区 → strip [+-]HH:MM 或 [IANA] 后缀
       str = str.replace(/\[[^\]]+\]$/, '')  // strip [Europe/Stockholm]
       str = str.replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')  // strip +01:00
-      return str;
+      // 同时规范化日期/时间部分（Temporal2 格式统一）
+      const tPos = str.indexOf('T')
+      if (tPos >= 0) {
+        const datePart = str.slice(0, tPos)
+        const timePart = str.slice(tPos + 1)
+        return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(timePart)
+      }
+      if (str.includes('-') || /^\d{8}$/.test(str) || /^\d{4}$/.test(str) || /^\d{4}-?W\d{2}/i.test(str) || /^\d{4}-?\d{3}$/.test(str)) {
+        return _normalizeDateStr(str)
+      }
+      return _normalizeTimeStr(str);
     }
     if (v && typeof v === "object") {
       const map = v;
@@ -1214,7 +1430,75 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       // 直接返回 ISO 格式（TCK 期望 datetime 完整传递字符串参数的原貌）
       // 无时区后缀时加 Z（localdatetime→datetime 补 Z）
       if (!/[Z+-]/.test(str.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?/, ''))) str += 'Z'
-      return str;
+      // 规范化日期/时间部分（Temporal2）
+      const tPos = str.indexOf('T')
+      if (tPos >= 0) {
+        const datePart = str.slice(0, tPos)
+        const rest = str.slice(tPos + 1)
+        // 分离 tz：支持 ±HH:MM、±HHMM、±HH、Z、[IANA]Z、[IANA]±HH:MM、[IANA]±HHMM、[IANA]±HH、[IANA-only]、[IANA]Z 等格式
+        const tzMatch = rest.match(/(?:\[[^\]]+\])?Z$|(?:\[[^\]]+\])?[+-]\d{2}:\d{2}(?:\.\d+)?(?:\[[^\]]+\])?$|(?:\[[^\]]+\])?[+-]\d{4}(?:\.\d+)?(?:\[[^\]]+\])?$|(?:\[[^\]]+\])?[+-]\d{2}(?:\.\d+)?(?:\[[^\]]+\])?$|Z(?:\[[^\]]+\])?$|\[[^\]]+\]$/)
+        if (tzMatch) {
+          const timePart = rest.slice(0, tzMatch.index)
+          let tzPart = tzMatch[0]
+          // 处理 [IANA]Z → 根据 IANA 解析真实 offset（不是硬编码 +00:00）
+          const ianaZ = tzPart.match(/^\[([^\]]+)\]Z$/)
+          if (ianaZ) {
+            const ianaName = ianaZ[1]
+            let y = 1984, m = 1, d = 1, hh = 12, mm = 0
+            const dp = datePart.match(/^(\d{4})/)
+            if (dp) y = parseInt(dp[1], 10)
+            const dp2 = datePart.match(/^\d{4}-(\d{2})/)
+            if (dp2) m = parseInt(dp2[1], 10)
+            const dp3 = datePart.match(/^\d{4}-\d{2}-(\d{2})/)
+            if (dp3) d = parseInt(dp3[1], 10)
+            const tp = timePart.match(/^(\d{2}):(\d{2})/)
+            if (tp) { hh = parseInt(tp[1], 10); mm = parseInt(tp[2], 10) }
+            const resolvedTz = _formatTimezone(_resolveNamedTimezone(ianaName, y, m, d, hh, mm))
+            return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(timePart) + resolvedTz
+          }
+          // 处理 [IANA] only → 解析 IANA 时区获取 offset
+          const ianaOnly = tzPart.match(/^\[([a-zA-Z0-9_/+.-]+)\]$/)
+          if (ianaOnly) {
+            const ianaName = ianaOnly[1]
+            let y = 1984, m = 1, d = 1, hh = 12, mm = 0
+            const dp = datePart.match(/^(\d{4})/)
+            if (dp) y = parseInt(dp[1], 10)
+            const dp2 = datePart.match(/^\d{4}-(\d{2})/)
+            if (dp2) m = parseInt(dp2[1], 10)
+            const dp3 = datePart.match(/^\d{4}-\d{2}-(\d{2})/)
+            if (dp3) d = parseInt(dp3[1], 10)
+            const tp = timePart.match(/^(\d{2}):(\d{2})/)
+            if (tp) { hh = parseInt(tp[1], 10); mm = parseInt(tp[2], 10) }
+            const resolvedTz = _formatTimezone(_resolveNamedTimezone(ianaName, y, m, d, hh, mm))
+            return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(timePart) + resolvedTz
+          }
+          const finalTz = _normalizeTz(tzPart)
+          return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(timePart) + finalTz
+        }
+        // 检查 rest 末尾是否有 [IANA] only（无 offset/Z 后缀）— 兜底
+        const ianaOnly2 = rest.match(/^(.+)\[([a-zA-Z0-9_/+.-]+)\]$/)
+        if (ianaOnly) {
+          const timePart = ianaOnly[1]
+          const ianaName = ianaOnly[2]
+          // 从日期中解析年份
+          let y = 1984, m = 1, d = 1
+          const dp = datePart.match(/^(\d{4})/)
+          if (dp) y = parseInt(dp[1], 10)
+          const dp2 = datePart.match(/^\d{4}-(\d{2})/)
+          if (dp2) m = parseInt(dp2[1], 10)
+          const dp3 = datePart.match(/^\d{4}-\d{2}-(\d{2})/)
+          if (dp3) d = parseInt(dp3[1], 10)
+          // 从 timePart 提取小时/分钟用于 DST 解析
+          const tp = timePart.match(/^(\d{2}):(\d{2})/)
+          const hh = tp ? parseInt(tp[1], 10) : 12
+          const mm = tp ? parseInt(tp[2], 10) : 0
+          const resolvedTz = _formatTimezone(_resolveNamedTimezone(ianaName, y, m, d, hh, mm))
+          return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(timePart) + resolvedTz + '[' + ianaName + ']'
+        }
+        // 无 tz 匹配，所有内容都是 timePart，交给 _normalizeTimeStr 处理
+        return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(rest)
+      }
+      return _normalizeDateStr(str) + 'T00:00:00Z';
     }
     if (v && typeof v === "object") {
       const map = v;
@@ -1348,6 +1632,12 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   duration: ([a], r) => {
     if (!a) return "PT0S";
     const v = _evalBinary(a, r);
+    if (typeof v === "string") {
+      let str = v;
+      if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      if (/^P/i.test(str)) return _normalizeDurationStr(str);
+      return "PT" + str + "S";
+    }
     if (v && typeof v === "object") {
       const map = v;
       const AVG_DAYS_PER_MONTH = 30.436875;
