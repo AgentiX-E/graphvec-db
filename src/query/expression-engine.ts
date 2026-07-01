@@ -276,10 +276,25 @@ function _parseTzOffset(tz: string): number {
 }
 
 /** 对给定的小时/分钟做时区偏移调整（处理跨日） */
-function _adjustTz(hour: number, minute: number, srcTz: string, dstTz: string, dayAdjust?: { sign: number }): { hour: number; minute: number; dayDelta: number } {
+function _adjustTz(hour: number, minute: number, srcTz: string, dstTz: string, dayAdjust?: { sign: number }, year?: number, month?: number, day?: number): { hour: number; minute: number; dayDelta: number } {
   if (!srcTz || !dstTz) return { hour, minute, dayDelta: 0 };
-  const srcOffset = _parseTzOffset(srcTz);
-  const dstOffset = _parseTzOffset(dstTz);
+  // 如果时区包含 IANA 名称，解析 DST 实际偏移
+  let srcForParse = srcTz;
+  let dstForParse = dstTz;
+  if (srcTz.includes('[') || !/^[+-]/.test(srcTz.replace(/\[.*?\]$/, ''))) {
+    const iana = srcTz.match(/\[([^\]]+)\]/);
+    const resolved = _resolveNamedTimezone(iana ? iana[1] : srcTz, year ?? 1984, month ?? 1, day ?? 1, hour ?? 12, minute ?? 0);
+    const match = resolved.match(/^([+-]\d{2}:\d{2})/);
+    if (match) srcForParse = match[1];
+  }
+  if (dstTz.includes('[') || !/^[+-]/.test(dstTz.replace(/\[.*?\]$/, ''))) {
+    const iana = dstTz.match(/\[([^\]]+)\]/);
+    const resolved = _resolveNamedTimezone(iana ? iana[1] : dstTz, year ?? 1984, month ?? 1, day ?? 1, hour ?? 12, minute ?? 0);
+    const match = resolved.match(/^([+-]\d{2}:\d{2})/);
+    if (match) dstForParse = match[1];
+  }
+  const srcOffset = _parseTzOffset(srcForParse);
+  const dstOffset = _parseTzOffset(dstForParse);
   if (srcOffset === dstOffset) return { hour, minute, dayDelta: 0 };
   const diffMinutes = dstOffset - srcOffset;
   const totalMinutes = hour * 60 + minute + diffMinutes;
@@ -1222,12 +1237,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
               const tpParts = timePart.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
               const baseH = tpParts ? Number(tpParts[1]) : 0;
               const baseM = tpParts ? Number(tpParts[2]) : 0;
-              const adj = _adjustTz(baseH, baseM, timeTz, dstTz);
-              const mergedSec = merged.match(/(\d{1,2}(?:\.\d+)?)$/);
-              const baseSec = mergedSec ? mergedSec[1] : '00';
-              // 用调整后的小时分钟重建
+              const adj = _adjustTz(baseH, baseM, timeTz, dstTz, undefined, Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10)));
               const baseStr = String(adj.hour).padStart(2, '0') + ':' + String(adj.minute).padStart(2, '0');
-              const timeStr = merged.includes(':') ? baseStr + ':' + merged.split(':').slice(2).join(':') : baseStr;
+              const secParts1 = merged.split(':').slice(2);
+              const timeStr = secParts1.length > 0 && secParts1[0].length > 0 ? baseStr + ':' + secParts1.join(':') : baseStr;
               return dateStr + 'T' + timeStr + dstTz;
             }
             return dateStr + 'T' + merged + dstTz
@@ -1235,7 +1248,16 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           // strip tz from timePart before merge (tz will be restored separately)
           const cleanTimeForMerge = timePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '')
           const merged = _mergeTimeStr(cleanTimeForMerge, map)
-          const restoredTzPart = hasOwnTz ? (timeTz || 'Z') : 'Z'
+          let restoredTzPart = hasOwnTz ? (timeTz || 'Z') : 'Z'
+          if (restoredTzPart.includes('[')) {
+            // IANA 时区需用实际日期解析 DST 偏移
+            const ianaName = restoredTzPart.match(/\[([^\]]+)\]/);
+            if (ianaName) {
+              const resolved = _resolveNamedTimezone(ianaName[1], Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10)));
+              const match = resolved.match(/^([+-]\d{2}:\d{2})/);
+              if (match) restoredTzPart = match[1] + '[' + ianaName[1] + ']';
+            }
+          }
           return dateStr + 'T' + merged + restoredTzPart
         }
         const { hour, minute, second, nanosecond } = _extractTimeMap(map);
@@ -1259,18 +1281,26 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
             const tpParts = timePart.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
             const baseH = tpParts ? Number(tpParts[1]) : 0;
             const baseM = tpParts ? Number(tpParts[2]) : 0;
-            const adj = _adjustTz(baseH, baseM, timeTz, dstTz);
-            // 用调整后的小时分钟重建 merged
-            const mergedSec = merged.match(/(\d{1,2}(?:\.\d+)?)$/);
-            const baseSec = mergedSec ? mergedSec[1] : '00';
+            const adj = _adjustTz(baseH, baseM, timeTz, dstTz, undefined, d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
             const baseStr = String(adj.hour).padStart(2, '0') + ':' + String(adj.minute).padStart(2, '0');
-            const timeStr = merged.includes(':') ? baseStr + ':' + merged.split(':').slice(2).join(':') : baseStr;
+            const secParts = merged.split(':').slice(2);
+            const timeStr = secParts.length > 0 && secParts[0].length > 0 ? baseStr + ':' + secParts.join(':') : baseStr;
             return dateStr + 'T' + timeStr + dstTz;
           }
           return dateStr + 'T' + merged + dstTz
         }
         const cleanTimeForMerge2 = timePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '')
-        return dateStr + 'T' + _mergeTimeStr(cleanTimeForMerge2, map) + (hasOwnTz ? (timeTz || 'Z') : 'Z')
+        const merged2 = _mergeTimeStr(cleanTimeForMerge2, map)
+        let restoredTzPart2 = (hasOwnTz ? (timeTz || 'Z') : 'Z')
+        if (restoredTzPart2.includes('[')) {
+          const ianaName = restoredTzPart2.match(/\[([^\]]+)\]/);
+          if (ianaName) {
+            const resolved = _resolveNamedTimezone(ianaName[1], d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+            const match = resolved.match(/^([+-]\d{2}:\d{2})/);
+            if (match) restoredTzPart2 = match[1] + '[' + ianaName[1] + ']';
+          }
+        }
+        return dateStr + 'T' + merged2 + restoredTzPart2
       }
       if (map.datetime != null && typeof map.datetime === 'string') {
         const dt = map.datetime.includes('T') ? map.datetime : map.datetime + 'T00:00:00'
@@ -1283,6 +1313,18 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           const dstTz = _formatTimezone(_resolveNamedTimezone(String(map.timezone), Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10))))
           if (dtTimePart) {
             const cleanTime = dtTimePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '')
+            // 如果原 datetime 有时区且与目标不同，做时区转换
+            if (origTz && origTz !== 'Z') {
+              const tpParts = dtTimePart.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
+              const baseH = tpParts ? Number(tpParts[1]) : 0;
+              const baseM = tpParts ? Number(tpParts[2]) : 0;
+              const adj = _adjustTz(baseH, baseM, origTz, dstTz, undefined, Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10)));
+              const merged = _mergeTimeStr(cleanTime, map);
+              const secParts = merged.split(':').slice(2);
+              const adjStr = String(adj.hour).padStart(2, '0') + ':' + String(adj.minute).padStart(2, '0');
+              const timeStr = secParts.length > 0 && secParts[0].length > 0 ? adjStr + ':' + secParts.join(':') : adjStr;
+              return dateStr + 'T' + timeStr + dstTz;
+            }
             return dateStr + 'T' + _mergeTimeStr(cleanTime, map) + dstTz
           }
           const { hour, minute, second, nanosecond } = _extractTimeMap(map);
