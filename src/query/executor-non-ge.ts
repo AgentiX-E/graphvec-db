@@ -473,9 +473,10 @@ export async function _execNonGePaths(
     return Object.keys(row).length ? [row] : []
   }
 
-  // ── DML 纯操作（无 RETURN）：直接返回空（side effects 由调用方处理） ──
-  // 注意：CREATE/MERGE 的节点/边创建不能跳过，否则 side effects 不会持久化
+  // ── DML 纯操作（无 RETURN）：CREATE/MERGE 必须创建节点不能跳过，其他 DML 直接返回空
   if (isDML && !plan.returnColumns?.length && !plan.aggregate) {
+    // CREATE/MERGE 需要创建节点，走 GE 路径（返回 null 给 _executeViaGraphEngine 处理）
+    if (plan.type === 'CREATE' || plan.type === 'MERGE') return null
     // CREATE_CONSTRAINT: 验证现有数据唯一性并注册约束
     if (plan.type === 'CREATE_CONSTRAINT' && plan.constraint) {
       const { label, property } = plan.constraint

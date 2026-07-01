@@ -236,7 +236,65 @@ export function _extractTimeMap(map: Record<string, unknown>): { hour: number; m
   }
 }
 
-/** 从 ISO 持续时间字符串中提取指定属性的数值（如 duration('P1DT2H').days → 1） */
+/** 从 ISO 持续时间字符串中提取指定属性的数值（如 duration('P1DT2H').days → 1） */export function _extractDateProp(s: string, prop: string): number | undefined {
+  let dateStr = s
+  if (dateStr.includes('T')) dateStr = dateStr.slice(0, dateStr.indexOf('T'))
+  const parts = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!parts) return undefined
+  const year = parseInt(parts[1], 10), month = parseInt(parts[2], 10), day = parseInt(parts[3], 10)
+  const d = new Date(Date.UTC(year, month - 1, day))
+  const jsDow = d.getUTCDay()
+  const isoDow = jsDow === 0 ? 7 : jsDow
+  const startOfYear = new Date(Date.UTC(year, 0, 1))
+  const ordinalDay = Math.floor((d.getTime() - startOfYear.getTime()) / 86400000) + 1
+  const quarter = Math.ceil(month / 3)
+  const qStart = new Date(Date.UTC(year, (quarter - 1) * 3, 1))
+  const dayOfQuarter = Math.floor((d.getTime() - qStart.getTime()) / 86400000) + 1
+  const jan4 = new Date(Date.UTC(year, 0, 4))
+  const jan4Dow = jan4.getUTCDay() || 7
+  const isoWeek1Start = new Date(Date.UTC(year, 0, 4 - (jan4Dow - 1)))
+  const week = Math.ceil((d.getTime() - isoWeek1Start.getTime() + 1) / 604800000)
+  let weekYear = year
+  if (week < 1) { weekYear = year - 1 }
+  else {
+    const nextJan4 = new Date(Date.UTC(year + 1, 0, 4))
+    const nextIsoWeek1 = new Date(Date.UTC(year + 1, 0, 4 - ((nextJan4.getUTCDay() || 7) - 1)))
+    if (d.getTime() >= nextIsoWeek1.getTime()) { weekYear = year + 1 }
+  }
+  switch (prop) {
+    case 'year': return year
+    case 'quarter': return quarter
+    case 'month': return month
+    case 'week': return week
+    case 'weekYear': return weekYear
+    case 'day': return day
+    case 'ordinalDay': return ordinalDay
+    case 'weekDay': return isoDow
+    case 'dayOfQuarter': return dayOfQuarter
+  }
+  return undefined
+}
+export function _extractTimeProp(s: string, prop: string): number | undefined {
+  const cleanS = s.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$|\[[^\]]+\]$/, '')
+  const parts = cleanS.match(/^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/)
+  if (!parts) return undefined
+  const hour = parseInt(parts[1], 10), minute = parseInt(parts[2], 10), second = parseInt(parts[3] || '0', 10)
+  let nanosecond = 0
+  if (parts[4]) nanosecond = parseInt((parts[4] + '000000000').slice(0, 9), 10)
+  switch (prop) {
+    case 'hour': return hour
+    case 'minute': return minute
+    case 'second': return second
+    case 'millisecond': return Math.floor(nanosecond / 1e6)
+    case 'microsecond': return Math.floor(nanosecond / 1e3)
+    case 'nanosecond': return nanosecond
+    case 'milliseconds': return Math.floor(nanosecond / 1e6)
+    case 'microseconds': return Math.floor(nanosecond / 1e3)
+    case 'nanoseconds': return nanosecond
+  }
+  return undefined
+}
+
 export function _extractDurationProp(durStr: string, prop: string): number | null {
   // 尝试标准格式：P...T...（组件前可能带 - 符号）
   const m = durStr.match(/^([-])?P(?:(\d+(?:\.\d+)?)Y)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?\d+(?:\.\d+)?)S)?)?$/)
@@ -3284,8 +3342,18 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     if (obj == null) return null
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) return (obj as Record<string, unknown>)[prop] ?? null
     // 持续时间 ISO 字符串属性访问：dur.days / dur.hours 等
-    // Cypher 中 duration('P1DT2H').days → 1
     if (typeof obj === 'string' && /^P/i.test(obj)) return _extractDurationProp(obj, prop)
+    // 日期/时间字符串属性访问：date.year, time.hour 等
+    if (typeof obj === 'string') {
+      if (/^\d{4}/.test(obj)) {
+        const dateAccessor = _extractDateProp(obj, prop)
+        if (dateAccessor !== undefined) return dateAccessor
+      }
+      if (/^\d{2}:\d{2}/.test(obj)) {
+        const timeAccessor = _extractTimeProp(obj, prop)
+        if (timeAccessor !== undefined) return timeAccessor
+      }
+    }
     // 对非 map 的基本类型抛 TypeError（列表也是非 map）
     throw Object.assign(new Error('TypeError: Property access on non-map type'), { tckError: 'TypeError' })
   }

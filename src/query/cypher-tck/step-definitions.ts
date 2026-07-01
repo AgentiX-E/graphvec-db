@@ -10,6 +10,7 @@ import * as assert from 'assert'
 import fs from 'fs'
 import crypto from 'crypto'
 import { parseQuery, _executeQuery, _validatePlan, _clearGeInstances } from '../query-engine'
+import { _evalBinary, _isExprValue } from '../expression-engine'
 import { GraphEngine } from '../../core/graph-engine'
 import { globalRegistry as _globalProcedureRegistry, type CypherProcedure } from '../procedure-registry'
 
@@ -647,17 +648,20 @@ Given('having executed:', async function (query: string) {
             if (cn.alias) node['_alias'] = cn.alias
             if (cn.props) {
               for (const [k, v] of Object.entries(cn.props)) {
-                node[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
+                let raw = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
                   ? (v as any).value
                   : v
-                if (typeof node[k] === 'string' && /^-?\d+$/.test(node[k] as string)) {
+                // 对表达式字符串求值
+                if (typeof raw === 'string' && _isExprValue(raw)) {
+                  try { raw = _evalBinary(raw, {}); node[k] = raw; continue } catch {}
+                } else if (typeof raw === 'string' && /^-?\d+$/.test(raw)) {
                   try {
-                    const asBig = BigInt(node[k] as string)
-                    if (asBig > BigInt(Number.MAX_SAFE_INTEGER) || asBig < BigInt(Number.MIN_SAFE_INTEGER)) {
-                      node[k] = asBig
-                    } else { node[k] = Number(node[k]) }
-                  } catch {}
+                    const asBig = BigInt(raw)
+                    node[k] = asBig > BigInt(Number.MAX_SAFE_INTEGER) || asBig < BigInt(Number.MIN_SAFE_INTEGER) ? raw : Number(raw)
+                  } catch { node[k] = raw }
+                  continue
                 }
+                node[k] = raw
               }
             }
             st.nodes.push(node)
