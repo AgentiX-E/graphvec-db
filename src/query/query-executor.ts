@@ -694,6 +694,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         const originalCount = nodes.length
         const newlyCreated = allNodes.slice(originalCount)
         if (newlyCreated.length > 0) {
+          // 将 MATCH 变量注入 rc（支持 v.date 等属性访问表达式）
           // 新创建节点 → ON CREATE SET
           for (const nn of newlyCreated) {
             for (const oc of plan.mergeOnCreate || []) {
@@ -1971,6 +1972,12 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
             for (const [k, v] of Object.entries(rawRow.__crossVarRows)) {
               if (!(k in rc)) rc[k] = v
             }
+          }
+          // 将 MATCH 变量注入 rc（支持 v.date 等属性访问表达式）
+          const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
+          const _firstVar = _exprVars?.[0]
+          if (_firstVar && rawRow?.props && !(_firstVar in rc)) {
+            rc[_firstVar] = rawRow.props
           }
           try {
             const evaluated = _evalBinary(wcExpr, rc)

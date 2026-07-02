@@ -711,6 +711,7 @@ Given('having executed:', async function (query: string) {
           if (typeof raw === 'string' && _isExprValue(raw)) {
             try { raw = _evalBinary(raw, {}) } catch {}
           }
+          node[k] = raw
           // 大整数精度保护：parseQuery 把超出 Number 安全范围的整数存储为 string，
           // 但 TCK 期望 RETURN 时输出为数字。将纯数字字符串转回 number/bigint。
           if (typeof node[k] === 'string' && /^-?\d+$/.test(node[k] as string)) {
