@@ -2121,8 +2121,15 @@ function extractMapLiteral(propsCtx: any): Record<string, unknown> | null {
   if (!propsCtx) return null
   const result: Record<string, unknown> = {}
 
-  // 只搜索直接子节点的 LiteralEntryContext（不递归进入子表达式内部）
-  const entries = (propsCtx.children || []).filter((c: any) => (c.constructor?.name ?? '') === 'LiteralEntryContext')
+  // 搜索 LiteralEntryContext（直接子节点或嵌套在 MapLiteralContext 下）
+  let entries = (propsCtx.children || []).filter((c: any) => (c.constructor?.name ?? '') === 'LiteralEntryContext')
+  if (entries.length === 0) {
+    // PropertiesContext 的子节点可能是 MapLiteralContext（非 LiteralEntryContext）
+    const mapCtx = (propsCtx.children || []).find((c: any) => (c.constructor?.name ?? '').includes('Map'))
+    if (mapCtx) {
+      entries = (mapCtx.children || []).filter((c: any) => (c.constructor?.name ?? '') === 'LiteralEntryContext')
+    }
+  }
   for (const entry of entries) {
     const keyCtx = findChild(entry, 'PropertyKeyNameContext')
     const key = keyCtx ? findSymbolicName(keyCtx) : null

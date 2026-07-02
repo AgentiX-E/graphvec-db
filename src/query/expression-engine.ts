@@ -52,6 +52,12 @@ interface PostProcessPlan {
   skip?: number
   limit?: number
 }
+/**
+ * 检查字符串是否是表达式（而非普通字符串字面量）
+ */
+export function _isExprValue(s: string): boolean {
+  return /^[a-z_]\w*\s*\(.*\)\s*$/i.test(s) || /^(?:[-+!]|[\w.]+)\s+/.test(s) || /\s+(?:AND|OR|XOR|IN|IS|=|<>|<=?|>=?|[+\-*/%])\s/.test(s)
+}
 export function _evaluateExpression(expr: string | Record<string, unknown>, row?: Record<string, unknown>): ExprValue {
   if (expr == null) return null
   // 支持结构化表达式 {type, value, items}（从 AST 解析而来）

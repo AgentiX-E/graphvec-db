@@ -704,9 +704,13 @@ Given('having executed:', async function (query: string) {
         if (cn.alias) node['_alias'] = cn.alias
         if (cn.props) { for (const [k, v] of Object.entries(cn.props)) {
           // parseQuery 将 props 打包为 {type:'STRING', value:'val'}，需解包
-          node[k] = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
+          let raw = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
             ? (v as any).value
             : v
+          // 对表达式字符串求值（date(...)、time(...)、duration(...) 等）
+          if (typeof raw === 'string' && _isExprValue(raw)) {
+            try { raw = _evalBinary(raw, {}) } catch {}
+          }
           // 大整数精度保护：parseQuery 把超出 Number 安全范围的整数存储为 string，
           // 但 TCK 期望 RETURN 时输出为数字。将纯数字字符串转回 number/bigint。
           if (typeof node[k] === 'string' && /^-?\d+$/.test(node[k] as string)) {

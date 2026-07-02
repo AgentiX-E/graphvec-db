@@ -411,8 +411,8 @@ function _parseQueryImpl(query: string): QueryPlan {
       const newAliasMap: Record<string, string> = {}
       for (const [key, val] of Object.entries(plan.returnAliasMap)) {
         const cleanKey = key.indexOf('.') >= 0 ? key.split('.').pop()! : key
-        const cleanVal = val.indexOf('.') >= 0 ? val.split('.').pop()! : val
-        newAliasMap[cleanKey] = cleanVal
+        // 保留原始表达式值（如 'd.year'），不裁剪为 'year'
+        newAliasMap[cleanKey] = val
       }
       plan.returnAliasMap = newAliasMap
     }
