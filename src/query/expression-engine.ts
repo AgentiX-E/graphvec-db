@@ -261,13 +261,29 @@ export function _extractTimeMap(map: Record<string, unknown>): { hour: number; m
   const isoWeek1Start = new Date(Date.UTC(year, 0, 4 - (jan4Dow - 1)))
   const week = Math.ceil((d.getTime() - isoWeek1Start.getTime() + 1) / 604800000)
   let weekYear = year
-  if (week < 1) { weekYear = year - 1 }
+  let weeksInPrevYear = 52
+  if (week < 1) {
+    weekYear = year - 1
+    // ISO 周编号公式：floor((ordinalDay - dow + 10) / 7)
+    // 上一年 12 月 28 日一定在最后一周
+    const dec28 = new Date(Date.UTC(year - 1, 11, 28))
+    const dec28Ordinal = Math.floor((dec28.getTime() - new Date(Date.UTC(year - 1, 0, 1)).getTime()) / 86400000) + 1
+    const dec28Dow = dec28.getUTCDay() || 7
+    weeksInPrevYear = Math.floor((dec28Ordinal - dec28Dow + 10) / 7)
+  }
   else {
     const nextJan4 = new Date(Date.UTC(year + 1, 0, 4))
     const nextIsoWeek1 = new Date(Date.UTC(year + 1, 0, 4 - ((nextJan4.getUTCDay() || 7) - 1)))
     if (d.getTime() >= nextIsoWeek1.getTime()) { weekYear = year + 1 }
   }
+  let correctedWeek = week < 1 && weekYear < year ? weeksInPrevYear : week
+  if (correctedWeek < 1) correctedWeek = 1
   switch (prop) {
+    case 'year': return year
+    case 'quarter': return quarter
+    case 'month': return month
+    case 'week': return correctedWeek
+    case 'weekYear': return weekYear
     case 'year': return year
     case 'quarter': return quarter
     case 'month': return month
@@ -287,6 +303,21 @@ export function _extractTimeProp(s: string, prop: string): number | undefined {
   const hour = parseInt(parts[1], 10), minute = parseInt(parts[2], 10), second = parseInt(parts[3] || '0', 10)
   let nanosecond = 0
   if (parts[4]) nanosecond = parseInt((parts[4] + '000000000').slice(0, 9), 10)
+  // 提取时区/偏移信息
+  const tzMatch = s.match(/(?:([+-])(\d{2}):(\d{2})(?:\[([^\]]+)\])?|Z)$/)
+  let tzOffsetMinutes = 0
+  let tzName = ''
+  const ianaMatch = s.match(/\[([^\]]+)\]$/)
+  if (ianaMatch) tzName = ianaMatch[1]
+  if (tzMatch && Array.isArray(tzMatch) && tzMatch[1]) {
+    const sign = tzMatch[1] === '+' ? 1 : -1
+    tzOffsetMinutes = sign * (parseInt(tzMatch[2], 10) * 60 + parseInt(tzMatch[3], 10))
+  } else if (s.endsWith('Z')) {
+    // Z = UTC, no offset minutes change needed
+  }
+  // duration components also use _extractTimeProp
+
+
   switch (prop) {
     case 'hour': return hour
     case 'minute': return minute
@@ -297,6 +328,17 @@ export function _extractTimeProp(s: string, prop: string): number | undefined {
     case 'milliseconds': return Math.floor(nanosecond / 1e6)
     case 'microseconds': return Math.floor(nanosecond / 1e3)
     case 'nanoseconds': return nanosecond
+    case 'timezone':
+      if (tzName) return tzName
+      if (s.endsWith('Z')) return '+00:00'
+      if (tzMatch && Array.isArray(tzMatch) && tzMatch[1]) return tzMatch[1] + tzMatch[2] + ':' + tzMatch[3]
+      return null
+    case 'offset':
+      if (s.endsWith('Z')) return '+00:00'
+      if (tzMatch && Array.isArray(tzMatch) && tzMatch[1]) return tzMatch[1] + tzMatch[2] + ':' + tzMatch[3]
+      return null
+    case 'offsetMinutes': return tzOffsetMinutes
+    case 'offsetSeconds': return tzOffsetMinutes * 60
   }
   return undefined
 }
@@ -315,17 +357,41 @@ export function _extractDurationProp(durStr: string, prop: string): number | nul
   const secInt = secVal < 0 ? Math.ceil(secVal) - 1 : Math.floor(secVal)
   const secFrac = secVal - secInt
   const nanos = Math.round(Math.abs(secFrac) * 1e9)
+  // Cypher 规范：duration 组件分为 calendar 侧（years/months）和 dayTime 侧（days/hours/minutes/seconds/nanos）
+  // calendar 侧累积：months_total = y*12 + mo
+  // dayTime 侧累积到各单位（不含 days 换算，days 是独立组件）：
+  // minutes = h*60 + min, seconds = h*3600 + min*60 + secInt
+  const calMonths = y * 12 + mo
+  const dtMinutes = h * 60 + min
+  const dtSeconds = h * 3600 + min * 60 + secInt
+  // 辅助属性：取模到对应"一年中/一季度中/一周中"的索引（1-indexed）
+  const _totalMonths = Math.round(calMonths)
+  const _totalQuarters = Math.floor(_totalMonths / 3)
+  const _quartersOfYear = _totalQuarters > 0 ? ((_totalQuarters - 1) % 4) + 1 : 0
+  const _monthsOfYear = _totalMonths > 0 ? ((_totalMonths - 1) % 12) + 1 : 0
+  const _monthsOfQuarter = _totalMonths > 0 ? ((_totalMonths - 1) % 3) + 1 : 0
+  const _daysOfWeek = d > 0 ? ((Math.round(d) - 1) % 7) + 1 : 0
   switch (prop) {
     case 'years': return sign * y
-    case 'months': return sign * mo
+    case 'months': return sign * calMonths
+    case 'quarters': return sign * _totalQuarters
+    case 'weeks': return sign * Math.floor(d / 7)
     case 'days': return sign * d
     case 'hours': return sign * h
-    case 'minutes': return sign * min
-    case 'seconds': return sign * (y * 31557600 + mo * 2629800 + d * 86400 + h * 3600 + min * 60 + secInt)
-    case 'milliseconds': return sign * (Math.floor(y * 31557600e3 + mo * 2629800e3 + d * 86400e3 + h * 3600e3 + min * 60e3 + secInt * 1e3) + Math.floor(nanos / 1e6))
-    case 'microseconds': return sign * (Math.floor(y * 31557600e6 + mo * 2629800e6 + d * 86400e6 + h * 3600e6 + min * 60e6 + secInt * 1e6) + Math.floor(nanos / 1e3))
-    case 'nanoseconds': return sign * (Math.floor(y * 31557600e9 + mo * 2629800e9 + d * 86400e9 + h * 3600e9 + min * 60e9 + secInt * 1e9) + nanos)
+    case 'minutes': return sign * dtMinutes
+    case 'seconds': return sign * dtSeconds
+    case 'milliseconds': return sign * (dtSeconds * 1000 + Math.floor(nanos / 1e6))
+    case 'microseconds': return sign * (dtSeconds * 1000000 + Math.floor(nanos / 1e3))
+    case 'nanoseconds': return sign * (dtSeconds * 1000000000 + nanos)
     case 'nanosecondsOfSecond': return sign * nanos
+    case 'millisecondsOfSecond': return sign * Math.floor(nanos / 1e6)
+    case 'microsecondsOfSecond': return sign * Math.floor(nanos / 1e3)
+    case 'quartersOfYear': return sign * _quartersOfYear
+    case 'monthsOfYear': return sign * _monthsOfYear
+    case 'monthsOfQuarter': return sign * _monthsOfQuarter
+    case 'daysOfWeek': return sign * _daysOfWeek
+    case 'minutesOfHour': return sign * Math.floor(min)
+    case 'secondsOfMinute': return sign * Math.floor(secInt + Math.round(secFrac * 1e9) / 1e9)
   }
   return null
 }
