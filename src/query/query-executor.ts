@@ -756,7 +756,9 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     const edgeFilters = plan.steps?.length ? (plan.filters || []).filter(f =>
       f.source && !nodeAliasList.includes(f.source)
     ) : []
-    const hasOR = query ? /OR/i.test(query) : false
+    // 只匹配作为 SQL 关键字的 OR（列名如 ordinalDay 不触发）
+    const _isQueryOrKeyword = (q: string): boolean => /\bOR\b/i.test(q)
+    const hasOR = query ? _isQueryOrKeyword(query) : false
     const geCapableOps = new Set(['EQ', 'NEQ', 'IN', 'STARTS_WITH', 'ENDS_WITH', 'CONTAINS', 'IS_NULL', 'IS_NOT_NULL'])
     const geFilters = (plan.filters || []).filter(f => !(edgeFilters as any[]).includes(f))
     // 从 GE filter 中移除 GE 不支持的运算符，由 query-engine 在后处理中补偿
@@ -1151,7 +1153,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           if (planForGe.steps?.[0]?.direction === 'any') delete planForGe.aggregate
           // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
           delete planForGe.skip; delete planForGe.limit
-          return _geExecQueryPlan(ge, planForGe)
+          const __t5PlanForGeKeys = Object.keys(planForGe)
+          const __t5PlanForGeFilters = JSON.stringify((planForGe.filters || []).map((f: any) => f.property))
+          const __t5PlanForGeEC = (planForGe.expressionColumns || []).length
+          const __t5PlanForGeReturn = (planForGe.returnColumns || []).length
+          const __t5PlanForGeWith = planForGe.with ? 'Y' : 'N'
+          const __t5RawRecords = _geExecQueryPlan(ge, planForGe)
+          return __t5RawRecords
         })()
     // Fallback: useEdgeWalk=false 且 hasMatch 时，从 GE 获取全部节点
     // 注意：当 GE 的标签扫描返回空（标签不匹配）时，不可回退到全量扫描，

@@ -3415,15 +3415,34 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) return (obj as Record<string, unknown>)[prop] ?? null
     // 持续时间 ISO 字符串属性访问：dur.days / dur.hours 等
     if (typeof obj === 'string' && /^P/i.test(obj)) return _extractDurationProp(obj, prop)
-    // 日期/时间字符串属性访问：date.year, time.hour 等
+    // 日期/时间字符串属性访问：date.year, time.hour, datetime.hour 等
     if (typeof obj === 'string') {
-      if (/^\d{4}/.test(obj)) {
-        const dateAccessor = _extractDateProp(obj, prop)
-        if (dateAccessor !== undefined) return dateAccessor
+      // epochSeconds / epochMillis
+      if (obj.includes('T') && (prop === 'epochSeconds' || prop === 'epochMillis')) {
+        const epochVal = _extractEpochFromDateTimeStr(obj, prop)
+        if (epochVal !== undefined) return epochVal
       }
-      if (/^\d{2}:\d{2}/.test(obj)) {
-        const timeAccessor = _extractTimeProp(obj, prop)
-        if (timeAccessor !== undefined) return timeAccessor
+      // 含 T 的 datetime 字符串：先尝试日期属性，再尝试时间属性
+      if (obj.includes('T')) {
+        const datePart = obj.slice(0, obj.indexOf('T'))
+        const timePart = obj.slice(obj.indexOf('T') + 1)
+        if (/^\d{4}/.test(datePart)) {
+          const dateAccessor = _extractDateProp(obj, prop)
+          if (dateAccessor !== undefined) return dateAccessor
+        }
+        if (/^\d{2}:\d{2}/.test(timePart)) {
+          const timeAccessor = _extractTimeProp(timePart, prop)
+          if (timeAccessor !== undefined) return timeAccessor
+        }
+      } else {
+        if (/^\d{4}/.test(obj)) {
+          const dateAccessor = _extractDateProp(obj, prop)
+          if (dateAccessor !== undefined) return dateAccessor
+        }
+        if (/^\d{2}:\d{2}/.test(obj)) {
+          const timeAccessor = _extractTimeProp(obj, prop)
+          if (timeAccessor !== undefined) return timeAccessor
+        }
       }
     }
     // 对非 map 的基本类型抛 TypeError（列表也是非 map）
@@ -4157,5 +4176,30 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
   }
 
   return processed
+}
+
+/** 从 datetime ISO 字符串中提取 epochSeconds / epochMillis */
+function _extractEpochFromDateTimeStr(s: string, prop: string): number | undefined {
+  // s = "1984-11-11T12:31:14.645876123+01:00[Europe/Stockholm]"
+  // 去掉 IANA 后缀，因为 Date.parse 不识别
+  let clean = s.replace(/\[.*?\]$/, '')
+  // 截断纳秒到毫秒精度（Date.parse 不处理 >3 位小数秒）
+  const dotIdx = clean.indexOf('.')
+  if (dotIdx >= 0) {
+    const beforeDot = clean.slice(0, dotIdx)
+    const afterDot = clean.slice(dotIdx + 1)
+    // 找到时区偏移的开始
+    const tzIdx = afterDot.search(/[+-]/)
+    const nsPart = tzIdx >= 0 ? afterDot.slice(0, tzIdx) : afterDot
+    const msPart = nsPart.slice(0, 3).padEnd(3, '0')
+    const tzPart = tzIdx >= 0 ? afterDot.slice(tzIdx) : ''
+    clean = beforeDot + '.' + msPart + tzPart
+  }
+  const dateObj = new Date(clean)
+  if (isNaN(dateObj.getTime())) return undefined
+  const ms = dateObj.getTime()
+  if (prop === 'epochSeconds') return Math.floor(ms / 1000)
+  if (prop === 'epochMillis') return ms
+  return undefined
 }
 
