@@ -3237,15 +3237,20 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue
     if (t[i] === '-' && !_inBrackets(t, i) && !_inString(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1]) && !'eE'.includes(t[i - 1])) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
-      if (left == null || right == null) return null
+      if (left == null || right == null) { return null }
+      // Manual type checks for date/duration subtraction
+      const _isDateStrDirect = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)
+      const _isDurationStrDirect = (v: unknown): v is string => typeof v === "string" && /^P(-?\d+(?:\.\d+)?Y)?(-?\d+(?:\.\d+)?M)?(-?\d+(?:\.\d+)?D)?(T(-?\d+(?:\.\d+)?H)?(-?\d+(?:\.\d+)?M(?!S))?(-?\d+(?:\.\d+)?S)?)?$/.test(v) || /^P-?\d+(?:\.\d+)?W$/.test(v)
+      const _isTimeStrDirect = (v: unknown): v is string => typeof v === "string" && /^\d{2}:\d{2}:\d{2}/.test(v)
+      const _isDateTimeStrDirect = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v)
       // duration - duration
-      if (_isDurationStr(left) && _isDurationStr(right)) return _durationSub(left, right)
+      if (_isDurationStrDirect(left) && _isDurationStrDirect(right)) return _durationSub(left, right)
       // date - duration
-      if (_isDateStr(left) && _isDurationStr(right)) return _dateSubDuration(left, right)
+      if (_isDateStrDirect(left) && _isDurationStrDirect(right)) return _dateSubDuration(left, right)
       // localtime - duration
-      if (_isTimeStr(left) && _isDurationStr(right)) return _timeSubDuration(left, right)
+      if (_isTimeStrDirect(left) && _isDurationStrDirect(right)) return _timeSubDuration(left, right)
       // datetime - duration
-      if (_isDateTimeStr(left) && _isDurationStr(right)) return _dateTimeSubDuration(left, right)
+      if (_isDateTimeStrDirect(left) && _isDurationStrDirect(right)) return _dateTimeSubDuration(left, right)
       return Number(left) - Number(right)
     }
   }

@@ -311,8 +311,24 @@ function _parseQueryImpl(query: string): QueryPlan {
   }
 
   // 递归修复子计划的 scanLabel（UNION/INTERSECT/SUBTRACT 的 rightPlan，CALL 的 callQuery）
+  function _isValidLabel(label: string): boolean {
+    // 合法的标签名只包含字母、数字（不能以数字开头）、允许下划线
+    return /^[a-zA-Z_]\w*$/.test(label)
+  }
   function _fixScanLabel(subPlan: QueryPlan): void {
+    console.error('FIX_SCAN: scanLabel=' + JSON.stringify(subPlan.scanLabel) + ' labelExpr=' + JSON.stringify(subPlan.labelExpr) + ' hasMatch=' + subPlan.hasMatch + '\n')
+    // 清除 labelExpr 中的所有非法标签名（从 WITH date({...}) 误解析的）
+    if (subPlan.labelExpr?.items) {
+      const validItems = subPlan.labelExpr.items.filter(item => _isValidLabel(item.name))
+      subPlan.labelExpr.items = validItems
+      if (validItems.length === 0) subPlan.labelExpr = undefined
+    }
     if (subPlan.scanLabel && !subPlan.labelExpr) {
+      // 清除非法标签（如 ANTLR 从 WITH date({...}) 中误解析的逗号分隔内容）
+      if (subPlan.scanLabel && !_isValidLabel(subPlan.scanLabel)) {
+        subPlan.scanLabel = null
+        return
+      }
       if (subPlan.returnColumns?.includes(subPlan.scanLabel)) {
         subPlan.scanLabel = null
       } else if (subPlan.filters?.length && subPlan.filters.some(f => f.source === subPlan.scanLabel)) {
@@ -474,7 +490,9 @@ function _parseQueryImpl(query: string): QueryPlan {
   // 此处从 query 文本检测多标签并重建 scanLabel + labelExpr。
   const qText = query.trim()
   if (plan.hasMatch) {
-    const nodePatterns = qText.match(/\([^)]+\)/g) || []
+    // 只匹配真正的 MATCH 子句中的节点模式 (var:Label)，排除 WITH 中的函数调用如 date({...})
+    const matchClauseText = (qText.match(/MATCH\s*.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|$)/gis) || [''])[0]
+    const nodePatterns = matchClauseText.match(/\([^)]+\)/g) || []
     // 优先使用 scanLabel 未清空时的路径
     let multiLabelFound = false
     if (plan.scanLabel) {
@@ -1398,10 +1416,12 @@ function _applyYieldAliases(
 // ── parseQuery LRU 缓存 ──
 
 // 同一个查询字符串的高频重复场景（benchmark / 批量请求）可跳过 ANTLR 解析 + Plan 适配
-const _parseCache = new Map<string, QueryPlan>()
+const _parseCache = new Map<string, QueryPlan>()  // CLEARED 2026-07-04
 const _PARSE_CACHE_MAX = 100
+let _parseCacheSalt = ''
 function _cachedParseQuery(query: string): QueryPlan {
-  const cached = _parseCache.get(query)
+  const cacheKey = query + _parseCacheSalt
+  const cached = _parseCache.get(cacheKey)
   if (cached) {
     // Deep copy to prevent cache poisoning from downstream mutations
     return JSON.parse(JSON.stringify(cached, _bigintReplacer), _bigintReviver) as QueryPlan
@@ -1413,7 +1433,7 @@ function _cachedParseQuery(query: string): QueryPlan {
       const firstKey = _parseCache.keys().next().value
       if (firstKey !== undefined) _parseCache.delete(firstKey)
     }
-    _parseCache.set(query, JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan)
+    _parseCache.set(cacheKey, JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan)
   }
   return plan
 }
