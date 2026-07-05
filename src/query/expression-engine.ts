@@ -626,7 +626,7 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
   while (minutes < 0) { hours--; minutes += 60 }
   if (days > 0 && hours > 0) {
     while (hours < days) { days -= 1; hours += 24; if (days <= 0) break; }
-    if (days > 0 && hours / days > 1.5) { days -= 1; hours += 24 }
+    if (hours / days > 1.5) { days -= 1; hours += 24 }
   }
   if (months >= 12) { years += Math.floor(months / 12); months = months % 12 }
   if (months > 0 && months % 1 !== 0) { days += (months - Math.floor(months)) * 30.436875; months = Math.floor(months); }
@@ -644,7 +644,6 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
     while (nanos >= 1e9) { seconds++; nanos -= 1e9 }
     while (nanos < 0) { seconds--; nanos += 1e9 }
   }
-
   // 秒的小数部分：如果 seconds 有小数，保留其小数形式
   let secStr = ''
   if (seconds || nanos) {
