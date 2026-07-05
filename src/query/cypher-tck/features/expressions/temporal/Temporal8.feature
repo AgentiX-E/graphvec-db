@@ -149,12 +149,12 @@ Feature: Temporal8 - Compute Arithmetic Operations on Temporal Values
     Given an empty graph
     And having executed:
       """
-      CREATE (:Duration1 {date: duration(<map1>)})
-      CREATE (:Duration2 {date: duration(<map2>)})
+      CREATE (:DurOne {date: duration(<map1>)}),
+      (:DurTwo {date: duration(<map2>)})
       """
     When executing query:
       """
-      MATCH (dur:Duration1), (dur2: Duration2)
+      MATCH (dur:DurOne), (dur2: DurTwo)
       RETURN dur.date + dur2.date AS sum, dur.date - dur2.date AS diff
       """
     Then the result should be, in any order:

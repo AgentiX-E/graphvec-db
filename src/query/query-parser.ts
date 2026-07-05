@@ -316,7 +316,7 @@ function _parseQueryImpl(query: string): QueryPlan {
     return /^[a-zA-Z_]\w*$/.test(label)
   }
   function _fixScanLabel(subPlan: QueryPlan): void {
-    console.error('FIX_SCAN: scanLabel=' + JSON.stringify(subPlan.scanLabel) + ' labelExpr=' + JSON.stringify(subPlan.labelExpr) + ' hasMatch=' + subPlan.hasMatch + '\n')
+    // 
     // 清除 labelExpr 中的所有非法标签名（从 WITH date({...}) 误解析的）
     if (subPlan.labelExpr?.items) {
       const validItems = subPlan.labelExpr.items.filter(item => _isValidLabel(item.name))

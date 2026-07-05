@@ -627,13 +627,12 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
         let nsStr = String(nanos).padStart(9, '0').replace(/0+$/, '')
         secStr += '.' + nsStr
       } else if (nanos < 0) {
-        // 负纳秒：把纳秒显示为秒的负小数部分（-秒.纳秒 或 秒.-纳秒）
+        // 负纳秒：纳秒以正数小数形式附加（负号已在秒上）
         let nsStr = String(Math.abs(nanos)).padStart(9, '0').replace(/0+$/, '')
         if (seconds === 0) {
           secStr = '-0.' + nsStr
         } else {
-          // seconds < 0 的情况，秒本身已经是负数，纳秒部分为正
-          secStr = String(seconds) + '.-' + nsStr
+          secStr = String(seconds) + '.' + nsStr
         }
       }
     } else {
@@ -3115,10 +3114,7 @@ function _dateAddDuration(dateStr: string, durStr: string): string {
   if (isNaN(date.getTime())) return dateStr
   date.setUTCMonth(date.getUTCMonth() + d.y * 12 + d.mo)
   date.setUTCDate(date.getUTCDate() + d.d)
-  date.setUTCHours(date.getUTCHours() + d.h)
-  date.setUTCMinutes(date.getUTCMinutes() + d.min)
-  date.setUTCSeconds(date.getUTCSeconds() + d.s)
-  date.setUTCMilliseconds(date.getUTCMilliseconds() + Math.round(d.ns / 1e6))
+  // date ± duration 只处理年月日+天，时间分量不影响日期结果
   const y = date.getUTCFullYear(), m = String(date.getUTCMonth() + 1).padStart(2, '0'), day = String(date.getUTCDate()).padStart(2, '0')
   return y + '-' + m + '-' + day
 }
@@ -3215,8 +3211,8 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue
     if (t[i] === '+' && !_inBrackets(t, i) && !_inString(t, i) && !(i > 0 && 'eE'.includes(t[i - 1]))) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
-      // Cypher: null 参与算术 → 返回 null
       if (left == null || right == null) return null
+      if (t.includes('dur.date') && t.includes('+')) console.error('T8_PLUS_DUR: t=' + t + ' l=' + (typeof left === 'string' ? left.slice(0,30) : typeof left) + ' r=' + (typeof right === 'string' ? right.slice(0,30) : typeof right) + '\n')
       // Cypher + 语义: list+list(拼接), list+scalar(追加), scalar+list(前置), number+number(加法), string+any(连接)
       if (Array.isArray(left) && Array.isArray(right)) return [...left, ...right]
       if (Array.isArray(left) && !Array.isArray(right)) return [...left, right]
