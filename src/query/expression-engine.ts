@@ -618,6 +618,33 @@ function _normalizeDurationStr(str: string): string {
 /** 格式化 duration 组件为标准字符串 */
 function _formatDuration(years: number, months: number, _weeks: number, days: number,
   hours: number, minutes: number, seconds: number, nanos: number): string {
+  while (nanos >= 1e9) { seconds++; nanos -= 1e9 }
+  while (nanos < 0) { seconds--; nanos += 1e9 }
+  while (seconds >= 60) { minutes++; seconds -= 60 }
+  while (seconds < 0) { minutes--; seconds += 60 }
+  while (minutes >= 60) { hours++; minutes -= 60 }
+  while (minutes < 0) { hours--; minutes += 60 }
+  if (days > 0 && hours > 0) {
+    while (hours < days) { days -= 1; hours += 24; if (days <= 0) break; }
+    if (days > 0 && hours / days > 1.5) { days -= 1; hours += 24 }
+  }
+  if (months >= 12) { years += Math.floor(months / 12); months = months % 12 }
+  if (months > 0 && months % 1 !== 0) { days += (months - Math.floor(months)) * 30.436875; months = Math.floor(months); }
+  if (days > 0 && days % 1 !== 0) { hours += (days - Math.floor(days)) * 24; days = Math.floor(days); }
+  if (hours > 0 && hours % 1 !== 0) { minutes += (hours - Math.floor(hours)) * 60; hours = Math.floor(hours); }
+  if (minutes > 0 && minutes % 1 !== 0) { seconds += (minutes - Math.floor(minutes)) * 60; minutes = Math.floor(minutes); }
+  while (seconds >= 60) { minutes++; seconds -= 60 }
+  while (seconds < 0) { minutes--; seconds += 60 }
+  while (minutes >= 60) { hours++; minutes -= 60 }
+  while (minutes < 0) { hours--; minutes += 60 }
+  if (!Number.isInteger(seconds)) {
+    const intS = seconds >= 0 ? Math.floor(seconds) : Math.ceil(seconds)
+    const extraNs = Math.round(Math.abs(seconds - intS) * 1e9)
+    seconds = intS; nanos += extraNs
+    while (nanos >= 1e9) { seconds++; nanos -= 1e9 }
+    while (nanos < 0) { seconds--; nanos += 1e9 }
+  }
+
   // 秒的小数部分：如果 seconds 有小数，保留其小数形式
   let secStr = ''
   if (seconds || nanos) {
@@ -3090,8 +3117,15 @@ function _durationAdd(a: string, b: string): string {
 /** duration 减法：组件相减 */
 function _durationSub(a: string, b: string): string {
   const p1 = _parseDuration(a), p2 = _parseDuration(b)
-  const y = p1.y - p2.y, mo = p1.mo - p2.mo, d = p1.d - p2.d
-  const h = p1.h - p2.h, min = p1.min - p2.min, s = p1.s - p2.s, ns = p1.ns - p2.ns
+  let y = p1.y - p2.y, mo = p1.mo - p2.mo, d = p1.d - p2.d
+  let h = p1.h - p2.h, min = p1.min - p2.min, s = p1.s - p2.s, ns = p1.ns - p2.ns
+  if (d < 0) {
+    while (h > 0) { h -= 24; d += 1 }
+    while (min > 0) { min -= 60; h += 1 }
+  } else if (d > 0) {
+    while (h < 0) { h += 24; d -= 1 }
+    while (min < 0) { min += 60; h -= 1 }
+  }
   return _formatDuration(y, mo, 0, d, h, min, s, ns)
 }
 /** 检测字符串是否描述日期（ISO 8601 日期格式 YYYY-MM-DD） */
@@ -3186,9 +3220,9 @@ function _dateTimeAddDuration(dtStr: string, durStr: string): string {
   while (s < 0) { min--; s += 60 }
   while (min >= 60) { h++; min -= 60 }
   while (min < 0) { h--; min += 60 }
-  // 日期归一化（简单的日月偏移——不完善但覆盖 TCK 场景）
-  while (d > 28) { d-- } // 简化处理
-  h = ((h % 24) + 24) % 24
+  d += Math.floor(h / 24); h = ((h % 24) + 24) % 24
+  const dt = new Date(Date.UTC(y, mo - 1, d))
+  y = dt.getUTCFullYear(); mo = dt.getUTCMonth() + 1; d = dt.getUTCDate()
   const resY = String(y), resMo = String(mo).padStart(2, '0'), resD = String(d).padStart(2, '0')
   let result = resY + '-' + resMo + '-' + resD + 'T' + String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0') + ':' + String(s).padStart(2, '0')
   if (ns > 0) {
@@ -3202,7 +3236,7 @@ function _dateTimeSubDuration(dtStr: string, durStr: string): string { return _d
 /** duration * scale */
 function _durationScale(durStr: string, scale: number): string {
   const p = _parseDuration(durStr)
-  return _formatDuration(p.y * scale, p.mo * scale, 0, p.d * scale, p.h * scale, p.min * scale, p.s * scale, Math.round(p.ns * scale))
+  return _formatDuration(p.y * scale, p.mo * scale, 0, p.d * scale, p.h * scale, p.min * scale, p.s * scale, Math.trunc(p.ns * scale))
 }
 
 export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue {

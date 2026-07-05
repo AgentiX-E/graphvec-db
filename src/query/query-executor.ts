@@ -1649,11 +1649,19 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // 上面的 crossVarFilters 分支不执行，filteredWithLabels 仍为 records。
     // 此处用 filteredRecords 重新构建正确格式的结果行。
     // 支持多个 MATCH 变量（如 MATCH (n), (m) → 笛卡尔积）和单变量 MATCH。
-    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && filteredRecords?.length) {
+    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && (filteredRecords?.length || allNodes?.length)) {
+      // 手动从 query 文本提取 MATCH 变量和标签（ANTLR 只解析第一个模式）
+      let hasMultiMatch = false
       const varLabelMap2: Record<string, string> = {}
       if (query) {
-        const matchClauses = query.matchAll(/MATCH\s*\((\w+)\s*:\s*(\w+)\)/g)
-        for (const mc of matchClauses) varLabelMap2[mc[1]] = mc[2]
+        const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
+        hasMultiMatch = !!(matchSection && matchSection[1].includes(','))
+        console.error("T8_MATCH_SECTION: hasMulti=" + hasMultiMatch + " clause=" + (matchSection ? matchSection[1].slice(0,100) : "none") + "\n")
+        if (matchSection) {
+          const clause = matchSection[1]
+          const nodePatterns = [...clause.matchAll(/\((\w+)\s*:\s*(\w+)\)/g)]
+          for (const np of nodePatterns) varLabelMap2[np[1]] = np[2]
+        }
       }
       // 从 MATCH 变量中提取所有变量名（支持有/无 label/有内联属性三种写法）
       let matchVarKeys2 = Object.keys(varLabelMap2)
@@ -1673,15 +1681,21 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
         if (anyMatchClause) matchVarKeys2 = [anyMatchClause[1]]
       }
       if (matchVarKeys2.length >= 1) {
+        // 多变量 MATCH: 从 allNodes 直接构建节点列表，不依赖 GE 单标签扫描
+        // 原因：ANTLR 只识别 scanLabel=第一个标签，GE 只返回该标签的节点。
+        // 如果 MATCH 有多个不同标签的变量，我们需要用 allNodes 替代 filteredRecords。
+        const useAllNodes = matchVarKeys2.length >= 2 && hasMultiMatch
+        const sourceRecords = useAllNodes
+          ? (allNodes || []).map((n: any, idx: number) => ({ node: n, idx }))
+          : (filteredRecords || []).map((rec: any, idx: number) => {
+              const nodeProps = rec.props || rec;
+              return { node: nodeProps, idx };
+            })
         // 为每个变量分配节点列表（按标签筛选）
         const varNodeMap2: Record<string, Array<{ node: Record<string, unknown>; idx: number }>> = {}
         for (const varName of matchVarKeys2) {
           const targetLabel2 = varLabelMap2[varName]
-          varNodeMap2[varName] = filteredRecords
-            .map((rec: any, idx: number) => {
-              const nodeProps = rec.props || rec;
-              return { node: nodeProps, idx };
-            })
+          varNodeMap2[varName] = sourceRecords
             .filter(({ node }: { node: Record<string, unknown> }) => {
               if (!targetLabel2) return true;
               const fullLabel = node.__fullLabel
@@ -1744,6 +1758,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               __crossVarRows: { [singleVar]: entry.node },
             });
           }
+        }
+        // TEMP debug
+        if (formattedRows.length && matchVarKeys2.length >= 2) {
+          const r0 = formattedRows[0];
+          const cvr = r0.__crossVarRows || {};
+          const durDate = cvr["dur"] ? cvr["dur"]["date"] : "?";
+          const dur2Date = cvr["dur2"] ? cvr["dur2"]["date"] : "?";
+            console.error("T8_FORMATTED: rows=" + formattedRows.length + " allNodes=" + JSON.stringify(allNodes.map(n => n._label + ":" + (n.date||"?").toString().slice(0,20))) + "\n");
         }
         filteredWithLabels = formattedRows;
       }

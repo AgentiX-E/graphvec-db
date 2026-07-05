@@ -162,6 +162,15 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         result[rc] = r.__edgeProps[property]
         continue
       }
+      // 无边多变量 MATCH: 从 __crossVarRows 中查找变量节点属性
+      // 用于 MATCH (dur:Label1), (dur2: Label2) RETURN dur.date + dur2.date 等场景
+      if (r.__crossVarRows && variable in r.__crossVarRows) {
+        const crossNode = r.__crossVarRows[variable]
+        if (crossNode && typeof crossNode === 'object' && property in crossNode) {
+          result[rc] = (crossNode as Record<string, unknown>)[property]
+          continue
+        }
+      }
       const firstStepSource = plan.steps?.[0]?.source
       const isSourceVar = firstStepSource && variable === firstStepSource
       if (isSourceVar && r.props && property in r.props) {
