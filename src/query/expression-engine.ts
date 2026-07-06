@@ -621,9 +621,9 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
   while (nanos >= 1e9) { seconds++; nanos -= 1e9 }
   while (nanos < 0) { seconds--; nanos += 1e9 }
   while (seconds >= 60) { minutes++; seconds -= 60 }
-  while (seconds < 0) { minutes--; seconds += 60 }
+  if (days >= 0) { while (seconds < 0) { minutes--; seconds += 60 } }
   while (minutes >= 60) { hours++; minutes -= 60 }
-  while (minutes < 0) { hours--; minutes += 60 }
+  if (!(hours <= 0 && minutes < 0)) { while (minutes < 0) { hours--; minutes += 60 } }
   if (days > 0 && hours > 0) {
     while (hours < days) { days -= 1; hours += 24; if (days <= 0) break; }
     if (hours / days > 1.5) { days -= 1; hours += 24 }
@@ -634,9 +634,9 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
   if (hours > 0 && hours % 1 !== 0) { minutes += (hours - Math.floor(hours)) * 60; hours = Math.floor(hours); }
   if (minutes > 0 && minutes % 1 !== 0) { seconds += (minutes - Math.floor(minutes)) * 60; minutes = Math.floor(minutes); }
   while (seconds >= 60) { minutes++; seconds -= 60 }
-  while (seconds < 0) { minutes--; seconds += 60 }
+  if (days >= 0) { while (seconds < 0) { minutes--; seconds += 60 } }
   while (minutes >= 60) { hours++; minutes -= 60 }
-  while (minutes < 0) { hours--; minutes += 60 }
+  if (!(hours <= 0 && minutes < 0)) { while (minutes < 0) { hours--; minutes += 60 } }
   if (!Number.isInteger(seconds)) {
     const intS = seconds >= 0 ? Math.floor(seconds) : Math.ceil(seconds)
     const extraNs = Math.round(Math.abs(seconds - intS) * 1e9)
@@ -651,7 +651,8 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
       secStr = String(seconds)
       if (nanos > 0) {
         let nsStr = String(nanos).padStart(9, '0').replace(/0+$/, '')
-        secStr += '.' + nsStr
+        if (seconds === 0 && days < 0) { secStr = '-0.' + nsStr }
+        else { secStr += '.' + nsStr }
       } else if (nanos < 0) {
         // 负纳秒：纳秒以正数小数形式附加（负号已在秒上）
         let nsStr = String(Math.abs(nanos)).padStart(9, '0').replace(/0+$/, '')
@@ -3114,19 +3115,59 @@ function _durationAdd(a: string, b: string): string {
   return _formatDuration(y, mo, 0, d, h, min, s, ns)
 }
 /** duration 减法：组件相减 */
-function _durationSub(a: string, b: string): string {
-  const p1 = _parseDuration(a), p2 = _parseDuration(b)
-  let y = p1.y - p2.y, mo = p1.mo - p2.mo, d = p1.d - p2.d
-  let h = p1.h - p2.h, min = p1.min - p2.min, s = p1.s - p2.s, ns = p1.ns - p2.ns
-  if (d < 0) {
-    while (h > 0) { h -= 24; d += 1 }
-    while (min > 0) { min -= 60; h += 1 }
-  } else if (d > 0) {
-    while (h < 0) { h += 24; d -= 1 }
-    while (min < 0) { min += 60; h -= 1 }
+function _durationSub(a: string, b: string): string {  const p1 = _parseDuration(a), b1 = _parseDuration(b)
+  let y = p1.y - b1.y, mo = p1.mo - b1.mo, d = p1.d - b1.d
+  let h = p1.h - b1.h, min = p1.min - b1.min, s = p1.s - b1.s, ns = p1.ns - b1.ns
+  while (ns >= 1e9) { s++; ns -= 1e9 }
+  while (ns < 0) { s--; ns += 1e9 }
+  if ((d < 0 && (h > 0 || min > 0 || s > 0 || ns > 0)) || (d > 0 && (h < 0 || min < 0 || s < 0))) {
+    const BN = 1000000000
+    const intSec = d * 86400 + h * 3600 + min * 60 + s
+    const totalNs = BigInt(intSec) * BigInt(BN) + BigInt(ns)
+    const absTotalNs = totalNs < 0n ? -totalNs : totalNs
+    const absSec = Number(absTotalNs / BigInt(BN))
+    const absNs = Number(absTotalNs % BigInt(BN))
+    const dSign = totalNs < 0n ? -1 : 1
+    d = dSign * Math.floor(absSec / 86400)
+    const rem = absSec % 86400
+    h = dSign * Math.floor(rem / 3600)
+    min = dSign * Math.floor((rem % 3600) / 60)
+    s = dSign * Math.floor(rem % 60)
+    ns = absNs
+    // BigInt 已做均匀分解，跳过 _formatDuration 的 D→H 块（会改变合法 BigInt 输出）
+    // 直接格式化 ISO 8601 duration
+    function _dPart(v: number): string {
+      if (v === 0) return ''
+      if (v > 0) return String(v)
+      // d < 0: 对所有 T 部分取绝对值加负号
+      const a = Math.abs(v)
+      let r = '-' + String(a)
+      return r
+    }
+    let result = 'P'
+    if (y) result += y + 'Y'
+    if (mo) result += mo + 'M'
+    if (d) result += d + 'D'
+    if (h !== 0 || min !== 0 || s !== 0 || ns !== 0) {
+      result += 'T'
+      if (h) result += h + 'H'
+      if (min) result += min + 'M'
+      if (s || ns) {
+        if (s === 0 && ns > 0 && d < 0) {
+          result += '-0'
+        } else {
+          result += String(s)
+        }
+        if (ns) {
+          let nsStr = String(ns).padStart(9, '0').replace(/0+$/, '')
+          result += '.' + nsStr
+        }
+        result += 'S'
+      }
+    }
+    return result === 'P' ? 'PT0S' : result
   }
-  return _formatDuration(y, mo, 0, d, h, min, s, ns)
-}
+  return _formatDuration(y, mo, 0, d, h, min, s, ns)}
 /** 检测字符串是否描述日期（ISO 8601 日期格式 YYYY-MM-DD） */
 function _isDateStr(v: unknown): v is string {
   return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
