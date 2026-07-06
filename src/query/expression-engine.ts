@@ -1806,7 +1806,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof v === "string") {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
-      if (/^P/i.test(str)) return _normalizeDurationStr(str);
+      if (/^P/i.test(str)) {
+        // 输入已经是正确格式的 ISO duration 字符串（来自 toString）。
+        // 直接返回，无需重新解析格式化，确保 roundtrip 一致。
+        return str;
+      }
       return "PT" + str + "S";
     }
     if (v && typeof v === "object") {
@@ -3134,38 +3138,33 @@ function _durationSub(a: string, b: string): string {  const p1 = _parseDuration
     min = dSign * Math.floor((rem % 3600) / 60)
     s = dSign * Math.floor(rem % 60)
     ns = absNs
-    // BigInt 已做均匀分解，跳过 _formatDuration 的 D→H 块（会改变合法 BigInt 输出）
-    // 直接格式化 ISO 8601 duration
-    function _dPart(v: number): string {
-      if (v === 0) return ''
-      if (v > 0) return String(v)
-      // d < 0: 对所有 T 部分取绝对值加负号
-      const a = Math.abs(v)
-      let r = '-' + String(a)
-      return r
-    }
-    let result = 'P'
-    if (y) result += y + 'Y'
-    if (mo) result += mo + 'M'
-    if (d) result += d + 'D'
+    // BigInt 已做均匀分解，跳过 _formatDuration 的 D→H 块
+    let bigIntResult = 'P'
+    if (y) bigIntResult += y + 'Y'
+    if (mo) bigIntResult += mo + 'M'
+    if (d) bigIntResult += d + 'D'
     if (h !== 0 || min !== 0 || s !== 0 || ns !== 0) {
-      result += 'T'
-      if (h) result += h + 'H'
-      if (min) result += min + 'M'
+      bigIntResult += 'T'
+      if (h) bigIntResult += h + 'H'
+      if (min) bigIntResult += min + 'M'
       if (s || ns) {
+        let secStr: string
         if (s === 0 && ns > 0 && d < 0) {
-          result += '-0'
+          secStr = '-0'
+        } else if (s === 0 && ns < 0 && d === 0 && h === 0 && min === 0) {
+          secStr = '-0'
         } else {
-          result += String(s)
+          secStr = String(s)
         }
+        bigIntResult += secStr
         if (ns) {
           let nsStr = String(ns).padStart(9, '0').replace(/0+$/, '')
-          result += '.' + nsStr
+          bigIntResult += '.' + nsStr
         }
-        result += 'S'
+        bigIntResult += 'S'
       }
     }
-    return result === 'P' ? 'PT0S' : result
+    return bigIntResult === 'P' ? 'PT0S' : bigIntResult
   }
   return _formatDuration(y, mo, 0, d, h, min, s, ns)}
 /** 检测字符串是否描述日期（ISO 8601 日期格式 YYYY-MM-DD） */
