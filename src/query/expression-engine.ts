@@ -2453,19 +2453,45 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         sb = base + 'T' + stripTz(origSb);
         sa = stripTz(origSa);
       }
+      else if (isTimeVal2(origSa) && isTimeVal2(origSb)) {
+        sa = '1970-01-01T' + stripTz(origSa);
+        sb = '1970-01-01T' + stripTz(origSb);
+      }
+      else if (isTimeVal2(origSa) && (origSb.includes('+') || origSb.includes('Z'))) {
+        const baseDate = '1970-01-01';
+        sa = baseDate + 'T' + stripTz(origSa);
+        sb = baseDate + 'T' + stripTz(origSb);
+      }
+      else if (isTimeVal2(origSb) && (origSa.includes('+') || origSa.includes('Z'))) {
+        const baseDate = '1970-01-01';
+        sb = baseDate + 'T' + stripTz(origSb);
+        sa = baseDate + 'T' + stripTz(origSa);
+      }
       
       // 有偏移的输入保留原字符串（含 +02:00），Date 自动转 UTC
       // 无偏移的输入 strip 后加 Z，强制 Date 当作 UTC 解析
       const hasTzSuffix = (s: string) => /[Z+]|(?:[+-]\d{2}:?\d{2})(?:\[[^\]]*\])?$/.test(s);
-      const n2 = (s: string): string => {
+      const n2 = (s: string, partner: string): string => {
         const cleaned = s.includes('[') ? s.replace(/\[.*\]$/, '') : s;
-        if (isDateOnly(s)) return s + 'T00:00:00Z';
+        if (isDateOnly(s)) {
+          const pTz = partner.match(/[+-]\d{2}:?\d{2}(?:\[[^\]]*\])?$|Z$/);
+          return s + 'T00:00:00' + (pTz ? pTz[0] : 'Z');
+        }
         if (hasTzSuffix(cleaned)) return cleaned;  // has offset, Date auto-parses to UTC
         const st = stripTz(cleaned);
         if (isTimeOnly(s)) return '1970-01-01T' + st + 'Z';
         return st.includes('T') ? st + 'Z' : st;
       };
-      sa = n2(sa); sb = n2(sb);      try {
+      // bothHaveTz 且无 IANA → strip tz 统一用 Z（clock-time diff，避免偏移变化影响）
+      // 以及 mixed tz（一方有 tz 一方无，且都有 T）→ 同上
+      const mixedTz = (hasTz(origSa) !== hasTz(origSb)) && origSa.includes('T') && origSb.includes('T');
+      if ((bothHaveTz && !anyIana) || mixedTz) {
+        sa = stripTz(origSa).replace(/\+$/, '') + 'Z';
+        sb = stripTz(origSb).replace(/\+$/, '') + 'Z';
+      } else {
+        sa = n2(sa, origSb); sb = n2(sb, origSa);
+      }
+      try {
         const da = Math.round(new Date(sa).getTime()), db = Math.round(new Date(sb).getTime());
         if (!isNaN(da) && !isNaN(db)) {
           const diffMs = db - da, sg = diffMs < 0 ? -1 : 1, aMs = Math.abs(diffMs);
@@ -2529,7 +2555,13 @@ export function _callFunction(name: string, args: string[], row?: Record<string,
   // 使用 hasOwnProperty 避免 Object.prototype 的 toString/valueOf 等被误识别为内置函数
   // Cypher 函数名大小写不敏感：先查原样，再查小写
   const lowerName = name.toLowerCase()
-  if (!Object.prototype.hasOwnProperty.call(_builtinFunctions, lowerName)) return null
+  // _builtinFunctions 可能混合大小写，用 Object.keys 的 find 做大小写不敏感匹配
+  if (!Object.prototype.hasOwnProperty.call(_builtinFunctions, lowerName)) {
+    const matchKey = Object.keys(_builtinFunctions).find(k => k.toLowerCase() === lowerName)
+    if (!matchKey) return null
+    const fn = _builtinFunctions[matchKey]
+    return fn(args, row)
+  }
   const fn = _builtinFunctions[lowerName]
   return fn(args, row)
 }
