@@ -239,7 +239,8 @@ export async function _execNonGePaths(
               withRows = [Object.fromEntries(withAggCols.map(a => [a.alias, a.val]))]
             }
             const secondPlan = { ...plan, with: undefined, returnColumns: plan.returnColumns || Object.keys(withRows[0] || {}) }
-            return _executeViaGraphEngine(secondPlan, withRows, query)
+            const { _executeViaGraphEngine: _evge } = await import('./query-executor')
+            return _evge(secondPlan, withRows, query)
           }
           return aliased
         }
@@ -346,8 +347,9 @@ export async function _execNonGePaths(
 
   // UNION — 递归执行
   if (plan.unionType && plan.rightPlan) {
-    const leftResult = await _executeViaGraphEngine({ ...plan, unionType: undefined, rightPlan: undefined }, nodes)
-    const rightResult = await _executeViaGraphEngine(plan.rightPlan, nodes)
+    const { _executeViaGraphEngine: _evge } = await import('./query-executor')
+    const leftResult = await _evge({ ...plan, unionType: undefined, rightPlan: undefined }, nodes)
+    const rightResult = await _evge(plan.rightPlan, nodes)
     const leftRows = leftResult as QueryRow[]
     const rightRows = rightResult as QueryRow[]
     switch (plan.unionType) {

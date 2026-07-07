@@ -93,7 +93,7 @@ function _geUpsertEdge(ge: any, srcId: number, dstId: number, typeId: number, pr
 }
 
 /** GraphEngine 原生执行入口 */
-async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
+export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
   // ── 非 GE 路径（early exit）──
   const nonGeResult = await _execNonGePaths(plan, nodes, query)
   if (nonGeResult !== null) return nonGeResult
