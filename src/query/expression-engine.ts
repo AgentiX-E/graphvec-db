@@ -1131,7 +1131,9 @@ export function _resolveDateFromMap(map: Record<string, unknown>): Date {
       if (map.day != null) day2 = Number(map.day)
       const base = new Date(Date.UTC(year, month2 - 1, day2))
       if (map.week != null || map.dayOfWeek != null || map.quarter != null || map.ordinalDay != null) {
-        const dateDow = base.getUTCDay() === 0 ? 7 : base.getUTCDay()
+        // dateDow 取原始 date 的 dayOfWeek（当 map.year 覆盖时，base 日期变了，但 dayOfWeek 继承不变！）
+        const origDate = map.date ? new Date(typeof map.date === 'string' ? map.date.replace(/T.*$/, '') : String(map.date).replace(/T.*$/, '')) : base
+        const dateDow = origDate.getUTCDay() === 0 ? 7 : origDate.getUTCDay()
         const isoY = map.year != null ? Number(map.year) : _isoYear(base)
         // quarter / ordinalDay 处理
         if (map.quarter != null) {
@@ -1811,9 +1813,47 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
       if (/^P/i.test(str)) {
-        // 输入已经是正确格式的 ISO duration 字符串（来自 toString）。
-        // 直接返回，无需重新解析格式化，确保 roundtrip 一致。
-        return str;
+        // 解析并重新格式化，确保分数展开 + 归一化
+        // 兜底：如果解析失败，返回原字符串
+        try {
+          const p = _parseDuration(str)
+          if (p || str !== 'P') {
+            let { y, mo, d, h, min, s, ns } = p
+            // 分数展开：小数天→小时，小数月→天
+            if (mo > 0 && mo % 1 !== 0) { d += (mo - Math.floor(mo)) * 30.436875; mo = Math.floor(mo) }
+            if (d > 0 && d % 1 !== 0) { h += (d - Math.floor(d)) * 24; d = Math.floor(d) }
+            if (h > 0 && h % 1 !== 0) { min += (h - Math.floor(h)) * 60; h = Math.floor(h) }
+            if (min > 0 && min % 1 !== 0) { s += (min - Math.floor(min)) * 60; min = Math.floor(min); ns = 0 } // 重置 ns 因为秒小数已更新
+            // 秒可能有小数，纳秒在此之外已被解析
+            const secInt = Math.floor(s)
+            if (!Number.isInteger(s)) { ns += Math.round((s - secInt) * 1e9); s = secInt }
+            // 归一化：H→D, Min→H, S→Min
+            while (h >= 24) { d += Math.floor(h / 24); h = h % 24 }
+            while (min >= 60) { h += Math.floor(min / 60); min = min % 60 }
+            while (s >= 60) { min += Math.floor(s / 60); s = s % 60 }
+            // 直接格式化，不经过 _formatDuration（避免 D→H 反向借位）
+            let result = "P"
+            if (y) result += y + "Y"
+            if (mo) result += mo + "M"
+            if (d) result += d + "D"
+            if (h || min || s || ns) {
+              result += "T"
+              if (h) result += h + "H"
+              if (min) result += min + "M"
+              if (s || ns) {
+                let secStr = ""
+                if (ns > 0) {
+                  let nsStr = String(ns).padStart(9, "0").replace(/0+$/, "")
+                  secStr = String(s) + "." + nsStr
+                } else {
+                  secStr = String(s)
+                }
+                result += secStr + "S"
+              }
+            }
+            return result === "P" ? "PT0S" : (result || "PT0S")
+          }
+        } catch {}
       }
       return "PT" + str + "S";
     }
@@ -3204,10 +3244,25 @@ function _isDurationStr(v: unknown): v is string {
 }
 /** 解析 duration 字符串到组件对象 */
 function _parseDuration(v: string): { y: number, mo: number, d: number, h: number, min: number, s: number, ns: number } {
-  const m = v.match(/^P(?:(-?\d+(?:\.\d+)?)Y)?(?:(-?\d+(?:\.\d+)?)M)?(?:(-?\d+(?:\.\d+)?)D)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?\d+(?:\.\d+)?)S)?)?$/)
+  // 先检测日期语法：P2012-02-02T14:37:21.545（Cypher 兼容格式）
+  const dateFmt = v.match(/^P(\d{4})-(\d{1,2})-(\d{1,2})(?:T(\d{1,2}):(\d{1,2}):(\d{1,2}(?:\.\d+)?))?$/)
+  if (dateFmt) {
+    const y = parseFloat(dateFmt[1]), mo = parseFloat(dateFmt[2]), d = parseFloat(dateFmt[3])
+    const h = dateFmt[4] ? parseFloat(dateFmt[4]) : 0
+    const min = dateFmt[5] ? parseFloat(dateFmt[5]) : 0
+    const secVal = dateFmt[6] ? parseFloat(dateFmt[6]) : 0
+    const s = Math.trunc(secVal)
+    const ns = Math.round((secVal - s) * 1e9)
+    return { y, mo, d, h, min, s, ns }
+  }
+  // 先常规匹配：兼容 W（周）和 T 后小数 M
+  const m = v.match(/^P(?:(-?\d+(?:\.\d+)?)Y)?(?:(-?\d+(?:\.\d+)?)M)?(?:(-?\d+(?:\.\d+)?)D)?(?:(-?\d+(?:\.\d+)?)W)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?\d+(?:\.\d+)?)S)?)?$/i)
   if (!m) return { y:0, mo:0, d:0, h:0, min:0, s:0, ns:0 }
-  const [, yStr, moStr, dStr, hStr, minStr, sStr] = m
-  const y = parseFloat(yStr||'0'), mo = parseFloat(moStr||'0'), d = parseFloat(dStr||'0')
+  const [, yStr, moStr, dStr, wStr, hStr, minStr, sStr] = m
+  let y = parseFloat(yStr||'0'), mo = parseFloat(moStr||'0'), d = parseFloat(dStr||'0')
+  const w = parseFloat(wStr||'0')
+  // weeks → days
+  if (w) d += w * 7
   const h = parseFloat(hStr||'0'), min = parseFloat(minStr||'0')
   // 分离秒的小数部分到纳秒
   const secVal = parseFloat(sStr||'0')
