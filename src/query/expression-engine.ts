@@ -27,6 +27,10 @@
  * - ExprValue[]（嵌套列表）
  * - { [key: string]: ExprValue }（嵌套映射）
  */
+/** duration `=` 比较：存储 map-created duration 的原始分量，用于非归一化年/月/天比较 */
+const _rawDurationCache = new Map<string, Array<{ y: number; mo: number; d: number; h: number; min: number; s: number; ns: number; ts: number }>>()
+let _rawDurationCalls = 0
+
 export type ExprValue = string | number | boolean | null | bigint | ExprValue[] | { [key: string]: ExprValue }
 
 export type QueryRow = Record<string, unknown>
@@ -1827,6 +1831,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       let nanos = _resolveNanoseconds(map);
       // weeks → days
       if (weeks) { days += weeks * 7; weeks = 0; }
+      // 保存原始分量（归一化前），用于 `=` 非归一化年/月/天比较
+      const _rawEntry = { y: years, mo: months, d: days, h: hours, min: minutes, s: seconds, ns: nanos }
       // 分数分解
       if (years % 1 !== 0) { months += (years - Math.floor(years)) * 12; years = Math.floor(years); }
       if (months % 1 !== 0) { days += (months - Math.floor(months)) * AVG_DAYS_PER_MONTH; months = Math.floor(months); }
@@ -1871,10 +1877,15 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         if (minutes) result += minutes + "M";
         if (seconds || nanos) {
           // 当秒为 0 且纳秒为负时，秒部分设为 "-0"
-          let secStr = (seconds === 0 && nanos < 0) ? "-0" : String(seconds);
+                  let secStr = (seconds === 0 && nanos < 0) ? "-0" : String(seconds);
           result += secStr + nanosFormatted + "S";
         }
       }
+      // 存原始分量，`=` 比较时查年/月/天
+      // 存原始分量，`=` 比较时查年/月
+      const rawArr = _rawDurationCache.get(result) || []
+      rawArr.push({ ..._rawEntry, ts: ++_rawDurationCalls })
+      _rawDurationCache.set(result, rawArr)
       return result === "P" ? "PT0S" : (result || "PT0S");
     }
     return null;
@@ -3023,33 +3034,94 @@ export function _compareValues(a: unknown, b: unknown, op: string): boolean | nu
     return _listLexCompare(a, b, op)
   }
   switch (op) {
-    case '=': { const __eq = _deepEqWithNull(a, b); return __eq.hasNull ? null : __eq.match }
+    case '=': {
+      // Duration 字符串值语义比较（绕过 intern 短路）
+      if (typeof a === 'string' && typeof b === 'string' && /^P/i.test(a) && /^P/i.test(b)) {
+        if (a === b) {
+          const raw = _rawDurationCache.get(a)
+          // 取最后两个元素（最近两次 duration 调用），它们是当前比较的左侧和右侧
+          if (raw && raw.length >= 2) {
+            const last = raw[raw.length - 1], prev = raw[raw.length - 2]
+            // 年/月必须精确匹配
+            if (last.y !== prev.y || last.mo !== prev.mo) return false
+            // 天不同：检查是否可通过 H→D 完全归一化抵消
+            if (last.d !== prev.d) {
+              const diffDays = last.d - prev.d, diffHours = last.h - prev.h
+              if (diffDays * 24 + diffHours !== 0) return false
+              if (last.h % 24 !== 0 && prev.h % 24 !== 0) return false
+            }
+          }
+        }
+        const pa = _parseDuration(a), pb = _parseDuration(b)
+        if (pa.y !== pb.y || pa.mo !== pb.mo || pa.d !== pb.d) return false
+        const BN = 1000000000
+        const tA = BigInt(pa.h) * 3600n * BigInt(BN) + BigInt(pa.min) * 60n * BigInt(BN) + BigInt(pa.s) * BigInt(BN) + BigInt(pa.ns)
+        const tB = BigInt(pb.h) * 3600n * BigInt(BN) + BigInt(pb.min) * 60n * BigInt(BN) + BigInt(pb.s) * BigInt(BN) + BigInt(pb.ns)
+        return tA === tB
+      }
+      const __eq = _deepEqWithNull(a, b); return __eq.hasNull ? null : __eq.match
+    }
     case '<>': return !_deepEq(a, b)
     case '<': {
       if (!_comparableTypes(a, b)) return null
-      if (typeof a === 'string') return a < b  // 字典序
+      if (typeof a === 'string') {
+        const aMs = _temporalToMs(a)
+        const bMs = _temporalToMs(b)
+        if (aMs !== undefined && bMs !== undefined) return aMs < bMs
+        return a < b  // 字典序
+      }
       return Number(a) < Number(b)
     }
     case '>': {
       if (!_comparableTypes(a, b)) return null
-      if (typeof a === 'string') return a > b
+      if (typeof a === 'string') {
+        const aMs = _temporalToMs(a)
+        const bMs = _temporalToMs(b)
+        if (aMs !== undefined && bMs !== undefined) return aMs > bMs
+        return a > b
+      }
       return Number(a) > Number(b)
     }
     case '<=': {
       if (!_comparableTypes(a, b)) return null
-      if (typeof a === 'string') return a <= b
+      if (typeof a === 'string') {
+        const aMs = _temporalToMs(a)
+        const bMs = _temporalToMs(b)
+        if (aMs !== undefined && bMs !== undefined) return aMs <= bMs
+        return a <= b
+      }
       return Number(a) <= Number(b)
     }
     case '>=': {
       if (!_comparableTypes(a, b)) return null
-      if (typeof a === 'string') return a >= b
+      if (typeof a === 'string') {
+        const aMs = _temporalToMs(a)
+        const bMs = _temporalToMs(b)
+        if (aMs !== undefined && bMs !== undefined) return aMs >= bMs
+        return a >= b
+      }
       return Number(a) >= Number(b)
     }
   }
   return false
 }
 
-export function _isNaN(v: unknown): boolean {
+export /** 将 time/datetime 字符串解析为 UTC 毫秒值，用于时态比较 */
+function _temporalToMs(s: string): number | undefined {
+  try {
+    if (/^\d{1,2}:\d{2}/.test(s)) {
+      const d = new Date('1970-01-01T' + (s.includes('T') ? s.slice(s.indexOf('T') + 1) : s))
+      return isNaN(d.getTime()) ? undefined : d.getTime()
+    }
+    if (/^\d{4}-\d{2}-\d{2}T/.test(s) || /^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const d = new Date(s)
+      return isNaN(d.getTime()) ? undefined : d.getTime()
+    }
+    return undefined
+  } catch { return undefined }
+}
+
+function _isNaN(v: unknown): boolean {
   return typeof v === 'number' && isNaN(v)
 }
 
