@@ -27,9 +27,11 @@
  * - ExprValue[]（嵌套列表）
  * - { [key: string]: ExprValue }（嵌套映射）
  */
-/** duration `=` 比较：存储 map-created duration 的原始分量，用于非归一化年/月/天比较 */
-const _rawDurationCache = new Map<string, Array<{ y: number; mo: number; d: number; h: number; min: number; s: number; ns: number; ts: number }>>()
-let _rawDurationCalls = 0
+/** duration 原始组件存储：用于 `=` 比较时绕过 V8 intern 短路。
+ *  由 `duration({...})` map 路径写入，`_compareValues('=')` 读取。
+ *  缓存上限 MAX_CACHE_SIZE。 */
+const _rawDurationCache = new Map<string, Array<{ y: number; mo: number; d: number; h: number; min: number; s: number; ns: number }>>()
+const MAX_CACHE_SIZE = 64
 
 export type ExprValue = string | number | boolean | null | bigint | ExprValue[] | { [key: string]: ExprValue }
 
@@ -1921,10 +1923,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           result += secStr + nanosFormatted + "S";
         }
       }
-      // 存原始分量，`=` 比较时查年/月/天
-      // 存原始分量，`=` 比较时查年/月
+      // 存储原始分量用于 `=` 比较（缓存上限 MAX_CACHE_SIZE）
       const rawArr = _rawDurationCache.get(result) || []
-      rawArr.push({ ..._rawEntry, ts: ++_rawDurationCalls })
+      rawArr.push({ y: _rawEntry.y, mo: _rawEntry.mo, d: _rawEntry.d, h: _rawEntry.h, min: _rawEntry.min, s: _rawEntry.s, ns: _rawEntry.ns })
+      if (rawArr.length > MAX_CACHE_SIZE) rawArr.splice(0, rawArr.length - MAX_CACHE_SIZE)
+      _rawDurationCache.set(result, rawArr)
       _rawDurationCache.set(result, rawArr)
       return result === "P" ? "PT0S" : (result || "PT0S");
     }

@@ -318,14 +318,25 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
   const whereClean = whereBody.replace(/\)\s*AS\s+\w+\s*$/i, '').trim()
   // 合并 MATCH 变量和 WITH 变量
   const definedVars = [...new Set([...matchVars, ...withVars, ...callYieldVars])]
-  // 去掉字符串常量
+  // 去掉字符串常量（替换为空格，避免字符串内容被当作变量名）
   let cleaned = whereClean
-    .replace(/'[^']*'/g, '')
-    .replace(/"[^"]*"/g, '')
+    .replace(/'[^']*'/g, ' ')
+    .replace(/"[^"]*"/g, ' ')
+  // 压缩多余空格
+  cleaned = cleaned.replace(/\s{2,}/g, ' ').trim()
   // 去掉属性访问（x.y 格式）
   cleaned = cleaned.split(/\s+/).filter(word => !word.includes('.')).join(' ')
   // 去掉标签谓词模式：var:Label 或 var:Label1:Label2（冒号后的标签名不是变量引用）
   cleaned = cleaned.replace(/(\b[a-zA-Z_]\w*)(?::[a-zA-Z_]\w*)+(?!\w)/g, '$1')
+  // 去掉函数调用参数：type(r), exists(n.name) 等中的参数是变量引用，已在 MATCH 中定义
+  // 保留函数名 (type, exists 等在内置函数列表中)，去掉括号内的参数
+  cleaned = cleaned.replace(/\b[a-zA-Z_]\w*\s*\(([^()]*)\)/g, (m, args) => {
+    // 如果函数名在内置函数列表中，把参数中的变量引用去掉（它们是表达式参数，不是新变量定义）
+    const funcName = m.match(/^\w+/)?.[0]?.toLowerCase() || ''
+    if (_TCK_KEYWORDS.has(funcName.toUpperCase())) return ' '
+    // 否则保留原字符串（可能是谓词等）
+    return ' '
+  })
   // 去掉 Pattern Comprehension 语法（(n)-[:REL]->() 中的 `REL` 不是变量)
   cleaned = _stripPatternPredicateSyntax(cleaned)
   // 提取裸标识符
