@@ -324,6 +324,8 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
     .replace(/"[^"]*"/g, '')
   // 去掉属性访问（x.y 格式）
   cleaned = cleaned.split(/\s+/).filter(word => !word.includes('.')).join(' ')
+  // 去掉标签谓词模式：var:Label 或 var:Label1:Label2（冒号后的标签名不是变量引用）
+  cleaned = cleaned.replace(/(\b[a-zA-Z_]\w*)(?::[a-zA-Z_]\w*)+(?!\w)/g, '$1')
   // 去掉 Pattern Comprehension 语法（(n)-[:REL]->() 中的 `REL` 不是变量)
   cleaned = _stripPatternPredicateSyntax(cleaned)
   // 提取裸标识符
