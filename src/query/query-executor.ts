@@ -116,12 +116,13 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     ge = dbGe
   } else {
     // 默认数据库：使用 GEPool 弹性连接池
-    // 如果 _gePool.value === null（_clearGeInstances 后被设置），创建独立 GE 实例
-    // 而非从池中获取（避免池中旧实例的残留数据影响后续查询）
+    // 如果 _gePool.value === null（_clearGeInstances 后被设置），销毁旧池重建
+    // 避免池中旧实例的残留数据影响后续查询
     if (_gePool.value) {
       ge = _gePool.value
     } else {
-      // 使用池连接（创建 GE 或复用空闲实例）
+      // 销毁旧池并创建新池，确保 GE 实例全新无残留
+      GEPool.destroyInstanceWithCleanup()
       const poolConfig: OverGraphConfig = { path: '/tmp/tckge-pool', denseVector: { dimension: 384 } }
       const pool = GEPool.getInstance({ warmup: true, config: poolConfig, maxSize: 4 })
       ge = pool.getConnection(isWriteOp(plan))
