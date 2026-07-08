@@ -19,7 +19,6 @@ import type { QueryPlan, FilterClause, TraverseStep, AggregateClause, SetClause,
 import { parseQuery } from './query-parser'
 import { _geInstanceRegistry, _gePool, _geDirRegistry, _indexRegistry, DEFAULT_DATABASE, DEFAULT_LIMIT, IndexEntry, ConstraintEntry, _registerIndex, _dropIndex, _getAllIndexes, _getIndex, _clearIndexes, _registerConstraint, _dropConstraint, _getAllConstraints, _clearConstraints, _getActiveDatabase, _setActiveDatabase, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances } from './executor-registry'
 import { GEPool } from './ge-pool'
-import { extractEdgePropColumnsFromQuery, extractEdgesFromNodes } from './executor-validators'
 import { _formatResultRow, _deepStripInternal, _executeVarLenPath, parseCsvContent } from './executor-common'
 import { _executeWithUnwindPipeline } from './executor-unwind-pipeline'
 import { _buildDmlRows } from './executor-dml'
