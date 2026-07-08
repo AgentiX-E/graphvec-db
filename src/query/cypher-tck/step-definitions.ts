@@ -774,48 +774,83 @@ Given('having executed:', async function (query: string) {
 
       } // !unwind
 
-      // ── 从原始查询文本中解析边并注入 st.nodes 的 __edges ──
+      // ── 从 createEdges 提取边信息注入 createdNodes 的 __edges ──
       // parseQuery 的 AST plan 不含边信息（edges: undefined）。
-      // 但 TCK 的 MATCH 依赖 __edges 来做边遍历，所以需要从 q 提取边。
-      const edgeTokens: Array<Record<string, unknown>> = []
-      const edgeRe = /\[([^\]]*)\]/g
-      const arrowRe = /(<-|->)/g
-      const arrows: string[] = []
-      let em
-      while ((em = arrowRe.exec(q)) !== null) arrows.push(em[1])
-      let ei = 0
-      while ((em = edgeRe.exec(q)) !== null) {
-        const inner = em[1].trim()
-        let edgeLabel = ''
-        const edgeProps: Record<string, unknown> = {}
-        const bi = inner.indexOf('{')
-        if (bi >= 0) {
-          const labelPart = inner.substring(0, bi).trim()
-          if (labelPart.startsWith(':')) edgeLabel = labelPart.substring(1).trim()
-          Object.assign(edgeProps, _parseProps(inner.substring(bi)))
-        } else if (inner.startsWith(':')) {
-          edgeLabel = inner.substring(1).trim()
+      // 但 TCK 的 MATCH 依赖 __edges 来做边遍历，所以需要从 createEdges 提取边。
+      // 使用 createEdges 的 source/target alias 来正确匹配 createdNodes 的真实索引，
+      // 避免 ei 序号推导在去重后错位的问题。
+      const cEdges = (plan as any).createEdges as Array<{ source: string; target: string; sourceIdx?: number; targetIdx?: number; label: string | null; direction: string; props?: Record<string, unknown> | null }> | undefined
+      if (cEdges?.length) {
+        // 构建 alias → 真实节点索引映射（去重后首个真实节点）
+        const aliasToTrueIdx = new Map<string, number>()
+        for (let i = 0; i < createdNodes.length; i++) {
+          const na = (createdNodes[i] as any)._alias as string
+          if (na && !aliasToTrueIdx.has(na)) {
+            aliasToTrueIdx.set(na, i)
+          }
         }
-        const arrow = arrows[ei] || '->'
-        const srcIdx = ei, dstIdx = ei + 1
-        const geSrc = arrow === '<-' ? dstIdx : srcIdx
-        const geDst = arrow === '<-' ? srcIdx : dstIdx
-        if (createdNodes[geSrc] && createdNodes[geDst]) {
-          if (!(createdNodes[geSrc] as any).__edges) (createdNodes[geSrc] as any).__edges = []
-          const eep = { srcIdx: geSrc, dstIdx: geDst, label: edgeLabel || 'T', props: Object.keys(edgeProps).length ? edgeProps : null }
-          ;(createdNodes[geSrc] as any).__edges.push(eep)
-          // 边种子数据也同步到 st.pGe
-          try {
-            const typeId = _hashLabel(edgeLabel || 'T')
-            const nids = createdNodes.map(n => {
-              const label = String(n._label || 'Default')
-              let h = 0; for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
-              return Math.abs(h) % 1000 + 1
-            })
-            ;(ge as any).upsertEdge(nids[geSrc], nids[geDst], typeId, { props: edgeProps })
-          } catch {}
+        for (const ce of cEdges) {
+          // 优先通过 alias 查找
+          let srcIdx = -1, dstIdx = -1
+          if (ce.source && aliasToTrueIdx.has(ce.source)) {
+            srcIdx = aliasToTrueIdx.get(ce.source)!
+          } else if (ce.sourceIdx !== undefined && ce.sourceIdx >= 0 && ce.sourceIdx < createdNodes.length) {
+            // 回退：找 createdNodes[ce.sourceIdx] 对应的真实节点（递归解引用）
+            let cursor = ce.sourceIdx
+            const visited = new Set<number>()
+            while (cursor >= 0 && cursor < createdNodes.length && !visited.has(cursor)) {
+              visited.add(cursor)
+              const refNode = createdNodes[cursor] as any
+              const isReal = refNode._label && refNode._label !== 'Default' || refNode.props
+              if (isReal) { srcIdx = cursor; break }
+              // 引用节点：尝试找其 alias 的首次真实索引
+              if (refNode._alias && aliasToTrueIdx.has(refNode._alias)) {
+                cursor = aliasToTrueIdx.get(refNode._alias)!
+              } else {
+                cursor--
+              }
+            }
+            if (srcIdx < 0) srcIdx = ce.sourceIdx
+          }
+          if (ce.target && aliasToTrueIdx.has(ce.target)) {
+            dstIdx = aliasToTrueIdx.get(ce.target)!
+          } else if (ce.targetIdx !== undefined && ce.targetIdx >= 0 && ce.targetIdx < createdNodes.length) {
+            let cursor = ce.targetIdx
+            const visited = new Set<number>()
+            while (cursor >= 0 && cursor < createdNodes.length && !visited.has(cursor)) {
+              visited.add(cursor)
+              const refNode = createdNodes[cursor] as any
+              const isReal = refNode._label && refNode._label !== 'Default' || refNode.props
+              if (isReal) { dstIdx = cursor; break }
+              if (refNode._alias && aliasToTrueIdx.has(refNode._alias)) {
+                cursor = aliasToTrueIdx.get(refNode._alias)!
+              } else {
+                cursor--
+              }
+            }
+            if (dstIdx < 0) dstIdx = ce.targetIdx
+          }
+          // 降级：使用 sourceIdx/targetIdx 直指（可能错位但比没有好）
+          if (srcIdx < 0) srcIdx = ce.sourceIdx ?? 0
+          if (dstIdx < 0) dstIdx = ce.targetIdx ?? 0
+          const srcNode = createdNodes[srcIdx]
+          const dstNode = createdNodes[dstIdx]
+          if (srcNode && dstNode && srcIdx >= 0 && dstIdx >= 0 && srcIdx !== dstIdx) {
+            if (!(srcNode as any).__edges) (srcNode as any).__edges = []
+            const eep = { srcIdx, dstIdx, label: ce.label || 'T', props: ce.props || null }
+            ;(srcNode as any).__edges.push(eep)
+            // 边种子数据同步到 st.pGe
+            try {
+              const typeId = _hashLabel(ce.label || 'T')
+              const nidLabel = String((srcNode as any)._label || 'Default')
+              let h = 0; for (let ci = 0; ci < nidLabel.length; ci++) h = ((h << 5) - h + nidLabel.charCodeAt(ci)) | 0
+              const srcNid = Math.abs(h) % 1000 + 1 + srcIdx
+              let h2 = 0; for (let ci = 0; ci < (String((dstNode as any)._label || 'Default')).length; ci++) h2 = ((h2 << 5) - h2 + (String((dstNode as any)._label || 'Default')).charCodeAt(ci)) | 0
+              const dstNid = Math.abs(h2) % 1000 + 1 + dstIdx
+              ;(ge as any).upsertEdge(srcNid, dstNid, typeId, { props: ce.props || {} })
+            } catch {}
+          }
         }
-        ei++
       }
       
       // If any UNWIND，为每个 UNWIND 元素创建额外的节点
