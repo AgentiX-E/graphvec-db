@@ -1093,7 +1093,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 const _patNoAlias = plan.steps?.[plan.steps.length - 1]?.targetAlias === ''
                 multiStepRaw.push({
                   id: geNode.id,
-                  props: { ...geNode.props },
+                  props: { ...geNode.__targetProps },
                   __targetProps: geNode.__targetProps,
                   __crossVarRows: geNode.__crossVarRows,
                 })
