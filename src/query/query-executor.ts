@@ -2757,6 +2757,79 @@ export async function _executeQuery(
   const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
   // DML 语句无 RETURN 时不返回结果（Cypher 规范）
+  // ── GROUP BY 聚合后处理 ──
+  // 当 plan.aggregate 和 plan.groupBy 都存在时，对原始 nodes 做分组聚合
+  if ((plan as any).groupBy?.length && (plan as any).aggregate) {
+    const groupByCols = (plan as any).groupBy as string[]
+    const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string }
+    const exprs = (plan as any).expressionColumns as Array<{expression:string;alias:string}> | undefined
+    
+    if (exprs) {
+      // 如果 plan.filters 有值，先过滤 nodes（WHERE 过滤应在 GROUP BY 之前执行）
+      let filteredNodes = nodes
+      const filters = (plan.filters || []) as Array<{source?:string;property:string;value:any;operator:string}>
+      if (filters.length) {
+        filteredNodes = nodes.filter((node: Record<string, unknown>) => {
+          return filters.every(f => {
+            const propMatch = (f.property || '').match(/^(\w+)\.(\w+)$/)
+            const actualVal = propMatch
+              ? (node as any)[propMatch[2]]
+              : (node as any)[f.property]
+            if (actualVal === undefined) return false
+            switch (f.operator) {
+              case 'EQ':  return String(actualVal) === String(f.value)
+              case 'NEQ': return String(actualVal) !== String(f.value)
+              case 'GT':  return Number(actualVal) > Number(f.value)
+              case 'GTE': return Number(actualVal) >= Number(f.value)
+              case 'LT':  return Number(actualVal) < Number(f.value)
+              case 'LTE': return Number(actualVal) <= Number(f.value)
+              default:    return String(actualVal) === String(f.value)
+            }
+          })
+        })
+      }
+      // 直接对 filteredNodes 按 groupBy 分组聚合
+      const groups = new Map<string, Record<string, unknown>[]>()
+      for (const node of filteredNodes) {
+        const rowCtx: Record<string, unknown> = { n: node }
+        const keyVals: Record<string, unknown> = {}
+        for (const gb of groupByCols) {
+          // 找到 gb 对应的 expression
+          const ec = exprs.find(e => e.alias === gb || e.expression === gb || e.expression.endsWith('.' + gb))
+          keyVals[gb] = ec ? _evalBinary(ec.expression, rowCtx) : node[gb as string]
+        }
+        const keyStr = JSON.stringify(keyVals)
+        if (!groups.has(keyStr)) groups.set(keyStr, [])
+        groups.get(keyStr)!.push(node)
+      }
+      // 对每组应用 aggregate 函数
+      const result: Record<string, unknown>[] = []
+      for (const [, groupRows] of groups) {
+        const row: Record<string, unknown> = {}
+        for (const gb of groupByCols) {
+          const ec = exprs.find(e => e.alias === gb || e.expression === gb || e.expression.endsWith('.' + gb))
+          row[ec?.alias || gb] = ec ? _evalBinary(ec.expression, { n: groupRows[0] }) : (groupRows[0] as any)[gb as string]
+        }
+        const aggField = agg.field === '*' ? null : agg.field
+        if (agg.function === 'count') {
+          row[agg.column] = aggField === null ? groupRows.length : groupRows.filter(n => (n as any)[aggField!] != null).length
+        } else if (agg.function === 'sum') {
+          row[agg.column] = groupRows.reduce((acc, n) => acc + (Number((n as any)[aggField!]) || 0), 0)
+        } else if (agg.function === 'avg') {
+          const sum = groupRows.reduce((acc, n) => acc + (Number((n as any)[aggField!]) || 0), 0)
+          row[agg.column] = sum / groupRows.length
+        } else if (agg.function === 'min') {
+          row[agg.column] = Math.min(...groupRows.map(n => Number((n as any)[aggField!]) || 0))
+        } else if (agg.function === 'max') {
+          row[agg.column] = Math.max(...groupRows.map(n => Number((n as any)[aggField!]) || 0))
+        } else {
+          row[agg.column] = groupRows.length
+        }
+        result.push(row)
+      }
+      return result
+    }
+  }
   const isDML = ['CREATE', 'MERGE', 'DELETE', 'SET', 'REMOVE'].includes(plan.type || '')
   if (isDML && !plan.returnColumns?.length && !plan.expressionColumns?.length) {
     return []
