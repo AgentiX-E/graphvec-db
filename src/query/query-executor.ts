@@ -284,7 +284,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           for (const lm of allLabelMatches) {
             whereLabelFilters.push({ varName: lm[1], targetLabel: lm[2] })
           }
-          console.log('[QEDBG] whereLabelFilters=', JSON.stringify(whereLabelFilters))
           for (const lm of allLabelMatches) {
             whereLabelFilters.push({ varName: lm[1], targetLabel: lm[2] })
           }
@@ -808,8 +807,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const hasEdgeStep = plan.steps?.length === 1 && allNodes.length > 0 && (plan.steps[0].edgeLabel != null || plan.steps[0].direction === 'out' || plan.steps[0].direction === 'in' || plan.steps[0].direction === 'any')
     const stepEdgesCache = new Map<number, string[]>()
     const useEdgeWalk = hasMultiStep || hasVarLen || hasEdgeStep
-    console.log('[QEDBG] useEdgeWalk=', useEdgeWalk, 'hasMultiStep=', hasMultiStep, 'hasVarLen=', hasVarLen, 'hasEdgeStep=', hasEdgeStep)
-    console.log('[QEDBG] allNodes.length=', allNodes.length, 'steps=', JSON.stringify(plan.steps))
     let rawRecords: any[] = (useEdgeWalk)
       ? (() => {
           const edgeVarColsLen = (plan.returnColumns || []).filter(rc => {
@@ -821,9 +818,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             return !nodeAliases.has(rc)
           }).length
           let multiStepRaw: any[] = []
-          console.log('[QEDBG] allNodes[0]=', JSON.stringify(allNodes[0]).slice(0,300))
-          console.log('[QEDBG] allNodes[1]=', JSON.stringify(allNodes[1]).slice(0,300))
-          console.log('[QEDBG] skipNodeIndices=', [...skipNodeIndices])
           for (let i = 0; i < allNodes.length; i++) {
             if (skipNodeIndices.has(i)) {
               continue
@@ -847,13 +841,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             }
             if (skipNode) continue
-            console.log('[QEDBG] before walk: i=', i, 'steps[0]=', JSON.stringify(plan.steps?.[0]), 'allNodes[0].__edges=', JSON.stringify((allNodes[0] as any)?.__edges))
             const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
-            console.log('[QEDBG] after walk: pathResults=', JSON.stringify(pathResults))
         const pathEnds = _pathEndIndices(pathResults)
         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
         // 防止后续 step 引入不相关的中间节点
-        console.log('[QEDBG] i=', i, 'pathResults=', JSON.stringify(pathResults), 'pathEnds=', [...pathEnds])
         const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).findLast(rc => {
           if (!rc) return false
           const firstSrc = plan.steps?.[0]?.source
@@ -897,7 +888,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
           }
         }
-        console.log('[QEDBG] boundedTargetIndices=', JSON.stringify(boundedTargetIndices), 'boundedPaths=', JSON.stringify(boundedPaths))
         // 自环模式：当前 source 节点只保留到自身的 targetIdx
         // 如 MATCH (n)-[r]->(n) 中，起始节点通过自环边只回到自身
         const isSelfStep = plan.steps?.[0]?.source && plan.steps?.[0]?.targetAlias &&
