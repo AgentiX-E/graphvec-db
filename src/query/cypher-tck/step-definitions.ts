@@ -541,43 +541,79 @@ Given('a graph with:', function (dt: DataTable) {
 /** Seed a single node into GE */
 /** Hand-parse a CREATE statement with relationships and inject nodes+edges directly into GE */
 function execCreateOnGe(ge: any, q: string): void {
-  const createdNodes: Array<Record<string, unknown>> = []
-  // Extract all node patterns (:Label {props})
-  const nodePatterns = q.match(/\([^)]+\)/g)
-  if (!nodePatterns) { st.nodes = []; return }
+  // Parse the CREATE pattern and produce nodes with __edges for _executeQuery.
+  // Supports: ()->(), ()-(), ()<-(), multiple edges: ()-[:T]->()-[:X]->()
+  // Also supports standalone nodes: (:A), (:B {prop:1})
 
-  for (const np of nodePatterns) {
-    const inner = np.slice(1, -1).trim()
+  const regex = /\(([^)]*)\)|\[([^\]]*)\]/g
+  const tokens: Array<{ type: 'node' | 'edge'; inner: string }> = []
+  let m
+  while ((m = regex.exec(q)) !== null) {
+    if (m[1] !== undefined) tokens.push({ type: 'node', inner: m[1].trim() })
+    else if (m[2] !== undefined) tokens.push({ type: 'edge', inner: m[2].trim() })
+  }
+
+  if (!tokens.length) { st.nodes = []; return }
+
+  // Extract arrows
+  const arrowRegex = /(->|<-|--?)/g
+  const arrows: string[] = []
+  while ((m = arrowRegex.exec(q)) !== null) arrows.push(m[1])
+
+  // Phase 1: Build node list
+  const nodeTokens = tokens.filter(t => t.type === 'node')
+  const edgeTokens = tokens.filter(t => t.type === 'edge')
+  const createdNodes: Array<Record<string, unknown>> = []
+  const nodeGeIds: number[] = []
+
+  for (const nt of nodeTokens) {
     const labels: string[] = []
     const props: Record<string, unknown> = {}
-    const bi = inner.indexOf('{')
+    const bi = nt.inner.indexOf('{')
     if (bi >= 0) {
-      if (inner.substring(0, bi).trim().startsWith(':')) labels.push(...inner.substring(0, bi).trim().substring(1).split(':').filter(Boolean))
-      const raw = inner.substring(bi).replace(/'/g, '"').replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)(\s*:)/g, '$1"$2"$3')
-      try { Object.assign(props, JSON.parse(raw)) } catch {}
-    } else if (inner.startsWith(':')) {
-      labels.push(...inner.substring(1).split(':').filter(Boolean))
+      const labelPart = nt.inner.substring(0, bi).trim()
+      if (labelPart.startsWith(':')) labels.push(...labelPart.substring(1).split(':').filter(Boolean))
+      Object.assign(props, _parseProps(nt.inner.substring(bi)))
+    } else if (nt.inner.startsWith(':')) {
+      labels.push(...nt.inner.substring(1).split(':').filter(Boolean))
+    } else if (nt.inner) {
+      labels.push(...nt.inner.split(':').filter(Boolean))
     }
     const node: Record<string, unknown> = { _label: labels[0] || 'Default', ...props }
     if (labels.length > 1) node.__fullLabel = labels.join(':')
-    const label = String(node._label || 'Default')
-    let h = 0; for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
-    try { (ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'rn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
+    node.__edges = []
     createdNodes.push(node)
+    const h = _hashLabel(node._label as string)
+    try { (ge as any).upsertNode(h, 'rn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
+    nodeGeIds.push(h)
   }
 
-  // Extract edge patterns [:EDGE_LABEL] and create edges between consecutive nodes
-  const edgePatterns = q.match(/\[:[A-Za-z_]+\]/g)
-  if (edgePatterns) {
-    for (let ei = 0; ei < edgePatterns.length && ei + 1 < createdNodes.length; ei++) {
-      const edgeLabel = edgePatterns[ei].replace(/[\[\]:]/g, '')
-      let h = 0; for (let ci = 0; ci < edgeLabel.length; ci++) h = ((h << 5) - h + edgeLabel.charCodeAt(ci)) | 0
-      // Determine direction from arrows in the query
-      const node1Idx = ei // first node index
-      const node2Idx = ei + 1 // second node index
-      // For now, create undirected edges (both directions)
-      try { (ge as any).upsertEdge(node1Idx + 1, node2Idx + 1, Math.abs(h) % 1000 + 1) } catch {}
+  // Phase 2: Build edges — link between consecutive node indices
+  for (let ei = 0; ei < edgeTokens.length && ei < createdNodes.length - 1; ei++) {
+    const et = edgeTokens[ei]
+    let edgeLabel = ''
+    const edgeProps: Record<string, unknown> = {}
+    const bi = et.inner.indexOf('{')
+    if (bi >= 0) {
+      const labelPart = et.inner.substring(0, bi).trim()
+      if (labelPart.startsWith(':')) edgeLabel = labelPart.substring(1).trim()
+      Object.assign(edgeProps, _parseProps(et.inner.substring(bi)))
+    } else if (et.inner.startsWith(':')) {
+      edgeLabel = et.inner.substring(1).trim()
     }
+
+    const arrow = arrows[ei] || '->'
+    const srcIdx = ei, dstIdx = ei + 1
+    const geSrc = arrow === '<-' ? dstIdx : srcIdx
+    const geDst = arrow === '<-' ? srcIdx : dstIdx
+
+    // Push to source node's __edges (will be read by extractEdgesFromNodes)
+    const edgeEntry = { srcIdx: geSrc, dstIdx: geDst, label: edgeLabel || 'T', props: Object.keys(edgeProps).length ? edgeProps : null }
+    createdNodes[srcIdx].__edges!.push(edgeEntry)
+
+    // Also seed edge to persistent GE
+    const typeId = _hashLabel(edgeLabel || 'T')
+    try { (ge as any).upsertEdge(nodeGeIds[geSrc], nodeGeIds[geDst], typeId, { props: edgeProps }) } catch {}
   }
 
   st.nodes = createdNodes
