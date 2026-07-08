@@ -19,6 +19,7 @@ import type { QueryPlan, FilterClause, TraverseStep, AggregateClause, SetClause,
 import { parseQuery } from './query-parser'
 import { _geInstanceRegistry, _gePool, _geDirRegistry, _indexRegistry, DEFAULT_DATABASE, DEFAULT_LIMIT, IndexEntry, ConstraintEntry, _registerIndex, _dropIndex, _getAllIndexes, _getIndex, _clearIndexes, _registerConstraint, _dropConstraint, _getAllConstraints, _clearConstraints, _getActiveDatabase, _setActiveDatabase, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances } from './executor-registry'
 import { GEPool } from './ge-pool'
+import { extractEdgePropColumnsFromQuery, extractEdgesFromNodes } from './executor-validators'
 import { _formatResultRow, _deepStripInternal, _executeVarLenPath, parseCsvContent } from './executor-common'
 import { _executeWithUnwindPipeline } from './executor-unwind-pipeline'
 import { _buildDmlRows } from './executor-dml'
@@ -280,11 +281,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const whereClause = whereClauseMatch[1]
           // 提取所有 var:Label 模式（g flag 必须用于 matchAll）
           const allLabelRegex = /(\w+)\s*:\s*(\w+)/g
-          const allLabelMatches = whereClause.matchAll(allLabelRegex)
-          for (const lm of allLabelMatches) {
-            whereLabelFilters.push({ varName: lm[1], targetLabel: lm[2] })
-          }
-          for (const lm of allLabelMatches) {
+          for (const lm of whereClause.matchAll(allLabelRegex)) {
             whereLabelFilters.push({ varName: lm[1], targetLabel: lm[2] })
           }
         }
@@ -433,13 +430,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
         // WHERE 标签谓词过滤：检查节点标签是否匹配 WHERE var:Label
-        // 多变量标签谓词（如 a:A AND b:B）中，每个节点只需匹配其中一条（对应的变量标签）
+        // 多变量标签谓词（如 a:A AND b:B）中，每个节点只需匹配指向自己的那条
+        // 如果某个节点没有被任何 labelFilter 指向，则放行（不对它做标签检查）
         if (whereLabelFilters.length && !skipNodeIndices.has(ni)) {
           const nodeLabel = String(node['_label'] || '')
-          const labelOk = whereLabelFilters.some(lf => {
+          // 找到指向这个节点的 labelFilte（如果有）
+          const matchingFilters = whereLabelFilters.filter(lf => {
             const targetIdx = resolveVariableNodeIdx(lf.varName, plan, allNodes)
-            return targetIdx === ni && nodeLabel === lf.targetLabel
+            return targetIdx === ni
           })
+          // 如果没有 labelFilter 指向这个节点 → 放行
+          // 如果有 → 全部匹配才通过
+          const labelOk = matchingFilters.length === 0 || matchingFilters.every(lf => nodeLabel === lf.targetLabel)
           if (!labelOk) {
             skipNodeIndices.add(ni)
           }

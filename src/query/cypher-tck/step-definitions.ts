@@ -13,6 +13,7 @@ import { parseQuery, _executeQuery, _validatePlan, _clearGeInstances } from '../
 import { _evalBinary, _isExprValue } from '../expression-engine'
 import { GraphEngine } from '../../core/graph-engine'
 import { globalRegistry as _globalProcedureRegistry, type CypherProcedure } from '../procedure-registry'
+import { extractEdgesFromNodes } from '../executor-validators'
 
 interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any; pDir?: string; params?: Record<string, string> }
 const st: St = { nodes: [], q: '', res: [], err: null, params: {} }
@@ -173,6 +174,10 @@ async function run(q: string): Promise<void> {
       (plan as any)._bareCallParams = { ...st.params }
     }
     const result = await _executeQuery(plan, st.nodes, resolvedQ)
+    if (plan.steps?.length && !result.length && !st.err) {
+      const edgeCount = extractEdgesFromNodes(st.nodes).length
+      process.stderr.write(`\n[TCK_DBG] type=${plan.type} steps=${plan.steps?.length} edgesFromNodes=${edgeCount} nodesLen=${st.nodes.length} q=${resolvedQ.slice(0,70)}\n`)
+    }
     st.err = null
     st.res = result as any[]
   } catch (e: any) {
