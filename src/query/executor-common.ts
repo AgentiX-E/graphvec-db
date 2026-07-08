@@ -78,6 +78,8 @@ function _deepStripInternal(obj: unknown): unknown {
 
 function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   const row: QueryRow = {}
+  // expressionColumns 序号索引（用于拆解后的 returnColumns 列变量恢复）
+  let _ecColIdx = 0
 
   // GE 返回格式：{ props: { _label, _alias, name, p, ... } }
   // 过滤内部属性（以 _ 开头）以保持 TCK 兼容性，避免出现 _alias 等内部字段
@@ -196,6 +198,33 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       }
       continue
     }
+
+    // ── 对拆解后的 returnColumns 做变量-属性恢复 ──
+    // returnColumns 已被 query-parser 拆解（b.name → name），
+    // 用 expressionColumns 的原始表达式恢复变量名，从 __crossVarRows 取值
+    // 必须在 (rc in row) 之前执行，防止 id 等拆后属性误从 row 取值
+    let resolved = false
+    if (plan.expressionColumns?.length) {
+      const ecIdx = _ecColIdx++
+      if (ecIdx < plan.expressionColumns.length) {
+        const ec = plan.expressionColumns[ecIdx]
+        const origExpr = ec.expression || ''
+        const propMatch2 = origExpr.match(/^(\w+)\.(\w+)$/)
+        if (propMatch2 && r.__crossVarRows) {
+          const variable = propMatch2[1]
+          const property = propMatch2[2]
+          const cvrNode = r.__crossVarRows[variable]
+          if (cvrNode && typeof cvrNode === 'object' && property in cvrNode) {
+            result[origExpr] = (cvrNode as Record<string, unknown>)[property]
+            resolved = true
+          } else if (r.__targetProps && property in r.__targetProps) {
+            result[origExpr] = r.__targetProps[property]
+            resolved = true
+          }
+        }
+      }
+    }
+    if (resolved) continue
 
     // 判断 rc 是否直接出现在 GE 返回的 props 中
     // 但如果是函数调用表达式（被 GE Error当作属性赋值），跳过 GE 数据走函数求值

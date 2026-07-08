@@ -843,6 +843,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             }
             if (skipNode) continue
+            // WHERE 标签谓词 pre-check：起始节点必须匹配 step source 变量的标签
+            if (plan.labelFilterItems?.length && plan.steps?.[0]?.source) {
+              const srcVar = plan.steps[0].source
+              const srcLabelFilters = plan.labelFilterItems.filter((lfi: any) => lfi.variable === srcVar)
+              if (srcLabelFilters.length) {
+                const nodeLabel = String((allNodes[i] as any)?._label || '')
+                const labelOk = srcLabelFilters.some((lfi: any) => nodeLabel === lfi.label)
+                if (!labelOk) continue
+              }
+            }
             const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
         const pathEnds = _pathEndIndices(pathResults)
         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
@@ -900,9 +910,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         for (const targetIdx of boundedTargets) {
               const targetNode = allNodes[targetIdx]
               if (!targetNode) continue
+              const srcNode = allNodes[i] as Record<string, unknown>
               const geNode: any = {
                 id: nodeGeIds[targetIdx] || (targetIdx + 1),
-                props: { _label: targetNode._label || 'Default', _allVars: {} as Record<string, unknown> },
+                props: { _label: (srcNode?._label as string) || 'Default', _allVars: {} as Record<string, unknown> },
                 type: targetNode._label || 'Default',
                 __multiStep: true,
                 __targetProps: {},
@@ -950,14 +961,24 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   }
                 }
               }
-              // source 节点
+              // source 节点——使用起始节点 allNodes[i] 而非 targetNode
               if (lastStepV?.source) {
-                allVars[lastStepV.source] = { _label: targetNode._label || 'Default' }
+                allVars[lastStepV.source] = { _label: (allNodes[i]?._label || 'Default') as string }
+                for (const k of Object.keys(allNodes[i] || {})) {
+                  if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) (allVars[lastStepV.source] as any)[k] = (allNodes[i] as any)[k]
+                }
               }
+              // target 节点属性存入 __targetProps（供非 source 变量查询如 b.id）
               for (const k of Object.keys(targetNode)) {
                 if (k !== '_label' && k !== '__edges' && k !== 'props') {
-                  geNode.props[k] = targetNode[k]
                   geNode.__targetProps[k] = targetNode[k]
+                }
+              }
+              // source 节点属性存入 geNode.props（供 source 变量查询如 a.id）
+              const srcNodeForProps = allNodes[i] as Record<string, unknown>
+              if (srcNodeForProps) {
+                for (const k of Object.keys(srcNodeForProps)) {
+                  if (k !== '_label' && k !== '__edges' && k !== 'props') geNode.props[k] = srcNodeForProps[k]
                 }
               }
               // 确保 __targetProps 中有 _label（用于节点格式化和 varCtx）
@@ -1073,7 +1094,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 const _patNoAlias = plan.steps?.[plan.steps.length - 1]?.targetAlias === ''
                 multiStepRaw.push({
                   id: geNode.id,
-                  props: _patNoAlias ? { ...geNode.props } : { ...geNode.__targetProps },
+                  props: { ...geNode.props },
                   __targetProps: geNode.__targetProps,
                   __crossVarRows: geNode.__crossVarRows,
                 })
