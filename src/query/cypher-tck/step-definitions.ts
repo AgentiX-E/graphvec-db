@@ -773,6 +773,50 @@ Given('having executed:', async function (query: string) {
       }
 
       } // !unwind
+
+      // ── 从原始查询文本中解析边并注入 st.nodes 的 __edges ──
+      // parseQuery 的 AST plan 不含边信息（edges: undefined）。
+      // 但 TCK 的 MATCH 依赖 __edges 来做边遍历，所以需要从 q 提取边。
+      const edgeTokens: Array<Record<string, unknown>> = []
+      const edgeRe = /\[([^\]]*)\]/g
+      const arrowRe = /(<-|->)/g
+      const arrows: string[] = []
+      let em
+      while ((em = arrowRe.exec(q)) !== null) arrows.push(em[1])
+      let ei = 0
+      while ((em = edgeRe.exec(q)) !== null) {
+        const inner = em[1].trim()
+        let edgeLabel = ''
+        const edgeProps: Record<string, unknown> = {}
+        const bi = inner.indexOf('{')
+        if (bi >= 0) {
+          const labelPart = inner.substring(0, bi).trim()
+          if (labelPart.startsWith(':')) edgeLabel = labelPart.substring(1).trim()
+          Object.assign(edgeProps, _parseProps(inner.substring(bi)))
+        } else if (inner.startsWith(':')) {
+          edgeLabel = inner.substring(1).trim()
+        }
+        const arrow = arrows[ei] || '->'
+        const srcIdx = ei, dstIdx = ei + 1
+        const geSrc = arrow === '<-' ? dstIdx : srcIdx
+        const geDst = arrow === '<-' ? srcIdx : dstIdx
+        if (createdNodes[geSrc] && createdNodes[geDst]) {
+          if (!(createdNodes[geSrc] as any).__edges) (createdNodes[geSrc] as any).__edges = []
+          const eep = { srcIdx: geSrc, dstIdx: geDst, label: edgeLabel || 'T', props: Object.keys(edgeProps).length ? edgeProps : null }
+          ;(createdNodes[geSrc] as any).__edges.push(eep)
+          // 边种子数据也同步到 st.pGe
+          try {
+            const typeId = _hashLabel(edgeLabel || 'T')
+            const nids = createdNodes.map(n => {
+              const label = String(n._label || 'Default')
+              let h = 0; for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
+              return Math.abs(h) % 1000 + 1
+            })
+            ;(ge as any).upsertEdge(nids[geSrc], nids[geDst], typeId, { props: edgeProps })
+          } catch {}
+        }
+        ei++
+      }
       
       // If any UNWIND，为每个 UNWIND 元素创建额外的节点
       // 解析 UNWIND 后替换 createNodes 中的变量引用
