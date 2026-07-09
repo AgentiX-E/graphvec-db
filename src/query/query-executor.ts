@@ -557,9 +557,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (ep.srcIdx >= 0 && ep.srcIdx < allNodes.length) {
             nodeEdgeMap[ep.srcIdx].push({dstIdx: ep.dstIdx, srcIdx: ep.srcIdx, label: ep.label, props: ep.props || undefined})
           }
-          if (ep.dstIdx >= 0 && ep.dstIdx < allNodes.length) {
-            nodeEdgeMap[ep.dstIdx].push({dstIdx: ep.dstIdx, srcIdx: ep.srcIdx, label: ep.label, props: ep.props || undefined})
-          }
         }
         // 为每行分配 __edges（如果还没有），同时构建邻接索引
         const adjIdx = new Map<number, Array<{dstIdx: number; srcIdx: number; label: string; props?: any}>>()
@@ -819,6 +816,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             return !nodeAliases.has(rc)
           }).length
           let multiStepRaw: any[] = []
+          // 保存并清除 edgeLabel 突变（L728-735 的 typeRegex 污染了 edgeLabel，只取第一个 OR branch）
+          const savedEdgeLabel = plan.steps?.[0]?.edgeLabel ?? null
+          if (plan.steps?.[0]) plan.steps[0].edgeLabel = null
           for (let i = 0; i < allNodes.length; i++) {
             if (skipNodeIndices.has(i)) {
               continue
@@ -1030,6 +1030,34 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps } }
                   }
                 }
+                // 绑定边变量（如 MATCH (n)-[r]->(x) 中的 r），供 WHERE type(r) 表达式使用
+                // 边变量：returnColumns 中不在 steps 的 source/targetAlias 中的短变量
+                const stepVars = new Set(plan.steps.flatMap((s: any) => [s.source, s.targetAlias]).filter(Boolean))
+                const edgeVar = (plan.returnColumns || []).find((rc: string) => {
+                  return !stepVars.has(rc) && rc.length <= 2
+                })
+                if (edgeVar) {
+                  const srcNodeEdges = (allNodes[i] as any)?.__edges as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
+                  if (srcNodeEdges) {
+                    for (const ee of srcNodeEdges) {
+                      if (ee.dstIdx === targetIdx) {
+                        const edgeObj: Record<string, unknown> = {
+                          __edgeLabel: ee.label,
+                          __edgeLabelStr: ee.label,
+                          _type: ee.label,
+                          _label: ee.label,
+                        }
+                        if (ee.props) {
+                          for (const [pk, pv] of Object.entries(ee.props)) {
+                            edgeObj[pk] = pv
+                          }
+                        }
+                        geNode.__crossVarRows[edgeVar] = edgeObj
+                        break
+                      }
+                    }
+                  }
+                }
                 // Pattern Comprehension 适配：当 targetAlias 为空（匿名目标）且 RETURN 列是 source 变量时，
                 // geNode 应代表 source 节点（而非匿名 target），使格式化能正确输出 source 的标签和属性
                 if (!thisStep.targetAlias && thisStep.source && plan.returnColumns?.some(rc => {
@@ -1102,6 +1130,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             }
           }
+          // 恢复 edgeLabel
+          if (plan.steps?.[0]) plan.steps[0].edgeLabel = savedEdgeLabel
           // Pattern Comprehension 去重：当 targetAlias 为空（匿名目标）时，
           // 每个 source 节点可能产生多行（不同目标节点）。
           // 去重：只保留每个 source 节点一行
@@ -2092,19 +2122,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         const row = result[ri]
                 // 构建变量级映射
         const ctx: Record<string, unknown> = {}
-        // 从原始 GE 记录获取变量上下文（如 {a: {name: 'Foo', _label: 'TheLabel'}}）
-        const rawEntry = rawWithEdges?.[ri]
-        if (rawEntry?.__crossVarRows) {
-          for (const [varName, varNode] of Object.entries(rawEntry.__crossVarRows)) {
-            ctx[varName] = varNode as Record<string, unknown>
-          }
-        }
-        // 再注入 result row 的扁平化键
+        // 先注入 result row 的扁平化键
         for (const [key, val] of Object.entries(row)) {
           if (hasProps(val)) {
             ctx[key] = { ...val.props }
           } else {
             ctx[key] = val
+          }
+        }
+        // 再从原始 GE 记录获取变量上下文（如 {a: {name: 'Foo', _label: 'TheLabel'}}）
+        // 注意：__crossVarRows 中的对象变量优先覆盖 row 中的字符串值，
+        // 因为 WHERE 表达式（如 type(r)）需要完整的变量上下文，而非格式化后的字符串。
+        const rawEntry = rawWithEdges?.[ri]
+        if (rawEntry?.__crossVarRows) {
+          for (const [varName, varNode] of Object.entries(rawEntry.__crossVarRows)) {
+            ctx[varName] = varNode as Record<string, unknown>
           }
         }
         // 注入 WITH/UNWIND 管道变量（WITH/UNWIND 在 MATCH 之前的情况）
