@@ -144,7 +144,7 @@ export interface SegmentStreamWalOptions {
 /**
  * SegmentStreamWal — 基于固定大小 segment 的消息持久化队列
  *
- * 与 StreamWal API 完全兼容，但内部使用多 segment 文件。
+ * 与 StreamWal API 完全兼容，但Internal use多 segment 文件。
  * prune 操作只删除整个 segment 文件，不重写任何数据。
  */
 export class SegmentStreamWal {

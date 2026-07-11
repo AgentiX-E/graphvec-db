@@ -157,7 +157,7 @@ export class GraphImporter {
     let batch: BatchItem[] = []
     let lineNum = 0
 
-    // 使用 Promise 包装 createReadStream，确保 ENOENT 等错误能被捕获
+    // 使用 Promise 包装 createReadStream，确保 ENOENT 等Error能被捕获
     const fileStream = await new Promise<NodeJS.ReadableStream>((resolve, reject) => {
       const stream = createReadStream(options.filePath)
         .on('open', () => resolve(stream))
@@ -257,7 +257,7 @@ export class GraphImporter {
     let lineNum = 0
 
     // 支持 .json（每行 JSON 对象）、.ndjson、.jsonl
-    // 使用 Promise 包装 createReadStream，确保 ENOENT 等错误能被捕获
+    // 使用 Promise 包装 createReadStream，确保 ENOENT 等Error能被捕获
     const fileStream = await new Promise<NodeJS.ReadableStream>((resolve, reject) => {
       const stream = createReadStream(options.filePath)
         .on('open', () => resolve(stream))

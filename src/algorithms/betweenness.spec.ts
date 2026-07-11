@@ -177,7 +177,7 @@ describe('betweennessCentrality', () => {
     expect(rNorm[2]).toBe(0)
   })
 
-  // ─── 第 9 个测试：非连续节点 ID ────────────────────────────────
+  // ─── 第 9 个测试：非连续Node ID ────────────────────────────────
   test('non-consecutive vertex IDs', () => {
     const vertices = [10, 20, 30]
     const adj = new Map<number, number[]>([

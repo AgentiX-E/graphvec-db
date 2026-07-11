@@ -5,7 +5,7 @@
  * 1. 大量 peer 并行出现（20+）
  * 2. 同时增减 peer
  * 3. DEALER 恢复时 peer 公钥已被删除
- * 4. NAS 目录只读/权限错误
+ * 4. NAS 目录只读/权限Error
  * 5. Outbox LMDB 空间满处理
  * 6. ACK 顺序错乱（未知 msgId）
  * 7. ZMQ DEALER connect 到不存在的端口
@@ -168,7 +168,7 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
   })
 
   // ================================================================
-  // 4. NAS 目录只读/权限错误
+  // 4. NAS 目录只读/权限Error
   // ================================================================
   it('should handle read-only curveDir gracefully (permission denied)', async () => {
     // 创建一个不可读的子目录
@@ -192,7 +192,7 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
         },
         nasMonitorIntervalMs: 200,
       })
-      // 注意：start() 会尝试写入本机公钥到 restrictedDir → 失败抛出
+      // Note: start() 会尝试写入本机公钥到 restrictedDir → 失败抛出
       await bus.start().catch((e: Error) => {
         // 预期：目录无权限，start() 应当抛出 EACCES
         if (e.message.includes('EACCES') || e.message.includes('permission denied')) {

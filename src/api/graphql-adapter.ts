@@ -614,7 +614,7 @@ type SubscriptionEvent {
     if (operationType === 'subscription' && this.subscriptionResolvers) {
       const sseEvent = this.subscriptionResolvers.getSSEEvent(fieldName)
       if (sseEvent) {
-        // 返回 SSE 配置信息，供调用方在 GraphQLSubscription 中订阅
+        // 返回 SSE 配置Info，供调用方在 GraphQLSubscription 中订阅
         return {
           _subscriptionEvent: sseEvent,
           _options: this.subscriptionResolvers.getSubscribeOptions(fieldName),

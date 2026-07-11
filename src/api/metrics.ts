@@ -125,7 +125,7 @@ export async function metricsHandler(_req: IncomingMessage, res: ServerResponse)
 }
 
 /**
- * 重置所有指标（测试用）。
+ * 重置所有指标（Test only）。
  */
 export function resetMetrics(): void {
   register.clear()

@@ -2,7 +2,7 @@
  * tck-parser.ts — openCypher TCK Gherkin .feature 文件解析器
  *
  * 解析 Cucumber/Gherkin 格式的 TCK 测试场景文件。
- * TCK 格式示例：
+ * TCK 格式Example: 
  *
  *   Feature: Match
  *
@@ -254,7 +254,7 @@ export function parseFeatureFile(content: string): TCKFeature[] {
   return features
 }
 
-// ── TCK 步骤 → 测试用例转换 ─────────────────────────────
+// ── TCK 步骤 → Test only例转换 ─────────────────────────────
 
 /**
  * 将解析出的 TCKFeature 转换为 TCKTestCase[]。

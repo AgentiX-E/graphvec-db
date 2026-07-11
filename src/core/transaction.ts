@@ -3,10 +3,10 @@
  *
  * 支持：
  * - 快照隔离 (Snapshot Isolation)
- * - 写集锁 + 冲突检测
- * - 读集追踪
- * - SSI (Serializable Snapshot Isolation) — 读集冲突检测
- * - 死锁检测 — Wait-for 图循环检测
+ * - 写集锁 + Conflict detection
+ * - 读集Trace
+ * - SSI (Serializable Snapshot Isolation) — 读集Conflict detection
+ * - Deadlock detected — Wait-for 图循环检测
  * - 版本链 — 多版本读取
  * - 隔离级别选择 (read-committed / snapshot / serializable)
  * - 超时锁清理
@@ -29,7 +29,7 @@ export interface UpsertOpData {
 export interface MVCCSnapshot {
   id: number
   createdAt: number
-  /** 可选版本号，用于多版本读取 (version chain) */
+  /** Optional版本号，用于多版本读取 (version chain) */
   version?: number
 }
 
@@ -45,7 +45,7 @@ export class TransactionManager {
   private _nextSnapshotId = 1
   private _locks = new Map<string, { nodeId: NodeId; snapshotId: number; lockedAt: number }>()
   private _lockTimeoutMs: number
-  /** 已提交事务的写入记录（用于 SSI 读集冲突检测）
+  /** 已提交事务的写入记录（用于 SSI 读集Conflict detection）
    *  key = nodeId string (or "name:${name}" for upsert operations)
    *  value = committedAt 时间戳 */
   private _committedWrites = new Map<string, number>()
@@ -109,7 +109,7 @@ export class TransactionManager {
   }
 
   /**
-   * 记录事务提交时的写入（用于 SSI 读集冲突检测）
+   * 记录事务提交时的写入（用于 SSI 读集Conflict detection）
    * 会记录 writeSet 中的 name 和 deleteSet 中的 nodeId
    */
   _recordCommitWrite(snapshotId: number, writeSet: Map<string, UpsertOpData>, deleteSet: Set<NodeId>, engine?: GraphEngine): void {
@@ -216,12 +216,12 @@ export class TransactionManager {
         }
         // 如果 A 和 B 各自有对方需要的节点，构建双向往边
         // 但这只适用于两个 snapshot 的情况
-        // 更通用的实现：对于每个节点，如果有多个 snapshot 锁了它，可能存在等待关系
+        // 更通用的实现：对于每个节点，If any多个 snapshot 锁了它，可能存在等待关系
       }
     }
 
     // 通用实现：对于每个被多 snapshot 锁住的节点，建立 wait-for 边
-    // 注意：在我们的实现中，同一节点不能被多个 snapshot 加锁（lock() 会抛异常）
+    // Note: 在我们的实现中，同一节点不能被多个 snapshot 加锁（lock() 会抛异常）
     // 所以真正的死锁发生在：T1 锁了 A 请求 B，T2 锁了 B 请求 A
     // 由于我们的 lock() 是抛异常而非阻塞，死锁需要通过显式的锁请求跟踪来实现
     //
@@ -232,9 +232,9 @@ export class TransactionManager {
     // 这里不构建复杂的 wait-for，因为我们的锁模型不阻塞等待。
     // 对于写 skew 检测（SSI），由 _checkReadSetConflict 负责。
     //
-    // 死锁检测在实际阻塞锁模型中才有意义。
+    // Deadlock detected在实际阻塞锁模型中才有意义。
     // 这里实现为接口存在但功能先返回 null（测试中通过模拟场景测试）
-    // 实际死锁检测会在增强的锁模型中实现
+    // 实际Deadlock detected会在增强的锁模型中实现
 
     // 使用 DFS 检测 wait-for 图中的循环
     // 从给定 snapshotId 出发
@@ -267,7 +267,7 @@ export class TransactionManager {
   }
 
   /**
-   * 注册锁请求（用于死锁检测）
+   * 注册锁请求（用于Deadlock detected）
    * 当 lock() 失败时调用，记录请求关系
    */
   private _lockRequests = new Map<string, { nodeId: NodeId; snapshotId: number }>()
@@ -290,7 +290,7 @@ export class TransactionManager {
   }
 
   /**
-   * 增强版死锁检测 — 基于锁请求跟踪
+   * 增强版Deadlock detected — 基于锁请求跟踪
    * 构建完整的 wait-for 图，检测循环
    */
   detectDeadlockFull(snapshotId: number): string | null {
@@ -362,7 +362,7 @@ export class TransactionManager {
   }
 
   /**
-   * 获取等待关系图（用于调试/测试）
+   * 获取等待关系图（用于Debug/测试）
    */
   getWaitForGraph(): Map<number, Set<number>> {
     const waitFor = new Map<number, Set<number>>()
@@ -451,7 +451,7 @@ export class Transaction {
   }
 
   /**
-   * 读节点（带版本信息）
+   * 读节点（带版本Info）
    * 在多版本读取中，返回 snapshot-time 的值
    * 如果 engine 提供了版本链支持，读取对应版本
    */
@@ -471,7 +471,7 @@ export class Transaction {
   }
 
   /**
-   * Phase 0: SSI 读集冲突检测
+   * Phase 0: SSI 读集Conflict detection
    * 检查读集中的节点是否被其他事务在 snapshot 之后修改过
    * 仅当 isolation === 'serializable' 时调用
    */
@@ -496,7 +496,7 @@ export class Transaction {
   }
 
   /**
-   * Phase 0.5: 死锁检测
+   * Phase 0.5: Deadlock detected
    * 检测当前事务是否陷入死锁（wait-for 图循环）
    */
   _detectDeadlock(snapshotId: number, mgr: TransactionManager | null): boolean {
@@ -535,7 +535,7 @@ export class Transaction {
     // Try lock check
     for (const key of allKeys) {
       if (this._mgr && this._mgr.isLocked(Number(key))) {
-        // 注册锁请求（用于死锁检测）
+        // 注册锁请求（用于Deadlock detected）
         if (this._mgr) {
           this._mgr._registerLockRequest(Number(key), this.snapshotId)
         }
@@ -554,7 +554,7 @@ export class Transaction {
       }
     }
 
-    // ── Phase 0.5: 死锁检测（加锁后，获取资源前） ──
+    // ── Phase 0.5: Deadlock detected（加锁后，获取资源前） ──
     if (this._mgr) {
       const deadlock = this._mgr.detectDeadlockFull(this.snapshotId)
       if (deadlock) {
@@ -573,7 +573,7 @@ export class Transaction {
         await this._flushToEngine(this._engine)
       }
 
-      // 记录已提交的写入（用于 SSI 读集冲突检测）
+      // 记录已提交的写入（用于 SSI 读集Conflict detection）
       if (this._mgr) {
         this._mgr._recordCommitWrite(this.snapshotId, this.writeSet, this.deleteSet, this._engine)
       }
@@ -630,14 +630,14 @@ export class Transaction {
   isNodeVisible(engine: GraphEngine, nodeId: NodeId): boolean {
     const version = engine.getNodeVersion(nodeId)
     if (version === undefined || version === null) {
-      // 没有版本信息的节点视为始终可见（非 MVCC 写入）
+      // 没有版本Info的节点视为始终可见（非 MVCC 写入）
       return true
     }
     // snapshot 隔离：只能看到 snapshotId 及之前写入的版本
     return version <= this.snapshotId
   }
 
-  /** 设置 engine（可选，用于 flush） */
+  /** 设置 engine（Optional，用于 flush） */
   setEngine(engine: GraphEngine): void {
     this._engine = engine
   }

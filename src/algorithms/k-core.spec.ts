@@ -2,7 +2,7 @@
  * k-Core 算法单元测试
  *
  * 测试 kCore / coreDecomposition / allKCores 三个导出函数。
- * 最少 8 个测试用例。
+ * 最少 8 个Test only例。
  */
 
 import { describe, test, expect } from 'vitest'

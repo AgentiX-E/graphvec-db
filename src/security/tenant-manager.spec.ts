@@ -2,7 +2,7 @@
  * tenant-manager.spec.ts — TenantManager 单元测试
  *
  * 测试 CRUD、ACL 集成、单例管理。
- * 注意：RBAC 是全局单例，每个 test 前需 clean ACLs。
+ * Note: RBAC 是全局单例，每个 test 前需 clean ACLs。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { RBAC } from './auth'

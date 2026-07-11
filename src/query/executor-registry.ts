@@ -38,7 +38,7 @@ function _saveStore(): void {
       indexes: Array.from(_indexRegistry.values()),
       constraints: Array.from(_constraintRegistry.values()),
     }, null, 2), 'utf8')
-  } catch { /* 非关键错误，静默处理 */ }
+  } catch { /* 非关键Error，静默处理 */ }
 }
 export function _registerIndex(label: string, property: string): void {
   _indexRegistry.set(`${label}:${property}`, { label, property }); _saveStore()
@@ -115,7 +115,7 @@ const _geInstanceRegistry = new Map<string, GraphEngine>()
  */
 const _gePool: { value: GraphEngine | null } = { value: null }
 
-/** 追踪 GE 实例的 LMDB 目录路径，用于复用时 reopen 已有目录 */
+/** Trace GE 实例的 LMDB 目录路径，用于复用时 reopen 已有目录 */
 const _geDirRegistry = new Map<string, string>()
 
 export function _clearGeInstances(): void {

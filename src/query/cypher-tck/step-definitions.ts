@@ -671,7 +671,7 @@ Given('having executed:', async function (query: string) {
           // 非 CREATE 语句，用 run() 执行
           await run(line)
         }
-      } catch { /* 忽略单语句错误，继续下一个 */ }
+      } catch { /* 忽略单语句Error，继续下一个 */ }
     }
     st.err = null
     return
@@ -683,7 +683,7 @@ Given('having executed:', async function (query: string) {
     // 注入持久 GE
     const ge = persistGe()
 
-    // 如果有 createNodes（CREATE/MERGE 的节点定义），直接注入 st.nodes 和 GE
+    // If any createNodes（CREATE/MERGE 的节点定义），直接注入 st.nodes 和 GE
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan as any).createNodes?.length) {
       const cns = (plan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
       const createdNodes: Array<Record<string, unknown>> = []
@@ -733,7 +733,7 @@ Given('having executed:', async function (query: string) {
 
       } // !unwind
       
-      // 如果有 UNWIND，为每个 UNWIND 元素创建额外的节点
+      // If any UNWIND，为每个 UNWIND 元素创建额外的节点
       // 解析 UNWIND 后替换 createNodes 中的变量引用
       if (unwind && unwind.list) {
         // 解析 UNWIND 列表：可能是 JS 数组或字符串 "[1,2,3]" / "['a','b','c']"
@@ -788,10 +788,10 @@ Given('having executed:', async function (query: string) {
         }
       }
 
-      // 创建边（如果有 createEdges）
+      // 创建边（If any createEdges）
       const edges = (plan as any).createEdges as Array<{ source: string; target: string; sourceIdx?: number; targetIdx?: number; label: string | null; direction: string }> | undefined
       if (edges?.length) {
-        // 从 GE 获取所有节点 ID
+        // 从 GE 获取所有Node ID
         const geNodeMap: Array<{ id: number }> = []
         const nodeIds: number[] = [...((ge as any)._nodeIds || [])]
         for (const nid of nodeIds) {
@@ -827,7 +827,7 @@ Given('having executed:', async function (query: string) {
             createdEdgeInfos.push({ srcIdx, dstIdx, label: edge.label || '', props: (edge as any).props || null })
           }
         }
-        // 把边信息编码到 st.nodes 的 __edges 中，供后续 _executeQuery 重建边
+        // 把边Info编码到 st.nodes 的 __edges 中，供后续 _executeQuery 重建边
         // 关键：srcIdx/dstIdx 必须指向 st.nodes 中的正确索引（而非 geNodeMap 中的索引）。
         // 因为 _executeViaGraphEngine 重建边时用 allNodes[i].__edges 中的
         // srcIdx/dstIdx 来映射到 nodeGeIds[i]，而 nodeGeIds 按 st.nodes 顺序排列。
@@ -960,7 +960,7 @@ Given(/^there exists a procedure (.*)$/, function (this: any, procDesc: string, 
   console.error('📝 Given there exists a procedure called')
   // 解析 Gherkin 步骤文本获取 procedure 名称和签名
   // 步骤格式: "there exists a procedure <name>(<params>) :: (<returns>):"
-  // data table 包含示例输入/输出行（可选，可能为空 | 单独一行）
+  // data table 包含示例输入/输出行（Optional，可能为空 | 单独一行）
   // cucumber-js v10: 正则捕获的 procDesc 就是步骤描述部分
   const text = `there exists a procedure ${procDesc}`
   console.error('📝 Step text:', text)
@@ -980,7 +980,7 @@ Given(/^there exists a procedure (.*)$/, function (this: any, procDesc: string, 
   const paramsSig = match[2].trim()
   const returnsSig = match[3].trim()
 
-  // 获取 data table（如果有）
+  // 获取 data table（If any）
   let dataTable: any[] = []
   if (dt && typeof dt.rows === 'function') {
     const rawRows = dt.raw()

@@ -59,9 +59,9 @@ interface WorkerResponse {
   count?: number
   /** ack: 被确认的消息 ID */
   msgId?: string
-  /** error: 错误消息 */
+  /** error: Error消息 */
   message?: string
-  /** stats: 子进程统计信息 */
+  /** stats: 子进程统计Info */
   stats?: WorkerStats
   /** 响应请求 ID */
   requestId?: string
@@ -246,7 +246,7 @@ class WorkerProcess {
   }
 
   /**
-   * getStats: 返回子进程统计信息
+   * getStats: 返回子进程统计Info
    */
   private _handleGetStats(cmd: WorkerCommand): void {
     this._send({
@@ -303,7 +303,7 @@ class WorkerProcess {
         }
       } catch (err: any) {
         if (!this.running) break
-        // 接收错误通常意味着 socket 已关闭
+        // 接收Error通常意味着 socket 已关闭
         break
       }
     }

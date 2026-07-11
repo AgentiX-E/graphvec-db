@@ -939,7 +939,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         const ret = extractReturn(clause.ctx)
         // 填充 returnAliasMap：returnColumn → 原始表达式（用于 DML 结果构造 & 表达式求值）
         plan.returnAliasMap = {}
-        // 填充 expressionColumns：结构化列信息（用于表达式求值引擎）
+        // 填充 expressionColumns：结构化列Info（用于表达式求值引擎）
         plan.expressionColumns = []
         for (const c of ret.columns) {
           const key = (c.alias ?? c.expression).replace(/^\w+\./, '')

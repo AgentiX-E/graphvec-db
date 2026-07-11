@@ -177,7 +177,7 @@ export class SchemaValidator {
    *
    * @param typeId 节点类型 ID
    * @param props 原始属性
-   * @returns 填充默认值后的属性
+   * @returns 填充Default value后的属性
    */
   applyDefaults(typeId: number, props: NodeProperties): NodeProperties {
     if (!this._schemaDef) return { ...props }

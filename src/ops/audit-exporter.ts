@@ -139,7 +139,7 @@ export class AuditLogExporter {
    *
    * @param targetPath 输出文件路径
    * @param format 导出格式
-   * @param filter 过滤条件（可选）
+   * @param filter 过滤条件（Optional）
    * @returns 导出结果
    */
   async export(
@@ -186,7 +186,7 @@ export class AuditLogExporter {
    * @param intervalMs 间隔毫秒
    * @param format 导出格式
    * @param targetDir 输出目录
-   * @param filter 过滤条件（可选）
+   * @param filter 过滤条件（Optional）
    * @returns 定时器句柄（可调用 clearInterval 停止）
    */
   scheduleExport(

@@ -5,7 +5,7 @@
  * - SHOW CONSTRAINTS / INDEXES / PROCEDURES / FUNCTIONS 解析 + 执行
  * - DESCRIBE 等价于 EXPLAIN
  * - DROP CONSTRAINT ON ... ASSERT ... IS UNIQUE 解析
- * - DROP 不存在的语法错误
+ * - DROP 不存在的语法Error
  */
 
 import { describe, it, expect } from 'vitest'

@@ -34,7 +34,7 @@ export interface TimeoutConfig {
 export interface RunOptions {
   /** 查询类型标签（用于统计和按类型超时） */
   queryType?: string
-  /** 请求 ID（用于日志追踪） */
+  /** 请求 ID（用于日志Trace） */
   requestId?: string
   /** 外部 AbortSignal（用于级联取消） */
   abortSignal?: AbortSignal
@@ -92,7 +92,7 @@ export class QueryTimeoutManager {
   }
 
   /**
-   * 获取统计信息
+   * 获取统计Info
    */
   getStats(): Readonly<TimeoutStats> {
     return Object.freeze({ ...this.stats })
@@ -143,7 +143,7 @@ export class QueryTimeoutManager {
           this.stats.timeoutCount++
         }
       } else {
-        // 其他错误（非超时）计入正常
+        // 其他Error（非超时）计入正常
         this.stats.successCount++
       }
       throw err
@@ -155,7 +155,7 @@ export class QueryTimeoutManager {
    * 用于 REST 请求级别的超时控制
    *
    * @param timeoutMs - 超时毫秒数
-   * @param signal - 父级 AbortSignal（可选）
+   * @param signal - 父级 AbortSignal（Optional）
    * @returns AbortController 和清理函数
    */
   createRequestTimeout(

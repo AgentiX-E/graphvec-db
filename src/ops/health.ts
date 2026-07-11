@@ -65,7 +65,7 @@ export class Health {
         diskOk = false
       }
     } catch {
-      diskOk = true // 无法获取磁盘信息时不阻塞 readiness
+      diskOk = true // 无法获取磁盘Info时不阻塞 readiness
     }
 
     const errors: string[] = []
@@ -237,7 +237,7 @@ export class Health {
     }
   }
 
-  /** 获取信息摘要 */
+  /** 获取Info摘要 */
   getSummary(): string {
     const h = this.getStatus()
     return [

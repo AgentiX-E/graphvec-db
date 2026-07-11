@@ -3,7 +3,7 @@
  *
  * 将图引擎的变更事件（node:created, node:deleted, edge:created, edge:deleted）
  * 转为结构化 CDC 变更记录，支持：
- *   - 单调递增 seq + offset 追踪
+ *   - 单调递增 seq + offset Trace
  *   - 断点续传（从指定 offset 开始消费）
  *   - pause/resume 流量控制
  *   - 批量消费
@@ -31,7 +31,7 @@ export interface CDCChangeRecord {
   seq: number
   /** 操作类型 */
   operation: CDCOperation
-  /** 节点 ID（node 操作时必填） */
+  /** Node ID（node 操作时必填） */
   nodeId?: NodeId
   /** 边标识（edge 操作时使用格式 "src:dst:typeId"） */
   edgeKey?: string
@@ -56,7 +56,7 @@ export interface CDCConsumerConfig {
   pollIntervalMs?: number
   /** 每条 CDC 记录的回调 */
   onRecord?: (record: CDCChangeRecord) => void
-  /** 错误处理回调 */
+  /** Error处理回调 */
   onError?: CDCErrorHandler
 }
 
@@ -252,7 +252,7 @@ export interface CDCConsumerGroupConfig {
  *
  * 适用于需要将同一变更流分发给多个下游的场景
  * （如同时同步到 ES 和数仓）。
- * 注意：当前实现每个 consumer 独立消费同一事件流，
+ * Note: 当前实现每个 consumer 独立消费同一事件流，
  * 每个 consumer 有独立的 offset。
  * 未来可扩展为 partition-based 模式。
  */

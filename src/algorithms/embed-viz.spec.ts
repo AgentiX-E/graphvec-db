@@ -19,7 +19,7 @@ import {
 } from './embed-viz'
 import { PCA } from 'ml-pca'
 
-/** 创建测试用的嵌入矩阵（N x D） */
+/** 创建Test only的嵌入矩阵（N x D） */
 function makeEmbedding(N: number, D: number): number[][] {
   const data: number[][] = []
   for (let i = 0; i < N; i++) {

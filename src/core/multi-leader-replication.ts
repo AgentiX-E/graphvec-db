@@ -18,13 +18,13 @@ export type TopologyType = 'intra-dc' | 'cross-dc' | 'edge'
 
 /** Multi-Leader 复制配置 */
 export interface MultiLeaderConfig {
-  /** 当前节点 ID */
+  /** 当前Node ID */
   nodeId: string
   /** peers 列表 [{ nodeId, addr }] */
   peers: Array<{ nodeId: string; addr: string }>
   /** Curve 公钥目录 */
   curveDir: string
-  /** LMDB 数据库路径（可选） */
+  /** LMDB 数据库路径（Optional） */
   dbPath?: string
   /** tick 间隔（ms），默认 500 */
   tickMs?: number
@@ -105,7 +105,7 @@ export class MultiLeaderReplication {
     this.manager = new OutboxReplicationManager(mgrConfig)
   }
 
-  /** 当前节点 ID */
+  /** 当前Node ID */
   get nodeId(): string { return this.config.nodeId }
 
   /** 获取当前配置副本（包含由 topology 推导的最终值） */
@@ -143,7 +143,7 @@ export class MultiLeaderReplication {
     this.manager.stop()
   }
 
-  /** 统计信息 */
+  /** 统计Info */
   getStats(): { workers: number; pending: number } {
     return {
       workers: this.config.peers.filter(p => p.nodeId !== this.config.nodeId).length,

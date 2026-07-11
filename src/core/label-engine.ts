@@ -40,7 +40,7 @@ export class LabelEngine {
     return removed
   }
 
-  /** 获取指定类型的所有节点 ID */
+  /** 获取指定类型的所有Node ID */
   getNodeIds(type: number): NodeId[] {
     const set = this.index.get(type)
     return set ? Array.from(set) : []

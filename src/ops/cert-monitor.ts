@@ -50,7 +50,7 @@ export interface CertMonitorConfig {
   onRenewed?: () => void
 }
 
-// ── ACME 配置（可选，用于 autoRenew） ─────────────────────
+// ── ACME 配置（Optional，用于 autoRenew） ─────────────────────
 
 export interface AcmeConfig {
   /** Let's Encrypt 邮箱 */
@@ -75,7 +75,7 @@ const DEFAULT_RENEW_DAYS = 7
 export class CertMonitor {
   private interval: ReturnType<typeof setInterval> | null = null
   private config: Required<CertMonitorConfig>
-  /** ACME 自动续期配置（可选） */
+  /** ACME 自动续期配置（Optional） */
   private acmeConfig: AcmeConfig | null = null
   /** 正在执行自动续期 */
   private _renewing = false
@@ -128,7 +128,7 @@ export class CertMonitor {
   /**
    * 立即执行一次证书过期检查
    *
-   * @returns 包含证书有效状态、剩余天数、颁发者和主题信息的对象
+   * @returns 包含证书有效状态、剩余天数、颁发者和主题Info的对象
    */
   checkNow(): { isValid: boolean; daysUntilExpiry: number; issuer?: string; subject?: string } {
     const parsed = this._parseCert()

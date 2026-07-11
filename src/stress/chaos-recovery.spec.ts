@@ -11,7 +11,7 @@
  * - open→pauseWrites→close 序列（写入冻结）
  * - open→pauseWrites→unfreeze→close 序列
  *
- * 注意：scanAllNodes() 依赖内存 _nodeIds 集合（close 后重置），
+ * Note: scanAllNodes() 依赖内存 _nodeIds 集合（close 后重置），
  * 持久化验证需要使用 getNode(id) 或 scanAllNodes 只在 open 期间使用。
  */
 import { test, expect } from 'vitest'
@@ -119,7 +119,7 @@ test('CR-03: open 后不写入直接 close', async () => {
     engine.close()
   }
 
-  // 打开后确认无错误
+  // 打开后确认无Error
   engine.open()
   try {
     // scanAllNodes 在空引擎返回空
@@ -611,7 +611,7 @@ test('CR-20: 多重 pauseWrites/resume 嵌套', async () => {
     resume2()
     // 根据实现：pauseWrites 是布尔标志位，第二次 resume 将 _writesFrozen 设为 false
     // 所以 resume2 后写入可能成功
-    // 如果成功，则捕获异常是可选的
+    // 如果成功，则捕获异常是Optional的
     try {
       await engine.upsertNode(2, 'still-frozen', { props: {} })
     } catch {
@@ -1553,7 +1553,7 @@ test('CR-60: 双向边持久化', async () => {
   } finally { e.close() }
 }, 60000)
 
-// ── Test 61: engine 在 open 时多 engine 同路径冲突检测 ──
+// ── Test 61: engine 在 open 时多 engine 同路径Conflict detection ──
 test('CR-61: 同一路径两个 engine 先后 open/close', async () => {
   const cfg = makeConfig('same-path-two')
   let e1 = new GraphEngine(cfg)
@@ -1902,8 +1902,8 @@ test('CR-77: 不同 typeId 同 name reopen', async () => {
   } finally { e.close() }
 }, 60000)
 
-// ── Test 78: reopen 后 neighbors 返回 edge 信息 ──
-test('CR-78: reopen 后 neighbors 返回 edge 信息', async () => {
+// ── Test 78: reopen 后 neighbors 返回 edge Info ──
+test('CR-78: reopen 后 neighbors 返回 edge Info', async () => {
   const cfg = makeConfig('edge-info-re')
   let src = -1, dst = -1
   let e = new GraphEngine(cfg)

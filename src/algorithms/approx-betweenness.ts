@@ -30,7 +30,7 @@ export interface ApproxBetweennessOptions {
 /**
  * approximate中介中心性 — 基于采样
  *
- * @param vertices - 所有节点 ID
+ * @param vertices - 所有Node ID
  * @param adjList - 邻接表 (nodeId → 邻居数组)
  * @param options - 配置项
  * @returns Map<nodeId, score>

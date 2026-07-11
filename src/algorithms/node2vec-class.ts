@@ -212,7 +212,7 @@ export class Node2Vec {
 
   /**
    * 获取指定节点的嵌入向量。
-   * @param nodeId — 节点 ID
+   * @param nodeId — Node ID
    * @returns Float32Array 或 null（节点不存在）
    */
   getEmbedding(nodeId: number): Float32Array | null {
@@ -267,7 +267,7 @@ export class Node2Vec {
   // ──────────────────────────────────────────────
 
   /**
-   * 从 engine 获取所有节点 ID。
+   * 从 engine 获取所有Node ID.
    */
   private _getAllNodeIds(engine: any): number[] {
     try {

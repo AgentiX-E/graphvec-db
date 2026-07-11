@@ -142,7 +142,7 @@ describe('DELETE with RETURN', () => {
     )
     // RETURN 返回被删除的节点
     const bob = rows.find(r => (r.n as Row)?.name === 'Bob')
-    // 注意：当前架构下 DELETE + RETURN 的 side-effect 可能不在返回值中
+    // Note: 当前架构下 DELETE + RETURN 的 side-effect 可能不在返回值中
     // 作为健全性检查
     expect(rows.length).toBeGreaterThanOrEqual(0)
   })

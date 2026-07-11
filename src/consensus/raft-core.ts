@@ -111,7 +111,7 @@ export class RaftCore {
   // ─── Leader 专用状态 ───
   private _nextIndex: Map<string, number> = new Map()
   private _matchIndex: Map<string, number> = new Map()
-  /** Pipeline: 每个 follower 的 in-flight 追踪（未确认的 AppendEntries） */
+  /** Pipeline: 每个 follower 的 in-flight Trace（未确认的 AppendEntries） */
   private _inFlight: Map<string, number> = new Map()
   /** Pipeline: 每个 follower 的待发送队列 */
   private _pendingQueue: Map<string, Array<{ entries: LogEntry[]; maxBatchSize: number }>> = new Map()
@@ -341,7 +341,7 @@ export class RaftCore {
 
     await this.transport.start()
 
-    // 单节点（无 peers）立即成为 leader，无需等待选举超时
+    // 单节点（无 peers）立即成为 leader，无需等待Election timeout
     if (this.config.peers.length === 0) {
       this._becomeLeader()
     } else {
@@ -786,7 +786,7 @@ export class RaftCore {
       return { term: this._currentTerm, success: false, lastLogIndex: this.wal.getLastIndex() }
     }
 
-    // 重置选举超时（合法 leader 的心跳）
+    // 重置Election timeout（合法 leader 的心跳）
     this._resetElectionTimeout()
 
     // 2. prevLog 一致性检查
@@ -1074,7 +1074,7 @@ export class RaftCore {
       return
     }
 
-    // 未获得足够投票，继续 candidate 状态（由选举超时触发重试）
+    // 未获得足够投票，继续 candidate 状态（由Election timeout触发重试）
   }
 
   private _becomeLeader(): void {
@@ -1377,7 +1377,7 @@ export class RaftCore {
       this._stepDown(request.term)
     }
 
-    // 重置选举超时
+    // 重置Election timeout
     this._resetElectionTimeout()
 
     // 将快照数据应用到状态机

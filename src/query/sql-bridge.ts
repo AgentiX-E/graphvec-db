@@ -33,16 +33,16 @@ export interface SqlTranslationResult {
   cypher: string
   /** 原始 SQL */
   sql: string
-  /** 翻译过程中是否产生了警告 */
+  /** 翻译过程中是否产生了Warn */
   warnings: string[]
 }
 
 export interface SqlTranslationError {
-  /** 错误消息 */
+  /** Error消息 */
   message: string
   /** 原始 SQL */
   sql: string
-  /** 错误码 */
+  /** Error码 */
   code: 'UNSUPPORTED_JOIN' | 'UNSUPPORTED_SUBQUERY' | 'UNSUPPORTED_STATEMENT' | 'PARSE_ERROR'
 }
 

@@ -29,7 +29,7 @@ export interface ProcedureContext {
   /** 获取当前配置对象 */
   getConfig?: () => Record<string, unknown> | Promise<Record<string, unknown>>
 
-  /** 获取统计信息 */
+  /** 获取统计Info */
   getStats?: () => Record<string, unknown> | Promise<Record<string, unknown>>
 
   /** FULLTEXT 索引节点查询 */

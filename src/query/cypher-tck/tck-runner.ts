@@ -1,7 +1,7 @@
 /**
  * tck-runner.ts — TCK 场景执行引擎
  *
- * 将 TCK 测试用例映射到 GraphEngine/QueryEngine 的查询执行上。
+ * 将 TCK Test only例映射到 GraphEngine/QueryEngine 的查询执行上。
  * 支持：
  * - 解析 Given 步骤为初始数据
  * - 执行 When 步骤的 Cypher 查询
@@ -66,7 +66,7 @@ export class TCKRunner {
       if (plan) {
         const result = _executeQuery(plan, inputData)
         if (Array.isArray(result)) {
-          // 更新图数据（如果有 CREATE 等副作用）
+          // 更新图数据（If any CREATE 等副作用）
           this.graphData = this.graphData.concat(
             result.filter(r => r._label || r._from)
           )
@@ -99,7 +99,7 @@ export class TCKRunner {
         this.executeQuery(step.query)
       } catch {
         // Given 步骤失败不应终止测试
-        // 记录警告
+        // 记录Warn
         console.warn(`Given step failed (ignored): ${step.query}`)
       }
     }
@@ -142,7 +142,7 @@ export class TCKRunner {
   }
 
   /**
-   * 运行单个 TCK 测试用例。
+   * 运行单个 TCK Test only例。
    */
   runTestCase(testCase: TCKTestCase): TCKExecutionResult {
     const errors: string[] = []
@@ -162,7 +162,7 @@ export class TCKRunner {
               actualResults = this.executeWhen(step)
             } catch (e) {
               if (step.errorExpected) {
-                // 期望的错误发生，没问题
+                // 期望的Error发生，没问题
                 break
               }
               throw e

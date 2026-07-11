@@ -46,7 +46,7 @@ export function getTraceId(): string | undefined {
 /**
  * Logger — pino 结构化日志
  *
- * 日志格式为结构化 JSON，自带时间戳、级别、hlc 时间戳
+ * Log format为结构化 JSON，自带时间戳、级别、hlc 时间戳
  * 开发环境使用 pino-pretty 美化输出
  * 生产环境输出纯 JSON 供 Loki/ELK 收集
  *

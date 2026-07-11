@@ -7,7 +7,7 @@
  * - WITH + 聚合组合
  * - COUNT(*) / COUNT(DISTINCT ...)
  * - MIN/MAX/AVG/SUM 基本路径
- * - 空结果聚合返回默认值
+ * - 空结果聚合返回Default value
  * - 路径函数：length / nodes / relationships / startNode / endNode
  */
 
@@ -208,7 +208,7 @@ describe('MIN/MAX/AVG/SUM 基本路径', () => {
   })
 })
 
-describe('空结果聚合返回默认值', () => {
+describe('空结果聚合返回Default value', () => {
 
   test('空结果 COUNT(*) 返回 0', () => {
     const plan = {

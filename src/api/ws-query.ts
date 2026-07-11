@@ -33,7 +33,7 @@ export type QueryExecutor = (
 
 /** WS 流式查询配置 */
 export interface WsQueryConfig {
-  /** HTTP 服务器实例（可选，如果提供则挂载到该服务器） */
+  /** HTTP 服务器实例（Optional，如果提供则挂载到该服务器） */
   server?: http.Server
   /** 绑定端口（仅在 server 未提供时生效），默认 7687 */
   port?: number
@@ -235,7 +235,7 @@ export class WsQueryServer {
     })
 
     ws.on('error', () => {
-      // 连接错误时清理
+      // 连接Error时清理
       for (const id of clientQueries) {
         const query = this._activeQueries.get(id)
         if (query) {

@@ -716,7 +716,7 @@ export async function startAdminUI(
     query?: (q: string) => unknown;
     /** 获取全量拓扑快照（Cytoscape.js 格式） */
     getTopology?: () => CyElement[];
-    /** CDC 事件订阅（可选） */
+    /** CDC 事件订阅（Optional） */
     onTopoChange?: (handler: (event: TopoChangeEvent) => void) => () => void;
   },
   options: AdminUIOptions = {},

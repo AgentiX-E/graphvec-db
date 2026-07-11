@@ -489,7 +489,7 @@ export class Backup {
     const dataDir = process.env.DATA_DIR || './data'
     const archiveDir = this.pitrConfig.walArchivePath
 
-    // 确保归档目录存在
+    // 确保Archive directory存在
     fs.mkdirSync(archiveDir, { recursive: true })
 
     // 扫描数据目录下所有 WAL 文件并归档
@@ -547,7 +547,7 @@ export class Backup {
    * 3. 按时间排序重放 WAL 归档直到目标时间戳
    *
    * @param timestamp 目标时间戳（毫秒）
-   * @param archiveDir 归档目录
+   * @param archiveDir Archive directory
    */
   async restoreToTimestamp(timestamp: number, archiveDir: string): Promise<void> {
     // 1. 找到最近的备份目录
@@ -610,7 +610,7 @@ export class Backup {
 
   /**
    * 列出可用的恢复点
-   * @param archiveDir 归档目录
+   * @param archiveDir Archive directory
    */
   async listRecoveryPoints(archiveDir: string): Promise<RecoveryPoint[]> {
     const points: RecoveryPoint[] = []

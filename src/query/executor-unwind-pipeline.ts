@@ -13,7 +13,7 @@ import { _evaluateExpression } from './expression-engine'
  * 处理链：
  *   WITH [...] AS listVar
  *     → UNWIND listVar AS x
- *       → UNWIND listVar AS y（可选 secondUnwind）
+ *       → UNWIND listVar AS y（Optional secondUnwind）
  *         → WITH expr AS v (投影)
  *           → RETURN agg(v)
  * 
@@ -28,7 +28,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   // 从原始 query 文本提取所有 WITH [...] AS var 的列表字面量（即使没有 UNWIND）
   if (query) {
     // 匹配所有 WITH [...] AS var 模式，取第一个
-    // 用括号深度追踪正确识别嵌套的 [] 和 {}（列表内嵌空列表/空 map）
+    // 用括号深度Trace正确识别嵌套的 [] 和 {}（列表内嵌空列表/空 map）
     let withListMatch: RegExpMatchArray | null = null
     {
       let start = -1

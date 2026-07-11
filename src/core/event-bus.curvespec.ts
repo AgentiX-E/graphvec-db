@@ -12,7 +12,7 @@
 import { EventBus, CurveSecurityConfig } from './event-bus'
 import * as zmq from 'zeromq'
 
-// 每次测试用不同的端口防止冲突
+// 每次Test only不同的端口防止冲突
 let portCounter = 10000
 function nextPorts(): { pub: number; sub: number } {
   const p = portCounter
@@ -110,7 +110,7 @@ describe('EventBus CURVE 跨节点通信', () => {
     const keyB = zmq.curveKeyPair()
     const wrongKey = zmq.curveKeyPair() // 不匹配的第三组密钥
 
-    // B 用错误的公钥连接 A → 应失败
+    // B 用Error的公钥连接 A → 应失败
     const curveA: CurveSecurityConfig = {
       server: true,
       publicKeyDir: '/tmp/curve-test-wrong',
@@ -142,7 +142,7 @@ describe('EventBus CURVE 跨节点通信', () => {
         security: { curve: curveWrongSub },
       })
       // 启动 B 的 SUB
-      // 实际上 zmq SUB 不会因 key 错误而抛出同步异常（错误在异步接收时）
+      // 实际上 zmq SUB 不会因 key Error而抛出同步异常（Error在异步接收时）
       // 所以我们验证发送方无法收到消息
     } catch {
       errorThrown = true

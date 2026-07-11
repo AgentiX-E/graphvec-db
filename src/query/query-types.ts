@@ -206,7 +206,7 @@ export interface QueryPlan {
   catalogOp?: 'CREATE_DATABASE' | 'DROP_DATABASE' | 'SHOW_DATABASES'
   /** EXPLAIN: 展示执行计划但不执行 */
   explain?: boolean
-  /** PROFILE: 执行并收集每步统计信息 */
+  /** PROFILE: 执行并收集每步统计Info */
   profile?: boolean
   /** INDEX 操作：'CREATE' 或 'DROP' */
   indexOp?: 'CREATE' | 'DROP'
@@ -418,7 +418,7 @@ export interface QueryPlan {
   periodicCommit?: {
     batchSize?: number
   }
-  /** CREATE CONSTRAINT 约束信息 */
+  /** CREATE CONSTRAINT 约束Info */
   constraint?: {
     label: string
     property: string
@@ -472,7 +472,7 @@ export type { ForEachClause }
 
 // ── DML 子句类型 ────────────────────────────────────────────
 
-/** SET 子句：property=value 赋值，可选 alias 指定目标变量 */
+/** SET 子句：property=value 赋值，Optional alias 指定目标变量 */
 export interface SetClause {
   property: string
   value: unknown

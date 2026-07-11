@@ -130,7 +130,7 @@ class MockGraphEngine {
     return { scores }
   }
 
-  // 暴露 _nodeIds 供 OLAP runner 内部使用
+  // 暴露 _nodeIds 供 OLAP runner Internal use
   get _nodeIds(): Set<number> {
     return this._nodeIds
   }

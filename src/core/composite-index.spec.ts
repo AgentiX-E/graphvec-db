@@ -19,8 +19,8 @@ import {
 // 直接测试复合索引的逻辑层
 
 describe('Composite Index — 纯逻辑层（不依赖 OverGraph DB）', () => {
-  // 创建一个轻量测试用的 OverGraphStorage 实例
-  // 注意：我们直接测试 _compositeIndexes 的操作方法
+  // 创建一个轻量Test only的 OverGraphStorage 实例
+  // Note: 我们直接测试 _compositeIndexes 的操作方法
   let storage: OverGraphStorage
 
   beforeEach(() => {

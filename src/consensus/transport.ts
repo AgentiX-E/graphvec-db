@@ -2,7 +2,7 @@
  * transport.ts — Transport 接口层
  *
  * 定义 Raft 协议核心 RPC 和传输抽象。
- * 实现可选用：内存 MockTransport（测试）、TCP、gRPC 等。
+ * 实现Optional用：内存 MockTransport（测试）、TCP、gRPC 等。
  */
 import { LogEntry } from './wal'
 import * as net from 'node:net'
@@ -97,7 +97,7 @@ export interface Transport {
   onMessage(handler: (from: string, msg: RaftMessage) => void): void
 }
 
-// ─── MockTransport (测试用) ─────────────────────────────────
+// ─── MockTransport (Test only) ─────────────────────────────────
 
 /**
  * MockTransport — 内存同步消息传递的 Transport 实现
@@ -310,7 +310,7 @@ export class MockTransport implements Transport {
     return globalRegistry.size
   }
 
-  /** 获取指定节点的注册条目（导出给测试用） */
+  /** 获取指定节点的注册条目（导出给Test only） */
   static getRegistryEntry(nodeId: string): NodeHandlers | undefined {
     return globalRegistry.get(nodeId)
   }
@@ -335,7 +335,7 @@ interface TcpFrame {
 }
 
 /** 全局 TCP 端口注册表（用于测试和集群管理等场景） */
-/** 全局 TCP 端口 Map（按命名空间隔离，测试用随机 ns 避免并行冲突） */
+/** 全局 TCP 端口 Map（按命名空间隔离，Test only随机 ns 避免并行冲突） */
 const globalTcpPorts: Map<string, number> = new Map()
 let _portNamespace = 'default'
 
@@ -748,10 +748,10 @@ export class TcpTransport {
   /**
    * 分块发送 InstallSnapshot 数据
    *
-   * 将大快照数据分成小块，每块附带 seq/total/checksum 信息。
+   * 将大快照数据分成小块，每块附带 seq/total/checksum Info。
    * 接收端重组并进行校验。
    *
-   * @param to - 目标节点 ID
+   * @param to - 目标Node ID
    * @param snapshot - InstallSnapshot 请求
    * @param chunkSize - 分块大小（默认 64KB）
    * @param timeoutMs - 超时时间（默认 30s）

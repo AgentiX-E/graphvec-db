@@ -37,7 +37,7 @@ export interface TCKResult {
   [key: string]: unknown
 }
 
-/** 完整的 TCK 测试用例 */
+/** 完整的 TCK Test only例 */
 export interface TCKTestCase {
   /** Feature 标题 */
   feature: string
@@ -118,7 +118,7 @@ export function expectColumns(actual: any[], columns: string[]): void {
 // ── 标准 TCK 测试生成器 ─────────────────────────────────────
 
 /**
- * 创建一个标准 TCK 测试用例结构，供 spec 文件使用。
+ * 创建一个标准 TCK Test only例结构，供 spec 文件使用。
  * 每个测试包含标准的 Given-When-Then 三部分。
  */
 export function createTCKTest(
@@ -154,7 +154,7 @@ export function createTCKTest(
 }
 
 /**
- * 将 TCK 测试用例转换为 vitest 的 it() 调用。
+ * 将 TCK Test only例转换为 vitest 的 it() 调用。
  * spec 文件应调用此函数来注册测试。
  */
 export function registerTCKTest(

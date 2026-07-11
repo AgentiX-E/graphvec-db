@@ -29,7 +29,7 @@ class MockFSWatcher {
     }
   }
 
-  /** 模拟错误事件 */
+  /** 模拟Error事件 */
   _emitError(err: Error): void {
     const handlers = this._listeners.get('error')
     if (handlers) {

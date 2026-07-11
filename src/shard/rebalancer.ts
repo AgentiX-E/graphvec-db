@@ -120,7 +120,7 @@ export class Rebalancer {
   private _hotShardDetector: HotShardDetector
   /** SH05: 操作记录 Map（范围级，用于 hot-spot 检测） */
   private _rangeOpRecords: Map<string, RangeOpRecord> = new Map()
-  /** B-07: 可选的 GlobalScheduler 引用，用于获取实时 QPS/负载数据 */
+  /** B-07: Optional的 GlobalScheduler 引用，用于获取实时 QPS/负载数据 */
   private _globalScheduler: GlobalScheduler | null = null
 
   constructor(manager: ShardManager, options?: RebalancerOptions) {
@@ -243,7 +243,7 @@ export class Rebalancer {
    *
    * 设计思路：不使用外部哈希库，将 NodeId 转为字符串后拼接，
    * 通过 JS 的 String → number 碰撞即可检测数据不一致。
-   * 对一致性校验场景足够了（错误正概率 < 2^-53）。
+   * 对一致性校验场景足够了（Error正概率 < 2^-53）。
    */
   async computeChecksums(): Promise<RangeChecksum[]> {
     const checksums: RangeChecksum[] = []
@@ -382,7 +382,7 @@ export class Rebalancer {
   // Private: 负载采集
   // ──────────────────────────────────────────
 
-  /** 采集所有 Range 的统计信息 */
+  /** 采集所有 Range 的统计Info */
   private _collectLoads(): RangeLoad[] {
     const loads: RangeLoad[] = []
     const allRanges = this.manager.getAllRanges()
@@ -403,7 +403,7 @@ export class Rebalancer {
       const history = this._globalScheduler.getSuggestionHistory()
       if (history.length > 0) {
         // 从 GlobalScheduler 的 shard 维度获取 QPS 数据
-        // 由于 GlobalScheduler 内部收集了 shard 负载信息，
+        // 由于 GlobalScheduler 内部收集了 shard 负载Info，
         // 这里间接使用其馈送的数据更新 operationCount
         // 通过检查最近被标记为热点的 range 来增强重平衡决策
         for (const load of loads) {
@@ -523,7 +523,7 @@ export class Rebalancer {
       this._lastRebalance = Date.now()
     }
 
-    // 如果有 range 负载因子超标，但节点数已经平衡，按负载再平衡
+    // If any range 负载因子超标，但节点数已经平衡，按负载再平衡
     const stats = this.getStats()
     if (stats.maxLoadFactor > this.options.loadFactorThreshold && !this._isNodeCountBalanced()) {
       // 按负载排序处理
@@ -567,18 +567,18 @@ export class Rebalancer {
    * 找出指定 Range 中最热的节点
    *
    * 热节点检测算法（基于度数）：
-   * 1. 在单次 range.read() 中：遍历所有 typeId 收集该引擎的全部节点 ID，查询每个节点的
+   * 1. 在单次 range.read() 中：遍历所有 typeId 收集该引擎的全部Node ID，查询每个节点的
    *    度数（入度 + 出度），构建 { nodeId → degree } 映射
    * 2. 按度数降序排列，取前 count 个作为最热节点
    * 3. 返回结果去重 & 不超过 count
    *
    * 备选指标（fallback）：
-   * - 如果度数全为 0 但节点存在，按节点 ID 降序排列（原逻辑）作为兜底
+   * - 如果度数全为 0 但节点存在，按Node ID 降序排列（原逻辑）作为兜底
    */
   private async _findHotNodes(range: RangeInstance, count: number): Promise<NodeId[]> {
     try {
       const result = await range.read(engine => {
-        // ── 第 1 步：通过 labelIndex 收集全部节点 ID ──
+        // ── 第 1 步：通过 labelIndex 收集全部Node ID ──
         const allNodeIds: number[] = []
         const seen = new Set<number>()
         // 扫描 0-99 覆盖绝大多数场景；遇到连续空 type 则提前停止
@@ -695,7 +695,7 @@ export class Rebalancer {
       })
 
       // 迁移节点和边的"写入"已完成目标 Range，现在清理源数据
-      // 注意：由于 sourceRange 处于 draining 状态，清理（delete）操作
+      // Note: 由于 sourceRange 处于 draining 状态，清理（delete）操作
       // 需要临时解除 draining，否则 delete 也会被拒绝
       sourceRange.setDraining(false)
 
@@ -1148,10 +1148,10 @@ export class Rebalancer {
   }
 
   /**
-   * SH04: 将指定 Range 按节点 ID 范围对半分裂
+   * SH04: 将指定 Range 按Node ID 范围对半分裂
    *
    * 算法:
-   * 1. 收集当前 range 的所有节点 ID
+   * 1. 收集当前 range 的所有Node ID
    * 2. 排序后按中间值对半分割
    * 3. 创建新的目标 range
    * 4. 将一半节点迁移到新 range
@@ -1160,7 +1160,7 @@ export class Rebalancer {
   private async _splitRange(rangeId: string): Promise<void> {
     const sourceRange = this.manager.getRange(rangeId)
 
-    // 1. 收集所有节点 ID
+    // 1. 收集所有Node ID
     const allNodeIds: NodeId[] = await sourceRange.read(engine => {
       const ids: number[] = []
       const seen = new Set<number>()

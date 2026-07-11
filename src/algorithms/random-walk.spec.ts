@@ -1,7 +1,7 @@
 /**
  * 随机游走测试
  *
- * 注意：随机性使用 seed 或 mock 控制，确保可重复。
+ * Note: 随机性使用 seed 或 mock 控制，确保可重复。
  */
 
 import { describe, it, expect, beforeEach } from 'vitest'

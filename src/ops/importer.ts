@@ -520,7 +520,7 @@ export class Importer {
           progress = await txnImporter.importNDJSON(filePath, streamOptions)
         }
 
-        // 如果有失败记录，回滚
+        // If any失败记录，回滚
         if (progress.failedRows > 0) {
           await txn.rollback()
           // rollback 后会抛异常，这里确保返回部分进度

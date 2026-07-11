@@ -18,7 +18,7 @@ export interface ShardHealthCheckConfig {
   intervalMs: number
   /** 超过此毫秒未活跃视为不健康，默认 intervalMs × 3 */
   staleThresholdMs?: number
-  /** 失活时的回调（可选），用于触发恢复/报警 */
+  /** 失活时的回调（Optional），用于触发恢复/报警 */
   onStale?: (rangeId: string, lastSeenMs: number) => void
 }
 
@@ -129,7 +129,7 @@ export class ShardManager {
   }
 
   /**
-   * 根据节点 ID 获取目标 Range
+   * 根据Node ID 获取目标 Range
    * 优先使用缓存的名称路由，回退到 String(id) 路由
    * 缓存 miss 概率很低：upsertNode 写入缓存 + 持久化 _rangeKey 到 props，
    * getNode 在每次读取后会从 _rangeKey 恢复缓存。
@@ -157,7 +157,7 @@ export class ShardManager {
    * Smart Routing（智能路由）
    *
    * 为新节点选择最佳的 Range。
-   * 如果有 Range 已经拥有该 typeId 的数据，优先选择数据最多的 Range，
+   * If any Range 已经拥有该 typeId 的数据，优先选择数据最多的 Range，
    * 以尽量减少跨 Range 查询。如果没有任何 Range 有该 typeId 的数据，
    * 则回退到一致性哈希路由。
    */
@@ -760,7 +760,7 @@ export class ShardManager {
     return result
   }
 
-  /** 获取单个分片的详细信息（用于 GET /api/v1/shard/:id/info） */
+  /** 获取单个分片的详细Info（用于 GET /api/v1/shard/:id/info） */
   getShardInfo(rangeId: string): {
     id: string
     rangeCount: number

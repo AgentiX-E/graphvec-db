@@ -248,7 +248,7 @@ export class CdcAdapter {
         return // 不识别的类型，跳过
     }
 
-    // 提取 label/type 信息用于过滤
+    // 提取 label/type Info用于过滤
     const label = data.label as string | undefined
     const typeId = data.typeId as number | undefined
 
@@ -362,7 +362,7 @@ export class CdcAdapter {
    *
    * @param id - 订阅者唯一 ID
    * @param handler - 事件回调
-   * @param filter - 可选过滤条件
+   * @param filter - Optional过滤条件
    */
   subscribe(id: string, handler: CdcEventHandler, filter?: CdcFilter): void {
     this.subscribers.set(id, { handler, filter })
@@ -403,7 +403,7 @@ export class CdcAdapter {
    * 查询从指定 seq 之后的所有事件（用于断点续传）。
    *
    * @param sinceSeq - 起始 seq（不包含）
-   * @param filter - 可选过滤条件
+   * @param filter - Optional过滤条件
    * @returns 匹配的事件列表
    */
   querySince(sinceSeq: number, filter?: CdcFilter): CdcEvent[] {

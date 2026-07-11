@@ -105,7 +105,7 @@ export function kCore(
  *
  * @param getNeighbors 邻接函数
  * @param allNodes 所有节点列表
- * @param options 可选参数
+ * @param options Optional参数
  * @returns 壳分解结果
  */
 export function coreDecomposition(

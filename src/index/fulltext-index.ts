@@ -168,7 +168,7 @@ export class FulltextIndex {
     this.stores.clear()
     this.counters.clear()
 
-    // 获取所有节点 ID
+    // 获取所有Node ID
     let nodeIds: number[]
     try {
       if (typeof engine.getNodeIds === 'function') {

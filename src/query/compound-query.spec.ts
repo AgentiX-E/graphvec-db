@@ -253,7 +253,7 @@ describe('INDEX — 执行不报错（no-op）', () => {
 })
 
 describe('INDEX — 非法语法', () => {
-  it('缺少括号抛出错误', () => {
+  it('缺少括号抛出Error', () => {
     expect(() => parseQuery('CREATE INDEX ON :Person name')).toThrow()
   })
 })

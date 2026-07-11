@@ -1,10 +1,10 @@
 /**
  * consensus-factory.ts — 共识层工厂
  *
- * 根据配置创建相应的 ConsensusProvider 实例
- * - 'standalone': 单节点模式（开发/测试）
- * - 'raft-logic': 生产级 tikv/raft-rs WASM 共识
- * - 'db-cluster': 通过 DbClusterConsensusProvider 桥接 db-cluster 共识层
+ * Create a ConsensusProvider instance based on the config
+ * - 'standalone': Single-node mode (dev / test)
+ * - 'raft-logic': Production-grade tikv/raft-rs WASM consensus
+ * - 'db-cluster': Bridge to db-cluster consensus layer via DbClusterConsensusProvider
  */
 
 import { ConsensusProvider, ConsensusConfig } from './consensus-provider'
@@ -64,7 +64,7 @@ export function clearDbClusterConsensus(): void {
 }
 
 /**
- * 根据配置创建共识实例（不启动，需返回后调用 start()）
+ * Create a consensus instance (not started — caller must call start())
  */
 export function createConsensus(config: ConsensusConfig): ConsensusProvider {
   switch (config.mode) {
@@ -72,7 +72,7 @@ export function createConsensus(config: ConsensusConfig): ConsensusProvider {
       return new StandaloneConsensus(config)
 
     case 'raft-logic': {
-      // 使用 mock? 配置项自动注入（测试用）
+      // 使用 mock? 配置项自动注入（Test only）
       const consensus = new RaftLogicConsensus(config)
       consensus.init().catch(err => {
         logger.warn('[ConsensusFactory] raft-logic init failed, will retry at start()', { err: (err as Error).message })
@@ -81,7 +81,7 @@ export function createConsensus(config: ConsensusConfig): ConsensusProvider {
     }
 
     case 'simulated-raft':
-      // simulated-raft 尚未实现，回退到 standalone
+      // simulated-raft 尚Not implemented，回退到 standalone
       logger.warn('[ConsensusFactory] simulated-raft not yet implemented, falling back to standalone')
       return new StandaloneConsensus(config)
 

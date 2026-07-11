@@ -25,7 +25,7 @@ import type { TopologyType } from '../core/multi-leader-replication'
 export interface RegionDef {
   /** Region ID（如 'dc-east', 'dc-west'） */
   id: string
-  /** 所属节点 ID 列表 */
+  /** 所属Node ID 列表 */
   nodeIds: string[]
   /** Region 标签（如 'us-east-1', 'cn-shanghai'） */
   labels?: string[]
@@ -38,9 +38,9 @@ export type LatencyTable = Record<string, number>
 export interface MultiRegionConfig {
   /** Region 映射：regionId → RegionDef */
   regions: Record<string, RegionDef>
-  /** 延迟表（可选），格式 'dc1:dc2' → 延迟 ms */
+  /** 延迟表（Optional），格式 'dc1:dc2' → 延迟 ms */
   latencies?: LatencyTable
-  /** 当前节点 ID */
+  /** 当前Node ID */
   currentNodeId: string
   /** 拓扑类型（默认 'cross-dc'） */
   topologyType?: TopologyType
@@ -52,7 +52,7 @@ export interface MultiRegionConfig {
   partitionRegions?: Record<string, string>
 }
 
-/** 分区归属信息 */
+/** 分区归属Info */
 export interface PartitionAssignment {
   partitionId: string
   primaryRegion: string
@@ -148,7 +148,7 @@ export class MultiRegionTopology {
     return undefined
   }
 
-  /** 当前节点 ID */
+  /** 当前Node ID */
   get currentNodeId(): string {
     return this._currentNodeId
   }
@@ -365,7 +365,7 @@ export class MultiRegionTopology {
  *
  * 根据 MultiRegionTopology 选择最近的节点：
  *   1. 优先本 region 节点
- *   2. 可选按延迟排序的所有节点
+ *   2. Optional按延迟排序的所有节点
  *   3. 支持按 partition 归属路由
  */
 export class LatencyAwareRouter {
@@ -459,7 +459,7 @@ export class LatencyAwareRouter {
  * 网络分区时的读写降级策略：
  *   - 'lww':   Last-Writer-Wins — 允许写入，恢复时合并
  *   - 'ignore': 忽略远程更新 — 只处理本地写入
- *   - 'crdt':  CRDT 合并 — 每个分区独立写入，恢复后合并
+ *   - 'crdt':  CRDT merge — 每个分区独立写入，恢复后合并
  */
 export class PartitionPriority {
   private _defaultStrategy: PartitionRecoveryStrategy
@@ -498,7 +498,7 @@ export class PartitionPriority {
     return this.getStrategy() === 'ignore'
   }
 
-  /** 是否使用 CRDT 合并 */
+  /** 是否使用 CRDT merge */
   useCrdtMerge(): boolean {
     return this.getStrategy() === 'crdt'
   }

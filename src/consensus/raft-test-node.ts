@@ -5,7 +5,7 @@
  *
  * 启动：npx tsx src/consensus/raft-test-node.ts
  * 环境变量：
- *   RT_NODE_ID — 节点 ID
+ *   RT_NODE_ID — Node ID
  *   RT_PEERS  — JSON: ["2:127.0.0.1:17551", "3:127.0.0.1:17552"]
  *   RT_PORT   — TCP 监听端口
  *   RT_DATA_DIR — 数据目录
@@ -37,7 +37,7 @@ async function main() {
   process.chdir(dataDir)
 
   // ── 为 raft-logic mock 注入一个真实的 raft-logic 模块 ──
-  // 由于 raft-logic 可选依赖在实际环境中可能未安装，
+  // 由于 raft-logic Optional依赖在实际环境中可能未安装，
   // 我们构造一个 mock raftLogic 模块
   const mockRaftModule = {
     RaftNode: class MockRaftNode {

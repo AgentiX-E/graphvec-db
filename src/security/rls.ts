@@ -19,7 +19,7 @@ export interface RLSContext {
 export interface RLSPolicy {
   /** 目标表: 'nodes' | 'edges' | 'graph' | '*' */
   table: string
-  /** 策略名称（用于调试） */
+  /** 策略名称（用于Debug） */
   name: string
   /** 过滤函数：返回 true 表示该记录对用户可见 */
   filter: (ctx: RLSContext, record: unknown) => boolean
@@ -121,7 +121,7 @@ export function checkRLSUpsertNode(
  *
  * @param rls RowLevelSecurity 实例
  * @param ctx 用户上下文
- * @param nodeId 节点 ID
+ * @param nodeId Node ID
  * @param tenantId 节点所属租户（可为空）
  * @returns true 表示允许
  */
@@ -141,7 +141,7 @@ export function checkRLSDeleteNode(
 }
 
 /**
- * 断言 upsert 操作被 RLS 允许。如果不允许则抛出错误。
+ * 断言 upsert 操作被 RLS 允许。如果不允许则抛出Error。
  *
  * @throws Error 如果 RLS 拒绝了操作
  */

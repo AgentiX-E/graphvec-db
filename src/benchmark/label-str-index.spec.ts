@@ -9,7 +9,7 @@
  * Usage:
  *   npx vitest run src/benchmark/label-str-index.spec.ts --no-coverage
  *
- * 注意：
+ * Note: 
  * - 冷启动（无 OS page cache）场景下首次 run 可能稍慢
  * - 断言阈值基于当前硬件（Linux x64，Node v24，NVMe SSD）
  * - 如果硬件变化，更新 docs/benchmark-baseline-20260621.md 中的断言阈值

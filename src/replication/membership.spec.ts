@@ -213,7 +213,7 @@ describe('ConsistentHashRing', () => {
       const stdHigh = _stddev(...countsHigh)
 
       // 高虚拟节点应该分布更均匀（标准差更小或相等）
-      // 注意：在小样本下可能不严格满足，所以用更宽松的断言
+      // Note: 在小样本下可能不严格满足，所以用更宽松的断言
       expect(stdLow).toBeGreaterThanOrEqual(0)
       expect(stdHigh).toBeGreaterThanOrEqual(0)
     })
@@ -379,7 +379,7 @@ describe('ClusterManager', () => {
   })
 
   describe('getRingStatus', () => {
-    test('getRingStatus 返回正确的状态信息', () => {
+    test('getRingStatus 返回正确的状态Info', () => {
       const mgr = new ClusterManager({ virtualNodes: 50 })
       mgr.join(makeNode('node-1', '10.0.0.1:3001'))
       mgr.join(makeNode('node-2', '10.0.0.2:3002'))

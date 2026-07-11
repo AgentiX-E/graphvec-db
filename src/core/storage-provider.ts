@@ -74,7 +74,7 @@ export interface StorageConfig {
     enable: boolean
     /** 要索引的属性列名列表 */
     columns: string[]
-    /** 索引存储路径，默认 {storagePath}/col-index/ */
+    /** 索引Storage path，默认 {storagePath}/col-index/ */
     indexPath?: string
     /** 是否在写入时同步维护索引，默认 true */
     syncOnWrite?: boolean
@@ -99,7 +99,7 @@ export interface NeighborEntry {
 }
 
 /**
- * 存储后端统计信息
+ * 存储后端统计Info
  */
 export interface StorageStats {
   nodeCount: number
@@ -171,14 +171,14 @@ export interface StorageProvider {
 
   neighbors(id: NodeId, opts?: NeighborsOptions): NeighborEntry[]
 
-  /** 获取所有节点 ID（用于 persistence 恢复重建索引） */
+  /** 获取所有Node ID（用于 persistence 恢复重建索引） */
   getAllNodeIds(): number[]
 
   // ── 批量操作 ──────────────────────────────
 
   /**
    * 批量删除节点
-   * @param ids - 要删除的节点 ID 列表
+   * @param ids - 要删除的Node ID 列表
    * @returns 实际删除的节点数
    */
   batchDeleteNodes?(ids: NodeId[]): number
@@ -196,7 +196,7 @@ export interface StorageProvider {
    * 创建复合索引
    * @param fields - 参与索引的字段名列表
    * @param name - 索引名称（唯一标识）
-   * @param options - 可选的索引选项（如 unique: true 表示唯一约束）
+   * @param options - Optional的索引选项（如 unique: true 表示唯一约束）
    */
   createCompositeIndex?(fields: string[], name: string, options?: { unique?: boolean }): void
 

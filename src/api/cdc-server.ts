@@ -219,7 +219,7 @@ export class CdcServer {
   }
 
   /**
-   * 统计信息
+   * 统计Info
    */
   stats(): { wsConnections: number; pendingPolls: number; webhookCount: number; bufferLength: number } {
     return {

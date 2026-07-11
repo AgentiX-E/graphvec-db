@@ -1,7 +1,7 @@
 /**
  * 最小生成树 (MST) 算法单元测试 — Kruskal 算法
  *
- * 测试 minimumSpanningTree: 基本图、加权图、边界条件、错误路径
+ * 测试 minimumSpanningTree: 基本图、加权图、边界条件、Error路径
  */
 
 import { describe, test, expect } from 'vitest'

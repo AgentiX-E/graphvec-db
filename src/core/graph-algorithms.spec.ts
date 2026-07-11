@@ -209,7 +209,7 @@ describe('GraphAlgorithms', () => {
       // 应该包含 Range A 和 Range B 的节点
       expect(result.has(0)).toBe(true)
       // 跨 Range 节点应包含在可达节点中
-      // 注意：这是 fan-out 收集模式，结果依赖于 engine.neighbors 的完整性
+      // Note: 这是 fan-out 收集模式，结果依赖于 engine.neighbors 的完整性
       expect(result.size).toBeGreaterThanOrEqual(3) // 至少本地 3 个
     })
 

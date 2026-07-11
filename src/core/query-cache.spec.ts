@@ -38,7 +38,7 @@ describe('QueryResultCache', () => {
     })
   })
 
-  describe('统计信息', () => {
+  describe('统计Info', () => {
     test('hits 和 misses 正确计数', () => {
       const key = makeQueryCacheKey('MATCH (n) RETURN n')
       cache.get(key) // miss
@@ -88,7 +88,7 @@ describe('QueryResultCache', () => {
       expect(cache.get(k2)).toBeDefined()
     })
 
-    test('invalidateByNode 清除包含节点 ID 标签的缓存', () => {
+    test('invalidateByNode 清除包含Node ID 标签的缓存', () => {
       const k = makeQueryCacheKey('Q')
       cache.set(k, ['r'], { query: 'Q', tags: ['42'] })
       cache.invalidateByNode(42)

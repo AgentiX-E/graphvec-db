@@ -27,7 +27,7 @@ export enum ConsistencyLevel {
   STRONG = 'STRONG',
   /** 最终一致：直接读取，不做同步 */
   EVENTUAL = 'EVENTUAL',
-  /** 因果一致：通过 HLC 时钟追踪因果 */
+  /** 因果一致：通过 HLC 时钟Trace因果 */
   CAUSAL = 'CAUSAL',
 }
 

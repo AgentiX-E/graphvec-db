@@ -39,7 +39,7 @@ export interface YenPath {
  * @param getWeightedNeighbors - 返回某节点的加权邻居列表
  * @param startNode - 源节点
  * @param targetNode - 目标节点
- * @param options - 可选参数
+ * @param options - Optional参数
  * @returns 前 K 条最短路径，按权重升序排列
  */
 export function yenKSP(

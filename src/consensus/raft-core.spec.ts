@@ -2,20 +2,20 @@
  * raft-core.spec.ts — RaftCore 固化共识单元测试
  *
  * 覆盖维度：
- * 1. RaftCoreConfig 验证 — 配置校验、默认值、必须参数
- * 2. Leader 选举 — 超时触发选举、requestVote 处理、获得多数票成为 leader
+ * 1. RaftCoreConfig 验证 — 配置校验、Default value、必须参数
+ * 2. Leader 选举 — 超时Trigger an election (campaign)、requestVote 处理、获得多数票成为 leader
  * 3. 日志复制 — appendEntries、日志一致性检查、写入 WAL
  * 4. 角色转换 — follower→candidate→leader 的完整生命周期
  * 5. 心跳 — leader 心跳发送、follower 心跳超时
  * 6. 任期管理 — 任期递增、stale term 拒绝、term 同步
  * 7. MockTransport 集成 — 使用 MockTransport 模拟节点间通信
- * 8. 错误路径 — 网络分区、投票分裂、日志冲突
+ * 8. Error路径 — 网络分区、投票分裂、日志冲突
  *
  * 技术约束：
  * - 使用 vitest
  * - 完全真实实现，不 mock RaftCore 本身
  * - 单机测试（单个 RaftCore + MockTransport）
- * - 使用 vi.useFakeTimers() 控制选举超时
+ * - 使用 vi.useFakeTimers() 控制Election timeout
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -100,7 +100,7 @@ describe('1. RaftCoreConfig 验证', () => {
     cleanup(tmp)
   })
 
-  it('应该使用默认值填充可选参数', () => {
+  it('应该使用Default value填充Optional参数', () => {
     const node = new RaftCore({
       nodeId: 'n1',
       peers: ['n2', 'n3'],
@@ -149,7 +149,7 @@ describe('1. RaftCoreConfig 验证', () => {
     await ref.node.stop()
   })
 
-  it('配置 snapshotPath 默认值为 walPath + .snapshot', () => {
+  it('配置 snapshotPath Default value为 walPath + .snapshot', () => {
     const node = new RaftCore({
       nodeId: 'n1',
       peers: [],
@@ -175,7 +175,7 @@ describe('2. Leader 选举', () => {
     cleanup(tmp)
   })
 
-  it('选举超时后 candidate 递增 term 并发起投票', async () => {
+  it('Election timeout后 candidate 递增 term 并发起投票', async () => {
     const transport = new MockTransport('n1')
     const t2 = new MockTransport('n2')
     await t2.start()
@@ -187,7 +187,7 @@ describe('2. Leader 选举', () => {
     expect(node.role).toBe('follower')
     expect(node.currentTerm).toBe(0)
 
-    // 推进到选举超时触发
+    // 推进到Election timeout触发
     await vi.advanceTimersByTimeAsync(500)
 
     expect(node.role).toBe('candidate')
@@ -231,7 +231,7 @@ describe('2. Leader 选举', () => {
   it('requestVote 处理：term 较小时拒绝投票', async () => {
     const ref = await createNode('n1', ['n2'], tmp)
     await ref.node.start()
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const resp = await ref.node._handleRequestVote('n2', {
       term: 0,
       candidateId: 'n2',
@@ -256,7 +256,7 @@ describe('2. Leader 选举', () => {
     await ref.start()
 
     if (termBefore > 0) {
-      // @ts-expect-error — 访问私有方法
+      // @ts-expect-error — 访问Private method
       const resp = await ref._handleRequestVote('n2', {
         term: 10,
         candidateId: 'n2',
@@ -277,7 +277,7 @@ describe('2. Leader 选举', () => {
     // @ts-expect-error — 访问私有属性
     ref.node._votedFor = 'n2'
 
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const resp = await ref.node._handleRequestVote('n3', {
       term: 1,
       candidateId: 'n3',
@@ -304,7 +304,7 @@ describe('3. 日志复制', () => {
     cleanup(tmp)
   })
 
-  it('leader 写入本节点 WAL 后可以通过 propose 追加日志', async () => {
+  it('leader 写入本节点 WAL 后可以通过 propose Append log entry', async () => {
     const ref = await createNode('n1', [], tmp)
     await ref.node.start()
     expect(ref.node.role).toBe('leader')
@@ -336,7 +336,7 @@ describe('3. 日志复制', () => {
     // @ts-expect-error — 访问私有属性
     ref.node._currentTerm = 5
 
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const resp2 = await ref.node._handleAppendEntries('n2', {
       term: 3,
       leaderId: 'n2',
@@ -355,7 +355,7 @@ describe('3. 日志复制', () => {
     await ref.node.start()
 
     // prevLogIndex=5 不存在
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const resp = await ref.node._handleAppendEntries('leader', {
       term: 1,
       leaderId: 'leader',
@@ -369,11 +369,11 @@ describe('3. 日志复制', () => {
     await ref.node.stop()
   })
 
-  it('appendEntries 正常追加日志并推进 commitIndex', async () => {
+  it('appendEntries 正常Append log entry并推进 commitIndex', async () => {
     const ref = await createNode('n1', ['n2'], tmp)
     await ref.node.start()
 
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const resp = await ref.node._handleAppendEntries('leader', {
       term: 1,
       leaderId: 'leader',
@@ -417,7 +417,7 @@ describe('4. 角色转换', () => {
     await ref.node.stop()
   })
 
-  it('follower->candidate：选举超时后转换为 candidate', async () => {
+  it('follower->candidate：Election timeout后转换为 candidate', async () => {
     const ref = await createNode('n1', ['n2'], tmp)
     await ref.node.start()
     expect(ref.node.role).toBe('follower')
@@ -449,7 +449,7 @@ describe('4. 角色转换', () => {
     expect(ref.node.role).toBe('leader')
 
     // 更高 term 的 AppendEntries → step down
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     await ref.node._handleAppendEntries('n2', {
       term: 10,
       leaderId: 'n2',
@@ -471,7 +471,7 @@ describe('4. 角色转换', () => {
     expect(ref.node.role).toBe('candidate')
 
     // 更高 term 的 RequestVote → step down
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     await ref.node._handleRequestVote('n2', {
       term: 5,
       candidateId: 'n2',
@@ -512,11 +512,11 @@ describe('5. 心跳', () => {
     await ref.node.stop()
   })
 
-  it('follower 收到心跳后重置选举超时', async () => {
+  it('follower 收到心跳后重置Election timeout', async () => {
     const ref = await createNode('n1', ['n2'], tmp)
     await ref.node.start()
 
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const resp = await ref.node._handleAppendEntries('leader', {
       term: 0,
       leaderId: 'leader',
@@ -536,7 +536,7 @@ describe('5. 心跳', () => {
     const ref = await createNode('n1', ['n2'], tmp)
     await ref.node.start()
 
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const req = ref.node._buildAppendEntriesRequest('n2', true)
     expect(req.term).toBe(ref.node.currentTerm)
     expect(req.leaderId).toBe('n1')
@@ -550,7 +550,7 @@ describe('5. 心跳', () => {
     await ref.node.start()
 
     // 手动调用心跳发送
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     ref.node._sendHeartbeat()
 
     await ref.node.stop()
@@ -597,7 +597,7 @@ describe('6. 任期管理', () => {
     await ref.node.start()
     expect(ref.node.currentTerm).toBe(0)
 
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     await ref.node._handleAppendEntries('n2', {
       term: 3,
       leaderId: 'n2',
@@ -621,7 +621,7 @@ describe('6. 任期管理', () => {
     ref.node._currentTerm = 5
 
     // AppendEntries 带 stale term=3
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const aeResp = await ref.node._handleAppendEntries('n2', {
       term: 3,
       leaderId: 'n2',
@@ -633,7 +633,7 @@ describe('6. 任期管理', () => {
     expect(aeResp.success).toBe(false)
 
     // RequestVote 带 stale term=3
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     const rvResp = await ref.node._handleRequestVote('n2', {
       term: 3,
       candidateId: 'n2',
@@ -756,9 +756,9 @@ describe('7. MockTransport 集成', () => {
   })
 })
 
-// ─── 8. 错误路径 ────────────────────────────────────────
+// ─── 8. Error路径 ────────────────────────────────────────
 
-describe('8. 错误路径', () => {
+describe('8. Error路径', () => {
   let tmp: string
 
   beforeEach(() => {
@@ -791,7 +791,7 @@ describe('8. 错误路径', () => {
     await ref.node.start()
 
     // 写入第一条日志 (index=1, term=1)
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     await ref.node._handleAppendEntries('leader', {
       term: 1,
       leaderId: 'leader',
@@ -803,7 +803,7 @@ describe('8. 错误路径', () => {
     expect(ref.node.lastLogIndex).toBe(1)
 
     // 冲突的日志 (index=1, term=2) — 被 leader 覆盖
-    // @ts-expect-error — 访问私有方法
+    // @ts-expect-error — 访问Private method
     await ref.node._handleAppendEntries('leader', {
       term: 2,
       leaderId: 'leader',

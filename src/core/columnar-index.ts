@@ -37,7 +37,7 @@ export interface ColumnarIndexConfig {
   enable: boolean
   /** 要索引的属性列名列表 */
   columns: string[]
-  /** 索引存储路径，默认 {storagePath}/col-index/ */
+  /** 索引Storage path，默认 {storagePath}/col-index/ */
   indexPath?: string
   /** 是否在写入时同步维护索引，默认 true */
   syncOnWrite?: boolean
@@ -46,7 +46,7 @@ export interface ColumnarIndexConfig {
 }
 
 /**
- * 归档节点 ID 及其列值，供范围扫描返回。
+ * 归档Node ID 及其列值，供范围扫描返回。
  */
 export interface IndexEntry {
   nodeId: number
@@ -325,7 +325,7 @@ export class ColumnarIndex {
    * @param op - 比较操作符
    * @param val - 比较值
    * @param val2 - between 操作符的右边界
-   * @returns 匹配的节点 ID 列表
+   * @returns 匹配的Node ID 列表
    */
   rangeScan(
     col: string,

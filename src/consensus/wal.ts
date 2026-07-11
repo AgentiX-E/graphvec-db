@@ -1,5 +1,5 @@
 /**
- * @deprecated 从 V14 起已废弃，使用 `lmdb-wal.ts` (LmdbWal) 替代。
+ * @deprecated 从 V14 起Deprecated，使用 `lmdb-wal.ts` (LmdbWal) 替代。
  * WAL 保留以向后兼容 RaftCore，
  * RaftCore 的 walPath 指向的是旧版 WAL 文件。
  * 后续应迁移 RaftCore 使用 LmdbWal。
@@ -61,7 +61,7 @@ export class WAL {
   private lastTerm: number = 0
   private logger: Logger
   private _opened = false
-  /** CRC 校验错误计数 */
+  /** CRC 校验Error计数 */
   private _crcErrors: number = 0
   // ── Group Commit（B-03） ──
   /** 待提交的批量写入 */
@@ -81,7 +81,7 @@ export class WAL {
     return this._opened
   }
 
-  /** CRC 校验错误数 */
+  /** CRC 校验Error数 */
   get crcErrors(): number {
     return this._crcErrors
   }
@@ -489,7 +489,7 @@ export class WAL {
         this.logger.error(
           `CRC mismatch at entry index ${index}: stored=${storedCrc}, computed=${computedCrc}`,
         )
-        // CRC 错误：跳过该条目继续读取后续条目（不中断）
+        // CRC Error：跳过该条目继续读取后续条目（不中断）
         continue
       }
 

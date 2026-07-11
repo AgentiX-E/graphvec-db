@@ -427,7 +427,7 @@ describe('EXPLAIN / PROFILE 集成 (query-engine.ts)', () => {
   })
 
   describe('_profileQuery — 收集每步执行统计', () => {
-    test('PROFILE 收集阶段统计信息', () => {
+    test('PROFILE 收集阶段统计Info', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
         steps: [],

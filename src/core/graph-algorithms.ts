@@ -124,12 +124,12 @@ export class GraphAlgorithms {
    * 使用幂迭代法计算 PPR。每次迭代收集当前可抵达的所有节点，
    * 按公式分配分数，直到收敛或达到最大迭代次数。
    *
-   * @param sourceId 源节点 ID
+   * @param sourceId 源Node ID
    * @param alpha    随机游走中重置概率（默认 0.85）
    * @param topK     返回的 topK 结果数（默认 10）
    * @returns Map<nodeId, rankScore>
    * @remarks 当配置了 shardRouter 且 crossRangeMode='fan-out' 时，
-   * 会通过 `_collectReachableCrossRange` 收集远程节点信息。
+   * 会通过 `_collectReachableCrossRange` 收集远程节点Info。
    * 但跨 Range 的 PPR 分数是approximate值，因为幂迭代需要在所有节点间同步状态。
    * 精确的跨 Range PPR 需要后续迭代优化。
    */
@@ -160,7 +160,7 @@ export class GraphAlgorithms {
     }
     rank.set(sourceId, 1)
 
-    // 缓存邻居 — 邻居信息在迭代过程中不变化，只需提前计算一次
+    // 缓存邻居 — 邻居Info在迭代过程中不变化，只需提前计算一次
     const cachedNeighbors = new Map<number, NeighborResult[]>()
     for (const nodeId of reachable) {
       const nb = this.engine.neighbors(nodeId)
@@ -221,12 +221,12 @@ export class GraphAlgorithms {
    * 同时从 source 和 target 出发展开搜索，每次扩展较小的 frontier，
    * 在相遇时重建完整路径。
    *
-   * @param sourceId 起始节点 ID
-   * @param targetId 目标节点 ID
+   * @param sourceId 起始Node ID
+   * @param targetId 目标Node ID
    * @returns nodeId 数组（含两端），如不可达则返回 null
    * @remarks 当配置了 shardRouter 且 crossRangeMode='fan-out' 时，
    * 在本地 BFS 耗尽 frontier 后会 fan-out 收集远程节点的邻居。
-   * 跨 Range 路径可能不是全局最优，因为远程 Range 返回的邻居信息
+   * 跨 Range 路径可能不是全局最优，因为远程 Range 返回的邻居Info
    * 受限于各 Range 的本地视图。
    */
   shortestPath(sourceId: number, targetId: number): number[] | null {
@@ -348,13 +348,13 @@ export class GraphAlgorithms {
    * 单源最短路径（Dijkstra）
    *
    * 计算从 sourceId 到所有可达节点的最短路径距离。
-   * 可选边权重字段。
+   * Optional边权重字段。
    *
-   * @param sourceId    源节点 ID
-   * @param weightField 边属性中的权重字段名（可选，默认等权=1）
+   * @param sourceId    源Node ID
+   * @param weightField 边属性中的权重字段名（Optional，默认等权=1）
    * @returns Map<nodeId, { distance, path }>
    * @remarks 当配置了 shardRouter 且 crossRangeMode='fan-out' 时，
-   * 会在本地松弛步骤结束后 fan-out 收集远程节点邻居信息，
+   * 会在本地松弛步骤结束后 fan-out 收集远程节点邻居Info，
    * 以支持跨 Range 最短路径发现。跨 Range 路径的构建受限于
    * 各 Range 的本地视图可见性。
    */
@@ -573,7 +573,7 @@ export class GraphAlgorithms {
    * @param otherParent 对方 parent 映射
    * @param isForward 是否为前向搜索
    * @param visited 全局已访问集合
-   * @returns 相遇节点 ID，或 null
+   * @returns 相遇Node ID，或 null
    */
   private _bfsExpand(
     queue: number[],

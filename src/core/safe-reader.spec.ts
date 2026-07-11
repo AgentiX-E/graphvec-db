@@ -163,8 +163,8 @@ describe('SafeReader', () => {
       } as unknown as ConsensusProvider
 
       const reader = new SafeReader(provider)
-      // barrier 抛错 — SafeReader 的 consistentRead 不吞错误
-      // （错误容忍由 RAFT Consensus 层的 barrier 实现保证）
+      // barrier 抛错 — SafeReader 的 consistentRead 不吞Error
+      // （Error容忍由 RAFT Consensus 层的 barrier 实现保证）
       await expect(reader.consistentRead(() => 'should-throw')).rejects.toThrow('barrier failed')
     })
   })

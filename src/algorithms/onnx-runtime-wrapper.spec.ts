@@ -7,7 +7,7 @@
 // 3. Session 运行 (mock)
 // 4. 模型元数据 (mock)
 // 5. 输入/输出维度验证
-// 6. 错误处理
+// 6. Error处理
 // ============================================================
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'

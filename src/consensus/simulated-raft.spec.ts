@@ -3,7 +3,7 @@
  *
  * 测试 SimulatedRaft 相关类：
  * - RaftCore 基本生命周期（创建、启动、停止）
- * - 使用 fake timers 模拟选举超时
+ * - 使用 fake timers 模拟Election timeout
  * - Leader 选举场景
  * - SimulatedRaftInstanceManager
  *

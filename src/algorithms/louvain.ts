@@ -152,7 +152,7 @@ function aggregateCommunities(
   totalWeight: number
   communityMap: Map<number, number>
 } {
-  // 为每个社区分配一个新的超级节点 ID
+  // 为每个社区分配一个新的超级Node ID
   const uniqueComms = new Set(community.values())
   const communityMap = new Map<number, number>()
   let superId = 0

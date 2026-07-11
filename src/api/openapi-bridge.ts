@@ -76,7 +76,7 @@ export class OpenAPIRegistry {
    *
    * @param method - HTTP 方法 (GET, POST, PUT, DELETE, PATCH)
    * @param path - 路径模板（如 /api/v1/{db}/node）
-   * @param info - 路由信息
+   * @param info - 路由Info
    */
   registerRoute(method: string, path: string, info: RouteInfo): this {
     const key = `${method.toUpperCase()}:${path}`
@@ -122,7 +122,7 @@ export class OpenAPIRegistry {
   /**
    * 批量注册路由
    *
-   * @param routes - 路由信息数组
+   * @param routes - 路由Info数组
    */
   registerRoutes(routes: RouteInfo[]): this {
     for (const route of routes) {
@@ -134,7 +134,7 @@ export class OpenAPIRegistry {
   /**
    * 从 RouteInfo 数组构建完整 OpenAPI 文档
    *
-   * @param options - 可选覆盖文档元信息
+   * @param options - Optional覆盖文档元Info
    */
   buildDocument(options?: {
     title?: string

@@ -2,7 +2,7 @@
  * raft-logic-consensus.spec.ts — RaftLogicConsensus 惰性加载测试
  *
  * 测试策略：
- * RaftLogicConsensus 真实依赖 raft-logic WASM 包（可选依赖）。
+ * RaftLogicConsensus 真实依赖 raft-logic WASM 包（Optional依赖）。
  * 测试使用 mock moduleRef 注入来验证逻辑，避免真实 WASM 加载。
  */
 import { RaftLogicConsensus } from './raft-logic-consensus'

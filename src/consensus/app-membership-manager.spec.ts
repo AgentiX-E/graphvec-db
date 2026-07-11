@@ -12,7 +12,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { AppMembershipManager, MembershipMessage, MembershipTransport } from './app-membership-manager'
 import { MembershipRouteTable } from './membership-route-table'
 
-/** 内存传输层（测试用） */
+/** 内存传输层（Test only） */
 class MockMembershipTransport implements MembershipTransport {
   private _peers: Array<{ nodeId: string; addr: string }>
   private _listeners: Array<(from: string, msg: any) => void> = []
@@ -172,7 +172,7 @@ describe('AppMembershipManager — routeTable', () => {
     mm.start()
 
     // node-5 不在现有 cluster 中，需要手动添加到 transport 以模拟地址
-    // 注意：在真实场景中，新节点的地址需要通过外部机制（如 DNS/配置）获取
+    // Note: 在真实场景中，新节点的地址需要通过外部机制（如 DNS/配置）获取
     // node-5 不在现有 cluster 中，需要在 transport 中注册地址
     // 模拟"从外部系统获取新节点地址"
     // 针对测试：手动在 commit 前让 transport.getPeers() 返回 node-5

@@ -2,9 +2,9 @@
  * ConsensusProvider — 共识层抽象接口
  *
  * 允许插件化切换共识实现：
- * - standalone: 单节点模式（开发/测试），无网络共识
+ * - standalone: Single-node mode (dev / test)，无网络共识
  * - simulated-raft: 内存模拟 Raft（多节点开发/测试）
- * - raft-logic: 生产级 tikv/raft-rs WASM 共识（当 raft-logic 稳定时启用）
+ * - raft-logic: Production-grade tikv/raft-rs WASM consensus（当 raft-logic 稳定时启用）
  */
 export interface ConsensusProvider {
   /** 初始化共识 */
@@ -33,7 +33,7 @@ export interface ConsensusProvider {
    * 语义严格强于 readIndex：barrier 确保所有前置 entry 已 apply，
    * 而 readIndex 只确保 leader 的 commitIndex ≥ follower 的 appliedIndex）。
    *
-   * 实现注意：
+   * 实现Note: 
    * - 优先使用底层 `barrier()` API（如 raft-rs WASM 提供）
    * - fallback：在无 barrier API 时，propose 一个 no-op entry 并等它 apply
    * - standalone 模式可以为空实现（线性一致保证由单点保证）
@@ -54,7 +54,7 @@ export interface ConsensusProvider {
 
   /**
    * 设置 apply 回调（由共识引擎在条目提交时调用）
-   * 可选方法，仅特定实现支持
+   * Optional方法，仅特定实现支持
    */
   setApply?(fn: (data: Uint8Array) => Promise<void>): void
 

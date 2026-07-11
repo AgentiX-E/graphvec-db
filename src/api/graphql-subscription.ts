@@ -39,7 +39,7 @@ export interface SubscriptionEvent {
   type: SubscriptionEventType
   /** 变更发生的时间戳 */
   timestamp: number
-  /** 发出事件的节点 ID */
+  /** 发出事件的Node ID */
   nodeId: string
   /** 变更数据 */
   data: Record<string, unknown>

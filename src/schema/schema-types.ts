@@ -27,7 +27,7 @@ export interface FieldDef {
   type: FieldType
   /** 是否必填（默认 false） */
   required?: boolean
-  /** 默认值（未传时使用） */
+  /** Default value（未传时使用） */
   default?: string | number | boolean | null
   /** 字段描述（仅文档用途） */
   description?: string
@@ -39,7 +39,7 @@ export interface NodeTypeDef {
   typeId: number
   /** 类型名称 */
   name: string
-  /** 属性字段定义（可选，不定义则不校验） */
+  /** 属性字段定义（Optional，不定义则不校验） */
   fields?: FieldDef[]
   /** 唯一约束：指定字段名数组，多个字段组合成唯一键 */
   uniqueConstraints?: string[][]

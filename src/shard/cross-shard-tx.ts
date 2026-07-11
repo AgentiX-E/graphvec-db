@@ -47,7 +47,7 @@ export interface TwoPCParticipant {
   prepareTx(txId: string, operations: any[]): Promise<boolean>
   commitTx(txId: string): Promise<void>
   rollbackTx(txId: string): Promise<void>
-  /** 可选: 查询 prepare log 是否存在（用于启发式恢复，不修改状态） */
+  /** Optional: 查询 prepare log 是否存在（用于启发式恢复，不修改状态） */
   hasPrepareLog?(txId: string): boolean
 }
 

@@ -40,7 +40,7 @@ async function advanceLeaderCommitIndex(
   for (let i = current + 1; i <= targetIndex; i++) {
     await leader.propose(Buffer.from(`entry-${i}`))
   }
-  // 如果有 follower，让其处理 AppendEntries
+  // If any follower，让其处理 AppendEntries
   if (follower) {
     // 等待一轮心跳传播
     await new Promise(r => setTimeout(r, 100))

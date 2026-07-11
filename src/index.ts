@@ -54,7 +54,7 @@ export { retry } from './utils/retry'
 export { parallelLimit, withTimeout, waitFor } from './utils/promise-utils'
 
 /**
- * AgentiX GraphVec — 版本信息
+ * AgentiX GraphVec — 版本Info
  */
 export const VERSION = '0.1.0'
 export const NAME = 'agentiX-graphvec'

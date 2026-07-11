@@ -7,7 +7,7 @@
  * 缓存策略：
  * - TTL 过期（默认 30s）
  * - 写时失效：节点/边写入后根据标签/类型清除相关缓存项
- * - 全量失效：任意图结构变更时可选清除全部
+ * - 全量失效：任意图结构变更时Optional清除全部
  *
  * 统计：hits / misses / entries
  */
@@ -153,7 +153,7 @@ export type CacheTag = string | number
 export interface QueryCacheEntry {
   /** 缓存的结果数据 */
   results: unknown
-  /** 缓存的查询文本（用于调试） */
+  /** 缓存的查询文本（用于Debug） */
   query: string
   /** 缓存创建时间戳 */
   cachedAt: number
@@ -193,7 +193,7 @@ export function makeQueryCacheKey(query: string): string {
 /**
  * 查询结果缓存
  *
- * 使用示例：
+ * 使用Example: 
  * ```ts
  * const cache = new QueryResultCache({ maxSize: 500, ttlSec: 30 })
  *
@@ -286,7 +286,7 @@ export class QueryResultCache {
   }
 
   /**
-   * 按节点 ID 失效（遍历包含该节点 ID 标签的缓存条目）
+   * 按Node ID 失效（遍历包含该Node ID 标签的缓存条目）
    */
   invalidateByNode(nodeId: number | string): number {
     return this.invalidateByLabel(String(nodeId))
@@ -346,7 +346,7 @@ export class QueryResultCache {
   }
 
   /**
-   * 获取缓存中所有键（调试用）
+   * 获取缓存中所有键（Debug用）
    */
   get keys(): string[] {
     return this.cache.keys()

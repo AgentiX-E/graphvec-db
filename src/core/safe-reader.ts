@@ -59,8 +59,8 @@ export class SafeReader {
    * - 客户端先写入，后续读必须看到写入（读己之写）
    * - 对一致性要求极高的读取（如分布式锁判定）
    *
-   * 注意：
-   * - barrier 是可选 API（provider.barrier?），不暴露时 fallback 到 readIndex
+   * Note: 
+   * - barrier 是Optional API（provider.barrier?），不暴露时 fallback 到 readIndex
    * - barrier 的性能开销略高于 readIndex（可能涉及 no-op proposal）
    */
   async consistentRead<T>(fn: () => T): Promise<ReadResult<T>> {
@@ -68,7 +68,7 @@ export class SafeReader {
       if (this._provider.barrier) {
         await this._provider.barrier(this._timeoutMs)
       } else {
-        // provider 未实现 barrier，fallback 到 readIndex
+        // provider Not implemented barrier，fallback 到 readIndex
         await this._provider.readIndex(this._timeoutMs)
       }
     }

@@ -362,7 +362,7 @@ export class EventBusWorkerPool {
     }
   }
 
-  /** 获取一致性 hash 路由信息（调试用） */
+  /** 获取一致性 hash 路由Info（Debug用） */
   getRoutingMap(): Map<string, number> {
     const routing = new Map<string, number>()
     for (const [idx, worker] of this.workers.entries()) {

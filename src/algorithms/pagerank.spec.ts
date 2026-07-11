@@ -2,7 +2,7 @@
  * pagerank.spec.ts — PageRank 算法单元测试
  *
  * 测试单线程 mode（默认）、收敛性、悬挂节点、空图等。
- * 多线程 mode（numThreads > 1）异步测试用单独的 describe。
+ * 多线程 mode（numThreads > 1）异步Test only单独的 describe。
  */
 import { describe, it, expect } from 'vitest'
 import { pagerank } from './pagerank'

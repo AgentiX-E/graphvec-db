@@ -186,7 +186,7 @@ describe('BUILTIN_FUNCTIONS 注册验证', () => {
   })
 
   // TC12: 未定义的函数 → 报错
-  it('未定义的函数抛出错误', () => {
+  it('未定义的函数抛出Error', () => {
     expect(() => executeBuiltinFunction('nonexistent', [])).toThrow('Unknown built-in function')
     expect(() => executeBuiltinFunction('undefinedFunction', ['test'])).toThrow('Unknown built-in function')
   })

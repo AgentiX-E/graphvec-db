@@ -4,9 +4,9 @@
  * 通过 npx tsx 启动，通过 stdin JSON line 接收命令，stdout JSON line 返回结果。
  *
  * 环境变量:
- *   EBTN_NODE_ID    — 节点 ID
+ *   EBTN_NODE_ID    — Node ID
  *   EBTN_PORT       — ZMQ ROUTER PORT
- *   EBTN_PEER_ID    — 对端节点 ID
+ *   EBTN_PEER_ID    — 对端Node ID
  *   EBTN_PEER_PORT  — 对端 ZMQ ROUTER PORT
  *   EBTN_CURVE_DIR  — 公钥目录
  *   EBTN_ROLE       — 'sender' | 'receiver'

@@ -130,7 +130,7 @@ export class ExplainFormatter {
    *
    * @param plan QueryPlan
    * @param executeFn 实际的执行函数（返回行数）
-   * @returns 带耗时信息的 ExplainResult
+   * @returns 带耗时Info的 ExplainResult
    */
   static async analyze(
     plan: QueryPlan,

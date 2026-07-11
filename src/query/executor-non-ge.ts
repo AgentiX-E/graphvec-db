@@ -362,14 +362,14 @@ export async function _execNonGePaths(
   // ── WITH / UNWIND / aggregate 管道 ──
   // 处理 WITH [...] AS x → UNWIND x AS y → ... → RETURN agg, count(*) 链
   // 不涉及 MATCH/GE 图遍历，纯表达式 + 聚合
-  // 注意：MATCH + WITH + UNWIND 场景（如 MATCH ... WITH [...] AS x UNWIND ...）
+  // Note: MATCH + WITH + UNWIND 场景（如 MATCH ... WITH [...] AS x UNWIND ...）
   // 的 WITH 列表包含 MATCH 变量，不能走纯表达式管道。走主路径处理。
   if (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) {
     return _executeWithUnwindPipeline(plan, nodes, query)
   }
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
-  // 注意：OPTIONAL MATCH 必须经过 GraphEngine，即使 hasMatch 为 false
+  // Note: OPTIONAL MATCH 必须经过 GraphEngine，即使 hasMatch 为 false
     const isDML = ['MERGE', 'CREATE', 'DELETE', 'SET', 'REMOVE', 'MATCH_MODIFY', 'CREATE_CONSTRAINT'].includes(plan.type || '')
   const hasOptionalMatch = plan.optionalMatchSteps?.length ? true : false
   if (!plan.scanLabel && !plan.steps?.length && !plan.aggregate && !plan.hasMatch && !isDML && !hasOptionalMatch) {

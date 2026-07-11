@@ -53,15 +53,15 @@ export interface RestApiConfig {
   maxRatelimitPerMin?: number
   /** Multi-Leader Outbox 复制管理器（暴露 admin 管理接口） */
   replicationManager?: OutboxReplicationManager
-  /** 多数据库管理器（可选），提供后自动启用 /api/v1/:db/... 路由 */
+  /** 多数据库管理器（Optional），提供后自动启用 /api/v1/:db/... 路由 */
   databaseManager?: DatabaseManager
-  /** EventBus 实例（可选），提供后启用 GraphQL Subscription SSE 端点 */
+  /** EventBus 实例（Optional），提供后启用 GraphQL Subscription SSE 端点 */
   eventBus?: EventBus
-  /** HealthChecker 实例（可选），提供后启用 /health/live 和 /health/ready 端点 */
+  /** HealthChecker 实例（Optional），提供后启用 /health/live 和 /health/ready 端点 */
   healthChecker?: import('./health-checker').HealthChecker
-  /** QuerySlowLog 实例（可选），提供后注入慢查询日志功能到查询路由 */
+  /** QuerySlowLog 实例（Optional），提供后注入慢查询日志功能到查询路由 */
   slowLog?: QuerySlowLog
-  /** GnnInferenceEngine 实例（可选），提供后启用 /api/v1/gnn/... 推理端点 */
+  /** GnnInferenceEngine 实例（Optional），提供后启用 /api/v1/gnn/... 推理端点 */
   gnnEngine?: GnnInferenceEngine
 }
 
@@ -159,7 +159,7 @@ interface Route {
   handler: RouteHandler
   requireAuth?: boolean
   requiredPermission?: string
-  /** 可选：子图（租户）隔离标识。如果设置，会在认证后检查子图 ACL */
+  /** Optional：子图（租户）隔离标识。如果设置，会在认证后检查子图 ACL */
   subgraph?: string
 }
 
@@ -305,7 +305,7 @@ function extractCN(req: http.IncomingMessage): string | null {
  * 将路径模式匹配到请求路径，返回提取的路径参数。
  * 支持 :param 单段参数和 * 通配符（仅尾部）。
  *
- * 示例：
+ * Example: 
  *   _matchRoute('/api/graph/node/:id', '/api/graph/node/42')
  *     → { id: '42' }
  *
@@ -416,7 +416,7 @@ function applyBodySizeLimit(
 
 /**
  * 从 TlsServerOptions 构建 https.ServerOptions。
- * 读取证书文件，如果文件不存在则抛出明确的错误信息。
+ * 读取证书文件，如果文件不存在则抛出明确的ErrorInfo。
  */
 function buildHttpsOptions(tlsOpts: TlsServerOptions): https.ServerOptions {
   if (!fs.existsSync(tlsOpts.key)) {
@@ -821,7 +821,7 @@ export function createRestApiServer(
             },
           }
 
-          // 如果有慢查询日志，追踪执行
+          // If any慢查询日志，Trace执行
           const enriched = enrichQueryLinks(data, '/api/query')
           jsonResponse(res, 200, enriched)
         }
@@ -1421,7 +1421,7 @@ export function createRestApiServer(
     // ════════════════════════════════════════════════════
     // 6 个 admin 端点，复用 mTLS + RBAC（requiredPermission: admin）
 
-    // 1) GET /api/admin/cache — 缓存信息
+    // 1) GET /api/admin/cache — 缓存Info
     {
       method: 'GET',
       path: '/api/admin/cache',
@@ -1682,7 +1682,7 @@ export function createRestApiServer(
 
         const maxQueryTimeMs = body.maxQueryTimeMs !== undefined ? Number(body.maxQueryTimeMs) : 30000
 
-        // 并行执行每个查询，独立错误处理
+        // 并行执行每个查询，独立Error处理
         const results = await Promise.allSettled(
           queries.map(async (q) => {
             let instance: DatabaseInstance
@@ -2047,7 +2047,7 @@ export function createRestApiServer(
       },
     )
 
-    // 数据库级别统计信息
+    // 数据库级别统计Info
     addMultiDbRoute('GET', '/api/v1/:db/stats', true, 'read',
       async (sm, _req, res, _parsed, _params) => {
         try {
@@ -2312,7 +2312,7 @@ export function createRestApiServer(
     // POST /api/v1/_cross-db/query — 并行跨库查询
   }
 
-  // 注册 admin 路由（如果有 replicationManager）
+  // 注册 admin 路由（If any replicationManager）
   if (config.replicationManager) {
     const mgr = config.replicationManager
 
@@ -2395,7 +2395,7 @@ export function createRestApiServer(
       res.setHeader('X-Frame-Options', 'DENY')
       res.setHeader('X-XSS-Protection', '1; mode=block')
 
-      // ── 请求追踪 ID ──────────────────────────
+      // ── 请求Trace ID ──────────────────────────
       // 从 X-Request-Id header 读取（客户端提供），否则自动生成
       const requestId: string = (typeof req.headers['x-request-id'] === 'string')
         ? req.headers['x-request-id']

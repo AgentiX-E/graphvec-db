@@ -4,7 +4,7 @@
  * 覆盖：
  * - 加密后密文与明文不同
  * - 加密后解密可恢复原文
- * - 错误密钥解密抛异常
+ * - Error密钥解密抛异常
  * - 不同密钥产生不同密文
  * - 不同 IV 产生不同密文（相同密钥）
  * - 空字符串加密/解密
@@ -39,7 +39,7 @@ describe('审计日志加密', () => {
     expect(decrypted).toBe(plaintext)
   })
 
-  it('错误密钥解密抛异常', () => {
+  it('Error密钥解密抛异常', () => {
     const key = makeKey('correct-key-32-bytes-abcdefghijk1')
     const wrongKey = makeKey('wrong-key-32-bytes-abcdefghijk12')
     const plaintext = '{"operation":"secret"}'

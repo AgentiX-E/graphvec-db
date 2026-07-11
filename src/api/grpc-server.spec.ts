@@ -1,7 +1,7 @@
 // ============================================================
 // grpc-server.spec.ts — gRPC Server & Client 配置/签名/接口测试
 //
-// 注意：不测试实际 gRPC 连接。所有 @grpc/grpc-js 调用被 mock。
+// Note: 不测试实际 gRPC 连接。所有 @grpc/grpc-js 调用被 mock。
 // 实际集成测试见 grpc.spec.ts。
 // ============================================================
 
@@ -283,7 +283,7 @@ describe('GraphVecClient 方法签名', () => {
     expect(client.getNode.length).toBe(1)
   })
 
-  it('addNode 应接受类型、名称和可选的 props', () => {
+  it('addNode 应接受类型、名称和Optional的 props', () => {
     const client = createGrpcClient('127.0.0.1:50051')
     const paramCount = client.addNode.length
     // 在实现中，addNode 接受 3 个参数 (typeId, name, props?)
@@ -291,31 +291,31 @@ describe('GraphVecClient 方法签名', () => {
     expect(paramCount).toBeLessThanOrEqual(4)
   })
 
-  it('deleteNode 应接受 id 和可选的 cascade', () => {
+  it('deleteNode 应接受 id 和Optional的 cascade', () => {
     const client = createGrpcClient('127.0.0.1:50051')
     expect(client.deleteNode.length).toBeGreaterThanOrEqual(1)
     expect(client.deleteNode.length).toBeLessThanOrEqual(2)
   })
 
-  it('query 应接受查询串和可选的 limit/skip', () => {
+  it('query 应接受查询串和Optional的 limit/skip', () => {
     const client = createGrpcClient('127.0.0.1:50051')
     expect(client.query.length).toBeGreaterThanOrEqual(1)
     expect(client.query.length).toBeLessThanOrEqual(3)
   })
 
-  it('neighbors 应接受 nodeId 和可选的 maxDepth/edgeTypeFilter', () => {
+  it('neighbors 应接受 nodeId 和Optional的 maxDepth/edgeTypeFilter', () => {
     const client = createGrpcClient('127.0.0.1:50051')
     expect(client.neighbors.length).toBeGreaterThanOrEqual(1)
     expect(client.neighbors.length).toBeLessThanOrEqual(3)
   })
 
-  it('batchNeighbors 应接受 ids 数组和可选的 maxDepth/edgeTypeFilter', () => {
+  it('batchNeighbors 应接受 ids 数组和Optional的 maxDepth/edgeTypeFilter', () => {
     const client = createGrpcClient('127.0.0.1:50051')
     expect(client.batchNeighbors.length).toBeGreaterThanOrEqual(1)
     expect(client.batchNeighbors.length).toBeLessThanOrEqual(3)
   })
 
-  it('addEdge 应接受 src, dst, typeId 和可选的 props/weight', () => {
+  it('addEdge 应接受 src, dst, typeId 和Optional的 props/weight', () => {
     const client = createGrpcClient('127.0.0.1:50051')
     expect(client.addEdge.length).toBeGreaterThanOrEqual(3)
     expect(client.addEdge.length).toBeLessThanOrEqual(6)

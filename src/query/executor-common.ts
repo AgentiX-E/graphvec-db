@@ -198,7 +198,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     }
 
     // 判断 rc 是否直接出现在 GE 返回的 props 中
-    // 但如果是函数调用表达式（被 GE 错误当作属性赋值），跳过 GE 数据走函数求值
+    // 但如果是函数调用表达式（被 GE Error当作属性赋值），跳过 GE 数据走函数求值
     // 聚合模式例外：聚合函数名如 count(*) 已在 GE 的 _execAggregation 中正确设为 props key
     // TODO: 更好的方法是统一 QE 和 GE 的聚合列名，避免走函数求值
     if ((rc in row)) {
@@ -376,7 +376,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       const allReturnVars = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).filter(Boolean)
       const missingVars = [...new Set([...allStepAliases, ...allReturnVars])].filter((vn: string) => vn && !vn.startsWith('_') && !(vn in varCtx))
       if (missingVars.length && plan.steps && plan.steps.length > 1) {
-        // 从 r.__targetProps 获取（如果有）
+        // 从 r.__targetProps 获取（If any）
         if (r.__targetProps) {
           for (const vn of missingVars) {
             if (r.__targetAlias === vn) {

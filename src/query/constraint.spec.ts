@@ -4,7 +4,7 @@
  * 测试清单（≥10）：
  * 1. CREATE CONSTRAINT ON (n:Person) ASSERT n.age IS UNIQUE — 解析 ✅
  * 2. 不同 label/属性 — CREATE CONSTRAINT ON (n:User) ASSERT n.email IS UNIQUE ✅
- * 3. 语法错误时抛出 — 非法约束语法 ✅
+ * 3. 语法Error时抛出 — 非法约束语法 ✅
  * 4. 执行尝试（执行层为空，返回确认）✅
  * 5. (额外) 属性名不重复 — 验证 plan 的 property 值 ✅
  * 6. 带下划线的属性名 ✅
@@ -36,7 +36,7 @@ describe('CREATE CONSTRAINT — 语法解析', () => {
     expect(plan.constraint!.property).toBe('email')
   })
 
-  it('语法错误时抛出 — 非法约束语法', () => {
+  it('语法Error时抛出 — 非法约束语法', () => {
     expect(() => parseQuery('CREATE CONSTRAINT ON (n:Person) BAD SYNTAX')).toThrow()
   })
 
@@ -62,11 +62,11 @@ describe('CREATE CONSTRAINT — 语法解析', () => {
     expect(plan.constraint!.property).toBe('first_name')
   })
 
-  it('缺少 ASSERT 关键字 — 抛出语法错误', () => {
+  it('缺少 ASSERT 关键字 — 抛出语法Error', () => {
     expect(() => parseQuery('CREATE CONSTRAINT ON (n:Person) n.age IS UNIQUE')).toThrow()
   })
 
-  it('IS UNIQUE 顺序错误 — 非法语法', () => {
+  it('IS UNIQUE 顺序Error — 非法语法', () => {
     expect(() => parseQuery('CREATE CONSTRAINT ON (n:Person) ASSERT n.age UNIQUE IS')).toThrow()
   })
 

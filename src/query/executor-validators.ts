@@ -33,7 +33,7 @@ export function extractMatchClause(query: string): string {
 }
 
 /**
- * 检测 pattern 出现在错误的位置（RETURN, WITH, SET 列中）
+ * 检测 pattern 出现在Error的位置（RETURN, WITH, SET 列中）
  * Cypher TCK: MATCH (n) RETURN (n)-[]->() 应报 UnexpectedSyntax
  */
 export function _validatePatternPosition(query: string): void {
@@ -175,7 +175,7 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
     const clauseBody = wm[1];
     // 从 clauseBody 末尾向前扫描，找到第一个不在括号内的 WHERE/MATCH 等关键字
     // 因为 clauseBody 可能包含列表谓词 all/any/none/single(...WHERE...)
-    // 简单方法：如果 clauseBody 没有括号，直接处理；如果有括号，用深度追踪截断
+    // 简单方法：如果 clauseBody 没有括号，直接处理；If any括号，用深度Trace截断
     let effectiveBody = clauseBody;
     if (/[()\[\]]/.test(clauseBody)) {
       // 括号感知截断：找到第一个不在括号内的 WHERE/MATCH/等

@@ -36,7 +36,7 @@ export interface ShardLoad {
   qps: number              // 每秒查询数
   avgLatencyMs: number
   diskBytes: number
-  localNodeId: string       // 当前驻留的节点 ID
+  localNodeId: string       // 当前驻留的Node ID
   isHot: boolean            // 热点标记（QPS/延迟超过阈值）
 }
 
@@ -51,8 +51,8 @@ export interface GlobalSuggestion {
   type: SuggestionType
   rangeId: string
   reason: string
-  priority: number                   // 0（紧急）到 10（可选）
-  /** 仅 migrate 类型：建议的目标节点 ID */
+  priority: number                   // 0（紧急）到 10（Optional）
+  /** 仅 migrate 类型：建议的目标Node ID */
   targetNodeId?: string
   /** 仅 split 类型：建议分裂成的目标分片数 */
   suggestedTargetCount?: number

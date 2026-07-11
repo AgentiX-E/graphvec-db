@@ -48,7 +48,7 @@ export interface SdkGenerationResult {
   target: string
   /** 是否成功 */
   success: boolean
-  /** 错误信息（如果失败） */
+  /** ErrorInfo（如果失败） */
   error?: string
 }
 

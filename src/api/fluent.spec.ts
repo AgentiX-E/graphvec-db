@@ -67,7 +67,7 @@ class MockShardManager {
     const result = this.adjacency.get(id)
     if (!result) return { edges: [], nodes: [] }
 
-    // 如果有 edgeTypeFilter，过滤边和节点
+    // If any edgeTypeFilter，过滤边和节点
     if (opts?.edgeTypeFilter && opts.edgeTypeFilter.length > 0) {
       const filteredEdges = result.edges.filter(e => opts.edgeTypeFilter!.includes(e.type))
       // 仍然返回所有邻居节点（保持实现简单）
@@ -429,7 +429,7 @@ describe('GraphQuery (Fluent API)', () => {
   })
 
   describe('toString', () => {
-    it('输出调试表示', () => {
+    it('输出Debug表示', () => {
       const mock = new MockShardManager()
       const q = new TestGraphQuery(mock)
       const str = q.match(1).where(() => true).neighbors(2, [10]).limit(5).toString()

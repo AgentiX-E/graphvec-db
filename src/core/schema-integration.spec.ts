@@ -63,7 +63,7 @@ describe('GraphEngine + Schema 集成测试', () => {
       expect(node!.props.age).toBe(30)
     })
 
-    test('可选字段可缺省', async () => {
+    test('Optional字段可缺省', async () => {
       const id = await engine.upsertNode(100, 'bob', { props: { name: 'Bob', age: 25 } })
       expect(id).toBeGreaterThan(0)
       // email is optional, not provided → no error

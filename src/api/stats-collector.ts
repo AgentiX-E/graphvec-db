@@ -20,7 +20,7 @@ export interface Predicate {
 }
 
 /**
- * PropertyStats — 单个属性的统计信息
+ * PropertyStats — 单个属性的统计Info
  */
 export interface PropertyStats {
   distinctValues: number
@@ -67,11 +67,11 @@ export class StatsCollector {
   }
 
   // ──────────────────────────────────────────
-  // collectNow — 立即收集统计信息
+  // collectNow — 立即收集统计Info
   // ──────────────────────────────────────────
 
   /**
-   * 立即收集所有节点/边的统计信息。
+   * 立即收集所有节点/边的统计Info。
    *
    * 从 GraphEngine 获取节点总数和边总数，
    * 再按 typeId 分组统计属性分布。
@@ -114,7 +114,7 @@ export class StatsCollector {
       try {
         await this.collectNow()
       } catch {
-        // 静默处理收集错误，避免定时器中断
+        // 静默处理收集Error，避免定时器中断
       }
     }, this._collectionIntervalMs)
   }
@@ -154,7 +154,7 @@ export class StatsCollector {
    * 规则:
    *   - eq:       1 / distinctValues
    *   - neq:      1 - 1/distinctValues
-   *   - gt/lt:    0.33（无 min/max 信息时）或 1/3
+   *   - gt/lt:    0.33（无 min/max Info时）或 1/3
    *   - gte/lte:  同 gt/lt
    *   - prefix:   sqrt(1 / distinctValues)
    *   - in:       min(1, value.length / distinctValues)
@@ -187,7 +187,7 @@ export class StatsCollector {
       case 'gte':
       case 'lt':
       case 'lte': {
-        // 如果有 min/max 信息且值是数字，用范围比例估算
+        // If any min/max Info且值是数字，用范围比例估算
         if (
           propStats.minValue !== undefined &&
           propStats.maxValue !== undefined &&
@@ -221,7 +221,7 @@ export class StatsCollector {
   }
 
   // ──────────────────────────────────────────
-  // 私有方法
+  // Private method
   // ──────────────────────────────────────────
 
   /**

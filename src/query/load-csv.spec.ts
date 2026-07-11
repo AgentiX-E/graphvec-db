@@ -6,7 +6,7 @@
  * - CSV 解析功能（引号转义、逗号分隔）
  * - LOAD CSV + CREATE 联动
  * - LOAD CSV + RETURN 输出
- * - 文件不存在的错误处理
+ * - 文件不存在的Error处理
  * - 文件路径解析（file:// 协议、绝对路径、相对路径）
  */
 
@@ -154,7 +154,7 @@ describe('_loadCsvFile — 文件 I/O', () => {
       }
       fs.rmdirSync(tmpDir)
     } catch {
-      // 忽略清理错误
+      // 忽略清理Error
     }
   })
 
@@ -188,7 +188,7 @@ describe('_loadCsvFile — 文件 I/O', () => {
     expect(result[0]).toEqual({ x: '1', y: '2' })
   })
 
-  it('文件不存在时抛出有意义的错误', () => {
+  it('文件不存在时抛出有意义的Error', () => {
     const nonExistent = path.join(tmpDir, 'nonexistent.csv')
 
     expect(() => {
@@ -196,7 +196,7 @@ describe('_loadCsvFile — 文件 I/O', () => {
     }).toThrow(/file not found/i)
   })
 
-  it('错误信息包含原始 source 路径', () => {
+  it('ErrorInfo包含原始 source 路径', () => {
     const fakePath = '/tmp/not-exist-file.csv'
 
     expect(() => {
@@ -220,7 +220,7 @@ describe('LOAD CSV + 查询联动', () => {
       }
       fs.rmdirSync(tmpDir)
     } catch {
-      // 忽略清理错误
+      // 忽略清理Error
     }
   })
 
@@ -248,10 +248,10 @@ describe('LOAD CSV + 查询联动', () => {
   })
 
   it('LOAD CSV 无 RETURN 也能被解析', () => {
-    // parseQuery 会抛出解析错误（语法要求必须有完整的语句结构）
+    // parseQuery 会抛出解析Error（语法要求必须有完整的语句结构）
     // 其目的是验证 LOAD CSV 提取仍然发生在 _preprocessQuery 阶段
-    // 注意：当前 peggy 解析器要求在 LOAD CSV 之后跟 RETURN 或其他语句
-    // 所以此处验证的是解析器在无 RETURN 时正确抛出错误
+    // Note: 当前 peggy 解析器要求在 LOAD CSV 之后跟 RETURN 或其他语句
+    // 所以此处验证的是解析器在无 RETURN 时正确抛出Error
     // 同时验证 rawQuery 历史中记录了 LOAD CSV 部分
     const csvPath = '/tmp/test-load-csv-no-return.csv'
     fs.writeFileSync(csvPath, 'id,name\n1,Alice\n', 'utf-8')
@@ -260,7 +260,7 @@ describe('LOAD CSV + 查询联动', () => {
       // 如果没出错，也算通过
       expect(true).toBe(true)
     } catch (e: any) {
-      // 预期错误，证明解析器识别了 LOAD CSV 但后续语法不完整
+      // 预期Error，证明解析器识别了 LOAD CSV 但后续语法不完整
       expect(e.message).toContain('Query parse error')
     }
     // 清理

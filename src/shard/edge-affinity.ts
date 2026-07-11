@@ -26,8 +26,8 @@ export class EdgeAffinity {
   /**
    * 计算边的分片键
    *
-   * @param src - 起点节点 ID
-   * @param dst - 终点节点 ID
+   * @param src - 起点Node ID
+   * @param dst - 终点Node ID
    * @param properties - 边的属性（用于 property-based 策略）
    * @returns 用作分片路由键的值
    */

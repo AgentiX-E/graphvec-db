@@ -2,7 +2,7 @@
  * api-e2e.spec.ts — API 集成端到端测试
  *
  * 通过 GraphEngine API 层（核心 API + 事务管理器）进行真实操作。
- * 覆盖：CRUD、错误路径、并发、事务管理
+ * 覆盖：CRUD、Error路径、并发、事务管理
  */
 import { GraphEngine } from '../core/graph-engine'
 import { TransactionManager, Transaction } from '../core/transaction'
@@ -111,7 +111,7 @@ describe('API E2E — 集成测试', () => {
     }
   }, 15000)
 
-  // ── 5. 错误路径：不存在节点查询 ─────────────────────
+  // ── 5. Error路径：不存在节点查询 ─────────────────────
   test('API-05: 对不存在的节点执行操作', async () => {
     const cfg = makeConfig('api-05')
     const engine = new GraphEngine(cfg)

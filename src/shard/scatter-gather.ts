@@ -33,7 +33,7 @@ export class ScatterGather {
   }
 
   /**
-   * 向量搜索 — 广播到所有 Range（带可选超时）
+   * 向量搜索 — 广播到所有 Range（带Optional超时）
    */
   async vectorSearch(query: VectorSearchOptions, options?: ScatterGatherOptions): Promise<VectorSearchResult[]> {
     const ranges = this._getRanges()
@@ -56,7 +56,7 @@ export class ScatterGather {
   }
 
   /**
-   * 获取所有节点（带可选分页，超时兜底）
+   * 获取所有节点（带Optional分页，超时兜底）
    */
   async getAllNodes(page = 0, pageSize = 100, options?: ScatterGatherOptions): Promise<Array<{ id: number; record: NodeRecord }>> {
     const ranges = this._getRanges()

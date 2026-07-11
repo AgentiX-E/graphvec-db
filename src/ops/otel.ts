@@ -1,10 +1,10 @@
 /**
  * otel.ts — OpenTelemetry 可观测性核心模块
  *
- * 提供分布式追踪（tracing）和指标（metrics）采集的基础设施。
+ * 提供分布式Trace（tracing）和指标（metrics）采集的基础设施。
  *
  * 设计原则：
- * 1. OTel 是可选依赖：Telemetry.enabled === false 时所有埋点操作零开销
+ * 1. OTel 是Optional依赖：Telemetry.enabled === false 时所有埋点操作零开销
  * 2. 默认不启用：需要显式 Telemetry.getInstance().init() 才激活
  * 3. SDK 初始化在应用启动时调用，不在构造函数中自动初始化
  * 4. 埋点只添加，不修改原有行为逻辑
@@ -115,7 +115,7 @@ export class Telemetry {
    *
    * @param serviceName  服务名称（默认 'agentiX-graphvec'）
    * @param otlpEndpoint OTLP gRPC 端点（默认 'http://localhost:4317'）
-   * @param exportConfig 可选的多 exporter 配置（优先级低于环境变量）
+   * @param exportConfig Optional的多 exporter 配置（优先级低于环境变量）
    */
   async init(
     serviceName?: string,
@@ -128,7 +128,7 @@ export class Telemetry {
     let endpoint = otlpEndpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4317'
     if (!endpoint) endpoint = 'http://localhost:4317'
 
-    // 开发环境开启诊断日志便于调试
+    // 开发环境开启诊断日志便于Debug
     if (process.env.NODE_ENV !== 'production') {
       diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN)
     }
@@ -167,7 +167,7 @@ export class Telemetry {
         serviceName: name,
       }
 
-      // 如果有其他 trace exporters（OTLP HTTP / Jaeger / Zipkin），通过 span processor 注册
+      // If any其他 trace exporters（OTLP HTTP / Jaeger / Zipkin），通过 span processor 注册
       if (traceExporters.length > 1) {
         const { BatchSpanProcessor } = require('@opentelemetry/sdk-trace-base')
         const { SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base')
@@ -209,7 +209,7 @@ export class Telemetry {
       registerInstrumentations({
         instrumentations: [
           new HttpInstrumentation({
-            // HTTP 请求/响应自动追踪
+            // HTTP 请求/响应自动Trace
             ignoreIncomingRequestHook: (req: any) => {
               // 忽略健康检查等内部端点
               if (req.url) {
@@ -221,7 +221,7 @@ export class Telemetry {
             },
           }),
           new FastifyInstrumentation({
-            // Fastify 路由层次自动追踪
+            // Fastify 路由层次自动Trace
           }),
         ],
       })
@@ -269,7 +269,7 @@ export class Telemetry {
    * 创建一个新的 span（仅 enabled 时有实际作用）
    *
    * @param name       span 名称
-   * @param parentSpan 可选的父 span（用于构建 span 层次）
+   * @param parentSpan Optional的父 span（用于构建 span 层次）
    */
   startSpan(name: string, parentSpan?: Span): Span | null {
     if (!this._enabled || !this.tracer) return null
@@ -285,7 +285,7 @@ export class Telemetry {
    * 结束一个 span，设置状态码
    *
    * @param span 要结束的 span
-   * @param error 可选的错误（设置 SpanStatusCode.ERROR）
+   * @param error Optional的Error（设置 SpanStatusCode.ERROR）
    */
   endSpan(span: Span | null, error?: Error): void {
     if (!span) return
@@ -304,7 +304,7 @@ export class Telemetry {
    * 在 disabled 状态下，直接调用 fn（零开销）。
    *
    * @param name span 名称
-   * @param fn   要追踪的异步操作
+   * @param fn   要Trace的异步操作
    */
   async traceAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
     if (!this._enabled || !this.tracer) {

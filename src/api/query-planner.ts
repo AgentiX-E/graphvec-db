@@ -60,7 +60,7 @@ export function planCacheSize(): number {
 }
 
 /**
- * 返回 planCache 的统计信息：条目数、最大容量、利用率。
+ * 返回 planCache 的统计Info：条目数、最大容量、利用率。
  * 当 utilization > 0.9 时自动发出 warn 告警。
  */
 export function planCacheStats(): { entryCount: number; maxSize: number; utilization: number } {
@@ -130,14 +130,14 @@ export interface TableStats {
 }
 
 /**
- * EnhancedStats — 增强的统计信息，支持 CBO 更精确的估算
+ * EnhancedStats — 增强的统计Info，支持 CBO 更精确的估算
  */
 export interface EnhancedStats {
   /** 按 label (typeId → count) 的节点分布 */
   labelCounts: Map<number, number>
   /** 按边类型 (typeId → count) 的边分布 */
   edgeLabelCounts: Map<number, number>
-  /** 按属性名 → 统计信息的属性分布 */
+  /** 按属性名 → 统计Info的属性分布 */
   propStats: Map<string, { min: number; max: number; cardinality: number; nullCount: number }>
 }
 
@@ -432,7 +432,7 @@ export class QueryPlanner {
     return plan
   }
 
-  /** 增强的统计信息（label 分布、边分布、属性分布） */
+  /** 增强的统计Info（label 分布、边分布、属性分布） */
   private _enhancedStats: EnhancedStats | null = null
 
   // ──────────────────────────────────────────
@@ -440,14 +440,14 @@ export class QueryPlanner {
   // ──────────────────────────────────────────
 
   /**
-   * 收集统计信息（增强版）
+   * 收集统计Info（增强版）
    *
    * 除了基础的全量节点计数外，还收集：
    * - 按 label (typeId) 的节点分布计数
    * - 按边类型的边分布计数
    * - 按属性的值分布（min/max/cardinality/nullCount）
    *
-   * 统计信息存储在 `_enhancedStats` 中，可通过 getEnhancedStats() 获取。
+   * 统计Info存储在 `_enhancedStats` 中，可通过 getEnhancedStats() 获取。
    */
   async collectStats(): Promise<void> {
     const status = this.shardManager.getShardStatus()
@@ -587,7 +587,7 @@ export class QueryPlanner {
   }
 
   /**
-   * 获取增强的统计信息（label 分布、边分布、属性分布）
+   * 获取增强的统计Info（label 分布、边分布、属性分布）
    *
    * 在调用 collectStats() 之后调用此方法。
    * 尚未收集时返回 null。
@@ -597,7 +597,7 @@ export class QueryPlanner {
   }
 
   // ──────────────────────────────────────────
-  // 索引推荐（基于增强统计信息）
+  // 索引推荐（基于增强统计Info）
   // ──────────────────────────────────────────
 
   /**
@@ -892,9 +892,9 @@ export interface QuerySpec {
   direction?: 'out' | 'in' | 'both'
   /** 变长路径匹配配置（如 MATCH (a)-[:TYPE*1..3]->(b)） */
   variableLengthPath?: {
-    /** 起始节点 ID 或占位符 */
+    /** 起始Node ID 或占位符 */
     startId?: number
-    /** 边类型 ID（可选） */
+    /** 边类型 ID（Optional） */
     edgeType?: number
     /** 最小深度 */
     minDepth: number
@@ -913,9 +913,9 @@ export interface QuerySpec {
  * 通过 BFS 在图中展开变长路径
  */
 export interface VariableLengthPathNode {
-  /** 起始节点 ID */
+  /** 起始Node ID */
   startId: number
-  /** 边类型 ID（可选） */
+  /** 边类型 ID（Optional） */
   edgeType?: number
   /** 最小深度 */
   minDepth: number
@@ -1086,12 +1086,12 @@ export function limitPushdown(plan: PlanNode): PlanNode {
     const skipValue = plan.details['skip'] as number | undefined
     if (limitValue === undefined) return plan
 
-    // 如果有 skip，下推 limit + skip 的合值，使 SCAN 返回足够数据供 skip 使用
+    // If any skip，下推 limit + skip 的合值，使 SCAN 返回足够数据供 skip 使用
     const pushLimit = (skipValue ?? 0) + limitValue
 
     // Walk down through intermediate nodes to find SCAN/NEIGHBORS
     // LIMIT 作为早期截断优化提示注入到 SCAN 层（后续 SORT + LIMIT 层保证最终正确语义）
-    // WARNING: 不能穿越 SORT 节点 — 否则 LIMIT 会在排序前截断，导致排序结果错误
+    // WARNING: 不能穿越 SORT 节点 — 否则 LIMIT 会在排序前截断，导致排序结果Error
     const walkDown = (node: PlanNode): boolean => {
       if (node.type === PlanNodeType.SCAN || node.type === PlanNodeType.NEIGHBORS) {
         node.details['pushedLimit'] = pushLimit
@@ -1328,7 +1328,7 @@ async function executeChildren(
   shardManager: ShardManager,
   fnPredicates?: Array<(node: NodeRecord) => boolean>,
 ): Promise<NodeRecord[]> {
-  // 如果有下属节点，递归执行
+  // If any下属节点，递归执行
   if (plan.children.length > 0) {
     // 对于多子节点场景（如 JOIN），后续可扩展
     return executeIR(plan.children[0], shardManager, fnPredicates)
@@ -1614,7 +1614,7 @@ async function executeNode(
 
     case PlanNodeType.PARALLEL_UNION:
     default:
-      // 暂未实现的节点类型，返回输入数据
+      // 暂Not implemented的节点类型，返回输入数据
       return inputData
   }
 }
@@ -1629,10 +1629,10 @@ async function executeNode(
  * 从 startId 开始，沿指定边类型 / 方向进行 BFS 遍历，
  * 收集深度在 [minDepth, maxDepth] 范围内的所有目标节点。
  *
- * @param startId - 起始节点 ID
+ * @param startId - 起始Node ID
  * @param minDepth - 最小深度（<1 时从 1 开始计数）
  * @param maxDepth - 最大深度（undefined 表示无上限）
- * @param edgeTypeOrTypes - 边类型 ID 或 IDs（可选）
+ * @param edgeTypeOrTypes - 边类型 ID 或 IDs（Optional）
  * @param direction - 遍历方向：'out' | 'in' | 'both'
  * @param visited - 已访问节点集合
  * @param result - 结果收集数组

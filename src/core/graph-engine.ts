@@ -214,7 +214,7 @@ export class GraphEngine {
   /** MVCC 版本跟踪：nodeId → 最后修改该节点的事务 snapshotId */
   private _mvccVersions: Map<NodeId, number> = new Map()
   private _eventStream: EventStream | null = null
-  /** Multi-Leader 同步复制层（可选） */
+  /** Multi-Leader 同步复制层（Optional） */
   private _mlReplication: MultiLeaderReplication | null = null
   /** 备份写冻结 */
   private _writesFrozen = false
@@ -257,19 +257,19 @@ export class GraphEngine {
   /** 查询结果缓存 */
   private _queryCache: QueryResultCache | null = null
 
-  /** Schema type definitions（可选） */
+  /** Schema type definitions（Optional） */
   private _schema?: SchemaDef
 
-  /** FullText 全文索引（可选） */
+  /** FullText 全文索引（Optional） */
   private _fulltext: FullTextIndex | null = null
 
-  /** Row-Level Security（可选） */
+  /** Row-Level Security（Optional） */
   private _rls: RowLevelSecurity | null = null
 
-  /** QueryPlanner — 查询计划器（可选，主供优化器桥接使用） */
+  /** QueryPlanner — 查询计划器（Optional，主供优化器桥接使用） */
   private _planner: QueryPlanner | null = null
 
-  /** OptimizerBridge — 优化器桥接层（可选） */
+  /** OptimizerBridge — 优化器桥接层（Optional） */
   private _bridge: OptimizerBridge | null = null
 
   // ── Degree Cache ──
@@ -311,7 +311,7 @@ export class GraphEngine {
   private _recursionDepth = 0
 
   /**
-   * 可选的回调：当节点/边发生变更时被调用
+   * Optional的回调：当节点/边发生变更时被调用
    * 用于 DeltaSync 捕捉变更
    */
   public onRecordChange?: (name: string, fields: Record<string, any>) => void
@@ -506,7 +506,7 @@ export class GraphEngine {
     }
   }
 
-  /** 关闭数据库 */
+  /** Close database */
   close(): void {
     if (!this._isOpen) return
 
@@ -578,7 +578,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    *
    * @param typeId - 节点类型 ID
    * @param name - 节点名称
-   * @param opts - 可选参数（属性、向量、有效期、衰减因子、TTL）
+   * @param opts - Optional参数（属性、向量、有效期、衰减因子、TTL）
    * @returns 新插入或已有节点的 ID
    * @throws {Error} 如果 GraphEngine 未 open() 或同步复制超时
    */
@@ -643,10 +643,10 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }
 
   /**
-   * 根据节点 ID 获取节点记录
+   * 根据Node ID 获取节点记录
    *
-   * @param id - 节点 ID
-   * @param ctx - 可选的 RLS 上下文，如果提供则进行行级过滤
+   * @param id - Node ID
+   * @param ctx - Optional的 RLS 上下文，如果提供则进行行级过滤
    * @returns NodeRecord 或 null（节点不存在或 RLS 过滤掉时）
    * @throws {Error} 如果 GraphEngine 未 open()
    */
@@ -714,12 +714,12 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 删除指定 ID 的节点
    *
-   * @param id - 要删除的节点 ID
+   * @param id - 要删除的Node ID
    * @param skipReplication - 是否跳过 Multi-Leader 同步复制（默认 false）
    * @param cascade - 是否级联删除关联边（默认 false）
    *   cascade=true 时，先删除该节点的所有出边，然后删除节点本身。
-   *   注意：当前实现仅删除出边（src === id 的边），入边（dst === id 的边）不受影响。
-   * @param opts - 可选参数（如 _txId 事务 ID）
+   *   Note: 当前实现仅删除出边（src === id 的边），入边（dst === id 的边）不受影响。
+   * @param opts - Optional参数（如 _txId 事务 ID）
    * @returns true 如果节点存在且被删除，false 如果节点不存在
    * @throws {Error} 如果 GraphEngine 未 open()
    */
@@ -870,10 +870,10 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 插入或更新一条边（Multi-Leader 模式：同步等待所有远程节点 ACK）
    *
-   * @param src - 源节点 ID
-   * @param dst - 目标节点 ID
+   * @param src - 源Node ID
+   * @param dst - 目标Node ID
    * @param typeId - 边类型 ID
-   * @param opts - 可选参数
+   * @param opts - Optional参数
    * @throws {Error} 如果 GraphEngine 未 open() 或同步复制超时
    */
   async upsertEdge(src: NodeId, dst: NodeId, typeId: number, opts?: UpsertEdgeOptions): Promise<void> {
@@ -944,8 +944,8 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 获取指定边的记录
    *
-   * @param src - 源节点 ID
-   * @param dst - 目标节点 ID
+   * @param src - 源Node ID
+   * @param dst - 目标Node ID
    * @param typeId - 边类型 ID
    * @returns EdgeRecord 或 null（边不存在时）
    * @throws {Error} 如果 GraphEngine 未 open()
@@ -986,11 +986,11 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 删除指定边
    *
-   * @param src - 源节点 ID
-   * @param dst - 目标节点 ID
+   * @param src - 源Node ID
+   * @param dst - 目标Node ID
    * @param typeId - 边类型 ID
    * @param skipReplication - 是否跳过 Multi-Leader 同步复制（默认 false）
-   * @param opts - 可选参数（如 _txId 事务 ID）
+   * @param opts - Optional参数（如 _txId 事务 ID）
    * @returns true 如果边存在且被删除
    * @throws {Error} 如果 GraphEngine 未 open()
    */
@@ -1017,7 +1017,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       this._inDegreeCounts.set(dst, Math.max(0, (this._inDegreeCounts.get(dst) ?? 0) - 1))
     }
     // 更新度数缓存（D-07）— 无论 result 是否为 true，都递减缓存
-    // 注意：OverGraph 原生层 deleteEdge 返回 undefined，不依赖返回值
+    // Note: OverGraph 原生层 deleteEdge 返回 undefined，不依赖返回值
     this._outDegrees.set(src, Math.max(0, (this._outDegrees.get(src) ?? 0) - 1))
     this._inDegrees.set(dst, Math.max(0, (this._inDegrees.get(dst) ?? 0) - 1))
     this.onRecordChange?.(`edge:${src}->${dst}:${typeId}`, { _deleted: true, src, dst, typeId })
@@ -1047,11 +1047,11 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 批量删除节点
    *
-   * 注意：默认实现采用循环逐条调用 storage.deleteNode。
+   * Note: 默认实现采用循环逐条调用 storage.deleteNode。
    * 如果后端存储支持原生批量删除（如实现了 batchDeleteNodes 接口），
    * 则将委托给后端获得更高性能。
    *
-   * @param ids 要删除的节点 ID 列表
+   * @param ids 要删除的Node ID 列表
    * @returns 实际删除的节点数
    */
   async batchDeleteNodes(ids: NodeId[], skipReplication = false): Promise<number> {
@@ -1074,7 +1074,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
         this._inDegrees.delete(id)
         this._outDegrees.delete(id)
       }
-      // 注意：batchDeleteNodes 内部不会逐条递减计数
+      // Note: batchDeleteNodes 内部不会逐条递减计数
       // 无法精确知道哪些被真正删除了，从总数中安全递减
       this._nodeCount = Math.max(0, this._nodeCount - ids.length)
 
@@ -1150,9 +1150,9 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 获取指定节点的所有邻居
    *
-   * @param id - 节点 ID
-   * @param opts - 可选参数（maxDepth, edgeTypeFilter）
-   * @param ctx - 可选的 RLS 上下文，如果提供则对结果集进行行级过滤
+   * @param id - Node ID
+   * @param opts - Optional参数（maxDepth, edgeTypeFilter）
+   * @param ctx - Optional的 RLS 上下文，如果提供则对结果集进行行级过滤
    * @returns 包含 edges 和 nodes 数组的对象
    * @throws {Error} 如果 GraphEngine 未 open()
    */
@@ -1216,7 +1216,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    * 输入 N 个 nodeId，一次返回所有邻居。
    * 每个 nodeId 的 neighbors() 内部已自带 LRU 缓存，所以批量查询自然走缓存。
    *
-   * @param ids - 节点 ID 数组（batch）
+   * @param ids - Node ID 数组（batch）
    * @param opts - 查询选项（同 neighbors()）
    * @returns Map<NodeId, { edges; nodes }>
    */
@@ -1237,7 +1237,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    *
    * 与 batchNeighbors 功能相同，但名称更直观，且深度参数直接暴露。
    *
-   * @param ids - 节点 ID 数组
+   * @param ids - Node ID 数组
    * @param depth - 遍历深度（默认 1）
    * @returns Map<NodeId, { edges; nodes }>
    */
@@ -1373,7 +1373,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    *   ORDER BY / LIMIT / SKIP
    *
    * @param queryString - Cypher-lite 查询字符串
-   * @param ctx - 可选的 RLS 上下文，如果提供则对结果集进行行级过滤
+   * @param ctx - Optional的 RLS 上下文，如果提供则对结果集进行行级过滤
    * @param useOptimizer - 是否启用优化器桥接（默认 false 向后兼容）
    * @returns 查询结果（节点记录数组）
    */
@@ -2225,7 +2225,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     agg: { type: string; field?: string; alias?: string },
     groupBy?: string[],
   ): NodeRecord[] {
-    // 如果有 GROUP BY 列，执行分组聚合
+    // If any GROUP BY 列，执行分组聚合
     if (groupBy && groupBy.length > 0) {
       return this._execGroupByAggregation(nodes, agg, groupBy)
     }
@@ -2418,7 +2418,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }
 
   /** 扫描所有节点 */
-  /** 全量扫描所有节点，可选 limit 早期截断 */
+  /** 全量扫描所有节点，Optional limit 早期截断 */
   private _scanAll(limit?: number): NodeRecord[] {
     const records: NodeRecord[] = []
     for (const id of this._nodeIds) {
@@ -2431,7 +2431,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     return records
   }
 
-  /** 按 label (typeName) 扫描节点，可选 limit 早期截断 */
+  /** 按 label (typeName) 扫描节点，Optional limit 早期截断 */
   private _scanNodesByLabel(label: string, limit?: number): NodeRecord[] {
     const records: NodeRecord[] = []
     // 优先：使用字符串 label 索引（O(1) 查询，仅适用于 props._label 模式）
@@ -2482,7 +2482,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    *
    * @param opts 扫描选项
    * @param opts.limit 每页最大节点数（默认 100）
-   * @param opts.cursor base64 编码的上一页最后一个节点 ID；null 或 undefined 从头部开始
+   * @param opts.cursor base64 编码的上一页最后一个Node ID；null 或 undefined 从头部开始
    * @returns { nodes: NodeRecord[], nextCursor: string | null }
    *   nextCursor 为 null 表示已到最后一页
    */
@@ -2495,7 +2495,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       ? Number(Buffer.from(opts.cursor, 'base64').toString('utf-8'))
       : null
 
-    // 将节点 ID 排序，按序分页
+    // 将Node ID 排序，按序分页
     const sortedIds = Array.from(this._nodeIds).sort((a, b) => a - b)
 
     // 找到游标位置
@@ -2631,11 +2631,11 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    *
    * @param candidates - 起始节点列表
    * @param opts - 遍历选项
-   * @param opts.relationshipType - 边类型 ID（可选）
+   * @param opts.relationshipType - 边类型 ID（Optional）
    * @param opts.minDepth - 最小深度
    * @param opts.maxDepth - 最大深度
    * @param opts.direction - 遍历方向
-   * @param opts.ctx - RLS 上下文（可选）
+   * @param opts.ctx - RLS 上下文（Optional）
    * @returns 位于有效深度范围内的目标节点列表（去重）
    */
   private _executeVariableLengthTraversal(
@@ -2728,7 +2728,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    * 个性化 PageRank
    *
    * @param opts - 算法参数
-   * @returns 节点 ID 和对应分数的数组
+   * @returns Node ID 和对应分数的数组
    * @throws {Error} 如果 GraphEngine 未 open()
    */
   personalizedPageRank(opts: PersonalizedPageRankOptions): { nodeId: number; score: number }[] {
@@ -2761,7 +2761,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 计算连通分量
    *
-   * @param opts - 可选参数
+   * @param opts - Optional参数
    * @returns 连通分量数组
    * @throws {Error} 如果 GraphEngine 未 open()
    */
@@ -2801,10 +2801,10 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   // ──────────────────────────────────────────
 
   /**
-   * 按节点类型查找所有节点 ID
+   * 按节点类型查找所有Node ID
    *
    * @param typeId - 节点类型 ID
-   * @returns 该类型的所有节点 ID 数组
+   * @returns 该类型的所有Node ID 数组
    */
   findNodesByType(typeId: number): number[] {
     this._ensureOpen()
@@ -2812,12 +2812,12 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }
 
   /**
-   * 按节点属性查找节点 ID
+   * 按节点属性查找Node ID
    *
    * @param typeId - 节点类型 ID
    * @param propKey - 属性键名
    * @param propValue - 属性值
-   * @returns 匹配的节点 ID 数组
+   * @returns 匹配的Node ID 数组
    */
   findNodesByProperty(typeId: number, propKey: string, propValue: unknown): number[] {
     this._ensureOpen()
@@ -2862,7 +2862,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
   /**
    * 聚合计数
-   * @param typeFilter - 可选，按 typeId 过滤（节点类型）
+   * @param typeFilter - Optional，按 typeId 过滤（节点类型）
    * @returns 符合条件的节点数量
    */
   countNodes(typeFilter?: number[]): number {
@@ -2884,7 +2884,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 统计节点属性之和
    * @param field - 属性字段名（必须是数字类型）
-   * @param typeFilter - 可选，按 typeId 过滤
+   * @param typeFilter - Optional，按 typeId 过滤
    * @returns 属性值的总和
    */
   sumNodeProperty(field: string, typeFilter?: number[]): number {
@@ -2905,7 +2905,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 统计节点属性平均值
    * @param field - 属性字段名（必须是数字类型）
-   * @param typeFilter - 可选，按 typeId 过滤
+   * @param typeFilter - Optional，按 typeId 过滤
    * @returns 属性值的平均值，无匹配节点时返回 0
    */
   avgNodeProperty(field: string, typeFilter?: number[]): number {
@@ -2928,7 +2928,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 统计节点属性最大值
    * @param field - 属性字段名（必须是数字类型）
-   * @param typeFilter - 可选，按 typeId 过滤
+   * @param typeFilter - Optional，按 typeId 过滤
    * @returns 属性值的最大值，无匹配节点时返回 -Infinity
    */
   maxNodeProperty(field: string, typeFilter?: number[]): number {
@@ -2949,7 +2949,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 统计节点属性最小值
    * @param field - 属性字段名（必须是数字类型）
-   * @param typeFilter - 可选，按 typeId 过滤
+   * @param typeFilter - Optional，按 typeId 过滤
    * @returns 属性值的最小值，无匹配节点时返回 Infinity
    */
   minNodeProperty(field: string, typeFilter?: number[]): number {
@@ -2968,7 +2968,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }
 
   /**
-   * 获取引擎统计信息
+   * 获取引擎统计Info
    *
    * @returns 包含节点数、边数和磁盘占用字节的对象
    */
@@ -3009,7 +3009,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
   /**
    * BFS 遍历
-   * @param startNode - 起始节点 ID
+   * @param startNode - 起始Node ID
    * @returns Map<nodeId, { distance, parent }>
    */
   async bfs(startNode: NodeId): Promise<Map<NodeId, { distance: number; parent: NodeId | null }>> {
@@ -3020,8 +3020,8 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
   /**
    * DFS 遍历
-   * @param startNode - 起始节点 ID
-   * @param order - 可选，'pre' | 'post'
+   * @param startNode - 起始Node ID
+   * @param order - Optional，'pre' | 'post'
    * @returns { pre, post, parent }
    */
   async dfs(startNode: NodeId, order?: 'pre' | 'post'): Promise<{
@@ -3034,7 +3034,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
   /**
    * PageRank 计算
-   * @param options - 可选参数（dampingFactor, maxIterations, convergenceThreshold）
+   * @param options - Optional参数（dampingFactor, maxIterations, convergenceThreshold）
    * @returns Map<nodeId, rank>
    */
   async pagerank(options?: {
@@ -3049,8 +3049,8 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * 最短路径（无权图）
    * 使用 BFS 计算从 start 到 end 的最短路径
-   * @param start - 起始节点 ID
-   * @param end - 目标节点 ID
+   * @param start - 起始Node ID
+   * @param end - 目标Node ID
    * @returns { path, distance } | null
    */
   async shortestPath(start: NodeId, end: NodeId): Promise<{
@@ -3072,7 +3072,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
   /**
    * Dijkstra 最短路径（带权图）
-   * @param startNode - 起始节点 ID
+   * @param startNode - 起始Node ID
    * @returns Map<nodeId, { distance, parent }>
    */
   async dijkstra(startNode: NodeId): Promise<Map<NodeId, { distance: number; parent: NodeId | null }>> {
@@ -3322,7 +3322,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
   /**
    * 获取节点的 MVCC 版本号
-   * 返回 undefined 表示节点没有版本信息（非 MVCC 写入）
+   * 返回 undefined 表示节点没有版本Info（非 MVCC 写入）
    */
   getNodeVersion(nodeId: NodeId): number | undefined {
     return this._mvccVersions.get(nodeId)
@@ -3469,7 +3469,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    *
    * 支持四种相似度方法 + GNN 推理
    *
-   * @param seed 可选随机种子（用于可复现的负采样和划分）
+   * @param seed Optional随机种子（用于可复现的负采样和划分）
    */
   createLinkPredictor(seed?: number): LinkPredictor {
     this._ensureOpen()

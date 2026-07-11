@@ -180,7 +180,7 @@ export class GEPool {
 
     // 3. 达到 maxSize → 等待最近最少使用的写连接（fallback: 获取最早的空闲实例）
     // 当前实现：如果所有实例都在使用，获取最近最少使用的实例并复用
-    // 注意：这可能导致并发冲突。生产环境应该增加 maxSize 或使用队列。
+    // Note: 这可能导致并发冲突。生产环境应该增加 maxSize 或使用队列。
     const oldestIdle = this._instances
       .filter(i => !i.inUse)
       .sort((a, b) => a.lastUsed - b.lastUsed)[0]
@@ -198,7 +198,7 @@ export class GEPool {
     return lru.ge
   }
 
-  /** 释放连接回池 */
+  /** Release connection回池 */
   releaseConnection(ge: GraphEngine): void {
     const inst = this._instances.find(i => i.ge === ge)
     if (inst) {

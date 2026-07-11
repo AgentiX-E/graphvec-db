@@ -60,7 +60,7 @@ interface PreSyncMessage {
   totalChunks?: number
   /** 节点是否已就绪（在 ready 消息中使用） */
   ready?: boolean
-  /** 错误信息 */
+  /** ErrorInfo */
   error?: string
 }
 
@@ -135,7 +135,7 @@ export class PreSyncManager {
     this.logger.info(`[PreSync] Starting sync to ${peerId} seq=${seq}, term=${term}, commitIndex=${commitIndex}`)
 
     try {
-      // Step 1: 发送 pre-sync-start（包含当前状态信息）
+      // Step 1: 发送 pre-sync-start（包含当前状态Info）
       const startMsg: PreSyncMessage = {
         type: 'pre-sync-start',
         seq,
@@ -206,7 +206,7 @@ export class PreSyncManager {
       // wait for ready response — the actual await happens via handleMessage
       this.logger.info(`[PreSync] Waiting for ready from ${peerId}`)
 
-      // 注意：真正等待 ready 是通过 message handler 完成的
+      // Note: 真正等待 ready 是通过 message handler 完成的
       // 这里返回一个 Promise，在收到 ready 或超时后 resolve
       return new Promise<boolean>((resolve) => {
         const state = this._inProgress.get(peerId)
@@ -282,7 +282,7 @@ export class PreSyncManager {
         this.logger.info(`[PreSync] Received snapshot (${msg.snapshot.byteLength} bytes) from ${from}`)
       } catch (err: any) {
         this.logger.warn(`[PreSync] Failed to process snapshot: ${err.message}`)
-        // 忽略快照错误，继续
+        // 忽略快照Error，继续
       }
     }
   }
@@ -331,7 +331,7 @@ export class PreSyncManager {
     // 调用回调通知上层
     this.config.onResult(true, from)
 
-    // 如果有待处理的 resolve，调用
+    // If any待处理的 resolve，调用
     const resolver = (state as any)._resolve
     if (resolver) resolver(true)
 

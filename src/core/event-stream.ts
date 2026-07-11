@@ -93,7 +93,7 @@ export class EventStream {
   private logger: Logger
   private seq = 0
   private dedup: DedupRing
-  /** 发送 pending 追踪：msgId → { sentAt, retries } */
+  /** 发送 pending Trace：msgId → { sentAt, retries } */
   private pendingTracker = new Map<string, { sentAt: number; retries: number }>()
   /** 本地事件回调 */
   private handlers = new Map<string, EventHandler[]>()
@@ -342,7 +342,7 @@ export class EventStream {
     const raw = msg.data.__es_msg as StreamMessage | undefined
     if (!raw) {
       // 没有 __es_msg 的 data 消息 → 可能是 Outbox Worker 直接发的 replicated 事件
-      // 直接交给 applyHandler 处理（如果有注册）
+      // 直接交给 applyHandler 处理（If any注册）
       if (this.applyHandler && msg.data && typeof msg.data === 'object') {
         const inlineMsg: StreamMessage = {
           msgId: msg.msgId,

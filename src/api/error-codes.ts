@@ -1,5 +1,5 @@
 // ============================================================
-// ErrorCode — 标准错误码枚举
+// ErrorCode — 标准Error码枚举
 // REST API 响应统一包含 errorCode 字段，方便客户端处理
 // ============================================================
 
@@ -8,19 +8,19 @@ export enum ErrorCode {
   NODE_NOT_FOUND = 'NODE_NOT_FOUND',
   /** 边未找到 */
   EDGE_NOT_FOUND = 'EDGE_NOT_FOUND',
-  /** 查询语法错误 */
+  /** 查询语法Error */
   INVALID_QUERY = 'INVALID_QUERY',
   /** 输入参数校验失败 */
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   /** 重复条目 */
   DUPLICATE_ENTRY = 'DUPLICATE_ENTRY',
-  /** 事务错误 */
+  /** 事务Error */
   TRANSACTION_ERROR = 'TRANSACTION_ERROR',
   /** 权限不足 */
   PERMISSION_DENIED = 'PERMISSION_DENIED',
   /** 请求频率限制 */
   RATE_LIMITED = 'RATE_LIMITED',
-  /** 内部服务错误 */
+  /** 内部服务Error */
   INTERNAL_ERROR = 'INTERNAL_ERROR',
 }
 
@@ -48,7 +48,7 @@ export function inferErrorCode(statusCode: number): ErrorCode {
 }
 
 /**
- * 将错误实例映射为 ErrorCode（按消息关键词匹配），
+ * 将Error实例映射为 ErrorCode（按消息关键词匹配），
  * 如果无法识别则回退到 statusCode 推断。
  */
 export function errorToCode(err: unknown, statusCode?: number): ErrorCode {

@@ -103,7 +103,7 @@ export class DeltaSync {
       // 1. 更新 HLC
       this.clock.update(message.hlcTimestamp)
 
-      // 2. CRDT 合并
+      // 2. CRDT merge
       const merged = this.crdt.merge(message.delta)
 
       // 3. 写入本地 OverGraph

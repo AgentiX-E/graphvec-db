@@ -602,7 +602,7 @@ describe('SH01: Reshard 数据迁移', () => {
     computeChecksumsSpy.mockRestore()
   })
 
-  test('SH01: migrateRangeComplete 错误时 status 标记为 failed 并保留 error', async () => {
+  test('SH01: migrateRangeComplete Error时 status 标记为 failed 并保留 error', async () => {
     const mockSourceRange = {
       setDraining: vi.fn(),
       isDraining: vi.fn().mockReturnValue(false),

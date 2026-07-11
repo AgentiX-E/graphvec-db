@@ -6,11 +6,11 @@
 // 缓存到一个事务缓冲区中，在 commit 时按顺序回放执行。
 //
 // 隔离保证：
-// - writeSet/deleteSet 跟踪：每条写入操作追踪涉及的 NodeId/EdgeKey
-// - SSI（Serializable Snapshot Isolation）冲突检测：
+// - writeSet/deleteSet 跟踪：每条写入操作Trace涉及的 NodeId/EdgeKey
+// - SSI（Serializable Snapshot Isolation）Conflict detection：
 //   如果两个并发事务写入了同一个 key，后提交的一方抛出 WriteConflictError。
 // - SERIALIZABLE 隔离级别：基于 async-mutex 的写锁 +
-//   等待图（Wait-For Graph）死锁检测 +
+//   等待图（Wait-For Graph）Deadlock detected +
 //   写锁超时 + 自动回滚 + 指数退避重试
 // ============================================================
 
@@ -166,7 +166,7 @@ class WriteLockManager {
   }
 
   /**
-   * 获取当前持有给定 lockKey 的事务 ID（如果有）。
+   * 获取当前持有给定 lockKey 的事务 ID（If any）。
    */
   getCurrentOwner(lockKey: string): string | null {
     return this._lockOwners.get(lockKey) ?? null
@@ -190,10 +190,10 @@ class WriteLockManager {
   }
 }
 
-// ── 死锁检测器 ──
+// ── Deadlock detected器 ──
 
 /**
- * 基于等待图（Wait-For Graph）的死锁检测器。
+ * 基于等待图（Wait-For Graph）的Deadlock detected器。
  * 使用 Tarjan 算法检测有向环。
  */
 class DeadlockDetector {
@@ -238,7 +238,7 @@ class DeadlockDetector {
       if (!edges.has(txId)) edges.set(txId, new Set())
     }
 
-    // 从锁管理器的等待表中收集等待信息
+    // 从锁管理器的等待表中收集等待Info
     // 由于 WriteLockManager 的 lockKeys 不可直接枚举，使用间接方法
     return edges
   }
@@ -294,13 +294,13 @@ class DeadlockDetector {
 export interface SimpleTxnManagerOptions {
   /** 事务最大生存时间（毫秒），默认 30000（30 秒） */
   maxTxnAgeMs?: number
-  /** 是否启用 SSI 冲突检测，默认 true */
+  /** 是否启用 SSI Conflict detection，默认 true */
   enableSSI?: boolean
-  /** 隔离级别：'snapshot'（默认，SSI 冲突检测）或 'serializable'（写锁+死锁检测） */
+  /** 隔离级别：'snapshot'（默认，SSI Conflict detection）或 'serializable'（写锁+Deadlock detected） */
   isolationLevel?: 'snapshot' | 'serializable'
   /** 写锁超时时间（毫秒），默认 5000 */
   lockTimeoutMs?: number
-  /** 死锁检测间隔（毫秒），默认 1000 */
+  /** Deadlock detected间隔（毫秒），默认 1000 */
   deadlockCheckIntervalMs?: number
   /** 最大重试次数，默认 3 */
   maxRetries?: number
@@ -316,21 +316,21 @@ export class SimpleTxnManager {
   private _maxTxnAgeMs: number
   private _enableSSI: boolean
   private _cleanupTimer: ReturnType<typeof setInterval> | null = null
-  /** 已提交事务的 writeSet 历史（用于 SSI 冲突检测，定时清理） */
+  /** 已提交事务的 writeSet 历史（用于 SSI Conflict detection，定时清理） */
   private _committedWriteSets: { keys: Set<any>; expiredAt: number }[] = []
   /** 隔离级别 */
   private _isolationLevel: 'snapshot' | 'serializable'
   /** 写锁管理器 */
   private _lockManager: WriteLockManager
-  /** 死锁检测器 */
+  /** Deadlock detected器 */
   private _deadlockDetector: DeadlockDetector
   /** 写锁超时（ms） */
   private _lockTimeoutMs: number
-  /** 死锁检测间隔（ms） */
+  /** Deadlock detected间隔（ms） */
   private _deadlockCheckIntervalMs: number
   /** 最大重试次数 */
   private _maxRetries: number
-  /** 死锁检测定时器 */
+  /** Deadlock detected定时器 */
   private _deadlockTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(opts?: SimpleTxnManagerOptions) {
@@ -343,7 +343,7 @@ export class SimpleTxnManager {
     this._lockManager = new WriteLockManager()
     this._deadlockDetector = new DeadlockDetector()
 
-    // 如果启用 serializable，启动死锁检测
+    // 如果启用 serializable，启动Deadlock detected
     if (this._isolationLevel === 'serializable') {
       this._startDeadlockDetection()
     }
@@ -364,11 +364,11 @@ export class SimpleTxnManager {
 
   /**
    * 提交事务：
-   * - snapshot 模式：SSI 冲突检测后回放
+   * - snapshot 模式：SSI Conflict detection后回放
    * - serializable 模式：先获取写锁，再执行，再释放锁
    *
    * @param engine - GraphEngine 或 ShardManager，用于执行缓冲的操作
-   * @throws {WriteConflictError} 如果 SSI 冲突检测失败
+   * @throws {WriteConflictError} 如果 SSI Conflict detection失败
    * @throws {DeadlockError} 如果检测到死锁
    * @throws {LockTimeoutError} 如果获取写锁超时
    */
@@ -414,7 +414,7 @@ export class SimpleTxnManager {
           this._lockManager.releaseAllLocks(txId)
           continue
         }
-        // 其他错误直接抛出
+        // 其他Error直接抛出
         throw err
       }
     }
@@ -509,7 +509,7 @@ export class SimpleTxnManager {
   }
 
   /**
-   * 使用 Snapshot 隔离级别提交：SSI 冲突检测后回放
+   * 使用 Snapshot 隔离级别提交：SSI Conflict detection后回放
    */
   private async _commitSnapshot(
     txId: string,
@@ -520,7 +520,7 @@ export class SimpleTxnManager {
       throw new Error(`Transaction '${txId}' not found or already committed/rolled back`)
     }
 
-    // SSI 冲突检测：检查已提交事务历史中的 writeSet 冲突
+    // SSI Conflict detection：检查已提交事务历史中的 writeSet 冲突
     if (this._enableSSI) {
       this._cleanupCommittedWriteSets()
       for (const committed of this._committedWriteSets) {
@@ -558,7 +558,7 @@ export class SimpleTxnManager {
 
     const count = entry.ops.length
 
-    // 将当前 writeSet 加入已提交历史（保留 maxTxnAgeMs 用于冲突检测）
+    // 将当前 writeSet 加入已提交历史（保留 maxTxnAgeMs 用于Conflict detection）
     if (this._enableSSI && (entry.writeSet.nodes.size > 0 || entry.writeSet.edgeKeys.size > 0)) {
       const allKeys = new Set<any>([...entry.writeSet.nodes, ...entry.writeSet.edgeKeys])
       this._committedWriteSets.push({
@@ -588,7 +588,7 @@ export class SimpleTxnManager {
 
   /**
    * 向事务添加一个写入操作（由 GraphEngine 内部调用）
-   * 同时更新该事务的 writeSet，用于 SSI 冲突检测。
+   * 同时更新该事务的 writeSet，用于 SSI Conflict detection。
    */
   addOp(txId: string, op: WriteOp): void {
     const entry = this._txns.get(txId)
@@ -705,7 +705,7 @@ export class SimpleTxnManager {
   }
 
   /**
-   * 启动死锁检测（定期运行）
+   * 启动Deadlock detected（定期运行）
    */
   private _startDeadlockDetection(): void {
     this._deadlockTimer = setInterval(() => {
@@ -717,7 +717,7 @@ export class SimpleTxnManager {
   }
 
   /**
-   * 停止死锁检测
+   * 停止Deadlock detected
    */
   private _stopDeadlockDetection(): void {
     if (this._deadlockTimer !== null) {
@@ -727,7 +727,7 @@ export class SimpleTxnManager {
   }
 
   /**
-   * 执行死锁检测，如果有死锁则自动回滚最年轻的事务
+   * 执行Deadlock detected，If any死锁则自动回滚最年轻的事务
    */
   private _detectAndHandleDeadlocks(): void {
     // 通过活跃事务构建等待图
@@ -738,7 +738,7 @@ export class SimpleTxnManager {
       if (!wfg.has(txId)) wfg.set(txId, new Set())
     }
 
-    // 填充等待图（这里从 lockManager 获取信息）
+    // 填充等待图（这里从 lockManager 获取Info）
     // 实际等待关系在 WriteLockManager 内部管理
     // 此处简化实现：通过检测锁获取失败来判断
 

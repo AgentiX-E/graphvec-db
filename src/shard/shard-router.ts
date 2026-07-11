@@ -25,7 +25,7 @@ export class ShardRouter {
     )
   }
 
-  /** 根据节点 ID 获取目标 Range */
+  /** 根据Node ID 获取目标 Range */
   getRange(nodeId: NodeId): string {
     return this.ring.getNode(String(nodeId))
   }
@@ -42,9 +42,9 @@ export class ShardRouter {
    * 1. 优先根据 src 确定 range
    * 2. 如果 src range 不存在该边（返回 false），回退到 dst range
    *
-   * @param src 边的源节点 ID
-   * @param dst 边的目标节点 ID
-   * @param edgeExistsInSrcRange 可选的回调，检查边是否在 src range 中存在
+   * @param src 边的源Node ID
+   * @param dst 边的目标Node ID
+   * @param edgeExistsInSrcRange Optional的回调，检查边是否在 src range 中存在
    * @returns [primaryRangeId, fallbackRangeId]
    */
   getRangeForEdge(
@@ -77,17 +77,17 @@ export class ShardRouter {
    *
    * 基本策略：
    * 1. 默认使用一致性哈希
-   * 2. 如果有 edgeCount 信息，偏向 edgeCount 高的 range
+   * 2. If any edgeCount Info，偏向 edgeCount 高的 range
    *
    * @returns rangeId
    */
   recommendRoute(node: NodeRecord): string {
     const defaultRange = this.getRange(node.id)
 
-    // 基础版：如果有 degree/edgeCount，偏向高频 range
+    // 基础版：If any degree/edgeCount，偏向高频 range
     const degree = node.degree ?? 0
     if (degree > 0) {
-      // 高连通节点：使用节点 ID 的哈希路由（默认策略即可）
+      // 高连通节点：使用Node ID 的哈希路由（默认策略即可）
       // 后续可扩展为：查找与该节点有最多连边的 range
       return defaultRange
     }

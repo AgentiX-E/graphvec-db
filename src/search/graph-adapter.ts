@@ -49,7 +49,7 @@ export async function toGraphologyGraph(
   const nodeLimit = options.nodeLimit ?? 100_000
   const seenEdges = new Set<string>()
 
-  // 遍历所有节点：通过 _labelIndex.getNodeIds 获取全量节点 ID
+  // 遍历所有节点：通过 _labelIndex.getNodeIds 获取全量Node ID
   // 遍历所有可能的 typeId（1 到 10000）查询
   for (let typeId = 1; typeId <= 1000; typeId++) {
     const nodeIds = (engine as any)._labelIndex?.getNodeIds(typeId) ?? []

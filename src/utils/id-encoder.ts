@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
 
 /**
- * ID Encoder — 节点 ID 编解码工具
+ * ID Encoder — Node ID 编解码工具
  */
 export class IdEncoder {
   /**
-   * 将字符串名称哈希为数字节点 ID
+   * 将字符串名称哈希为数字Node ID
    *
    * 使用 SHA-256 取前 6 字节（48-bit），保证：
    * - 在 Number.MAX_SAFE_INTEGER (2^53 - 1) 内
@@ -24,7 +24,7 @@ export class IdEncoder {
   }
 
   /**
-   * 将数字节点 ID 转回字符串表示
+   * 将数字Node ID 转回字符串表示
    */
   static idToName(id: number): string {
     return String(id)

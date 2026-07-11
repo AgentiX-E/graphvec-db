@@ -426,7 +426,7 @@ describe('SegmentStreamWalAppendStream — fsync 策略与公开方法', () => {
     fs.closeSync(fd)
   })
 
-  it('显式指定 lazy 策略仍可覆盖默认值', () => {
+  it('显式指定 lazy 策略仍可覆盖Default value', () => {
     const fd = fs.openSync(tmpPath, 'w')
     const stream = new SegmentStreamWalAppendStream(fd, { fsyncStrategy: 'lazy' })
     expect((stream as any)._fsyncStrategy).toBe('lazy')

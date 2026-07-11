@@ -106,7 +106,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
         for (const v of edgeVars) if (v[1]) matchEdgeVars.add(v[1])
       }
-      // 如果 type() 的参数是节点变量（在 MATCH 中绑定为节点，且不是边），抛出错误
+      // 如果 type() 的参数是节点变量（在 MATCH 中绑定为节点，且不是边），抛出Error
       if (matchNodeVars.has(typeArg) && !matchEdgeVars.has(typeArg)) {
         throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
       }
@@ -163,7 +163,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
           /^(count|sum|avg|max|min|collect)\s*\(/i.test(rc)
         ).map((rc: string) => rc.replace(/\s+/g, ''))
       )
-      // 如果有多个不同聚合函数
+      // If any多个不同聚合函数
       if (aggSet.size > 1) {
         throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
       }
@@ -197,7 +197,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
 
   // ── SyntaxError: VariableAlreadyBound ──
   // 1. MATCH (n) CREATE (n:Person) — n 已在 MATCH 中绑定
-  // 注意：MATCH (x:X), (y:Y) CREATE (x)-[:R]->(y) 是合法的，x/y 在 createNodes 中
+  // Note: MATCH (x:X), (y:Y) CREATE (x)-[:R]->(y) 是合法的，x/y 在 createNodes 中
   // 仅当 createNode 有 label 或 props（即试图重新定义节点）时才视为 VariableAlreadyBound
   if (plan.hasMatch && plan.createNodes?.length) {
     const matchVars = extractMatchVariables(query)
@@ -213,7 +213,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   }
   // 2. CREATE (n:Foo) CREATE (n:Bar) — n 在同一语句中被绑定两次
   // 从 query 文本直接扫描所有 CREATE 中的变量
-  // 注意：CREATE (a) CREATE (a)-[:R]->(b) 中的 a 是引用已创建的变量，不是重新绑定
+  // Note: CREATE (a) CREATE (a)-[:R]->(b) 中的 a 是引用已创建的变量，不是重新绑定
   // 只有节点定义中的变量（出现在 (...) 内）才算绑定，边引用中的变量不算
   {
     const createVarCounts = new Map<string, number>()
@@ -279,7 +279,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         if (!/^[a-zA-Z_]\w*$/.test(varName)) continue
         if (/^(count|sum|avg|max|min|collect)$/i.test(varName)) continue
         // 如果这个变量在 plan 的已定义集合中找不到，也是未定义
-        // 注意：boundVars 从 text 提取可能不完整
+        // Note: boundVars 从 text 提取可能不完整
         // 只检查 CREATE (b {name: missing}) 这种括号内的 map literal 中的未定义变量
       }
     }
@@ -510,7 +510,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CALL 校验 — 编译时错误
+  // CALL 校验 — 编译时Error
   // ═══════════════════════════════════════════════════════════════
   if (plan.type === 'CALL' && query) {
     const cp = plan.callProcedure as { name: string; args: any[]; yieldItems?: Array<{ name: string; alias: string | null }> } | undefined

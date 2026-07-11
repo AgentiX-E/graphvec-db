@@ -405,7 +405,7 @@ export class Outbox implements IOutbox {
 //     ...
 //     _seq-counter.lmdb/ # 全局唯一序列计数器
 //
-// 每个 peer LMDB 内部使用 prefix-key：
+// 每个 peer LMDB Internal use prefix-key：
 //   msg:${seq}      → OutboxEntry
 //   seq             → lastSeq（全局唯一序列）
 //   pending         → 当前 pending 列表（"," 分隔的 seq）
@@ -712,7 +712,7 @@ export class PerPeerWorker {
   private criticalQueue: PendingItem[] = []
   private normalQueue: PendingItem[] = []
 
-  /** ack 追踪：msgId → sentAt */
+  /** ack Trace：msgId → sentAt */
   private ackTracker = new Map<string, number>()
 
   /** 上次发送时间（退避用） */
@@ -1019,7 +1019,7 @@ export class PerPeerWorker {
         this.serializedCache.delete(item.entry.msgId)
       }
 
-      // 成功：标记 delivered + 加入 ack 追踪
+      // 成功：标记 delivered + 加入 ack Trace
       this.lastSuccessfulSend.set(this.peerId, Date.now())
       this.outbox.markDeliveredBatch(entriesToDeliver)
       for (const item of batch) {

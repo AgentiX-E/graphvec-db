@@ -229,7 +229,7 @@ function fallbackTSNE(data: number[][], dim: number, originalDim: number): Reduc
 
 /**
  * 基于力的布局（Force-Directed Layout）
- * 使用边信息计算 2D 布局。
+ * 使用边Info计算 2D 布局。
  *
  * 适用于不需要降维、而是利用图拓扑结构的场景。
  *

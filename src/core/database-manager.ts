@@ -57,7 +57,7 @@ export interface Tombstone {
   ackNodes: string[]
   /** 数据库所属的所有 RaftGroup ID 列表 */
   groupIds: string[]
-  /** 回滚时间（可选） */
+  /** 回滚时间（Optional） */
   restoredAt?: string
 }
 
@@ -99,7 +99,7 @@ export class DatabaseManager {
 
   /**
    * 解析数据库名称，返回对应的 DatabaseInstance
-   * 如果数据库不存在则抛出错误
+   * 如果数据库不存在则抛出Error
    */
   resolve(name: string): DatabaseInstance {
     const db = this.databases.get(name)
@@ -134,7 +134,7 @@ export class DatabaseManager {
    * 创建新数据库
    *
    * @param name 数据库名称（用于 REST 路由路径）
-   * @param config 数据库配置
+   * @param config Database config
    * @returns DatabaseInstance
    */
   async createDatabase(name: string, config: Omit<DatabaseConfig, 'name'>): Promise<DatabaseInstance> {
@@ -257,7 +257,7 @@ export class DatabaseManager {
   /**
    * Phase 2: 冷静期内回滚删除 — 移除墓碑，恢复数据库
    *
-   * 注意：当前实现在 dropDatabase() Phase 0 之后已将数据库从 active map 中移除，
+   * Note: 当前实现在 dropDatabase() Phase 0 之后已将数据库从 active map 中移除，
    * 所以 restoreDatabase 需要重新注册数据库。
    *
    * 如果数据库仍为 active 状态，则无法执行回滚（无需回滚）。
@@ -444,7 +444,7 @@ export class DatabaseManager {
 
   // ── 持久化配置读写 ──────────────────────────────────────────────
 
-  /** 写入数据库配置到文件 */
+  /** 写入Database config到文件 */
   private async _writeConfig(name: string, config: DatabaseConfig): Promise<void> {
     const dbDir = this._databaseDir(name)
     await fs.promises.mkdir(dbDir, { recursive: true })
@@ -452,7 +452,7 @@ export class DatabaseManager {
     await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8')
   }
 
-  /** 读取数据库配置文件 */
+  /** 读取Database config文件 */
   private async _readConfig(name: string): Promise<DatabaseConfig | null> {
     try {
       const configPath = path.join(this._databaseDir(name), 'config.json')
@@ -532,7 +532,7 @@ export class DatabaseManager {
   }
 
   /**
-   * 获取所有数据库统计信息
+   * 获取所有数据库统计Info
    */
   getStats(): Record<string, { shardCount: number; dataDir: string }> {
     const stats: Record<string, { shardCount: number; dataDir: string }> = {}

@@ -298,7 +298,7 @@ export class CompositeIndex {
     this.uniqueConstraints = []
   }
 
-  /** 获取统计信息 */
+  /** 获取统计Info */
   stats(): IndexStats {
     const fieldKeys = new Set<string>()
     for (const [, record] of this.records) {

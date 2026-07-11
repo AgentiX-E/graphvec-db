@@ -139,7 +139,7 @@ export function displaySchema(ctx: ReplContext, log: (msg: string) => void = con
   log(`Nodes: ${stats.nodeCount}`)
   log(`Edges: ${stats.edgeCount}`)
 
-  // 从 label engine 获取类型信息
+  // 从 label engine 获取类型Info
   const nodeIds = engine.scanAllNodes()
   const typeSet = new Set<number>()
   for (const node of nodeIds) {
@@ -171,7 +171,7 @@ export function displaySchema(ctx: ReplContext, log: (msg: string) => void = con
 }
 
 // ──────────────────────────────────────────
-// 帮助信息
+// 帮助Info
 // ──────────────────────────────────────────
 
 export function displayHelp(ctx: ReplContext, log: (msg: string) => void = console.log): void {
@@ -215,7 +215,7 @@ export async function startRepl(ctx: ReplContext): Promise<void> {
   rl.on('line', (line: string) => {
     const trimmed = line.trim()
 
-    // 如果有累积 buffer，处理多行输入
+    // If any累积 buffer，处理多行输入
     if (multilineBuffer) {
       multilineBuffer += ' ' + trimmed
       if (trimmed.endsWith(';')) {

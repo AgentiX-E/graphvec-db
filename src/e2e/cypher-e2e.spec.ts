@@ -11803,7 +11803,7 @@ afterAll(() => {
     const eB2 = new GraphEngine(cfgB); await eB2.open(); try { expect(eB2.scanAllNodes()).toHaveLength(1) } finally { eB2.close() }
   }, 30000)
 
-// 维度2: 错误路径
+// 维度2: Error路径
   it('V57-e2e: error double close', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-err-dc'))
     await e.open(); try { await e.upsertNode(1, 'n', { props: {} }) } finally { e.close() }

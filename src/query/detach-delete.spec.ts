@@ -127,7 +127,7 @@ describe('DETACH DELETE 执行', () => {
     // 用深拷贝确保数据不被后续 DETACH DELETE 影响
     const graphClone = JSON.parse(JSON.stringify(graphWithEdges))
     // 因为 Bob（p2）有 _edges 和 _inEdges，Alice（p1）有 _edges
-    // 所以 DELETE（无 DETACH）应抛出错误
+    // 所以 DELETE（无 DETACH）应抛出Error
     expect(() => {
       _executeQuery(plan, graphClone)
     }).toThrow(/cannot delete/i)
@@ -197,7 +197,7 @@ describe('DETACH DELETE 执行', () => {
     // 由于 DELETE 无 RETURN，默认的返回行为是展示清理后的结果
     expect(Array.isArray(result)).toBe(true)
     // DETACH DELETE 的节点不应出现在结果中（它们已经从图数据中被删除了的概念）
-    // 注意：当前实现中，_executeQuery 不对节点过滤，仅清理边元数据。
+    // Note: 当前实现中，_executeQuery 不对节点过滤，仅清理边元数据。
     // 这个测试验证边已被清理且无报错。
     expect(result.length).toBeGreaterThanOrEqual(0)
   })

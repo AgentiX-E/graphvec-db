@@ -83,7 +83,7 @@ describe('parseQuery — Cypher-lite 解析 + QueryPlan 转换', () => {
     expect(plan.filters.length).toBe(0)
   })
 
-  it('解析错误抛出有意义的错误', () => {
+  it('解析Error抛出有意义的Error', () => {
     expect(() => parseQuery('SELECT * FROM users')).toThrow(/Query/)
   })
 
@@ -360,12 +360,12 @@ describe('parseQuery — DML 语句（CREATE / DELETE / SET / MERGE）', () => {
     expect(plan.returnColumns).toEqual(['n'])
   })
 
-  // TC-17.7: 语法错误恢复
-  it('语法错误 — CREAT (n)', () => {
+  // TC-17.7: 语法Error恢复
+  it('语法Error — CREAT (n)', () => {
     expect(() => parseQuery('CREAT (n)')).toThrow(/Query/)
   })
 
-  it('语法错误 — 非法关键字', () => {
+  it('语法Error — 非法关键字', () => {
     expect(() => parseQuery('DELET n')).toThrow(/Query/)
   })
 })
@@ -419,7 +419,7 @@ describe('parseQuery — Set operations (UNION / UNION ALL / INTERSECT / SUBTRAC
 // ── _executeQuery UNION 执行测试 ──
 
 describe('_executeQuery — Set operations with in-memory data', () => {
-  // 测试用节点数据
+  // Test only节点数据
   const testNodes = [
     { id: 1, name: 'Alice', age: 30 },
     { id: 2, name: 'Bob', age: 25 },
@@ -562,7 +562,7 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
   })
 
   // TC-P5: 缺少参数
-  it('缺少参数抛出有意义错误', () => {
+  it('缺少参数抛出有意义Error', () => {
     expect(() => {
       cypher(
         "MATCH (n:Person) WHERE n.name = $name AND n.age > $age RETURN n",
@@ -571,7 +571,7 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
     }).toThrow(/Missing parameter/)
   })
 
-  it('缺少参数错误信息包含参数名', () => {
+  it('缺少参数ErrorInfo包含参数名', () => {
     expect(() => {
       cypher(
         "MATCH (n:Person) WHERE n.name = $name RETURN n",
@@ -933,7 +933,7 @@ describe('变量长度路径查询', () => {
     expect(result).toHaveLength(0)
   })
 
-  it('单步变量长度—调试检查 range 是否传入', async () => {
+  it('单步变量长度—Debug检查 range 是否传入', async () => {
     const nodes = buildChain(5)
     const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
     expect(plan.scanLabel).toBe('Node')

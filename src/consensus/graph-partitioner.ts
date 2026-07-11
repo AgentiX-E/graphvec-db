@@ -74,7 +74,7 @@ export class GraphPartitioner {
   private adjacency: Map<NodeId, NodeId[]>  // 无向邻接表
 
   /**
-   * @param vertices - 所有节点 ID
+   * @param vertices - 所有Node ID
    * @param edges - 无向边 (src, dst)
    */
   constructor(vertices: NodeId[], edges: Array<{ src: NodeId; dst: NodeId }>) {
@@ -136,7 +136,7 @@ export class GraphPartitioner {
 
     const communityMap = louvainResult.communities as Map<number, number>
 
-    // Step 2: 收集社区信息
+    // Step 2: 收集社区Info
     const commNodes = new Map<number, NodeId[]>()
     for (const v of this.vertices) {
       const commId = communityMap.get(v as number)!
@@ -408,7 +408,7 @@ export class GraphPartitioner {
     strategy: PartitionStrategy,
     method: PartitionMethod,
   ): GraphPartitionerResult {
-    // 收集分区信息
+    // 收集分区Info
     const partitionNodes = new Map<number, NodeId[]>()
     for (const [node, partId] of assignment) {
       if (!partitionNodes.has(partId)) partitionNodes.set(partId, [])

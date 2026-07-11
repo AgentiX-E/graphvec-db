@@ -4,7 +4,7 @@
  * 测试 LmdbWal 的 append/truncate/readAll/destroy 等操作。
  * 使用临时目录存储 LMDB 数据库。
  *
- * 注意：LMDB 依赖本机 C 扩展；如果环境中没有 lmdb 原生库，
+ * Note: LMDB 依赖本机 C 扩展；如果环境中没有 lmdb 原生库，
  * 通过 try/catch 捕获并跳过测试。
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'

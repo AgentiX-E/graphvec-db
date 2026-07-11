@@ -37,7 +37,7 @@ export interface Node2VecOptions {
   learningRate?: number
   /** 训练迭代轮次（默认 5） */
   epochs?: number
-  /** 随机种子（可选，用于可重复结果） */
+  /** 随机种子（Optional，用于可重复结果） */
   seed?: number
   /** 用于序列化的嵌入向量是否包含偏置项（默认 false） */
   includeBias?: boolean
@@ -47,7 +47,7 @@ export interface Node2VecOptions {
  * Node2Vec 结果
  */
 export interface Node2VecResult {
-  /** 节点 ID → 嵌入向量 */
+  /** Node ID → 嵌入向量 */
   embeddings: Map<NodeId, number[]>
   /** 训练配置副本 */
   options: Required<Node2VecOptions>
@@ -70,9 +70,9 @@ export interface JaccardSimilarityResult {
 /**
  * 执行 Node2Vec 图嵌入训练。
  *
- * @param nodeIds - 所有节点 ID
- * @param getNeighbors - 返回邻居节点 ID 的函数
- * @param options - 可选配置
+ * @param nodeIds - 所有Node ID
+ * @param getNeighbors - 返回邻居Node ID 的函数
+ * @param options - Optional配置
  * @returns Node2VecResult
  */
 export function node2vec(
@@ -477,8 +477,8 @@ export function jaccardSimilarity(
 /**
  * 计算所有节点对的 Jaccard 邻接相似度（仅对有边的节点对）。
  *
- * @param nodeIds - 所有节点 ID
- * @param getNeighbors - 返回邻居节点 ID 的函数
+ * @param nodeIds - 所有Node ID
+ * @param getNeighbors - 返回邻居Node ID 的函数
  * @param threshold - 仅返回高于此阈值的相似度（默认 0）
  * @returns JaccardSimilarityResult
  */

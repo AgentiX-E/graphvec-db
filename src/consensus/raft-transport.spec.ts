@@ -188,7 +188,7 @@ describe('TcpTransport', () => {
     // 故意不给 t2 启动 + 不连接，使 sendTo 找不到连接
     // 注意: sendTo 在没有连接时会返回 false（同步路径）
     // 我们需要模拟"连接存在但消息收不到 ACK"的情况
-    // 方法：先创建一个错误的连接映射
+    // 方法：先创建一个Error的连接映射
 
     // 直接发送到不存在的 peer（没有连接）
     const result = await t1.sendTo('t2-ghost', Buffer.from('timeout-test'))
@@ -201,7 +201,7 @@ describe('TcpTransport', () => {
    * TC-3.3: 发送失败恢复
    *   peer 离线再上线，sendTo 恢复成功
    *
-   * 注意：TCP close 事件是异步的，所以我们设置短 ACK 超时来模拟"离线"。
+   * Note: TCP close 事件是异步的，所以我们设置短 ACK 超时来模拟"离线"。
    */
   test.skip('TC-3.3 should recover after peer goes offline and comes back', async () => {
     const testNs = ns()

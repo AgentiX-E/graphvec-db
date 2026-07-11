@@ -143,7 +143,7 @@ describe('B-04 PreVote 完整化', () => {
     const node = new RaftCore(makeCfg('n1', ['n2'], tmp), new MockTransport('n1'))
     await node.start()
 
-    // 等选举超时触发 PreVote（n2 没有注册到 MockTransport）
+    // 等Election timeout触发 PreVote（n2 没有注册到 MockTransport）
     // PreVote 会发给 n2，但得不到响应，结果 preVote 1/2 = 失败
     await new Promise(r => setTimeout(r, 1000))
 
@@ -179,7 +179,7 @@ describe('B-04 PreVote 完整化', () => {
     await node.stop()
   })
 
-  // ── TC7: PreVote 超时后恢复到 follower 不触发选举 ──
+  // ── TC7: PreVote 超时后恢复到 follower 不Trigger an election (campaign) ──
   test('TC7: pre-vote timeout reverts to follower without election', async () => {
     tmp = makeTmpDir()
     const node = new RaftCore(makeCfg('n1', ['slow-peer'], tmp), new MockTransport('n1'))
@@ -187,7 +187,7 @@ describe('B-04 PreVote 完整化', () => {
 
     // 用受控方式：模拟 PreVote 超时
     // PreVote 超时内部设置为 electionTimeoutMs*2 = 300ms
-    // 等待超时过后应该还是 follower（超时不触发选举）
+    // 等待超时过后应该还是 follower（超时不Trigger an election (campaign)）
     await new Promise(r => setTimeout(r, 1500))
 
     const role = (node as any)._role as string

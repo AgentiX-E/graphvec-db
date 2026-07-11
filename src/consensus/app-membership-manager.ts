@@ -62,26 +62,26 @@ export interface MembershipTransport {
 
 /** 成员变更管理器配置 */
 export interface MembershipManagerConfig {
-  /** 当前节点 ID */
+  /** 当前Node ID */
   nodeId: string
   /** 传输层接口 */
   transport: MembershipTransport
-  /** 路由表（可选） */
+  /** 路由表（Optional） */
   routeTable?: MembershipRouteTable
   /** 成员变更回调 */
   onMembershipChange: (members: string[]) => void
   /** 变更提案的 ACK 超时时间（ms），默认 5000 */
   ackTimeoutMs?: number
-  /** Leader 存活检查回调（可选），返回 true 表示 leader 存活 */
+  /** Leader 存活检查回调（Optional），返回 true 表示 leader 存活 */
   checkLeaderAlive?: () => Promise<boolean>
   /**
-   * Commit 前一致性检查（可选）
+   * Commit 前一致性检查（Optional）
    * 在 Phase 2（ACK 收集完成）后、Phase 3（广播 commit）前执行。
    * 返回 false → 取消变更，回滚 pending。
    */
   syncCheck?: () => Promise<boolean>
   /**
-   * PreSync 确认回调（可选）
+   * PreSync 确认回调（Optional）
    * 在 Phase 1（广播 proposal）前调用。
    * 用于验证新节点数据预同步已完成。
    */
@@ -106,7 +106,7 @@ interface PendingProposal {
  *
  * 支持安全的 addPeer/removePeer，不依赖 raft-logic WASM。
  *
- * 使用示例：
+ * 使用Example: 
  *
  * ```typescript
  * const mm = new AppMembershipManager({

@@ -58,7 +58,7 @@ function isWriteOp(plan: QueryPlan): boolean {
 /** GE 节点的类型：public API 缺失的类型补充 */
 interface GeNodeInfo { type: number; name: string }
 
-/** 执行 GE 查询计划（封装 _executeQueryPlan 私有方法） */
+/** 执行 GE 查询计划（封装 _executeQueryPlan Private method） */
 function _geExecQueryPlan(ge: any, plan: any): any[] {
   return (ge as any)._executeQueryPlan(plan)
 }
@@ -78,12 +78,12 @@ function _geGetNode(ge: any, id: number): GeNodeInfo | undefined {
   return (ge as any).getNode(id)
 }
 
-/** 解析边类型 ID（_resolveEdgeType 私有方法） */
+/** 解析边类型 ID（_resolveEdgeType Private method） */
 function _geResolveEdgeType(ge: any, label: string): number {
   return (ge as any)._resolveEdgeType(label)
 }
 
-/** 插入边（storage.upsertEdge 私有方法） */
+/** 插入边（storage.upsertEdge Private method） */
 function _geUpsertEdge(ge: any, srcId: number, dstId: number, typeId: number, props?: Record<string, unknown>): void {
   if (props) {
     (ge as any).storage.upsertEdge(srcId, dstId, typeId, { props })
@@ -250,7 +250,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // GE 的 _executeQueryPlan 在 steps 遍历后才对结果节点应用 filter，
     // 且 _matchFilter 忽略 filter.source。对于 WHERE n.name = 'Bob'
     // 这种 source 变量是步骤起点的 filter，在 seed 阶段跳过不匹配的节点。
-    // 注意：allNodes 必须保持原样（__edges 的 srcIdx/dstIdx 依赖原始索引），
+    // Note: allNodes 必须保持原样（__edges 的 srcIdx/dstIdx 依赖原始索引），
     // 所以在 seed 循环中条件跳过，而非过滤 allNodes。
     // 跨变量属性引用检测：f.value 格式为 `var.property`，不能在 seed 阶段用常数比较
     const _isVarRef = (v: any): boolean => typeof v === 'string' && /^\w+\.\w+$/.test(v) && !/^['"]/.test(v) && !/^\d/.test(v)
@@ -288,7 +288,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── 索引加速预过滤：当 plan 有 scanLabel 且 EQ filter 匹配已注册索引时 ──
     // 利用 _getIndex 检查 (scanLabel, property) 是否已注册索引
-    // 即使索引没有 build 节点 ID 集，也可以用 scanLabel + filter 值做预过滤
+    // 即使索引没有 build Node ID 集，也可以用 scanLabel + filter 值做预过滤
     const indexedEqFilters: Array<{ filter: any; index: IndexEntry }> = []
     if (plan.scanLabel) {
       for (const f of (plan.filters || [])) {
@@ -909,7 +909,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                   if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[lastStepV.targetAlias][k] = targetNode[k]
                 }
               }
-              // 用 boundedPaths 补充中间节点和边标签信息
+              // 用 boundedPaths 补充中间节点和边标签Info
               if (boundedPaths?.length > 0) {
                 const matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
                 if (matchingPath && matchingPath.length >= 2) {
@@ -981,7 +981,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
               geNode.__crossVarRows = {}
               if (plan.steps?.length) {
                 const thisStep = plan.steps[plan.steps.length - 1]
-                // 绑定 targetAlias（如果有命名目标且非空）
+                // 绑定 targetAlias（If any命名目标且非空）
                 if (thisStep.targetAlias) {
                   const cvrNode: Record<string, unknown> = {}
                   for (const k of Object.keys(targetNode)) {
@@ -1020,7 +1020,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 }
               }
               // ── 多步多 RETURN 变量支持 ──
-              // 如果有多个 RETURN 的非 source 变量（如 `RETURN b, c`），
+              // If any多个 RETURN 的非 source 变量（如 `RETURN b, c`），
               // 对每个非最终步的 targetAlias，收集其节点属性存入 __targetPropsMap
               if (plan.returnColumns && plan.returnColumns.length > 1 && plan.steps.length > 1) {
                 const firstSrc = plan.steps[0].source
@@ -1132,7 +1132,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
                 if (p2.steps?.[0]) p2.steps[0].edgeLabel = ol.label
                 const subRaw: any[] = _geExecQueryPlan(ge, p2)
                 for (const r of subRaw || []) {
-                  // 保存边标签信息用于 RETURN r 格式化
+                  // 保存边标签Info用于 RETURN r 格式化
                   if (!combined.has(String(r.id) + '__' + ol.label)) {
                     const rec = r.id !== undefined ? { ...r, id: r.id } : r
                     rec.__edgeLabel = ol.label
@@ -1162,8 +1162,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           return __t5RawRecords
         })()
     // Fallback: useEdgeWalk=false 且 hasMatch 时，从 GE 获取全部节点
-    // 注意：当 GE 的标签扫描返回空（标签不匹配）时，不可回退到全量扫描，
-    // 否则会错误地匹配不存在的标签。条件加上了 scanLabel 不再回退的检查。
+    // Note: 当 GE 的标签扫描返回空（标签不匹配）时，不可回退到全量扫描，
+    // 否则会Error地匹配不存在的标签。条件加上了 scanLabel 不再回退的检查。
     if (!useEdgeWalk && plan.hasMatch && !rawRecords?.length && allNodes.length && !plan.scanLabel) {
       const scanPlan = JSON.parse(JSON.stringify({ ...plan, scanLabel: null, callProcedure: undefined }, _bigintReplacer), _bigintReviver)
       delete scanPlan.callProcedure
@@ -1198,7 +1198,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
       })
     }
 
-    // GE 的 _executeQueryPlan 总是返回遍历后的目标节点，不保留 source 节点信息。
+    // GE 的 _executeQueryPlan 总是返回遍历后的目标节点，不保留 source 节点Info。
     // 当 RETURN n（steps[0].source）时，需要将 GE 返回的 target 节点映射回 source 节点。
     // 通过 sourceTargetMap 完成：targetGeId → sourceGeIds[].
     // 如果某个 target 对应多个 source（多对多），也可能是一个 source 对多个 target（一对多）。
@@ -1376,7 +1376,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // [CVE-H4]: 此处的代码是 line 1551 处预过滤的重复实现，且当 skipNodeIndices
     // 已被 seed 阶段填充时跳过不执行。已移除。若 inlineVar 不是 step source，
     // 需在此处做兜底过滤而非依赖 isMatchSource 条件。
-    // 注意：seed 阶段的预过滤（line 1551）在 `!stepSourceFilters.length` 条件下执行，
+    // Note: seed 阶段的预过滤（line 1551）在 `!stepSourceFilters.length` 条件下执行，
     // 如果 stepSourceFilters 存在（如 MatchWhere2+3 跨变量场景），inline 过滤可能被跳过。
     // 但 stepSourceFilters 存在时 MATCH 模式复杂，inline 属性匹配通常由 ANTLR plan.filters 处理。
     // TODO: 如果需要全覆盖，应在 _walkMultiSteps 或 GE 结果后添加无条件 inline 属性过滤。
@@ -1387,7 +1387,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     }
 
     // ── labelExpr 过滤（多标签 AND 匹配） ──
-    // 注意：labelExpr 与 step.targetLabel 存在架构冗余（M1），
+    // Note: labelExpr 与 step.targetLabel 存在架构冗余（M1），
     // labelExpr 在 GE stepping 后再过滤，step.targetLabel 在 _walkMultiSteps
     // 每步立即过滤。两者都起作用但不冲突：step.targetLabel 做早期截断，
     // labelExpr 兜底（多标签 AND 匹配时 GE stepping 无法处理多标签）。
@@ -1821,7 +1821,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── edgeProps（内联关系属性谓词）过滤 ──
     // MATCH (node)-[r:KNOWS {name: 'monkey'}]->(a) — steps 中的 edgeProps
-    // 利用 edgesPayload（从 __edges 提取的边信息）来验证边属性是否匹配
+    // 利用 edgesPayload（从 __edges 提取的边Info）来验证边属性是否匹配
     const edgePropSteps = (plan.steps || []).filter(s => s.edgeProps && Object.keys(s.edgeProps).length > 0)
     const edgePropFilteredRecords = (edgePropSteps.length && edgesPayload.length)
       ? (filteredWithLabels || []).filter((r: any) => {
@@ -1853,8 +1853,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── 边变量后处理 ──
     // 如果 returnColumns 包含边变量（如 MATCH (a)-[r]->(b) RETURN r），
-    // GE 的 _executeQueryPlan 只返回邻居节点，不追踪边。
-    // 从 edgesPayload（__edges 信息）中获取边标签构建 [:T1] 格式。
+    // GE 的 _executeQueryPlan 只返回邻居节点，不Trace边。
+    // 从 edgesPayload（__edges Info）中获取边标签构建 [:T1] 格式。
     // 策略：
     // 1. 如果 MATCH 指定了 edgeLabel（:T1），直接用 query 的 label
     // 2. 如果未指定，从 edgesPayload 按 srcIdx→dstIdx 匹配边标签
@@ -1893,7 +1893,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
           const row: Record<string, unknown> = {}
           if (r.props) Object.assign(row, r.props)
           // 对于多边变量：按遍历步骤顺序分配边。edgeVarCols 的顺序对应遍历步骤顺序。
-          // edgesPayload 中边的顺序为遍历中匹配的顺序，如果有多个边变量且边数匹配，
+          // edgesPayload 中边的顺序为遍历中匹配的顺序，If any多个边变量且边数匹配，
           // 则按顺序分配（适用于链式匹配如 ()-[r1:T1]->()-[r2:T2]->()）
           const edgeVarCount = edgeVarCols.length
           const sequentialMatch = (edgeVarCount === edgesPayload.length && edgeVarCount > 1 && edgesPayload.every((e: any) => e.label))
@@ -2057,7 +2057,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── WHERE 子句后处理过滤（表达式引擎处理 GE 不支持的复杂 boolean 表达式） ──
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
-    // 注意：即使 plan.aggregate 存在，也必须先应用 WHERE 再聚合。
+    // Note: 即使 plan.aggregate 存在，也必须先应用 WHERE 再聚合。
     if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind)) {
       const filteredResult: QueryRow[] = []
       for (let ri = 0; ri < result.length; ri++) {
@@ -2159,7 +2159,7 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
 
     // ── 聚合处理 ──
     // 对 MATCH + RETURN count/sum/avg/min/max 的结果做聚合
-    // GE 的 _execAggregation 可能因 walk path 节点丢失而返回错误的值，
+    // GE 的 _execAggregation 可能因 walk path 节点丢失而返回Error的值，
     // 所以 QE 始终在 GE 的原始 rawWithEdges 上执行聚合。
     // 对于无 GROUP BY 的聚合（count/sum/avg/min/max），GE 返回单个聚合节点；
     // 有 GROUP BY 时 GE 的 GROUP BY 已经正确执行，不需要 QE 二次聚合。
@@ -2243,8 +2243,8 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── plan.filters 后处理过滤（补 WHERE 后处理不覆盖的 filter） ──
     // WHERE 后处理依赖 whereBody 字符串，但对于 STARTS_WITH / ENDS_WITH / CONTAINS
     // 等操作符，whereBody 可能被截断（ANTLR 适配器问题）。plan.filters 包含完整
-    // 的结构化 filter 信息，在此处对所有未在 GE 预过滤中处理的结果做二次过滤。
-    // 注意：如果 whereBody 已经处理过（result 已被过滤），跳过此步避免重复过滤
+    // 的结构化 filter Info，在此处对所有未在 GE 预过滤中处理的结果做二次过滤。
+    // Note: 如果 whereBody 已经处理过（result 已被过滤），跳过此步避免重复过滤
     // 破坏与 whereBody 语义一致的扁平化结果。
     if (plan.filters?.length && result.length && !plan.aggregate && !plan.whereBody) {
       if (plan.returnColumns?.some(c => c === 'i.var' || c === 'var') || (plan.whereBody && plan.whereBody.includes('>') && plan.whereBody.includes('IS NOT NULL'))) {
@@ -2310,14 +2310,14 @@ async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<strin
     // ── OPTIONAL MATCH 处理 ──
     // 对主查询的每一行结果，尝试匹配 optionalMatchSteps 中的每个 optional MATCH 模式。
     // 成功 → 将匹配到的节点/边合并到 row；失败 → 填充 null。
-    // 注意：此处的实现假设 OPTIONAL MATCH 使用临时 GE 实例，与主查询共享 allNodes。
+    // Note: 此处的实现假设 OPTIONAL MATCH 使用临时 GE 实例，与主查询共享 allNodes。
     if (plan.optionalMatchSteps?.length && result.length) {
       for (const opt of plan.optionalMatchSteps) {
         const optRecords: Array<{ row: QueryRow; props: Record<string, unknown> | null }> = []
         for (let ri = 0; ri < result.length; ri++) {
           const row = result[ri]
           // 构建 OPTIONAL MATCH 的 GE plan
-          // scanLabel 可选：如果为 null，扫描 allNodes 中的所有节点
+          // scanLabel Optional：如果为 null，扫描 allNodes 中的所有节点
           const optPlan: any = {
             type: 'QUERY',
             scanLabel: opt.scanLabel,
@@ -2668,7 +2668,7 @@ export async function _executeQuery(
   }
 
   // 对不需要 GE 的快捷路径，Plan 深拷贝可以延迟到真正需要时
-  // 注意：_executeViaGraphEngine 内部会 mutate plan.filters/plan.steps，
+  // Note: _executeViaGraphEngine 内部会 mutate plan.filters/plan.steps，
   // 所以 GE 路径必须在执行前深拷贝
   // 快捷路径（LOAD CSV, SHOW, catalog, DML, bare CALL）不 mutate plan → 无需拷贝
 

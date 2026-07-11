@@ -178,7 +178,7 @@ export class PermissionResolver {
 
   /**
    * 检查节点删除操作是否允许。
-   * 先做 RBAC 检查，再做可选的 RLS 检查。
+   * 先做 RBAC 检查，再做Optional的 RLS 检查。
    */
   checkNodeDelete(
     ctx: PermissionContext,
@@ -248,7 +248,7 @@ export class PermissionResolver {
  * 等入口前注入权限检查，返回一个代理对象。
  *
  * @param engine 原始的 GraphEngine 实例
- * @param resolver PermissionResolver 实例（可选，默认为新实例）
+ * @param resolver PermissionResolver 实例（Optional，默认为新实例）
  * @returns PermissionGuardian 代理
  *
  * 使用方式:

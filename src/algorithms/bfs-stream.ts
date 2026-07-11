@@ -36,7 +36,7 @@ export async function bfsStream(
   const allNodeIds = new Set<NodeId>()
   allNodeIds.add(startNode)
 
-  // 先收集所有节点 ID
+  // 先收集所有Node ID
   for await (const batch of nodesBatches) {
     for (const n of batch) {
       allNodeIds.add(n.id)

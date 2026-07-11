@@ -24,7 +24,7 @@ const DEFAULT_TIMEOUT_MS = 30000
  *
  * @param fnOrPromise - 查询函数或 Promise
  * @param timeoutMs - 超时毫秒数（默认 30000）
- * @param abortSignal - 外部 AbortSignal（可选，用于级联取消）
+ * @param abortSignal - 外部 AbortSignal（Optional，用于级联取消）
  * @returns 查询结果
  */
 export async function withQueryTimeout<T>(

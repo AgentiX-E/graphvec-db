@@ -118,7 +118,7 @@ export function createImportCommand(engine?: GraphEngine): Command {
     }) => {
       const filePath = path.resolve(csvFile)
       if (!fs.existsSync(filePath)) {
-        console.error(`错误: 文件不存在: ${filePath}`)
+        console.error(`Error: 文件不存在: ${filePath}`)
         process.exit(1)
       }
 
@@ -189,8 +189,8 @@ export function createImportCommand(engine?: GraphEngine): Command {
     .description('从 CSV 文件批量导入边')
     .argument('<csv-file>', 'CSV 文件路径')
     .requiredOption('--type <typeName>', '边类型名称（如 KNOWS）')
-    .requiredOption('--from <col>', '源节点 ID 的列名')
-    .requiredOption('--to <col>', '目标节点 ID 的列名')
+    .requiredOption('--from <col>', '源Node ID 的列名')
+    .requiredOption('--to <col>', '目标Node ID 的列名')
     .option('--delimiter <char>', 'CSV 分隔符', ',')
     .option('--batch-size <n>', '每批提交边数', '1000')
     .action(async (csvFile: string, options: {
@@ -202,7 +202,7 @@ export function createImportCommand(engine?: GraphEngine): Command {
     }) => {
       const filePath = path.resolve(csvFile)
       if (!fs.existsSync(filePath)) {
-        console.error(`错误: 文件不存在: ${filePath}`)
+        console.error(`Error: 文件不存在: ${filePath}`)
         process.exit(1)
       }
 
@@ -215,11 +215,11 @@ export function createImportCommand(engine?: GraphEngine): Command {
       const fromIdx = columns.indexOf(options.from)
       const toIdx = columns.indexOf(options.to)
       if (fromIdx === -1) {
-        console.error(`错误: 列 "${options.from}" 在 CSV 中不存在。可用列: ${columns.join(', ')}`)
+        console.error(`Error: 列 "${options.from}" 在 CSV 中不存在。可用列: ${columns.join(', ')}`)
         process.exit(1)
       }
       if (toIdx === -1) {
-        console.error(`错误: 列 "${options.to}" 在 CSV 中不存在。可用列: ${columns.join(', ')}`)
+        console.error(`Error: 列 "${options.to}" 在 CSV 中不存在。可用列: ${columns.join(', ')}`)
         process.exit(1)
       }
 
@@ -274,7 +274,7 @@ export function createImportCommand(engine?: GraphEngine): Command {
     }) => {
       const filePath = path.resolve(file)
       if (!fs.existsSync(filePath)) {
-        console.error(`错误: 文件不存在: ${filePath}`)
+        console.error(`Error: 文件不存在: ${filePath}`)
         process.exit(1)
       }
 

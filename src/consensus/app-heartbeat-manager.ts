@@ -20,9 +20,9 @@ export interface HeartbeatTransport {
   send(peerId: string, msg: any): Promise<void>
 }
 
-/** 心跳管理器配置 */
+/** Heartbeat manager配置 */
 export interface HeartbeatConfig {
-  /** 当前节点 ID */
+  /** 当前Node ID */
   nodeId: string
   /** peer 列表 */
   peers: Array<{ nodeId: string; addr: string }>
@@ -53,11 +53,11 @@ interface PeerHeartbeatState {
 }
 
 /**
- * 应用层心跳管理器
+ * 应用层Heartbeat manager
  *
  * 提供独立于 raft-logic WASM 的分区检测。
  *
- * 使用示例：
+ * 使用Example: 
  *
  * ```typescript
  * const hb = new AppHeartbeatManager({
@@ -314,7 +314,7 @@ export class AppHeartbeatManager {
   }
 
   /**
-   * 手动触发一次 tick（测试用）
+   * 手动触发一次 tick（Test only）
    * 发送 ping + 检查超时 + 重新计算 majority
    */
   async manualTick(): Promise<void> {

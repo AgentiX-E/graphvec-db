@@ -7,7 +7,7 @@ import { Telemetry } from '../ops/otel'
 import { MetricsCollector } from '../ops/otel-metrics'
 
 /**
- * 冲突解决策略枚举
+ * Conflict resolution strategy枚举
  */
 export type ConflictResolution = 'accept' | 'reject' | 'merge'
 
@@ -15,7 +15,7 @@ export type ConflictResolution = 'accept' | 'reject' | 'merge'
  * 纯函数：基于 HLC 时间戳的 LWW 冲突解决
  *
  * @param remote 远程 delta
- * @param localTimestamp 本地已应用的 HLC 时间戳（可选）
+ * @param localTimestamp 本地已应用的 HLC 时间戳（Optional）
  * @param strategy 冲突策略
  * @returns 'accept' — 接受远程变更 | 'reject' — 拒绝远程变更 | 'merge' — 合并双方
  */
@@ -52,7 +52,7 @@ export function resolveConflict(
 }
 
 /**
- * DCSync — 跨数据中心同步协调器
+ * DCSync — Cross-DC sync协调器
  *
  * 使用 ZMQ PUB/SUB 模式：
  * - PUB: 定时广播本 DC 的 delta 变更

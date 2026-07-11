@@ -63,7 +63,7 @@ describe('execQuery — 命名参数（$name 语法）', () => {
     }).toThrow(/\$name/)
   })
 
-  it('缺少命名参数 $name 错误信息含参数名', () => {
+  it('缺少命名参数 $name ErrorInfo含参数名', () => {
     expect(() => {
       execQuery(
         "MATCH (n:Person) WHERE n.name = $name AND n.age > $age RETURN n",

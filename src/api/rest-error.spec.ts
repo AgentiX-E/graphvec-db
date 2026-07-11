@@ -1,7 +1,7 @@
 // ============================================================
-// rest-error.spec.ts — REST API 错误码标准化测试
+// rest-error.spec.ts — REST API Error码标准化测试
 //
-// 验证所有错误响应统一包含 { error, code, errorCode } 格式。
+// 验证所有Error响应统一包含 { error, code, errorCode } 格式。
 // ============================================================
 
 import { describe, test, expect, vi } from 'vitest'
@@ -36,8 +36,8 @@ function makeFakeRes(): [any, CapturedResponse] {
 
 // ── 测试 ──────────────────────────────────────────────────
 
-describe('REST API — 标准错误响应格式', () => {
-  test('400 错误响应包含 error, code, errorCode 字段', () => {
+describe('REST API — 标准Error响应格式', () => {
+  test('400 Error响应包含 error, code, errorCode 字段', () => {
     const [res, cap] = makeFakeRes()
     jsonResponse(res, 400, { error: 'Invalid input' })
 

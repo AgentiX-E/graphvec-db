@@ -120,14 +120,14 @@ const ARCHIVE_PREFIX = 'wal-archive-'
 /**
  * WalArchiver — WAL 文件归档工具
  *
- * 将 WAL 文件复制到归档目录并添加时间戳命名，
+ * 将 WAL 文件复制到Archive directory并添加时间戳命名，
  * 支持列出归档和按保留数量清理。
  */
 export class WalArchiver {
   /**
    * 归档指定 WAL 文件到存档目录
    * @param walPath 源 WAL 文件路径
-   * @param archiveDir 归档目录
+   * @param archiveDir Archive directory
    * @returns 归档记录
    */
   async archiveWal(walPath: string, archiveDir: string): Promise<WalArchive> {
@@ -138,7 +138,7 @@ export class WalArchiver {
    * 同步版 archiveWal（用于不需要 async 的扫描场景）
    */
   archiveWalSync(walPath: string, archiveDir: string): WalArchive {
-    // 确保归档目录存在
+    // 确保Archive directory存在
     fs.mkdirSync(archiveDir, { recursive: true })
 
     const timestamp = Date.now()
@@ -167,7 +167,7 @@ export class WalArchiver {
 
   /**
    * 列出所有 WAL 归档，按时间排序（升序）
-   * @param archiveDir 归档目录
+   * @param archiveDir Archive directory
    */
   async listArchives(archiveDir: string): Promise<WalArchive[]> {
     try {
@@ -200,7 +200,7 @@ export class WalArchiver {
 
   /**
    * 清除旧归档，只保留最近的 retentionCount 个
-   * @param archiveDir 归档目录
+   * @param archiveDir Archive directory
    * @param retentionCount 保留数量
    */
   async cleanupArchives(archiveDir: string, retentionCount: number): Promise<void> {
@@ -219,9 +219,9 @@ export class WalArchiver {
   }
 
   /**
-   * 从归档目录列出恢复点
+   * 从Archive directory列出恢复点
    * 每个 WAL 归档代表一个增量恢复点
-   * @param archiveDir 归档目录
+   * @param archiveDir Archive directory
    */
   async listRecoveryPoints(archiveDir: string): Promise<RecoveryPoint[]> {
     const archives = await this.listArchives(archiveDir)

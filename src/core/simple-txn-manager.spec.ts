@@ -703,7 +703,7 @@ describe('SimpleTxnManager — deep test: concurrent writes', () => {
     expect(mgr.activeCount).toBe(0)
   })
 
-  test('并发写入相同节点冲突检测', async () => {
+  test('并发写入相同节点Conflict detection', async () => {
     await env.engine.upsertNode(1, 'conflict-target')
     const mgr = env.engine.simpleTxnMgr
     const txA = mgr.begin('A')

@@ -157,7 +157,7 @@ export class IncrementalBackupManager {
       this._writeMetadata(destDir, metadata)
       this._metadataCache.set(snapshotId, metadata)
 
-      // 更新前一个快照的 nextSnapshotIds（如果有增量链）
+      // 更新前一个快照的 nextSnapshotIds（If any增量链）
       this._updatePrevSnapshotLinks(snapshotId)
 
       // 清理过期快照
@@ -205,7 +205,7 @@ export class IncrementalBackupManager {
         latestSnapshot.walSeqMax,
       )
 
-      // 拷贝 metadata 和 marker 文件（它们不含实际数据，但用于恢复链追踪）
+      // 拷贝 metadata 和 marker 文件（它们不含实际数据，但用于恢复链Trace）
       this._copyNonWalFiles(this._config.dataDir, destDir)
 
       const fileCount = changedFiles.nonWalCount + changedFiles.walCount

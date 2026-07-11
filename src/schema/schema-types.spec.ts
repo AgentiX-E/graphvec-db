@@ -2,7 +2,7 @@
  * schema-types.spec.ts — Schema 类型定义单元测试
  *
  * 覆盖 FieldType/FieldDef/NodeTypeDef/EdgeTypeDef/SchemaDef 的数据结构
- * 注意：不测试 schema-validator 的逻辑，仅测试类型定义本身
+ * Note: 不测试 schema-validator 的逻辑，仅测试类型定义本身
  */
 import { describe, it, expect } from 'vitest'
 
@@ -61,7 +61,7 @@ describe('FieldDef', () => {
     expect(field.type).toBe('string')
   })
 
-  it('应构造包含所有可选字段的 FieldDef', () => {
+  it('应构造包含所有Optional字段的 FieldDef', () => {
     const field: FieldDef = {
       name: 'age',
       type: 'number',
@@ -76,7 +76,7 @@ describe('FieldDef', () => {
     expect(field.description).toBe('Age of the person')
   })
 
-  it('应构造包含 null 默认值的 FieldDef', () => {
+  it('应构造包含 null Default value的 FieldDef', () => {
     const field: FieldDef = {
       name: 'nickname',
       type: 'string',
@@ -86,7 +86,7 @@ describe('FieldDef', () => {
     expect(field.default).toBeNull()
   })
 
-  it('应构造 boolean 默认值的 FieldDef', () => {
+  it('应构造 boolean Default value的 FieldDef', () => {
     const field: FieldDef = {
       name: 'active',
       type: 'boolean',
@@ -361,7 +361,7 @@ describe('Schema 类型边界情况', () => {
     expect(nodeType.uniqueConstraints).toHaveLength(0)
   })
 
-  it('应支持可选的 fields 完全省略', () => {
+  it('应支持Optional的 fields 完全省略', () => {
     const nodeType: NodeTypeDef = { typeId: 1, name: 'NoFields' }
     const edgeType: EdgeTypeDef = { typeId: 10, name: 'NO_FIELDS' }
     expect(nodeType.fields).toBeUndefined()

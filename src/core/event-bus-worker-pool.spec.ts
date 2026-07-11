@@ -6,7 +6,7 @@
  * 2. 子进程生命周期：fork/ready/stop 流程
  * 3. 消息路由：send() 按 hash 路由到正确 worker
  * 4. 重分配：rebalance 停旧启新
- * 5. 错误处理：子进程异常后的降级行为
+ * 5. Error处理：子进程异常后的降级行为
  * 6. 子进程 ACK 回传：IPC 通道接收 ACK
  */
 const assert = require('node:assert')
@@ -55,7 +55,7 @@ describe('EventBusWorkerPool', () => {
     return peers
   }
 
-  // ── 测试用例 ──
+  // ── Test only例 ──
 
   it('should fork child processes and start workers', async () => {
     const peers = createPeers(4)
@@ -220,7 +220,7 @@ describe('EventBusWorkerPool', () => {
  * 模拟向 WorkerPool 发送 ACK（测试工具函数）
  * 通过 IPC 模拟子进程的 ACK 消息
  *
- * 注意：在生产环境中，ACK 由子进程的 DEALER receive 循环接收后通过 IPC 回传。
+ * Note: 在生产环境中，ACK 由子进程的 DEALER receive 循环接收后通过 IPC 回传。
  * 这里直接通过内部 workers 数组模拟。
  */
 function sendAckToPool(pool: EventBusWorkerPool, peerId: string, msgId: string): void {

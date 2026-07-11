@@ -132,7 +132,7 @@ describe('MetricsCollector', () => {
 
   it('should not be enabled after Telemetry init without MetricsCollector init', async () => {
     await telemetry.init('test-service', '')
-    // 注意：MetricsCollector.init() 未调用
+    // Note: MetricsCollector.init() 未调用
     // telemetry 启用但 metrics 自身未初始化
     expect(metrics.isEnabled()).toBe(false)
   })

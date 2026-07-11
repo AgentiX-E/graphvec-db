@@ -303,7 +303,7 @@ export function _extractTimeProp(s: string, prop: string): number | undefined {
   const hour = parseInt(parts[1], 10), minute = parseInt(parts[2], 10), second = parseInt(parts[3] || '0', 10)
   let nanosecond = 0
   if (parts[4]) nanosecond = parseInt((parts[4] + '000000000').slice(0, 9), 10)
-  // 提取时区/偏移信息
+  // 提取时区/偏移Info
   const tzMatch = s.match(/(?:([+-])(\d{2}):(\d{2})(?:\[([^\]]+)\])?|Z)$/)
   let tzOffsetMinutes = 0
   let tzName = ''
@@ -943,7 +943,7 @@ function _applyTruncateConfig(result: string, configArg: string, r: Record<strin
   if (!hasDateOverrides && !hasTimeOverrides) {
     // 只检查时区覆盖
     if (config.timezone != null) {
-      // 如果 result 是纯时间格式（无日期部分，只有 HH:MM[:SS...] 和可选的时区），直接替换时区后缀
+      // 如果 result 是纯时间格式（无日期部分，只有 HH:MM[:SS...] 和Optional的时区），直接替换时区后缀
       if (!result.includes('T') && !/^\d{4}/.test(result)) {
         const noTz = result.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/, '');
         const tz = _formatTimezone(_resolveNamedTimezone(String(config.timezone)));
@@ -1016,7 +1016,7 @@ function _applyTruncateConfig(result: string, configArg: string, r: Record<strin
   if (hasDateOverrides) {
     datePart = _mergeDateStr(datePart, config);
   }
-  // 如果有 timezone 覆盖且 config 中指定了 timezone，附加它
+  // If any timezone 覆盖且 config 中指定了 timezone，附加它
   if (config.timezone != null) {
     const parts = datePart.split('-');
     const tzYear = parseInt(parts[0], 10) || undefined;
@@ -1396,7 +1396,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       const map = v;
       // map.date 字符串穿透 + 覆盖字段合并
       if (map.date != null && typeof map.date === 'string') {
-        // 如果有 week/quarter/ordinalDay 需要走 _resolveDateFromMap（保留 other 的 dayOfWeek）
+        // If any week/quarter/ordinalDay 需要走 _resolveDateFromMap（保留 other 的 dayOfWeek）
         if (map.week != null || map.quarter != null || map.ordinalDay != null || map.dayOfWeek != null) {
           const d = _resolveDateFromMap(map)
           return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
@@ -1433,7 +1433,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         const timeStr = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
         // localtime 不含时区 → strip [+-]HH:MM 或 [IANA] 后缀
         const cleanTimeStr = timeStr.replace(/\[[^\]]+\]$/, '').replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')
-        // 如果有覆盖字段（second=42），只用这些字段覆盖时间值
+        // If any覆盖字段（second=42），只用这些字段覆盖时间值
         const hasOverrides = map.hour != null || map.minute != null || map.second != null || map.nanosecond != null || map.microsecond != null || map.millisecond != null || map.timezone != null
         if (!hasOverrides) return cleanTimeStr
         // 有覆盖：从 timeStr 提取基础值，覆盖字段优先
@@ -1686,7 +1686,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
             const dstTz = _formatTimezone(_resolveNamedTimezone(String(map.timezone), Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10))))
             const cleanTimePartForMerge = timePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '');
             let merged = _mergeTimeStr(cleanTimePartForMerge, map)
-            // 如果有原时区且目标时区不同，做一个简单的时区转换（只调小时分钟，不跨日）
+            // If any原时区且目标时区不同，做一个简单的时区转换（只调小时分钟，不跨日）
             if (timeTz) {
               // 从 timePart 提取基准时间做时区转换
               const tpParts = timePart.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
@@ -2087,7 +2087,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       // 确保 a <= b，swap 后 sign 肯定为负
       if (sign < 0) { [aDT, bDT] = [bDT, aDT]; }
       // sign 现在反映方向：-1 表示结果应该是负的（当原始 b < a 时输出负值）
-      // 注意：sign 是原始方向，在格式化输出时用于前缀负号
+      // Note: sign 是原始方向，在格式化输出时用于前缀负号
       
       // 字段减（带借位）
       let nsDiff = bDT.ns - aDT.ns;
@@ -2944,7 +2944,7 @@ export function _listLexCompare(a: unknown[], b: unknown[], op: string): boolean
   // 所有同索引元素相等
   if (a.length === b.length) return op === '>=' || op === '<=' ? true : false
   // 长度不等 → 短列表视为小于长列表
-  // 注意：大于号/小于号的不等比较不因多余元素含 null 而返回 null（规范：短列表总是较小的）
+  // Note: 大于号/小于号的不等比较不因多余元素含 null 而返回 null（规范：短列表总是较小的）
   // 等号比较带 null 元素：长度不等时 = 为 false，所以不需要 null 检查
   const isLtGt = op === '>' || op === '<'
   const isLeGe = op === '>=' || op === '<='
@@ -4066,7 +4066,7 @@ export function _validateLiterals(query: string): void {
 }
 
 /**
- * 递归检测列表/Map 字面量中是否缺失逗号分隔符（Cypher 语法错误）
+ * 递归检测列表/Map 字面量中是否缺失逗号分隔符（Cypher 语法Error）
  */
 export function _detectMissingCommas(expr: string): boolean {
   if (!expr.startsWith('[') && !expr.startsWith('{')) return false
@@ -4148,7 +4148,7 @@ export function _detectMissingCommas(expr: string): boolean {
 /**
  * 检查表达式是否为纯字面量（不含顶层操作符）。
  * 用于 _validateLiterals，避免将复杂表达式（如 [1,2] = [1] 或 0.0/0.0 > 1）
- * 错误地送入字面量语法检查。
+ * Error地送入字面量语法检查。
  */
 export function _isPureLiteralExpr(s: string): boolean {
   let depth = 0, inStr = false, strChar = ''

@@ -40,7 +40,7 @@ export interface SplitSuggestion {
 
 /**
  * ReshardCallback — 触发 rebalance 的回调签名
- * - suggestion 可选：传递时不破坏向后兼容，ReshardManager 可选择忽略或使用建议。
+ * - suggestion Optional：传递时不破坏向后兼容，ReshardManager Optional择忽略或使用建议。
  */
 export type ReshardCallback = (suggestion?: SplitSuggestion) => void
 

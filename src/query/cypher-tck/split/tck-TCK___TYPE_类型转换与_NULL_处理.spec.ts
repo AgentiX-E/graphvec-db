@@ -61,7 +61,7 @@ describe('TCK — TYPE 类型转换与 NULL 处理', () => {
     expect(plan).toBeDefined()
   })
 
-  it('[TCK-TYPE-10] WHERE IS NOT NULL 不抛出错误', async () => {
+  it('[TCK-TYPE-10] WHERE IS NOT NULL 不抛出Error', async () => {
     expect(() => parseQuery('MATCH (n:Person) WHERE n.name IS NOT NULL RETURN n')).not.toThrow()
   })
 

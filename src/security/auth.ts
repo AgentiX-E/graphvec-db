@@ -21,7 +21,7 @@ import * as crypto from 'crypto'
  * 1. 从客户端证书提取 CN（Common Name）
  * 2. 在授权列表（identities）中查找 CN
  * 3. 找到则返回对应的身份和角色
- * 4. 未找到则使用 defaultRole（如果有配置）
+ * 4. 未找到则使用 defaultRole（If any配置）
  * 5. 无 defaultRole 则拒绝访问
  */
 export class Authenticator {
@@ -295,7 +295,7 @@ export class RBAC {
   }
 
   /**
-   * 获取指定子图的 ACL（调试/审计用）
+   * 获取指定子图的 ACL（Debug/审计用）
    * 返回能够访问该子图的角色列表
    */
   static getSubgraphAcls(subgraph: string): Array<{ role: string; actions: string[] }> {
@@ -595,7 +595,7 @@ export class JwtManager {
 
   /**
    * 从文件加载 JWT secret（第一行内容即为 secret）
-   * 若文件不存在或读取失败，使用内置默认值
+   * 若文件不存在或读取失败，使用内置Default value
    */
   static loadSecretFromFile(filePath: string): Buffer {
     try {
@@ -802,7 +802,7 @@ export class ApiKeyManager {
    * 验证 API Key
    *
    * @param apiKey 完整的 API Key
-   * @returns 如果有效返回 { userId, role }，否则 null
+   * @returns If any效返回 { userId, role }，否则 null
    */
   validateApiKey(apiKey: string): { userId: string; role: Role } | null {
     if (!apiKey.startsWith('agx_')) {
@@ -856,7 +856,7 @@ export class ApiKeyManager {
   }
 
   /**
-   * 获取所有活跃 key（不含完整 key，返回安全信息）
+   * 获取所有活跃 key（不含完整 key，返回安全Info）
    */
   listActiveKeys(): Array<{ keyPrefix: string; userId: string; role: Role; createdAt: number }> {
     const result: Array<{ keyPrefix: string; userId: string; role: Role; createdAt: number }> = []
@@ -1177,7 +1177,7 @@ export interface OIDCValidatorOptions {
   issuer: string
   /** 预期 audience (client_id) */
   clientId: string
-  /** JWKS 端点地址（可选，默认从 issuer 的 .well-known/openid-configuration 发现） */
+  /** JWKS 端点地址（Optional，默认从 issuer 的 .well-known/openid-configuration 发现） */
   jwksUri?: string
 }
 
@@ -1322,7 +1322,7 @@ export interface AuthenticatorEntry {
  * 每个认证器接收 http.IncomingMessage，返回 AuthResult | null。
  * - 返回 AuthResult → 认证成功，直接返回
  * - 返回 null → 继续尝试下一个
- * - 抛出错误 → 记录日志并继续尝试下一个
+ * - 抛出Error → 记录日志并继续尝试下一个
  *
  * 所有认证器都失败时，抛出 AuthError (401)。
  */
@@ -1427,7 +1427,7 @@ export interface RefreshTokenResult {
 /**
  * refreshAccessToken — 使用 Refresh Token 换取新的 Access Token
  * @param refreshToken Refresh Token
- * @returns 新的 access token 信息
+ * @returns 新的 access token Info
  * @throws AuthError 如果 token 无效或过期
  */
 ;(JwtManager as any).prototype.refreshAccessToken = function (

@@ -227,7 +227,7 @@ describe('MembershipManager — 3 节点端到端', { timeout: 30000 }, () => {
   test('RouteTable 自动更新', async () => {
     const { managers, routeTables } = createCluster({ routeTable: true })
 
-    // node-4 的路由信息（通过 transport 可见）
+    // node-4 的路由Info（通过 transport 可见）
     MeshTransport.registerPeer('node-4', 'tcp://node-4:7001')
 
     await managers[0].proposeChange('add', 'node-4')

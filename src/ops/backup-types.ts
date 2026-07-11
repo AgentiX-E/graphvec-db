@@ -45,7 +45,7 @@ export interface PITRConfig {
 }
 
 /**
- * PITR 恢复点信息
+ * PITR 恢复点Info
  */
 export interface RecoveryPoint {
   timestamp: number

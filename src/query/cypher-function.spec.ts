@@ -82,7 +82,7 @@ describe('C-04: BUILTIN_FUNCTIONS', () => {
     expect(keys.sort()).toEqual(expected.sort())
   })
 
-  // TC8: 未知函数抛出错误
+  // TC8: 未知函数抛出Error
   it('unknown function throws', () => {
     expect(() => executeBuiltinFunction('nonexistent', [])).toThrow('Unknown built-in function')
   })

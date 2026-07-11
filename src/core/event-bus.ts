@@ -76,7 +76,7 @@ export type GraphEventType =
 
 export interface GraphEvent {
   type: GraphEventType
-  nodeId: string         // 来源节点 ID
+  nodeId: string         // 来源Node ID
   timestamp: number
   data: Record<string, unknown>
 }
@@ -146,7 +146,7 @@ export interface ResolvedCurve {
 // ──────────────────────────────────────────
 
 export interface EventBusConfig {
-  /** 本节点 ID（唯一标识） */
+  /** 本Node ID（唯一标识） */
   nodeId: string
   /** ROUTER socket 监听地址（null = 不启动 server 端） */
   publishAddress?: string | null
@@ -221,9 +221,9 @@ export interface TransportMessage {
   msgId: string
   /** 消息类型 */
   type: 'data' | 'ack' | 'sync-query' | 'sync-query-reply' | 'sync-request' | 'sync-batch'
-  /** 来源节点 ID */
+  /** 来源Node ID */
   srcNodeId: string
-  /** 目标节点 ID（data/ack/query 等可填 '' 表示广播关心） */
+  /** 目标Node ID（data/ack/query 等可填 '' 表示广播关心） */
   dstNodeId?: string
   /** 负载数据 */
   data: Record<string, unknown>
@@ -279,7 +279,7 @@ export class EventBus {
   private readonly ACK_FLUSH_TIMEOUT = 5
 
   /**
-   * 可选：WorkerPool 多进程架构。
+   * Optional：WorkerPool 多进程架构。
    * 当配置了 workerPoolConcurrency > 1 时，EventBus 不再创建和管理 DEALER sockets，
    * 改为通过 WorkerPool 发送。ROUTER socket 仍保留在主进程。
    */
@@ -341,7 +341,7 @@ export class EventBus {
    * 1. 生成本机密钥对（secretKey + publicKey）
    * 2. 将公钥写入共享目录
    * 3. 扫描目录发现所有 peer 公钥
-   * 4. 返回 resolved 配置（含密钥 + peer 信息）
+   * 4. 返回 resolved 配置（含密钥 + peer Info）
    */
   static async resolveCurveConfig(security: EventBusSecurity): Promise<{
     secretKey: string
@@ -597,7 +597,7 @@ export class EventBus {
   }
 
   /**
-   * 检查 ROUTER Socket 是否已创建并运行（测试用）
+   * 检查 ROUTER Socket 是否已创建并运行（Test only）
    */
   hasRouterSocket(): boolean {
     return this.routerSocket !== null
@@ -637,8 +637,8 @@ export class EventBus {
    * 将 CURVE 安全配置应用到 ZMQ socket
    *
    * CURVE 是强制安全机制，此处无条件应用。
-   * 密钥信息已在 start() 中解析并存储在 `_resolvedCurve`。
-   * 注意：DEALER(client) 端的 curveServerKey 在 start() DEALER 创建循环中单独设置，
+   * 密钥Info已在 start() 中解析并存储在 `_resolvedCurve`。
+   * Note: DEALER(client) 端的 curveServerKey 在 start() DEALER 创建循环中单独设置，
    * 因为不同 peer 的 serverKey 不同，不能在这里统一设置。
    *
    * @param isRouter - true = ROUTER(server)，false = DEALER(client)
@@ -766,7 +766,7 @@ export class EventBus {
   async _recoverDealerByNodeId(nodeId: string): Promise<boolean> {
     if (!this.nasKeyDir) return false
 
-    // 关闭已有的 DEALER（如果有）
+    // 关闭已有的 DEALER（If any）
     const oldDealer = this.dealerSockets.get(nodeId)
     if (oldDealer) {
       try {

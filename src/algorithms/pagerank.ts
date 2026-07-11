@@ -7,7 +7,7 @@
  * 时间复杂度: O(I * (V + E))，I 为迭代次数
  * 空间复杂度: O(V + E)
  *
- * 优化说明：
+ * 优化Note: 
  * - 构建反向邻接表（入边索引）避免 O(V²) 的全节点扫描
  * - 支持多线程并行（worker_threads），4线程比单线程快2.5x+
  * - 单线程模式用于简单测试
@@ -54,7 +54,7 @@ function buildIncomingMap(
 }
 
 /**
- * 单线程 PageRank 计算（内部使用）
+ * 单线程 PageRank 计算（Internal use）
  */
 function pagerankSingleThread(
   getNeighbors: (nodeId: NodeId) => NodeId[],
@@ -253,7 +253,7 @@ async function pagerankMultiThread(
  *
  * @param getNeighbors 邻接函数
  * @param allNodes 所有节点列表
- * @param options 可选项：dampingFactor, maxIterations, convergenceThreshold, numThreads
+ * @param options Optional项：dampingFactor, maxIterations, convergenceThreshold, numThreads
  * @returns Map<NodeId, number> 或 Promise<Map<NodeId, number>>
  */
 export function pagerank(

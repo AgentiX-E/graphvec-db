@@ -20,7 +20,7 @@ export interface TTLTickHandler {
 /**
  * TTLIndex — 节点自动过期索引
  *
- * 内部使用 Map<number, Set<NodeId>> 以过期时间戳为 key：
+ * Internal use Map<number, Set<NodeId>> 以过期时间戳为 key：
  *   key   = 过期 Unix 时间戳（毫秒）
  *   value = 在该时间戳到期的所有节点
  *
@@ -110,7 +110,7 @@ export class TTLIndex {
 
   /**
    * 扫描所有已过期节点
-   * 返回已过期但尚未清理的节点 ID 列表
+   * 返回已过期但尚未清理的Node ID 列表
    * 如果设置了 onExpire 回调，自动调用
    *
    * 扫描 O(n) 其中 n = 唯一过期时间戳数（通常远小于节点数）

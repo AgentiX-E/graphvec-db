@@ -2,7 +2,7 @@
  * batch-processor.spec.ts — BatchProcessor 单元测试
  *
  * 验证：
- * 1. splitIntoBatches：正确分块、边界值、错误处理
+ * 1. splitIntoBatches：正确分块、边界值、Error处理
  * 2. processInBatches：批量异步处理、结果拼接、边际场景
  */
 import { describe, it, expect } from 'vitest'

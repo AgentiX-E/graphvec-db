@@ -17,7 +17,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseQuery, _executeQuery } from './query-engine'
 
-// ── 测试用图数据 ──────────────────────────────────────────
+// ── Test only图数据 ──────────────────────────────────────────
 
 const testGraph = [
   { _id: 'p1', _label: 'Person', name: 'Alice', age: 30 },

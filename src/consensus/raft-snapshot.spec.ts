@@ -170,7 +170,7 @@ describe('B-05 快照自动压缩', () => {
     await new Promise(r => setTimeout(r, 1500))
 
     if (node1.role !== 'leader') {
-      // n1 可能没成为 leader（可能是 n2 成了），让 n1 强制触发选举
+      // n1 可能没成为 leader（可能是 n2 成了），让 n1 强制Trigger an election (campaign)
       // 简化：只测试 handleInstallSnapshot 直接调用
       const snapshotData = Buffer.from(
         JSON.stringify({ lastIncludedIndex: 10, lastIncludedTerm: 3, state: 'test' })

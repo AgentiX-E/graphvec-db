@@ -64,7 +64,7 @@ describe('TCK — PATH 路径遍历', () => {
     expect(plan.scanLabel).toBe('Person')
   })
 
-  it('[TCK-PATH-12] 多标签不再抛出错误', async () => {
+  it('[TCK-PATH-12] 多标签不再抛出Error', async () => {
     expect(() => parseQuery('MATCH (n:Person:Employee) RETURN n')).not.toThrow()
   })
 

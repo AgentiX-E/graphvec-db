@@ -76,7 +76,7 @@ describe('api-validation', () => {
     })
   })
 
-  describe('validateFirst() — 第一个错误', () => {
+  describe('validateFirst() — 第一个Error', () => {
     test('should return null for valid data', () => {
       expect(validateFirst({ name: 'ok' }, { name: { type: 'string' } })).toBeNull()
     })

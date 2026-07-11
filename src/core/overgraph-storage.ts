@@ -256,7 +256,7 @@ export async function* readChunksFromFile(filePath: string): AsyncGenerator<Buff
 //
 // OverGraph Rust 原生 getEdgeByTriple 在 upsertEdge 后存在缓存未刷新问题：
 // - upsertEdge → getEdgeByTriple 返回旧 props
-// - getEdgeByTriple 可能忽略 typeId 参数，返回错误 label 的 edge
+// - getEdgeByTriple 可能忽略 typeId 参数，返回Error label 的 edge
 // - node 操作无此问题
 //
 // 方案：在 JS 层维护一个写入缓存，upsertEdge 后写缓存，getEdge 先查缓存
@@ -1055,7 +1055,7 @@ export class OverGraphStorage implements StorageProvider {
     if (def.unique) {
       if (def.data.has(key)) {
         const existing = def.data.get(key)!
-        // 允许同一个节点 ID 重复添加到同一个键（幂等）
+        // 允许同一个Node ID 重复添加到同一个键（幂等）
         if (existing.length > 0 && existing[0] !== nodeId) {
           throw new Error(
             `Unique constraint violation on composite index "${indexName}": ` +
@@ -1119,7 +1119,7 @@ export class OverGraphStorage implements StorageProvider {
   }
 
   /**
-   * 通过复合索引查找节点 ID。
+   * 通过复合索引查找Node ID.
    * 支持精确匹配（fields 长度与索引一致）和前缀匹配（fields 是索引前缀）。
    * 如果找不到匹配的索引，返回 null（需要调用方回退到全表扫描）。
    */
@@ -1156,7 +1156,7 @@ export class OverGraphStorage implements StorageProvider {
   }
 
   /**
-   * 收集所有节点 ID。
+   * 收集所有Node ID.
    */
   private _collectAllNodeIds(): number[] {
     if (!this._db) return []
@@ -1188,12 +1188,12 @@ export class OverGraphStorage implements StorageProvider {
     return this._geoIndex
   }
 
-  /** 查询半径内的所有节点 ID */
+  /** 查询半径内的所有Node ID */
   geoNearby(lat: number, lng: number, radiusKm: number): number[] {
     return this._geoIndex.queryRadius(lat, lng, radiusKm)
   }
 
-  /** 查询指定包围盒内的所有节点 ID */
+  /** 查询指定包围盒内的所有Node ID */
   geoBBox(
     southWest: [number, number],
     northEast: [number, number],

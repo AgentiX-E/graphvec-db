@@ -43,7 +43,7 @@ export interface BatchImportOptions {
   csvOptions?: CsvParseOptions
   /** 进度回调 */
   onProgress?: (processed: number, total: number) => void
-  /** 错误回调 */
+  /** Error回调 */
   onError?: (row: number, error: string) => void
   /** 跳过空行 */
   skipEmptyLines?: boolean
@@ -71,7 +71,7 @@ export interface CsvParseOptions {
   delimiter?: string
   /** 是否包含 header，默认 true */
   hasHeader?: boolean
-  /** 节点 ID 列名，默认 'id' */
+  /** Node ID 列名，默认 'id' */
   nodeIdColumn?: string
   /** 节点名称列名，默认 'name' */
   nodeNameColumn?: string
@@ -256,7 +256,7 @@ function _normalizeJSONLRow(parsed: any): ImportRow {
     }
   }
 
-  // 自动推断：如果有 src/dst 则是边，否则是节点
+  // 自动推断：If any src/dst 则是边，否则是节点
   if (parsed.src !== undefined && parsed.dst !== undefined) {
     return {
       type: 'edge',

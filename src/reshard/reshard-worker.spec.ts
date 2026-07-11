@@ -223,7 +223,7 @@ function createMockRange(rangeId: string, opts?: {
   const snapshotCallback = opts?.snapshotCallback
   const mutableState = opts?.mutableState
 
-  // 用于 stats() 的实时值：如果有 mutableState 则使用它，否则使用初始值
+  // 用于 stats() 的实时值：If any mutableState 则使用它，否则使用初始值
   const getNodeCount = () => mutableState?.nodeCount ?? nodeCount
   const getEdgeCount = () => mutableState?.edgeCount ?? edgeCount
 

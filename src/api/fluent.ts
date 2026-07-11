@@ -20,7 +20,7 @@ import { QueryResultCache, makeQueryCacheKey } from '../core/query-cache'
  * 支持链式调用：match → where → neighbors → return
  * 内部维护查询状态，return() 最终执行查询，调用 ShardManager 接口。
  *
- * 使用示例：
+ * 使用Example: 
  *   const q = new GraphQuery(manager)
  *   const nodes = await q.match(1).where(n => n.name.startsWith('A')).neighbors(2).return()
  */
@@ -56,7 +56,7 @@ export class GraphQuery {
   private deleteEdges_: Array<{ src: number; dst: number; typeId: number }> | null = null
 
   /**
-   * 待删除的节点 ID 集合，由 deleteNodes 设置
+   * 待删除的Node ID 集合，由 deleteNodes 设置
    */
   private deleteNodeIds_: number[] | null = null
 
@@ -283,8 +283,8 @@ export class GraphQuery {
 
   /**
    * 更新边的属性（upsert 语义 — 存在则更新，不存在则创建）
-   * @param src 源节点 ID
-   * @param dst 目标节点 ID
+   * @param src 源Node ID
+   * @param dst 目标Node ID
    * @param typeId 边类型
    * @param updates 要更新/设置的属性
    */
@@ -307,8 +307,8 @@ export class GraphQuery {
 
   /**
    * 删除边
-   * @param src 源节点 ID
-   * @param dst 目标节点 ID
+   * @param src 源Node ID
+   * @param dst 目标Node ID
    * @param typeId 边类型
    */
   async deleteEdge(src: number, dst: number, typeId: number): Promise<void> {
@@ -333,7 +333,7 @@ export class GraphQuery {
    *   await q.match(1).deleteNodes()        // 删除所有 type=1 的节点
    *   await q.match(1).where(n => n.name.startsWith('A')).deleteNodes()  // 带条件
    *
-   * 也可直接指定节点 ID：
+   * 也可直接指定Node ID：
    *   await q.deleteNodes([1, 2, 3])
    */
   async deleteNodes(ids?: number[]): Promise<number> {
@@ -439,7 +439,7 @@ export class GraphQuery {
   }
 
   /**
-   * 输出当前查询的调试表示
+   * 输出当前查询的Debug表示
    */
   toString(): string {
     const parts: string[] = ['GraphQuery']
@@ -459,7 +459,7 @@ export class GraphQuery {
    * plan — 输出当前查询的优化计划（EXPLAIN），不实际执行
    *
    * 使用 QueryIR 构建计划树，应用优化，然后返回可读的计划描述。
-   * 适用于调试、性能分析、查询调优。
+   * 适用于Debug、性能分析、查询调优。
    *
    * @returns 查询计划的可读字符串描述
    */
@@ -751,7 +751,7 @@ export class GraphQuery {
 /**
  * UnionQuery — 多个查询的并集
  *
- * 使用示例：
+ * 使用Example: 
  *   const q1 = new GraphQuery(manager).match(1)
  *   const q2 = new GraphQuery(manager).match(2)
  *   const result = await union(q1, q2).return()

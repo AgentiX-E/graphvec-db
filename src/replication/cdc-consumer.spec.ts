@@ -433,7 +433,7 @@ describe('CDCConsumerGroup', () => {
     const c2 = groupWithDefaults.addConsumer({ batchSize: 3 })
 
     expect(c1.getOffset()).toBe(10)
-    // c2 的 batchSize 应覆盖默认值
+    // c2 的 batchSize 应覆盖Default value
     expect((c2 as any).config.batchSize).toBe(3)
   })
 

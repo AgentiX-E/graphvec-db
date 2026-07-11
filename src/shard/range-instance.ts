@@ -18,7 +18,7 @@ import { MetricsCollector } from '../ops/otel-metrics'
  *
  * draining:
  * - 在 rebalancing 迁移期间将源 Range 标记为 draining
- * - draining 期间新的写入将被拒绝（返回错误），确保"先写后删"安全
+ * - draining 期间新的写入将被拒绝（返回Error），确保"先写后删"安全
  * - 读取不受影响
  */
 export class RangeInstance {

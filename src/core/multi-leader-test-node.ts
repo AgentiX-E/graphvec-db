@@ -5,7 +5,7 @@
  * 通过 stdout（JSON line）返回结果。
  *
  * 环境变量:
- *   ML_NODE_ID          — 节点 ID（如 node-1）
+ *   ML_NODE_ID          — Node ID（如 node-1）
  *   ML_PEERS            — JSON 数组: ["node-1","node-2","node-3"]
  *   ML_PORT             — ZMQ 端口
  *   ML_DATA_DIR         — WAL / 数据目录

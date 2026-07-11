@@ -34,7 +34,7 @@ export interface LinkPredictionResult {
 }
 
 export interface EmbeddingResult {
-  /** 节点 ID */
+  /** Node ID */
   nodeId: NodeId
   /** 嵌入向量 */
   embedding: Float32Array
@@ -84,7 +84,7 @@ export class GraphEngineFeatureEncoder {
   ) {}
 
   /**
-   * 将节点 ID 编码为特征向量
+   * 将Node ID 编码为特征向量
    * - 从 GraphEngine 读取节点 props
    * - 只取数值类型的 prop 值
    * - null/undefined/非数值 → 0
@@ -126,7 +126,7 @@ export class GnnInferenceEngine {
   /**
    * 创建 GNN 推理引擎
    * @param config 引擎配置
-   * @param encoder 可选的节点特征编码器（默认使用零向量）
+   * @param encoder Optional的节点特征编码器（默认使用零向量）
    */
   constructor(
     config: GnnEngineConfig,
@@ -255,8 +255,8 @@ export class GnnInferenceEngine {
    * - input_node_features: [2, feature_dim] 拼接的特征向量
    * - 或 source_features, target_features 分开的输入
    *
-   * @param source 源节点 ID
-   * @param target 目标节点 ID
+   * @param source 源Node ID
+   * @param target 目标Node ID
    * @returns 链接预测结果（概率 [0,1] + logit）
    */
   async predictLink(
@@ -277,7 +277,7 @@ export class GnnInferenceEngine {
    * 利用 GNN 模型的前向传播计算节点的嵌入表示。
    * 即使节点在训练时不可见（未见节点），也能通过其特征计算嵌入。
    *
-   * @param nodeId 节点 ID
+   * @param nodeId Node ID
    * @returns 嵌入向量
    */
   async computeEmbedding(nodeId: NodeId): Promise<Float32Array> {
@@ -413,8 +413,8 @@ export class GnnInferenceEngine {
   }
 
   /**
-   * 设置图数据访问器（用于获取所有节点 ID）
-   * @param getAllNodeIds 返回图中所有节点 ID 的函数
+   * 设置图数据访问器（用于获取所有Node ID）
+   * @param getAllNodeIds 返回图中所有Node ID 的函数
    */
   setGraphAccessor(getAllNodeIds: () => number[]): void {
     this._getAllNodeIds = getAllNodeIds
@@ -427,7 +427,7 @@ export class GnnInferenceEngine {
    *
    * 对每个 nodeId 提取特征，运行 ONNX 推理，将 softmax 输出 argmax 映射到 label 名。
    *
-   * @param nodeIds 节点 ID 列表
+   * @param nodeIds Node ID 列表
    * @param labelNames 标签名称列表（顺序与模型输出类对应）
    * @returns 节点分类结果列表（不存在的节点被跳过）
    */
@@ -485,7 +485,7 @@ export class GnnInferenceEngine {
       throw new Error('labelNames must not be empty')
     }
 
-    // 获取所有节点 ID
+    // 获取所有Node ID
     const getAllNodeIds = this._getAllNodeIds
     if (!getAllNodeIds) {
       throw new Error('Graph accessor not set. Call setGraphAccessor() first.')
@@ -548,7 +548,7 @@ export class GnnInferenceEngine {
   }
 
   /**
-   * 获取配置信息
+   * 获取配置Info
    */
   getConfig(): GnnEngineConfig {
     return { ...this.config }
@@ -584,8 +584,8 @@ export class GnnInferenceEngine {
   }
 
   /**
-   * 将节点 ID 编码为特征向量
-   * - 如果有自定义编码器，使用之
+   * 将Node ID 编码为特征向量
+   * - If any自定义编码器，使用之
    * - 否则返回零向量
    */
   private encodeNodeFeatures(nodeId: NodeId): Float32Array {

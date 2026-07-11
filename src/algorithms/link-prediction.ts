@@ -71,7 +71,7 @@ export class LinkPredictor {
     allNodes: Iterable<NodeId>,
     /**
      * 邻接表：nodeId → 其邻居节点集合
-     * 注意：自动创建双向（如果只传单向，会补全）
+     * Note: 自动创建双向（如果只传单向，会补全）
      */
     adjacency?: Map<NodeId, Set<NodeId>>,
     seed?: number,

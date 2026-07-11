@@ -293,8 +293,8 @@ describe('import load-csv command', () => {
   })
 })
 
-describe('错误处理', () => {
-  test('错误的文件路径 → 友好报错', () => {
+describe('Error处理', () => {
+  test('Error的文件路径 → 友好报错', () => {
     // 模拟有返回值的场景
     try {
       const rows = readCsvRows('/nonexistent/path.csv', ',', true)

@@ -16,7 +16,7 @@ const HLC_codec = codec as any
  * 2. update() 接收远程时间戳更新本地时钟，保持因果一致性
  * 3. toBytes() 使用 @consento/hlc 编码为 Uint8Array
  *
- * 注意：@consento/hlc v2.x 的 Timestamp.decode 不存在（实际在 codec 上），
+ * Note: @consento/hlc v2.x 的 Timestamp.decode 不存在（实际在 codec 上），
  * 通过 any 桥接使用运行时 API
  */
 export class HlcClock {

@@ -348,7 +348,7 @@ describe('VectorIndexManager — HNSW Parameters', () => {
     expect(mgr.getEfConstruction('Test', 'vec')).toBe(400)
   })
 
-  it('TC-20: 不传 M/efConstruction 时使用默认值', () => {
+  it('TC-20: 不传 M/efConstruction 时使用Default value', () => {
     mgr.createIndex({ label: 'Default', property: 'vec', dimension: 4 })
     expect(mgr.getM('Default', 'vec')).toBe(16)
     expect(mgr.getEfConstruction('Default', 'vec')).toBe(200)

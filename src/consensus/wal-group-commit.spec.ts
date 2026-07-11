@@ -115,7 +115,7 @@ describe('B-03 WAL Group Commit 共识层', () => {
     await wal2.close()
 
     // Group Commit 应该比独立 fsync 快至少 30%
-    // 注意：在高速 SSD 上差异可能较小，但 GC 至少在 500 条场景下应明显更快
+    // Note: 在高速 SSD 上差异可能较小，但 GC 至少在 500 条场景下应明显更快
     console.log(`Group Commit: ${entryCount} entries in ${gcElapsed}ms = ${(entryCount / gcElapsed * 1000).toFixed(0)} ops/sec`)
     console.log(`Immediate fsync: ${entryCount} entries in ${immElapsed}ms = ${(entryCount / immElapsed * 1000).toFixed(0)} ops/sec`)
 

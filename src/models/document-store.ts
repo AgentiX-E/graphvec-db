@@ -42,7 +42,7 @@ export interface CollectionConfig {
   name: string
   /**
    * LMDB 选项（覆盖默认）
-   * 注意：name 字段由 collection 管理，不应在此处传递
+   * Note: name 字段由 collection 管理，不应在此处传递
    */
   lmdbOptions?: Omit<lmdb.DatabaseOptions, 'name'>
 }
@@ -59,7 +59,7 @@ export interface QueryOptions {
 export interface DocumentStoreConfig {
   /** LMDB 数据库路径 */
   path: string
-  /** 可选的加密密钥（256-bit hex） */
+  /** Optional的加密密钥（256-bit hex） */
   encryptionKey?: string
   /**
    * LMDB 映射大小（字节），默认 256MB
@@ -436,7 +436,7 @@ export class DocumentStore {
    * 获取或创建文档 collection
    *
    * @param name Collection 名称
-   * @param config 可选的 Collection 配置
+   * @param config Optional的 Collection 配置
    * @returns DocumentCollection 实例
    */
   collection<T = DocumentBody>(

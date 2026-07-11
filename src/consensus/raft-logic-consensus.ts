@@ -8,12 +8,12 @@ import { Logger } from '../ops/logger'
  * 生产级共识，使用 etcd/TiKV 的 Raft 实现
  * 提供：Leader 选举、日志复制、preVote 防脑裂、checkQuorum
  *
- * 注意：raft-logic 为可选依赖，当安装时使用此实现
+ * Note: raft-logic 为Optional依赖，当安装时使用此实现
  *
  * 采用惰性加载模式：
  * - 构造时不加载模块，允许按需创建实例
- * - init() 中尝试加载模块，失败时保存错误但不抛出
- * - start() 时如果模块未加载则抛出明确错误（含安装指引）
+ * - init() 中尝试加载模块，失败时保存Error但不抛出
+ * - start() 时如果模块未加载则抛出明确Error（含安装指引）
  * - 测试可通过 _moduleRef 注入 mock 模块避免真实依赖
  */
 export class RaftLogicConsensus implements ConsensusProvider {
@@ -31,7 +31,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
   private _snapshotTimer: ReturnType<typeof setInterval> | null = null
   private _entryCount = 0
 
-  // ── P0-2: 自动日志压缩（基于字节阈值） ──
+  // ── P0-2: 自动Log compaction（基于字节阈值） ──
   private _snapshotThresholdBytes: number = 64 * 1024 * 1024  // 64 MB default
   private _totalLogBytes: number = 0
 
@@ -67,7 +67,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
 
   /**
    * 惰性加载 raft-logic 模块
-   * 加载失败时保存错误但不抛出，允许 graceful fallback
+   * 加载失败时保存Error但不抛出，允许 graceful fallback
    */
   async init(): Promise<void> {
     // 如果已注入 mock module，直接使用
@@ -222,7 +222,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
         transport,
         apply: async (entry: any) => {
           this._entryCount++
-          // P0-2: 累计 entry 字节数用于自动日志压缩
+          // P0-2: 累计 entry 字节数用于自动Log compaction
           const entryData = entry.data
           if (entryData) {
             this._totalLogBytes += typeof entryData === 'string' ? Buffer.byteLength(entryData) : entryData.length
@@ -244,7 +244,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
       await raft.start()
       this._started = true
 
-      // 尝试注册 WASM onSnapshot 回调（如果有）
+      // 尝试注册 WASM onSnapshot 回调（If any）
       this._tryRegisterOnSnapshot()
 
       // 每 apply 10000 条后触发一次 snapshot（Raft log compact）
@@ -610,7 +610,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
     return this._loaded
   }
 
-  /** 测试辅助：获取加载错误 */
+  /** 测试辅助：获取加载Error */
   _getLoadError(): Error | null {
     return this._loadError
   }
@@ -639,7 +639,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
         return
       }
 
-      // 1) 如果有 engine，先 export 状态快照
+      // 1) If any engine，先 export 状态快照
       let snapshotData: Buffer | null = null
       if (this._engine) {
         try {
@@ -805,7 +805,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
    * 在 start() 中调用
    *
    * P0-2: 增强实现
-   * - 不静默吞错误 — 记录日志
+   * - 不静默吞Error — 记录日志
    * - WASM 不可用时始终使用 TS handler fallback
    * - 移除 !WASM 检查 — 始终走 TS 路径（更可靠）
    * - 当 WASM onSnapshot 可用时注册回调，但无论 WASM 是否暴露，
@@ -866,7 +866,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
   }
 }
 
-/** 动态导入 raft-logic（可选依赖） */
+/** 动态导入 raft-logic（Optional依赖） */
 let _raftModule: any = null
 
 async function getRaftModule(): Promise<any> {

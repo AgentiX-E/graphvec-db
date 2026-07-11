@@ -6,7 +6,7 @@
 
 import { parseQuery, _executeQuery } from './query-engine'
 
-// ── 测试用图数据 ──────────────────────────────────────────
+// ── Test only图数据 ──────────────────────────────────────────
 
 var testGraph = [
   { _id: 'p1', _label: 'Person', name: 'Alice', age: 30 },

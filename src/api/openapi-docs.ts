@@ -4,7 +4,7 @@
  * 为 REST API 端点自动生成 OpenAPI 3.0 规范文档。
  * 支持通过 JSON endpoint 获取规范，以及基本的 Swagger UI 支持。
  *
- * 注意：不引入任何新 npm 包，纯手动构建 OpenAPI 规范对象。
+ * Note: 不引入任何新 npm 包，纯手动构建 OpenAPI 规范对象。
  */
 
 // ── 接口定义 ────────────────────────────────────────────
@@ -88,7 +88,7 @@ export interface OpenAPIDocument {
 const NodeSchema: OpenAPISchema = {
   type: 'object',
   properties: {
-    id: { type: 'integer', description: '节点 ID' },
+    id: { type: 'integer', description: 'Node ID' },
     type: { type: 'integer', description: '节点类型' },
     name: { type: 'string', description: '节点名称' },
     props: { type: 'object', description: '节点属性（JSON）', additionalProperties: true },
@@ -99,8 +99,8 @@ const NodeSchema: OpenAPISchema = {
 const EdgeSchema: OpenAPISchema = {
   type: 'object',
   properties: {
-    src: { type: 'integer', description: '源节点 ID' },
-    dst: { type: 'integer', description: '目标节点 ID' },
+    src: { type: 'integer', description: '源Node ID' },
+    dst: { type: 'integer', description: '目标Node ID' },
     type: { type: 'integer', description: '边类型' },
     props: { type: 'object', description: '边属性（JSON）', additionalProperties: true },
   },
@@ -110,8 +110,8 @@ const EdgeSchema: OpenAPISchema = {
 const ErrorSchema: OpenAPISchema = {
   type: 'object',
   properties: {
-    error: { type: 'string', description: '错误描述' },
-    code: { type: 'integer', description: '错误状态码' },
+    error: { type: 'string', description: 'Error描述' },
+    code: { type: 'integer', description: 'Error状态码' },
   },
 }
 
@@ -249,7 +249,7 @@ export function generateOpenAPIDocument(options?: {
               },
             },
             '400': {
-              description: '查询语法错误',
+              description: '查询语法Error',
               content: { 'application/json': { schema: ErrorSchema } },
             },
             '401': {
@@ -278,7 +278,7 @@ export function generateOpenAPIDocument(options?: {
               name: 'id',
               in: 'query',
               required: true,
-              description: '节点 ID',
+              description: 'Node ID',
               schema: { type: 'integer' },
             },
           ],
@@ -333,7 +333,7 @@ export function generateOpenAPIDocument(options?: {
               content: { 'application/json': { schema: NodeSchema } },
             },
             '400': {
-              description: '请求参数错误',
+              description: '请求参数Error',
               content: { 'application/json': { schema: ErrorSchema } },
             },
           },
@@ -354,7 +354,7 @@ export function generateOpenAPIDocument(options?: {
               name: 'id',
               in: 'query',
               required: true,
-              description: '节点 ID',
+              description: 'Node ID',
               schema: { type: 'integer' },
             },
           ],
@@ -404,7 +404,7 @@ export function generateOpenAPIDocument(options?: {
               name: 'id',
               in: 'query',
               required: true,
-              description: '节点 ID',
+              description: 'Node ID',
               schema: { type: 'integer' },
             },
           ],
@@ -448,14 +448,14 @@ export function generateOpenAPIDocument(options?: {
               name: 'src',
               in: 'query',
               required: true,
-              description: '源节点 ID',
+              description: '源Node ID',
               schema: { type: 'integer' },
             },
             {
               name: 'dst',
               in: 'query',
               required: true,
-              description: '目标节点 ID',
+              description: '目标Node ID',
               schema: { type: 'integer' },
             },
             {
@@ -499,8 +499,8 @@ export function generateOpenAPIDocument(options?: {
                   type: 'object',
                   required: ['src', 'dst', 'type'],
                   properties: {
-                    src: { type: 'integer', description: '源节点 ID' },
-                    dst: { type: 'integer', description: '目标节点 ID' },
+                    src: { type: 'integer', description: '源Node ID' },
+                    dst: { type: 'integer', description: '目标Node ID' },
                     type: { type: 'integer', description: '边类型' },
                     props: {
                       type: 'object',
@@ -518,7 +518,7 @@ export function generateOpenAPIDocument(options?: {
               content: { 'application/json': { schema: EdgeSchema } },
             },
             '400': {
-              description: '请求参数错误',
+              description: '请求参数Error',
               content: { 'application/json': { schema: ErrorSchema } },
             },
           },
@@ -539,14 +539,14 @@ export function generateOpenAPIDocument(options?: {
               name: 'src',
               in: 'query',
               required: true,
-              description: '源节点 ID',
+              description: '源Node ID',
               schema: { type: 'integer' },
             },
             {
               name: 'dst',
               in: 'query',
               required: true,
-              description: '目标节点 ID',
+              description: '目标Node ID',
               schema: { type: 'integer' },
             },
             {

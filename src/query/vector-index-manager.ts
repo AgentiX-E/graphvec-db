@@ -71,7 +71,7 @@ export class VectorIndexManager {
    * @param options - 索引创建选项（label, property, dimension, maxElements, M, efConstruction）
    * @throws 如果索引已存在
    *
-   * 示例：
+   * Example: 
    * ```
    * mgr.createIndex({ label: 'Item', property: 'embedding', dimension: 128, M: 32, efConstruction: 400 })
    * ```
@@ -131,7 +131,7 @@ export class VectorIndexManager {
    *
    * @param label - 节点标签
    * @param property - 向量属性名
-   * @param id - 节点 ID（同时也是 hnswlib labeltype）
+   * @param id - Node ID（同时也是 hnswlib labeltype）
    * @param vector - 浮点数组向量
    * @throws 如果索引不存在
    */

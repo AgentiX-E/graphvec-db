@@ -31,7 +31,7 @@ export interface EgoNetOptions {
 }
 
 export interface EgoNetResult {
-  /** 子图中包含的节点 ID */
+  /** 子图中包含的Node ID */
   nodes: Set<NodeId>
   /**
    * 子图中的边 (src, dst, weight?)
@@ -46,7 +46,7 @@ export interface EgoNetResult {
  * 提取 Ego Network
  *
  * @param getNeighbors - 返回某节点的邻居 ID 列表
- * @param getWeightedNeighbors - 可选：返回加权邻居，用于保留边权重
+ * @param getWeightedNeighbors - Optional：返回加权邻居，用于保留边权重
  * @param egoNode - 中心节点
  * @param options - 配置项
  * @returns 子图结构

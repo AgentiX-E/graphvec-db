@@ -28,7 +28,7 @@ export interface BackupSchedulerConfig {
   /** 要备份的 GraphEngine 实例 */
   engine: GraphEngine
 
-  /** PITR 配置（可选，启用后每次备份会同时创建增量备份） */
+  /** PITR 配置（Optional，启用后每次备份会同时创建增量备份） */
   pitrConfig?: PITRConfig
 
   /** 保留天数，超过此天数的旧备份会被自动清理 */

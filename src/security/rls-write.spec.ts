@@ -90,7 +90,7 @@ describe('C-08: RLS write path coverage', () => {
     expect(result).toBe(true)
   })
 
-  // TC7: assertRLSUpsert 抛出 RLS 错误
+  // TC7: assertRLSUpsert 抛出 RLS Error
   it('assertRLSUpsert throws on denied write', () => {
     expect(() => {
       assertRLSUpsert(rls, tenantBCtx, 'nodes', { tenantId: 'tenant-A' })

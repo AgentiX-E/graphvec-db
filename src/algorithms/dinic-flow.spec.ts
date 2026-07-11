@@ -1,7 +1,7 @@
 /**
  * Dinic 最大流算法单元测试
  *
- * 测试 maxFlow 函数：基础图、复杂拓扑、边界条件、错误路径
+ * 测试 maxFlow 函数：基础图、复杂拓扑、边界条件、Error路径
  */
 
 import { describe, test, expect } from 'vitest'

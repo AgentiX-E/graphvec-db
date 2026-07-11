@@ -1153,7 +1153,7 @@ describe('OptimizerBridge', () => {
     const spec = { match: {} as any } // match all
     const optimized = await bridge.executeOptimized(spec)
 
-    // 注意：标准 query 和优化器桥接可能无法逐字段完全一致
+    // Note: 标准 query 和优化器桥接可能无法逐字段完全一致
     // 但 count 应该相同
     expect(optimized.length).toBeGreaterThanOrEqual(standard.length)
   })
@@ -1239,7 +1239,7 @@ describe('OptimizerBridge', () => {
   })
 
   test('Q03-9: Engine constructors accepts planner parameter', () => {
-    // 验证构造函数签名 — planner 参数是可选
+    // 验证构造函数签名 — planner 参数是Optional
     const engineWithoutPlanner = new GraphEngine({ ...testEngineConfig, path: testEngineConfig.path + '-no-planner' })
     expect(engineWithoutPlanner).toBeInstanceOf(GraphEngine)
     engineWithoutPlanner.close()

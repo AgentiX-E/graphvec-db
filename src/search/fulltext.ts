@@ -450,7 +450,7 @@ export class FullTextIndex {
 
   /**
    * 关闭 WAL 文件句柄并停止定时快照。在不再需要写入 WAL 时调用。
-   * 注意：close() 后 add/remove 仍可工作，只是不再写入 WAL 和定时快照。
+   * Note: close() 后 add/remove 仍可工作，只是不再写入 WAL 和定时快照。
    */
   close(): void {
     this._closeWalFd()
@@ -477,7 +477,7 @@ export class FullTextIndex {
 
   /**
    * 启动定时自动快照定时器。
-   * 每 _snapshotIntervalSec 秒检查一次，如果有写入则需要快照。
+   * 每 _snapshotIntervalSec 秒检查一次，If any写入则需要快照。
    */
   private _startPeriodicSnapshot(): void {
     if (this._snapshotIntervalSec <= 0) return
@@ -619,7 +619,7 @@ export class FullTextIndex {
       try {
         entry = JSON.parse(trimmed)
       } catch {
-        continue  // 跳过格式错误的条目
+        continue  // 跳过格式Error的条目
       }
 
       if (entry.op === 'add') {
@@ -1132,7 +1132,7 @@ export class FullTextIndex {
     return [query]
   }
 
-  // ── 模拟旧接口（未实现时 throw） ──
+  // ── 模拟旧接口（Not implemented时 throw） ──
   evaluateRecall(_testQueries: Array<{ query: string; relevantDocIds: string[] }>): { precision: number; recall: number; f1: number } {
     return { precision: 0, recall: 0, f1: 0 }
   }

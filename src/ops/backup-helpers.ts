@@ -14,7 +14,7 @@ import { Logger } from './logger'
 const WAL_GLOB_PATTERN = /^wal-.+\.bin$/
 
 /**
- * 收集目录下所有文件信息（相对路径 + 大小 + mtime）
+ * 收集目录下所有文件Info（相对路径 + 大小 + mtime）
  * 用于备份后的校验对比
  */
 export function collectFileInfo(dir: string): Array<{ relativePath: string; size: number; mtimeMs: number }> {

@@ -5,7 +5,7 @@
 import { ProcedureRegistry, globalRegistry, toAsyncIterable } from './procedure-registry'
 import { parseQuery, _executeQuery } from './query-engine'
 
-// ── 测试用图数据 ──────────────────────────────────────────
+// ── Test only图数据 ──────────────────────────────────────────
 
 const testGraph = [
   { _id: 'p1', _label: 'Person', name: 'Alice', age: 30 },
@@ -175,7 +175,7 @@ describe('CALL procedure — YIELD 高级场景', function() {
 // ── 5. 更多内置过程 ──────────────────────────────────────
 
 describe('其他内置 Procedure', function() {
-  it('db.stats.retrieve() — 返回统计信息', function() {
+  it('db.stats.retrieve() — 返回统计Info', function() {
     const result = _executeQuery(
       parseQuery('CALL db.stats.retrieve()'),
       testGraph,
@@ -186,7 +186,7 @@ describe('其他内置 Procedure', function() {
     expect(result[0].stat.nodeCount).toBe(4)
   })
 
-  it('db.schema.visualization() — 返回拓扑信息', function() {
+  it('db.schema.visualization() — 返回拓扑Info', function() {
     const result = _executeQuery(
       parseQuery('CALL db.schema.visualization()'),
       testGraph,
@@ -197,7 +197,7 @@ describe('其他内置 Procedure', function() {
     expect(result[0].degreeDistribution).toBeDefined()
   })
 
-  it('dbms.listConfig() — 返回配置信息', function() {
+  it('dbms.listConfig() — 返回配置Info', function() {
     const result = _executeQuery(
       parseQuery('CALL dbms.listConfig()'),
       testGraph,

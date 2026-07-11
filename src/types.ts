@@ -45,9 +45,9 @@ export interface UpsertNodeOptions {
   ttlSeconds?: number
   /** 如果为 true，跳过 Multi-Leader 复制广播 */
   skipReplication?: boolean
-  /** MVCC 版本号（内部使用，由事务系统传入） */
+  /** MVCC 版本号（Internal use，由事务系统传入） */
   _mvccVersion?: number
-  /** 简单事务 ID（内部使用，由 SimpleTxnManager 传入） */
+  /** 简单事务 ID（Internal use，由 SimpleTxnManager 传入） */
   _txId?: string
 }
 
@@ -57,7 +57,7 @@ export interface UpsertEdgeOptions {
   weight?: number
   /** 如果为 true，跳过 Multi-Leader 复制广播 */
   skipReplication?: boolean
-  /** 简单事务 ID（内部使用，由 SimpleTxnManager 传入） */
+  /** 简单事务 ID（Internal use，由 SimpleTxnManager 传入） */
   _txId?: string
 }
 
@@ -299,7 +299,7 @@ export interface AuthConfig {
   mode: 'mtls'
   tlsCert: string   // 服务端证书路径
   tlsKey: string    // 服务端私钥路径
-  tlsCA?: string    // CA 证书路径（可选，如不指定则用系统 CA）
+  tlsCA?: string    // CA 证书路径（Optional，如不指定则用系统 CA）
 
   /** 授权身份列表 */
   identities?: AuthorizedIdentity[]

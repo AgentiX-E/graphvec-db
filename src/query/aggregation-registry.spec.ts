@@ -103,12 +103,12 @@ describe('AggregationRegistry', () => {
       expect(result).toEqual([1, 2, 3])
     })
 
-    it('重复注册应抛出错误', () => {
+    it('重复注册应抛出Error', () => {
       registry.register('my_uda', () => ({ state: 0 } as Accumulator))
       expect(() => registry.register('my_uda')).toThrow(/already registered/)
     })
 
-    it('未注册的聚合函数应抛出错误', () => {
+    it('未注册的聚合函数应抛出Error', () => {
       expect(() => registry.aggregate('nonexistent', [1, 2, 3])).toThrow(/Unknown aggregation/)
     })
 

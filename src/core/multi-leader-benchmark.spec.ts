@@ -43,7 +43,7 @@ describe('端到端多进程压测', () => {
       let readyCount = 0
       const stderrBuf: string[] = []
 
-      // 每 60s 打印 ready 进度（方便调试）
+      // 每 60s 打印 ready 进度（方便Debug）
       const progress = setInterval(() => {
         if (readyCount < nodeIds.length) {
           console.log(`  ⏳ spawnNodes: ${readyCount}/${nodeIds.length} ready after ${Math.round(performance.now() / 1000)}s`)
@@ -240,7 +240,7 @@ describe('端到端多进程压测', () => {
     console.log('  ✓ Batch write 100 items completed')
   }, 120000)
 
-  // ──── 用例 7: 环境变量默认值验证 ────
+  // ──── 用例 7: 环境变量Default value验证 ────
   test('不指定 ML_TICK_MS 和 ML_BATCH_SIZE 时节点仍正常启动', async () => {
     const defaultIds = ['def-0']
     const defPort = 81550 + Math.floor(Math.random() * 5000)

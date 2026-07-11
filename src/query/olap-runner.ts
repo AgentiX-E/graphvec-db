@@ -22,9 +22,9 @@ export interface OlapConfig {
   algo: 'pagerank' | 'bfs' | 'betweenness' | 'louvain' | 'degree_centrality'
   /** PageRank 迭代次数（默认 20） */
   iterations?: number
-  /** BFS 起始节点 ID */
+  /** BFS 起始Node ID */
   startNode?: number
-  /** 中介中心性采样数（可选） */
+  /** 中介中心性采样数（Optional） */
   sample?: number
   /** Louvain 分辨率参数（默认 1.0） */
   resolution?: number
@@ -140,7 +140,7 @@ export class OlapRunner {
 
   /**
    * 执行 PageRank。
-   * 使用 engine.pagerank() 方法，传入可选的迭代次数。
+   * 使用 engine.pagerank() 方法，传入Optional的迭代次数。
    * 将 Map 转换为普通对象以便序列化。
    */
   private async runPageRank(): Promise<Record<string, number>> {

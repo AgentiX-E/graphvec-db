@@ -80,7 +80,7 @@ export class ConsistentHashRing {
    * 从环中移除一个物理节点。
    * 自动移除该节点下的所有虚拟节点。
    *
-   * @param nodeId - 要移除的节点 ID
+   * @param nodeId - 要移除的Node ID
    */
   removeNode(nodeId: string): void {
     const node = this.nodes.get(nodeId)
@@ -106,11 +106,11 @@ export class ConsistentHashRing {
   // ── 路由 ──
 
   /**
-   * 根据 key 查找对应的物理节点 ID。
+   * 根据 key 查找对应的物理Node ID.
    * 通过一致性哈希找到顺时针方向第一个虚拟节点的归属物理节点。
    *
    * @param key - 路由键
-   * @returns 物理节点 ID
+   * @returns 物理Node ID
    * @throws {Error} 环为空时抛出
    */
   getNode(key: string): string {
@@ -129,7 +129,7 @@ export class ConsistentHashRing {
    *
    * @param key - 路由键
    * @param count - 需要的副本数
-   * @returns 物理节点 ID 列表（可能少于 count，如果环上节点不足）
+   * @returns 物理Node ID 列表（可能少于 count，如果环上节点不足）
    */
   getReplicas(key: string, count: number): string[] {
     if (this.sortedKeys.length === 0 || count <= 0) {
@@ -314,7 +314,7 @@ export class ClusterManager {
    * 根据 shardKey 路由 shard 到对应的物理节点。
    *
    * @param shardKey - 分片 key（如节点名称、边 key）
-   * @returns 目标物理节点 ID
+   * @returns 目标物理Node ID
    * @throws {Error} 集群为空时抛出
    */
   routeShard(shardKey: string): string {
@@ -326,7 +326,7 @@ export class ClusterManager {
    *
    * @param shardKey - 分片 key
    * @param count - 副本数量
-   * @returns 副本节点 ID 列表
+   * @returns 副本Node ID 列表
    */
   getShardReplicas(shardKey: string, count: number = 3): string[] {
     return this.hashRing.getReplicas(shardKey, count)

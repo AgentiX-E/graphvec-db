@@ -159,8 +159,8 @@ export class HotMigrator {
    * 基于源节点和目标节点的地理位置，提供区域感知路由提示。
    * 适合全球多活的部署场景，确保请求路由到最近的 Region。
    *
-   * @param sourceGeo 源节点的地理信息
-   * @param targetGeo 目标节点的地理信息
+   * @param sourceGeo 源节点的地理Info
+   * @param targetGeo 目标节点的地理Info
    * @returns 路由建议
    */
   selectOptimalRegion(
@@ -412,7 +412,7 @@ export interface RegionEntry {
  * @param clientLat 客户端纬度
  * @param clientLon 客户端经度
  * @param nodes 候选节点列表（每个节点包含经纬度）
- * @returns 最近的节点 ID
+ * @returns 最近的Node ID
  */
 export function selectNearestNode(
   clientLat: number,

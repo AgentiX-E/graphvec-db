@@ -276,7 +276,7 @@ export class PrometheusExporter {
 
   /**
    * 获取或创建 Counter（带 label 支持）
-   * 先检查注册表中是否已存在同名指标，避免重复注册错误
+   * 先检查注册表中是否已存在同名指标，避免重复注册Error
    */
   private _getCounter(name: string, help: string, labelConfig?: { operation?: string }): Counter<string> {
     const key = labelConfig ? `${name}:${labelConfig.operation ?? ''}` : name
@@ -303,7 +303,7 @@ export class PrometheusExporter {
 
   /**
    * 获取或创建 Histogram（带 label 支持）
-   * 先检查注册表中是否已存在同名指标，避免重复注册错误
+   * 先检查注册表中是否已存在同名指标，避免重复注册Error
    */
   private _getHistogram(name: string, help: string, labelConfig?: Record<string, string>): Histogram<string> {
     const key = name
@@ -331,7 +331,7 @@ export class PrometheusExporter {
 
   /**
    * 获取或创建 Gauge（带 label 支持）
-   * 先检查注册表中是否已存在同名指标，避免重复注册错误
+   * 先检查注册表中是否已存在同名指标，避免重复注册Error
    */
   private _getGauge(name: string, help: string, labelConfig?: Record<string, string>): Gauge<string> {
     const key = name

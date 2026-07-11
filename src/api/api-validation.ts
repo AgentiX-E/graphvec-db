@@ -2,7 +2,7 @@
  * api-validation.ts — 轻量参数验证函数
  *
  * 用于 REST API 路由的参数验证，替代 RouteHandler 中分散的手工验证。
- * 支持链式组合验证规则，返回统一的验证错误信息。
+ * 支持链式组合验证规则，返回统一的验证ErrorInfo。
  *
  * 验证规则：
  *   required    — 字段是否必填
@@ -49,7 +49,7 @@ export function validate(
       continue
     }
 
-    // 可选字段且为 undefined → 跳过后续检查
+    // Optional字段且为 undefined → 跳过后续检查
     if (value === undefined || value === null) {
       continue
     }
@@ -88,7 +88,7 @@ export function validate(
 }
 
 /**
- * 验证并返回第一个错误，或 null
+ * 验证并返回第一个Error，或 null
  */
 export function validateFirst(
   data: Record<string, unknown>,

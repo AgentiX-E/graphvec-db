@@ -42,7 +42,7 @@ export interface ProjectionStats {
  *
  * CSR 格式：
  *   nodeOffsets: 长度为 (nodeCount + 1) 的数组，nodeOffsets[i] 是节点 i 的边起始位置
- *   edges: 所有邻居节点 ID 的扁平数组
+ *   edges: 所有邻居Node ID 的扁平数组
  *
  * 本地节点的索引映射：projectionNodeIds[i] = 原始 nodeId
  * nodeIndex: Map<nodeId, csrIdx>
@@ -58,7 +58,7 @@ export class GraphProjection {
   public readonly nodeIndex: Map<NodeId, number>
   /** 投影的原始 NodeRecord 列表（保持索引顺序） */
   public readonly nodeRecords: NodeRecord[]
-  /** 投影统计信息 */
+  /** 投影统计Info */
   public readonly stats: ProjectionStats
 
   constructor(
@@ -176,7 +176,7 @@ export class GraphProjection {
   /**
    * O(indegree) 入边查询 — 返回所有指向指定节点的源节点原始 NodeId。
    *
-   * 注意：每次调用都需要遍历整个 CSR 以构建入边列表。
+   * Note: 每次调用都需要遍历整个 CSR 以构建入边列表。
    * 如果需要多次调用，建议手动构建一次 `buildInEdges()` 并缓存。
    */
   inEdges(nodeId: number): number[] {

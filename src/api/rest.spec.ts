@@ -15,7 +15,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 
 // ──────────────────────────────────────────
-// mTLS 测试用证书路径
+// mTLS Test only证书路径
 // ──────────────────────────────────────────
 
 const TEST_CERTS_DIR = path.resolve(__dirname, '../../test-certs')
@@ -40,7 +40,7 @@ function createMockTlsConfig(): TLSConfig {
 }
 
 /**
- * 构建一个允许测试用 CN 的 Authenticator
+ * 构建一个允许Test only CN 的 Authenticator
  * 基于 test-certs 中签发的 CN：test-admin, test-reader
  */
 function createMockAuthenticator(): Authenticator {
@@ -803,10 +803,10 @@ describe('RestApiServer', () => {
   })
 
   // ──────────────────────────────────────────
-  // 请求追踪 ID (P2-A8)
+  // 请求Trace ID (P2-A8)
   // ──────────────────────────────────────────
 
-  describe('请求追踪 ID (X-Request-Id)', () => {
+  describe('请求Trace ID (X-Request-Id)', () => {
     test('不传 X-Request-Id 应自动生成并返回', async () => {
       const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
@@ -858,7 +858,7 @@ describe('RestApiServer', () => {
       expect(res.headers['x-request-id']).toBeDefined()
     })
 
-    test('错误响应也应包含 X-Request-Id', async () => {
+    test('Error响应也应包含 X-Request-Id', async () => {
       const config: RestApiConfig = { port: 0, host: '127.0.0.1', authenticator: mockAuthenticator, tlsConfig: mockTlsConfig }
       server = createRestApiServer(mockShardManager as any, config)
       await server.start()

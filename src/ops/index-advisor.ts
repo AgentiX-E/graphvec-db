@@ -30,7 +30,7 @@ export interface IndexSuggestion {
   benefit: string
 }
 
-/** 现有列索引信息 */
+/** 现有列索引Info */
 export interface ExistingIndex {
   name: string
   columns: string[]
@@ -300,7 +300,7 @@ export class IndexAdvisor {
  * 便捷函数：一步执行 EXPLAIN + 分析。
  *
  * @param plan — 查询计划
- * @param lister — 现有索引列表函数（可选）
+ * @param lister — 现有索引列表函数（Optional）
  * @returns 索引建议列表
  */
 export function suggestIndexes(plan: QueryPlan, lister?: IndexLister): IndexSuggestion[] {
@@ -313,7 +313,7 @@ export function suggestIndexes(plan: QueryPlan, lister?: IndexLister): IndexSugg
  * 分析一组慢查询计划，生成去重后的索引建议。
  *
  * @param plans — 慢查询的查询计划列表
- * @param lister — 现有索引列表函数（可选）
+ * @param lister — 现有索引列表函数（Optional）
  * @returns 索引建议列表
  */
 export function suggestIndexesFromSlowLog(plans: QueryPlan[], lister?: IndexLister): IndexSuggestion[] {

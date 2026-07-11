@@ -90,9 +90,9 @@ export class TLSConfig {
    * 重新读取并调用 setSecureContext() 更新 TLS 上下文。
    * 支持 awaitWriteFinish，防止部分写入时触发重载。
    *
-   * @param certPath 服务端证书路径（可选，默认使用 config.tlsCert）
-   * @param keyPath  服务端私钥路径（可选，默认使用 config.tlsKey）
-   * @param caPath   CA 证书路径（可选，默认使用 config.tlsCA）
+   * @param certPath 服务端证书路径（Optional，默认使用 config.tlsCert）
+   * @param keyPath  服务端私钥路径（Optional，默认使用 config.tlsKey）
+   * @param caPath   CA 证书路径（Optional，默认使用 config.tlsCA）
    */
   startCertWatcher(
     certPath?: string,
@@ -102,7 +102,7 @@ export class TLSConfig {
     // 如果已启动，先停止旧 watcher
     this.stopCertWatcher()
 
-    // 更新路径（支持覆盖默认值）
+    // 更新路径（支持覆盖Default value）
     if (certPath) this._certPath = certPath
     if (keyPath) this._keyPath = keyPath
     if (caPath !== undefined) this._caPath = caPath
@@ -285,7 +285,7 @@ export interface TlsConnectionResult {
  *
  * @param options 服务器 TLS 选项（cert, key, ca 等）
  * @param onData 收到数据时的回调（data: Buffer）
- * @param onError 错误回调（可选）
+ * @param onError Error回调（Optional）
  * @returns TLSServer 实例（需调用 listen() 启动）
  */
 export function createTlsServer(
@@ -306,7 +306,7 @@ export function createTlsServer(
     // 如果需要端到端确认，发送握手完成标记
     if (!socket.authorized) {
       socket.on('error', () => {
-        // 未授权连接的错误已通过 error 事件处理
+        // 未授权连接的Error已通过 error 事件处理
       })
     }
   })

@@ -1,9 +1,9 @@
 // ============================================================
-// txn-isolation.spec.ts — Serializable 隔离 + 死锁检测测试
+// txn-isolation.spec.ts — Serializable 隔离 + Deadlock detected测试
 //
 // 验证 SimpleTxnManager 的 Serializable 隔离级别：
 // - 写锁管理（基于 async-mutex）
-// - 等待图死锁检测
+// - 等待图Deadlock detected
 // - 写锁超时 + 自动回滚 + 重试（指数退避）
 // ============================================================
 
@@ -149,7 +149,7 @@ describe('Write lock management', () => {
   })
 })
 
-// ── 死锁检测测试 ───────────────────────────────────────────
+// ── Deadlock detected测试 ───────────────────────────────────────────
 
 describe('Deadlock detection', () => {
   test('detect locks that conflict on same resource', async () => {

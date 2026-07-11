@@ -126,7 +126,7 @@ describe('VariableLengthPath (GAP-20)', () => {
       expect(vln.direction).toBe('out')
     })
 
-    it('可选字段应为 undefined 默认', () => {
+    it('Optional字段应为 undefined 默认', () => {
       const vln: VariableLengthPathNode = {
         startId: 1,
         minDepth: 1,

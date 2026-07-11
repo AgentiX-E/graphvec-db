@@ -267,7 +267,7 @@ describe('GlobalScheduler', () => {
       },
     )
 
-    // 注意：r-split 的 nodeCount > max 所以它的 split 排在第一位
+    // Note: r-split 的 nodeCount > max 所以它的 split 排在第一位
     // r-hot 在 r-split 之后（因为 split 后 continue 跳过 migrate），
     // 但 r-hot 也可能被排队。确保第一条是 split。
     const count = await s.scheduleNow()

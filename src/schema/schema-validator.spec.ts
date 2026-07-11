@@ -6,7 +6,7 @@
  * - validateNode / validateEdge
  * - 必填字段校验
  * - 类型校验
- * - 默认值填充
+ * - Default value填充
  * - writeSchema / getSchema / disableSchema
  * - 唯一约束获取
  * - 集成到 GraphEngine 路径
@@ -162,7 +162,7 @@ describe('SchemaValidator', () => {
     })
   })
 
-  describe('GAP-29: 默认值填充', () => {
+  describe('GAP-29: Default value填充', () => {
     test('applyDefaults should fill missing fields', () => {
       const validator = new SchemaValidator()
       validator.setSchema({

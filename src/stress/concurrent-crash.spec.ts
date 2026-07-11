@@ -6,7 +6,7 @@
  * - 并发 upsertEdge 无 race
  * - 并发读写混合（50 readers + 50 writers）
  * - 大量并发 delete 操作
- * - 边创建时节点不存在的错误处理
+ * - 边创建时节点不存在的Error处理
  * - 同 id 并发 upsert 与读取
  * - 超大属性值（50KB string）写入
  * - 超大数量 props（100 个 key）的节点
@@ -159,8 +159,8 @@ test('CC-04: 大量并发 delete 操作', async () => {
   }
 }, 60000)
 
-// ── Test 5: 边创建时节点不存在（错误处理） ──
-test('CC-05: 边指向不存在节点的错误处理', async () => {
+// ── Test 5: 边创建时节点不存在（Error处理） ──
+test('CC-05: 边指向不存在节点的Error处理', async () => {
   const cfg = makeConfig('edge-no-node')
   const engine = new GraphEngine(cfg)
   engine.open()
@@ -380,7 +380,7 @@ test('CC-14: 删除后重新创建', async () => {
     expect(engine.getNode(id)).toBeNull()
 
     // 重新创建 — upsertNode 用相同的 typeId 和 name
-    // 注意：重新 upsert 后可能返回新的 id
+    // Note: 重新 upsert 后可能返回新的 id
     const newId = await engine.upsertNode(1, 'recreated', {
       props: { version: 2 },
     })

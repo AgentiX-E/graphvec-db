@@ -76,7 +76,7 @@ function serializeParamValue(val: unknown): string {
  * 参数会被安全地序列化并替换到查询语句中。
  *
  * @param query - 查询字符串（可包含 $N 或 $name 占位符）
- * @param params - 可选参数数组或对象
+ * @param params - Optional参数数组或对象
  * @returns QueryPlan
  *
  * @example
@@ -294,7 +294,7 @@ function _injectParamsToPlan(plan: QueryPlan, resolve: (name: string) => unknown
  *
  *   WITH n, n.age AS age WHERE age > 18 RETURN n
  *   → WITH 后的内容转换为伪 MATCH + RETURN 语法使 peggy 可解析，
- *     然后从 AST 中提取所需信息重构 WITH 子句。
+ *     然后从 AST 中提取所需Info重构 WITH 子句。
  */
 
 export function parseQuery(query: string): QueryPlan {
@@ -413,7 +413,7 @@ function _parseQueryImpl(query: string): QueryPlan {
       const expr = typeof ec === 'string' ? ec : ec.expression || ec.alias || ec
       const alias = ec.alias || expr
       // 只在顶层拆分 b.name → name，跳过表达式内的 .（如 1.5, func().prop）
-      // 注意：不修改 expression（用于求值），只修改 alias（用作结果列名）
+      // Note: 不修改 expression（用于求值），只修改 alias（用作结果列名）
       let dotIdx = -1
       if (/^[a-zA-Z_]\w*\.\w+$/.test(alias)) {
         dotIdx = alias.indexOf('.')
@@ -436,7 +436,7 @@ function _parseQueryImpl(query: string): QueryPlan {
 
   // ── WHERE 子句提取（用于后过滤） ──
   // 即使 ANTLR 没有生成 filters，也需要提取 WHERE 子句供 _evaluateExpression 后处理
-  // 注意：需要先屏蔽 list 谓词中的 WHERE（如 ALL(x IN list WHERE cond)），避免干扰正则
+  // Note: 需要先屏蔽 list 谓词中的 WHERE（如 ALL(x IN list WHERE cond)），避免干扰正则
   let safeQuery = (query || '')
   // 使用平衡括号匹配，将 list 谓词替换为占位符
   const listPredStarts = [...safeQuery.matchAll(/\b(ALL|ANY|NONE|SINGLE)\s*\(/gi)]
@@ -606,7 +606,7 @@ function _parseQueryImpl(query: string): QueryPlan {
     }
   }
 
-  // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR 错误被吞掉了）
+  // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR Error被吞掉了）
   // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
   if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unwinds?.length && !plan.unionType && !plan.caseColumns?.length && !plan.loadCsv) {
     // 检查原始查询是否包含有效关键字 — 大多数无效查询没有 MATCH etc.
@@ -1196,7 +1196,7 @@ function _walkMultiSteps(
           if (!passes) nextSet.delete(fidx)
         }
       }
-    // 应用被 WHERE 过滤跳过的节点抑制（仅在单步时使用，多步会错误地过滤路径中间节点）
+    // 应用被 WHERE 过滤跳过的节点抑制（仅在单步时使用，多步会Error地过滤路径中间节点）
     if (skipNodeIndices && skipNodeIndices.size > 0 && steps.length <= 1) {
       for (const sidx of skipNodeIndices) {
         nextSet.delete(sidx)

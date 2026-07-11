@@ -264,7 +264,7 @@ export function registerPeriodicCommit(
   registry: ProcedureRegistry,
   engine: GraphEngineLike,
 ): void {
-  // 先移除已存在的注册（如果有），避免注册冲突
+  // 先移除已存在的注册（If any），避免注册冲突
   // 因为 ProcedureRegistry.registerProcedure 会检查重复
   registry.registerProcedure(
     'periodic.commit',

@@ -4,7 +4,7 @@
  * 覆盖：
  * - BackupResult 接口结构
  * - WalLsnSnapshot 接口结构
- * - PITRConfig 接口默认值
+ * - PITRConfig 接口Default value
  * - RecoveryPoint 接口结构
  * - 各种字段类型校验
  */
@@ -137,7 +137,7 @@ describe('PITRConfig', () => {
     expect(config.targetTimestamp).toBe(ts)
   })
 
-  it('targetTimestamp 可选', () => {
+  it('targetTimestamp Optional', () => {
     const config: PITRConfig = {
       enabled: true,
       fullBackupIntervalMs: 86400000,

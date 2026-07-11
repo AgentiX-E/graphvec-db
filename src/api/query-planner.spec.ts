@@ -1015,7 +1015,7 @@ describe('Query Plan Cache', () => {
       expect(planCacheSize()).toBe(0)
     })
 
-    test('planCacheStats 返回正确的结构信息', () => {
+    test('planCacheStats 返回正确的结构Info', () => {
       const stats = planCacheStats()
       expect(stats).toHaveProperty('entryCount')
       expect(stats).toHaveProperty('maxSize')

@@ -4,7 +4,7 @@
  * 提供 SimulatedRaftInstanceManager（测试辅助类，管理多个内存 Raft 实例）
  * 提供向后兼容的别名：SimulatedRaftConsensus → RaftCore
  *
- * 注意：SimulatedRaftConsensus 已由 RaftCore 替代。
+ * Note: SimulatedRaftConsensus 已由 RaftCore 替代。
  * 旧的 SimulatedRaftConsensus class 已移除，改为 RaftCore 的别名。
  */
 import { RaftCore } from './raft-core'

@@ -29,7 +29,7 @@ export interface RemoteAuditSinkOptions {
   headers?: Record<string, string>
   /** 网络中断时本地缓存的最大条目数（默认 10000） */
   maxCached?: number
-  /** 重试间隔（毫秒，默认 30000） */
+  /** Retry interval（毫秒，默认 30000） */
   retryIntervalMs?: number
 }
 
@@ -107,7 +107,7 @@ export class RemoteAuditSink {
   }
 
   /**
-   * 获取统计信息
+   * 获取统计Info
    */
   stats(): { sent: number; failed: number; cached: number } {
     return {
@@ -314,7 +314,7 @@ export class AuditLogger {
   }
 
   /**
-   * 记录错误
+   * 记录Error
    */
   logError(operation: string, user: string, role: Role, error: Error): void {
     this.log({
@@ -388,7 +388,7 @@ export class AuditLogger {
     return this.entries.length
   }
 
-  /** 获取存储路径 */
+  /** 获取Storage path */
   getStoragePath(): string | null {
     return this.storagePath
   }
