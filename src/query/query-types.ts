@@ -352,7 +352,7 @@ export interface QueryPlan {
   }>
   /** SHOW 元数据查询 */
   show?: string
-  /** SEARCH 向量搜索子句（ANN / 近似最近邻） */
+  /** SEARCH 向量搜索子句（ANN / approximate最近邻） */
   search?: {
     /** 搜索的目标属性（如 'n.embedding'） */
     targetProperty: string

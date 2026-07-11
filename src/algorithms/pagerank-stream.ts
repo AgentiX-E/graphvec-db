@@ -89,7 +89,7 @@ export async function pagerankStream(
     const n = state.allNodes.length
     const teleport = (1 - dampingFactor) / n
 
-    // 局部迭代：只跑几轮近似更新
+    // 局部迭代：只跑几轮approximate更新
     // Pre-compute inverse adjacency: for each node, store which nodes point to it
     const incoming = new Map<NodeId, NodeId[]>()
     for (const node of state.allNodes) {

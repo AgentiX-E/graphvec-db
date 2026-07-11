@@ -7,19 +7,19 @@ import { HlcClock } from '../replication/hlc-clock'
 import { Logger } from '../ops/logger'
 
 /**
- * ReshardManager — 在线 Resharding 协调器
+ * ReshardManager — Online Resharding Coordinator
  *
- * 7 阶段状态机（3PC 原子提交）：
- * 1. pending — 计划生成
- * 2. dual_write — 双写
- * 3. migrating — 数据迁移
- * 4. preparing — 3PC Prepare：验证所有目标 Range 就绪
- * 5. committing — 3PC Commit：原子切换路由
- * 6. cleaning — 清理
- * 7. completed — 完成
+ * 7-phase state machine (3PC atomic commit)：
+ * 1. pending — plan generation
+ * 2. dual_write — dual write
+ * 3. migrating — data migration
+ * 4. preparing — 3PC Prepare: verify all target Ranges ready
+ * 5. committing — 3PC Commit: atomic route switch
+ * 6. cleaning — cleanup
+ * 7. completed — done
  *
- * 3PC 保证：如果在 prepare 阶段失败，执行回滚；
- * 如果在 commit 阶段崩溃，重启后可通过 recovery 恢复最终一致。
+ * 3PC guarantee: rollback if prepare phase fails;
+ * if crash during commit, recovery ensures eventual consistency after restart.
  */
 export class ReshardManager {
   private shardManager: ShardManager
@@ -40,10 +40,10 @@ export class ReshardManager {
   get status(): ReshardingStatus | null { return this._status }
 
   /**
-   * 检查并执行 Resharding
+   * Check and execute Resharding
    */
   async evaluateAndExecute(): Promise<ReshardingStatus | null> {
-    // 获取当前所有 Range 的状态
+    // Get current status of all Ranges
     const shardStatus = this.shardManager.getShardStatus()
     const ranges = shardStatus.map(s => ({
       rangeId: s.rangeId,
@@ -59,7 +59,7 @@ export class ReshardManager {
   }
 
   /**
-   * 执行 Resharding 计划
+   * Execute Resharding plan
    */
   async execute(plan: ReshardingPlan): Promise<ReshardingStatus> {
     this._status = {
@@ -72,23 +72,23 @@ export class ReshardManager {
     }
 
     try {
-      // Phase 2: 双写
+      // Phase 2: dual write
       await this._startDualWrite(plan)
       this._updateState('dual_write', 5)
 
-      // Phase 3: 数据迁移
+      // Phase 3: data migration
       await this._migrateData(plan)
       this._updateState('migrating', 50)
 
-      // Phase 4: 3PC 原子提交
+      // Phase 4: 3PC atomic commit
       await this._atomicSwitch(plan)
       // _atomicSwitch 内部设置 preparing → committing
 
-      // Phase 5: 启动清理计时器
+      // Phase 5: start cleanup timer
       this._scheduleCleanup(plan, 48 * 60 * 60 * 1000)
       this._updateState('cleaning', 95)
 
-      // 标记完成
+      // Mark as completed
       this._status.state = 'completed'
       this._status.progressPercent = 100
       this._status.completedAt = Date.now()
@@ -100,17 +100,17 @@ export class ReshardManager {
     return this._status
   }
 
-  /** 回滚（Phase 4 后 48h 内可调用） */
+  /** Rollback (callable within 48h after Phase 4) */
   async rollback(): Promise<void> {
     if (this._status && this._status.state === 'completed') {
-      // 恢复路由表
-      // 清理目标 Range
+      // Restore routing table
+      // Clean up target Range
       for (const worker of this.workers) {
         await worker.rollback()
       }
       this._status.state = 'failed'
       this._status.errors.push('Rolled back by operator')
-      // 取消清理定时器
+      // Cancel cleanup timer
       if (this.cleanTimer) clearTimeout(this.cleanTimer)
     }
   }
@@ -141,7 +141,7 @@ export class ReshardManager {
       this.workers.push(worker)
     }
 
-    // 启用双写：此后所有写入同时写入源和目标 Range
+    // Enable dual write: all writes go to both source and target Range
     this.shardManager.enableDualWrite(plan.splits)
   }
 
@@ -153,18 +153,18 @@ export class ReshardManager {
   }
 
   /**
-   * 3PC 原子提交
+   * 3PC atomic commit
    *
-   * Phase 1: Prepare — 验证所有目标 Range 数据完整性
-   * Phase 2: Commit — 原子更新路由表
+   * Phase 1: Prepare — verify data integrity of all target Ranges
+   * Phase 2: Commit — atomically update routing table
    *
-   * 如果 Prepare 失败，自动对所有 worker 执行回滚。
-   * Commit 阶段一旦完成即不可回滚（幂等）。
+   * If Prepare fails, automatically rollback all workers.
+   * Commit phase is irreversible once completed (idempotent).
    */
   private async _atomicSwitch(plan: ReshardingPlan): Promise<void> {
     this._status!.state = 'preparing'
 
-    // ── Phase 1: Prepare — 所有目标 Range 验证就绪 ──
+    // ── Phase 1: Prepare — all target Ranges verified ready ──
     const prepareResults: Array<{ rangeId: string; ok: boolean }> = []
     for (const worker of this.workers) {
       try {
@@ -189,7 +189,7 @@ export class ReshardManager {
       throw new Error(this._status!.errors[this._status!.errors.length - 1])
     }
 
-    // ── Phase 2: Commit — 原子切换路由 ──
+    // ── Phase 2: Commit — atomically switch routing ──
     this._status!.state = 'committing'
     this._status!.progressPercent = 85
 
@@ -224,9 +224,9 @@ export class ReshardManager {
       },
     }
 
-    // 原子更新路由表（ShardManager.rebuildRouter 内部应使用锁）
+    // Atomically update routing table (ShardManager.rebuildRouter should use a lock internally)
     this.shardManager.rebuildRouter(newMap)
-    // 路由已切换，停用双写：后续写入只走新路由
+    // Route switched, disable dual write: subsequent writes only go through new route
     this.shardManager.disableDualWrite()
     this._status!.progressPercent = 90
   }

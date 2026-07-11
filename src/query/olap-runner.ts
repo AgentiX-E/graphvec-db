@@ -183,7 +183,7 @@ export class OlapRunner {
    * 执行中介中心性（Betweenness Centrality）。
    *
    * 使用 Brandes 算法。如果提供了 sample 参数，
-   * 则随机采样 vertices 的子集（近似加速）。
+   * 则随机采样 vertices 的子集（approximate加速）。
    */
   private async runBetweenness(): Promise<Record<string, number>> {
     const allNodeIds = Array.from(this.engine['_nodeIds'] || [])

@@ -1,7 +1,7 @@
 /**
  * openapi-bridge.ts — OpenAPI 装饰器桥接层
  *
- * 在已有 openapi-docs.ts 基础上提供增量改进：
+ * 在已有 openapi-docs.ts 基础上提供增量Improvements:
  * 1. OpenAPIRegistry：运行时注册路由的 OpenAPI 元数据
  * 2. 从 Route[] 自动聚合 OpenAPI 路径
  * 3. 提供 registerRoute() / registerRoutes() 便捷方法

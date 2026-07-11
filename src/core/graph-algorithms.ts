@@ -130,7 +130,7 @@ export class GraphAlgorithms {
    * @returns Map<nodeId, rankScore>
    * @remarks 当配置了 shardRouter 且 crossRangeMode='fan-out' 时，
    * 会通过 `_collectReachableCrossRange` 收集远程节点信息。
-   * 但跨 Range 的 PPR 分数是近似值，因为幂迭代需要在所有节点间同步状态。
+   * 但跨 Range 的 PPR 分数是approximate值，因为幂迭代需要在所有节点间同步状态。
    * 精确的跨 Range PPR 需要后续迭代优化。
    */
   ppr(sourceId: number, alpha: number = 0.85, topK: number = 10): Map<number, number> {

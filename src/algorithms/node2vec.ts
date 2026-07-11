@@ -414,7 +414,7 @@ function _createRng(seed: number): () => number {
 }
 
 /**
- * Box-Muller: 生成近似标准正态分布随机数。
+ * Box-Muller: 生成approximate标准正态分布随机数。
  */
 function _gaussianRandom(rng: () => number): number {
   let u = 0, v = 0

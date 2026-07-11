@@ -145,7 +145,7 @@ scalar JSON
   return lines.join('\n')
 }
 
-// ── Schema 类型定义 ────────────────────────────────────────
+// ── Schema type definitions ────────────────────────────────────────
 
 export interface GraphQLField {
   name: string

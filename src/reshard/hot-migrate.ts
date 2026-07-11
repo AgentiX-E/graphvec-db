@@ -1,16 +1,16 @@
 // ============================================================
-// HotMigrator — 零停机热迁移 + 区域感知路由
+// HotMigrator — zero-downtime hot migration + zone-aware routing
 //
-// 基于现有的 ReshardWorker + 双写机制实现零停机热迁移。
-// 将待迁移分片逐步过渡到目标节点，前端无感知。
+// Implements zero-downtime hot migration based on existing ReshardWorker + dual write mechanism.
+// Gradually transition the shard to the target node, transparent to the frontend.
 //
-// 热迁移流程（6 步，逐节点执行）：
-//   1. PREPARE_TARGET  — 目标节点建好空 Range 并加入集群
-//   2. ENABLE_DUAL     — 启用双写，新数据同时写入源和目标
-//   3. SNAPSHOT_SYNC   — 快照式全量同步存量数据
-//   4. CATCH_UP        — 增量追赶（重放双写期间积累的变更）
-//   5. ATOMIC_SWITCH   — 3PC 原子切换路由，新读写走目标
-//   6. CLEANUP_SOURCE  — 清理源 Range（可选）
+// Hot migration flow (6 steps, executed per node):
+//   1. PREPARE_TARGET — Create empty Range on target node and join cluster
+//   2. ENABLE_DUAL — Enable dual write, new data written to both source and target
+//   3. SNAPSHOT_SYNC — Full snapshot sync of existing data
+//   4. CATCH_UP — Incremental catch-up (replay changes accumulated during dual write)
+//   5. ATOMIC_SWITCH — 3PC atomic route switch, new reads/writes go to target
+//   6. CLEANUP_SOURCE — Clean up source Range (optional)
 // ============================================================
 
 import { Logger } from '../ops/logger'
@@ -49,12 +49,12 @@ export interface GeoAwareRouteHint {
 }
 
 /**
- * HotMigrator — 零停机热迁移执行器
+ * HotMigrator — zero-downtime hot migration executor
  *
- * 性能保障：
- * - 双写阶段：写入的额外开销 = 一次网络往返 + 一次本地写入
- * - 快照同步阶段：源 Range 的读操作与快照导出是异步的，不阻塞写入
- * - 切换阶段：原子更新路由表，1ms 内完成
+ * Performance guarantees:
+ * - Dual write phase: extra write cost = one network round-trip + one local write
+ * - Snapshot sync phase: source Range reads and snapshot export are async, do not block writes
+ * - Switch phase: atomic route table update, completes within 1ms
  */
 export class HotMigrator {
   private shardManager: ShardManager
@@ -68,17 +68,17 @@ export class HotMigrator {
     this.logger = new Logger('HotMigrator')
   }
 
-  /** 获取迁移进度快照 */
+  /** Get migration progress snapshot */
   getProgress(rangeId?: string): HotMigrateProgress | HotMigrateProgress[] | null {
     if (rangeId) return this._progress.get(rangeId) ?? null
     return [...this._progress.values()]
   }
 
   /**
-   * 零停机热迁移 — 将指定 Range 的数据迁移到目标节点的新 Range
+   * Zero-downtime hot migration — migrate specified Range data to target node's new Range
    *
-   * @param split — 迁移分片定义
-   * @param targetRangeConfig — 目标 Range 的配置（需要调用方提供）
+   * @param split — Migration shard definition
+   * @param targetRangeConfig — Target Range configuration (caller must provide)
    */
   async migrate(
     split: ReshardSplit,
@@ -96,22 +96,22 @@ export class HotMigrator {
     this._progress.set(split.sourceRangeId, progress)
 
     try {
-      // ── Step 1: 在目标节点创建并启动 Range ──
+      // ── Step 1: Create and start Range on target node ──
       await this._prepareTarget(split, targetRangeConfig, progress)
 
-      // ── Step 2: 启用双写 — 新写入同时发往源和目标 Range ──
+      // ── Step 2: Enable dual write — new writes go to both source and target Range ──
       await this._enableDualWrite(split, progress)
 
-      // ── Step 3: 快照式全量同步 — 异步执行，不阻塞写入 ──
+      // ── Step 3: Full snapshot sync — async execution, does not block writes ──
       await this._snapshotSync(split, progress)
 
-      // ── Step 4: 增量追赶 — 重放双写积累的变更 ──
+      // ── Step 4: Incremental catch-up — replay changes accumulated during dual write ──
       await this._catchUp(split, progress)
 
-      // ── Step 5: 原子切换路由 — 读写流量瞬时切到目标 ──
+      // ── Step 5: Atomic route switch — read/write traffic instantly switches to target ──
       await this._atomicSwitch(split, progress)
 
-      // ── Step 6: 源 Range 清理 ──
+      // ── Step 6: Source Range cleanup ──
       await this._cleanupSource(split, progress)
 
       progress.phase = 'completed'

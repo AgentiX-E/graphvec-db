@@ -257,7 +257,7 @@ export class GraphEngine {
   /** 查询结果缓存 */
   private _queryCache: QueryResultCache | null = null
 
-  /** Schema 类型定义（可选） */
+  /** Schema type definitions（可选） */
   private _schema?: SchemaDef
 
   /** FullText 全文索引（可选） */
@@ -353,12 +353,12 @@ export class GraphEngine {
     // 由 open() 调用 registerApplyHandler，避免构造函数重复注册
   }
 
-  /** 设置 Schema 定义 */
+  /** Set Schema definition */
   setSchema(schema: SchemaDef): void {
     this._schema = schema
   }
 
-  /** 获取当前 Schema */
+  /** Get current Schema */
   getSchema(): SchemaDef | undefined {
     return this._schema
   }

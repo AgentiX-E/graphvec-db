@@ -1,18 +1,18 @@
 /**
- * schema-validator.ts — Schema 字段校验器
+ * schema-validator.ts — Schema field validator
  *
- * 在 upsertNode/upsertEdge 之前校验：
- * - typeId 是否在 Schema 中定义
- * - 必填字段是否缺失
- * - 字段类型是否匹配
- * - 唯一性约束（需要 GraphEngine 配合查询）
+ * Validates before upsertNode/upsertEdge:
+ * - typeId is defined in Schema
+ * - Required fields are present
+ * - Field types match
+ * - Uniqueness constraints (requires GraphEngine query support)
  *
- * 增强 (GAP-29)：
- * - SchemaDefinition 接口：label/typeId, propertyTypes, required, unique, default
- * - SchemaValidator 类封装所有校验逻辑
- * - 默认值填充（applyDefaults）
- * - writeSchema / getSchema / disableSchema 管理
- * - 唯一约束支持（unique keys）
+ * Enhanced (GAP-29):
+ * - SchemaDefinition interface: label/typeId, propertyTypes, required, unique, default
+ * - SchemaValidator class encapsulates all validation logic
+ * - Default value filling (applyDefaults)
+ * - writeSchema / getSchema / disableSchema management
+ * - Uniqueness constraint support (unique keys)
  */
 import { NodeProperties } from '../types'
 import { SchemaDef, NodeTypeDef, EdgeTypeDef, FieldDef, FieldType, ValidationResult } from './schema-types'
@@ -22,46 +22,46 @@ import { SchemaDef, NodeTypeDef, EdgeTypeDef, FieldDef, FieldType, ValidationRes
 // ──────────────────────────────────────────
 
 /**
- * 属性类型映射
+ * Property type mapping
  */
 export interface PropertyTypeMap {
   [propertyName: string]: FieldType
 }
 
 /**
- * SchemaDefinition — 简化的 Schema 定义接口
+ * SchemaDefinition — simplified Schema definition interface
  *
- * 与传统 SchemaDef 相比，提供了更简洁的 label→typeId 映射，
- * 以及更方便的默认值/唯一约束声明。
+ * Compared to traditional SchemaDef, provides a cleaner label→typeId mapping,
+ * and more convenient defaults/unique constraint declarations.
  */
 export interface SchemaDefinition {
-  /** label 到 typeId 的映射 */
+  /** label to typeId mapping */
   label: string | number
-  /** typeId（数字） */
+  /** typeId (number) */
   typeId: number
-  /** 属性类型映射 */
+  /** Property type mapping */
   propertyTypes: PropertyTypeMap
-  /** 必填字段列表 */
+  /** Required field list */
   required?: string[]
-  /** 唯一键字段列表 */
+  /** Unique key field list */
   unique?: string[]
-  /** 默认值映射 */
+  /** Default value mapping */
   default?: Record<string, FieldType | string | number | boolean | null>
 }
 
 // ──────────────────────────────────────────
-// SchemaValidator 类
+// SchemaValidator class
 // ──────────────────────────────────────────
 
 /**
- * SchemaValidator — Schema 校验和默认值填充
+ * SchemaValidator — Schema validation and default value filling
  */
 export class SchemaValidator {
   private _schemaDef: SchemaDef | null = null
   private _enabled: boolean = true
 
   /**
-   * 设置 Schema 定义
+   * Set Schema definition
    */
   setSchema(schema: SchemaDef): void {
     this._schemaDef = schema
@@ -69,7 +69,7 @@ export class SchemaValidator {
   }
 
   /**
-   * 从 SchemaDefinition 数组设置 Schema
+   * Set Schema from SchemaDefinition array
    */
   setSchemaFromDefinitions(definitions: SchemaDefinition[]): void {
     const nodeTypes: NodeTypeDef[] = []
@@ -105,35 +105,35 @@ export class SchemaValidator {
   }
 
   /**
-   * 获取当前 Schema
+   * Get current Schema
    */
   getSchema(): SchemaDef | null {
     return this._schemaDef
   }
 
   /**
-   * 禁用 Schema 校验
+   * Disable Schema validation
    */
   disableSchema(): void {
     this._enabled = false
   }
 
   /**
-   * 启用 Schema 校验
+   * Enable Schema validation
    */
   enableSchema(): void {
     this._enabled = true
   }
 
   /**
-   * 是否启用了 Schema 校验
+   * Whether Schema validation is enabled
    */
   isEnabled(): boolean {
     return this._enabled && this._schemaDef !== null
   }
 
   /**
-   * 校验节点属性是否符合 Schema
+   * Validate node properties against Schema
    *
    * @param typeId 节点类型 ID
    * @param props 节点属性
@@ -153,7 +153,7 @@ export class SchemaValidator {
   }
 
   /**
-   * 校验边属性是否符合 Schema
+   * Validate edge properties against Schema
    *
    * @param typeId 边类型 ID
    * @param props 边属性
@@ -173,7 +173,7 @@ export class SchemaValidator {
   }
 
   /**
-   * 填充默认值并校验，返回填充后的 props
+   * Fill defaults and validate, return filled props
    *
    * @param typeId 节点类型 ID
    * @param props 原始属性
@@ -197,7 +197,7 @@ export class SchemaValidator {
   }
 
   /**
-   * 校验并填充默认值，返回最终属性
+   * Validate and fill defaults, return final properties
    */
   validateAndApplyDefaults(typeId: number, props: NodeProperties): { props: NodeProperties; result: ValidationResult } {
     const withDefaults = this.applyDefaults(typeId, props)
@@ -206,7 +206,7 @@ export class SchemaValidator {
   }
 
   /**
-   * 获取指定 typeId 的唯一约束字段列表
+   * Get unique constraint field list for specified typeId
    */
   getUniqueConstraints(typeId: number): string[][] {
     if (!this._schemaDef) return []
@@ -286,11 +286,11 @@ export class SchemaValidator {
 }
 
 // ──────────────────────────────────────────
-// 遗留兼容的独立函数（保持向后兼容）
+// Legacy standalone functions (maintain backward compatibility)
 // ──────────────────────────────────────────
 
 /**
- * 校验节点属性是否符合 Schema
+ * Validate node properties against Schema
  */
 export function validateNodeType(
   typeId: number,
@@ -305,7 +305,7 @@ export function validateNodeType(
 }
 
 /**
- * 校验边属性是否符合 Schema
+ * Validate edge properties against Schema
  */
 export function validateEdgeType(
   typeId: number,
@@ -320,7 +320,7 @@ export function validateEdgeType(
 }
 
 /**
- * 填充默认值（独立函数版本）
+ * Fill defaults (standalone function version)
  */
 export function applyDefaults(
   typeId: number,

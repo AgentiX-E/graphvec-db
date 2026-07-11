@@ -620,7 +620,7 @@ function _syncNodesFromGe(): void {
 Given('having executed:', async function (query: string) {
   const q = query.trim()
   // 支持多语句：按行分割，逐条执行。
-  // 改进：合并以逗号结尾的行（多行 CREATE 链不被切碎）
+  // Improvements:合并以逗号结尾的行（多行 CREATE 链不被切碎）
   const rawLines = q.split('\n').map(s => s.trim()).filter(Boolean)
   const lines: string[] = []
   let pending = ''

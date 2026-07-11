@@ -9,7 +9,7 @@ import { NodeId, ShardMap, NodeRecord } from '../types'
  * 一致性哈希在节点增减时只需迁移 1/N 的数据
  * vnodes=160 使分布更均匀
  *
- * 改进：
+ * Improvements:
  * - P1-S02: 边写入路由对称 — getRangeForEdge 支持 src/dst fallback
  * - P1-S01: 智能路由优化 — recommendRoute 基于 label + edgeCount 建议最佳 range
  */
@@ -92,7 +92,7 @@ export class ShardRouter {
       return defaultRange
     }
 
-    // 基于 label 的路由改进：将 label 哈希到 range
+    // 基于 label 的路由Improvements:将 label 哈希到 range
     const labelHash = this.getRangeForKey(`label:${node.type}:${String(node.id)}`)
     return labelHash
   }

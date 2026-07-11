@@ -2,7 +2,7 @@
  * segment-stream-wal.ts — Segment-based Stream WAL
  *
  * 替代 stream-wal.ts 中基于单一文件的 WAL 实现。
- * 核心改进：
+ * 核心Improvements:
  *   1. 固定大小 segment（默认 64MB），prune 只 delete 旧 segment，不 rename
  *   2. 写入只在 active segment 上 append，永不重写
  *   3. 消除了 stream-wal.ts prune() 中 rename + reopen 的数据丢失窗口

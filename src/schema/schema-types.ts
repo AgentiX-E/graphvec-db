@@ -1,12 +1,12 @@
 /**
- * schema-types.ts — Schema 类型定义
+ * schema-types.ts — Schema type definitions
  *
- * SchemaDef 定义节点类型和边类型的结构和约束：
- * - 节点类型：typeId, name, properties（每个字段的类型/默认值/可选性/唯一性）
- * - 边类型：typeId, name, properties（字段定义）
- * - 支持唯一性约束和自动索引
+ * SchemaDef defines the structure and constraints for node types and edge types:
+ * - Node type: typeId, name, properties (type/default/optional/unique for each field)
+ * - Edge type: typeId, name, properties (field definitions)
+ * - Supports uniqueness constraints and auto-indexing
  *
- * 在 GraphEngine 中加载后，upsertNode/upsertEdge 前校验。
+ * Validates on upsertNode/upsertEdge after loading in GraphEngine.
  */
 import { NodeProperties } from '../types'
 

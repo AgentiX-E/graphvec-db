@@ -193,7 +193,7 @@ export class ShardManager {
   }
 
   async start(healthConfig?: ShardHealthCheckConfig, routerDataDir?: string): Promise<void> {
-    // 尝试从持久化文件恢复路由表
+    // 尝试从持久化文件Restore routing table
     if (routerDataDir) {
       const saved = ShardRouter.loadShardMap(routerDataDir)
       if (saved) {

@@ -13,7 +13,7 @@
  * 空间复杂度: O(V + E)
  *
  * 参考: "A Faster Algorithm for Betweenness Centrality" (Brandes, 2001)
- *       以及近似变体 (Bader et al., 2007)
+ *       以及approximate变体 (Bader et al., 2007)
  */
 
 import { NodeId } from '../types'
@@ -28,7 +28,7 @@ export interface ApproxBetweennessOptions {
 }
 
 /**
- * 近似中介中心性 — 基于采样
+ * approximate中介中心性 — 基于采样
  *
  * @param vertices - 所有节点 ID
  * @param adjList - 邻接表 (nodeId → 邻居数组)
