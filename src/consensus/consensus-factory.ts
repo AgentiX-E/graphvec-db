@@ -1,5 +1,5 @@
 /**
- * consensus-factory.ts — 共识层工厂
+ * consensus-factory.ts — Consensus provider factory
  *
  * Create a ConsensusProvider instance based on the config
  * - 'standalone': Single-node mode (dev / test)
@@ -72,7 +72,7 @@ export function createConsensus(config: ConsensusConfig): ConsensusProvider {
       return new StandaloneConsensus(config)
 
     case 'raft-logic': {
-      // 使用 mock? 配置项自动注入（Test only）
+      // Auto-inject mock via config (Test only)
       const consensus = new RaftLogicConsensus(config)
       consensus.init().catch(err => {
         logger.warn('[ConsensusFactory] raft-logic init failed, will retry at start()', { err: (err as Error).message })
@@ -81,7 +81,7 @@ export function createConsensus(config: ConsensusConfig): ConsensusProvider {
     }
 
     case 'simulated-raft':
-      // simulated-raft 尚Not implemented，回退到 standalone
+      // simulated-raft not implemented yet — fallback to standalone
       logger.warn('[ConsensusFactory] simulated-raft not yet implemented, falling back to standalone')
       return new StandaloneConsensus(config)
 
