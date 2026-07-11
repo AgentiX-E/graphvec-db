@@ -17,8 +17,13 @@ export default defineConfig({
     testTimeout: 1200000,
     hookTimeout: 1200000,
     globals: true,
-    pool: 'threads',
+    pool: 'vmThreads',
     singleThread: true,
+    deps: {
+      server: {
+        inline: [/lmdb/, /@lmdb/],
+      },
+    },
     server: {
       deps: {
         exclude: ['raft-logic'],
