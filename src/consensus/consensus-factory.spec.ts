@@ -5,10 +5,17 @@
  * StandaloneConsensus 直接使用真实实例。
  * RaftLogicConsensus 通过 mock module 注入。
  */
-import { describe, it, expect, vi } from 'vitest'
-import { createConsensus } from './consensus-factory'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import {
+  createConsensus,
+  registerDbClusterConsensus,
+  isDbClusterConsensusRegistered,
+  getDbClusterConsensus,
+  clearDbClusterConsensus,
+} from './consensus-factory'
 import { ConsensusConfig, ConsensusProvider } from './consensus-provider'
 import { StandaloneConsensus } from './standalone-consensus'
+import { DbClusterConsensusProvider } from './DbClusterConsensusProvider'
 
 /** 构造最小有效配置 */
 function makeConfig(overrides?: Partial<ConsensusConfig>): ConsensusConfig {
@@ -176,6 +183,195 @@ describe('createConsensus', () => {
         await instance.barrier()
       }
       await instance.stop()
+    })
+  })
+
+  describe('db-cluster mode', () => {
+    beforeEach(() => {
+      clearDbClusterConsensus()
+    })
+
+    it('should register and check db-cluster consensus instance', () => {
+      expect(isDbClusterConsensusRegistered()).toBe(false)
+      const mockCluster = {
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+        propose: vi.fn().mockResolvedValue(1),
+        isLeader: vi.fn().mockResolvedValue(true),
+        getLeader: vi.fn().mockResolvedValue('node-1'),
+        getCommitIndex: vi.fn().mockResolvedValue(42),
+        registerShard: vi.fn(),
+        removeShard: vi.fn().mockResolvedValue(undefined),
+        notifyTopologyChange: vi.fn().mockResolvedValue(undefined),
+        getHealthStatus: vi.fn().mockResolvedValue([]),
+        campaign: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn(),
+        off: vi.fn(),
+        setForceLeader: vi.fn(),
+      }
+      registerDbClusterConsensus(mockCluster)
+      expect(isDbClusterConsensusRegistered()).toBe(true)
+      expect(getDbClusterConsensus()).toBe(mockCluster)
+    })
+
+    it('should throw when creating db-cluster consensus before registration', () => {
+      const config = makeConfig({ mode: 'db-cluster' as any })
+      expect(() => createConsensus(config)).toThrow(
+        'db-cluster consensus not registered',
+      )
+    })
+
+    it('should create DbClusterConsensusProvider when db-cluster is registered', () => {
+      const mockCluster = {
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+        propose: vi.fn().mockResolvedValue(1),
+        isLeader: vi.fn().mockResolvedValue(true),
+        getLeader: vi.fn().mockResolvedValue('node-1'),
+        getCommitIndex: vi.fn().mockResolvedValue(42),
+        registerShard: vi.fn(),
+        removeShard: vi.fn().mockResolvedValue(undefined),
+        notifyTopologyChange: vi.fn().mockResolvedValue(undefined),
+        getHealthStatus: vi.fn().mockResolvedValue([]),
+        campaign: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn(),
+        off: vi.fn(),
+        setForceLeader: vi.fn(),
+      }
+      registerDbClusterConsensus(mockCluster)
+
+      const config = makeConfig({ mode: 'db-cluster' as any, nodeId: 'db-node' })
+      const instance = createConsensus(config)
+
+      expect(instance).toBeInstanceOf(DbClusterConsensusProvider)
+      expect(instance.getLeaderId()).toBeNull()
+    })
+
+    it('should create a valid ConsensusProvider interface', () => {
+      const mockCluster = {
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+        propose: vi.fn().mockResolvedValue(1),
+        isLeader: vi.fn().mockResolvedValue(true),
+        getLeader: vi.fn().mockResolvedValue('node-1'),
+        getCommitIndex: vi.fn().mockResolvedValue(42),
+        registerShard: vi.fn(),
+        removeShard: vi.fn().mockResolvedValue(undefined),
+        notifyTopologyChange: vi.fn().mockResolvedValue(undefined),
+        getHealthStatus: vi.fn().mockResolvedValue([]),
+        campaign: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn(),
+        off: vi.fn(),
+        setForceLeader: vi.fn(),
+      }
+      registerDbClusterConsensus(mockCluster)
+
+      const config = makeConfig({ mode: 'db-cluster' as any })
+      const instance = createConsensus(config)
+
+      // Verify ConsensusProvider interface
+      expect(instance).toHaveProperty('start')
+      expect(instance).toHaveProperty('stop')
+      expect(instance).toHaveProperty('propose')
+      expect(instance).toHaveProperty('readIndex')
+      expect(instance).toHaveProperty('barrier')
+      expect(instance).toHaveProperty('getRole')
+      expect(instance).toHaveProperty('getLeaderId')
+      expect(instance).toHaveProperty('getTerm')
+      expect(instance).toHaveProperty('waitForLeader')
+      expect(instance).toHaveProperty('setApply')
+      expect(instance).toHaveProperty('inMajority')
+      expect(instance).toHaveProperty('onMajorityChange')
+      expect(instance).toHaveProperty('addPeer')
+      expect(instance).toHaveProperty('removePeer')
+      expect(instance).toHaveProperty('getClusterMembers')
+      expect(instance).toHaveProperty('onMembershipChange')
+    })
+
+    it('should be started/stopped correctly', async () => {
+      const mockCluster = {
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+        propose: vi.fn().mockResolvedValue(1),
+        isLeader: vi.fn().mockResolvedValue(true),
+        getLeader: vi.fn().mockResolvedValue('node-1'),
+        getCommitIndex: vi.fn().mockResolvedValue(42),
+        registerShard: vi.fn(),
+        removeShard: vi.fn().mockResolvedValue(undefined),
+        notifyTopologyChange: vi.fn().mockResolvedValue(undefined),
+        getHealthStatus: vi.fn().mockResolvedValue([]),
+        campaign: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn(),
+        off: vi.fn(),
+        setForceLeader: vi.fn(),
+      }
+      registerDbClusterConsensus(mockCluster)
+
+      const config = makeConfig({ mode: 'db-cluster' as any, nodeId: 'db-node' })
+      const instance = createConsensus(config)
+
+      // Before start
+      expect(instance.getLeaderId()).toBeNull()
+
+      await instance.start()
+      expect(mockCluster.start).toHaveBeenCalledOnce()
+      expect(instance.getLeaderId()).toBe('db-node')
+
+      await instance.stop()
+      expect(mockCluster.stop).toHaveBeenCalledOnce()
+      expect(instance.getLeaderId()).toBeNull()
+    })
+
+    it('should clear registration for test isolation', () => {
+      const mockCluster = {
+        start: vi.fn(),
+        stop: vi.fn(),
+        propose: vi.fn(),
+        isLeader: vi.fn(),
+        getLeader: vi.fn(),
+        getCommitIndex: vi.fn(),
+        registerShard: vi.fn(),
+        removeShard: vi.fn(),
+        notifyTopologyChange: vi.fn(),
+        getHealthStatus: vi.fn(),
+        campaign: vi.fn(),
+        on: vi.fn(),
+        off: vi.fn(),
+        setForceLeader: vi.fn(),
+      }
+      registerDbClusterConsensus(mockCluster)
+      expect(isDbClusterConsensusRegistered()).toBe(true)
+
+      clearDbClusterConsensus()
+      expect(isDbClusterConsensusRegistered()).toBe(false)
+    })
+
+    it('should subscribe to cluster events on construction', () => {
+      const mockCluster = {
+        start: vi.fn(),
+        stop: vi.fn(),
+        propose: vi.fn(),
+        isLeader: vi.fn(),
+        getLeader: vi.fn(),
+        getCommitIndex: vi.fn(),
+        registerShard: vi.fn(),
+        removeShard: vi.fn(),
+        notifyTopologyChange: vi.fn(),
+        getHealthStatus: vi.fn(),
+        campaign: vi.fn(),
+        on: vi.fn(),
+        off: vi.fn(),
+        setForceLeader: vi.fn(),
+      }
+      registerDbClusterConsensus(mockCluster)
+
+      const config = makeConfig({ mode: 'db-cluster' as any })
+      createConsensus(config)
+
+      // The DbClusterConsensusProvider constructor subscribes to
+      // membership_change and majority_change
+      expect(mockCluster.on).toHaveBeenCalledWith('membership_change', expect.any(Function))
+      expect(mockCluster.on).toHaveBeenCalledWith('majority_change', expect.any(Function))
     })
   })
 })
