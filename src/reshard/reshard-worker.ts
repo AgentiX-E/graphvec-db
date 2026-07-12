@@ -85,7 +85,7 @@ export class ReshardWorker {
 
   /**
    * Verify data integrity of target Range (used in 3PC Prepare phase)
-   * @returns true 如果目标 Range 包含所有需要迁移的数据
+   * @returns true if target Range contains all data to be migrated
    */
   async prepare(): Promise<boolean> {
     try {

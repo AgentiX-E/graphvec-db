@@ -114,7 +114,7 @@ export class ReshardPlan {
   } {
     // Assume each node ~200 bytes (including vectors)
     const avgNodeSize = 200
-    const targetNodes = Math.floor(sourceNodeCount / 2) // 近似
+    const targetNodes = Math.floor(sourceNodeCount / 2) // approximate
     return {
       estimatedBytes: targetNodes * avgNodeSize,
       estimatedDurationMs: targetNodes * 0.5, // ~0.5ms per node

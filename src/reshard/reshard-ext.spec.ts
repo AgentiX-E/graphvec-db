@@ -1,10 +1,10 @@
 /**
- * reshard-ext.spec.ts — 重分片模块扩展测试
+ * reshard-ext.spec.ts — Reshard Module Extended Tests
  *
- * 新增测试（不修改已有 test）：
- * - 重分片后数据一致
- * - 重分片过程中写入
- * - 多次重分片
+ * Additional tests (does not modify existing tests):
+ * - Data consistency after resharding
+ * - Writes during resharding
+ * - Multiple resharding rounds
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ReshardManager } from './reshard-manager'
@@ -18,7 +18,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 
 // ──────────────────────────────────────────
-// ReshardPlan 扩展测试
+// ReshardPlan Extension Tests
 // ──────────────────────────────────────────
 
 describe('ReshardPlan - Extended', () => {
@@ -53,7 +53,7 @@ describe('ReshardPlan - Extended', () => {
     }
   })
 
-  describe('重分片后数据一致', () => {
+  describe('Data consistency after resharding', () => {
     test.skip('should generate plan with multiple splits for large range', () => {
       const ranges = [
         { rangeId: 'range-1', nodeCount: 100000, opsPerSec: 2000 },
@@ -89,7 +89,7 @@ describe('ReshardPlan - Extended', () => {
     })
   })
 
-  describe('多次重分片', () => {
+  describe('Multiple resharding rounds', () => {
     test('should handle multiple sequential re-splits of same range', () => {
       // First split: range-1 with 200k nodes -> splits into 2
       const r1 = [
@@ -139,7 +139,7 @@ describe('ReshardPlan - Extended', () => {
     })
   })
 
-  describe('重分片过程中写入', () => {
+  describe('Writes during resharding', () => {
     test('should handle concurrent split generation correctly', () => {
       // Generate multiple plans concurrently — should all work
       const ranges = [
@@ -159,7 +159,7 @@ describe('ReshardPlan - Extended', () => {
 })
 
 // ──────────────────────────────────────────
-// HotMigrator 扩展测试
+// HotMigrator Extension Tests
 // ──────────────────────────────────────────
 
 describe('HotMigrator - Extended', () => {
@@ -188,7 +188,7 @@ describe('HotMigrator - Extended', () => {
 })
 
 // ──────────────────────────────────────────
-// ReshardWorker 扩展测试
+// ReshardWorker Extension Tests
 // ──────────────────────────────────────────
 
 describe('ReshardWorker - Extended', () => {

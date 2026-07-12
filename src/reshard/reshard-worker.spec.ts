@@ -1,5 +1,5 @@
 /**
- * reshard-worker.spec.ts — ReshardWorker 数据迁移测试
+ * reshard-worker.spec.ts — ReshardWorker Data Migration Tests
  */
 
 // Need to import types for the mock helper
@@ -77,7 +77,7 @@ describe('ReshardWorker', () => {
       const nodeCount = 10
       const edgeCount = 5
 
-      // 用 Buffer 存储真实导出的快照数据
+      // Store real exported snapshot data in Buffer
       const snapshotBuffer = Buffer.from(
         JSON.stringify({
           nodes: Array.from({ length: nodeCount }, (_, i) => ({
@@ -95,7 +95,7 @@ describe('ReshardWorker', () => {
         })
       )
 
-      // 记录目标 range 接收到的 write 操作
+      // Record write operations received by target range
       const targetWrites: any[] = []
 
       const sourceRange = createMockRange('range-source', {
@@ -104,13 +104,13 @@ describe('ReshardWorker', () => {
         snapshotOverride: snapshotBuffer,
       }) as unknown as RangeInstance
 
-      // 目标 range 使用可变的 nodeCount/edgeCount，模拟 snapshot 写入后的状态更新
+      // Target range uses mutable nodeCount/edgeCount to simulate stats update after snapshot write
       const mockTargetState = { nodeCount: 0, edgeCount: 0 }
       const targetRange = createMockRange('range-target', {
         nodeCount: 0,
         edgeCount: 0,
         mutableState: mockTargetState,
-        // 安装 snapshot 后更新统计
+        // Update stats after installing snapshot
         snapshotCallback: (data: string) => {
           const parsed = JSON.parse(Buffer.from(data, 'base64').toString())
           const nCount = parsed.nodes?.length ?? 0
@@ -127,7 +127,7 @@ describe('ReshardWorker', () => {
       expect(worker.progress).toBe(100)
       expect(targetWrites.length).toBeGreaterThanOrEqual(1)
       expect(targetWrites[0].type).toBe('install_snapshot')
-      // 校验快照包含了正确的数据量
+      // Verify snapshot contains correct data counts
       expect(targetWrites[0].nodeCount).toBe(nodeCount)
       expect(targetWrites[0].edgeCount).toBe(edgeCount)
     })
@@ -223,7 +223,7 @@ function createMockRange(rangeId: string, opts?: {
   const snapshotCallback = opts?.snapshotCallback
   const mutableState = opts?.mutableState
 
-  // 用于 stats() 的实时值：If any mutableState 则使用它，否则使用初始值
+  // Live values for stats(): use mutableState if available, otherwise use initial values
   const getNodeCount = () => mutableState?.nodeCount ?? nodeCount
   const getEdgeCount = () => mutableState?.edgeCount ?? edgeCount
 
@@ -241,7 +241,7 @@ function createMockRange(rangeId: string, opts?: {
       }
     }),
     read: vi.fn().mockImplementation(async (reader: Function) => {
-      // 构造 mock 的 GraphEngine-like 对象
+      // Build a mock GraphEngine-like object
       const mockEngine: any = {
         queryPattern: () =>
           Array.from({ length: nodeCount }, (_, i) => ({
@@ -261,7 +261,7 @@ function createMockRange(rangeId: string, opts?: {
         }),
         exportSnapshot: () => {
           if (snapshotOverride) return snapshotOverride
-          // 默认生成快照 Buffer
+          // Generate default snapshot Buffer
           return Buffer.from(
             JSON.stringify({
               nodes: Array.from({ length: nodeCount }, (_, i) => ({

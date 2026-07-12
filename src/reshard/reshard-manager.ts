@@ -82,7 +82,7 @@ export class ReshardManager {
 
       // Phase 4: 3PC atomic commit
       await this._atomicSwitch(plan)
-      // _atomicSwitch 内部设置 preparing → committing
+      // _atomicSwitch internally sets preparing → committing
 
       // Phase 5: start cleanup timer
       this._scheduleCleanup(plan, 48 * 60 * 60 * 1000)
@@ -177,13 +177,13 @@ export class ReshardManager {
 
     const allReady = prepareResults.every(r => r.ok)
     if (!allReady) {
-      // Abort — 通知所有 worker 回滚
+      // Abort — notify all workers to rollback
       this._status!.errors.push(
         `Reshard prepare failed: ${prepareResults.filter(r => !r.ok).map(r => r.rangeId).join(', ')}`
       )
       for (const worker of this.workers) {
         await worker.rollback().catch(() => {
-          // 回滚失败不阻塞整体流程
+          // Rollback failure does not block the overall flow
         })
       }
       throw new Error(this._status!.errors[this._status!.errors.length - 1])
@@ -238,7 +238,7 @@ export class ReshardManager {
           this.logger.warn(`Cleaning up source range: ${split.sourceRangeId} (48h after split completion)`)
           this.shardManager.removeRange(split.sourceRangeId)
         } catch {
-          // 清理失败不阻塞
+          // Cleanup failure does not block
         }
       }
     }, delayMs)

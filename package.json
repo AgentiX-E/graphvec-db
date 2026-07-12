@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "license": "Apache-2.0",
-  "description": "AgentiX GraphVec — Globally distributed, multi-active graph database for AI Agent era",
+  "description": "AgentiX GraphVec \u2014 Globally distributed, multi-active graph database for AI Agent era",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "engines": {
@@ -52,7 +52,8 @@
     "prepublishOnly": "npm run build",
     "test:int": "npx vitest run --config vitest.int.config.ts test/integration",
     "test:fault": "npx vitest run --config vitest.int.config.ts test/fault-injection",
-    "test:curvespec": "npx vitest run --config vitest.config.ts --root . src/core/event-bus.curvespec.ts"
+    "test:curvespec": "npx vitest run --config vitest.config.ts --root . src/core/event-bus.curvespec.ts",
+    "test": "npm run test:core"
   },
   "dependencies": {
     "@consento/hlc": "^2.1.0",

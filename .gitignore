@@ -4,3 +4,11 @@ dist/
 *.bak
 test-data/
 test-data/
+
+# Compiled output
+*.js
+*.d.ts
+!scripts/*.js
+!test/fixtures/*.js
+!*.config.js
+!*.eslintrc.js

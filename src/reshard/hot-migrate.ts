@@ -32,8 +32,8 @@ export type HotMigratePhase =
   | 'failed'
 
 export interface HotMigrateProgress {
-  rangeId: string            // 被迁移的源 Range ID
-  targetRangeId: string      // 目标 Range ID
+  rangeId: string            // Source Range ID being migrated
+  targetRangeId: string      // Target Range ID
   phase: HotMigratePhase
   progressPercent: number
   startedAt: number
@@ -122,7 +122,7 @@ export class HotMigrator {
       this.logger.error({ error: msg, rangeId: split.sourceRangeId }, 'Hot migration failed')
       progress.phase = 'failed'
       progress.error = msg
-      // 尝试回滚（中止双写）
+      // Attempt rollback (disable dual write)
       this.shardManager.disableDualWrite()
     }
 
@@ -130,8 +130,8 @@ export class HotMigrator {
   }
 
   /**
-   * 回滚热迁移（仅在 ATOMIC_SWITCH 前有效）
-   * 恢复双写前的状态，目标 Range 将被移除
+   * Rollback hot migration (only valid before ATOMIC_SWITCH)
+   * Restore pre-dual-write state; target Range will be removed
    */
   async rollback(split: ReshardSplit): Promise<void> {
     const progress = this._progress.get(split.sourceRangeId)
@@ -153,21 +153,21 @@ export class HotMigrator {
     }
   }
 
-  // ── 区域感知路由 ──
+  // ── Geo-Aware Routing ──
 
   /**
-   * 基于源节点和目标节点的地理位置，提供区域感知路由提示。
-   * 适合全球多活的部署场景，确保请求路由到最近的 Region。
+   * Provide geo-aware routing hints based on source and target node geolocation.
+   * Suitable for global active-active deployments, ensuring requests route to the nearest Region.
    *
-   * @param sourceGeo 源节点的地理Info
-   * @param targetGeo 目标节点的地理Info
-   * @returns 路由建议
+   * @param sourceGeo Source node geolocation info
+   * @param targetGeo Target node geolocation info
+   * @returns Route suggestion
    */
   selectOptimalRegion(
     sourceGeo: GeoAwareRouteHint,
     targetGeo: GeoAwareRouteHint,
   ): { preferredNodeId: string; preferredRegion: string } {
-    // 简单实现：选择与源同 Region 的目标（减少跨区域延迟）
+    // Simple implementation: prefer target in same Region as source (reduce cross-region latency)
     if (sourceGeo.region === targetGeo.region) {
       return {
         preferredNodeId: targetGeo.nodeId,
@@ -175,7 +175,7 @@ export class HotMigrator {
       }
     }
 
-    // 跨 Region 场景：按地理位置计算最近 Region
+    // Cross-Region scenario: compute nearest Region by geolocation
     const dist = this._haversine(
       sourceGeo.lat, sourceGeo.lon,
       targetGeo.lat, targetGeo.lon,
@@ -192,7 +192,7 @@ export class HotMigrator {
     }
   }
 
-  // ── 内部方法 ──
+  // ── Internal Methods ──
 
   private async _prepareTarget(
     split: ReshardSplit,
@@ -222,7 +222,7 @@ export class HotMigrator {
 
     this.shardManager.enableDualWrite([split])
 
-    // 验证双写生效：写入一条测试数据，确认目标 Range 也收到
+    // Verify dual write: write a test record and confirm it reached the target Range
     const testId = await this.shardManager.upsertNode(1, `__hotmigrate_probe_${Date.now()}`)
     const sourceRange = this.shardManager.getRange(split.sourceRangeId)
     const targetRange = this.shardManager.getRange(split.targetRangeId)
@@ -230,8 +230,8 @@ export class HotMigrator {
     const sourceNode = await sourceRange.read(engine => engine.getNode(testId))
     const targetNode = await targetRange.read(engine => engine.getNode(testId))
     if (!sourceNode && !targetNode) {
-      // 双写测试数据可能因为独立 auto-increment 在不同 range 有不同 id
-      // 只检查目标 Range 非空
+      // Dual-write test data may have different ids across ranges due to independent auto-increment
+      // Only check that target Range is non-empty
     }
 
     await sourceRange.write({
@@ -253,20 +253,20 @@ export class HotMigrator {
     const sourceRange = this.shardManager.getRange(split.sourceRangeId)
     const targetRange = this.shardManager.getRange(split.targetRangeId)
 
-    // 导出快照 — 不阻塞写入（exportSnapshot 是读快照，不持有写锁）
+    // Export snapshot — non-blocking (exportSnapshot is a read snapshot, does not hold write lock)
     const snapshotData = await sourceRange.read<Buffer>(engine => {
       return engine.exportSnapshot()
     })
     progress.progressPercent = 50
 
-    // 安装快照到目标 Range
+    // Install snapshot to target Range
     await targetRange.write({
       type: 'install_snapshot',
       payload: { snapshotData: snapshotData.toString('base64') },
     })
     progress.progressPercent = 65
 
-    // 校验快照写入
+    // Verify snapshot write
     const sourceStats = await sourceRange.read(engine => engine.stats())
     const targetStats = await targetRange.read(engine => engine.stats())
 
@@ -292,9 +292,9 @@ export class HotMigrator {
     progress.phase = 'catch_up'
     progress.progressPercent = 70
 
-    // 在双写机制下，从快照导出到安装完成之间的所有增量写入，
-    // 已经通过 _writeWithDualWrite 写入了目标 Range（Step 2 的双写保证了这点）。
-    // 尽管如此，做一次最终一致性校验是好的。
+    // Under dual write, all incremental writes between snapshot export and installation
+    // have already been written to the target Range via _writeWithDualWrite (guaranteed by Step 2).
+    // Nevertheless, a final consistency check is good practice.
     this.logger.info({ sourceRangeId: split.sourceRangeId }, 'Verifying dual-write catch-up...')
 
     const sourceRange = this.shardManager.getRange(split.sourceRangeId)
@@ -306,8 +306,8 @@ export class HotMigrator {
     const sourceTotal = sourceStats.nodeCount + sourceStats.edgeCount
     const targetTotal = targetStats.nodeCount + targetStats.edgeCount
 
-    // 双写保证：目标数量 ≥ 源数量（因为双写写入已持久化到目标）
-    // 实际可能因目标有额外数据（如独立 auto-increment 的临时数据）而大于源
+    // Dual-write guarantee: target count >= source count (dual writes already persisted to target)
+    // In practice, target may have extra data (e.g. temporary data from independent auto-increment) exceeding source
     this.logger.info(
       { sourceTotal, targetTotal, diff: Math.abs(sourceTotal - targetTotal) },
       'Catch-up verification',
@@ -328,7 +328,7 @@ export class HotMigrator {
       'Performing atomic route switch',
     )
 
-    // 1. 构建新 ShardMap，将源 Range 替换为目标 Range（保留 hashRing 不变）
+    // 1. Build new ShardMap replacing source Range with target Range (keep hashRing unchanged)
     const oldMap = this.shardManager.getRouter().getShardMap()
     const newRanges = oldMap.ranges.map(r => {
       if (r.rangeId === split.sourceRangeId) {
@@ -347,10 +347,10 @@ export class HotMigrator {
       hashRing: oldMap.hashRing,
     }
 
-    // 2. 原子更新路由表
+    // 2. Atomically update routing table
     this.shardManager.rebuildRouter(newMap)
 
-    // 3. 停用双写 — 此后所有读写重新路由到目标 Range
+    // 3. Disable dual write — all reads/writes now route to target Range
     this.shardManager.disableDualWrite()
 
     progress.progressPercent = 95
@@ -378,10 +378,10 @@ export class HotMigrator {
     this.logger.info({ sourceRangeId: split.sourceRangeId }, 'Source range cleaned up')
   }
 
-  // ── Haversine 距离公式（球面距离计算） ──
+  // ── Haversine Distance Formula (Spherical Distance Calculation) ──
 
   private _haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const R = 6371 // 地球半径（km）
+    const R = 6371 // Earth radius (km)
     const dLat = this._toRad(lat2 - lat1)
     const dLon = this._toRad(lon2 - lon1)
     const a =
@@ -397,7 +397,7 @@ export class HotMigrator {
   }
 }
 
-// ── 区域感知路由辅助函数 ──
+// ── Geo-Aware Routing Helpers ──
 
 export interface RegionEntry {
   nodeId: string
@@ -407,12 +407,12 @@ export interface RegionEntry {
 }
 
 /**
- * 从 geoip-lite 风格的 GeoIP 数据中选择最近节点
+ * Select nearest node from geoip-lite-style GeoIP data
  *
- * @param clientLat 客户端纬度
- * @param clientLon 客户端经度
- * @param nodes 候选节点列表（每个节点包含经纬度）
- * @returns 最近的Node ID
+ * @param clientLat Client latitude
+ * @param clientLon Client longitude
+ * @param nodes Candidate node list (each node has lat/lon)
+ * @returns Nearest node ID
  */
 export function selectNearestNode(
   clientLat: number,
@@ -439,7 +439,7 @@ export function selectNearestNode(
 }
 
 /**
- * Haversine 距离（球面）
+ * Haversine distance (spherical)
  */
 export function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371

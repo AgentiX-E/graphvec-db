@@ -1,14 +1,14 @@
 /**
- * reshard-manager.spec.ts — ReshardManager 在线 Resharding 测试
+ * reshard-manager.spec.ts — ReshardManager Online Resharding Tests
  *
- * 测试策略：
- * ReshardManager 协调 ShardManager + ReshardPlan + ReshardWorker。
- * ShardManager 需要真实 RangeInstance，通过 jest.mock 模块级别 mock。
- * 单元测试验证：
- * - 状态机转换（pending → dual_write → migrating → ... → completed）
- * - 3PC 原子提交流程
- * - 回滚逻辑
- * - 容错处理
+ * Test strategy:
+ * ReshardManager coordinates ShardManager + ReshardPlan + ReshardWorker.
+ * ShardManager requires real RangeInstance, mocked at module level via jest.mock.
+ * Unit tests verify:
+ * - State machine transitions (pending → dual_write → migrating → ... → completed)
+ * - 3PC atomic commit flow
+ * - Rollback logic
+ * - Fault tolerance
  */
 import * as os from 'node:os'
 import * as path from 'node:path'

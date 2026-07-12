@@ -1,5 +1,5 @@
 // ============================================================
-// hot-migrate.spec.ts — 热迁移 + 区域感知路由 单元测试
+// hot-migrate.spec.ts — Hot Migration + Geo-Aware Routing Unit Tests
 // ============================================================
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
