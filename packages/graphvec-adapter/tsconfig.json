@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "outDir": "./dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "types": ["node"],
+    "rootDir": "src",
+    "baseUrl": "src",
+    "typeRoots": [
+      "node_modules/@types",
+      "src"
+    ],
+    "paths": {
+      "@agentix-e/db-operations-core": ["../../../db-operations/packages/core/dist"],
+      "@agentix-e/db-operations-core/types": ["../../../db-operations/packages/core/dist/types"],
+      "@agentix-e/db-operations-health": ["../../../db-operations/packages/health/dist"],
+      "@agentix-e/db-operations-backup": ["../../../db-operations/packages/backup/dist"],
+      "@agentix-e/db-operations-logger": ["../../../db-operations/packages/logger/dist"],
+      "@agentix-e/db-operations-metrics": ["../../../db-operations/packages/metrics/dist"],
+      "@agentix-e/db-operations-monitor": ["../../../db-operations/packages/monitor/dist"],
+      "@agentix-e/db-operations-security": ["../../../db-operations/packages/security/dist"],
+      "@agentix-e/db-operations-observability": ["../../../db-operations/packages/observability/dist"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "**/__tests__/**"]
+}

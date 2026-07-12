@@ -1,0 +1,43 @@
+{
+  "name": "@agentix-e/graphvec-adapter",
+  "version": "0.1.0",
+  "description": "GraphVec adapter that implements db-operations interfaces for the graphvec-db engine",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agentix-e/db-operations-core": "file:../../../db-operations/packages/core",
+    "@agentix-e/db-operations-health": "file:../../../db-operations/packages/health",
+    "@agentix-e/db-operations-backup": "file:../../../db-operations/packages/backup",
+    "@agentix-e/db-operations-logger": "file:../../../db-operations/packages/logger",
+    "@agentix-e/db-operations-metrics": "file:../../../db-operations/packages/metrics",
+    "@agentix-e/db-operations-monitor": "file:../../../db-operations/packages/monitor",
+    "@agentix-e/db-operations-security": "file:../../../db-operations/packages/security",
+    "@agentix-e/db-operations-observability": "file:../../../db-operations/packages/observability"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.7",
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
