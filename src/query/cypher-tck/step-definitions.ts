@@ -708,6 +708,22 @@ Given('having executed:', async function (query: string) {
             st.nodes.push(node)
             try { seedGe(persistGe(), node) } catch {}
           }
+          // 注入边（createEdges）
+          const cEdges = (subPlan as any).createEdges as Array<{ sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
+          if (cEdges?.length) {
+            for (const ce of cEdges) {
+              const srcIdx = ce.sourceIdx
+              const dstIdx = ce.targetIdx
+              if (srcIdx >= 0 && srcIdx < st.nodes.length && dstIdx >= 0 && dstIdx < st.nodes.length) {
+                if (!st.nodes[srcIdx].__edges) st.nodes[srcIdx].__edges = []
+                st.nodes[srcIdx].__edges.push({
+                  srcIdx, dstIdx,
+                  label: ce.label || 'KNOWS',
+                  props: ce.props || null,
+                })
+              }
+            }
+          }
         } else {
           // 非 CREATE 语句，用 run() 执行
           await run(line)
@@ -792,8 +808,12 @@ Given('having executed:', async function (query: string) {
         for (const ce of cEdges) {
           // 优先通过 alias 查找
           let srcIdx = -1, dstIdx = -1
+          // 无 alias 时直接使用 sourceIdx/targetIdx（匿名节点场景）
+          const noAlias = !ce.source && !ce.target
           if (ce.source && aliasToTrueIdx.has(ce.source)) {
             srcIdx = aliasToTrueIdx.get(ce.source)!
+          } else if (noAlias && ce.sourceIdx !== undefined && ce.sourceIdx >= 0 && ce.sourceIdx < createdNodes.length) {
+            srcIdx = ce.sourceIdx
           } else if (ce.sourceIdx !== undefined && ce.sourceIdx >= 0 && ce.sourceIdx < createdNodes.length) {
             // 回退：找 createdNodes[ce.sourceIdx] 对应的真实节点（递归解引用）
             let cursor = ce.sourceIdx
@@ -814,7 +834,8 @@ Given('having executed:', async function (query: string) {
           }
           if (ce.target && aliasToTrueIdx.has(ce.target)) {
             dstIdx = aliasToTrueIdx.get(ce.target)!
-          } else if (ce.targetIdx !== undefined && ce.targetIdx >= 0 && ce.targetIdx < createdNodes.length) {
+          } else if (noAlias && ce.targetIdx !== undefined && ce.targetIdx >= 0 && ce.targetIdx < createdNodes.length) {
+            dstIdx = ce.targetIdx
             let cursor = ce.targetIdx
             const visited = new Set<number>()
             while (cursor >= 0 && cursor < createdNodes.length && !visited.has(cursor)) {

@@ -231,6 +231,27 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // 聚合模式例外：聚合函数名如 count(*) 已在 GE 的 _execAggregation 中正确设为 props key
     // TODO: 更好的方法是统一 QE 和 GE 的聚合列名，避免走函数求值
     if ((rc in row)) {
+      // 如果 row[rc] 是 "[:T]" 格式字符串但没有 props，而 __crossVarRows 有边属性，
+      // 替换为带 props 的格式"[:T {name: 'bar'}]"
+      if (typeof row[rc] === 'string' && row[rc].startsWith('[:') && !row[rc].includes('{') && r.__crossVarRows?.[rc]) {
+        const edgeInfo = r.__crossVarRows[rc] as Record<string, unknown>
+        const props: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(edgeInfo)) {
+          if (!k.startsWith('_')) props[k] = v
+        }
+        const propKeys = Object.keys(props)
+        if (propKeys.length) {
+          const propStr = propKeys.map(k => {
+            const v = props[k]
+            if (typeof v === 'string') return `${k}: '${v}'`
+            if (typeof v === 'number') return `${k}: ${v}`
+            return `${k}: ${JSON.stringify(v)}`
+          }).join(', ')
+          const label = row[rc].replace(/^\[:/, '').replace(/\].*$/, '')
+          result[rc] = `[:${label} {${propStr}}]`
+          continue
+        }
+      }
       result[rc] = row[rc]
       continue
     }
@@ -241,6 +262,24 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       // 如果是边变量（值是字符串 "[:T1]" 格式），直接输出
       if (typeof r[rc] === 'string' && r[rc].startsWith('[:')) {
         result[rc] = r[rc]
+        continue
+      }
+      // 边变量：从 __crossVarRows 或 r[rc] 获取，格式化为 [:Label {prop: 'val'}]
+      if (typeof r[rc] === 'object' && r[rc] !== null && '_label' in r[rc]) {
+        const edgeObj = r[rc] as Record<string, unknown>
+        const label = (edgeObj._label as string) || ''
+        const propKeys = Object.keys(edgeObj).filter(k => !k.startsWith('_'))
+        if (propKeys.length === 0) {
+          result[rc] = label ? `[:${label}]` : '[:]'
+        } else {
+          const propStr = propKeys.map(k => {
+            const v = edgeObj[k]
+            if (typeof v === 'string') return `${k}: '${v}'`
+            if (typeof v === 'number') return `${k}: ${v}`
+            return `${k}: ${JSON.stringify(v)}`
+          }).join(', ')
+          result[rc] = label ? `[:${label} {${propStr}}]` : `[: {${propStr}}]`
+        }
         continue
       }
       result[rc] = r[rc]
@@ -328,7 +367,28 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         isEdgeVar = typeof r[rc] === 'string' && r[rc].startsWith('[:')
       }
       if (isEdgeVar) {
-        result[rc] = '[:' + r.__edgeLabel + ']'
+        // 检查 __crossVarRows 是否有边属性
+        const edgeInfo = r.__crossVarRows?.[rc]
+        if (edgeInfo && typeof edgeInfo === 'object') {
+          const props: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(edgeInfo)) {
+            if (!k.startsWith('_')) props[k] = v
+          }
+          const propKeys = Object.keys(props)
+          if (propKeys.length === 0) {
+            result[rc] = '[:' + r.__edgeLabel + ']'
+          } else {
+            const propStr = propKeys.map(k => {
+              const v = props[k]
+              if (typeof v === 'string') return `${k}: '${v}'`
+              if (typeof v === 'number') return `${k}: ${v}`
+              return `${k}: ${JSON.stringify(v)}`
+            }).join(', ')
+            result[rc] = `[:${r.__edgeLabel} {${propStr}}]`
+          }
+        } else {
+          result[rc] = '[:' + r.__edgeLabel + ']'
+        }
         continue
       }
     }

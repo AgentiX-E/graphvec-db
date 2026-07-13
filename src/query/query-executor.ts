@@ -1150,6 +1150,107 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               return true
             })
           }
+          // 边变量过滤：WHERE r.name = 'monkey' 场景，
+          // 用边属性过滤结果，并附加边属性到 __crossVarRows 供下游 whereBody 评估使用
+          if (multiStepRaw.length && (plan.filters || []).some((f: any) => {
+            const stepVars = new Set((plan.steps || []).flatMap((s: any) => [s.source, s.targetAlias]))
+            return f.source && !stepVars.has(f.source)
+          })) {
+            const stepVars = new Set((plan.steps || []).flatMap((s: any) => [s.source, s.targetAlias]))
+            const edgeFilters = (plan.filters || []).filter((f: any) => f.source && !stepVars.has(f.source))
+            const collectedEdges: Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>|null}> = []
+            for (let ni = 0; ni < allNodes.length; ni++) {
+              const ne = (allNodes[ni] as any).__edges as Array<any> | undefined
+              if (ne) collectedEdges.push(...ne)
+            }
+            if (collectedEdges.length) {
+              multiStepRaw = multiStepRaw.filter((r: any) => {
+                const rIdx = nodeGeIds.indexOf(r.id)
+                if (rIdx < 0) return true
+                return edgeFilters.every((f: any) => {
+                  const connected = collectedEdges.filter((e: any) =>
+                    e.dstIdx === rIdx || e.srcIdx === rIdx
+                  )
+                  if (!connected.length) return false
+                  const stepEdgeLabel = plan.steps?.[0]?.edgeLabel
+                  const candidates = stepEdgeLabel
+                    ? connected.filter((e: any) => e.label === stepEdgeLabel)
+                    : connected
+                  if (!candidates.length) return false
+                  const actualVal = candidates[0].props?.[f.property]
+                  if (actualVal === undefined && f.operator !== 'IS_NULL') return false
+                  switch (f.operator) {
+                    case 'EQ':   return String(actualVal) === String(f.value)
+                    case 'NEQ':  return String(actualVal) !== String(f.value)
+                    default:     return String(actualVal) === String(f.value)
+                  }
+                })
+              })
+              // 为保留下来的行附加边变量属性到 __crossVarRows，
+              // 使下游 _formatResultRow / whereBody 评估能正确解析 ctx.r.name
+              if (multiStepRaw.length) {
+                const edgeVarNames = [...new Set(edgeFilters.map((f: any) => f.source))]
+                for (const r of multiStepRaw) {
+                  const rIdx = nodeGeIds.indexOf(r.id)
+                  if (rIdx < 0) continue
+                  const connected = collectedEdges.filter((e: any) =>
+                    e.dstIdx === rIdx || e.srcIdx === rIdx
+                  ).filter((e: any) => !plan.steps?.[0]?.edgeLabel || e.label === plan.steps[0].edgeLabel)
+                  if (connected.length && connected[0].props) {
+                    if (!r.__crossVarRows) r.__crossVarRows = {}
+                    for (const evn of edgeVarNames) {
+                      const edgeInfo = { ...connected[0].props, _label: connected[0].label || '' }
+                      r.__crossVarRows[evn] = edgeInfo
+                      // 边变量也可能出现在 RETURN 中（如 RETURN r），
+                      // 需要同时注入到 props 供 _formatResultRow 使用
+                      if (!r.props) r.props = {}
+                      r.props[evn] = edgeInfo
+                    }
+                  }
+                }
+              }
+            }
+          }
+          // 为 multiStepRaw 条目标记边变量属性（__crossVarRows），供 RETURN r / whereBody 使用
+          if (multiStepRaw.length) {
+            const collectedEdges: Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>|null}> = []
+            for (let ni = 0; ni < allNodes.length; ni++) {
+              const ne = (allNodes[ni] as any).__edges as Array<any> | undefined
+              if (ne) collectedEdges.push(...ne)
+            }
+            if (collectedEdges.length) {
+              // 找出边变量名
+              const nodeAliases = new Set([
+                ...(plan.createNodes || []).map((n: any) => n.alias).filter(Boolean),
+                ...(plan.steps || []).flatMap((s: any) => [s.source, s.targetAlias]).filter(Boolean),
+              ])
+              const _sVars = new Set((plan.steps || []).flatMap((s: any) => [s.source, s.targetAlias]))
+              const edgeVarNames = new Set<string>()
+              if (plan.returnColumns) {
+                for (const rc of plan.returnColumns) {
+                  if (!nodeAliases.has(rc)) edgeVarNames.add(rc)
+                }
+              }
+              if (plan.filters) {
+                for (const f of plan.filters) {
+                  if (f.source && !_sVars.has(f.source)) edgeVarNames.add(f.source)
+                }
+              }
+              for (const r of multiStepRaw) {
+                const rIdx = nodeGeIds.indexOf(r.id)
+                if (rIdx < 0) continue
+                const connected = collectedEdges.filter((e: any) =>
+                  e.dstIdx === rIdx || e.srcIdx === rIdx
+                ).filter((e: any) => !plan.steps?.[0]?.edgeLabel || e.label === plan.steps[0].edgeLabel)
+                if (connected.length && !r.__crossVarRows) {
+                  r.__crossVarRows = {}
+                  for (const evn of edgeVarNames) {
+                    r.__crossVarRows[evn] = { ...connected[0].props, _label: connected[0].label || '' }
+                  }
+                }
+              }
+            }
+          }
           return multiStepRaw
         })()
       : multiTypeStep
@@ -2012,10 +2113,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         })
       : edgePropFilteredRecords
 
-    // Safety: ensure rawWithEdges is always an array
-    if (!Array.isArray(rawWithEdges)) rawWithEdges = edgePropFilteredRecords
-
-    // ── 边属性列后处理 ──
+    // ── 边属性列后置处理 ──
     // 对 `RETURN r.num` 这样的边属性访问，从 edgesPayload 查找边属性并设置到行记录
     if (edgesPayload.length && rawWithEdges.length && (query || '').match(/\w+\.\w+/)) {
       // 从 query 中提取可能的边属性访问列
