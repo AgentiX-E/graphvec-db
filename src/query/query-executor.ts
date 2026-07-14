@@ -480,33 +480,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const matchSource = plan.steps?.[0]?.source
           const isMatchSource = inlineVar === matchSource || (!matchSource && !plan.scanLabel)
           if (isMatchSource) {
-            for (let i = 0; i < allNodes.length; i++) {
-              if (skipNodeIndices.has(i)) continue
-              let matchesAll = true
-              for (const pred of inlinePredicates) {
-                const actual = allNodes[i][pred.key]
-                const expected = pred.value
-                const expectedRaw = pred.raw
-                if (actual === undefined) {
-                  matchesAll = false
-                  break
-                }
-                // 普通字符串/数字比较
-                const actualStr = String(actual)
-                if (actualStr === expectedRaw) continue  // exact match
-                // 大整数精度丢失：actual 被 ANTLR 截断，raw 是原始文本
-                // 用 BigInt(raw) 解析后与 actual 用 BigInt 对比
-                if (/^\d+$/.test(expectedRaw)) {
-                  try {
-                    const actualBig = typeof actual === 'bigint' ? actual : BigInt(actualStr)
-                    const expectedBig = BigInt(expectedRaw)
-                    if (actualBig === expectedBig) continue  // bigint match！
-                  } catch {}
-                }
-                matchesAll = false
-                break
-              }
-              if (!matchesAll) skipNodeIndices.add(i)
+            // 内联属性过滤 `(n {name:'A'})`：不要用 skipNodeIndices 跳过不匹配节点，
+            // 这会把 target 节点（B、C）也跳过。
+            // 改为注入 stepSourceFilters，让 _walkMultiSteps 在遍历时正确约束。
+            // 先清空现有同 variable 的 source 过滤（避免重复过滤）
+            if (!stepSourceFilters) stepSourceFilters = []
+            for (const pred of inlinePredicates) {
+              stepSourceFilters.push({
+                source: inlineVar,
+                property: pred.key,
+                value: typeof pred.value === 'number' ? pred.value : pred.raw,
+              })
             }
           }
         }
@@ -1199,7 +1183,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   if (connected.length && connected[0].props) {
                     if (!r.__crossVarRows) r.__crossVarRows = {}
                     for (const evn of edgeVarNames) {
-                      const edgeInfo = { ...connected[0].props, _label: connected[0].label || '' }
+                      const edgeInfo = { ...connected[0].props, _label: connected[0].label || '', __edgeLabel: connected[0].label || '' }
                       r.__crossVarRows[evn] = edgeInfo
                       // 边变量也可能出现在 RETURN 中（如 RETURN r），
                       // 需要同时注入到 props 供 _formatResultRow 使用
@@ -1242,12 +1226,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 const connected = collectedEdges.filter((e: any) =>
                   e.dstIdx === rIdx || e.srcIdx === rIdx
                 ).filter((e: any) => !plan.steps?.[0]?.edgeLabel || e.label === plan.steps[0].edgeLabel)
-                if (connected.length && !r.__crossVarRows) {
-                  r.__crossVarRows = {}
+                if (connected.length) {
+                  const edgeInfo = { ...connected[0].props, _label: connected[0].label || '', __edgeLabel: connected[0].label || '' }
+                  if (!r.__crossVarRows) r.__crossVarRows = {}
+                  // 注入到已知的边变量名（来自 returnColumns / filters）
                   for (const evn of edgeVarNames) {
-                    r.__crossVarRows[evn] = { ...connected[0].props, _label: connected[0].label || '' }
+                    r.__crossVarRows[evn] = edgeInfo
                   }
-                }
+                  // 无条件注入到 'r'（最常用的边变量名），供 whereBody type(r) 等场景
+                  if (!r.__crossVarRows['r']) r.__crossVarRows['r'] = edgeInfo
+                  // DEBUG check
+                                  }
               }
             }
           }
@@ -2113,6 +2102,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         })
       : edgePropFilteredRecords
 
+
     // ── 边属性列后置处理 ──
     // 对 `RETURN r.num` 这样的边属性访问，从 edgesPayload 查找边属性并设置到行记录
     if (edgesPayload.length && rawWithEdges.length && (query || '').match(/\w+\.\w+/)) {
@@ -2208,7 +2198,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     } else {
       result = rawResult
     }
-    if (plan.aggregate) console.error(`[DEBUG] result after assign: length=${result.length}, keys=${result[0] ? Object.keys(result[0]).join(',') : 'no'}`)
 
     // ── WHERE 子句后处理过滤（表达式引擎处理 GE 不支持的复杂 boolean 表达式） ──
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
@@ -2236,7 +2225,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           for (const [varName, varNode] of Object.entries(rawEntry.__crossVarRows)) {
             ctx[varName] = varNode as Record<string, unknown>
           }
-        }
+                }
         // 注入 WITH/UNWIND 管道变量（WITH/UNWIND 在 MATCH 之前的情况）
         // 尝试从 nodes 中获取 pipeline 执行结果
         if (plan.with?.columns?.length && !Array.isArray(nodes?.[0]?.props)) {
@@ -2254,15 +2243,33 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const unwindVal = Array.isArray(nodes?.[0]) ? nodes[0] : null
           if (unwindVal) ctx[plan.unwind.name] = unwindVal
         }
+        // 路径变量注入：WHERE length(p) = N 需要通过 ctx.p.length 评估
+        if (plan.pathVar && !(plan.pathVar in ctx)) {
+          const nSteps = (plan.steps || []).length
+          ctx[plan.pathVar] = { length: nSteps }
+        }
+        // 预处理 whereBody：替换 length(var) = N → var.length = N
+        // 表达式引擎不认识 length() 函数，但可以用 .length 属性访问
+        let whereBodyExpr = plan.whereBody
+        if (whereBodyExpr) {
+          whereBodyExpr = whereBodyExpr.replace(/length\s*\(\s*(\w+)\s*\)/g, '$1.length')
+        }
         let evalVal: unknown
-        if (_isPatternPredicate(plan.whereBody)) {
+        if (_isPatternPredicate(plan.whereBody) || (whereBodyExpr && whereBodyExpr !== plan.whereBody)) {
           // Pattern Comprehension（如 (n)-[]->() 或 (n)-[:REL1]->()）由 GE steps 已执行。
-          // 此时 whereBody 是原始文本，不能作为表达式求值。
-          // 如果 result 中有此行，说明 GE 步已有匹配，模式存在。
-          // 对于 NOT 模式：WHERE NOT (n)-[]->()，需要反转判断
-          const isNegated = plan.whereBody.trim().startsWith('NOT ')
-          evalVal = isNegated ? false : true
-                } else if (/^exists\s*\{/i.test(plan.whereBody.trim())) {
+          // 如果 length(p) 已替换为 p.length，isPatternPredicate 可能不匹配，
+          // 但长度评估已经在 whereBodyExpr 中处理，所以走表达式求值路径。
+          if (_isPatternPredicate(plan.whereBody)) {
+            // 原始 whereBody 是 Pattern Comprehension
+            const isNegated = plan.whereBody.trim().startsWith('NOT ')
+            evalVal = isNegated ? false : true
+          } else {
+            // whereBodyExpr !== plan.whereBody（如 length(p)=1 → p.length=1）
+            // 或 _isPatternPredicate 为 false 的非 pattern 查询
+            const resultVal = _evaluateExpression(whereBodyExpr || plan.whereBody, ctx)
+            evalVal = resultVal
+          }
+        } else if (/^exists\s*\{/i.test(plan.whereBody.trim())) {
           // EXISTS { ... } 子查询
           const ebody = plan.whereBody.trim()
           const srcMatch = ebody.match(/(\w+)/)
@@ -2305,7 +2312,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const isNegatedExists = /^not\s+exists/i.test(ebody)
           evalVal = isNegatedExists ? !existsVal : existsVal
         } else {
-          evalVal = _evaluateExpression(plan.whereBody, ctx)
+          const resultVal = _evaluateExpression(whereBodyExpr || plan.whereBody, ctx)
+          evalVal = resultVal
         }
         if (evalVal === true) {
           filteredResult.push(row)
@@ -2316,11 +2324,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── 聚合处理 ──
-    // 对 MATCH + RETURN count/sum/avg/min/max 的结果做聚合
-    // GE 的 _execAggregation 可能因 walk path 节点丢失而返回Error的值，
-    // 所以 QE 始终在 GE 的原始 rawWithEdges 上执行聚合。
-    // 对于无 GROUP BY 的聚合（count/sum/avg/min/max），GE 返回单个聚合节点；
-    // 有 GROUP BY 时 GE 的 GROUP BY 已经正确执行，不需要 QE 二次聚合。
     if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
@@ -2761,7 +2764,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
               evalVal = existsVal2
             } else {
-              evalVal = _evaluateExpression(plan.whereBody, ctx)
+              evalVal = _evaluateExpression(whereBodyExpr || plan.whereBody, ctx)
             }
             if (evalVal === true) {
               filtered.push(row)

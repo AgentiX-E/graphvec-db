@@ -174,10 +174,6 @@ async function run(q: string): Promise<void> {
       (plan as any)._bareCallParams = { ...st.params }
     }
     const result = await _executeQuery(plan, st.nodes, resolvedQ)
-    if (plan.steps?.length && !result.length && !st.err) {
-      const edgeCount = extractEdgesFromNodes(st.nodes).length
-      process.stderr.write(`\n[TCK_DBG] type=${plan.type} steps=${plan.steps?.length} edgesFromNodes=${edgeCount} nodesLen=${st.nodes.length} q=${resolvedQ.slice(0,70)}\n`)
-    }
     st.err = null
     st.res = result as any[]
   } catch (e: any) {
@@ -708,12 +704,24 @@ Given('having executed:', async function (query: string) {
             st.nodes.push(node)
             try { seedGe(persistGe(), node) } catch {}
           }
-          // 注入边（createEdges）
-          const cEdges = (subPlan as any).createEdges as Array<{ sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
+          // 注入边（createEdges）——使用 alias 查找替代 sourceIdx/targetIdx
+          const cEdges = (subPlan as any).createEdges as Array<{ source: string; target: string; sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
           if (cEdges?.length) {
             for (const ce of cEdges) {
-              const srcIdx = ce.sourceIdx
-              const dstIdx = ce.targetIdx
+              let srcIdx = -1, dstIdx = -1
+              // 优先通过 alias 查找
+              if (ce.source) {
+                for (let si = 0; si < st.nodes.length; si++) {
+                  if ((st.nodes[si] as any)._alias === ce.source) { srcIdx = si; break }
+                }
+              }
+              if (srcIdx < 0) srcIdx = ce.sourceIdx
+              if (ce.target) {
+                for (let si = 0; si < st.nodes.length; si++) {
+                  if ((st.nodes[si] as any)._alias === ce.target) { dstIdx = si; break }
+                }
+              }
+              if (dstIdx < 0) dstIdx = ce.targetIdx
               if (srcIdx >= 0 && srcIdx < st.nodes.length && dstIdx >= 0 && dstIdx < st.nodes.length) {
                 if (!st.nodes[srcIdx].__edges) st.nodes[srcIdx].__edges = []
                 st.nodes[srcIdx].__edges.push({
