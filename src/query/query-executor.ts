@@ -2014,6 +2014,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const nodeAliases = new Set([
       ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
       ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
+      ...(plan.optionalMatchSteps || []).flatMap((om: any) => {
+        const vars: string[] = []
+        if (om.variableName) vars.push(om.variableName)
+        for (const s of om.steps || []) {
+          if (s.source) vars.push(s.source)
+          if (s.targetAlias) vars.push(s.targetAlias)
+        }
+        return vars
+      }),
     ])
     // edgeVarCols：识别边变量 RETURN 列（如 RETURN r），排除 RETURN i.var 等属性列
     // 属性列已被 dispatchWherePath 拆为简短名称（如 i.var→var），此时 nodeAliases 不含 var。
@@ -2204,7 +2213,51 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
     // Note: 即使 plan.aggregate 存在，也必须先应用 WHERE 再聚合。
     if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind)) {
-      const filteredResult: QueryRow[] = []
+      // 提取主 MATCH 的 WHERE 条件：在 "OPTIONAL MATCH" 之前的文本
+      let whereExpr = plan.whereBody
+      const optMatchPos = whereExpr.indexOf('OPTIONAL MATCH')
+      if (optMatchPos >= 0) {
+        whereExpr = whereExpr.substring(0, optMatchPos).trim()
+      }
+      if (whereExpr) {
+        // 跳过属于 OPTIONAL MATCH 变量的条件（如 m:NonExistent, x0 IS NOT NULL）
+        // 这些在 OPTIONAL MATCH 处理中另做过滤
+        if (plan.optionalMatchSteps?.length) {
+          const optVarSet = new Set<string>()
+          for (const om of plan.optionalMatchSteps) {
+            if (om.variableName) optVarSet.add(om.variableName)
+            for (const s of om.steps || []) {
+              if (s.source) optVarSet.add(s.source)
+              if (s.targetAlias) optVarSet.add(s.targetAlias)
+              if (s.targetAlias) optVarSet.add(s.targetAlias)
+            }
+          }
+          // 加入 OPTIONAL MATCH 的 expressionColumns 别名（如 x0）
+          if (plan.expressionColumns?.length) {
+            for (const ec of plan.expressionColumns) {
+              const ecObj = ec as any
+              if (ecObj.alias) optVarSet.add(ecObj.alias)
+            }
+          }
+          const labelMatch = whereExpr.match(/^(\w+)\s*:\s*(\w+)$/)
+          if (labelMatch && optVarSet.has(labelMatch[1])) {
+            // 纯 OPTIONAL 变量 label 条件：跳过主 MATCH WHERE 过滤
+            whereExpr = ''
+          }
+          // 检查 whereExpr 中的所有变量引用是否全属于 OPTIONAL MATCH
+          if (whereExpr) {
+            const referencedVars = [...whereExpr.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
+              .filter(v => !/^(IS|NOT|NULL|TRUE|FALSE|AND|OR|XOR)$/i.test(v))
+              // 排除字符串字面量（单引号/双引号括起来的单词）
+              .filter(v => whereExpr.match(new RegExp(`'${v}'|"${v}"`)) === null)
+            if (referencedVars.length && referencedVars.every(v => optVarSet.has(v))) {
+              whereExpr = ''
+            }
+          }
+        }
+      }
+      if (whereExpr) {
+        const filteredResult: QueryRow[] = []
       for (let ri = 0; ri < result.length; ri++) {
         const row = result[ri]
                 // 构建变量级映射
@@ -2250,28 +2303,33 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         }
         // 预处理 whereBody：替换 length(var) = N → var.length = N
         // 表达式引擎不认识 length() 函数，但可以用 .length 属性访问
-        let whereBodyExpr = plan.whereBody
+        let whereBodyExpr = whereExpr
         if (whereBodyExpr) {
           whereBodyExpr = whereBodyExpr.replace(/length\s*\(\s*(\w+)\s*\)/g, '$1.length')
         }
         let evalVal: unknown
-        if (_isPatternPredicate(plan.whereBody) || (whereBodyExpr && whereBodyExpr !== plan.whereBody)) {
+        const checkExpr = whereExpr
+        if (_isPatternPredicate(checkExpr) || (whereBodyExpr && whereBodyExpr !== checkExpr)) {
           // Pattern Comprehension（如 (n)-[]->() 或 (n)-[:REL1]->()）由 GE steps 已执行。
           // 如果 length(p) 已替换为 p.length，isPatternPredicate 可能不匹配，
           // 但长度评估已经在 whereBodyExpr 中处理，所以走表达式求值路径。
-          if (_isPatternPredicate(plan.whereBody)) {
+          if (_isPatternPredicate(checkExpr)) {
             // 原始 whereBody 是 Pattern Comprehension
-            const isNegated = plan.whereBody.trim().startsWith('NOT ')
+            const isNegated = checkExpr.trim().startsWith('NOT ')
             evalVal = isNegated ? false : true
           } else {
-            // whereBodyExpr !== plan.whereBody（如 length(p)=1 → p.length=1）
+            // whereBodyExpr !== checkExpr（如 length(p)=1 → p.length=1）
             // 或 _isPatternPredicate 为 false 的非 pattern 查询
-            const resultVal = _evaluateExpression(whereBodyExpr || plan.whereBody, ctx)
-            evalVal = resultVal
+            try {
+              const resultVal = _evaluateExpression(whereBodyExpr || checkExpr, ctx)
+              evalVal = resultVal
+            } catch {
+              evalVal = undefined
+            }
           }
-        } else if (/^exists\s*\{/i.test(plan.whereBody.trim())) {
+        } else if (/^exists\s*\{/i.test(checkExpr.trim())) {
           // EXISTS { ... } 子查询
-          const ebody = plan.whereBody.trim()
+          const ebody = checkExpr.trim()
           const srcMatch = ebody.match(/(\w+)/)
           let existsVal = false
           if (srcMatch && allNodes?.length) {
@@ -2312,8 +2370,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const isNegatedExists = /^not\s+exists/i.test(ebody)
           evalVal = isNegatedExists ? !existsVal : existsVal
         } else {
-          const resultVal = _evaluateExpression(whereBodyExpr || plan.whereBody, ctx)
-          evalVal = resultVal
+          try {
+            const resultVal = _evaluateExpression(whereBodyExpr || checkExpr, ctx)
+            evalVal = resultVal
+          } catch {
+            // OPTIONAL MATCH 变量的条件在当前行上下文可能不可用
+            evalVal = undefined
+          }
         }
         if (evalVal === true) {
           filteredResult.push(row)
@@ -2321,6 +2384,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
       result.length = 0
       result.push(...filteredResult);
+      }
     }
 
     // ── 聚合处理 ──
@@ -2469,75 +2533,113 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── OPTIONAL MATCH 处理 ──
-    // 对主查询的每一行结果，尝试匹配 optionalMatchSteps 中的每个 optional MATCH 模式。
+    // 对主查询的每一行结果，尝试匹配 optionalMatchSteps 中的每个 OPTIONAL MATCH 模式。
     // 成功 → 将匹配到的节点/边合并到 row；失败 → 填充 null。
-    // Note: 此处的实现假设 OPTIONAL MATCH 使用临时 GE 实例，与主查询共享 allNodes。
+    // 使用 allNodes（本地节点数据，含 __edges）进行遍历，不依赖 GE Pool 实例。
     if (plan.optionalMatchSteps?.length && result.length) {
       for (const opt of plan.optionalMatchSteps) {
-        const optRecords: Array<{ row: QueryRow; props: Record<string, unknown> | null }> = []
+        const optSteps = opt.steps || []
         for (let ri = 0; ri < result.length; ri++) {
           const row = result[ri]
-          // 构建 OPTIONAL MATCH 的 GE plan
-          // scanLabel Optional：如果为 null，扫描 allNodes 中的所有节点
-          const optPlan: any = {
-            type: 'QUERY',
-            scanLabel: opt.scanLabel,
-            steps: opt.steps || [],
-            filters: opt.filters || [],
-            returnColumns: [],
-            orderBy: [],
-            limit: undefined,
-            skip: undefined,
+          // 解析 source 变量对应的 allNodes 索引
+          const sourceVar = optSteps[0]?.source || ''
+          const targetVar = optSteps[0]?.targetAlias || ''
+          let edgeVar = optSteps[0]?.edgeAlias || ''
+          if (!edgeVar && query) {
+            const optMatchEdge = query.match(/OPTIONAL\s+MATCH\s*\([^)]+\)\s*-\s*\[(\w+)\]/)
+            if (optMatchEdge) edgeVar = optMatchEdge[1]
           }
-          const geRecords = _geExecQueryPlan(ge, optPlan)
-          if (geRecords?.length) {
-            // 第一个匹配结果
-            const first = geRecords[0]
-            const nodeProps: Record<string, unknown> = {}
-            if (first && first.props) {
-              for (const [k, v] of Object.entries(first.props)) {
-                if (k !== '__edges' && !k.startsWith('_')) nodeProps[k] = v
+          const optVarName = opt.variableName || ''
+          let srcNodeIdx = -1
+          // 先从 rawWithEdges.__crossVarRows 获取源节点引用（比 row[sourceVar] 更可靠）
+          const rawEntry = Array.isArray(rawWithEdges) ? rawWithEdges[ri] : undefined
+          if (rawEntry?.__crossVarRows && sourceVar && sourceVar in rawEntry.__crossVarRows) {
+            const srcNodeRef = rawEntry.__crossVarRows[sourceVar] as any
+            const srcLabel = (srcNodeRef as any)?._label || ''
+            if (srcLabel) {
+              for (let si = 0; si < allNodes.length; si++) {
+                if ((allNodes[si] as any)._label === srcLabel) { srcNodeIdx = si; break }
               }
             }
-            // 确定需要填充的变量名
-            const sourceVar = opt.steps?.[0]?.source || ''
-            const targetVar = opt.steps?.[0]?.targetAlias || ''
-            const edgeVar = opt.steps?.[0]?.edgeAlias || ''
-            // 如果 steps 为空但有 variableName（单节点 OPTIONAL MATCH 如 (n)），使用 variableName
-            const optVarName = opt.variableName || ''
-            // 将匹配到的节点属性填回 row
-            if (sourceVar && !row[sourceVar]) {
-              row[sourceVar] = nodeProps
-            } else if (optVarName && !row[optVarName] && !sourceVar) {
-              row[optVarName] = nodeProps
-            }
-            if (targetVar && !row[targetVar]) {
-              row[targetVar] = nodeProps
-            }
-            // 边变量用空 placeholder（精确的边属性扩展见 Phase B）
-            if (edgeVar && !row[edgeVar]) {
-              row[edgeVar] = null
-            }
-          } else {
-            // OPTIONAL MATCH 匹配失败：所有变量设为 null
-            const sourceVar = opt.steps?.[0]?.source || ''
-            const targetVar = opt.steps?.[0]?.targetAlias || ''
-            const edgeVar = opt.steps?.[0]?.edgeAlias || ''
-            const optVarName = opt.variableName || ''
-            if (optVarName && !sourceVar && !targetVar && !edgeVar) {
-              // 单节点模式：OPTIONAL MATCH (n) — 变量名来自 variableName
-              row[optVarName] = null
-            } else if (!sourceVar && !targetVar && !edgeVar && opt.scanLabel) {
-              // 单节点模式：OPTIONAL MATCH (n:Label) — 变量名来自 scanLabel
-              const scanVar = opt.scanLabel
-              if (scanVar && !row[scanVar]) row[scanVar] = null
-            } else {
-              if (sourceVar && !row[sourceVar]) row[sourceVar] = null
-              if (targetVar && !row[targetVar]) row[targetVar] = null
-              if (edgeVar && !row[edgeVar]) row[edgeVar] = null
+            if (srcNodeIdx < 0) {
+              // 按 _alias 或节点匹配
+              for (let si = 0; si < allNodes.length; si++) {
+                const node = allNodes[si] as any
+                if (node._alias === sourceVar ||
+                    (node._label && (srcNodeRef as any)._label === node._label &&
+                     !Object.entries(srcNodeRef).some(([k,v]) => k!=='_label'&&k!=='__edges'&&k!=='_alias'&&node[k]!==v))) {
+                  srcNodeIdx = si; break
+                }
+              }
             }
           }
-          optRecords.push({ row, props: null })
+          if (srcNodeIdx < 0 && sourceVar) {
+            // 尝试从 row[sourceVar] 获取字符串化的节点值
+            const srcVal = row[sourceVar]
+            const srcType = typeof srcVal
+            if (srcType === 'string') {
+              const rowLabel = (srcVal as string).match(/^\(:(\w+)/)
+              if (rowLabel) {
+                for (let si = 0; si < allNodes.length; si++) {
+                  if ((allNodes[si] as any)._label === rowLabel[1]) { srcNodeIdx = si; break }
+                }
+              }
+            }
+            // fallback: 用 opt.scanLabel 或主 MATCH 的 scanLabel 匹配 allNodes
+            if (srcNodeIdx < 0) {
+              const srcLabel = opt.scanLabel || (plan as any).scanLabel || ''
+              if (srcLabel) {
+                for (let si = 0; si < allNodes.length; si++) {
+                  if ((allNodes[si] as any)._label === srcLabel) { srcNodeIdx = si; break }
+                }
+              }
+            }
+            // last fallback: 按 _alias 匹配
+            if (srcNodeIdx < 0) {
+              for (let si = 0; si < allNodes.length; si++) {
+                if ((allNodes[si] as any)._alias === sourceVar) { srcNodeIdx = si; break }
+              }
+            }
+          }
+          // 构造 nodeProps 帮助函数
+          const _mkNodeProps = (n: any): Record<string, unknown> => {
+            const p: Record<string, unknown> = {}
+            if (!n) return p
+            for (const k of Object.keys(n)) {
+              if (k !== '__edges' && !k.startsWith('_')) p[k] = n[k]
+            }
+            if (n._label) p._label = n._label
+            return p
+          }
+          if (srcNodeIdx >= 0 && optSteps.length) {
+            const walkPaths = _walkMultiSteps(srcNodeIdx, optSteps, allNodes)
+            if (walkPaths?.length) {
+              // 取第一条路径的最后节点
+              const lastNodeIdx = walkPaths[0][walkPaths[0].length - 1]
+              const targetNode = allNodes[lastNodeIdx] as any
+              const nodeProps = _mkNodeProps(targetNode)
+              // 无条件覆盖：OPTIONAL MATCH 结果优先于 _formatResultRow 的默认值
+              row[targetVar] = nodeProps
+              if (edgeVar) row[edgeVar] = null
+            } else {
+              // OPTIONAL 路径不匹配：填充 null
+              if (sourceVar) row[sourceVar] = null
+              if (targetVar) row[targetVar] = null
+              if (edgeVar) row[edgeVar] = null
+            }
+          } else if (optVarName && !sourceVar && !targetVar && !edgeVar) {
+            // 单节点模式：OPTIONAL MATCH (n) / (n:Label)
+            const nodeProps = opt.scanLabel
+              ? _mkNodeProps(allNodes.find(n => (n as any)._label === opt.scanLabel))
+              : null
+            row[optVarName] = nodeProps || null
+          } else {
+            // 找不到 source 或无步骤
+            if (sourceVar) row[sourceVar] = null
+            if (targetVar) row[targetVar] = null
+            if (edgeVar) row[edgeVar] = null
+            if (optVarName) row[optVarName] = null
+          }
         }
       }
     }
@@ -2708,7 +2810,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           result.push(...allPipelineRows)
         }
       } else {
-        result.length = 0
+        // 无 UNWIND/WITH 管道，保留 result（OPTIONAL MATCH 已在行中设置变量）
+        // 不清空 result，确保后面的 WHERE 过滤看到正确数据
       }
       // ── UNWIND + WITH 管道后再求值 WHERE ──
       if (plan.whereBody && result.length) {

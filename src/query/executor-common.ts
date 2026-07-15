@@ -361,6 +361,16 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         const nodeAliases = new Set([
           ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
           ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
+          // OPTIONAL MATCH 步骤中的变量也视为节点别名（不是边变量）
+          ...(plan.optionalMatchSteps || []).flatMap(om => {
+            const vars: string[] = []
+            if (om.variableName) vars.push(om.variableName)
+            for (const s of om.steps || []) {
+              if (s.source) vars.push(s.source)
+              if (s.targetAlias) vars.push(s.targetAlias)
+            }
+            return vars
+          }),
         ])
         isEdgeVar = !nodeAliases.has(rc)
       } else {
