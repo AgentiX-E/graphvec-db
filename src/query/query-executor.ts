@@ -840,7 +840,28 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         const pathEnds = _pathEndIndices(pathResults)
         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
         // 防止后续 step 引入不相关的中间节点
-        const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).findLast(rc => {
+        // [FIX-MW2]: 当 returnColumns 仅含属性名（如 "name"）时（ANTLR 将 out.name → "name" 剥离了变量前缀），
+        // 从 expressionColumns 或 returnAliasMap 中提取真正的变量名
+        const retVars: string[] = []
+        for (const rc of (plan.returnColumns || [])) {
+          const simpleVar = typeof rc === 'string' ? rc.split('.')[0] : ''
+          if (simpleVar && plan.steps?.some(s => s.targetAlias === simpleVar)) {
+            retVars.push(simpleVar)
+          } else if (plan.expressionColumns?.length) {
+            for (const ec of plan.expressionColumns) {
+              if (ec.alias === rc || ec.expression === rc) {
+                const dotIdx = ec.expression.indexOf('.')
+                if (dotIdx > 0) {
+                  const expVar = ec.expression.substring(0, dotIdx)
+                  if (plan.steps?.some(s => s.targetAlias === expVar)) {
+                    retVars.push(expVar)
+                  }
+                }
+              }
+            }
+          }
+        }
+        const retVar = retVars.findLast(rc => {
           if (!rc) return false
           const firstSrc = plan.steps?.[0]?.source
           return rc !== firstSrc && plan.steps?.some(s => s.targetAlias === rc)
@@ -1040,6 +1061,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                         break
                       }
                     }
+                  }
+                }
+                // [FIX]: allVars → __crossVarRows 全量注入，确保 WHERE 能访问所有中间变量
+                if (allVars) {
+                  for (const [vn, vdata] of Object.entries(allVars as Record<string, unknown>)) {
+                    if (geNode.__crossVarRows[vn]) continue
+                    const vObj = vdata as Record<string, unknown>
+                    const cvrEntry: Record<string, unknown> = {}
+                    for (const k of Object.keys(vObj)) {
+                      if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) cvrEntry[k] = vObj[k]
+                    }
+                    if (vObj._label !== undefined) cvrEntry._label = vObj._label
+                    geNode.__crossVarRows[vn] = { ...cvrEntry, props: { ...cvrEntry } }
                   }
                 }
                 // Pattern Comprehension 适配：当 targetAlias 为空（匿名目标）且 RETURN 列是 source 变量时，

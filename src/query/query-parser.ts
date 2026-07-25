@@ -1154,6 +1154,45 @@ function _walkMultiSteps(
           }
         }
       }
+      // [FIX-MW2]: direction='in' 反向边遍历——遍历其他节点的 __edges 寻找指向当前 idx 的边
+      if (step.direction === 'in') {
+        for (let j = 0; j < allNodes.length; j++) {
+          if (j === idx) continue
+          const other = allNodes[j] as any
+          if (other.__edges) {
+            for (const e of other.__edges) {
+              if (e.dstIdx === idx) {
+                // 边标签检查
+                if (step.edgeLabel) {
+                  const targetLabels = step.edgeLabel.split('|')
+                  if (!targetLabels.includes(e.label)) continue
+                }
+                const neighborIdx = e.srcIdx
+                if (!nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
+                  nextSet.add(neighborIdx)
+                }
+              }
+            }
+          }
+        }
+      }
+      // direction='in' 时：从其他节点的 __edges 中寻找指向当前 idx 的边
+      if (step.direction === 'in') {
+        for (let j = 0; j < allNodes.length; j++) {
+          if (j === idx) continue
+          const other = allNodes[j] as any
+          if (other.__edges) {
+            for (const e of other.__edges) {
+              if (e.dstIdx === idx) {
+                const neighborIdx = e.srcIdx
+                if (!nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
+                  nextSet.add(neighborIdx)
+                }
+              }
+            }
+          }
+        }
+      }
       // 无向边：其他节点到当前节点的反向边
       if (isAny) {
         for (let j = 0; j < allNodes.length; j++) {
@@ -1209,10 +1248,17 @@ function _walkMultiSteps(
         // 检查路径末端节点是否通过边连接到 idx
         const last = p[p.length - 1]
         const lastNode = allNodes[last] as any
-        const connected = lastNode?.__edges?.some((e: any) => {
+        let connected = lastNode?.__edges?.some((e: any) => {
           const neighborIdx = e.dstIdx === last ? e.srcIdx : (e.srcIdx === last ? e.dstIdx : -1)
           return neighborIdx === idx
         })
+        // [FIX-MW2]: direction='in' 时，边存储在 neighbor 节点（idx）而非 last 节点
+        if (!connected && step.direction === 'in') {
+          const neighborNode = allNodes[idx] as any
+          connected = neighborNode?.__edges?.some((e: any) => {
+            return e.dstIdx === last
+          })
+        }
         if (connected) {
           newPaths.push([...p, idx])
         }
