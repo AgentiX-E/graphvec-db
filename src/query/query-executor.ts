@@ -806,7 +806,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const _ceComma = plan.steps?.length > 1 && plan.steps.some(
             (s: any, si: number) => {
               if (si === 0) return false
-              if (s.source !== plan.steps[si - 1].targetAlias) return true
+              // Comma-separated MATCH: targetAlias reused across steps
               for (let pj = 0; pj < si; pj++)
                 if (plan.steps[pj].targetAlias === s.targetAlias && s.targetAlias) return true
               return false
@@ -904,7 +904,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               const lastStep = plan.steps[plan.steps.length - 1]
               if (_ceComma) {
                 boundedTargetIndices = [...interEnds]
-                boundedPaths = intermediate
+                // In comma case, pathResults contains full walk results including all variables.
+                // We need interEnds for target filtering, but pathResults for allVars population.
+                // The allVars population code below uses boundedPaths to find matchingPath.
+                // We must use pathResults so all steps' variables get populated.
+                boundedPaths = pathResults
+              } else if (lastStep && lastStep.targetAlias === effectiveRetVar) {
               } else if (lastStep && lastStep.targetAlias === effectiveRetVar) {
                 boundedTargetIndices = [...pathEnds].filter(idx => interEnds.has(idx))
                 boundedPaths = pathResults.filter(p => interEnds.has(p[p.length - 1]))
@@ -945,7 +950,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
               // 用 boundedPaths 补充中间节点和边标签Info
               if (boundedPaths?.length > 0) {
-                const matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
+                let matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
+                // [COMMA]: matchingPath 可能为空 —— interEnds 节点不在 path 末尾
+                // 改用 interEnds 在 path 中查找（path[defStepIdx] === targetIdx）
+                if (!matchingPath && _ceComma) {
+                  matchingPath = boundedPaths.find(p => {
+                    // defStep 是 steps 中首次定义 retVar 的步索引
+                    const defStepIdx = plan.steps?.findIndex((st: any) => st.targetAlias === lastTargetVar)
+                    return defStepIdx != null && defStepIdx >= 0 && p[defStepIdx] === targetIdx
+                  })
+                }
                 if (matchingPath && matchingPath.length >= 2) {
                   const pathEdges: string[] = []
                   for (let psi = 0; psi < plan.steps.length && psi < matchingPath.length - 1; psi++) {
@@ -983,10 +997,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) (allVars[lastStepV.source] as any)[k] = (allNodes[i] as any)[k]
                 }
               }
-              // target 节点属性存入 __targetProps（供非 source 变量查询如 b.id）
               for (const k of Object.keys(targetNode)) {
                 if (k !== '_label' && k !== '__edges' && k !== 'props') {
                   geNode.__targetProps[k] = targetNode[k]
+              // Debug
+              process.stderr.write("ALLVARS: a=" + JSON.stringify(allVars.a) + " b=" + JSON.stringify(allVars.b) + " c=" + JSON.stringify(allVars.c) + " d=" + JSON.stringify(allVars.d) + " i=" + i + " targetIdx=" + targetIdx + " boundedPaths=" + (boundedPaths ? boundedPaths.length : 0) + "\n")
                 }
               }
               // source 节点属性存入 geNode.props（供 source 变量查询如 a.id）
