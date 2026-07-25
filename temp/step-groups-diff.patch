@@ -1,0 +1,371 @@
+diff --git a/src/query/query-executor.ts b/src/query/query-executor.ts
+index a0115833..e24ddf37 100644
+--- a/src/query/query-executor.ts
++++ b/src/query/query-executor.ts
+@@ -27,6 +27,84 @@ import { _validatePlan } from './executor-validate-plan'
+ import { _execNonGePaths } from './executor-non-ge'
+ 
+ /** 判断值是否为 typed-format 对象 { type: 'STRING', value: '...' } */
++
++/** 在 WHERE 中解析 pattern predicate（模式谓词），返回 true/false */
++function _evalPatternComprehension(patExpr: string): string {
++  if (patExpr.includes('*')) return 'false'
++  const patMatch = patExpr.match(/^\s*\((\s*\w+\s*)\)\s*(?:<-\s*\[|-\s*\[)\s*(?::(\w+))?\s*\]\s*->\s*\((\s*\w+)(?::(\w+))?\s*\)\s*$/)
++  if (!patMatch) return 'false'
++  const srcVar = patMatch[1]; const edgeLabel = patMatch[2] || null
++  const tgtVar = patMatch[3]; const tgtLabel = patMatch[4] || null
++  const srcNode: any = (globalThis as any).__ctx_pc?.[srcVar]
++  const tgtNode: any = (globalThis as any).__ctx_pc?.[tgtVar]
++  const allNodes: any[] = (globalThis as any).__allNodes_pc || []
++  if (!srcNode || !tgtNode) return 'false'
++  if (tgtLabel) {
++    const actualLabel = tgtNode._label || tgtNode.props?._label || ''
++    if (actualLabel !== tgtLabel) return 'false'
++  }
++  const srcIdx = allNodes.indexOf(srcNode)
++  const tgtIdx = allNodes.indexOf(tgtNode)
++  if (srcIdx >= 0 && tgtIdx >= 0) {
++    for (const node of allNodes) {
++      if (!node.__edges || !Array.isArray(node.__edges)) continue
++      for (const e of node.__edges) {
++        if (e.label === undefined || e.label === null) continue
++        if (edgeLabel && e.label !== edgeLabel) continue
++        if ((e.srcIdx === srcIdx && e.dstIdx === tgtIdx) || (e.srcIdx === tgtIdx && e.dstIdx === srcIdx)) return 'true'
++      }
++    }
++  }
++  return 'false'
++}
++
++function _resolvePatternComprehensions(expr: string): string {
++  const andOrPos = findFirstTopLevelAndOr(expr)
++  if (andOrPos >= 0) {
++    const left = expr.slice(0, andOrPos).trim()
++    const rest = expr.slice(andOrPos).trim()
++    const opMatch = rest.match(/^(AND|OR|XOR)\b/i)
++    if (opMatch) {
++      const op = opMatch[1].toUpperCase()
++      const right = rest.slice(opMatch[0].length).trim()
++      return _resolvePatternComprehensions(left) + ' ' + op + ' ' + _resolvePatternComprehensions(right)
++    }
++  }
++  const trimmed = expr.trim()
++  if (typeof trimmed !== 'string' || trimmed.length === 0) return expr
++  if (trimmed.startsWith('(') && trimmed.endsWith(')') && isBalancedParens(trimmed)) {
++    const inner = trimmed.slice(1, -1).trim()
++    if (_isPatternPredicate(trimmed)) return _evalPatternComprehension(trimmed)
++    return '(' + _resolvePatternComprehensions(inner) + ')'
++  }
++  if (_isPatternPredicate(trimmed)) return _evalPatternComprehension(trimmed)
++  return expr
++}
++
++function findFirstTopLevelAndOr(s: string): number {
++  let depth = 0, inStr = false, strChar = ''
++  for (let i = 0; i < s.length; i++) {
++    if (inStr && s[i] === '\\') { i++; continue }
++    if (inStr) { if (s[i] === strChar) inStr = false; continue }
++    if (s[i] === "'" || s[i] === '"') { inStr = true; strChar = s[i]; continue }
++    if (s[i] === '(' || s[i] === '[' || s[i] === '{') { depth++; continue }
++    if (s[i] === ')' || s[i] === ']' || s[i] === '}') { depth--; continue }
++    if (depth === 0) {
++      if (s.slice(i, i+5) === ' AND ' || s.slice(i, i+4) === ' OR ' || s.slice(i, i+5) === ' XOR ') return i
++    }
++  }
++  return -1
++}
++
++function isBalancedParens(s: string): boolean {
++  let depth = 0
++  for (const ch of s) {
++    if (ch === '(') depth++
++    else if (ch === ')') { depth--; if (depth < 0) return false }
++  }
++  return depth === 0
++}
++
+ function isTypedValue(v: unknown): v is { type: string; value: unknown } {
+   return !!v && typeof v === 'object' && 'value' in v && 'type' in (v as any)
+ }
+@@ -836,8 +914,152 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
+                 if (!labelOk) continue
+               }
+             }
+-            const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
++            // [FIX-STEP-GROUPS]
++            const _sgSteps = plan.steps || []
++            const _sgGroups = []
++            if (_sgSteps.length > 0) {
++              let _sgCur = [_sgSteps[0]]
++              const _sgSeenAliases = new Set()
++              if (_sgSteps[0].targetAlias) _sgSeenAliases.add(_sgSteps[0].targetAlias)
++              for (let si = 1; si < _sgSteps.length; si++) {
++                // [FIX-STEP-GROUPS-v2]: 
++                // 1. source 不连续时切分
++                // 2. targetAlias 已存在时切分（表明这是额外约束而非路径扩展）
++                const _sgSourceMatch = _sgSteps[si].source === _sgSteps[si - 1].targetAlias
++                const _sgAliasDup = _sgSteps[si].targetAlias && _sgSeenAliases.has(_sgSteps[si].targetAlias)
++                if (_sgSourceMatch && !_sgAliasDup) {
++                  _sgCur.push(_sgSteps[si])
++                } else {
++                  _sgGroups.push(_sgCur)
++                  _sgCur = [_sgSteps[si]]
++                }
++                if (_sgSteps[si].targetAlias) _sgSeenAliases.add(_sgSteps[si].targetAlias)
++              }
++              if (_sgCur.length > 0) _sgGroups.push(_sgCur)
++            }
++            const _sgMulti = _sgGroups.length > 1
++            let pathResults
++            if (_sgMulti) {
++              const _sgGroup0 = _sgGroups[0]
++              pathResults = _walkMultiSteps(i, _sgGroup0, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
++              if (pathResults.length > 0) {
++                const _sgCrossPassed = []
++                for (const p of pathResults) {
++                  const _sgVmap = {}
++                  _sgVmap[_sgGroup0[0].source] = i
++                  for (let si = 0; si < _sgGroup0.length && si < p.length - 1; si++) {
++                    if (_sgGroup0[si] && _sgGroup0[si].targetAlias) _sgVmap[_sgGroup0[si].targetAlias] = p[si + 1]
++                  }
++                  const _sgVals = new Set(Object.values(_sgVmap))
++                  const _sgVars = new Set(Object.keys(_sgVmap))
++                  if (_sgVals.size < _sgVars.size) continue
++                  let _sgPass = true
++                  // [FIX-STEP-GROUPS-v2-cross]: 跨组边验证
++                  // 对于 source/targetAlias 都已在组0中定义（即 _sgVmap 中）的约束步，
++                  // 用已知变量映射做双向边检查，而不是从 source 遍历
++                  for (let gi = 1; gi < _sgGroups.length; gi++) {
++                    for (const gs of _sgGroups[gi]) {
++                      const _srcIdx = gs.source ? _sgVmap[gs.source] : -1
++                      const _tgtIdx = gs.targetAlias ? _sgVmap[gs.targetAlias] : -1
++                      // 如果 source 和 targetAlias 都已映射，做直接的边存在性检查
++                      if (_srcIdx >= 0 && _tgtIdx >= 0) {
++                        let _foundEdge = false
++                        // 检查 srcIdx 的出边/入边/any 边到 tgtIdx
++                        const _srcNodeE = allNodes[_srcIdx] as any
++                        if (_srcNodeE?.__edges) {
++                          for (const e of _srcNodeE.__edges) {
++                            if (gs.direction === "out" && e.srcIdx === _srcIdx && e.dstIdx === _tgtIdx) _foundEdge = true
++                            else if (gs.direction === "in" && e.dstIdx === _srcIdx && e.srcIdx === _tgtIdx) _foundEdge = true
++                            else if (gs.direction === "any" && ((e.srcIdx === _srcIdx && e.dstIdx === _tgtIdx) || (e.srcIdx === _tgtIdx && e.dstIdx === _srcIdx))) _foundEdge = true
++                          }
++                        }
++                        // 也检查反向边（CREATE 可能是单向的）
++                        if (!_foundEdge) {
++                          const _tgtNodeE = allNodes[_tgtIdx] as any
++                          if (_tgtNodeE?.__edges) {
++                            for (const e of _tgtNodeE.__edges) {
++                              if (gs.direction === "out" && e.srcIdx === _srcIdx && e.dstIdx === _tgtIdx) _foundEdge = true
++                              else if (gs.direction === "in" && e.dstIdx === _srcIdx && e.srcIdx === _tgtIdx) _foundEdge = true
++                              else if (gs.direction === "any" && ((e.srcIdx === _srcIdx && e.dstIdx === _tgtIdx) || (e.srcIdx === _tgtIdx && e.dstIdx === _srcIdx))) _foundEdge = true
++                            }
++                          }
++                        }
++                        if (!_foundEdge) { _sgPass = false; break }
++                      } else if (_srcIdx >= 0) {
++                        // 只有 source, targetAlias 未映射：做边遍历
++                        const _srcNode = allNodes[_srcIdx] as any
++                        const _edges = (_srcNode && _srcNode.__edges) || []
++                        const _cands = []
++                        for (const e of _edges) {
++                          let ni = -1
++                          if (gs.direction === "any") ni = e.dstIdx === _srcIdx ? e.srcIdx : (e.srcIdx === _srcIdx ? e.dstIdx : -1)
++                          else if (gs.direction === "out" && e.srcIdx === _srcIdx) ni = e.dstIdx
++                          else if (gs.direction === "in" && e.dstIdx === _srcIdx) ni = e.srcIdx
++                          if (ni >= 0 && (!gs.edgeLabel || e.label === gs.edgeLabel) && _stepMatchConstraint(ni, gs, allNodes)) _cands.push(ni)
++                        }
++                        if (_tgtIdx >= 0 && !_cands.includes(_tgtIdx)) { _sgPass = false; break }
++                        if (_tgtIdx < 0 && _cands.length === 0) { _sgPass = false; break }
++                      } else {
++                        _sgPass = false; break
++                      }
++                    }
++                    if (!_sgPass) break
++                  }
++                  if (_sgPass) _sgCrossPassed.push(p)
++                }
++                pathResults = _sgCrossPassed
++                if (pathResults.length > 0) {
++                  for (const _sgP of pathResults) {
++                    const _sgVmap = {}
++                    _sgVmap[_sgGroup0[0].source] = i
++                    for (let si = 0; si < _sgGroup0.length && si < _sgP.length - 1; si++) {
++                      if (_sgGroup0[si] && _sgGroup0[si].targetAlias) _sgVmap[_sgGroup0[si].targetAlias] = _sgP[si + 1]
++                    }
++                    const _sgRetCols = plan.returnColumns || []
++                    for (const _rc of _sgRetCols) {
++                      if (!_rc || _rc === "*") continue
++                      const _rcName = _rc.split(".")[0]
++                      if (!_rcName || _sgVmap[_rcName] === undefined) continue
++                      const _nIdx = _sgVmap[_rcName]
++                      const _nGeId = nodeGeIds[_nIdx] || (_nIdx + 1)
++                      const _sgAllVars = {}
++                      for (const [vn, vi] of Object.entries(_sgVmap)) {
++                        const raw = allNodes[vi]
++                        if (raw) {
++                          const clean = { _label: raw._label || "Default" }
++                          for (const k of Object.keys(raw)) {
++                            if (k[0] !== "_" || (k !== "_label" && k !== "_alias" && k !== "props")) clean[k] = raw[k]
++                          }
++                          _sgAllVars[vn] = clean
++                        }
++                      }
++                      const _sgNodeProps = { _label: (allNodes[_nIdx] && allNodes[_nIdx]._label) || "Default" }
++                      if (allNodes[_nIdx]) {
++                        for (const k of Object.keys(allNodes[_nIdx])) {
++                          if (k[0] !== "_" || (k !== "_label" && k !== "props")) _sgNodeProps[k] = allNodes[_nIdx][k]
++                        }
++                      }
++                      multiStepRaw.push({
++                        id: _nGeId,
++                        props: _sgNodeProps,
++                        type: (allNodes[_nIdx] && allNodes[_nIdx]._label) || "Default",
++                        __multiStep: true,
++                        __targetProps: Object.assign({}, _sgNodeProps),
++                        __targetAlias: _rcName,
++                        __crossVarRows: _sgAllVars,
++                      })
++                    }
++                  }
++                  continue
++                }
++              }
++            } else {
++              pathResults = _walkMultiSteps(i, _sgSteps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
++            }
+         const pathEnds = _pathEndIndices(pathResults)
++
++
++
+         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
+         // 防止后续 step 引入不相关的中间节点
+         const retVar = (plan.returnColumns || []).map(rc => rc?.split('.')[0]).findLast(rc => {
+@@ -847,7 +1069,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
+         })
+         // 对于多步，改用最后一个 targetAlias 变量（降级安全）
+         const lastTargetVar = plan.steps?.[plan.steps.length - 1]?.targetAlias
+-        const effectiveRetVar = (lastTargetVar && (plan.returnColumns || []).map(rc => rc?.split('.')[0]).includes(lastTargetVar))
++        if (plan.filters && plan.filters.length >= 4 && plan.filters.some(function(f) { return f.source === "advertiser" })) {
++          console.error("MW2[2]_effectiveRetVar prev:", JSON.stringify({retVar,lastTargetVar,lastStepTarget:plan.steps?.[plan.steps.length-1]?.targetAlias,retCols:plan.returnColumns}))
++        }
++          console.error("MW2[2]_ALL plan:", JSON.stringify({steps:plan.steps?.map(function(s,i){return [i,s.source,s.targetAlias]}),filters:plan.filters,retCols:plan.returnColumns,scanLabel:plan.scanLabel,targetAlias:plan.steps?.[plan.steps.length-1]?.targetAlias}))
++        const effectiveRetVar = 
+           ? lastTargetVar
+           : (retVar || lastTargetVar)
+         let boundedTargetIndices: number[] = [...pathEnds]
+@@ -944,6 +1170,45 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
+                   }
+                 }
+               }
++              // [FIX-MW2[2]-allVars-fill]: 当 boundedPaths 只覆盖部分步骤时，
++              // 对未覆盖的 steps 补充它们的中间节点到 _allVars
++              if (boundedPaths?.length > 0 && plan.steps?.length > 1) {
++                const matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
++                if (matchingPath && matchingPath.length >= 2) {
++                  const _covSteps = new Set<number>()
++                  for (let psi = 0; psi < matchingPath.length - 1 && psi < plan.steps.length; psi++) {
++                    if (matchingPath[psi + 1] !== targetIdx) _covSteps.add(psi)
++                  }
++                  // 对 boundedPath 未覆盖的 steps，从 allNodes 直接补充变量绑定
++                  for (let psi = 0; psi < plan.steps.length; psi++) {
++                    const _s = plan.steps[psi]
++                    // source 变量（除了 steps[0].source 已由 source 节点填充）
++                    if (_s.source && !allVars[_s.source] && psi > 0) {
++                      // 用 boundedPaths 中的节点索引
++                      const psiMinus1 = psi - 1
++                      if (psiMinus1 < matchingPath.length - 1) {
++                        const nidx = matchingPath[psiMinus1]
++                        if (nidx !== undefined && allNodes[nidx]) {
++                          allVars[_s.source] = { _label: allNodes[nidx]._label || 'Default' }
++                          for (const k of Object.keys(allNodes[nidx])) {
++                            if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[_s.source][k] = allNodes[nidx][k]
++                          }
++                        }
++                      }
++                    }
++                    // targetAlias 变量（从 matchingPath 中对应步的终点）
++                    if (_s.targetAlias && !allVars[_s.targetAlias]) {
++                      const nidx = psi < matchingPath.length - 1 ? matchingPath[psi + 1] : -1
++                      if (nidx >= 0 && allNodes[nidx]) {
++                        allVars[_s.targetAlias] = { _label: allNodes[nidx]._label || 'Default' }
++                        for (const k of Object.keys(allNodes[nidx])) {
++                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[_s.targetAlias][k] = allNodes[nidx][k]
++                        }
++                      }
++                    }
++                  }
++                }
++              }
+               // source 节点——使用起始节点 allNodes[i] 而非 targetNode
+               if (lastStepV?.source) {
+                 allVars[lastStepV.source] = { _label: (allNodes[i]?._label || 'Default') as string }
+@@ -951,6 +1216,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
+                   if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) (allVars[lastStepV.source] as any)[k] = (allNodes[i] as any)[k]
+                 }
+               }
++              // [FIX-MW2[2]-allVars]: 补充 steps[0].source 到 _allVars
++              if (plan.steps?.[0]?.source && !allVars[plan.steps[0].source]) {
++                const _s0node = allNodes[i] as Record<string, unknown>
++                allVars[plan.steps[0].source] = { _label: (_s0node?._label as string) || 'Default' }
++                for (const k of Object.keys(_s0node || {})) {
++                  if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) (allVars[plan.steps[0].source] as any)[k] = (_s0node as any)[k]
++                }
++              }
+               // target 节点属性存入 __targetProps（供非 source 变量查询如 b.id）
+               for (const k of Object.keys(targetNode)) {
+                 if (k !== '_label' && k !== '__edges' && k !== 'props') {
+@@ -991,6 +1264,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
+               }
+               // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
+               geNode.__crossVarRows = {}
++        if (plan.filters && plan.filters.length >= 4 && plan.filters.some(function(f) { return f.source === "advertiser" })) {
++          console.error("MW2[2]_CVR:", JSON.stringify(Object.keys(geNode.__crossVarRows)))
++        }
+               if (plan.steps?.length) {
+                 const thisStep = plan.steps[plan.steps.length - 1]
+                 // 绑定 targetAlias（If any命名目标且非空）
+@@ -1001,17 +1277,33 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
+                   }
+                   geNode.__crossVarRows[thisStep.targetAlias] = { ...cvrNode, props: { ...cvrNode } }
+                 }
+-                // 绑定 source 变量（起始节点）—— 使用当前 allNodes[i] 而不是 plan.scanLabel（已为 null）
+-                if (thisStep.source) {
+-                  const srcNode = allNodes[i]
+-                  if (srcNode) {
+-                    // 保留原始属性，确保 _label 可用
+-                    const srcProps: Record<string, unknown> = {}
+-                    for (const k of Object.keys(srcNode)) {
+-                      if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) srcProps[k] = srcNode[k]
++                // [FIX-MW2[2]-__crossVarRows]: 补充所有 steps 的 source 变量
++                const _cvrAllSteps = new Set<string>()
++                for (const _cvS of plan.steps) {
++                  if (_cvS.source && !_cvrAllSteps.has(_cvS.source)) {
++                    _cvrAllSteps.add(_cvS.source)
++                    const _cvrSrc = _cvS === plan.steps[0] ? allNodes[i] : null
++                    if (_cvrSrc) {
++                      const p: Record<string, unknown> = {}
++                      for (const k of Object.keys(_cvrSrc)) {
++                        if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) p[k] = _cvrSrc[k]
++                      }
++                      if (_cvrSrc._label !== undefined) p._label = _cvrSrc._label
++                      geNode.__crossVarRows[_cvS.source] = { ...p, props: { ...p } }
++                    } else if (!geNode.__crossVarRows[_cvS.source]) {
++                      const cached = allVars[_cvS.source]
++                      if (cached) {
++                        geNode.__crossVarRows[_cvS.source] = cached as any
++                      }
++                    }
++                  }
++                  if (_cvS.targetAlias && !_cvrAllSteps.has(_cvS.targetAlias)) {
++                    _cvrAllSteps.add(_cvS.targetAlias)
++                    if (_cvS === plan.steps[plan.steps.length - 1] && geNode.__crossVarRows[_cvS.targetAlias]) continue
++                    const _cvrTgt = allVars[_cvS.targetAlias]
++                    if (_cvrTgt) {
++                      geNode.__crossVarRows[_cvS.targetAlias] = _cvrTgt as any
+                     }
+-                    if (srcNode._label !== undefined) srcProps._label = srcNode._label
+-                    geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps } }
+                   }
+                 }
+                 // 绑定边变量（如 MATCH (n)-[r]->(x) 中的 r），供 WHERE type(r) 表达式使用

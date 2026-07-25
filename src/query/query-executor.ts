@@ -803,6 +803,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // 保存并清除 edgeLabel 突变（L728-735 的 typeRegex 污染了 edgeLabel，只取第一个 OR branch）
           const savedEdgeLabel = plan.steps?.[0]?.edgeLabel ?? null
           if (plan.steps?.[0]) plan.steps[0].edgeLabel = null
+          const _ceComma = plan.steps?.length > 1 && plan.steps.some(
+            (s: any, si: number) => {
+              if (si === 0) return false
+              if (s.source !== plan.steps[si - 1].targetAlias) return true
+              for (let pj = 0; pj < si; pj++)
+                if (plan.steps[pj].targetAlias === s.targetAlias && s.targetAlias) return true
+              return false
+            }
+          )
           for (let i = 0; i < allNodes.length; i++) {
             if (skipNodeIndices.has(i)) {
               continue
@@ -893,9 +902,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // 会影响返回值（后续步的 filter 消除多余节点），需要用交集过滤。
               // 否则 pathResults 中的节点是后续步的 target，不相关，直接用 intermediate。
               const lastStep = plan.steps[plan.steps.length - 1]
-              if (lastStep && lastStep.targetAlias === effectiveRetVar) {
+              if (_ceComma) {
+                boundedTargetIndices = [...interEnds]
+                boundedPaths = intermediate
+              } else if (lastStep && lastStep.targetAlias === effectiveRetVar) {
                 boundedTargetIndices = [...pathEnds].filter(idx => interEnds.has(idx))
-                // 同时筛选 boundedPaths
                 boundedPaths = pathResults.filter(p => interEnds.has(p[p.length - 1]))
               } else {
                 boundedTargetIndices = [...interEnds]
