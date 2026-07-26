@@ -803,27 +803,34 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // 保存并清除 edgeLabel 突变（L728-735 的 typeRegex 污染了 edgeLabel，只取第一个 OR branch）
           const savedEdgeLabel = plan.steps?.[0]?.edgeLabel ?? null
           if (plan.steps?.[0]) plan.steps[0].edgeLabel = null
-          const _ceComma = plan.steps?.length > 1 && plan.steps.some(
-            (s: any, si: number) => {
-              if (si === 0) return false
-              if (s.source !== plan.steps[si - 1].targetAlias) return true
-              for (let pj = 0; pj < si; pj++)
-                if (plan.steps[pj].targetAlias === s.targetAlias && s.targetAlias) return true
-              return false
+          let _ceComma = false
+          let commaCutIdx = 0
+          if (plan.steps?.length && plan.steps.length > 1) {
+            for (let si = 1; si < plan.steps.length; si++) {
+              const s = plan.steps[si]
+              if (s.source !== plan.steps[si - 1].targetAlias) { _ceComma = true; commaCutIdx = si; break }
+              let reused = false
+              for (let pj = 0; pj < si; pj++) {
+                if (plan.steps[pj].targetAlias === s.targetAlias && s.targetAlias) {
+                  reused = true; break
+                }
+              }
+              if (reused) { _ceComma = true; commaCutIdx = si; break }
             }
-          )
+          }
           for (let i = 0; i < allNodes.length; i++) {
             if (skipNodeIndices.has(i)) {
               continue
             }
-            // 根据 scanLabel 过滤起始节点（支持多标签 __fullLabel）
+            // scanLabel filter: case-insensitive (ANTLR falls back to variable name, e.g. 'a' vs 'A')
             if (plan.scanLabel) {
               const node = allNodes[i]
               const nodeLabel = String(node?.['_label'] || '')
               const fullLabel = node?.__fullLabel
+              const sll = plan.scanLabel.toLowerCase()
               if (fullLabel && typeof fullLabel === 'string') {
-                if (!fullLabel.split(':').includes(plan.scanLabel)) continue
-              } else if (nodeLabel !== plan.scanLabel) {
+                if (!fullLabel.split(':').some((l: string) => l.toLowerCase() === sll)) continue
+              } else if (nodeLabel.toLowerCase() !== sll) {
                 continue
               }
             }
@@ -903,8 +910,62 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // 否则 pathResults 中的节点是后续步的 target，不相关，直接用 intermediate。
               const lastStep = plan.steps[plan.steps.length - 1]
               if (_ceComma) {
-                boundedTargetIndices = [...interEnds]
-                boundedPaths = intermediate
+                // ── Comma-separated MATCH: defStep walk bounded to interEnds,
+                // then comma constraint verifies connectivity of comma variables ──
+                const mainSteps = plan.steps!.slice(0, commaCutIdx)
+                const commaSteps = plan.steps!.slice(commaCutIdx)
+                // Walk up to defStep for effectiveRetVar (same as non-comma branch)
+                const mainDefStep = mainSteps.find(s => s.targetAlias === effectiveRetVar)
+                const defWalk = mainDefStep !== undefined
+                  ? _walkMultiSteps(i, mainSteps.slice(0, mainSteps.indexOf(mainDefStep) + 1), allNodes, undefined, plan.filters, stepSourceFilters)
+                  : _walkMultiSteps(i, mainSteps, allNodes, undefined, plan.filters, stepSourceFilters)
+                const interEnds = new Set(_pathEndIndices(defWalk))
+                // Comma constraint: verify comma variables are connected via pathVars
+                const validTargets = new Set<number>()
+                const validPaths: number[][] = []
+                for (const dwPath of defWalk) {
+                  const dwEnd = dwPath[dwPath.length - 1]
+                  if (!interEnds.has(dwEnd)) continue
+                  // Build pathVars: {variable → nodeIndex} from dwPath and mainSteps
+                  const pathVars: Record<string, number> = {}
+                  for (let psi = 0; psi < mainSteps.length && psi < dwPath.length - 1; psi++) {
+                    const step = mainSteps[psi]
+                    if (step.source) pathVars[step.source] = dwPath[psi]
+                    if (step.targetAlias && dwPath[psi + 1] !== undefined)
+                      pathVars[step.targetAlias] = dwPath[psi + 1]
+                  }
+                  // Comma connectivity: walk from comma source to comma target
+                  let passesComma = true
+                  for (const cs of commaSteps) {
+                    // Resolve comma source: prefer pathVars[cs.source];
+                    // fallback to any other pathVars key (ANTLR cross-wiring)
+                    const srcIdx = (cs.source && pathVars[cs.source] !== undefined)
+                      ? pathVars[cs.source]
+                      : pathVars[Object.keys(pathVars).find(k => k !== cs.source) as string]
+                    const tgtIdx = cs.targetAlias ? pathVars[cs.targetAlias] : undefined
+                    if (srcIdx === undefined || tgtIdx === undefined) {
+                      passesComma = false; break
+                    }
+                    const csWalk = _walkMultiSteps(srcIdx, [cs], allNodes, undefined, plan.filters, stepSourceFilters)
+                    if (!csWalk.some((w: number[]) => w[w.length - 1] === tgtIdx)) {
+                      passesComma = false; break
+                    }
+                  }
+                  if (passesComma) {
+                    validTargets.add(dwEnd)
+                    validPaths.push(dwPath)
+                    // Also add comma-step source node as bounded target
+                    // (e.g. (b)--(d) where d = A via cycle a->b->c->d->a)
+                    for (const cs of commaSteps) {
+                      const csSrc = (cs.source && pathVars[cs.source] !== undefined)
+                        ? pathVars[cs.source]
+                        : undefined
+                      if (csSrc !== undefined) validTargets.add(csSrc)
+                    }
+                  }
+                }
+                boundedTargetIndices = [...validTargets]
+                boundedPaths = validPaths.length > 0 ? validPaths : defWalk
               } else if (lastStep && lastStep.targetAlias === effectiveRetVar) {
                 boundedTargetIndices = [...pathEnds].filter(idx => interEnds.has(idx))
                 boundedPaths = pathResults.filter(p => interEnds.has(p[p.length - 1]))
@@ -934,22 +995,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 __targetProps: {},
                 __targetAlias: plan.steps?.[plan.steps.length - 1]?.targetAlias || '',
               }
-              // 构建所有步骤变量的节点数据（存于 props._allVars 以避免属性丢失）
+              // ── allVars: full variable population from matchingPath ──
               const allVars: Record<string, unknown> = geNode.props._allVars as Record<string, unknown>
-              const lastStepV = plan.steps?.[plan.steps.length - 1]
-              if (lastStepV?.targetAlias) {
-                allVars[lastStepV.targetAlias] = { _label: targetNode._label || 'Default' }
-                for (const k of Object.keys(targetNode)) {
-                  if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[lastStepV.targetAlias][k] = targetNode[k]
-                }
-              }
-              // 用 boundedPaths 补充中间节点和边标签Info
               if (boundedPaths?.length > 0) {
                 const matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
                 if (matchingPath && matchingPath.length >= 2) {
+                  // Comma case: only iterate mainSteps (before commaCutIdx); non-comma: full steps
+                  const effSteps = (_ceComma && commaCutIdx > 0)
+                    ? plan.steps!.slice(0, commaCutIdx)
+                    : plan.steps!
                   const pathEdges: string[] = []
-                  for (let psi = 0; psi < plan.steps.length && psi < matchingPath.length - 1; psi++) {
-                    const step = plan.steps[psi]
+                  for (let psi = 0; psi < effSteps.length && psi < matchingPath.length - 1; psi++) {
+                    const step = effSteps[psi]
+                    // Edge label collection
                     const fromNode = allNodes[matchingPath[psi]] as any
                     if (fromNode?.__edges) {
                       const edge = fromNode.__edges.find((e: any) => {
@@ -958,14 +1016,25 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                       })
                       if (edge?.label) pathEdges.push(edge.label)
                     }
-                    // 中间节点：填充 _allVars 中对应步骤的 targetAlias
-                    if (psi < plan.steps.length - 1 && matchingPath[psi + 1] !== targetIdx) {
-                      const midNode = allNodes[matchingPath[psi + 1]]
-                      const midAlias = plan.steps[psi]?.targetAlias
-                      if (midAlias && midNode) {
-                        allVars[midAlias] = { _label: midNode._label || 'Default' }
-                        for (const k of Object.keys(midNode)) {
-                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[midAlias][k] = midNode[k]
+                    // source variable → matchingPath[psi]
+                    if (step.source && matchingPath[psi] !== undefined) {
+                      const sn = allNodes[matchingPath[psi]]
+                      if (sn && !allVars[step.source]) {
+                        allVars[step.source] = { _label: sn._label || 'Default' }
+                        for (const k of Object.keys(sn)) {
+                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__'))
+                            (allVars[step.source] as any)[k] = sn[k]
+                        }
+                      }
+                    }
+                    // targetAlias → matchingPath[psi+1]
+                    if (step.targetAlias && matchingPath[psi + 1] !== undefined) {
+                      const tn = allNodes[matchingPath[psi + 1]]
+                      if (tn && !allVars[step.targetAlias]) {
+                        allVars[step.targetAlias] = { _label: tn._label || 'Default' }
+                        for (const k of Object.keys(tn)) {
+                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__'))
+                            (allVars[step.targetAlias] as any)[k] = tn[k]
                         }
                       }
                     }
@@ -974,13 +1043,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     geNode.props.__stepEdges = pathEdges
                     stepEdgesCache.set(targetIdx, pathEdges)
                   }
-                }
-              }
-              // source 节点——使用起始节点 allNodes[i] 而非 targetNode
-              if (lastStepV?.source) {
-                allVars[lastStepV.source] = { _label: (allNodes[i]?._label || 'Default') as string }
-                for (const k of Object.keys(allNodes[i] || {})) {
-                  if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) (allVars[lastStepV.source] as any)[k] = (allNodes[i] as any)[k]
                 }
               }
               // target 节点属性存入 __targetProps（供非 source 变量查询如 b.id）
