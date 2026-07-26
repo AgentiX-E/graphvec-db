@@ -800,9 +800,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             return !nodeAliases.has(rc)
           }).length
           let multiStepRaw: any[] = []
-          // 保存并清除 edgeLabel 突变（L728-735 的 typeRegex 污染了 edgeLabel，只取第一个 OR branch）
-          const savedEdgeLabel = plan.steps?.[0]?.edgeLabel ?? null
-          if (plan.steps?.[0]) plan.steps[0].edgeLabel = null
+          const savedEdgeLabel = ((plan as any)._typeInjected && plan.steps?.[0]) ? (plan.steps[0].edgeLabel) : undefined
+          if ((plan as any)._typeInjected && plan.steps?.[0]) plan.steps[0].edgeLabel = null
           let _ceComma = false
           let commaCutIdx = 0
           if (plan.steps?.length && plan.steps.length > 1) {
@@ -884,9 +883,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         })
         // 对于多步，改用最后一个 targetAlias 变量（降级安全）
         const lastTargetVar = plan.steps?.[plan.steps.length - 1]?.targetAlias
-        const effectiveRetVar = (lastTargetVar && (plan.returnColumns || []).map(rc => rc?.split('.')[0]).includes(lastTargetVar))
-          ? lastTargetVar
-          : (retVar || lastTargetVar)
+        // For multi-step MATCH, GE rows represent the last step's target node.
+        // If returnColumns are just bare property names (ANTLR stripped var. prefix),
+        // retVar from expressionColumns may point to wrong variable.
+        // Always prefer lastTargetVar for multi-step, fallback to retVar.
+        const hasNamedRetCol = (plan.returnColumns || []).some(rc => {
+          const sv = rc?.split('.')[0] || ''
+          return plan.steps?.some(s => s.targetAlias === sv || s.source === sv)
+        })
+        const effectiveRetVar = hasNamedRetCol
+          ? ((lastTargetVar && (plan.returnColumns || []).map(rc => rc?.split('.')[0]).includes(lastTargetVar))
+            ? lastTargetVar
+            : (retVar || lastTargetVar))
+          : (lastTargetVar || retVar)
         let boundedTargetIndices: number[] = [...pathEnds]
         let boundedPaths: number[][] = pathResults
         // 多步匿名匹配（effectiveRetVar 为空，steps.length>1，非变量长度/非边变量）：保持 pathResults 全量
@@ -1037,6 +1046,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                             (allVars[step.targetAlias] as any)[k] = tn[k]
                         }
                       }
+                      // Also populate __crossVarRows for whereBody evaluation in _executeQuery
+                      if (tn) {
+                        if (!geNode.__crossVarRows) geNode.__crossVarRows = {}
+                        if (!geNode.__crossVarRows[step.targetAlias]) {
+                          const midProps: Record<string, unknown> = {}
+                          for (const k of Object.keys(tn)) {
+                            if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) midProps[k] = tn[k]
+                          }
+                          if (tn._label !== undefined) midProps._label = tn._label
+                          geNode.__crossVarRows[step.targetAlias] = { ...midProps, props: { ...midProps } }
+                        } else {
+                        }
+                      }
                     }
                   }
                   if (pathEdges.length >= edgeVarColsLen) {
@@ -1084,27 +1106,31 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               } else {
               }
               // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
-              geNode.__crossVarRows = {}
+              // 不重置：allVars foreach 可能已注入中间步变量（out、red等），
+              // 在已有基础上仅追加最后一步的 source/targetAlias/edgeVar
+              if (!geNode.__crossVarRows) geNode.__crossVarRows = {}
               if (plan.steps?.length) {
                 const thisStep = plan.steps[plan.steps.length - 1]
                 // 绑定 targetAlias（If any命名目标且非空）
-                if (thisStep.targetAlias) {
+                // [FIX]: 只在 __crossVarRows 中不存在此变量时才写入（allVars 循环可能已正确绑定）
+                if (thisStep.targetAlias && !geNode.__crossVarRows[thisStep.targetAlias]) {
                   const cvrNode: Record<string, unknown> = {}
                   for (const k of Object.keys(targetNode)) {
                     if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) cvrNode[k] = targetNode[k as keyof typeof targetNode]
                   }
                   geNode.__crossVarRows[thisStep.targetAlias] = { ...cvrNode, props: { ...cvrNode } }
                 }
-                // 绑定 source 变量（起始节点）—— 使用当前 allNodes[i] 而不是 plan.scanLabel（已为 null）
-                if (thisStep.source) {
-                  const srcNode = allNodes[i]
-                  if (srcNode) {
-                    // 保留原始属性，确保 _label 可用
-                    const srcProps: Record<string, unknown> = {}
-                    for (const k of Object.keys(srcNode)) {
-                      if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) srcProps[k] = srcNode[k]
+                // 绑定 source 变量——从 matchingPath 中查找实际源节点，而非总是 allNodes[i]
+                // [FIX]: 只在不存在时写入，且使用匹配路径中的实际节点而不是 always allNodes[i]
+                if (thisStep.source && !geNode.__crossVarRows[thisStep.source]) {
+                  // 从 allVars 中获取已正确赋值的 source 节点副本
+                  const srcProps: Record<string, unknown> = {}
+                  const av = allVars[thisStep.source]
+                  if (av && typeof av === 'object') {
+                    for (const k of Object.keys(av as Record<string,unknown>)) {
+                      if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) srcProps[k] = (av as any)[k]
                     }
-                    if (srcNode._label !== undefined) srcProps._label = srcNode._label
+                    if ((av as any)._label !== undefined) srcProps._label = (av as any)._label
                     geNode.__crossVarRows[thisStep.source] = { ...srcProps, props: { ...srcProps } }
                   }
                 }
@@ -1222,7 +1248,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
           }
           // 恢复 edgeLabel
-          if (plan.steps?.[0]) plan.steps[0].edgeLabel = savedEdgeLabel
+          if ((plan as any)._typeInjected && plan.steps?.[0] && savedEdgeLabel !== undefined) plan.steps[0].edgeLabel = savedEdgeLabel
           // Pattern Comprehension 去重：当 targetAlias 为空（匿名目标）时，
           // 每个 source 节点可能产生多行（不同目标节点）。
           // 去重：只保留每个 source 节点一行
@@ -1347,6 +1373,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             }
           }
+          ;(plan as any)._filtersConsumed = true
           return multiStepRaw
         })()
       : multiTypeStep
@@ -2293,6 +2320,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── 格式化结果 ──
+    if (rawWithEdges.length) {
+      const x0 = rawWithEdges[0] as any
+    }
     const rawResult: QueryRow[] = rawWithEdges.map((r: any) => {
       const fr = _formatResultRow(r, plan)
       return fr
@@ -2314,7 +2344,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     } else {
       result = rawResult
     }
-
     // ── WHERE 子句后处理过滤（表达式引擎处理 GE 不支持的复杂 boolean 表达式） ──
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
@@ -2384,6 +2413,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         if (rawEntry?.__crossVarRows) {
           for (const [varName, varNode] of Object.entries(rawEntry.__crossVarRows)) {
             ctx[varName] = varNode as Record<string, unknown>
+          }
+        }
+        // Also check rawEntry.__targetPropsMap for non-returned source vars
+        if (rawEntry?.__targetPropsMap) {
+          for (const [varName, varNode] of Object.entries(rawEntry.__targetPropsMap)) {
+            if (!(varName in ctx) && varNode && typeof varNode === 'object') {
+              ctx[varName] = varNode as Record<string, unknown>
+            }
           }
                 }
         // 注入 WITH/UNWIND 管道变量（WITH/UNWIND 在 MATCH 之前的情况）
@@ -2578,7 +2615,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 的结构化 filter Info，在此处对所有未在 GE 预过滤中处理的结果做二次过滤。
     // Note: 如果 whereBody 已经处理过（result 已被过滤），跳过此步避免重复过滤
     // 破坏与 whereBody 语义一致的扁平化结果。
-    if (plan.filters?.length && result.length && !plan.aggregate && !plan.whereBody) {
+    if (plan.filters?.length && result.length && !plan.aggregate && !plan.whereBody && !(plan as any)._filtersConsumed) {
       if (plan.returnColumns?.some(c => c === 'i.var' || c === 'var') || (plan.whereBody && plan.whereBody.includes('>') && plan.whereBody.includes('IS NOT NULL'))) {
       }
       const filteredResult: QueryRow[] = []
@@ -2978,8 +3015,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
             if (evalVal === true) {
               filtered.push(row)
+            } else {
             }
-          } catch {
+          } catch(e) {
             filtered.push(row)
           }
         }

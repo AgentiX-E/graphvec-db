@@ -176,6 +176,8 @@ async function run(q: string): Promise<void> {
     const result = await _executeQuery(plan, st.nodes, resolvedQ)
     st.err = null
     st.res = result as any[]
+      if (Array.isArray(st.res) && !st.res.length) { const A = st.nodes.filter((n:any)=>n._label==="A"); process.stderr.write("TCK-ZERO-DBG: A nodes="+A.length+" A0="+JSON.stringify(A[0])+" st.nodes="+st.nodes.length+"\n") }
+      if (Array.isArray(st.res) && !st.res.length) { const A = st.nodes.find((n:any)=>n._label==="A"); process.stderr.write("TCK-ZERO-DBG: A="+JSON.stringify(A)+" st.nodes="+st.nodes.length+" res="+st.res.length+"\n") }
   } catch (e: any) {
     st.err = e; st.res = []
   }

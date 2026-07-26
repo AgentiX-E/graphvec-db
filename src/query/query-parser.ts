@@ -1176,23 +1176,7 @@ function _walkMultiSteps(
           }
         }
       }
-      // direction='in' 时：从其他节点的 __edges 中寻找指向当前 idx 的边
-      if (step.direction === 'in') {
-        for (let j = 0; j < allNodes.length; j++) {
-          if (j === idx) continue
-          const other = allNodes[j] as any
-          if (other.__edges) {
-            for (const e of other.__edges) {
-              if (e.dstIdx === idx) {
-                const neighborIdx = e.srcIdx
-                if (!nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
-                  nextSet.add(neighborIdx)
-                }
-              }
-            }
-          }
-        }
-      }
+
       // 无向边：其他节点到当前节点的反向边
       if (isAny) {
         for (let j = 0; j < allNodes.length; j++) {
