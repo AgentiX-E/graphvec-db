@@ -668,7 +668,10 @@ Given('having executed:', async function (query: string) {
       pending += '\n' + line
       if (!line.endsWith(',')) { lines.push(pending); pending = '' }
     } else {
-      if (line.endsWith(',')) { pending = line }
+      // Detect standalone CREATE/MERGE keyword (multi-line pattern syntax)
+      // e.g. "CREATE" + "  (:X {val: 1})-[:E1]->(:Y),"
+      if (/^(CREATE|MERGE)$/i.test(line)) { pending = line }
+      else if (line.endsWith(',')) { pending = line }
       else { lines.push(line) }
     }
   }

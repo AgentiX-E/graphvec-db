@@ -2827,9 +2827,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (edgeVar) row[edgeVar] = null
             }
             // ── Post-OM row-level filter（opt.filters） ──
-            // Only evaluate filters whose source vars belong to this OM.
+            // Only evaluate filters whose source vars belong to this OM,
+            // and only when the OPTIONAL MATCH pattern actually matched.
             // Cross-OM filters (e.g. source="x" in OM2 when x is from main MATCH)
-            // are skipped. Single-step: always eval. Multi-step: only on pathFound.
+            // are skipped. When pathFound=false, variables are null and the row survives.
             const omVars = new Set<string>()
             for (const s of optSteps) {
               if (s.source) omVars.add(s.source)
@@ -2838,9 +2839,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             const isOmFilter = opt.filters?.length &&
               opt.filters.every((f: any) => omVars.has(f.source))
             if (isOmFilter && optSteps.length) {
-              const isMultiOM = optSteps.length > 1
               const pathFound = srcNodeIdx >= 0 && walkPaths?.length
-              if (!isMultiOM || pathFound) {
+              // Only evaluate OM filter when the pattern actually matched.
+              // If the OPTIONAL didn't match (pathFound=false), the variables
+              // are null and evaluating the filter would incorrectly kill the row.
+              if (pathFound) {
                 const omCtx: Record<string, unknown> = {}
                 for (const [k, v] of Object.entries(row)) {
                   if (v !== undefined) {
