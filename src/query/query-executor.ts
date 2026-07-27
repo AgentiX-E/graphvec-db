@@ -2809,54 +2809,72 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             if (walkPaths?.length) {
               // 取第一条路径——对多步 OPTIONAL MATCH，提取每个步骤的目标变量
               const path = walkPaths[0]
-              // Filter walk paths by OPTIONAL MATCH WHERE (if WHERE references OPTIONAL vars)
-              let validPaths = walkPaths
-              if (plan.whereBody && optVarSet.size) {
-                const omCtx: Record<string, unknown> = {}
-                // Build ctx from path nodes for WHERE evaluation
-                for (let psi = 0; psi < optSteps.length; psi++) {
-                  if (optSteps[psi].targetAlias) {
-                    const tgtIdx = path[psi + 1]
-                    if (tgtIdx !== undefined && tgtIdx < allNodes.length) {
-                      const tgtNode = allNodes[tgtIdx] as any
-                      omCtx[optSteps[psi].targetAlias] = { ..._mkNodeProps(tgtNode), props: { ..._mkNodeProps(tgtNode) } }
-                    }
+              for (let psi = 0; psi < optSteps.length; psi++) {
+                if (optSteps[psi].targetAlias) {
+                  const tgtIdx = path[psi + 1]
+                  if (tgtIdx !== undefined && tgtIdx < allNodes.length) {
+                    const tgtNode = allNodes[tgtIdx] as any
+                    const np = _mkNodeProps(tgtNode)
+                    row[optSteps[psi].targetAlias] = np
                   }
-                }
-                // Add source variable from row
-                const svObj = (row[optSteps[0].source] && typeof row[optSteps[0].source] === 'object')
-                  ? row[optSteps[0].source] as Record<string, unknown>
-                  : (row[optSteps[0].source] ? { val: row[optSteps[0].source] } : {})
-                const svObjProps = (svObj as any)?.props || {}
-                omCtx[optSteps[0].source || ''] = { ...svObj, props: { ...svObjProps, ...svObj } }
-                try {
-                  const evalResult = _evaluateExpression(plan.whereBody, omCtx)
-                  if (!evalResult) validPaths = []
-                } catch { validPaths = [] }
-              }
-              if (validPaths.length) {
-                for (let psi = 0; psi < optSteps.length; psi++) {
-                  if (optSteps[psi].targetAlias) {
-                    const tgtIdx = path[psi + 1]  // path[0]=srcNodeIdx, path[1]=firstTarget, ...
-                    if (tgtIdx !== undefined && tgtIdx < allNodes.length) {
-                      const tgtNode = allNodes[tgtIdx] as any
-                      const np = _mkNodeProps(tgtNode)
-                      row[optSteps[psi].targetAlias] = np
-                    }
-                  }
-                }
-              } else {
-                // WHERE failed → null out OPTIONAL vars only (not source var from main MATCH)
-                for (const s of optSteps) {
-                  if (s.targetAlias) row[s.targetAlias] = null
                 }
               }
             } else {
-              // OPTIONAL 路径不匹配：填充 null（仅 OPTIONAL 变量，不覆盖主 MATCH 的 sourceVar）
+              // OPTIONAL 路径不匹配：null 所有目标变量（不覆盖主 MATCH 的 sourceVar）
               for (let psi = 0; psi < optSteps.length; psi++) {
                 if (optSteps[psi].targetAlias) row[optSteps[psi].targetAlias] = null
               }
               if (edgeVar) row[edgeVar] = null
+            }
+            // ── Post-OM row-level filter（opt.filters） ──
+            // Only evaluate filters whose source vars belong to this OM.
+            // Cross-OM filters (e.g. source="x" in OM2 when x is from main MATCH)
+            // are skipped. Single-step: always eval. Multi-step: only on pathFound.
+            const omVars = new Set<string>()
+            for (const s of optSteps) {
+              if (s.source) omVars.add(s.source)
+              if (s.targetAlias) omVars.add(s.targetAlias)
+            }
+            const isOmFilter = opt.filters?.length &&
+              opt.filters.every((f: any) => omVars.has(f.source))
+            if (isOmFilter && optSteps.length) {
+              const isMultiOM = optSteps.length > 1
+              const pathFound = srcNodeIdx >= 0 && walkPaths?.length
+              if (!isMultiOM || pathFound) {
+                const omCtx: Record<string, unknown> = {}
+                for (const [k, v] of Object.entries(row)) {
+                  if (v !== undefined) {
+                    if (v !== null && typeof v === 'object') {
+                      omCtx[k] = { ...v as Record<string, unknown>, props: { ...v as Record<string, unknown> } }
+                    } else {
+                      omCtx[k] = v
+                    }
+                  }
+                }
+                const filterExpr = opt.filters.map((f: any) => {
+                  const op = f.operator === 'LT' ? '<' : f.operator === 'GT' ? '>' :
+                             f.operator === 'EQ' ? '=' : f.operator === 'LE' ? '<=' :
+                             f.operator === 'GE' ? '>=' : f.operator === 'NEQ' ? '<>' :
+                             f.operator === 'STARTS_WITH' ? 'STARTS WITH' :
+                             f.operator === 'ENDS_WITH' ? 'ENDS WITH' :
+                             f.operator === 'CONTAINS' ? 'CONTAINS' : f.operator
+                  return `${f.source}.${f.property} ${op} ${f.value}`
+                }).join(' AND ')
+                try {
+                  const evalResult = _evaluateExpression(filterExpr, omCtx)
+                  if (!evalResult) {
+                    for (const s of optSteps) {
+                      if (s.targetAlias) row[s.targetAlias] = null
+                    }
+                    result[ri] = null as any
+                  }
+                } catch {
+                  for (const s of optSteps) {
+                    if (s.targetAlias) row[s.targetAlias] = null
+                  }
+                  result[ri] = null as any
+                }
+              }
             }
           } else if (optVarName && !sourceVar && !targetVar && !edgeVar) {
             // 单节点模式：OPTIONAL MATCH (n) / (n:Label)
@@ -2873,6 +2891,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
       }
+      // Remove rows marked for deletion by post-OM filter
+      const filtered = result.filter(r => r !== null)
+      result.length = 0
+      result.push(...filtered)
     }
 
     // OPTIONAL MATCH 后处理：OPTIONAL MATCH 设置的变量可能改变了 RETURN 表达式的求值结果。
