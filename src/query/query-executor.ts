@@ -2846,16 +2846,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   }
                 }
               } else {
-                // WHERE failed → null out OPTIONAL vars
+                // WHERE failed → null out OPTIONAL vars only (not source var from main MATCH)
                 for (const s of optSteps) {
                   if (s.targetAlias) row[s.targetAlias] = null
-                  if (s.source) row[s.source] = null
                 }
               }
             } else {
-              // OPTIONAL 路径不匹配：填充 null
-              if (sourceVar) row[sourceVar] = null
-              if (targetVar) row[targetVar] = null
+              // OPTIONAL 路径不匹配：填充 null（仅 OPTIONAL 变量，不覆盖主 MATCH 的 sourceVar）
+              for (let psi = 0; psi < optSteps.length; psi++) {
+                if (optSteps[psi].targetAlias) row[optSteps[psi].targetAlias] = null
+              }
               if (edgeVar) row[edgeVar] = null
             }
           } else if (optVarName && !sourceVar && !targetVar && !edgeVar) {
