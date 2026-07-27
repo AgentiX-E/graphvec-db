@@ -1679,9 +1679,15 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
         const filtered: NodeRecord[] = []
         for (const node of results) {
           if (effectiveLimit !== undefined && filtered.length >= effectiveLimit) break
-          const neighborsRaw = this.storage.neighbors(node.id, {
+          const neighborsOpts: any = {
             edgeTypeFilter: step.edgeLabel ? [this._resolveEdgeType(step.edgeLabel)] : undefined,
-          })
+          }
+          if (step.direction === 'in') {
+            neighborsOpts.direction = 'in'
+          } else if (step.direction === 'any') {
+            neighborsOpts.direction = 'any'
+          }
+          const neighborsRaw = this.storage.neighbors(node.id, neighborsOpts)
           for (const entry of neighborsRaw) {
             if (effectiveLimit !== undefined && filtered.length >= effectiveLimit) break
             const neighbor = this.getNode(entry.nodeId, ctx)

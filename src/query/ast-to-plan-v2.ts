@@ -1358,12 +1358,20 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
   const propsNode = findChild(firstPattern, 'PropertiesContext')
   const properties = propsNode ? extractMapLiteral(propsNode) : null
 
-  // Extract edge steps (PatternElementChain)
-  const chains = findAllChildren(matchCtx, 'PatternElementChainContext')
+  // Extract edge steps — process each PatternElement independently
+  // to correctly handle comma-separated MATCH patterns like (a)--(b), (c)--(d).
+  // Each PatternElement gets its own starting node variable and currentSource.
+  const patternElements = findAllChildren(matchCtx, 'PatternElementContext')
   const edges: ParsedEdgeStep[] = []
 
-  let currentSource = variable ?? ''
-  for (const chain of chains) {
+  for (const pe of patternElements) {
+    // Starting node for this PatternElement
+    const peFirstPattern = findChild(pe, 'NodePatternContext')
+    const peVariable = findSymbolicName(findChild(peFirstPattern!, 'VariableContext'))
+    let currentSource = peVariable ?? variable ?? ''
+
+    const chains = findAllChildren(pe, 'PatternElementChainContext')
+    for (const chain of chains) {
     const relPattern = findChild(chain, 'RelationshipPatternContext')
     const targetPattern = findChild(chain, 'NodePatternContext')
 
@@ -1449,6 +1457,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
 
     currentSource = targetVar ?? ''
   }
+  } // end for each PatternElement
 
   return {
     variable,
