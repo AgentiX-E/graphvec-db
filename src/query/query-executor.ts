@@ -2869,13 +2869,40 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     for (const s of optSteps) {
                       if (s.targetAlias) row[s.targetAlias] = null
                     }
-                    result[ri] = null as any
+                    if (edgeVar) row[edgeVar] = null
                   }
                 } catch {
                   for (const s of optSteps) {
                     if (s.targetAlias) row[s.targetAlias] = null
                   }
-                  result[ri] = null as any
+                  if (edgeVar) row[edgeVar] = null
+                }
+              }
+            }
+            // ── Label predicate check（OM variables） ──
+            // plan.labelFilterItems 可能包含对 OM 变量的 label 要求
+            // （如 WHERE m:NonExistent）。在路径匹配后验证。
+            // 失败时：OM 变量设 null，行保留（OPTIONAL 语义）。
+            const omLabelFilters = ((plan as any).labelFilterItems || []).filter(
+              (lf: any) => omVars.has(lf.variable)
+            )
+            if (omLabelFilters.length && optSteps.length) {
+              const pathFound = srcNodeIdx >= 0 && walkPaths?.length
+              if (pathFound) {
+                let labelMatch = true
+                for (const lf of omLabelFilters) {
+                  const varVal = row[lf.variable]
+                  if (varVal && typeof varVal === 'object') {
+                    const nodeLabel = (varVal as any)._label
+                    const matches = lf.exclude ? (nodeLabel !== lf.label) : (nodeLabel === lf.label)
+                    if (!matches) { labelMatch = false; break }
+                  }
+                }
+                if (!labelMatch) {
+                  for (const s of optSteps) {
+                    if (s.targetAlias) row[s.targetAlias] = null
+                  }
+                  if (edgeVar) row[edgeVar] = null
                 }
               }
             }
@@ -2894,10 +2921,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
       }
-      // Remove rows marked for deletion by post-OM filter
-      const filtered = result.filter(r => r !== null)
-      result.length = 0
-      result.push(...filtered)
+      // Post-OM filter failures: OPTIONAL MATCH variables set to null,
+      // rows are preserved (not deleted) per Cypher OPTIONAL semantics.
     }
 
     // OPTIONAL MATCH 后处理：OPTIONAL MATCH 设置的变量可能改变了 RETURN 表达式的求值结果。
