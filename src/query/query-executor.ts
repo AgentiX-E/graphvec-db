@@ -1938,7 +1938,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (query) {
         const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
         hasMultiMatch = !!(matchSection && matchSection[1].includes(','))
-        console.error("T8_MATCH_SECTION: hasMulti=" + hasMultiMatch + " clause=" + (matchSection ? matchSection[1].slice(0,100) : "none") + "\n")
         if (matchSection) {
           const clause = matchSection[1]
           const nodePatterns = [...clause.matchAll(/\((\w+)\s*:\s*(\w+)\)/g)]
@@ -2323,7 +2322,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     if (rawWithEdges.length) {
       const x0 = rawWithEdges[0] as any
     }
-    const rawResult: QueryRow[] = rawWithEdges.map((r: any) => {
+    // Fallback: when rawWithEdges is empty (e.g. MATCH (x:X) without edge steps —
+    // plan.steps=[] means edgeVarCols=[]→rawWithEdges=[]), use rawRecords directly.
+    // This handles queries with OPTIONAL MATCH clauses where the main MATCH
+    // has no edge traversal (pure label scan).
+    const rawSource: any[] = rawWithEdges.length ? rawWithEdges : rawRecords
+    const rawResult: QueryRow[] = rawSource.map((r: any) => {
       const fr = _formatResultRow(r, plan)
       return fr
     })
@@ -2348,47 +2352,48 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
     // Note: 即使 plan.aggregate 存在，也必须先应用 WHERE 再聚合。
+    // Collect OPTIONAL MATCH variables for WHERE deferred evaluation & path filtering
+    let optVarSet = new Set<string>()
+    if (plan.optionalMatchSteps?.length) {
+      for (const om of plan.optionalMatchSteps) {
+        if (om.variableName) optVarSet.add(om.variableName)
+        for (const s of om.steps || []) {
+          if (s.source) optVarSet.add(s.source)
+          if (s.targetAlias) optVarSet.add(s.targetAlias)
+        }
+      }
+      if (plan.expressionColumns?.length) {
+        for (const ec of plan.expressionColumns) {
+          const ecObj = ec as any
+          if (ecObj.alias) optVarSet.add(ecObj.alias)
+        }
+      }
+    }
     if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind)) {
-      // 提取主 MATCH 的 WHERE 条件：在 "OPTIONAL MATCH" 之前的文本
+      // 提取主 MATCH 的 WHERE 条件：在 "OPTIONAL MATCH" 之前的文本（如果有嵌套 OPTIONAL）
       let whereExpr = plan.whereBody
       const optMatchPos = whereExpr.indexOf('OPTIONAL MATCH')
       if (optMatchPos >= 0) {
         whereExpr = whereExpr.substring(0, optMatchPos).trim()
       }
       if (whereExpr) {
-        // 跳过属于 OPTIONAL MATCH 变量的条件（如 m:NonExistent, x0 IS NOT NULL）
-        // 这些在 OPTIONAL MATCH 处理中另做过滤
-        if (plan.optionalMatchSteps?.length) {
-          const optVarSet = new Set<string>()
-          for (const om of plan.optionalMatchSteps) {
-            if (om.variableName) optVarSet.add(om.variableName)
-            for (const s of om.steps || []) {
-              if (s.source) optVarSet.add(s.source)
-              if (s.targetAlias) optVarSet.add(s.targetAlias)
-              if (s.targetAlias) optVarSet.add(s.targetAlias)
-            }
-          }
-          // 加入 OPTIONAL MATCH 的 expressionColumns 别名（如 x0）
-          if (plan.expressionColumns?.length) {
-            for (const ec of plan.expressionColumns) {
-              const ecObj = ec as any
-              if (ecObj.alias) optVarSet.add(ecObj.alias)
-            }
-          }
+        // Extract variables referenced in whereExpr
+        const referencedVars = [...whereExpr.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
+          .filter(v => !/^(IS|NOT|NULL|TRUE|FALSE|AND|OR|XOR)$/i.test(v))
+          .filter(v => !new RegExp(`'${v}'|"${v}"`).test(whereExpr))
+
+        // For WHERE clauses that reference OPTIONAL MATCH variables,
+        // save the expression for deferred evaluation (after OPTIONAL MATCH is processed).
+        // OPTIONAL variables are undefined at this point, so WHERE evaluation
+        // would incorrectly filter out all rows.
+        if (optVarSet.size && referencedVars.some(v => optVarSet.has(v))) {
+          whereExpr = whereExpr
+          whereExpr = ''
+        }
+        if (whereExpr) {
           const labelMatch = whereExpr.match(/^(\w+)\s*:\s*(\w+)$/)
           if (labelMatch && optVarSet.has(labelMatch[1])) {
-            // 纯 OPTIONAL 变量 label 条件：跳过主 MATCH WHERE 过滤
             whereExpr = ''
-          }
-          // 检查 whereExpr 中的所有变量引用是否全属于 OPTIONAL MATCH
-          if (whereExpr) {
-            const referencedVars = [...whereExpr.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
-              .filter(v => !/^(IS|NOT|NULL|TRUE|FALSE|AND|OR|XOR)$/i.test(v))
-              // 排除字符串字面量（单引号/双引号括起来的单词）
-              .filter(v => whereExpr.match(new RegExp(`'${v}'|"${v}"`)) === null)
-            if (referencedVars.length && referencedVars.every(v => optVarSet.has(v))) {
-              whereExpr = ''
-            }
           }
         }
       }
@@ -2695,8 +2700,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           const optVarName = opt.variableName || ''
           let srcNodeIdx = -1
-          // 先从 rawWithEdges.__crossVarRows 获取源节点引用（比 row[sourceVar] 更可靠）
-          const rawEntry = Array.isArray(rawWithEdges) ? rawWithEdges[ri] : undefined
+          // 先从 rawWithEdges/rawSource 获取源节点引用（比 row[sourceVar] 更可靠）
+          // rawSource is the fallback when rawWithEdges is empty (e.g. MATCH without edge steps)
+          const _omRawSource = rawSource || rawWithEdges
+          const rawEntry = Array.isArray(_omRawSource) ? _omRawSource[ri] : undefined
           if (rawEntry?.__crossVarRows && sourceVar && sourceVar in rawEntry.__crossVarRows) {
             const srcNodeRef = rawEntry.__crossVarRows[sourceVar] as any
             const srcLabel = (srcNodeRef as any)?._label || ''
@@ -2718,15 +2725,57 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
           }
           if (srcNodeIdx < 0 && sourceVar) {
-            // 尝试从 row[sourceVar] 获取字符串化的节点值
             const srcVal = row[sourceVar]
             const srcType = typeof srcVal
             if (srcType === 'string') {
-              const rowLabel = (srcVal as string).match(/^\(:(\w+)/)
+              // Match TCK node notation: (:Label) or (:Label {prop: val}) or [: {val: 1}]
+              const rowLabel = (srcVal as string).match(/^\[?\s*:?\s*(\w+)/)
+              // Also try to extract numbered props for disambiguation: [: {val: 1}] → {val: 1}
+              let rowProps: Record<string, string> = {}
+              const propBlock = (srcVal as string).match(/\{([^}]+)\}/)
+              if (propBlock) {
+                const pairs = propBlock[1].split(',')
+                for (const p of pairs) {
+                  const kv = p.split(':')
+                  if (kv.length === 2) rowProps[kv[0].trim()] = kv[1].trim()
+                }
+              }
               if (rowLabel) {
                 for (let si = 0; si < allNodes.length; si++) {
-                  if ((allNodes[si] as any)._label === rowLabel[1]) { srcNodeIdx = si; break }
+                  const cand = allNodes[si] as any
+                  if (cand._label !== rowLabel[1]) continue
+                  // Disambiguate by props if available
+                  if (Object.keys(rowProps).length > 0) {
+                    let match = true
+                    for (const [k, v] of Object.entries(rowProps)) {
+                      if (cand[k] === undefined || String(cand[k]) !== v) { match = false; break }
+                    }
+                    if (match) { srcNodeIdx = si; break }
+                  } else {
+                    srcNodeIdx = si; break
+                  }
                 }
+              }
+            } else if (srcVal && typeof srcVal === 'object' && !Array.isArray(srcVal)) {
+              // row[sourceVar] is already a resolved node object (e.g. {_label:"X", val:1})
+              // Match by _label + all non-__ properties to find the correct allNodes index
+              const svObj = srcVal as Record<string, unknown>
+              const svLabel = svObj._label || ''
+              const svKeys = Object.keys(svObj).filter(k => !k.startsWith('_'))
+              // Also extract props from node notation objects (e.g. {_label:"X", props:{val:1}})
+              const svProps = (svObj as any).props || {}
+              for (let si = 0; si < allNodes.length; si++) {
+                const cand = allNodes[si] as any
+                if (svLabel && cand._label !== svLabel) continue
+                // Match by known properties
+                let match = true
+                for (const k of svKeys) {
+                  if (k === 'props' || k === '_label') continue
+                  const candVal = cand[k] !== undefined ? cand[k] : svProps[k]
+                  if (candVal === undefined) { match = false; break }
+                  if (String(candVal) !== String(svObj[k])) { match = false; break }
+                }
+                if (match && svKeys.length > 0) { srcNodeIdx = si; break }
               }
             }
             // fallback: 用 opt.scanLabel 或主 MATCH 的 scanLabel 匹配 allNodes
@@ -2758,13 +2807,51 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (srcNodeIdx >= 0 && optSteps.length) {
             const walkPaths = _walkMultiSteps(srcNodeIdx, optSteps, allNodes)
             if (walkPaths?.length) {
-              // 取第一条路径的最后节点
-              const lastNodeIdx = walkPaths[0][walkPaths[0].length - 1]
-              const targetNode = allNodes[lastNodeIdx] as any
-              const nodeProps = _mkNodeProps(targetNode)
-              // 无条件覆盖：OPTIONAL MATCH 结果优先于 _formatResultRow 的默认值
-              row[targetVar] = nodeProps
-              if (edgeVar) row[edgeVar] = null
+              // 取第一条路径——对多步 OPTIONAL MATCH，提取每个步骤的目标变量
+              const path = walkPaths[0]
+              // Filter walk paths by OPTIONAL MATCH WHERE (if WHERE references OPTIONAL vars)
+              let validPaths = walkPaths
+              if (plan.whereBody && optVarSet.size) {
+                const omCtx: Record<string, unknown> = {}
+                // Build ctx from path nodes for WHERE evaluation
+                for (let psi = 0; psi < optSteps.length; psi++) {
+                  if (optSteps[psi].targetAlias) {
+                    const tgtIdx = path[psi + 1]
+                    if (tgtIdx !== undefined && tgtIdx < allNodes.length) {
+                      const tgtNode = allNodes[tgtIdx] as any
+                      omCtx[optSteps[psi].targetAlias] = { ..._mkNodeProps(tgtNode), props: { ..._mkNodeProps(tgtNode) } }
+                    }
+                  }
+                }
+                // Add source variable from row
+                const svObj = (row[optSteps[0].source] && typeof row[optSteps[0].source] === 'object')
+                  ? row[optSteps[0].source] as Record<string, unknown>
+                  : (row[optSteps[0].source] ? { val: row[optSteps[0].source] } : {})
+                const svObjProps = (svObj as any)?.props || {}
+                omCtx[optSteps[0].source || ''] = { ...svObj, props: { ...svObjProps, ...svObj } }
+                try {
+                  const evalResult = _evaluateExpression(plan.whereBody, omCtx)
+                  if (!evalResult) validPaths = []
+                } catch { validPaths = [] }
+              }
+              if (validPaths.length) {
+                for (let psi = 0; psi < optSteps.length; psi++) {
+                  if (optSteps[psi].targetAlias) {
+                    const tgtIdx = path[psi + 1]  // path[0]=srcNodeIdx, path[1]=firstTarget, ...
+                    if (tgtIdx !== undefined && tgtIdx < allNodes.length) {
+                      const tgtNode = allNodes[tgtIdx] as any
+                      const np = _mkNodeProps(tgtNode)
+                      row[optSteps[psi].targetAlias] = np
+                    }
+                  }
+                }
+              } else {
+                // WHERE failed → null out OPTIONAL vars
+                for (const s of optSteps) {
+                  if (s.targetAlias) row[s.targetAlias] = null
+                  if (s.source) row[s.source] = null
+                }
+              }
             } else {
               // OPTIONAL 路径不匹配：填充 null
               if (sourceVar) row[sourceVar] = null
