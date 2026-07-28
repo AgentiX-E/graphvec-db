@@ -906,6 +906,19 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         }
         const parsed = extractMatch(clause.ctx)
         if (parsed) {
+          // Deduplicate consecutive identical steps.
+          // Path variable syntax (MATCH p = (n)-->(x)) causes ANTLR to produce
+          // duplicate PatternElement entries for the same edge pattern.
+          if (parsed.edges.length > 1) {
+            const deduped: typeof parsed.edges = []
+            for (const e of parsed.edges) {
+              const prev = deduped[deduped.length - 1]
+              if (!prev || prev.source !== e.source || prev.targetAlias !== e.targetAlias || prev.direction !== e.direction || prev.edgeLabel !== e.edgeLabel) {
+                deduped.push(e)
+              }
+            }
+            parsed.edges = deduped
+          }
           // 如果是第一个 MATCH，设置 scanLabel 和 steps
           // 如果是后续 MATCH（逗号分隔），作为额外 scan + steps
           if (!plan.scanLabel && plan.steps.length === 0) {
