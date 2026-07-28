@@ -706,14 +706,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       return _postProcessResults(created, plan)
     }
 
-    // ── WHERE type(r) = 'X' → 转为 edgeLabel 过滤（非参数化，全局匹配） ──
-    // [CVE-H3]: 原实现只匹配第一个 type(r) = 'X'，AND/OR 复合条件中后续约束被忽略。
-    // 现改用全局正则匹配所有 type(r) = 'X' 条件。
+    // ── WHERE type(r) = 'X' → 转为 edgeLabel 过滤 ──
+    // Only apply when there is a single type() = constraint (not OR/AND composite conditions).
+    // For composite predicates like WHERE type(r) = 'X' OR type(r) = 'Y',
+    // we must let the expression engine evaluate the full whereBody at runtime.
     if (query && !plan.steps?.some(s => s.edgeLabel)) {
-      const typeRegex = /WHERE\s+type\s*\(\s*(\w+)\s*\)\s*=\s*['"]([^'"]+)['"]/g
-      let typeMatch: RegExpExecArray | null
-      while ((typeMatch = typeRegex.exec(query)) !== null) {
-        const typeLabel = typeMatch[2]
+      const typeMatchAll = [...query.matchAll(/WHERE\s+type\s*\(\s*(\w+)\s*\)\s*=\s*['"]([^'"]+)['"]/g)]
+      // Only apply if exactly one type() = constraint (no OR/AND disjunctions)
+      if (typeMatchAll.length === 1 && !/\b(?:OR|AND)\b/i.test(query)) {
+        const typeLabel = typeMatchAll[0][2]
         for (const s of plan.steps || []) {
           if (!s.edgeLabel) {
             s.edgeLabel = typeLabel
@@ -2418,6 +2419,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         if (rawEntry?.__crossVarRows) {
           for (const [varName, varNode] of Object.entries(rawEntry.__crossVarRows)) {
             ctx[varName] = varNode as Record<string, unknown>
+          }
+        }
+        // Edge variable recovery: when ctx[var] is still a string (formatted edge representation like "[:KNOWS]")
+        // and __crossVarRows is unavailable (e.g. rawWithEdges misaligned with result), parse the string back
+        // into an object for expression functions like type(). The _type field is the edge label between brackets.
+        for (const [key, val] of Object.entries(ctx)) {
+          if (typeof val === 'string' && /^\[:.*\]$/.test(val)) {
+            const edgeLabelMatch = val.match(/^\[:(.*?)(?:\s*\{.*\})?\]$/)
+            if (edgeLabelMatch && !(key in (rawEntry?.__crossVarRows || {}))) {
+              ctx[key] = { _type: edgeLabelMatch[1], __edgeLabel: edgeLabelMatch[1], _label: edgeLabelMatch[1] }
+            }
           }
         }
         // Also check rawEntry.__targetPropsMap for non-returned source vars
