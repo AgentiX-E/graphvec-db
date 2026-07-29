@@ -805,6 +805,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if ((plan as any)._typeInjected && plan.steps?.[0]) plan.steps[0].edgeLabel = null
           let _ceComma = false
           let commaCutIdx = 0
+          let _commaCsSrcPathVars: Map<number, Record<string, number>> | undefined
           if (plan.steps?.length && plan.steps.length > 1) {
             for (let si = 1; si < plan.steps.length; si++) {
               const s = plan.steps[si]
@@ -936,13 +937,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 for (const dwPath of defWalk) {
                   const dwEnd = dwPath[dwPath.length - 1]
                   if (!interEnds.has(dwEnd)) continue
-                  // Build pathVars: {variable → nodeIndex} from dwPath and mainSteps
+                  // Build pathVars: {variable → nodeIndex} from dwPath and mainSteps.
+                  // Use <= to cover the last step's targetAlias when dwPath length
+                  // equals mainSteps count (e.g. comma constraint for cycle graphs).
                   const pathVars: Record<string, number> = {}
-                  for (let psi = 0; psi < mainSteps.length && psi < dwPath.length - 1; psi++) {
+                  for (let psi = 0; psi < mainSteps.length && psi <= dwPath.length - 1; psi++) {
                     const step = mainSteps[psi]
                     if (step.source) pathVars[step.source] = dwPath[psi]
                     if (step.targetAlias && dwPath[psi + 1] !== undefined)
                       pathVars[step.targetAlias] = dwPath[psi + 1]
+                    else if (step.targetAlias && psi === dwPath.length - 1)
+                      pathVars[step.targetAlias] = dwPath[psi]
                   }
                   // Comma connectivity: walk from comma source to comma target
                   let passesComma = true
@@ -970,7 +975,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                       const csSrc = (cs.source && pathVars[cs.source] !== undefined)
                         ? pathVars[cs.source]
                         : undefined
-                      if (csSrc !== undefined) validTargets.add(csSrc)
+                      if (csSrc !== undefined && csSrc !== dwEnd) {
+                        validTargets.add(csSrc)
+                        // Add truncated path so allVars loop can populate intermediate variables
+                        const csSrcIdx = dwPath.indexOf(csSrc)
+                        if (csSrcIdx >= 0) {
+                          validPaths.push(dwPath.slice(0, csSrcIdx + 1))
+                        }
+                        // Store full pathVars for csSrc targets to ensure __crossVarRows completeness
+                        if (!_commaCsSrcPathVars) _commaCsSrcPathVars = new Map()
+                        _commaCsSrcPathVars.set(csSrc, { ...pathVars })
+                      }
                     }
                   }
                 }
@@ -1106,10 +1121,25 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 }
               } else {
               }
-              // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
-              // 不重置：allVars foreach 可能已注入中间步变量（out、red等），
-              // 在已有基础上仅追加最后一步的 source/targetAlias/edgeVar
+              // 添加 __crossVarRows 供 whereBody 后处理
               if (!geNode.__crossVarRows) geNode.__crossVarRows = {}
+              // Comma csSrc targets: inject full pathVars for complete variable context
+              if (_commaCsSrcPathVars?.has(targetIdx)) {
+                const csSrcPV = _commaCsSrcPathVars.get(targetIdx)!
+                for (const [vName, vIdx] of Object.entries(csSrcPV)) {
+                  if (geNode.__crossVarRows[vName]) continue
+                  const node = allNodes[vIdx] as Record<string, unknown> | undefined
+                  if (!node) continue
+                  const nodeProps: Record<string, unknown> = {}
+                  for (const k of Object.keys(node)) {
+                    if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) {
+                      nodeProps[k] = node[k]
+                    }
+                  }
+                  if (node._label !== undefined) nodeProps._label = node._label
+                  geNode.__crossVarRows[vName] = { ...nodeProps, props: { ...nodeProps } }
+                }
+              }
               if (plan.steps?.length) {
                 const thisStep = plan.steps[plan.steps.length - 1]
                 // 绑定 targetAlias（If any命名目标且非空）
