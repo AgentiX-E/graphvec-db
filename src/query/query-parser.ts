@@ -1236,11 +1236,14 @@ function _walkMultiSteps(
           const neighborIdx = e.dstIdx === last ? e.srcIdx : (e.srcIdx === last ? e.dstIdx : -1)
           return neighborIdx === idx
         })
-        // [FIX-MW2]: direction='in' 时，边存储在 neighbor 节点（idx）而非 last 节点
-        if (!connected && step.direction === 'in') {
+        // Reverse edge check: for 'in' and 'any' directions, the edge connecting
+        // last→idx may be stored on the neighbor node (idx) rather than the current
+        // node (last). TCK stores edges on the source node only; target nodes may
+        // have no __edges.
+        if (!connected && (step.direction === 'in' || step.direction === 'any')) {
           const neighborNode = allNodes[idx] as any
           connected = neighborNode?.__edges?.some((e: any) => {
-            return e.dstIdx === last
+            return e.dstIdx === last || e.srcIdx === last
           })
         }
         if (connected) {

@@ -853,7 +853,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 if (!labelOk) continue
               }
             }
-            const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, plan.filters, stepSourceFilters)
+            // For comma-separated MATCH, skip source filters during the main walk
+            // and defer filtering to whereBody. Source filters in _walkMultiSteps
+            // pre-filter intermediate nodes too aggressively (e.g. a.id=1 AND c.id=2
+            // blocks path 1→0→? at step 2 because A lacks id=2, even though A is a
+            // valid intermediate node in a cycle path).
+            const _mainFilters = _ceComma ? [] : plan.filters
+            const pathResults = _walkMultiSteps(i, plan.steps, allNodes, skipNodeIndices, _mainFilters, stepSourceFilters)
         const pathEnds = _pathEndIndices(pathResults)
         // 对多步结果做交集限定：只保留在 RETURN 变量对应定义步（第一个定义该变量的 step）中存在的 target
         // 防止后续 step 引入不相关的中间节点
@@ -967,8 +973,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     }
                   }
                   if (passesComma) {
-                    validTargets.add(dwEnd)
-                    validPaths.push(dwPath)
+                    // Exclude self-loop cycle paths where the path returns to
+                    // the seed node (e.g. MATCH (a)--()--()--()--(a) in a cycle)
+                    if (dwEnd !== i) {
+                      validTargets.add(dwEnd)
+                      validPaths.push(dwPath)
+                    }
                     // Also add comma-step source node as bounded target
                     // (e.g. (b)--(d) where d = A via cycle a->b->c->d->a)
                     for (const cs of commaSteps) {
@@ -982,9 +992,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                         if (csSrcIdx >= 0) {
                           validPaths.push(dwPath.slice(0, csSrcIdx + 1))
                         }
-                        // Store full pathVars for csSrc targets to ensure __crossVarRows completeness
+                        // Store full pathVars for csSrc targets to ensure __crossVarRows completeness.
+                        // Prefer pathVars that map source variables to their expected seed nodes
+                        // (e.g. a→B(id=1) not a→D alias'd as 'd') to avoid whereBody mismatch.
                         if (!_commaCsSrcPathVars) _commaCsSrcPathVars = new Map()
-                        _commaCsSrcPathVars.set(csSrc, { ...pathVars })
+                        const prev = _commaCsSrcPathVars.get(csSrc)
+                        if (!prev || pathVars.a === i) {
+                          _commaCsSrcPathVars.set(csSrc, { ...pathVars })
+                        }
                       }
                     }
                   }
