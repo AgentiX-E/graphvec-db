@@ -943,11 +943,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 for (const dwPath of defWalk) {
                   const dwEnd = dwPath[dwPath.length - 1]
                   if (!interEnds.has(dwEnd)) continue
-                  // Build pathVars: {variable → nodeIndex} from dwPath and mainSteps.
-                  // Use <= to cover the last step's targetAlias when dwPath length
-                  // equals mainSteps count (e.g. comma constraint for cycle graphs).
+                  // Build pathVars: {variable → nodeIndex} from dwPath using only
+                  // the steps actually walked (defStepsCount). Full mainSteps would
+                  // include extra steps beyond the defWalk (e.g. d-a in a cycle) that
+                  // overwrite source bindings (a → D instead of a → B).
                   const pathVars: Record<string, number> = {}
-                  for (let psi = 0; psi < mainSteps.length && psi <= dwPath.length - 1; psi++) {
+                  const defStepsCount = mainSteps.indexOf(mainDefStep!) + 1
+                  for (let psi = 0; psi < defStepsCount && psi <= dwPath.length - 1; psi++) {
                     const step = mainSteps[psi]
                     if (step.source) pathVars[step.source] = dwPath[psi]
                     if (step.targetAlias && dwPath[psi + 1] !== undefined)
@@ -992,12 +994,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                         if (csSrcIdx >= 0) {
                           validPaths.push(dwPath.slice(0, csSrcIdx + 1))
                         }
-                        // Store full pathVars for csSrc targets to ensure __crossVarRows completeness.
-                        // Prefer pathVars that map source variables to their expected seed nodes
-                        // (e.g. a→B(id=1) not a→D alias'd as 'd') to avoid whereBody mismatch.
+                        // Store pathVars for csSrc targets to recover correct variable
+                        // bindings in __crossVarRows during geNode construction.
+                        // Since the defWalk truncation means only defStepsCount steps
+                        // contributed to pathVars, the bindings are now correct by
+                        // construction (no d-a overwrite). Use first-wins to avoid
+                        // rebinding variables from a wrong cycle path.
                         if (!_commaCsSrcPathVars) _commaCsSrcPathVars = new Map()
                         const prev = _commaCsSrcPathVars.get(csSrc)
-                        if (!prev || pathVars.a === i) {
+                        if (!prev) {
                           _commaCsSrcPathVars.set(csSrc, { ...pathVars })
                         }
                       }
@@ -1142,6 +1147,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (_commaCsSrcPathVars?.has(targetIdx)) {
                 const csSrcPV = _commaCsSrcPathVars.get(targetIdx)!
                 for (const [vName, vIdx] of Object.entries(csSrcPV)) {
+                  // Skip the lastStep target variable (e.g. "d") for csSrc targets
+                  // because the pathVars entry points to a different node than the
+                  // actual csSrc target. "d" should come from the targetNode below.
+                  if (vName === plan.steps?.[plan.steps.length - 1]?.targetAlias) continue
                   if (geNode.__crossVarRows[vName]) continue
                   const node = allNodes[vIdx] as Record<string, unknown> | undefined
                   if (!node) continue
