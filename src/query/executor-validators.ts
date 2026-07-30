@@ -149,6 +149,83 @@ export function _isPatternPredicate(text: string): boolean {
   return /\([^)]*\)\s*(?:<-\s*\[|-\s*\[|-\s*\(|--)/.test(t)
 }
 
+/** Represents an embedded pattern predicate extracted from a WHERE clause. */
+export type PatternPredicate = {
+  fullText: string         // e.g. "(a)-[:T]->(b:TheLabel)"
+  sourceVar: string        // e.g. "a"
+  targetVar: string        // e.g. "b"
+  edgeLabel: string | null // e.g. "T" or null for unlabelled
+  targetLabel: string | null // e.g. "TheLabel" or null
+  isVarLength: boolean     // true for [:T*] patterns
+  direction: 'out' | 'in' | 'any' // direction of edge
+  negated: boolean         // true for NOT (a)-[]->()
+}
+
+/**
+ * Detects whether a WHERE expression contains embedded pattern predicates
+ * (e.g. `a.id = 0 AND (a)-[:T]->(b)**`). Returns true even if mixed with AND/OR.
+ */
+export function _hasEmbeddedPatternPredicate(text: string): boolean {
+  // Pattern: (var) followed by edge syntax
+  return /\((\w+)\)\s*(?:<-\s*\[|-\s*\[|--)[^)]*->\s*\((\w+)/.test(text)
+    || /\((\w+)\)\s*<-\[[^)]*\]\s*-(\w+)/.test(text)
+}
+
+/**
+ * Extracts all embedded pattern predicates from a WHERE expression.
+ * Returns them in order of appearance, each with a unique replacement token.
+ */
+export function _extractPatternPredicates(text: string): {
+  patterns: PatternPredicate[]
+  replacedExpr: string   // expression with patterns replaced by __PPn tokens
+  tokens: Map<string, PatternPredicate>  // __PPn → pattern mapping
+} {
+  const patterns: PatternPredicate[] = []
+  const tokens = new Map<string, PatternPredicate>()
+  let replaced = text
+
+  // Match directed patterns: (src)-[:LABEL*?]->(tgt) or (src)<-[:LABEL*?]-(tgt)
+  // Match pattern predicates: (src)-[edge]->(tgt) with optional arrow directions
+  // Groups: 1=NOT prefix, 2=src var, 3=left arrow (e.g. "->"), 4=edge content,
+  //         5=right arrow (e.g. "->"), 6=tgt var, 7=tgt label
+  const ppRegex = /([!]?NOT\s+)?\((\w+)\)\s*(<-|-)\s*\[([^\[\]]*)\]\s*(->|-)\s*\((\w+)(?::(\w+))?\)/g
+
+  let match
+  let idx = 0
+  while ((match = ppRegex.exec(text)) !== null) {
+    const negated = !!(match[1] && /not/i.test(match[1]))
+    const sourceVar = match[2]
+    const edgeLabelRaw = match[4] || ''
+    const isVarLength = edgeLabelRaw.includes('*')
+    const edgeLabel = edgeLabelRaw.startsWith(':') ? edgeLabelRaw.slice(1).replace(/\*$/, '') : ((edgeLabelRaw && !isVarLength) ? edgeLabelRaw : null)
+    const targetVar = match[6]
+    const targetLabel = match[7] || null
+    const leftArrow = match[3] === '<-'
+    const rightArrow = match[5] === '->'
+    const direction: 'in' | 'out' | 'any' = rightArrow && !leftArrow ? 'out' : leftArrow && !rightArrow ? 'in' : 'any'
+
+    const fullText = match[0]
+    const pattern: PatternPredicate = {
+      fullText,
+      sourceVar,
+      targetVar,
+      edgeLabel,
+      targetLabel,
+      isVarLength,
+      direction,
+      negated,
+    }
+    patterns.push(pattern)
+
+    const token = `__PP${idx}`
+    tokens.set(token, pattern)
+    replaced = replaced.replace(fullText, token)
+    idx++
+  }
+
+  return { patterns, replacedExpr: replaced, tokens }
+}
+
 export function _validateUndefinedVariables(query: string, plan?: any): void {
   const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
   const matchVars = extractMatchVariables(query)

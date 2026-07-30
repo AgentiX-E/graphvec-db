@@ -22,7 +22,7 @@ import { GEPool } from './ge-pool'
 import { _formatResultRow, _deepStripInternal, _executeVarLenPath, parseCsvContent } from './executor-common'
 import { _executeWithUnwindPipeline } from './executor-unwind-pipeline'
 import { _buildDmlRows } from './executor-dml'
-import { _isPatternPredicate, _validateUndefinedVariables, _validateUnknownFunctions, extractEdgePropColumnsFromQuery, extractMatchVariables, extractVariablesFromClause, extractEdgesFromNodes } from './executor-validators'
+import { _isPatternPredicate, _hasEmbeddedPatternPredicate, _extractPatternPredicates, _validateUndefinedVariables, _validateUnknownFunctions, extractEdgePropColumnsFromQuery, extractMatchVariables, extractVariablesFromClause, extractEdgesFromNodes } from './executor-validators'
 import { _validatePlan } from './executor-validate-plan'
 import { _execNonGePaths } from './executor-non-ge'
 
@@ -90,6 +90,84 @@ function _geUpsertEdge(ge: any, srcId: number, dstId: number, typeId: number, pr
   } else {
     _geUpsertEdge(ge, srcId, dstId, typeId)
   }
+}
+
+/** PatternPredicate type for buildPPContext */
+type PatternPredicate = {
+  sourceVar: string; targetVar: string; edgeLabel: string | null;
+  targetLabel: string | null; isVarLength: boolean; direction: 'out' | 'in' | 'any';
+  negated: boolean; fullText: string;
+}
+
+/**
+ * Build extended evaluation context with embedded pattern predicate evaluators.
+ * Each __PPn token in the reduced expression maps to a function that checks
+ * edge connectivity between source and target nodes.
+ */
+export function _buildPPContext(
+  baseCtx: Record<string, unknown>,
+  ppTokens: Map<string, PatternPredicate>,
+  allNodes: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  const ctx = { ...baseCtx }
+  for (const [token, pp] of ppTokens) {
+    const srcNode = baseCtx[pp.sourceVar] as Record<string, unknown> | undefined
+    let result: boolean
+
+    if (!srcNode) {
+      result = pp.negated
+    } else {
+      const srcIdx = allNodes.indexOf(srcNode)
+      if (srcIdx < 0) {
+        result = pp.negated
+      } else {
+        // Find matching target nodes in allNodes
+        let found = false
+        for (let tgtIdx = 0; tgtIdx < allNodes.length; tgtIdx++) {
+          const tgtNode = allNodes[tgtIdx]
+
+          // Label filter: target must match targetLabel if specified
+          if (pp.targetLabel && String(tgtNode._label || '') !== pp.targetLabel) continue
+
+          // ctx target variable check: if ctx[pp.targetVar] is set, must match
+          const ctxTarget = baseCtx[pp.targetVar] as Record<string, unknown> | undefined
+          if (ctxTarget && ctxTarget !== tgtNode) continue
+
+          // Check edge existence between src and target
+          for (const edge of (srcNode as any).__edges || []) {
+            const neighborIdx = edge.srcIdx === srcIdx ? edge.dstIdx : edge.srcIdx
+            if (neighborIdx !== tgtIdx) continue
+            if (pp.direction === 'out' && edge.srcIdx !== srcIdx) continue
+            if (pp.direction === 'in' && edge.dstIdx !== srcIdx) continue
+            if (pp.edgeLabel && edge.label !== pp.edgeLabel) continue
+            found = true
+            break
+          }
+          if (found) break
+
+          // Also check reverse edges (stored on neighbor nodes)
+          for (const other of allNodes) {
+            const oIdx = allNodes.indexOf(other)
+            for (const edge of ((other as any).__edges || [])) {
+              const oNeighbor = edge.srcIdx === oIdx ? edge.dstIdx : edge.srcIdx
+              if (oNeighbor !== srcIdx) continue
+              if ((edge.dstIdx !== tgtIdx && edge.srcIdx !== tgtIdx) && (edge.dstIdx !== srcIdx || edge.srcIdx !== tgtIdx)) continue
+              if (pp.direction === 'out' && edge.dstIdx !== srcIdx) continue
+              if (pp.direction === 'in' && edge.srcIdx !== srcIdx) continue
+              if (pp.edgeLabel && edge.label !== pp.edgeLabel) continue
+              found = true
+              break
+            }
+            if (found) break
+          }
+          if (found) break
+        }
+        result = pp.negated ? !found : found
+      }
+    }
+    ctx[token] = result
+  }
+  return ctx
 }
 
 /** GraphEngine 原生执行入口 */
@@ -2104,6 +2182,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             console.error("T8_FORMATTED: rows=" + formattedRows.length + " allNodes=" + JSON.stringify(allNodes.map(n => n._label + ":" + (n.date||"?").toString().slice(0,20))) + "\n");
         }
         filteredWithLabels = formattedRows;
+        // Replace rawRecords with formatted rows so that downstream
+        // _formatResultRow sees the correct __crossVarRows structure.
+        // Only do this for pure edge-free MATCH (no OPTIONAL MATCH)
+        // where steps=[] — OM queries have their own struct from GE.
+        if (!plan.optionalMatchSteps?.length) {
+          rawRecords = formattedRows
+        }
       }
     }
 
@@ -2212,6 +2297,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         return vars
       }),
     ])
+    // For edge-free MATCH (steps=[]), extract variable names from the MATCH clause
+    // text so that RETURN (e.g. RETURN b) is treated as a node variable, not edge variable
+    if (!plan.steps?.length && query) {
+      const matchClause = query.match(/MATCH\s+(.+?)(?:\s+WHERE|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
+      if (matchClause) {
+        const allVars = [...matchClause[1].matchAll(/\((\w+)(?:\s*:\s*\w+)?(?:\s*\{[^}]*\})?\s*\)/g)]
+        for (const mv of allVars) {
+          if (mv[1]) nodeAliases.add(mv[1])
+        }
+      }
+    }
     // edgeVarCols：识别边变量 RETURN 列（如 RETURN r），排除 RETURN i.var 等属性列
     // 属性列已被 dispatchWherePath 拆为简短名称（如 i.var→var），此时 nodeAliases 不含 var。
     // 用原始 query 做最终判断：如果 query 中是 var.xxx 格式的列，不当作边变量。
@@ -2382,8 +2478,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // This handles queries with OPTIONAL MATCH clauses where the main MATCH
     // has no edge traversal (pure label scan).
     const rawSource: any[] = rawWithEdges.length ? rawWithEdges : rawRecords
+    // DEBUG: MW4[2] format check — check steps=[] with embedded predicates
+    if (rawSource.length && !plan.steps?.length && _hasEmbeddedPatternPredicate(plan.whereBody || '')) {
+      const rs0 = rawSource[0]
+    }
     const rawResult: QueryRow[] = rawSource.map((r: any) => {
       const fr = _formatResultRow(r, plan)
+      if (plan.type === 'QUERY' && !plan.steps?.length && _hasEmbeddedPatternPredicate(plan.whereBody || '')) {
+        const hasCVR = ! !r.__crossVarRows
+        const cvrB = r.__crossVarRows?.b
+      }
       return fr
     })
 
@@ -2522,9 +2626,22 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         if (whereBodyExpr) {
           whereBodyExpr = whereBodyExpr.replace(/length\s*\(\s*(\w+)\s*\)/g, '$1.length')
         }
+        // Embedded pattern predicate support: WHERE a.id=0 AND (a)-[:T]->(b)
+        // Extract pattern predicates, replace with evaluable tokens, evaluate
+        // sub-patterns via GE edge checking, then evaluate the reduced expression.
+        let ppTokens: Map<string, import('./executor-validators').PatternPredicate> | undefined
+        let _ppReplacedExpr: string | undefined
+        if (_hasEmbeddedPatternPredicate(whereBodyExpr)) {
+          const extracted = _extractPatternPredicates(whereBodyExpr)
+          ppTokens = extracted.tokens
+          _ppReplacedExpr = extracted.replacedExpr
+        }
         let evalVal: unknown
         const checkExpr = whereExpr
-        if (_isPatternPredicate(checkExpr) || (whereBodyExpr && whereBodyExpr !== checkExpr)) {
+        // Build extended context with embedded pattern predicate evaluators
+        const evalCtx = ppTokens ? _buildPPContext(ctx, ppTokens, allNodes) : ctx
+        const evalExpr = ppTokens ? (_ppReplacedExpr || whereBodyExpr || checkExpr) : (whereBodyExpr || checkExpr)
+        if (_isPatternPredicate(checkExpr) || (whereBodyExpr && whereBodyExpr !== checkExpr && !ppTokens)) {
           // Pattern Comprehension（如 (n)-[]->() 或 (n)-[:REL1]->()）由 GE steps 已执行。
           // 如果 length(p) 已替换为 p.length，isPatternPredicate 可能不匹配，
           // 但长度评估已经在 whereBodyExpr 中处理，所以走表达式求值路径。
@@ -2536,11 +2653,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             // whereBodyExpr !== checkExpr（如 length(p)=1 → p.length=1）
             // 或 _isPatternPredicate 为 false 的非 pattern 查询
             try {
-              const resultVal = _evaluateExpression(whereBodyExpr || checkExpr, ctx)
+              const resultVal = _evaluateExpression(evalExpr, evalCtx)
               evalVal = resultVal
             } catch {
               evalVal = undefined
             }
+          }
+        } else if (ppTokens) {
+          // Embedded pattern predicates: evaluate reduced expression
+          try {
+            const resultVal = _evaluateExpression(evalExpr, evalCtx)
+            evalVal = resultVal
+          } catch {
+            evalVal = undefined
           }
         } else if (/^exists\s*\{/i.test(checkExpr.trim())) {
           // EXISTS { ... } 子查询
@@ -2586,7 +2711,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           evalVal = isNegatedExists ? !existsVal : existsVal
         } else {
           try {
-            const resultVal = _evaluateExpression(whereBodyExpr || checkExpr, ctx)
+            const resultVal = _evaluateExpression(evalExpr, evalCtx)
             evalVal = resultVal
           } catch {
             // OPTIONAL MATCH 变量的条件在当前行上下文可能不可用
