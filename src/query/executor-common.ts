@@ -403,6 +403,42 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       }
     }
 
+    // Build variable context dictionary from all available sources on the row.
+    // Hoisted before expr resolution so that the variable-existence check
+    // (rc in varCtx) below can safely reference an already-built object.
+    const varCtx: Record<string, unknown> = {}
+    // Cross-variable rows (multi-variable MATCH): from __crossVarRows
+    if (r.__crossVarRows) {
+      for (const vn of Object.keys(r.__crossVarRows)) {
+        varCtx[vn] = r.__crossVarRows[vn]
+      }
+    }
+    // WITH / projection variables: from r.props
+    if (r.props && typeof r.props === 'object') {
+      for (const k of Object.keys(r.props)) {
+        if (!k.startsWith('_') && !(k in varCtx)) {
+          varCtx[k] = r.props[k]
+        }
+      }
+    }
+    // Multi-step multi-RETURN variables: from __targetPropsMap
+    if (r.__targetPropsMap) {
+      for (const vn of Object.keys(r.__targetPropsMap)) {
+        if (!(vn in varCtx)) varCtx[vn] = r.__targetPropsMap[vn]
+      }
+    }
+    // Top-level keys on r (cover synthetic aliases)
+    for (const k of Object.keys(r)) {
+      if (!k.startsWith('_') && !(k in varCtx)) {
+        varCtx[k] = r[k]
+      }
+    }
+    if (r.__vridPropMap) {
+      for (const k of Object.keys(r.__vridPropMap)) {
+        if (!(k in varCtx)) varCtx[k] = r.__vridPropMap[k]
+      }
+    }
+
     // 使用 returnAliasMap 或 expressionColumns 解析原始表达式：统一走 _evaluateExpression
     let expr = (aliasMap && rc in aliasMap) ? aliasMap[rc] : (rc in ecMap ? ecMap[rc] : null)
     // 如果没有表达式映射（aliasMap 为空），但 rc 是简单变量名且存在于 varCtx 中，直接用 rc 作为表达式
@@ -414,39 +450,6 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       if (typeof row[rc] === 'string' && row[rc].startsWith('[:')) {
         result[rc] = row[rc]
         continue
-      }
-      // 构建变量上下文字典：从 r 的交叉变量表和 targetProps 中提取所有可用变量
-      const varCtx: Record<string, unknown> = {}
-      // 无边模式：从 __crossVarRows 构建
-      if (r.__crossVarRows) {
-        for (const vn of Object.keys(r.__crossVarRows)) {
-          varCtx[vn] = r.__crossVarRows[vn]
-        }
-      }
-      // WITH 生成的自定义变量（如 list、map）：也从 r.props 提取
-      if (r.props && typeof r.props === 'object') {
-        for (const k of Object.keys(r.props)) {
-          if (!k.startsWith('_') && !(k in varCtx)) {
-            varCtx[k] = r.props[k]
-          }
-        }
-      }
-      // 多步多 RETURN 变量：从 __targetPropsMap 构建
-      if (r.__targetPropsMap) {
-        for (const vn of Object.keys(r.__targetPropsMap)) {
-          if (!(vn in varCtx)) varCtx[vn] = r.__targetPropsMap[vn]
-        }
-      }
-      // WITH 生成的自定义变量（如 list、map）：从 r 的顶层 key 和 __vridPropMap 提取
-      for (const k of Object.keys(r)) {
-        if (!k.startsWith('_') && !(k in varCtx)) {
-          varCtx[k] = r[k]
-        }
-      }
-      if (r.__vridPropMap) {
-        for (const k of Object.keys(r.__vridPropMap)) {
-          if (!(k in varCtx)) varCtx[k] = r.__vridPropMap[k]
-        }
       }
       // source 变量：从 row 构建（过滤掉边变量字符串，避免 [:xxx] 被混入节点属性）
       const firstStepSource = plan.steps?.[0]?.source
