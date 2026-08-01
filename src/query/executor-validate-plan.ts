@@ -5,8 +5,9 @@
  */
 
 import type { QueryPlan } from './query-types'
-import { _validateUndefinedVariables, _validateUnknownFunctions, extractVariablesFromClause } from './executor-validators'
+import { _validateUndefinedVariables, _validateUnknownFunctions, extractVariablesFromClause, extractMatchVariables } from './executor-validators'
 import { _validateLiterals, _splitTopLevel } from './expression-engine'
+import { globalRegistry as _procedureRegistry } from './procedure-registry'
 
 export function _validatePlan(plan: QueryPlan, query?: string): void {
   if (!plan || !plan.type) return

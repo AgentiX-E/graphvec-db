@@ -10,6 +10,17 @@ import fs from 'fs'
 import path from 'path'
 import type { QueryPlan, QueryResult } from './query-types'
 import { _evaluateExpression, _postProcessResults } from './expression-engine'
+import { globalRegistry as _procedureRegistry } from './procedure-registry'
+import { _applyYieldAliases } from './query-parser'
+// Lazy import to break circular dependency with query-executor
+let _executeQuery: Function | undefined
+const _getExecuteQuery = (): Function => {
+  if (!_executeQuery) {
+    const mod = require('./query-executor')
+    _executeQuery = mod._executeQuery
+  }
+  return _executeQuery
+}
 import { parseCsvContent } from './executor-common'
 import { _executeVarLenPath } from './executor-common'
 import { _executeWithUnwindPipeline } from './executor-unwind-pipeline'
@@ -272,7 +283,7 @@ export async function _execNonGePaths(
             // 用 _executeQuery 正确处理 MATCH plan
             const matchPlan = { ...plan, callProcedure: undefined } as any
             delete matchPlan.callProcedure
-            return _executeQuery(matchPlan, nodes, query)
+            return _getExecuteQuery()(matchPlan, nodes, query)
           }
           // 有结果时十字连接
           let geRows
