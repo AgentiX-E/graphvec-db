@@ -27,16 +27,57 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // ── SyntaxError: InvalidDelete ──
   // DELETE relationships requires DETACH (only when deleting a pattern like [:REL],
   // not when deleting a relationship variable).
-  if (plan.type === 'DELETE' && query) {
+  if ((plan.type === 'DELETE' || plan.type === 'MATCH_MODIFY') && query) {
     const isDetach = query.toUpperCase().includes('DETACH')
+    // Extract DELETE clause text (everything from DELETE to RETURN/WITH/end)
+    const deleteMatch = query.match(/DELETE\s+(.*?)(?:\s+RETURN\s|\s+WITH\s|\s*$)/si)
+    const delTargets = deleteMatch ? deleteMatch[1].trim() : ''
     if (!isDetach) {
-      // Extract DELETE clause text (everything from DELETE to RETURN/WITH/end)
-      const deleteMatch = query.match(/DELETE\s+(.*?)(?:\s+RETURN\s|\s+WITH\s|\s*$)/si)
       const deleteClause = deleteMatch ? deleteMatch[1] : ''
-      // Only flag relationship patterns like [:REL] or [var:REL], not plain list/array brackets
-      const hasRelPattern = /\[[\w:]+]/.test(deleteClause)
+      // Flag relationship patterns like [:REL] or [var:REL] (must contain a colon before the label),
+      // not plain list/array brackets like [0] or rels.key[0]
+      const hasRelPattern = /\[[\w]*:[\w]+]/.test(deleteClause)
       if (hasRelPattern) {
         throw Object.assign(new Error('SyntaxError: InvalidDelete'), { tckError: 'InvalidDelete' })
+      }
+      // DELETE n:Person (node label) — not allowed
+      if (/:\w+/.test(deleteClause)) {
+        throw Object.assign(new Error('SyntaxError: InvalidDelete'), { tckError: 'InvalidDelete' })
+      }
+    }
+    // DELETE 1 + 1 (expression) — InvalidArgumentType
+    // Check DELETE targets for non-variable expressions (numbers, operators, literals)
+    if (delTargets && !isDetach) {
+      // Split comma-separated targets
+      const targets = _splitTopLevel(delTargets, ',').map(s => s.trim())
+      for (const t of targets) {
+        // Non-variable patterns: numbers, arithmetic ops, string literals, function calls
+        if (/^\d+\s*([+\-*/]\s*.+)?$/.test(t) || t.startsWith("'") || t.startsWith('"') || /^\w+\(/.test(t)) {
+          throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+        }
+      }
+    }
+    // DELETE x where x is undefined in MATCH scope
+    if (delTargets) {
+      const targets = _splitTopLevel(delTargets, ',').map(s => s.trim().replace(/\s+DETACH\s+/i, '').trim())
+      const definedVars = new Set<string>()
+      // Collect variables from MATCH clauses
+      const matchText = query.match(/MATCH\s+(.+?)(?:\s+(?:DELETE|RETURN|WITH|OPTIONAL)\s|$)/si)
+      if (matchText) {
+        const matchBody = matchText[1]
+        const varMatches = matchBody.matchAll(/\b([a-zA-Z_]\w*)\b/g)
+        for (const m of varMatches) {
+          const vn = m[1].toLowerCase()
+          if (!['match', 'where', 'and', 'or', 'not', 'xor', 'in', 'is', 'null', 'true', 'false', 'none', 'all', 'any', 'single', 'contains', 'starts', 'ends', 'as', 'order', 'by', 'skip', 'limit', 'asc', 'desc', 'distinct', 'optional'].includes(vn)) {
+            definedVars.add(m[1])
+          }
+        }
+      }
+      for (const t of targets) {
+        // Only check if it looks like a variable name (not a pattern or expression)
+        if (/^[a-zA-Z_]\w*$/.test(t) && !definedVars.has(t)) {
+          throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+        }
       }
     }
   }
