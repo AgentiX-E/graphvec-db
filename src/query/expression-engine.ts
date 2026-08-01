@@ -4056,7 +4056,9 @@ export function _validateLiterals(query: string): void {
   const retMatch = query.match(/RETURN\b([\s\S]*)/i)
   if (!retMatch) return
   const afterReturn = retMatch[1].trim()
-  const exprs = _splitTopLevel(afterReturn, ',').map(s => s.trim()).filter(Boolean)
+  // Strip trailing LIMIT / SKIP / ORDER BY clauses (not part of the literal expression)
+  const afterReturnClean = afterReturn.replace(/\s+(LIMIT|SKIP)\s+\d+.*$/i, '').replace(/\s+ORDER\s+BY\b.*$/i, '')
+  const exprs = _splitTopLevel(afterReturnClean, ',').map(s => s.trim()).filter(Boolean)
   const literals = exprs.map(s => s.replace(/\s+AS\s+\w+$/i, '').trim())
 
   for (const rawExpr of literals) {
