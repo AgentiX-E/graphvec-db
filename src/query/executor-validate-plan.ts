@@ -25,14 +25,19 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   _validateLiterals(query)
 
   // ── SyntaxError: InvalidDelete ──
-  // DELETE 关系模式（需要 DETACH）
+  // DELETE relationships requires DETACH (only when deleting a pattern like [:REL],
+  // not when deleting a relationship variable).
   if (plan.type === 'DELETE' && query) {
-    // DELETE 关系但未使用 DETACH
-    const hasRelationship = query.includes('[') && query.includes(']')
     const isDetach = query.toUpperCase().includes('DETACH')
-    if (hasRelationship && !isDetach) {
-      // 删除关系需要 DETACH
-      throw Object.assign(new Error('SyntaxError: InvalidDelete'), { tckError: 'InvalidDelete' })
+    if (!isDetach) {
+      // Extract DELETE clause text (everything from DELETE to RETURN/WITH/end)
+      const deleteMatch = query.match(/DELETE\s+(.*?)(?:\s+RETURN\s|\s+WITH\s|\s*$)/si)
+      const deleteClause = deleteMatch ? deleteMatch[1] : ''
+      // Only flag relationship patterns like [:REL] or [var:REL], not plain list/array brackets
+      const hasRelPattern = /\[[\w:]+]/.test(deleteClause)
+      if (hasRelPattern) {
+        throw Object.assign(new Error('SyntaxError: InvalidDelete'), { tckError: 'InvalidDelete' })
+      }
     }
   }
 
