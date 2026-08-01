@@ -2876,7 +2876,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 对主查询的每一行结果，尝试匹配 optionalMatchSteps 中的每个 OPTIONAL MATCH 模式。
     // 成功 → 将匹配到的节点/边合并到 row；失败 → 填充 null。
     // 使用 allNodes（本地节点数据，含 __edges）进行遍历，不依赖 GE Pool 实例。
-    if (plan.optionalMatchSteps?.length && result.length) {
+    if (plan.optionalMatchSteps?.length) {
+      // Seed an empty row when the main query produces zero rows,
+      // otherwise OPTIONAL MATCH never executes and variables stay unset.
+      if (!result.length) result.push({})
       for (const opt of plan.optionalMatchSteps) {
         const optSteps = opt.steps || []
         for (let ri = 0; ri < result.length; ri++) {
@@ -2886,8 +2889,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const targetVar = optSteps[0]?.targetAlias || ''
           let edgeVar = optSteps[0]?.edgeAlias || ''
           if (!edgeVar && query) {
-            const optMatchEdge = query.match(/OPTIONAL\s+MATCH\s*\([^)]+\)\s*-\s*\[(\w+)\]/)
-            if (optMatchEdge) edgeVar = optMatchEdge[1]
+            // Extract edge variable from OPTIONAL MATCH pattern
+            const optMatchEdge = query.match(/OPTIONAL\s+MATCH\s*\([^)]*\)\s*-+\s*\[(\w+)[:\]]/)
+            if (!optMatchEdge) {
+              // Try with anonymous source (): match ()-[var:label]-() pattern
+              const anonMatch = query.match(/\(\)\s*-+\s*\[(\w+)\b/)
+              if (anonMatch) edgeVar = anonMatch[1]
+            } else {
+              edgeVar = optMatchEdge[1]
+            }
           }
           const optVarName = opt.variableName || ''
           let srcNodeIdx = -1
@@ -2995,7 +3005,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             if (n._label) p._label = n._label
             return p
           }
-          if (srcNodeIdx >= 0 && optSteps.length) {
+          if (srcNodeIdx < 0) {
+            // Source node not found in graph (e.g. label doesn't exist):
+            // null all variable bindings for this OPTIONAL MATCH.
+            for (let psi = 0; psi < optSteps.length; psi++) {
+              if (optSteps[psi].targetAlias) row[optSteps[psi].targetAlias] = null
+            }
+            if (edgeVar) row[edgeVar] = null
+            // When there are no steps (bare node pattern like (a:Label)),
+            // the variable name itself is the target.
+            if (!optSteps.length && opt.variableName) {
+              row[opt.variableName] = null
+            }
+          } else if (srcNodeIdx >= 0 && optSteps.length) {
             const walkPaths = _walkMultiSteps(srcNodeIdx, optSteps, allNodes)
             if (walkPaths?.length) {
               // 取第一条路径——对多步 OPTIONAL MATCH，提取每个步骤的目标变量
