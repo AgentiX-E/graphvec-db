@@ -712,6 +712,10 @@ Given('having executed:', async function (query: string) {
           // 注入边（createEdges）——使用 alias 查找替代 sourceIdx/targetIdx
           const cEdges = (subPlan as any).createEdges as Array<{ source: string; target: string; sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
           if (cEdges?.length) {
+            // sourceIdx/targetIdx from the parser are local indices relative to
+            // this CREATE statement's own node batch.  Offset them by the number
+            // of nodes that existed before this batch was appended to st.nodes.
+            const nodesBeforeBatch = st.nodes.length - cns.length
             for (const ce of cEdges) {
               let srcIdx = -1, dstIdx = -1
               // 优先通过 alias 查找
@@ -720,13 +724,13 @@ Given('having executed:', async function (query: string) {
                   if ((st.nodes[si] as any)._alias === ce.source) { srcIdx = si; break }
                 }
               }
-              if (srcIdx < 0) srcIdx = ce.sourceIdx
+              if (srcIdx < 0) srcIdx = nodesBeforeBatch + ce.sourceIdx
               if (ce.target) {
                 for (let si = 0; si < st.nodes.length; si++) {
                   if ((st.nodes[si] as any)._alias === ce.target) { dstIdx = si; break }
                 }
               }
-              if (dstIdx < 0) dstIdx = ce.targetIdx
+              if (dstIdx < 0) dstIdx = nodesBeforeBatch + ce.targetIdx
               if (srcIdx >= 0 && srcIdx < st.nodes.length && dstIdx >= 0 && dstIdx < st.nodes.length) {
                 if (!st.nodes[srcIdx].__edges) st.nodes[srcIdx].__edges = []
                 st.nodes[srcIdx].__edges.push({

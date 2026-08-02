@@ -2324,6 +2324,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         const aggCol = (plan.aggregate as any).column || ''
         if (aggCol.includes(rc) && /^\w+\(/.test(aggCol)) return false
       }
+      // Exclude RETURN alias columns that come from expressionColumns
+      // (e.g. RETURN 42 AS num): num is not an edge variable, it's a literal alias.
+      const exprAliases = new Set((plan.expressionColumns || []).map((ec: any) => ec.alias).filter(Boolean))
+      if (exprAliases.has(rc)) return false
       // 如果属性名在所有节点 props 中作为键存在，说明是节点属性而非边变量
       // 回退方案：检查 query 中是否有原始变量前缀（如 i.var）对应此 rc
       if (queryHasColumnRef && query) {
