@@ -229,8 +229,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // 判断 rc 是否直接出现在 GE 返回的 props 中
     // 但如果是函数调用表达式（被 GE Error当作属性赋值），跳过 GE 数据走函数求值
     // 聚合模式例外：聚合函数名如 count(*) 已在 GE 的 _execAggregation 中正确设为 props key
-    // TODO: 更好的方法是统一 QE 和 GE 的聚合列名，避免走函数求值
-    if ((rc in row)) {
+    // Skip when rc has a different returnAliasMap value (e.g. RETURN 42 AS num):
+    // row['num'] is a node property, not the literal 42 — avoid shadowing the alias.
+    const hasAliasOverride = aliasMap && rc in aliasMap && aliasMap[rc] !== rc
+    if (!hasAliasOverride && (rc in row)) {
       // 如果 row[rc] 是 "[:T]" 格式字符串但没有 props，而 __crossVarRows 有边属性，
       // 替换为带 props 的格式"[:T {name: 'bar'}]"
       if (typeof row[rc] === 'string' && row[rc].startsWith('[:') && !row[rc].includes('{') && r.__crossVarRows?.[rc]) {
@@ -258,7 +260,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // 检查 rc 是否是节点变量名（RETURN n / RETURN m）
     // GE 返回的 r 本身可能包含节点数据
-    if (r[rc] !== undefined) {
+    if (!hasAliasOverride && r[rc] !== undefined) {
       // 如果是边变量（值是字符串 "[:T1]" 格式），直接输出
       if (typeof r[rc] === 'string' && r[rc].startsWith('[:')) {
         result[rc] = r[rc]
@@ -290,7 +292,6 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // 必须在边变量 RETURN r 分支之前，避免 labels(m) 被误输出为 [:R]
     // 每当 rc 是函数调用表达式时，优先通过 _evaluateExpression 求值
     // 也支持 rc 是别名但 aliasMap 中对应当函数表达式（如 rc="l" → aliasMap["l"] = "labels(...)"）
-    const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
     let fnExpr: string | null = null
     if (rc.match(/^\w+\(/)) {
       fnExpr = rc.replace(/\s+AS\s+\w+(?:\s*\([^)]*\))?\s*$/i, '').trim()
@@ -354,7 +355,9 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // ── 边变量 RETURN r ──
     // rc 是边变量名（如 RETURN r），从 r.__edgeLabel 获取标签输出 [:LABEL] 格式
-    if (r.__edgeLabel && !rc.match(/^\w+\(/)) {
+    // Skip when rc has a different returnAliasMap value (e.g. RETURN 42 AS num
+    // on a relationship DELETE query): num is not an edge variable.
+    if (r.__edgeLabel && !rc.match(/^\w+\(/) && !hasAliasOverride) {
       // 只在 rc 确实是 GE 记录的边变量时使用边标签（避免自环中节点被误输出为边格式）
       let isEdgeVar = false
       if (plan.returnColumns) {
