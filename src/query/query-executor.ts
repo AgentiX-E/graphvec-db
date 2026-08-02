@@ -2064,7 +2064,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 上面的 crossVarFilters 分支不执行，filteredWithLabels 仍为 records。
     // 此处用 filteredRecords 重新构建正确格式的结果行。
     // 支持多个 MATCH 变量（如 MATCH (n), (m) → 笛卡尔积）和单变量 MATCH。
-    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && (filteredRecords?.length || allNodes?.length)) {
+    // Skip when plan.aggregate is set: GE already processed aggregation and
+    // returned aggregated output. Rebuilding formattedRows from filteredRecords
+    // would treat the aggregate row as a node, producing empty rows.
+    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && (filteredRecords?.length || allNodes?.length) && !plan.aggregate) {
       // 手动从 query 文本提取 MATCH 变量和标签（ANTLR 只解析第一个模式）
       let hasMultiMatch = false
       const varLabelMap2: Record<string, string> = {}
@@ -2420,9 +2423,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 而 _executeViaGraphEngine 直接调用 GE._executeQueryPlan 绕过了 WITH 处理。
     // 此处用表达式引擎对 WITH 列求值，将结果放到 rawRow.props 中。
     // 也会将 WITH 列表中的标识符字符串解析为实际节点值。
+    // Skip when plan.aggregate is set: GE already performed aggregation, so
+    // rawRow.props is the aggregate output (e.g. {sum:15}), not a node reference.
+    // WITH expressions like n.num would fail because rc[n] points to the
+    // aggregate result pseudo-node, not the original node with its properties.
+    //
     // Use rawSource fallback when rawWithEdges is empty (e.g. pure node MATCH
-    // without edge steps — DELETE + WITH + RETURN aggregate path)
-    if (plan.with?.columns?.length) {
+    // without edge steps — DELETE + WITH + RETURN aggregate).
+    if (plan.with?.columns?.length && !plan.aggregate) {
       const withSource: any[] = rawWithEdges.length ? rawWithEdges : rawRecords
       for (const rawRow of withSource) {
         for (const wc of plan.with.columns) {
@@ -2731,11 +2739,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── 聚合处理 ──
+    // GE's _executeQueryPlan already performs aggregation when plan.aggregate
+    // is set, returning the aggregated result as a single pseudo-node row with
+    // props[alias]=value. QE should NOT re-aggregate in that case.
+    //
+    // Check whether GE already produced the aggregate output: if the first
+    // result row already has the aggregate alias, GE handled it.
+    const alreadyAggregated = plan.aggregate && result.length > 0 &&
+      (plan.aggregate.alias ? result[0].hasOwnProperty(plan.aggregate.alias) : false)
     // rawWithEdges is empty for pure node MATCH (no edge steps).
     // Use rawSource (which already falls back to rawRecords) as the guard
     // so that aggregate functions work for DELETE/SET + RETURN sum() etc.
     const aggSource = rawWithEdges.length ? rawWithEdges : rawSource
-    if (plan.aggregate && !plan.groupBy?.length && aggSource?.length) {
+    if (plan.aggregate && !plan.groupBy?.length && aggSource?.length && !alreadyAggregated) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
       const aggAlias = agg.alias || agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c'
