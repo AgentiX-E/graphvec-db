@@ -2420,8 +2420,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 而 _executeViaGraphEngine 直接调用 GE._executeQueryPlan 绕过了 WITH 处理。
     // 此处用表达式引擎对 WITH 列求值，将结果放到 rawRow.props 中。
     // 也会将 WITH 列表中的标识符字符串解析为实际节点值。
+    // Use rawSource fallback when rawWithEdges is empty (e.g. pure node MATCH
+    // without edge steps — DELETE + WITH + RETURN aggregate path)
     if (plan.with?.columns?.length) {
-      for (const rawRow of rawWithEdges) {
+      const withSource: any[] = rawWithEdges.length ? rawWithEdges : rawRecords
+      for (const rawRow of withSource) {
         for (const wc of plan.with.columns) {
           const alias = typeof wc === 'object' ? wc.alias : null
           if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
@@ -2728,7 +2731,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── 聚合处理 ──
-    if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length) {
+    // rawWithEdges is empty for pure node MATCH (no edge steps).
+    // Use rawSource (which already falls back to rawRecords) as the guard
+    // so that aggregate functions work for DELETE/SET + RETURN sum() etc.
+    const aggSource = rawWithEdges.length ? rawWithEdges : rawSource
+    if (plan.aggregate && !plan.groupBy?.length && aggSource?.length) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
       const aggAlias = agg.alias || agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c'
