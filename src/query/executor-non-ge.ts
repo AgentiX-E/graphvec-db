@@ -551,6 +551,34 @@ export async function _execNonGePaths(
         return newRow
       })
     }
+    // ── 聚合后处理 ──
+    // _evaluateExpression 对每行单独求值 count(*) 等聚合函数时只返回 1。
+    // 当 plan.aggregate 存在时，需要重新计算实际的聚合值。
+    if ((plan as any).aggregate && varLenResult.length) {
+      const agg = (plan as any).aggregate
+      const aggFn = (agg.function || agg.type || '').toLowerCase()
+      const aggAlias = agg.alias || 'c'
+      const field = agg.field || '*'
+      const aggRow: QueryRow = {}
+      if (aggFn === 'count') {
+        if (field === '*') {
+          aggRow[aggAlias] = varLenResult.length
+        } else {
+          const nonNull = varLenResult.filter(r => r[field] != null)
+          aggRow[aggAlias] = nonNull.length
+        }
+      } else if (aggFn === 'sum') {
+        aggRow[aggAlias] = varLenResult.reduce((acc, r) => acc + (Number(r[field]) || 0), 0)
+      } else if (aggFn === 'avg') {
+        const sum = varLenResult.reduce((acc, r) => acc + (Number(r[field]) || 0), 0)
+        aggRow[aggAlias] = varLenResult.length ? sum / varLenResult.length : 0
+      } else if (aggFn === 'min') {
+        aggRow[aggAlias] = Math.min(...varLenResult.map(r => Number(r[field]) || 0))
+      } else if (aggFn === 'max') {
+        aggRow[aggAlias] = Math.max(...varLenResult.map(r => Number(r[field]) || 0))
+      }
+      return [aggRow]
+    }
     return varLenResult
   }
 

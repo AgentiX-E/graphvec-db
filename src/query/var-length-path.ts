@@ -124,21 +124,59 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
       for (const entry of frontier) {
         const node = srcNodes[entry.nIdx] as any
         const edgeArr: Array<{ dstIdx: number; srcIdx: number; label: string }> = node?.__edges || []
+        const dir = (step as any).direction || 'out'
+        const isAny = dir !== 'out' && dir !== 'in'
+        // 收集邻居节点ID：直接边 + 无向兜底
+        const neighborSet = new Set<number>()
         for (const e of edgeArr) {
           let nIdx = -1
-          const dir = (step as any).direction || 'out'
           if (dir === 'out' && e.srcIdx === entry.nIdx) nIdx = e.dstIdx
           else if (dir === 'in' && e.dstIdx === entry.nIdx) nIdx = e.srcIdx
-          else if (dir !== 'out' && dir !== 'in') {
+          else if (isAny) {
             if (e.srcIdx === entry.nIdx) nIdx = e.dstIdx
             else if (e.dstIdx === entry.nIdx) nIdx = e.srcIdx
           }
-          if (nIdx < 0 || nIdx >= srcNodes.length) continue
+          if (nIdx >= 0 && nIdx < srcNodes.length && !entry.path.includes(nIdx)) {
+            neighborSet.add(nIdx)
+          }
+        }
+        // 无向边兜底：扫描所有其他节点的 __edges，找出指向当前节点的边
+        if (isAny) {
+          for (let j = 0; j < srcNodes.length; j++) {
+            if (j === entry.nIdx || entry.path.includes(j)) continue
+            const otherEdges = (srcNodes[j] as any)?.__edges
+            if (otherEdges) {
+              for (const e of otherEdges) {
+                if ((e.dstIdx === entry.nIdx && e.srcIdx === j) || (e.srcIdx === entry.nIdx && e.dstIdx === j)) {
+                  neighborSet.add(j)
+                  break
+                }
+              }
+            }
+          }
+        }
+        for (const nIdx of neighborSet) {
           if (entry.path.includes(nIdx)) continue
           const newPath = [...entry.path, nIdx]
           if (depth < minHops) { nextFrontier.push({ nIdx, path: newPath }); continue }
           const targetNode = srcNodes[nIdx] as any
-          if (step.edgeLabel && e.label !== step.edgeLabel) continue
+          // 找到连接 entry.nIdx 和 nIdx 的边（用于 edgeLabel 检查）
+          let matchedEdge: any = null
+          const fromEdges = (srcNodes[entry.nIdx] as any)?.__edges || []
+          const toEdges = (srcNodes[nIdx] as any)?.__edges || []
+          for (const e of fromEdges) {
+            if ((e.srcIdx === entry.nIdx && e.dstIdx === nIdx) || (e.dstIdx === entry.nIdx && e.srcIdx === nIdx)) {
+              matchedEdge = e; break
+            }
+          }
+          if (!matchedEdge) {
+            for (const e of toEdges) {
+              if ((e.srcIdx === entry.nIdx && e.dstIdx === nIdx) || (e.dstIdx === entry.nIdx && e.srcIdx === nIdx)) {
+                matchedEdge = e; break
+              }
+            }
+          }
+          if (step.edgeLabel && matchedEdge && matchedEdge.label !== step.edgeLabel) continue
           const pathNodes = newPath.map((idx) => {
             const n = srcNodes[idx] as any
             const out: Record<string, unknown> = { _label: n._label || 'Default' }
