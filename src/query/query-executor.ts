@@ -2434,7 +2434,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     //
     // Use rawSource fallback when rawWithEdges is empty (e.g. pure node MATCH
     // without edge steps — DELETE + WITH + RETURN aggregate).
-    if (plan.with?.columns?.length && !plan.aggregate) {
+    if (plan.with?.columns?.length) {
+      // When plan.aggregate exists AND all WITH columns are simple identifiers
+      // (no property access like r.num), GE already handled them during query
+      // execution. Skip to avoid double-processing aggregate pseudo-node data.
+      // But when WITH includes property access (e.g. r.num), we MUST process
+      // the WITH columns to extract edge/node properties before aggregation.
+      const allSimpleIdentifiers = plan.with.columns.every((wc: any) => {
+        const expr = typeof wc === 'object' ? wc.expression : wc
+        return (typeof expr === 'object' && expr?.type === 'IDENTIFIER') ||
+               (typeof expr === 'string' && !expr.includes('.'))
+      })
+      const needsWithProcessing = !allSimpleIdentifiers || !plan.aggregate
+      if (needsWithProcessing) {
       const withSource: any[] = rawWithEdges.length ? rawWithEdges : rawRecords
       for (const rawRow of withSource) {
         for (const wc of plan.with.columns) {
@@ -2482,6 +2494,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
       }
+      } // needsWithProcessing
     }
 
     // ── 格式化结果 ──
@@ -2747,9 +2760,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // is set, returning the aggregated result as a single pseudo-node row with
     // props[alias]=value. QE should NOT re-aggregate in that case.
     //
-    // Check whether GE already produced the aggregate output: if the first
-    // result row already has the aggregate alias, GE handled it.
-    const alreadyAggregated = plan.aggregate && result.length > 0 &&
+    // Check whether GE already produced the aggregate output: if there is only
+    // one result row AND it already has the aggregate alias, GE handled it.
+    // When WITH processing handled property extraction (edge vars like r.num),
+    // result will have multiple rows (N>1) — QE must still aggregate.
+    const alreadyAggregated = plan.aggregate && result.length === 1 &&
       (plan.aggregate.alias ? result[0].hasOwnProperty(plan.aggregate.alias) : false)
     // rawWithEdges is empty for pure node MATCH (no edge steps).
     // Use rawSource (which already falls back to rawRecords) as the guard
@@ -2782,8 +2797,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         }
       } else {
         // sum/avg/min/max
-        const values = result
-          .map(r => r[field])
+        // Try to resolve field from result rows first (formatResultRow output).
+        // If missing (field was projected away by WITH), fall back to aggSource
+        // which retains raw props including WITH-projected aliases.
+        const hasFieldInResult = result.some(r => field in r)
+        const valueSource = hasFieldInResult ? result : aggSource
+        const values = valueSource
+          .map(r => {
+            if (hasFieldInResult) return r[field]
+            // aggSource items have props object
+            const props = (r as any).props
+            return props ? props[field] : undefined
+          })
           .filter((v: unknown) => v !== null && v !== undefined)
           .map(Number)
           .filter((v: number) => !isNaN(v))
