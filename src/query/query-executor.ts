@@ -343,6 +343,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (crossVarFilters.includes(f)) return false
       // 排除 ANTLR 链式比较解析失败的 filter（值中包含比较运算符）
       if (_isBrokenChainValue(f.value)) return false
+      // 排除 _label 属性（标签谓词由 whereLabelFilters 独立处理，不应影响 seed 过滤）
+      // _label 在节点级别检查，对于 target 节点不应该用 source label 去过滤。
+      if (f.property === '_label') return false
       const result = firstStep && f.source === firstStep.source && firstStep.source
       return result
     })
@@ -2682,10 +2685,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         const rawEntry = rawWithEdges?.[ri]
         if (rawEntry?.__crossVarRows) {
           for (const [varName, varNode] of Object.entries(rawEntry.__crossVarRows)) {
-            if (typeof ctx[varName] === 'string') {
-              // Only override string values (formatted edge repr like "[:R]");
-              // keep already-resolved numeric/object values to prevent
-              // edge prop objects from being set under property names.
+            const ctxVal = ctx[varName]
+            if (typeof ctxVal === 'string' || ctxVal === undefined) {
+              // Override string values (formatted edge repr like "[:R]") and
+              // inject missing keys (e.g. edge variables like 'r' that were
+              // not included in _formatResultRow's output because returnColumns
+              // only contains the target variable, not the edge variable).
               ctx[varName] = varNode as Record<string, unknown>
             }
           }
