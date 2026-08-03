@@ -460,7 +460,7 @@ function _parseQueryImpl(query: string): QueryPlan {
       safeQuery = safeQuery.slice(0, start) + placeholder + safeQuery.slice(end)
     }
   }
-  const whereClause = safeQuery.match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
+  const whereClause = safeQuery.match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+OPTIONAL\b|$)/is)
   if (whereClause) {
     let whereBody = whereClause[1]
     // 恢复占位符
@@ -468,6 +468,29 @@ function _parseQueryImpl(query: string): QueryPlan {
       whereBody = whereBody.replace(`__LPRED${pi}__`, placeholders[pi].text)
     }
     plan.whereBody = whereBody
+    // ── Node label predicates (e.g. `b:B` in WHERE) ──
+    // ANTLR does not always convert bare `var:Label` predicates in WHERE to step
+    // filters. Detect them and add to plan.filters as label constraints so they
+    // are enforced during execution.
+    if (!plan.filters?.length && whereBody) {
+      const labelPredicate = whereBody.match(/^(\w+):(\w+)$/)
+      if (labelPredicate) {
+        const labelVar = labelPredicate[1]
+        const labelName = labelPredicate[2]
+        // Push as a filter; during execution the filter processor will match
+        // the variable's __crossVarRows entry or props to the label.
+        plan.filters = [{
+          source: labelVar,
+          property: '_label',
+          value: labelName,
+          operator: 'EQ'
+        } as any]
+        // Clear whereBody since the predicate is now handled by filters.
+        // Otherwise _evaluateExpression("a:A", ctx) would fail and filter out
+        // all rows in the QE WHERE loop.
+        plan.whereBody = ''
+      }
+    }
     // 检测顶层 OR/XOR（不在括号内的 OR）——清空 filters（OR 需要运行时可短路评估）
     if (plan.filters?.length) {
       let depth = 0

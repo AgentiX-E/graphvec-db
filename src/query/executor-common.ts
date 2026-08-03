@@ -385,7 +385,12 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // rc 是边变量名（如 RETURN r），从 r.__edgeLabel 获取标签输出 [:LABEL] 格式
     // Skip when rc has a different returnAliasMap value (e.g. RETURN 42 AS num
     // on a relationship DELETE query): num is not an edge variable.
-    if (r.__edgeLabel && !rc.match(/^\w+\(/) && !hasAliasOverride) {
+    // The edge label may come from r.__edgeLabel (GE-produced rows) or from
+    // __crossVarRows[rc].__edgeLabel (QE edge-walk produced rows where the edge
+    // info is stored in the cross-var context rather than on the raw row itself).
+    const effectiveEdgeLabel: string | undefined =
+      r.__edgeLabel || (r.__crossVarRows?.[rc] as any)?.__edgeLabel || (r.__crossVarRows?.[rc] as any)?._type
+    if (effectiveEdgeLabel && !rc.match(/^\w+\(/) && !hasAliasOverride) {
       // 只在 rc 确实是 GE 记录的边变量时使用边标签（避免自环中节点被误输出为边格式）
       let isEdgeVar = false
       if (plan.returnColumns) {
@@ -425,10 +430,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
               if (typeof v === 'number') return `${k}: ${v}`
               return `${k}: ${JSON.stringify(v)}`
             }).join(', ')
-            result[rc] = `[:${r.__edgeLabel} {${propStr}}]`
+            result[rc] = `[:${effectiveEdgeLabel} {${propStr}}]`
           }
         } else {
-          result[rc] = '[:' + r.__edgeLabel + ']'
+          result[rc] = '[:' + effectiveEdgeLabel + ']'
         }
         continue
       }

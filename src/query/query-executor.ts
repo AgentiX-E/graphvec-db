@@ -511,10 +511,22 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // 如果某个节点没有被任何 labelFilter 指向，则放行（不对它做标签检查）
         if (whereLabelFilters.length && !skipNodeIndices.has(ni)) {
           const nodeLabel = String(node['_label'] || '')
-          // 找到指向这个节点的 labelFilte（如果有）
+          // 找到指向这个节点的 labelFilter（如果有）
           const matchingFilters = whereLabelFilters.filter(lf => {
             const targetIdx = resolveVariableNodeIdx(lf.varName, plan, allNodes)
-            return targetIdx === ni
+            if (targetIdx === ni) return true
+            // When resolveVariableNodeIdx returns -1 or an index that doesn't
+            // match, try matching by _alias or __alias on the seed node.
+            // This handles TCK seed data where node ordering doesn't align with
+            // step source/target alias positions.
+            const alias = (node as any)._alias || (node as any).__alias || ''
+            if (alias === lf.varName) return true
+            // For single-step patterns without explicit aliases, match by label
+            // name. The variable's expected label from the filter must match the
+            // node's _label. This is a safe heuristic because in single-step
+            // MATCH WHERE a:A, only nodes with label A can bind to variable a.
+            if (targetIdx < 0 && nodeLabel === lf.targetLabel) return true
+            return false
           })
           // 如果没有 labelFilter 指向这个节点 → 放行
           // 如果有 → 全部匹配才通过
@@ -2622,6 +2634,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const optMatchPos = whereExpr.indexOf('OPTIONAL MATCH')
       if (optMatchPos >= 0) {
         whereExpr = whereExpr.substring(0, optMatchPos).trim()
+      }
+      // 跳过纯标签谓词（如 a:A）：由 whereLabelFilters 在 seed 阶段处理
+      if (/^(\w+):(\w+)$/.test(whereExpr.trim()) && plan.filters?.length) {
+        whereExpr = ''
       }
       if (whereExpr) {
         // Extract variables referenced in whereExpr
