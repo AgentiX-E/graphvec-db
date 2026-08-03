@@ -2661,10 +2661,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // 再从原始 GE 记录获取变量上下文（如 {a: {name: 'Foo', _label: 'TheLabel'}}）
         // 注意：__crossVarRows 中的对象变量优先覆盖 row 中的字符串值，
         // 因为 WHERE 表达式（如 type(r)）需要完整的变量上下文，而非格式化后的字符串。
+        // 对于非字符串值（如数字属性 num），不应覆盖，否则会将数值替换为边对象
+        // 导致 WHERE num % 2 = 0 等表达式对对象求值失败（NaN）。
         const rawEntry = rawWithEdges?.[ri]
         if (rawEntry?.__crossVarRows) {
           for (const [varName, varNode] of Object.entries(rawEntry.__crossVarRows)) {
-            ctx[varName] = varNode as Record<string, unknown>
+            if (typeof ctx[varName] === 'string') {
+              // Only override string values (formatted edge repr like "[:R]");
+              // keep already-resolved numeric/object values to prevent
+              // edge prop objects from being set under property names.
+              ctx[varName] = varNode as Record<string, unknown>
+            }
           }
         }
         // Edge variable recovery: when ctx[var] is still a string (formatted edge representation like "[:KNOWS]")
