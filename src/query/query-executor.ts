@@ -100,6 +100,46 @@ type PatternPredicate = {
 }
 
 /**
+ * Property-based node lookup in allNodes array.
+ * Unlike Array.indexOf (reference equality), this matches nodes by _id or id
+ * property. Used for embedded pattern predicate evaluation where ctx node copies
+ * from Cartesian product __crossVarRows are deep copies rather than the original
+ * allNodes references.
+ */
+function _findNodeIndexInAllNodes(
+  node: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): number {
+  // Fast path: try reference equality first (covers non-Cartesian paths)
+  const refIdx = allNodes.indexOf(node)
+  if (refIdx >= 0) return refIdx
+  // Property-based fallback: match by _id or id
+  const nodeId = node._id ?? node.id
+  if (nodeId !== undefined) {
+    for (let i = 0; i < allNodes.length; i++) {
+      const n = allNodes[i] as any
+      if (n._id === nodeId || n.id === nodeId) return i
+    }
+  }
+  // Final fallback: match by _label + all properties
+  const nodeLabel = node._label
+  if (nodeLabel !== undefined) {
+    for (let i = 0; i < allNodes.length; i++) {
+      const n = allNodes[i] as any
+      if (n._label !== nodeLabel) continue
+      // Check all properties match (excluding internal keys)
+      let match = true
+      for (const k of Object.keys(node)) {
+        if (k.startsWith('_') || k.startsWith('__') || k === 'props' || k === 'id') continue
+        if (String(n[k]) !== String(node[k])) { match = false; break }
+      }
+      if (match) return i
+    }
+  }
+  return -1
+}
+
+/**
  * Build extended evaluation context with embedded pattern predicate evaluators.
  * Each __PPn token in the reduced expression maps to a function that checks
  * edge connectivity between source and target nodes.
@@ -117,7 +157,10 @@ export function _buildPPContext(
     if (!srcNode) {
       result = pp.negated
     } else {
-      const srcIdx = allNodes.indexOf(srcNode)
+      // Use property-based lookup (not allNodes.indexOf which relies on reference
+      // equality). ctx node copies from Cartesian product __crossVarRows may be
+      // deep copies rather than the original allNodes references.
+      const srcIdx = _findNodeIndexInAllNodes(srcNode, allNodes)
       if (srcIdx < 0) {
         result = pp.negated
       } else {
@@ -131,10 +174,23 @@ export function _buildPPContext(
 
           // ctx target variable check: if ctx[pp.targetVar] is set, must match
           const ctxTarget = baseCtx[pp.targetVar] as Record<string, unknown> | undefined
-          if (ctxTarget && ctxTarget !== tgtNode) continue
+          if (ctxTarget) {
+            // Use property-based comparison (not reference equality) since ctx
+            // node copies from Cartesian product __crossVarRows may be deep
+            // copies rather than the original allNodes references.
+            let match = true
+            for (const k of Object.keys(ctxTarget)) {
+              if (k === 'props' || k.startsWith('__')) continue
+              if (String((tgtNode as any)[k]) !== String(ctxTarget[k])) { match = false; break }
+            }
+            if (!match) continue
+          }
 
           // Check edge existence between src and target
-          for (const edge of (srcNode as any).__edges || []) {
+          // Use edges from allNodes[srcIdx] (the original reference) since ctx
+          // node copies from Cartesian product may not carry __edges.
+          const sourceNodeInAllNodes = allNodes[srcIdx] as any
+          for (const edge of (sourceNodeInAllNodes.__edges || []) as any[]) {
             const neighborIdx = edge.srcIdx === srcIdx ? edge.dstIdx : edge.srcIdx
             if (neighborIdx !== tgtIdx) continue
             if (pp.direction === 'out' && edge.srcIdx !== srcIdx) continue
