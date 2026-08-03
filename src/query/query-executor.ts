@@ -2497,6 +2497,66 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       } // needsWithProcessing
     }
 
+    // ── Multi-WITH chain processing ──
+    // When the query has multiple WITH clauses (e.g. WITH r, r.num AS num ... WITH sum(num) AS sum),
+    // the parser accumulates them into plan.withChain. The last WITH is processed above; here we
+    // process earlier WITH clauses IN ORDER to project/transform rows before the final WITH.
+    if ((plan as any).withChain?.length > 1) {
+      const chainSource: any[] = rawWithEdges.length ? rawWithEdges : rawRecords
+      // Process all but the last WITH (already handled above)
+      for (let wi = 0; wi < (plan as any).withChain.length - 1; wi++) {
+        const wcLayer = (plan as any).withChain[wi]
+        if (!wcLayer?.columns?.length) continue
+        for (const rawRow of chainSource) {
+          for (const wc of wcLayer.columns) {
+            const alias = typeof wc === 'object' ? wc.alias : null
+            if (!alias) continue
+            // Skip simple variable passthrough (e.g. WITH n)
+            if ((wc.expression as any)?.type === 'IDENTIFIER') continue
+            const wcExpr = typeof wc.expression === 'string' ? wc.expression :
+              (wc.expression?.type === 'LIST'
+                ? '[' + (wc.expression.items || []).map((i: any) => i.name ?? i.value ?? '').join(', ') + ']'
+                : null)
+            if (!wcExpr) continue
+            // Build variable context from raw row (props + crossVarRows)
+            const rc: Record<string, unknown> = {}
+            if (rawRow.props) {
+              for (const [k, v] of Object.entries(rawRow.props)) {
+                if (!k.startsWith('_') && k !== alias) rc[k] = v
+              }
+            }
+            if (rawRow.__crossVarRows) {
+              for (const [k, v] of Object.entries(rawRow.__crossVarRows)) {
+                if (!(k in rc)) rc[k] = v
+              }
+            }
+            // Inject MATCH variables for property access expressions (e.g. r.num)
+            const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
+            const _firstVar = _exprVars?.[0]
+            if (_firstVar && rawRow?.props && !(_firstVar in rc)) {
+              rc[_firstVar] = rawRow.props
+            }
+            try {
+              const evaluated = _evalBinary(wcExpr, rc)
+              if (evaluated !== undefined && evaluated !== null) {
+                if (typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)) {
+                  const cleanVal: Record<string, unknown> = {}
+                  for (const [ek, ev] of Object.entries(evaluated as Record<string, unknown>)) {
+                    if (ek !== '__edges' && ek !== 'props' && !ek.startsWith('__')) cleanVal[ek] = ev
+                  }
+                  rawRow.props[alias] = cleanVal
+                } else {
+                  rawRow.props[alias] = evaluated
+                }
+              }
+            } catch {
+              // fallback: keep existing value
+            }
+          }
+        }
+      }
+    }
+
     // ── 格式化结果 ──
     if (rawWithEdges.length) {
       const x0 = rawWithEdges[0] as any

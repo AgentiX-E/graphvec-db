@@ -299,6 +299,34 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       fnExpr = aliasMap[rc]
     }
     if (fnExpr) {
+      // ── 聚合函数别名特殊处理 ──
+      // Query: MATCH ... WITH r, r.num AS num RETURN sum(num) AS sum
+      // When plan.aggregate is set and rc is the aggregate alias,
+      // do NOT evaluate sum(num) as a scalar function here (it would
+      // just return Number(num) for each row, losing the aggregation).
+      // Instead, pass the underlying field value through so that the
+      // downstream aggregation block can compute the actual sum.
+      if (plan.aggregate && rc === (plan.aggregate as any).alias) {
+        const aggField = (plan.aggregate as any).field || ''
+        const colMatch = ((plan.aggregate as any).column || '').match(/^\w+\(\s*.+?\s*\)(?:\s+AS\s+\w+)?$/i)
+        const field = colMatch ? colMatch[1] : aggField
+        if (field && field !== '*') {
+          // Resolve field: check row props (from WITH), crossVarRows, etc.
+          if (field in row) {
+            result[rc] = row[field]
+            continue
+          }
+          if (r.__crossVarRows?.[field] !== undefined) {
+            result[rc] = r.__crossVarRows[field]
+            continue
+          }
+          if (r.props && field in r.props) {
+            result[rc] = r.props[field]
+            continue
+          }
+        }
+      }
+
       const fnVarCtx: Record<string, unknown> = {}
       if (r.__crossVarRows) {
         for (const vn of Object.keys(r.__crossVarRows)) {

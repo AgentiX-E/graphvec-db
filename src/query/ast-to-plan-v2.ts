@@ -1128,7 +1128,13 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         break
       }
       case 'WITH': {
-        plan.with = extractWith(clause.ctx)
+        const wc = extractWith(clause.ctx)
+        plan.with = wc  // last WITH (backward compat)
+        // Accumulate all WITH clauses into a chain for multi-WITH support.
+        // The chain is processed sequentially in _executeViaGraphEngine, where
+        // each WITH layer projects/transforms rows before the next one executes.
+        if (!plan.withChain) plan.withChain = []
+        plan.withChain.push(wc)
         break
       }
     }
