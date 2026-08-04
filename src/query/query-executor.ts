@@ -2521,7 +2521,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const withSource: any[] = rawWithEdges.length ? rawWithEdges : rawRecords
       for (const rawRow of withSource) {
         for (const wc of plan.with.columns) {
-          const alias = typeof wc === 'object' ? wc.alias : null
+          const alias = (typeof wc === 'object' ? wc.alias : null) ||
+            (typeof wc === 'object' && typeof wc.expression === 'string' ? wc.expression : null)
           if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
           const wcExpr = typeof wc.expression === 'string' ? wc.expression :
             (wc.expression?.type === 'LIST'
@@ -2543,8 +2544,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // 将 MATCH 变量注入 rc（支持 v.date 等属性访问表达式）
           const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
           const _firstVar = _exprVars?.[0]
-          if (_firstVar && rawRow?.props && !(_firstVar in rc)) {
-            rc[_firstVar] = rawRow.props
+          if (_firstVar && !(_firstVar in rc)) {
+            // Prefer __crossVarRows for edge/node variables.
+            // If neither source is available, skip injection — the variable
+            // will be set by later processing (e.g. OM path matching).
+            if (rawRow?.__crossVarRows && _firstVar in rawRow.__crossVarRows) {
+              rc[_firstVar] = rawRow.__crossVarRows[_firstVar]
+            } else if (rawRow?.props && _firstVar in rawRow.props) {
+              rc[_firstVar] = rawRow.props[_firstVar]
+            }
+            // If the variable still isn't in rc after the above attempts,
+            // leave it unset rather than assigning rawRow.props wholesale.
+            // Assigning rawRow.props would bind the wrong object (e.g.
+            // setting 'r' to the entire row properties instead of an edge object).
           }
           try {
             const evaluated = _evalBinary(wcExpr, rc)
@@ -2580,7 +2592,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         if (!wcLayer?.columns?.length) continue
         for (const rawRow of chainSource) {
           for (const wc of wcLayer.columns) {
-            const alias = typeof wc === 'object' ? wc.alias : null
+            const alias = (typeof wc === 'object' ? wc.alias : null) ||
+              (typeof wc === 'object' && typeof wc.expression === 'string' ? wc.expression : null)
             if (!alias) continue
             // Skip simple variable passthrough (e.g. WITH n)
             if ((wc.expression as any)?.type === 'IDENTIFIER') continue
@@ -2605,7 +2618,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
             const _firstVar = _exprVars?.[0]
             if (_firstVar && rawRow?.props && !(_firstVar in rc)) {
-              rc[_firstVar] = rawRow.props
+              if (rawRow.__crossVarRows && _firstVar in rawRow.__crossVarRows) {
+                rc[_firstVar] = rawRow.__crossVarRows[_firstVar]
+              } else {
+                rc[_firstVar] = rawRow.props
+              }
             }
             try {
               const evaluated = _evalBinary(wcExpr, rc)
@@ -3085,14 +3102,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const targetVar = optSteps[0]?.targetAlias || ''
           let edgeVar = optSteps[0]?.edgeAlias || ''
           if (!edgeVar && query) {
-            // Extract edge variable from OPTIONAL MATCH pattern
-            const optMatchEdge = query.match(/OPTIONAL\s+MATCH\s*\([^)]*\)\s*-+\s*\[(\w+)[:\]]/)
-            if (!optMatchEdge) {
-              // Try with anonymous source (): match ()-[var:label]-() pattern
-              const anonMatch = query.match(/\(\)\s*-+\s*\[(\w+)\b/)
-              if (anonMatch) edgeVar = anonMatch[1]
-            } else {
-              edgeVar = optMatchEdge[1]
+            // Remove directional markers (< >) to match patterns like (a)<-[r]-(b)
+            const normQuery = query.replace(/[<>]/g, '')
+            const omMatch = normQuery.match(/OPTIONAL\s+MATCH\s*\([^)]*\)\s*-+\s*\[([a-zA-Z_]\w*)[:\]]/)
+            if (omMatch && omMatch[1]) {
+              edgeVar = omMatch[1]
+            }
+            if (!edgeVar) {
+              const optMatchEdge = query.match(/OPTIONAL\s+MATCH\s*\([^)]*\)\s*-+\s*\[(\w+)[:\]]/)
+              if (!optMatchEdge) {
+                const anonMatch = query.match(/\(\)\s*-+\s*\[(\w+)\b/)
+                if (anonMatch) edgeVar = anonMatch[1]
+              } else {
+                edgeVar = optMatchEdge[1]
+              }
             }
           }
           const optVarName = opt.variableName || ''
@@ -3191,6 +3214,32 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             }
           }
+          // When sourceVar is not found in the row or graph (e.g. a2 in
+          // OPTIONAL MATCH (a2)<-[r]-(b2) after WITH r, a1 LIMIT 1),
+          // try resolving from equality predicates in the plan whereBody
+          // (e.g. a1 = a2) which bind the OM source var to a known variable.
+          if (srcNodeIdx < 0 && sourceVar && (plan.whereBody || '').includes(sourceVar)) {
+            const eqRe1 = new RegExp('(\\w+)\\s*=\\s*' + sourceVar + '\\b')
+            const eqRe2 = new RegExp(sourceVar + '\\s*=\\s*(\\w+)')
+            let m = (plan.whereBody || '').match(eqRe1)
+            if (!m) m = (plan.whereBody || '').match(eqRe2)
+            if (m) {
+              const knownVar = m[1]
+              if (knownVar && knownVar in row) {
+                const knownVal = row[knownVar]
+                if (knownVal && typeof knownVal === 'object' && !Array.isArray(knownVal)) {
+                  const knownObj = knownVal as Record<string, unknown>
+                  for (let si = 0; si < allNodes.length; si++) {
+                    const n = allNodes[si] as any
+                    if (n._label === knownObj._label) {
+                      srcNodeIdx = si
+                      break
+                    }
+                  }
+                }
+              }
+            }
+          }
           // 构造 nodeProps 帮助函数
           const _mkNodeProps = (n: any): Record<string, unknown> => {
             const p: Record<string, unknown> = {}
@@ -3204,10 +3253,35 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (srcNodeIdx < 0) {
             // Source node not found in graph (e.g. label doesn't exist):
             // null all variable bindings for this OPTIONAL MATCH.
+            // Only null target variables and edge vars; source variables
+            // (e.g. 'x' from MATCH (x:X)) should not be nulled here.
             for (let psi = 0; psi < optSteps.length; psi++) {
               if (optSteps[psi].targetAlias) row[optSteps[psi].targetAlias] = null
             }
-            if (edgeVar) row[edgeVar] = null
+            if (edgeVar && !row[edgeVar] && query) {
+              // Extract edge label from the original MATCH pattern: ()-[r:LABEL]->
+              const edgeLabelMatch = query.match(new RegExp(
+                '\\[\\s*' + edgeVar + '\\s*:\\s*([A-Za-z_][\\w]*)|' +
+                '\\[\\s*' + edgeVar + '\\s*\\]'))
+              if (edgeLabelMatch) {
+                let elabel = edgeLabelMatch[1] || ''
+                if (!elabel) {
+                  // No explicit label in the pattern; derive from the known
+                  // source node's outgoing edges (e.g. a1's __edges in allNodes).
+                  for (const n of allNodes as any[]) {
+                    if (!n.__edges) continue
+                    for (const e of n.__edges) {
+                      elabel = e.label || ''
+                      break
+                    }
+                    if (elabel) break
+                  }
+                }
+                row[edgeVar] = elabel ? '[:' + elabel + ']' : null
+              } else {
+                row[edgeVar] = null
+              }
+            }
             // When there are no steps (bare node pattern like (a:Label)),
             // the variable name itself is the target.
             if (!optSteps.length && opt.variableName) {
@@ -3229,11 +3303,36 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 }
               }
             } else {
-              // OPTIONAL 路径不匹配：null 所有目标变量（不覆盖主 MATCH 的 sourceVar）
+              // OM path didn't match. Null target variables; preserve edge variables
+              // that were passed through WITH (reused in OM pattern). If the edge
+              // variable is null, set its notation string from the original query's
+              // edge label (e.g. '[:T]' from MATCH ()-[r:T]->() WITH r, ...).
               for (let psi = 0; psi < optSteps.length; psi++) {
                 if (optSteps[psi].targetAlias) row[optSteps[psi].targetAlias] = null
               }
-              if (edgeVar) row[edgeVar] = null
+              if (edgeVar && !row[edgeVar] && query) {
+                // Extract edge label from the original MATCH pattern: ()-[r:LABEL]->
+                const edgeLabelMatch = query.match(new RegExp(
+                  '\\[\\s*' + edgeVar + '\\s*:\\s*([A-Za-z_][\\w]*)|' +
+                  '\\[\\s*' + edgeVar + '\\s*\\]'))
+                if (edgeLabelMatch) {
+                  let elabel = edgeLabelMatch[1] || ''
+                  if (!elabel) {
+                    // No explicit label in pattern; derive from allNodes edges
+                    for (const n of allNodes as any[]) {
+                      if (!n.__edges) continue
+                      for (const e of n.__edges) {
+                        elabel = e.label || ''
+                        break
+                      }
+                      if (elabel) break
+                    }
+                  }
+                  row[edgeVar] = elabel ? '[:' + elabel + ']' : null
+                } else {
+                  row[edgeVar] = null
+                }
+              }
             }
             // ── Post-OM row-level filter（opt.filters） ──
             // Only evaluate filters whose source vars belong to this OM,
