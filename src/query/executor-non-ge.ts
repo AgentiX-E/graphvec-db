@@ -524,10 +524,13 @@ export async function _execNonGePaths(
       _registerConstraint(constraintName, label, property)
       return []
     }
-    // DELETE/SET/REMOVE 可以直接返回空（不创建节点/边）
-    if (plan.type !== 'CREATE' && plan.type !== 'MERGE') {
+    // DELETE/SET/REMOVE/MATCH_MODIFY — fall through to GE path for MATCH + DML execution
+    // (CREATE/MERGE 已在上述分支处理，DML with MATCH needs GE)
+    if (plan.type === 'CREATE' || plan.type === 'MERGE') {
       return []
     }
+    // Non-CREATE/MERGE DML — return null to fall through to GE execution
+    return null
   }
 
   // ── 变量长度路径：直接 BFS 并返回，不依赖 GE ──

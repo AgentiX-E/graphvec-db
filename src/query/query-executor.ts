@@ -1761,9 +1761,43 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 在 GE 执行匹配后，对 allNodes 做突变以实现持久化操作。
     // allNodes 的元素是 nodes 数组中对应对象的引用，修改它们也会修改原始 nodes。
     if ((plan.type === 'DELETE' || plan.type === 'SET' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY') && records?.length) {
-      if (plan.type === 'DELETE') {
+      // DELETE 可能来自 plan.type === 'DELETE' 或 MATCH_MODIFY（MATCH + DELETE）
+      const isDeletePlan = plan.type === 'DELETE' ||
+        (plan.type === 'MATCH_MODIFY' && query && /\bDELETE\s+\w/i.test(query))
+      if (isDeletePlan) {
         // 删除：从 allNodes 中移除匹配的节点
         const removeNodeIds = new Set(records.map((r: any) => r.id))
+        // DELETE n (node) — only raise ConstraintVerificationFailed when
+        // deleting a node (not a relationship) that has connected edges.
+        // DETACH DELETE bypasses this check.
+        const isDetach = query ? /\bDETACH\s+DELETE\b/i.test(query) : false
+        if (!isDetach && removeNodeIds.size) {
+          // Only check if this is a NODE delete (DELETE n, not DELETE r).
+          // DELETE r (relationship) targets edge variables, not nodes.
+          const deleteVar = query ? query.match(/DELETE\s+(?!DETACH)(\w+)/i)?.[1] : null
+          // MATCH variable: the variable bound by MATCH that DELETE targets
+          // When plan.steps exists, use stepSourceVar for matching.
+          // Otherwise, extract the MATCH variable from the query text.
+          const stepSourceVar = plan.steps?.[0]?.source ||
+            (query ? query.match(/MATCH\s*\(([^)]*)\)/i)?.[1]?.split(':')[0]?.trim() : null)
+          const isNodeTarget = deleteVar && stepSourceVar && deleteVar === stepSourceVar
+          if (isNodeTarget) {
+            for (let i = 0; i < allNodes.length; i++) {
+              if (!removeNodeIds.has(nodeGeIds[i])) continue
+              const nodeEdges = (allNodes[i] as any).__edges || []
+              if (nodeEdges.length) {
+                throw new Error('ConstraintVerificationFailed: DeleteConnectedNode')
+              }
+              for (let j = 0; j < allNodes.length; j++) {
+                if (i === j || removeNodeIds.has(nodeGeIds[j])) continue
+                const otherEdges = (allNodes[j] as any).__edges || []
+                if (otherEdges.some((e: any) => e.dstIdx === i)) {
+                  throw new Error('ConstraintVerificationFailed: DeleteConnectedNode')
+                }
+              }
+            }
+          }
+        }
         // 从 allNodes 移除（浅拷贝过滤后替换原引用）
         const keptNodes: typeof allNodes = []
         for (let i = 0; i < allNodes.length; i++) {
@@ -3090,6 +3124,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 成功 → 将匹配到的节点/边合并到 row；失败 → 填充 null。
     // 使用 allNodes（本地节点数据，含 __edges）进行遍历，不依赖 GE Pool 实例。
     if (plan.optionalMatchSteps?.length) {
+      // For DML (DELETE/SET/REMOVE) with OPTIONAL MATCH, GE may return a
+      // single empty record that _formatResultRow turns into {} (keys set
+      // to the node's props object).  Clear such placeholder rows so the
+      // seed row below can inject proper null columns for RETURN variables.
+      const isDml = plan.type === 'DELETE' || plan.type === 'SET' || plan.type === 'REMOVE'
+      if (result.length === 1 && isDml) {
+        const row = result[0]
+        const keys = Object.keys(row)
+        const allEmpty = keys.every(k => {
+          const v = row[k]
+          return v == null || v === undefined ||
+            (typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0)
+        })
+        if (allEmpty || keys.length === 0) result.length = 0
+      }
       // Seed an empty row when the main query produces zero rows,
       // otherwise OPTIONAL MATCH never executes and variables stay unset.
       if (!result.length) result.push({})
@@ -3227,11 +3276,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               const knownVar = m[1]
               if (knownVar && knownVar in row) {
                 const knownVal = row[knownVar]
+                let knownLabel: string | null = null
                 if (knownVal && typeof knownVal === 'object' && !Array.isArray(knownVal)) {
-                  const knownObj = knownVal as Record<string, unknown>
+                  knownLabel = (knownVal as Record<string, unknown>)._label as string || null
+                } else if (typeof knownVal === 'string') {
+                  // TCK node notation: (:Label) or (:Label {prop: val})
+                  const nm = (knownVal as string).match(/^\(?:(\w+)/)
+                  if (nm) knownLabel = nm[1]
+                }
+                if (knownLabel) {
                   for (let si = 0; si < allNodes.length; si++) {
                     const n = allNodes[si] as any
-                    if (n._label === knownObj._label) {
+                    if (n._label === knownLabel) {
                       srcNodeIdx = si
                       break
                     }
@@ -3259,25 +3315,35 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (optSteps[psi].targetAlias) row[optSteps[psi].targetAlias] = null
             }
             if (edgeVar && !row[edgeVar] && query) {
-              // Extract edge label from the original MATCH pattern: ()-[r:LABEL]->
-              const edgeLabelMatch = query.match(new RegExp(
-                '\\[\\s*' + edgeVar + '\\s*:\\s*([A-Za-z_][\\w]*)|' +
-                '\\[\\s*' + edgeVar + '\\s*\\]'))
-              if (edgeLabelMatch) {
-                let elabel = edgeLabelMatch[1] || ''
-                if (!elabel) {
-                  // No explicit label in the pattern; derive from the known
-                  // source node's outgoing edges (e.g. a1's __edges in allNodes).
-                  for (const n of allNodes as any[]) {
-                    if (!n.__edges) continue
-                    for (const e of n.__edges) {
-                      elabel = e.label || ''
-                      break
+              // Only fix up edge notation for variables defined in the main
+              // MATCH clause (e.g. MATCH ()-[r]->() WITH r ...).  For OM-internal
+              // edge variables (OPTIONAL MATCH ()-[r:X]-() with no prior MATCH),
+              // leave as null.
+              const mainMatch = query.replace(/OPTIONAL\s+MATCH.*$/is, '')
+                .match(new RegExp('\\[\\s*' + edgeVar + '\\s*[\\]:\\.\\-&><]'))
+              if (mainMatch) {
+                // Extract edge label from the original MATCH pattern: ()-[r:LABEL]->
+                const edgeLabelMatch = query.match(new RegExp(
+                  '\\[\\s*' + edgeVar + '\\s*:\\s*([A-Za-z_][\\w]*)|' +
+                  '\\[\\s*' + edgeVar + '\\s*\\]'))
+                if (edgeLabelMatch) {
+                  let elabel = edgeLabelMatch[1] || ''
+                  if (!elabel) {
+                    // No explicit label in the pattern; derive from the known
+                    // source node's outgoing edges (e.g. a1's __edges in allNodes).
+                    for (const n of allNodes as any[]) {
+                      if (!n.__edges) continue
+                      for (const e of n.__edges) {
+                        elabel = e.label || ''
+                        break
+                      }
+                      if (elabel) break
                     }
-                    if (elabel) break
                   }
+                  row[edgeVar] = elabel ? '[:' + elabel + ']' : null
+                } else {
+                  row[edgeVar] = null
                 }
-                row[edgeVar] = elabel ? '[:' + elabel + ']' : null
               } else {
                 row[edgeVar] = null
               }
@@ -3311,24 +3377,34 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 if (optSteps[psi].targetAlias) row[optSteps[psi].targetAlias] = null
               }
               if (edgeVar && !row[edgeVar] && query) {
-                // Extract edge label from the original MATCH pattern: ()-[r:LABEL]->
-                const edgeLabelMatch = query.match(new RegExp(
-                  '\\[\\s*' + edgeVar + '\\s*:\\s*([A-Za-z_][\\w]*)|' +
-                  '\\[\\s*' + edgeVar + '\\s*\\]'))
-                if (edgeLabelMatch) {
-                  let elabel = edgeLabelMatch[1] || ''
-                  if (!elabel) {
-                    // No explicit label in pattern; derive from allNodes edges
-                    for (const n of allNodes as any[]) {
-                      if (!n.__edges) continue
-                      for (const e of n.__edges) {
-                        elabel = e.label || ''
-                        break
+                // Only fix up edge notation for variables defined in the main
+                // MATCH clause (e.g. MATCH ()-[r]->() WITH r ...).  For OM-internal
+                // edge variables (OPTIONAL MATCH ()-[r:X]-() with no prior MATCH),
+                // leave as null.
+                const mainMatch = query.replace(/OPTIONAL\s+MATCH.*$/is, '')
+                  .match(new RegExp('\\[\\s*' + edgeVar + '\\s*[\\]:\\.\\-&><]'))
+                if (mainMatch) {
+                  // Extract edge label from the original MATCH pattern: ()-[r:LABEL]->
+                  const edgeLabelMatch = query.match(new RegExp(
+                    '\\[\\s*' + edgeVar + '\\s*:\\s*([A-Za-z_][\\w]*)|' +
+                    '\\[\\s*' + edgeVar + '\\s*\\]'))
+                  if (edgeLabelMatch) {
+                    let elabel = edgeLabelMatch[1] || ''
+                    if (!elabel) {
+                      // No explicit label in pattern; derive from allNodes edges
+                      for (const n of allNodes as any[]) {
+                        if (!n.__edges) continue
+                        for (const e of n.__edges) {
+                          elabel = e.label || ''
+                          break
+                        }
+                        if (elabel) break
                       }
-                      if (elabel) break
                     }
+                    row[edgeVar] = elabel ? '[:' + elabel + ']' : null
+                  } else {
+                    row[edgeVar] = null
                   }
-                  row[edgeVar] = elabel ? '[:' + elabel + ']' : null
                 } else {
                   row[edgeVar] = null
                 }

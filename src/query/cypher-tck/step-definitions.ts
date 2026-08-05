@@ -1258,6 +1258,10 @@ Then(/^a (QueryError|EntityNotFound) should be raised at runtime(?:.*)$/, functi
 Then(/^a (ConstraintError|CreateConstraintFailure) should be raised(?:.*)$/, function (_match?: string) {
   assert.ok(st.err, `no error\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })
+Then(/^a ConstraintVerificationFailed should be raised at runtime: DeleteConnectedNode$/, function () {
+  assert.ok(st.err, `no ConstraintVerificationFailed\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
+  assert.ok(/DeleteConnectedNode/i.test(st.err?.message ?? ''), `wrong error: ${st.err?.message}`)
+})
 Then(/^a ArgumentError should be raised at runtime(?:.*)$/, function () {
   assert.ok(st.err, `no ArgumentError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })
