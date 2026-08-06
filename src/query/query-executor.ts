@@ -3080,6 +3080,38 @@ export async function _executeQuery(
       }
     }
   }
+  // ── Pure-expression WITH+RETURN fast path ──
+  // For queries with WITH/UNWIND/expression columns but no MATCH, no DML,
+  // and no procedure calls, bypass GE entirely.  The query-executor's
+  // expression engine evaluates temporal functions (date(), datetime(), etc.)
+  // while GE's _executeWithClause would skip them, leaving stale data.
+  if (plan.type === 'QUERY' && !plan.hasMatch && !plan.steps?.length &&
+      !plan.callProcedure && (plan.with?.columns?.length || plan.expressionColumns?.length)) {
+    const hasAnyNonAggExpr = plan.with?.columns?.some((wc: any) => {
+      const expr = typeof wc === 'object' ? wc.expression : wc
+      return typeof expr === 'string' && expr.includes('(')
+    }) || false
+    if (hasAnyNonAggExpr) {
+      // Build a single row with WITH columns evaluated by expression engine
+      const row: Record<string, unknown> = {}
+      if (plan.with?.columns) {
+        for (const wc of plan.with.columns) {
+          const alias = wc.alias || wc.expression
+          const wcExpr = typeof wc.expression === 'string' ? wc.expression : null
+          if (wcExpr) {
+            const val = _evalBinary(wcExpr, {})
+            if (val !== null && val !== undefined) {
+              row[alias] = val
+            }
+          }
+        }
+      }
+      // Format through _formatResultRow to handle RETURN expressions
+      const rawRow = { id: '', props: row }
+      const formatted = _formatResultRow(rawRow as any, plan)
+      return await _postProcessResults([formatted], plan)
+    }
+  }
   // GE 执行路径 - 仅在需要时才深拷贝 plan（_executeViaGraphEngine 内会 mutate plan.filters/plan.steps）
   const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
