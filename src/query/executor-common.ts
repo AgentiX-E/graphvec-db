@@ -214,11 +214,14 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           const variable = propMatch2[1]
           const property = propMatch2[2]
           const cvrNode = r.__crossVarRows[variable]
+          // Use rc (the alias column name) when expressionColumns has an explicit AS,
+          // otherwise use origExpr (e.g. "a.id") to preserve multi-variable column distinction.
+          const key = (ec.alias && ec.alias !== ec.expression) ? rc : origExpr
           if (cvrNode && typeof cvrNode === 'object' && property in cvrNode) {
-            result[origExpr] = (cvrNode as Record<string, unknown>)[property]
+            result[key] = (cvrNode as Record<string, unknown>)[property]
             resolved = true
           } else if (r.__targetProps && property in r.__targetProps) {
-            result[origExpr] = r.__targetProps[property]
+            result[key] = r.__targetProps[property]
             resolved = true
           }
         }

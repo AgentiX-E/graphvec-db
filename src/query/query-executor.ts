@@ -1523,9 +1523,24 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // 再执行 REMOVE
         if (plan.removeClauses?.length) {
           for (const r of records) {
-            const nodeIdx = nodeGeIds.indexOf(r.id)
-            if (nodeIdx < 0) continue
-            const node = allNodes[nodeIdx]
+            const nodeIdx2 = nodeGeIds.indexOf(r.id)
+            if (nodeIdx2 < 0) {
+              // Edge REMOVE: delete properties from r.props[edgeVarName]
+              if (plan.steps?.length) {
+                const evn2 = stepSrc || plan.removeClauses?.[0]?.ref
+                if (evn2 && r.props?.[evn2] && typeof r.props[evn2] === 'object') {
+                  const edgeObj = r.props[evn2] as Record<string,unknown>
+                  for (const rc of plan.removeClauses) {
+                    if (rc.type === 'REMOVE_PROP' && rc.property) {
+                      if (rc.ref && rc.ref !== evn2) continue
+                      if (rc.property in edgeObj) delete edgeObj[rc.property]
+                    }
+                  }
+                }
+              }
+              continue
+            }
+            const node = allNodes[nodeIdx2]
             for (const rc of plan.removeClauses) {
               if (rc.type === 'REMOVE_PROP' && rc.property) {
                 if (rc.ref && rc.ref !== plan.steps?.[0]?.source) continue
@@ -1559,7 +1574,23 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // REMOVE：删除匹配节点的属性或标签
         for (const r of records) {
           const nodeIdx = nodeGeIds.indexOf(r.id)
-          if (nodeIdx < 0) continue
+          if (nodeIdx < 0) {
+            // Edge REMOVE: when plan has edge steps, the record holds edge info
+            // in r.props[edgeVarName]. Delete properties from there.
+            if (plan.steps?.length) {
+              const evn = stepSrc || plan.removeClauses?.[0]?.ref
+              if (evn && r.props?.[evn] && typeof r.props[evn] === 'object') {
+                const edgeObj = r.props[evn] as Record<string,unknown>
+                for (const rc of plan.removeClauses) {
+                  if (rc.type === 'REMOVE_PROP' && rc.property) {
+                    if (rc.ref && rc.ref !== evn) continue
+                    if (rc.property in edgeObj) delete edgeObj[rc.property]
+                  }
+                }
+              }
+            }
+            continue
+          }
           const node = allNodes[nodeIdx]
           for (const rc of plan.removeClauses) {
             if (rc.type === 'REMOVE_PROP' && rc.property) {
