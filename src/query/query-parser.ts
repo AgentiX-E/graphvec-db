@@ -722,6 +722,31 @@ function _parseQueryImpl(query: string): QueryPlan {
     }
   }
 
+  // ── Detect aggregate functions in WITH columns and synthesize plan.aggregate ──
+  // When the last WITH contains an aggregate function (e.g. WITH sum(num) AS sum),
+  // ANTLR does not set plan.aggregate because aggregation is in WITH, not RETURN.
+  // Synthesize it so QE's aggregation block can execute the aggregate.
+  // Only match actual aggregate functions — non-aggregate function expressions like
+  // date(), datetime(), coalesce(), etc. must not set plan.aggregate.
+  if (!plan.aggregate && plan.with?.columns?.length) {
+    const AGG_FNS = new Set(['count','sum','avg','max','min','collect','stdev','stdevp','percentilecont','percentiledisc'])
+    for (const col of plan.with.columns) {
+      const expr = typeof col.expression === 'string' ? col.expression : ''
+      const alias = col.alias || ''
+      const aggMatch = expr.match(/^(\w+)\(\s*(.+?)\s*\)$/i)
+      if (aggMatch && alias && AGG_FNS.has(aggMatch[1].toLowerCase())) {
+        plan.aggregate = {
+          function: aggMatch[1].toLowerCase(),
+          column: expr,
+          type: aggMatch[1].toLowerCase(),
+          alias,
+          field: aggMatch[2],
+        }
+        break
+      }
+    }
+  }
+
   // ── CASE 表达式适配：从查询字符串构建 GE 兼容的 caseColumns ──
   // ANTLR 不输出 caseColumns（PEG 时期构建的 AST 字段），GE 的 _execCaseColumns 需要它。
   if (!plan.caseColumns && plan.returnColumns && plan.returnColumns.length > 0) {
