@@ -216,7 +216,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           const cvrNode = r.__crossVarRows[variable]
           // Use rc (the alias column name) when expressionColumns has an explicit AS,
           // otherwise use origExpr (e.g. "a.id") to preserve multi-variable column distinction.
-          const key = (ec.alias && ec.alias !== ec.expression) ? rc : origExpr
+          // When the same alias appears multiple times in returnColumns (e.g. RETURN a.id, b.id
+          // both produce "id"), fall back to origExpr to avoid key collisions.
+          const aliasCount = (plan.returnColumns || []).filter(c => c === rc).length
+          const key = (ec.alias && ec.alias !== ec.expression && aliasCount <= 1) ? rc : origExpr
           if (cvrNode && typeof cvrNode === 'object' && property in cvrNode) {
             result[key] = (cvrNode as Record<string, unknown>)[property]
             resolved = true
