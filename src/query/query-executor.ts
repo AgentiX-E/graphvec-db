@@ -2310,28 +2310,127 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // [x IN collect(p) | head(nodes(x))] can resolve correctly.
     const pathVars = new Set((plan.steps || []).map(s => s.pathVariable).filter(Boolean))
     if (pathVars.size) {
-      for (const r of rawWithEdges) {
-        for (const pv of pathVars) {
-          // Build source node copy from r.props (without internal fields)
-          const srcNode: Record<string, unknown> = {}
-          if (r.props && typeof r.props === 'object') {
-            for (const [k, v] of Object.entries(r.props)) {
-              if (!k.startsWith('__') && k !== pv) srcNode[k] = v
-            }
+      // Build alias→label lookup from allNodes to recover true labels.
+      // GE path traversal may set _label='Default' on source nodes; we
+      // restore the correct label via allNodes.
+      const aliasToLabel: Record<string, string> = {}
+      for (const n of allNodes) {
+        const a = (n as any)._alias
+        const label = (n as any)._label
+        if (a && label && !aliasToLabel[a]) {
+          aliasToLabel[a] = typeof label === 'string' && !label.startsWith(':') ? `:${label}` : label
+        }
+      }
+
+      // When GE returns a single row for a path variable query with multiple
+      // edges (MATCH p = (n)-->()), expand rawWithEdges to one row per edge
+      // so that collect(p) can aggregate across all path objects.
+      if (rawWithEdges.length === 1 && edgesPayload?.length > 1) {
+        const original = rawWithEdges[0]
+        rawWithEdges.length = 0
+        for (const ep of edgesPayload) {
+          const srcAllNode: any = allNodes[ep.srcIdx] || {}
+          const dstAllNode: any = allNodes[ep.dstIdx] || {}
+
+          const srcNode: Record<string, unknown> = {
+            _alias: srcAllNode._alias || `n${ep.srcIdx}`,
+            _label: aliasToLabel[srcAllNode._alias] || (typeof srcAllNode._label === 'string' && !srcAllNode._label.startsWith(':') ? `:${srcAllNode._label}` : srcAllNode._label || 'Default'),
           }
-          // Build target node copy from r.__targetProps
-          const tgtNode: Record<string, unknown> = {}
-          if (r.__targetProps && typeof r.__targetProps === 'object') {
-            for (const [k, v] of Object.entries(r.__targetProps)) {
-              if (!k.startsWith('__')) tgtNode[k] = v
-            }
+          const tgtNode: Record<string, unknown> = {
+            _alias: dstAllNode._alias || `m${ep.dstIdx}`,
+            _label: aliasToLabel[dstAllNode._alias] || (typeof dstAllNode._label === 'string' && !dstAllNode._label.startsWith(':') ? `:${dstAllNode._label}` : dstAllNode._label || 'Default'),
           }
-          if (Object.keys(srcNode).length) {
-            ;(r as any).props[pv] = {
-              __path: [srcNode, Object.keys(tgtNode).length ? tgtNode : srcNode],
+
+          const row = JSON.parse(JSON.stringify(original))
+          for (const pv of pathVars) {
+            (row as any).props = { ...(row as any).props, [pv]: { __path: [srcNode, tgtNode] }, _alias: srcAllNode._alias, _label: srcNode._label }
+          }
+          rawWithEdges.push(row)
+        }
+      } else {
+        // Single-row path variable: build path object from r.props / __targetProps
+        for (const r of rawWithEdges) {
+          for (const pv of pathVars) {
+            const srcNode: Record<string, unknown> = {}
+            if (r.props && typeof r.props === 'object') {
+              for (const [k, v] of Object.entries(r.props)) {
+                if (!k.startsWith('__') && k !== pv) srcNode[k] = v
+              }
+              if (r.props._alias && aliasToLabel[r.props._alias as string]) {
+                srcNode._label = aliasToLabel[r.props._alias as string]
+              }
+            }
+            const tgtNode: Record<string, unknown> = {}
+            if (r.__targetProps && typeof r.__targetProps === 'object') {
+              for (const [k, v] of Object.entries(r.__targetProps)) {
+                if (!k.startsWith('__')) tgtNode[k] = v
+              }
+            }
+            if (Object.keys(srcNode).length) {
+              ;(r as any).props[pv] = { __path: [srcNode, Object.keys(tgtNode).length ? tgtNode : srcNode] }
             }
           }
         }
+      }
+    }
+    // ── Pre-aggregate path variable list comprehensions ──
+    // When a path variable query produces multiple rows (one per edge), but
+    // the RETURN/WITH expression uses collect(p), aggregate path objects
+    // across all rows into an array so the list comprehension evaluates
+    // against the full collect result.
+    const hasPathVarAgg = rawWithEdges.length > 1 && pathVars.size && (
+      plan.expressionColumns?.some(ec => /\[.*IN.*collect\b/.test(ec.expression || '')) ||
+      !!(plan.with?.columns?.length)
+    )
+    if (hasPathVarAgg) {
+      const collectedBeforeAgg = rawWithEdges.length
+      const collectedPaths: Record<string, any[]> = {}
+      for (const pv of pathVars) {
+        collectedPaths[pv] = []
+        for (const r of rawWithEdges) {
+          const pvVal = (r as any).props?.[pv]
+          if (pvVal && typeof pvVal === 'object') collectedPaths[pv].push(pvVal)
+        }
+      }
+      if (Object.keys(collectedPaths).some(k => collectedPaths[k].length > 0)) {
+        const synthetic: any = JSON.parse(JSON.stringify(rawWithEdges[0]))
+        for (const pv of pathVars) {
+          if (collectedPaths[pv].length) {
+            ;(synthetic as any).props[pv] = collectedPaths[pv]
+          }
+        }
+        // Ensure count alias is in returnColumns
+        if (plan.with?.columns?.length && !plan.returnColumns?.includes('c')) {
+          const rcs = plan.returnColumns || []
+          rcs.push('c')
+          plan.returnColumns = rcs
+          ;(synthetic as any).props.c = String(collectedBeforeAgg)
+        }
+        // Inject list comprehension expressions from WITH into
+        // into expressionColumns so _formatResultRow's ecMap can resolve them.
+        // ANTLR may fail to parse complex expressions in WITH columns;
+        // we extract expression text directly from the query string.
+        if (plan.with?.columns?.length && query) {
+          const withPart = query.match(/WITH\s+([\s\S]+?)(?=RETURN\b|$)/i)?.[1] || ''
+          // List comprehension: [x IN collect(p) | head(nodes(x))] AS p
+          for (const pv of pathVars) {
+            const lcMatch = withPart.match(new RegExp(
+              `(\\[\\s*\\w+\\s+IN\\s+collect\\s*\\(\\s*${pv}\\s*\\)[^\\]]*\\])\\s+AS\\s+(\\w+)`,
+              'i'
+            ))
+            if (lcMatch) {
+              const expr = lcMatch[1]
+              const alias = lcMatch[2]
+              const exprCols = plan.expressionColumns || []
+              if (!exprCols.some(e => e.alias === alias)) {
+                exprCols.push({ expression: expr, alias })
+                plan.expressionColumns = exprCols
+              }
+            }
+          }
+        }
+        rawWithEdges.length = 0
+        rawWithEdges.push(synthetic)
       }
     }
     const rawResult: QueryRow[] = rawWithEdges.map((r: any) => {

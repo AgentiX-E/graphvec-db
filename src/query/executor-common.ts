@@ -146,8 +146,14 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         ecMap[rawKey] = rawExpr
       }
     }
-  }  // 构造输出行，每列正确映射
+  }
+  // DEBUG
+  // 构造输出行，每列正确映射
   const result: QueryRow = {}
+  // When row contains keys not in ret (e.g. aggregation aliases from WITH
+  // pipelines), include them so _formatResultRow doesn't silently drop them.
+  const extraColumns = Object.keys(row).filter(k => !k.startsWith('_') && !ret.includes(k))
+  for (const k of extraColumns) { ret.push(k) }
   for (const rc of ret) {
     if (!rc) continue
 
@@ -161,6 +167,23 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       const localCtx: Record<string, unknown> = {}
       for (const k of Object.keys(row)) {
         if (!k.startsWith('__')) localCtx[k] = row[k]
+      }
+      // When the path variable value is a pre-aggregated array (from executor),
+      // replace collect(p) with p directly in the expression so the list
+      // comprehension operates on the full array.
+      const pvVal = (r as any).props?.[rc]
+      if (pvVal && typeof pvVal === 'object' && Array.isArray(pvVal) && pvVal.length > 1) {
+        const adjustedExpr = ecMap[rc].replace(new RegExp(`collect\\s*\\(\\s*${rc}\\s*\\)`, 'gi'), rc)
+        const evalCtx: Record<string, unknown> = { [rc]: pvVal }
+        const evalResult = _evaluateExpression(adjustedExpr, evalCtx)
+        if (evalResult !== null && evalResult !== undefined) {
+          if (evalResult && typeof evalResult === 'object') {
+            result[rc] = _deepStripInternal(evalResult)
+          } else {
+            result[rc] = evalResult
+          }
+          continue
+        }
       }
       if (r.__targetProps) {
         for (const [k, v] of Object.entries(r.__targetProps)) {
