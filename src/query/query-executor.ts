@@ -3220,6 +3220,25 @@ export async function _executeQuery(
   if (isDML && !plan.returnColumns?.length && !plan.expressionColumns?.length) {
     return []
   }
+  // ── Aggregate default row ──
+  // When a Cypher query has aggregation functions (collect, count, etc.) but no
+  // rows were produced (e.g., empty graph + OPTIONAL MATCH), return a single
+  // default row with null/zero aggregate values instead of an empty result.
+  if (execQueryResult.length === 0 && query && /\b(collect|count|sum|avg|min|max)\s*\(/i.test(query)) {
+    const defaultRow: QueryRow = {}
+    for (const col of (plan.expressionColumns || [])) {
+      const alias = col.alias || ''
+      if (!alias) continue
+      const expr = typeof col.expression === 'string' ? col.expression : (col.expression as any)?.expression || ''
+      // Determine default: size(collect(...)) -> 0, count(...) -> 0, others -> null
+      if (/^(?:size|count)\s*\(/.test(expr.trim())) {
+        defaultRow[alias] = 0
+      } else {
+        defaultRow[alias] = null
+      }
+    }
+    return [defaultRow] as QueryResult
+  }
   return execQueryResult
 }
 

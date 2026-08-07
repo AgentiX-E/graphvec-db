@@ -473,6 +473,12 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   }
 
 
+  // If no rows but an aggregate WITH was defined, inject a default row.
+  // Cypher semantics: aggregation without grouping always returns 1 row.
+  if (!rows.length && plan.with?.columns?.length && plan.aggregate) {
+    rows = [{}]
+  }
+
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
   if (!plan.with?.columns?.length && !rows.length && !plan.unwind) {
     rows = [{}]

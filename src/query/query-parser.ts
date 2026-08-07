@@ -722,24 +722,25 @@ function _parseQueryImpl(query: string): QueryPlan {
     }
   }
 
-  // ── Detect aggregate functions in WITH columns and synthesize plan.aggregate ──
-  // When the last WITH contains an aggregate function (e.g. WITH sum(num) AS sum),
-  // ANTLR does not set plan.aggregate because aggregation is in WITH, not RETURN.
-  // Synthesize it so QE's aggregation block can execute the aggregate.
+  // ── Detect aggregate functions in WITH/RETURN columns and synthesize plan.aggregate ──
+  // ANTLR does not set plan.aggregate when aggregation is in WITH or RETURN.
   // Only match actual aggregate functions — non-aggregate function expressions like
   // date(), datetime(), coalesce(), etc. must not set plan.aggregate.
-  if (!plan.aggregate && plan.with?.columns?.length) {
+  // Only match pure aggregate functions (not nested inside list comprehensions).
+  if (!plan.aggregate) {
     const AGG_FNS = new Set(['count','sum','avg','max','min','collect','stdev','stdevp','percentilecont','percentiledisc'])
-    for (const col of plan.with.columns) {
-      const expr = typeof col.expression === 'string' ? col.expression : ''
-      const alias = col.alias || ''
-      const aggMatch = expr.match(/^(\w+)\(\s*(.+?)\s*\)$/i)
-      if (aggMatch && alias && AGG_FNS.has(aggMatch[1].toLowerCase())) {
+    const columns = plan.with?.columns?.length ? plan.with.columns : (plan.expressionColumns?.length ? plan.expressionColumns : [])
+    for (const col of columns) {
+      const expr = typeof col.expression === 'string' ? col.expression : (col.expression?.expression || '')
+      // Exclude list comprehensions: [x IN ... | expr]
+      if ((expr as string).startsWith('[') && (expr as string).includes('IN') && (expr as string).includes('|')) continue
+      const aggMatch = (expr as string).match(/^(\w+)\(\s*(.+?)\s*\)$/i)
+      if (aggMatch && col.alias && AGG_FNS.has(aggMatch[1].toLowerCase())) {
         plan.aggregate = {
           function: aggMatch[1].toLowerCase(),
           column: expr,
           type: aggMatch[1].toLowerCase(),
-          alias,
+          alias: col.alias || '',
           field: aggMatch[2],
         }
         break
