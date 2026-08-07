@@ -1216,7 +1216,96 @@ export function _unwrapRecord(v: unknown): Record<string, unknown> {
   return (v as Record<string, unknown>) || {}
 }
 
+/**
+ * Evaluate a list predicate expression: ALL/ANY/NONE/SINGLE(var IN list WHERE condition).
+ *
+ * Cypher 3-valued logic for list predicates:
+ * - ALL:  true if list is empty OR every element satisfies predicate.
+ *          null if at least one element yields null AND none yield false.
+ *          false if at least one element yields false.
+ * - ANY:  true if at least one element yields true.
+ *          null if no element yields true AND at least one yields null.
+ *          false if all elements yield false.
+ * - NONE: true if all elements yield false.
+ *          null if all yield false/null AND at least one yields null.
+ *          false if at least one element yields true.
+ * - SINGLE: true if exactly one element yields true.
+ *           null if >1 yield true OR (0 yield true AND at least one yields null).
+ *           false if 0 yield true AND 0 yield null.
+ */
+function _evalListPredicate(
+  predicateType: 'all' | 'any' | 'none' | 'single',
+  varName: string,
+  listExpr: string,
+  whereClause: string,
+  row?: Record<string, unknown>
+): unknown {
+  const list = _evalBinary(listExpr, row)
+  if (!Array.isArray(list)) return null
+
+  let trueCount = 0
+  let nullCount = 0
+  let falseCount = 0
+
+  for (const elem of list) {
+    const injectedRow = { ...row, [varName]: elem }
+    const cond = _evalBinary(whereClause, injectedRow)
+    if (cond === true) trueCount++
+    else if (cond === null || cond === undefined) nullCount++
+    else falseCount++
+  }
+
+  switch (predicateType) {
+    case 'all':
+      // true if empty or all true; null if no false but some null; false otherwise
+      if (falseCount > 0) return false
+      if (nullCount > 0) return null
+      return true
+    case 'any':
+      // true if any true; null if no true and some null; false if all false
+      if (trueCount > 0) return true
+      if (nullCount > 0) return null
+      return false
+    case 'none':
+      // true if all false; null if mix of false/null with some null; false if any true
+      if (trueCount > 0) return false
+      if (nullCount > 0) return null
+      return true
+    case 'single':
+      // true if exactly one true; null if >1 true or (0 true and some null); false if 0 true and 0 null
+      if (trueCount === 1 && nullCount === 0) return true
+      if (trueCount > 1) return null
+      if (nullCount > 0) return null
+      return false
+    default:
+      return null
+  }
+}
+
 const _builtinFunctions: Record<string, _BuiltinFn> = {
+  // ── List predicates: ALL / ANY / NONE / SINGLE ──
+  // Syntax: ALL(varName IN listExpr WHERE condition)
+  // Argument is a single string "varName IN listExpr WHERE condition"
+  all: ([a], r) => {
+    const m = String(a || '').match(/^(\w+)\s+IN\s+(.+?)\s+WHERE\s+(.+)$/is)
+    if (!m) return null
+    return _evalListPredicate('all', m[1], m[2].trim(), m[3].trim(), r)
+  },
+  any: ([a], r) => {
+    const m = String(a || '').match(/^(\w+)\s+IN\s+(.+?)\s+WHERE\s+(.+)$/is)
+    if (!m) return null
+    return _evalListPredicate('any', m[1], m[2].trim(), m[3].trim(), r)
+  },
+  none: ([a], r) => {
+    const m = String(a || '').match(/^(\w+)\s+IN\s+(.+?)\s+WHERE\s+(.+)$/is)
+    if (!m) return null
+    return _evalListPredicate('none', m[1], m[2].trim(), m[3].trim(), r)
+  },
+  single: ([a], r) => {
+    const m = String(a || '').match(/^(\w+)\s+IN\s+(.+?)\s+WHERE\s+(.+)$/is)
+    if (!m) return null
+    return _evalListPredicate('single', m[1], m[2].trim(), m[3].trim(), r)
+  },
   length: ([a], r) => {
     const v = _evalBinary(a, r);
     // 路径长度：路径对象以 {__path, __pathEdges} 形式存储
