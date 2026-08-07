@@ -6,7 +6,7 @@
  */
 
 import { parseCypherToPlan } from './ast-to-plan-v2'
-import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver } from './expression-engine'
+import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver, _parseCommaList } from './expression-engine'
 import { executeVarLenPath } from './var-length-path'
 import type { QueryPlan, FilterClause, TraverseStep, EdgeStepAST, PatternAST, WhereClauseAST, ColumnAST, ExpressionAST, PrimaryAST, AggregateClause } from './query-types'
 import type { OverGraphConfig } from '../types'
