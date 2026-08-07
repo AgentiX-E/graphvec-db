@@ -150,6 +150,34 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   const result: QueryRow = {}
   for (const rc of ret) {
     if (!rc) continue
+
+    // ── Path variable override ──
+    // When rc is a path variable (MATCH p = (n)-->()), evaluate the
+    // corresponding list comprehension expression directly so that
+    // collect(p) / head(nodes(x)) can resolve against the path object.
+    const isPathVar = rc && plan.steps?.some(s => s.pathVariable === rc)
+    if (isPathVar && ecMap[rc] && ecMap[rc] !== rc) {
+      // Build varCtx with the path object from r.props[rc]
+      const localCtx: Record<string, unknown> = {}
+      for (const k of Object.keys(row)) {
+        if (!k.startsWith('__')) localCtx[k] = row[k]
+      }
+      if (r.__targetProps) {
+        for (const [k, v] of Object.entries(r.__targetProps)) {
+          if (!k.startsWith('__') && !(k in localCtx)) localCtx[k] = v
+        }
+      }
+      const evalResult = _evaluateExpression(ecMap[rc], localCtx)
+      if (evalResult !== null && evalResult !== undefined) {
+        if (evalResult && typeof evalResult === 'object') {
+          result[rc] = _deepStripInternal(evalResult)
+        } else {
+          result[rc] = evalResult
+        }
+        continue
+      }
+    }
+
         // ── 解析 "a.id" → { variable: "a", property: "id" } ──
     const propMatch = rc.match(/^(\w+)\.(\w+)$/)
     if (propMatch) {
@@ -366,7 +394,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       if (plan.returnColumns) {
         const nodeAliases = new Set([
           ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
-          ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
+          ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias, s.pathVariable].filter(Boolean)),
           // OPTIONAL MATCH 步骤中的变量也视为节点别名（不是边变量）
           ...(plan.optionalMatchSteps || []).flatMap(om => {
             const vars: string[] = []
@@ -374,6 +402,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             for (const s of om.steps || []) {
               if (s.source) vars.push(s.source)
               if (s.targetAlias) vars.push(s.targetAlias)
+              if (s.pathVariable) vars.push(s.pathVariable)
             }
             return vars
           }),
@@ -411,6 +440,10 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // 使用 returnAliasMap 或 expressionColumns 解析原始表达式：统一走 _evaluateExpression
     let expr = (aliasMap && rc in aliasMap) ? aliasMap[rc] : (rc in ecMap ? ecMap[rc] : null)
+    // ecMap takes precedence over aliasMap for expression columns (e.g. list comprehensions)
+    if (ecMap[rc] && ecMap[rc] !== rc) {
+      expr = ecMap[rc]
+    }
     // 如果没有表达式映射（aliasMap 为空），但 rc 是简单变量名且存在于 varCtx 中，直接用 rc 作为表达式
     if (expr === null && rc && /^[a-zA-Z_]\w*$/.test(rc) && (rc in varCtx || rc in row)) {
       expr = rc

@@ -375,6 +375,27 @@ function _parseQueryImpl(query: string): QueryPlan {
   _fixScanLabel(plan)
   _fixScanLabel(plan)
 
+  // ── Extract path variables from MATCH p = (n)-->() patterns ──
+  // ANTLR does not recognise path variable assignment; inject into plan.steps
+  if (plan.steps?.length && query) {
+    const pvMatch = query.match(/MATCH\s+(\w+)\s*=\s*\(\s*(\w+)/i)
+    if (pvMatch && pvMatch[1] !== pvMatch[2]) {
+      plan.steps[0].pathVariable = pvMatch[1]
+    }
+  }
+  // Also handle path variables in optional MATCH
+  if (plan.optionalMatchSteps?.length && query) {
+    const optMatches = [...query.matchAll(/OPTIONAL\s+MATCH\s+(\w+)\s*=\s*\(/gi)]
+    let idx = 0
+    for (const om of plan.optionalMatchSteps) {
+      if (idx < optMatches.length && om.steps?.length) {
+        const pv = optMatches[idx][1]
+        om.steps[0].pathVariable = pv
+      }
+      idx++
+    }
+  }
+
   // ── DML type 映射：MATCH_MODIFY → SET/DELETE ──
   // 如果 MATCH_MODIFY 只有一种 DML 操作，细化为准确类型
   if (plan.type === 'MATCH_MODIFY') {

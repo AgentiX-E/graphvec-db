@@ -130,6 +130,7 @@ export interface TraverseStep {
   targetProps: Record<string, unknown> | null
   edgeProps?: Record<string, unknown> | null
   range?: { min: number; max: number | null }
+  pathVariable?: string | null  /** MATCH p = (n)-->() path variable */
 }
 
 export interface FilterClause {

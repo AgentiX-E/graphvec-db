@@ -2131,13 +2131,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const hasMatchingEdgeLabel = hasExplicitEdgeLabel && uniqueEdgeLabels.includes(queryEdgeLabel)
     const nodeAliases = new Set([
       ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
-      ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
+      ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias, s.pathVariable].filter(Boolean)),
       ...(plan.optionalMatchSteps || []).flatMap((om: any) => {
         const vars: string[] = []
         if (om.variableName) vars.push(om.variableName)
         for (const s of om.steps || []) {
           if (s.source) vars.push(s.source)
           if (s.targetAlias) vars.push(s.targetAlias)
+          if (s.pathVariable) vars.push(s.pathVariable)
         }
         return vars
       }),
@@ -2304,6 +2305,35 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── 格式化结果 ──
+    // Pre-process path variables: replace edge placeholder strings with path
+    // objects containing __path arrays so list comprehensions like
+    // [x IN collect(p) | head(nodes(x))] can resolve correctly.
+    const pathVars = new Set((plan.steps || []).map(s => s.pathVariable).filter(Boolean))
+    if (pathVars.size) {
+      for (const r of rawWithEdges) {
+        for (const pv of pathVars) {
+          // Build source node copy from r.props (without internal fields)
+          const srcNode: Record<string, unknown> = {}
+          if (r.props && typeof r.props === 'object') {
+            for (const [k, v] of Object.entries(r.props)) {
+              if (!k.startsWith('__') && k !== pv) srcNode[k] = v
+            }
+          }
+          // Build target node copy from r.__targetProps
+          const tgtNode: Record<string, unknown> = {}
+          if (r.__targetProps && typeof r.__targetProps === 'object') {
+            for (const [k, v] of Object.entries(r.__targetProps)) {
+              if (!k.startsWith('__')) tgtNode[k] = v
+            }
+          }
+          if (Object.keys(srcNode).length) {
+            ;(r as any).props[pv] = {
+              __path: [srcNode, Object.keys(tgtNode).length ? tgtNode : srcNode],
+            }
+          }
+        }
+      }
+    }
     const rawResult: QueryRow[] = rawWithEdges.map((r: any) => {
       const fr = _formatResultRow(r, plan)
       return fr
