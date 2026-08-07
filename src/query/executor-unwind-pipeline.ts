@@ -6,7 +6,7 @@
 
 import type { QueryPlan, QueryRow } from './query-types'
 import { _evaluateExpression } from './expression-engine'
-import { _resolveUnwindList } from './query-parser'
+import { _resolveUnwindList, _splitWithColumns, _findWhereOutsideBrackets } from './query-parser'
 
 /**
  * 处理 WITH/UNWIND/aggregate 管道（不含 MATCH 图遍历）。
@@ -21,10 +21,82 @@ import { _resolveUnwindList } from './query-parser'
  * DSL 语义：WITH 先计算列表字面量（直接在 plan 中），然后 UNWIND 行展开，
  * WITH 列投影 + aggregate 聚合。
  */
+
+/**
+ * Pre-process aggregate WITH clauses for mixed MATCH+WITH queries.
+ * Evaluates the first WITH's aggregate expression (e.g., collect(a))
+ * and injects the result into varCtx so subsequent UNWIND can resolve
+ * the list variable (e.g., UNWIND nodes AS n).
+ */
+function _preProcessAggregateWith(
+  varCtx: Record<string, unknown>,
+  preAggAliases: Set<string>,
+  plan: QueryPlan,
+  query: string,
+  nodes: Array<Record<string, unknown>>
+): void {
+  // Process all WITH clauses that precede UNWIND, in order.
+  const withRegex = /\bWITH\s+(.+?)(?=\s+(?:WITH|UNWIND|RETURN)\b)/gis
+  let m: RegExpExecArray | null
+  while ((m = withRegex.exec(query)) !== null) {
+    const clauseBody = m[1].trim()
+    const columns = _splitWithColumns(clauseBody)
+    for (const col of columns) {
+      const eqIdx = col.search(/\s+AS\s+/i)
+      if (eqIdx < 0) continue
+      const expr = col.substring(0, eqIdx).trim()
+      const alias = col.substring(eqIdx + 3).trim()
+      const val = _evaluateExpression(expr, varCtx)
+      varCtx[alias] = val !== undefined ? _deepCopyForCapture(val) : null
+      preAggAliases.add(alias)
+    }
+  }
+}
+
+/** Shallow-deep copy: clone arrays and plain objects for value capture. */
+function _deepCopyForCapture(val: unknown): unknown {
+  if (Array.isArray(val)) return val.map(v => _deepCopyForCapture(v))
+  if (val !== null && typeof val === 'object') {
+    const copy: Record<string, unknown> = {}
+    for (const k of Object.keys(val as Record<string, unknown>)) {
+      copy[k] = _deepCopyForCapture((val as Record<string, unknown>)[k])
+    }
+    return copy
+  }
+  return val
+}
+
 export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record<string, unknown>>, query?: string, initialVarCtx?: Record<string, unknown>): QueryRow[] {
   // Step 1: 解析 WITH 列表字面量
   // plan.with.columns[0] 是 {expression: "[1, 3.14, ...]", alias: "operands"}
   const varCtx: Record<string, unknown> = { ...initialVarCtx }
+
+  // When plan.hasMatch (mixed MATCH+WITH+aggregate), inject MATCH variables
+  // from allNodes into varCtx so aggregate expressions like collect(a) can
+  // resolve the MATCH variable 'a'.
+  if (plan.hasMatch && _nodes.length > 0) {
+    // Try to get the variable name from plan.steps, then fall back to query regex
+    let stepSrc = plan.steps?.[0]?.source
+    if (!stepSrc && query) {
+      const matchMatch = query.match(/MATCH\s*\((\w+)\b/i)
+      stepSrc = matchMatch?.[1]
+    }
+    if (stepSrc) {
+      // For aggregation like collect(a), inject all matching nodes
+      // Use array for collect() compatibility
+      varCtx[stepSrc] = _nodes.length === 1 ? _nodes[0] : _nodes
+    }
+  }
+
+  // Pre-process aggregate WITH clauses (e.g., WITH collect(a) AS nodes) before
+  // UNWIND expansion.  The UNWIND list variable often depends on the aggregate
+  // result (e.g., UNWIND nodes AS n), so we must evaluate aggregate WITH first
+  // and inject the result into varCtx before the UNWIND step resolves its list.
+  const _preAggAliases = new Set<string>()
+  if (plan.hasMatch && plan.with && query &&
+      (plan.aggregate || plan.type === 'SET' || plan.type === 'DELETE')) {
+    _preProcessAggregateWith(varCtx, _preAggAliases, plan, query, _nodes)
+  }
 
   // 从原始 query 文本提取所有 WITH [...] AS var 的列表字面量（即使没有 UNWIND）
   if (query) {
@@ -212,6 +284,13 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     }
   } else {
     rows = [{}]
+    // Inject MATCH variables into rows for aggregate processing (e.g., collect(a))
+    if (plan.hasMatch && plan.aggregate) {
+      const stepSrc = plan.steps?.[0]?.source || (query?.match(/MATCH\s*\((\w+)\b/i)?.[1])
+      if (stepSrc && stepSrc in varCtx) {
+        rows[0][stepSrc] = varCtx[stepSrc]
+      }
+    }
   }
 
   // ── 中间 WITH 投影 ──
@@ -295,6 +374,14 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       for (let i = 0; i < plan.with.columns.length; i++) {
         const col = plan.with.columns[i]
         const alias = col.alias || col.expression
+        // Skip re-evaluation of columns that were pre-processed by
+        // _preProcessAggregateWith (e.g., list comprehensions in WITH chains).
+        // These have already been snapshotted before UNWIND/SET mutations.
+        if (col.alias && _preAggAliases.has(col.alias)) {
+          newRow[alias] = varCtx[alias]
+          if (isAggCol[i]) aggIdx++ // advance but don't collect (value already snapshotted)
+          continue
+        }
         if (isAggCol[i]) {
           const colExpr = typeof col.expression === 'string' ? col.expression : ''
           const innerMatch = colExpr.match(/^\s*\w+\s*\((.+?)\)\s*$/is)
@@ -346,7 +433,9 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       return newRow
     })
     // 聚合后：将所有 UNWIND 行压缩为单行，聚合列的值替换为收集的数组
-    if (hasAgg) {
+    // Skip aggregation row construction when all agg columns were pre-computed
+    // (their values are already snapshotted in newRow via _preAggAliases skip).
+    if (hasAgg && aggCols.some(ac => ac.rows.length > 0)) {
       const aggRow: Record<string, unknown> = {}
       for (const ac of aggCols) {
         aggRow[ac.alias] = ac.rows  // collect → 整个数组
@@ -418,7 +507,8 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   }
 
   // Step 4: 聚合（count/sum/avg/max/min）
-  if (plan.aggregate) {
+  // Only run if plan.with.columns aggregate projection (Step 3) didn't already handle it.
+  if (plan.aggregate && !plan.with?.columns?.length) {
     const agg = plan.aggregate as any
     const aggFn = (agg.function || agg.type || '').toLowerCase()
     const aggAlias = agg.alias || (agg.column && agg.column.replace(/^.+?\s+AS\s+/i, '').trim()) || agg.field || agg.column || 'count(*)'
@@ -448,6 +538,10 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       .filter((v: number) => !isNaN(v))
 
     switch (aggFn) {
+      case 'collect':
+        // collect(expr): gather all values into a list
+        const collected = rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined)
+        return [{ [aggAlias]: collected }]
       case 'sum':
         return [{ [aggAlias]: values.reduce((a: number, b: number) => a + b, 0) }]
       case 'avg':

@@ -1364,7 +1364,7 @@ function _findWhereOutsideBrackets(text: string): number {
 }
 
 
-function _splitWithColumns(clauseBody: string): string[] {
+export function _splitWithColumns(clauseBody: string): string[] {
   const columns: string[] = []
   let current = ''
   let depth = 0

@@ -8,7 +8,7 @@
 
 import fs from 'fs'
 import path from 'path'
-import type { QueryPlan, QueryResult } from './query-types'
+import type { QueryPlan, QueryRow, QueryResult } from './query-types'
 import { _evaluateExpression, _postProcessResults } from './expression-engine'
 import { parseCsvContent } from './executor-common'
 import { _executeVarLenPath } from './executor-common'
@@ -366,8 +366,34 @@ export async function _execNonGePaths(
   // 不涉及 MATCH/GE 图遍历，纯表达式 + 聚合
   // Note: MATCH + WITH + UNWIND 场景（如 MATCH ... WITH [...] AS x UNWIND ...）
   // 的 WITH 列表包含 MATCH 变量，不能走纯表达式管道。走主路径处理。
-  if (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) {
-    return _executeWithUnwindPipeline(plan, nodes, query)
+  // Exception: mixed MATCH+aggregate WITH queries (e.g. MATCH ... WITH collect(a) AS nodes)
+  // — the aggregate pipeline needs to process WITH/UNWIND after MATCH returns nodes.
+  // GE's _executeQueryPlan doesn't handle WITH expressions when plan.aggregate is set,
+  // so we let the unwind pipeline manage the full post-MATCH projection.
+  // Also cover SET/DELETE DML types that have hasMatch+unwind/with: when the query
+  // plan is a DML type, GE may not handle WITH correctly, so delegate to pipeline.
+  if ((!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) ||
+      (plan.hasMatch && plan.aggregate && (plan.unwind || plan.with)) ||
+      (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && (plan.unwind || plan.with))) {
+    const result = _executeWithUnwindPipeline(plan, nodes, query)
+    // Execute SET clauses on the matched nodes after pipeline projection
+    if (plan.type === 'SET' && plan.setClauses?.length) {
+      for (const sc of plan.setClauses) {
+        if (sc.property) {
+          const targetVarName = plan.unwind?.name
+          for (const row of (result as QueryRow[])) {
+            const target = row[targetVarName!]
+            if (target && typeof target === 'object') {
+              const val = sc.value
+              const parsedVal = typeof val === 'object' && val !== null && 'value' in val
+                ? (val as any).value : val
+              ;(target as Record<string, unknown>)[sc.property] = parsedVal
+            }
+          }
+        }
+      }
+    }
+    return result
   }
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine
