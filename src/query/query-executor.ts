@@ -1560,7 +1560,34 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             if (sc.alias && sc.alias !== plan.steps?.[0]?.source) continue
             if (sc.property) {
               const pv = sc.value
-              node[sc.property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
+              let value: unknown
+              if (typeof pv === 'object' && pv !== null && 'value' in pv) {
+                value = pv.value
+              } else if (typeof pv === 'string') {
+                // Parse structured literals: arrays, maps, numbers, booleans, null
+                const trimmed = pv.trim()
+                if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                  try { value = JSON.parse(trimmed) } catch { value = pv }
+                } else if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                  try { value = JSON.parse(trimmed) } catch { value = pv }
+                } else if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+                  value = Number(trimmed)
+                } else if (/^(true|false)$/i.test(trimmed)) {
+                  value = trimmed.toLowerCase() === 'true'
+                } else if (trimmed === 'null') {
+                  value = null
+                } else {
+                  value = pv
+                }
+              } else {
+                value = pv
+              }
+              node[sc.property] = value
+              // Sync to GE-returned record props so RETURN expression evaluation
+              // sees the newly-set properties (e.g., RETURN size(n.numbers) after SET n.numbers).
+              if (r.props && typeof r.props === 'object') {
+                (r.props as Record<string,unknown>)[sc.property] = value
+              }
             }
           }
           // 同步更新 GE 存储层节点属性（await 确保持久化）
