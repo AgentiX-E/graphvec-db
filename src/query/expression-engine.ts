@@ -4149,6 +4149,18 @@ export function _validateLiterals(query: string): void {
   const literals = exprs.map(s => s.replace(/\s+AS\s+\w+$/i, '').trim())
 
   for (const rawExpr of literals) {
+    // ── Compile-time check: size() on pattern predicates ──
+    // size((a)-->(b)), size(()<--()), etc. must raise SyntaxError at compile time.
+    const trimmed = rawExpr.trim()
+    if (trimmed.startsWith('size(')) {
+      const inner = trimmed.slice(5, -1).trim()
+      // Pattern predicate: node pattern followed by edge arrow (-->  or  -[type]->)
+      if (inner.startsWith('(') && inner.endsWith(')') &&
+          /\([^)]*\)\s*-+(?:\[[^\]]*\])?->|\([^)]*\)\s*<-(?:\[[^\]]*\])?-+/.test(inner)) {
+        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+      }
+    }
+
     // 只对纯字面量（不含顶层操作符的 表达式）做语法验证。
     // 复杂表达式（如 [1,2] = [1] 或 0.0/0.0 > 1）不应被误识别为非法字面量。
     if (!_isPureLiteralExpr(rawExpr)) continue
