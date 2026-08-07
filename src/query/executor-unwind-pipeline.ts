@@ -293,6 +293,26 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     }
   }
 
+  // ── DML 执行（SET / DELETE）在 UNWIND 展开后、WITH 投影前 ──
+  // 必须在 WITH 投影之前执行，因为 projection 会改变行结构
+  if (rows.length > 0 && plan.setClauses?.length) {
+    for (const sc of plan.setClauses) {
+      if (!sc.property) continue
+      const parsedVal = typeof sc.value === 'object' && sc.value !== null && 'value' in (sc.value as Record<string, unknown>)
+        ? (sc.value as any).value
+        : sc.value
+      for (const row of rows) {
+        // SET x.prop = val: find the target variable in the row
+        // The target is the UNWIND alias (e.g., SET n.name = 'newName' → target = n)
+        const targetVar = plan.unwind?.name || ''
+        const target = row[targetVar]
+        if (target && typeof target === 'object') {
+          ;(target as Record<string, unknown>)[sc.property] = parsedVal
+        }
+      }
+    }
+  }
+
   // ── 中间 WITH 投影 ──
   if (query && rows.length && plan.unwind) {
     const nonListWithClauses: Array<{ cols: string; where: string | null }> = []
@@ -368,7 +388,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       }
     }
     rows = rows.map(row => {
-      const newRow: Record<string, unknown> = {}
+      const newRow: Record<string, unknown> = { ...row }
       const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
       let aggIdx = 0
       for (let i = 0; i < plan.with.columns.length; i++) {

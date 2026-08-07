@@ -16,7 +16,11 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   const qUpper = query.toUpperCase()
 
   // ── SyntaxError: UndefinedVariable ──
-  _validateUndefinedVariables(query, plan)
+  // Strip WHERE clauses inside list predicates/comprehensions before validation
+  // to avoid false positives on IN-bound variables (e.g., [x IN list WHERE x <> null])
+  // Keep original query for other validators
+  const queryForVarCheck = _stripListPredicates(query)
+  _validateUndefinedVariables(queryForVarCheck, plan)
 
   // ═══════════════════════════════════════════════════════════════
   // Literals SyntaxError (编译时字面量检查)
@@ -433,14 +437,30 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
 
     // ── SyntaxError: InvalidAggregation（WHERE 中使用聚合函数） ──
     // MATCH (a) WHERE count(a) > 10 RETURN a
-    if (query?.includes('WHERE')) {
+    // Also: RETURN [x IN [1,2,3] | count(*)] — aggregation in list comprehension
+    if (query) {
       const aggFuncs = ['count', 'sum', 'avg', 'min', 'max', 'collect']
-      for (const func of aggFuncs) {
-        const whereClause = query.split(/WHERE\s+/i).slice(1).join('WHERE ')
-        if (!whereClause) break
-        const whereBody = whereClause.split(/\s+(WITH|RETURN|CREATE|MERGE|SET|DELETE|ORDER|SKIP|LIMIT)\s+/i)[0]
-        if (whereBody && new RegExp(`\\b${func}\\s*\\(`).test(whereBody)) {
-          throw Object.assign(new Error('SyntaxError: InvalidAggregation'), { tckError: 'InvalidAggregation' })
+      // Check WHERE clauses
+      if (query.includes('WHERE')) {
+        for (const func of aggFuncs) {
+          const whereClause = query.split(/WHERE\s+/i).slice(1).join('WHERE ')
+          if (!whereClause) break
+          const whereBody = whereClause.split(/\s+(WITH|RETURN|CREATE|MERGE|SET|DELETE|ORDER|SKIP|LIMIT)\s+/i)[0]
+          if (whereBody && new RegExp(`\\b${func}\\s*\\(`).test(whereBody)) {
+            throw Object.assign(new Error('SyntaxError: InvalidAggregation'), { tckError: 'InvalidAggregation' })
+          }
+        }
+      }
+      // Check list comprehensions: [x IN list | agg_func(...)]
+      const listCompMatch = query.match(/\[[\w.]+\s+IN\s+.+?\|(.+?)\]/g)
+      if (listCompMatch) {
+        for (const lc of listCompMatch) {
+          const body = lc.substring(lc.indexOf('|') + 1, lc.lastIndexOf(']')).trim()
+          for (const func of aggFuncs) {
+            if (new RegExp(`\\b${func}\\s*\\(`, 'i').test(body)) {
+              throw Object.assign(new Error('SyntaxError: InvalidAggregation'), { tckError: 'InvalidAggregation' })
+            }
+          }
         }
       }
     }
@@ -698,5 +718,33 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       }
     }
   }
+}
+
+/** Strip WHERE clauses from list predicates/comprehensions to avoid
+ * false-positive UndefinedVariable errors on IN-bound variables.
+ * e.g., [x IN collect(r) WHERE x <> null] -> [x IN collect(r)] */
+function _stripListPredicates(query: string): string {
+  let result = query
+  const lcStart = /\[(\w+)\s+IN\s+/gi
+  let m: RegExpExecArray | null
+  while ((m = lcStart.exec(query)) !== null) {
+    let depth = 1
+    let i = m.index + 1
+    while (i < query.length && depth > 0) {
+      if (query[i] === '[') depth++
+      else if (query[i] === ']') depth--
+      if (depth > 0) i++
+    }
+    if (depth !== 0) continue
+    const body = query.substring(m.index + m[0].length, i)
+    const whereStart = body.search(/\bWHERE\s+/i)
+    if (whereStart >= 0) {
+      // Remove WHERE ... portion, keep the rest + closing bracket
+      const prefix = query.substring(0, m.index + m[0].length + whereStart)
+      const suffix = query.substring(i)
+      result = prefix + suffix
+    }
+  }
+  return result
 }
 

@@ -4414,6 +4414,8 @@ export function _detectMissingCommas(expr: string): boolean {
  * Error地送入字面量语法检查。
  */
 export function _isPureLiteralExpr(s: string): boolean {
+  // List comprehensions: [var IN list | expr] are not pure literals
+  if (s.startsWith('[') && /\sIN\s/.test(s) && /\|/.test(s)) return false
   let depth = 0, inStr = false, strChar = ''
   for (let i = 0; i < s.length; i++) {
     if (inStr) { if (s[i] === '\\') { i++; continue }; if (s[i] === strChar) inStr = false; continue }
