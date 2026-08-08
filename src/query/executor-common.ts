@@ -154,6 +154,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   // pipelines), include them so _formatResultRow doesn't silently drop them.
   const extraColumns = Object.keys(row).filter(k => !k.startsWith('_') && !ret.includes(k))
   for (const k of extraColumns) { ret.push(k) }
+  // DEBUG
   for (const rc of ret) {
     if (!rc) continue
 

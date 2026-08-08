@@ -2399,12 +2399,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             ;(synthetic as any).props[pv] = collectedPaths[pv]
           }
         }
-        // Ensure count alias is in returnColumns
-        if (plan.with?.columns?.length && !plan.returnColumns?.includes('c')) {
-          const rcs = plan.returnColumns || []
-          rcs.push('c')
-          plan.returnColumns = rcs
-          ;(synthetic as any).props.c = String(collectedBeforeAgg)
+        // Ensure count alias value is set on synthetic row.
+        if (plan.with?.columns?.length) {
+          ;(synthetic as any).props.c = collectedBeforeAgg
+          // Also ensure 'c' appears in returnColumns
+          if (!plan.returnColumns?.includes('c')) {
+            const rcs = plan.returnColumns || []
+            rcs.push('c')
+            plan.returnColumns = rcs
+          }
         }
         // Inject list comprehension expressions from WITH into
         // into expressionColumns so _formatResultRow's ecMap can resolve them.
@@ -2433,10 +2436,63 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         rawWithEdges.push(synthetic)
       }
     }
+    // DEBUG
     const rawResult: QueryRow[] = rawWithEdges.map((r: any) => {
       const fr = _formatResultRow(r, plan)
       return fr
     })
+    // When whereBody references variables not in result rows (e.g. MATCH
+    // (n)-->(b) WHERE n.name IN [...] RETURN b), inject missing vars from
+    // rawWithEdges so the expression engine can evaluate the WHERE.
+    if (plan.whereBody && plan.whereBody.includes('IN [')) {
+      const wbVars = plan.whereBody.match(/\b([a-zA-Z_]\w*)\b/g)?.filter(
+        v => !/^(IN|IS|NOT|NULL|TRUE|FALSE|AND|OR|XOR|WHERE|toLower|labels|size|head|nodes|collect|name|describe|exists|any|all|single|none|x|y|z)$/i.test(v)
+      ) || []
+      const rcSet = new Set(plan.returnColumns || [])
+      const missingVars = wbVars.filter(v => !rcSet.has(v))
+      if (missingVars.length && rawWithEdges.length) {
+        // Fix target node labels (GE sets _label='Default')
+        const nodeLabelMap: Record<string, string> = {}
+        for (const anode of allNodes) {
+          const a = (anode as any)._alias
+          const label = (anode as any)._label
+          if (a && label && !nodeLabelMap[a]) {
+            nodeLabelMap[a] = typeof label === 'string' && !label.startsWith(':') ? `:${label}` : label
+          }
+        }
+        for (let ri = 0; ri < rawResult.length; ri++) {
+          // Fix target node label from edgesPayload
+          const ep = edgesPayload?.[ri]
+          if (ep && ep.dstIdx < allNodes.length) {
+            const dstNode = allNodes[ep.dstIdx] as any
+            const dstLabel = nodeLabelMap[dstNode._alias] || dstNode._label
+            if (dstLabel && dstLabel !== 'Default') {
+              for (const step of (plan.steps || [])) {
+                const tAlias = step.targetAlias
+                if (tAlias && rawResult[ri][tAlias]) {
+                  ;(rawResult[ri][tAlias] as any)._label = dstLabel
+                  if ((rawResult[ri][tAlias] as any).props) {
+                    ;(rawResult[ri][tAlias] as any).props._label = dstLabel
+                  }
+                }
+              }
+            }
+          }
+          const rawEdge = rawWithEdges[ri]
+          for (const mv of missingVars) {
+            if (rawEdge.__crossVarRows && mv in rawEdge.__crossVarRows) {
+              rawResult[ri][mv] = rawEdge.__crossVarRows[mv]
+            } else if (rawEdge.props && mv in rawEdge.props) {
+              rawResult[ri][mv] = rawEdge.props[mv]
+            } else if (rawEdge.__targetProps && mv in rawEdge.__targetProps) {
+              rawResult[ri][mv] = rawEdge.__targetProps[mv]
+            } else if (rawEdge.__targetPropsMap && mv in rawEdge.__targetPropsMap) {
+              rawResult[ri][mv] = rawEdge.__targetPropsMap[mv]
+            }
+          }
+        }
+      }
+    }
 
     // ── DISTINCT 去重（RETURN DISTINCT n） ──
     // 在 WITH/UNWIND pipeline 之外，GE 直接执行路径也需要去重
@@ -2460,6 +2516,71 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
     // Note: 即使 plan.aggregate 存在，也必须先应用 WHERE 再聚合。
     if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind)) {
+      // Fix GE Default labels on target nodes in __crossVarRows before WHERE eval.
+      // GE sets _label='Default' on matched target nodes; restore from allNodes.
+      const allN = nodes
+      const ep = edgesPayload
+      if (allN?.length && ep?.length && rawWithEdges?.length) {
+        // GE creates intermediate nodes with _label='Default' for edge
+        // traversal targets. The real B, C nodes have no _alias and the
+        // correct label. Find them in order and patch __crossVarRows.
+        const realTargets = allN
+          .map((n: any, i: number) => ({ i, label: n._label, alias: n._alias }))
+          .filter(t => t.label !== 'Default' && t.label !== 'A' && !t.alias)
+        for (let ri = 0; ri < Math.min(rawWithEdges.length, realTargets.length); ri++) {
+          const targetLabel = realTargets[ri]?.label
+          if (!targetLabel) continue
+          const dstLabel = typeof targetLabel === 'string' && !targetLabel.startsWith(':')
+            ? `:${targetLabel}` : targetLabel
+          if (rawWithEdges[ri].__crossVarRows) {
+            for (const step of (plan.steps || [])) {
+              const tAlias = step.targetAlias
+              if (tAlias && rawWithEdges[ri].__crossVarRows[tAlias]) {
+                rawWithEdges[ri].__crossVarRows[tAlias]._label = dstLabel
+                if (rawWithEdges[ri].__crossVarRows[tAlias].props) {
+                  rawWithEdges[ri].__crossVarRows[tAlias].props._label = dstLabel
+                }
+              }
+            }
+          }
+        }
+        // Also patch rawResult to have correct b labels
+        for (let ri = 0; ri < Math.min(rawResult.length, realTargets.length); ri++) {
+          const targetLabel = realTargets[ri]?.label
+          if (!targetLabel) continue
+          const dstLabel = typeof targetLabel === 'string' && !targetLabel.startsWith(':')
+            ? `:${targetLabel}` : targetLabel
+          for (const step of (plan.steps || [])) {
+            const tAlias = step.targetAlias
+            if (tAlias && rawResult[ri][tAlias]) {
+              ;(rawResult[ri][tAlias] as any)._label = dstLabel
+              if ((rawResult[ri][tAlias] as any).props) {
+                ;(rawResult[ri][tAlias] as any).props._label = dstLabel
+              }
+            }
+          }
+        }
+        for (let ri = 0; ri < rawWithEdges.length; ri++) {
+          const edgeEntry = ep[ri]
+          if (edgeEntry && edgeEntry.dstIdx < allN.length) {
+            const dstNode = allN[edgeEntry.dstIdx] as any
+            const dstLabel = dstNode._label
+            if (dstLabel && dstLabel !== 'Default') {
+              if (rawWithEdges[ri].__crossVarRows) {
+                for (const step of (plan.steps || [])) {
+                  const tAlias = step.targetAlias
+                  if (tAlias && rawWithEdges[ri].__crossVarRows[tAlias]) {
+                    rawWithEdges[ri].__crossVarRows[tAlias]._label = dstLabel
+                    if (rawWithEdges[ri].__crossVarRows[tAlias].props) {
+                      rawWithEdges[ri].__crossVarRows[tAlias].props._label = dstLabel
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
       // 提取主 MATCH 的 WHERE 条件：在 "OPTIONAL MATCH" 之前的文本
       let whereExpr = plan.whereBody
       const optMatchPos = whereExpr.indexOf('OPTIONAL MATCH')
@@ -2987,9 +3108,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     //   }
     // }
 
-    // ── MATCH + WITH/UNWIND 管道 ──
-    // MATCH 结果已经构建在 result 中，但查询还有 WITH/UNWIND 需要处理。
-    // 对每一行 MATCH 结果，构造变量上下文，然后交给 WITH/UNWIND 管道处理。
     if (plan.hasMatch && plan.unwind && Array.isArray(result) && result.length) {
       const allPipelineRows: QueryRow[] = []
       for (let rowIdx = 0; rowIdx < result.length; rowIdx++) {
