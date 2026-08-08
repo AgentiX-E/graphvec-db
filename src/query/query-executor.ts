@@ -26,6 +26,11 @@ import { _isPatternPredicate, _validateUndefinedVariables, _validateUnknownFunct
 import { _validatePlan } from './executor-validate-plan'
 import { _execNonGePaths } from './executor-non-ge'
 
+// Module-level cache for pattern comprehension degree lookup.
+// Populated by _executeQuery before each GE call, consumed by
+// _executeViaGraphEngine's pattern comprehension pre-computation.
+let _seedEdgeMap: Map<string, { total: number; byLabel: Record<string, number> }> = new Map()
+
 /** 判断值是否为 typed-format 对象 { type: 'STRING', value: '...' } */
 function isTypedValue(v: unknown): v is { type: string; value: unknown } {
   return !!v && typeof v === 'object' && 'value' in v && 'type' in (v as any)
@@ -144,6 +149,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     for (const node of allNodes) {
       if (!node.__edges) node.__edges = []
     }
+    // Pre-compute outgoing edge degree per label for pattern comprehension
+    // queries (e.g. size([(a)--() | 1])). Uses _seedEdgeMap populated by
+    // _executeQuery before GE mutation can inflate __edges counts.
+    const outDegreeMap = _seedEdgeMap
     for (const node of allNodes) {
       if (node._label && String(node._label).includes(':')) {
         node.__fullLabel = String(node._label)
@@ -793,11 +802,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       ? (() => {
           const edgeVarColsLen = (plan.returnColumns || []).filter(rc => {
             if (!rc || rc === '*' || rc.includes('.')) return false
-            const nodeAliases = new Set([
+            const nodeAliasesScan = new Set([
               ...(plan.createNodes || []).map((n: any) => n.alias).filter(Boolean),
               ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias]).filter(Boolean),
             ])
-            return !nodeAliases.has(rc)
+            const _sAlias2 = (plan.scanLabel && query && plan.steps?.length === 0)
+              ? (query.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*\w+\s*)?\)/i) || [])[1] || null : null
+            if (_sAlias2) nodeAliasesScan.add(_sAlias2)
+            return !nodeAliasesScan.has(rc)
           }).length
           let multiStepRaw: any[] = []
           // 保存并清除 edgeLabel 突变（L728-735 的 typeRegex 污染了 edgeLabel，只取第一个 OR branch）
@@ -1264,10 +1276,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
             if (collectedEdges.length) {
               // 找出边变量名
+              const scanAlias = (plan.scanLabel && query && plan.steps?.length === 0)
+                ? (query.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*\w+\s*)?\)/i) || [])[1] || null : null
               const nodeAliases = new Set([
                 ...(plan.createNodes || []).map((n: any) => n.alias).filter(Boolean),
                 ...(plan.steps || []).flatMap((s: any) => [s.source, s.targetAlias]).filter(Boolean),
               ])
+              if (scanAlias) nodeAliases.add(scanAlias)
               const _sVars = new Set((plan.steps || []).flatMap((s: any) => [s.source, s.targetAlias]))
               const edgeVarNames = new Set<string>()
               if (plan.returnColumns) {
@@ -2129,6 +2144,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const queryEdgeLabel = (plan.steps || []).find(s => s.edgeLabel)?.edgeLabel
     const hasExplicitEdgeLabel = queryEdgeLabel && !queryEdgeLabel.includes('|')
     const hasMatchingEdgeLabel = hasExplicitEdgeLabel && uniqueEdgeLabels.includes(queryEdgeLabel)
+    // Extract source alias from scanLabel pattern (e.g. MATCH (n:X) when
+    // ANTLR treats it as label scan without creating a TraverseStep)
+    const scanSourceAlias = (plan.scanLabel && query && plan.steps?.length === 0)
+      ? (query.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*\w+\s*)?\)/i) || [])[1] || null
+      : null
+
     const nodeAliases = new Set([
       ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
       ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias, s.pathVariable].filter(Boolean)),
@@ -2143,6 +2164,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         return vars
       }),
     ])
+    if (scanSourceAlias) nodeAliases.add(scanSourceAlias)
     // edgeVarCols：识别边变量 RETURN 列（如 RETURN r），排除 RETURN i.var 等属性列
     // 属性列已被 dispatchWherePath 拆为简短名称（如 i.var→var），此时 nodeAliases 不含 var。
     // 用原始 query 做最终判断：如果 query 中是 var.xxx 格式的列，不当作边变量。
@@ -2437,6 +2459,73 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
     // DEBUG
+    // ── Pattern comprehension expression evaluation ──
+    // When return/expression columns contain pattern comprehensions
+    // (e.g. size([(n)--() | 1]) > 0), evaluate them using graph data.
+    // The expression engine doesn't have access to the graph structure,
+    // so we pre-compute the values and inject them directly into row props.
+    if (rawWithEdges.length && edgesPayload) {
+      const exprCols = plan.expressionColumns || []
+      for (const ec of exprCols) {
+        const expr = ec.expression || ''
+        // Match size([(...)--... | 1]) pattern — degree computation
+        const pcMatch = expr.match(/size\s*\(\s*\[\s*\(\s*(\w+)\s*\)\s*(--|-->|<--)/)
+        if (pcMatch) {
+          const pcVar = pcMatch[1]
+          // Extract optional relationship type filter from the pattern comprehension
+          // e.g. (a)-[:T]->()  => filterLabels = ['T']
+          //      (a)-[:T|OTHER]->() => filterLabels = ['T', 'OTHER']
+          const relTypesMatch = expr.match(/\((\w+)\)\s*-\s*\[?\s*:?\s*([A-Za-z_|]+)?\s*\]?\s*->/)
+          let filterLabels: string[] | null = null
+          if (relTypesMatch?.[2]) {
+            filterLabels = relTypesMatch[2].split('|').map(s => s.trim())
+          }
+
+
+          for (let ri = 0; ri < rawWithEdges.length; ri++) {
+            let degree = 0
+            // Look up degree from the pre-computed outDegreeMap using the
+            // matched node's _alias (from __crossVarRows). This avoids GE's
+            // intermediate-node artifacts because the map was built before GE.
+            const crossRow = rawWithEdges[ri]?.__crossVarRows as Record<string, any> | undefined
+            const matchNode = crossRow?.[pcVar]
+            const nodeAlias = matchNode?._alias || matchNode?._label
+            if (nodeAlias) {
+              const degInfo = outDegreeMap.get(String(nodeAlias))
+              if (degInfo) {
+                if (filterLabels?.length) {
+                  for (const lbl of filterLabels) {
+                    degree += degInfo.byLabel[lbl] || 0
+                  }
+                } else {
+                  degree = degInfo.total
+                }
+              }
+            }
+            // Evaluate the full expression with pattern comprehension replaced by degree
+            const alias = ec.alias || expr
+            let simplifiedExpr = expr
+            const pcFullMatch = expr.match(/size\s*\(\s*\[\s*\(\s*\w+\s*\)\s*(?:--|-->|<--)\s*(?:\[\s*:\s*[\w|]+\s*\])?\s*\(\s*\)\s*\|\s*\d+\s*\]\s*\)/)
+            if (pcFullMatch) {
+              simplifiedExpr = expr.replace(pcFullMatch[0], String(degree))
+            }
+            const varCtx: Record<string, unknown> = {}
+            if (rawWithEdges[ri]?.__crossVarRows) {
+              for (const [k, v] of Object.entries(rawWithEdges[ri].__crossVarRows)) {
+                varCtx[k] = v as Record<string, unknown>
+              }
+            }
+            try {
+              const val = _evaluateExpression(simplifiedExpr, varCtx)
+              if (val !== null && val !== undefined) {
+                ;(rawWithEdges[ri] as any).props[alias] = val
+              }
+            } catch (_e: any) { /* fall through */ }
+          }
+        }
+      }
+    }
+
     const rawResult: QueryRow[] = rawWithEdges.map((r: any) => {
       const fr = _formatResultRow(r, plan)
       return fr
@@ -3388,6 +3477,31 @@ export async function _executeQuery(
   }
   // GE 执行路径 - 仅在需要时才深拷贝 plan（_executeViaGraphEngine 内会 mutate plan.filters/plan.steps）
   const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
+  // Pre-save edge counts for pattern comprehension before GE mutation.
+  // Deep-clone __edges from nodes because GE seed may have already modified
+  // them in prior calls (same node objects persist across TCK scenarios).
+  const seedEdgeMap = new Map<string, { total: number; byLabel: Record<string, number> }>()
+
+  // Pre-save edge counts before GE mutation for pattern comprehension
+  _seedEdgeMap = seedEdgeMap // share with _executeViaGraphEngine
+  if (nodes) {
+    for (const node of nodes) {
+      const rawEdges = (node as any).__edges
+      if (Array.isArray(rawEdges) && rawEdges.length > 0) {
+        const edges: Array<{ label?: string }> = JSON.parse(JSON.stringify(rawEdges))
+        const byLabel: Record<string, number> = {}
+        let totalOut = 0
+        for (const e of edges) {
+          const lbl = e.label || ''
+          if (lbl) {
+            byLabel[lbl] = (byLabel[lbl] || 0) + 1
+            totalOut++
+          }
+        }
+        seedEdgeMap.set(String((node as any)._alias || node._label || ''), { total: totalOut, byLabel })
+      }
+    }
+  }
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
   // DML 语句无 RETURN 时不返回结果（Cypher 规范）
   // ── GROUP BY 聚合后处理 ──

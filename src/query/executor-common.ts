@@ -202,6 +202,43 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       }
     }
 
+    // ── Expression column evaluation (non-path-variable) ──
+    // When rc has an associated expression (e.g. "size([(n)--() | 1]) > 0 AS b"),
+    // evaluate it via the expression engine before falling through to raw value.
+    if (!isPathVar && ecMap[rc] && ecMap[rc] !== rc) {
+      // Only evaluate if row value is an edge-format placeholder ([:...])
+      // or undefined. If already pre-computed (boolean, number, object), skip.
+      const rowVal = row[rc]
+      const needsEval = rowVal === undefined || rowVal === null
+        || (typeof rowVal === 'string' && rowVal.startsWith('[:'))
+      if (needsEval) {
+      const fnMatch = ecMap[rc].match(/^([a-zA-Z_]\w*)\s*\(/);
+      if (fnMatch && /size|length|head|nodes|labels|collect|count|sum|avg|min|max|coalesce|toLower|toUpper|type|exists|id|all|any|none|single|reduce|reverse|tail|left|right|split|replace|substring|trim|ltrim|rtrim|toString|toInteger|toFloat|toBoolean|keys|properties|startNode|endNode|range|abs|sqrt|ceil|floor|round|sign|rand|pi|sin|cos|tan|asin|acos|atan|degrees|radians|log|log10|exp|e|haversin/i.test(fnMatch[1])) {
+        const localCtx: Record<string, unknown> = {};
+        for (const k of Object.keys(row)) {
+          if (!k.startsWith('__')) localCtx[k] = row[k];
+        }
+        // Inject cross-variable row context (e.g. n for pattern comprehension)
+        if (r.__crossVarRows) {
+          for (const [varName, varNode] of Object.entries(r.__crossVarRows)) {
+            localCtx[varName] = varNode as Record<string, unknown>;
+          }
+        }
+        try {
+          const evalResult = _evaluateExpression(ecMap[rc], localCtx);
+          if (evalResult !== null && evalResult !== undefined) {
+            if (evalResult && typeof evalResult === 'object') {
+              result[rc] = _deepStripInternal(evalResult);
+            } else {
+              result[rc] = evalResult;
+            }
+            continue;
+          }
+        } catch (_e: any) { /* fall through to raw value */ }
+        } // if (fnMatch)
+      } // if (needsEval)
+    } // expression column eval
+
         // ── 解析 "a.id" → { variable: "a", property: "id" } ──
     const propMatch = rc.match(/^(\w+)\.(\w+)$/)
     if (propMatch) {
@@ -431,6 +468,12 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             return vars
           }),
         ])
+        // Include scanLabel source alias (MATCH (n:Label) without TraverseStep)
+        if (plan.scanLabel && plan.steps?.length === 0) {
+          const q = ((plan as any)._originalQuery as string) || ''
+          const scAlias = (q.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*\w+\s*)?\)/i) || [])[1]
+          if (scAlias) nodeAliases.add(scAlias)
+        }
         isEdgeVar = !nodeAliases.has(rc)
       } else {
         isEdgeVar = typeof r[rc] === 'string' && r[rc].startsWith('[:')
