@@ -137,7 +137,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
 
     // ── 构建完整的输入节点集（seedNodes + DML createNodes） ──
     originalNodeCount = nodes?.length || 0
-    allNodes = [...(nodes || [])]
+    // Deep-clone seed nodes: shallow-copy properties but deep-clone
+    // __edges arrays. GE's createEdges loop (lines ~688-690) pushes
+    // to allNodes[i].__edges, which would otherwise mutate the caller's
+    // st.nodes and cause cross-scenario contamination in TCK tests.
+    allNodes = (nodes || []).map((n: Record<string, unknown>) => {
+      const clone: Record<string, unknown> = { ...n }
+      if (Array.isArray((n as any).__edges)) {
+        ;(clone as any).__edges = [...(n as any).__edges]
+      }
+      return clone
+    })
 
     // 确保多标签节点有 __fullLabel 属性（传入的 nodes 可能没有）
     // 确保 __edges 存在（EXISTS 子查询需要）
@@ -531,8 +541,22 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           nodeGeIds[i] = i + 1
         }
       }
-      // 从 allNodes 中提取 __edges 并创建边
-      edgesPayload = extractEdgesFromNodes(allNodes)
+      // 从 allNodes 中提取 __edges 并创建边。
+      // Only extract from original seed nodes (index < originalNodeCount);
+      // GE creates intermediate Default-labeled copy nodes (index >=
+      // originalNodeCount) whose __edges contain duplicates that inflate
+      // pattern comprehension degree calculations.
+      const rawEdges = extractEdgesFromNodes(allNodes.slice(0, originalNodeCount))
+      edgesPayload = []
+      const epSeen = new Set<string>()
+      for (const ep of rawEdges) {
+        const key = `${ep.srcIdx}|${ep.dstIdx}|${ep.label || ''}`
+        if (!epSeen.has(key)) {
+          epSeen.add(key)
+          edgesPayload.push(ep)
+        }
+      }
+      
       // 将 edgesPayload 中的边分配到对应节点的 __edges 上（供 _walkMultiSteps 遍历使用）
       // edgesPayload 可能只存储在 allNodes[0].__edges 中（TCK step-definitions 的存储方式）
       if (edgesPayload.length) {
@@ -664,11 +688,36 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (!nNode.__edges) nNode.__edges = []
             }
             const edgeLabel = edge.label || ''
-            // 在 src 节点的 __edges 中添加出边
-            (allNodes[srcIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
-            // 在 dst 节点的 __edges 中添加入边
-            (allNodes[dstIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
+            // Only push __edges entries for original seed nodes (index <
+            // originalNodeCount). GE's intermediate Default-labeled copies
+            // (index >= originalNodeCount) would inflate edgesPayload with
+            // spurious entries that don't correspond to real graph edges.
+            if (srcIdx < originalNodeCount) {
+              (allNodes[srcIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
+            }
+            if (dstIdx < originalNodeCount) {
+              (allNodes[dstIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
+            }
           }
+        }
+      }
+    }
+
+    // For non-CREATE queries (e.g. MATCH-only), edgesPayload may still be
+    // empty because it was only populated inside plan.createNodes block.
+    // Extract edges from original seed nodes to support pattern comprehension
+    // degree calculations in query-only executions (TCK List6 [8]-[10]).
+    if (!edgesPayload.length) {
+      const rawEdges = extractEdgesFromNodes(allNodes.slice(0, originalNodeCount))
+      // Deduplicate by (srcIdx, dstIdx, label). GE createEdges loop
+      // may push duplicate entries to allNodes[i].__edges from both
+      // the TCK handler and prior _executeViaGraphEngine calls.
+      const epSeen = new Set<string>()
+      for (const ep of rawEdges) {
+        const key = `${ep.srcIdx}|${ep.dstIdx}|${ep.label || ''}`
+        if (!epSeen.has(key)) {
+          epSeen.add(key)
+          edgesPayload.push(ep)
         }
       }
     }
@@ -2449,7 +2498,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         rawWithEdges.push(synthetic)
       }
     }
-    // DEBUG
     // ── Pattern comprehension expression evaluation ──
     // When return/expression columns contain pattern comprehensions
     // (e.g. size([(n)--() | 1]) > 0), evaluate them using graph data.
@@ -2460,13 +2508,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       for (const ec of exprCols) {
         const expr = ec.expression || ''
         // Match size([(...)--... | 1]) pattern — degree computation
-        const pcMatch = expr.match(/size\s*\(\s*\[\s*\(\s*(\w+)\s*\)\s*(--|-->|<--)/)
+        // Supports: -->, --, <--, -[:T]->, -[:T|S]->, <-[:T]-, etc.
+        const pcMatch = expr.match(
+          /size\s*\(\s*\[\s*\(\s*(\w+)\s*\)\s*(?:<-?-|-?->|--|<\-\s*\[:[A-Za-z_|]+\]\s*-|-\s*\[:[A-Za-z_|]+\]\s*->)\s*\(\s*\)/
+        )
         if (pcMatch) {
           const pcVar = pcMatch[1]
-          // Extract optional relationship type filter from the pattern comprehension
-          // e.g. (a)-[:T]->()  => filterLabels = ['T']
-          //      (a)-[:T|OTHER]->() => filterLabels = ['T', 'OTHER']
-          const relTypesMatch = expr.match(/\((\w+)\)\s*-\s*\[?\s*:?\s*([A-Za-z_|]+)?\s*\]?\s*->/)
+          // Extract optional relationship type filter
+          const relTypesMatch = expr.match(
+            /\((\w+)\)\s*-\s*\[?\s*:?\s*([A-Za-z_|]+)?\s*\]?\s*->/
+          )
           let filterLabels: string[] | null = null
           if (relTypesMatch?.[2]) {
             filterLabels = relTypesMatch[2].split('|').map(s => s.trim())
@@ -2475,32 +2526,27 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
 
           for (let ri = 0; ri < rawWithEdges.length; ri++) {
             let degree = 0
-            // Compute degree from edgesPayload unique non-null destination nodes.
-            // GE creates intermediate Default-labeled copy nodes that inflate
-            // edgesPayload but they share the same dstIdx for the same logical
-            // destination node. We deduplicate by dstIdx, excluding entries where
-            // allNodes[idx] is null (GE artifact from index-out-of-range on
-            // intermediate copies that were removed).
-            const seenDst = new Set<number>()
+            // edgesPayload is extracted only from original seed nodes
+            // (see extractEdgesFromNodes call at seed time). Deduplicate
+            // by (srcIdx, dstIdx, label) and match edge label for filters.
             for (const ep of edgesPayload) {
-              if (ep.dstIdx != null && allNodes[ep.dstIdx] && !seenDst.has(ep.dstIdx)) {
-                seenDst.add(ep.dstIdx)
-                if (filterLabels?.length) {
-                  // When a relationship type filter is specified, only count
-                  // edges whose edge label (from the ep or allNodes) matches
-                  const dLabel = allNodes[ep.dstIdx]._label
-                  if (filterLabels.includes(String(dLabel))) {
-                    degree++
-                  }
-                } else {
-                  degree++
-                }
+              if (ep.dstIdx == null || !allNodes[ep.dstIdx]) continue
+              const key = `${ep.srcIdx}|${ep.dstIdx}|${ep.label || ''}`
+              if (seen.has(key)) continue
+              seen.add(key)
+              if (filterLabels?.length) {
+                const edgeLabel = ep.label ? String(ep.label) : ''
+                if (filterLabels.includes(edgeLabel)) degree++
+              } else {
+                degree++
               }
             }
             // Evaluate the full expression with pattern comprehension replaced by degree
             const alias = ec.alias || expr
             let simplifiedExpr = expr
-            const pcFullMatch = expr.match(/size\s*\(\s*\[\s*\(\s*\w+\s*\)\s*(?:--|-->|<--)\s*(?:\[\s*:\s*[\w|]+\s*\])?\s*\(\s*\)\s*\|\s*\d+\s*\]\s*\)/)
+            const pcFullMatch = expr.match(
+              /size\s*\(\s*\[\s*\(\s*\w+\s*\)\s*(?:<-?-|-?->|--|<\-\s*\[:[A-Za-z_|]+\]\s*-|-\s*\[:[A-Za-z_|]+\]\s*->)\s*\(\s*\)\s*\|\s*\d+\s*\]\s*\)/
+            )
             if (pcFullMatch) {
               simplifiedExpr = expr.replace(pcFullMatch[0], String(degree))
             }
