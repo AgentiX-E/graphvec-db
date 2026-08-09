@@ -26,11 +26,6 @@ import { _isPatternPredicate, _validateUndefinedVariables, _validateUnknownFunct
 import { _validatePlan } from './executor-validate-plan'
 import { _execNonGePaths } from './executor-non-ge'
 
-// Module-level cache for pattern comprehension degree lookup.
-// Populated by _executeQuery before each GE call, consumed by
-// _executeViaGraphEngine's pattern comprehension pre-computation.
-let _seedEdgeMap: Map<string, { total: number; byLabel: Record<string, number> }> = new Map()
-
 /** 判断值是否为 typed-format 对象 { type: 'STRING', value: '...' } */
 function isTypedValue(v: unknown): v is { type: string; value: unknown } {
   return !!v && typeof v === 'object' && 'value' in v && 'type' in (v as any)
@@ -149,10 +144,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     for (const node of allNodes) {
       if (!node.__edges) node.__edges = []
     }
-    // Pre-compute outgoing edge degree per label for pattern comprehension
-    // queries (e.g. size([(a)--() | 1])). Uses _seedEdgeMap populated by
-    // _executeQuery before GE mutation can inflate __edges counts.
-    const outDegreeMap = _seedEdgeMap
     for (const node of allNodes) {
       if (node._label && String(node._label).includes(':')) {
         node.__fullLabel = String(node._label)
@@ -2484,21 +2475,25 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
 
           for (let ri = 0; ri < rawWithEdges.length; ri++) {
             let degree = 0
-            // Look up degree from the pre-computed outDegreeMap using the
-            // matched node's _alias (from __crossVarRows). This avoids GE's
-            // intermediate-node artifacts because the map was built before GE.
-            const crossRow = rawWithEdges[ri]?.__crossVarRows as Record<string, any> | undefined
-            const matchNode = crossRow?.[pcVar]
-            const nodeAlias = matchNode?._alias || matchNode?._label
-            if (nodeAlias) {
-              const degInfo = outDegreeMap.get(String(nodeAlias))
-              if (degInfo) {
+            // Compute degree from edgesPayload unique non-null destination nodes.
+            // GE creates intermediate Default-labeled copy nodes that inflate
+            // edgesPayload but they share the same dstIdx for the same logical
+            // destination node. We deduplicate by dstIdx, excluding entries where
+            // allNodes[idx] is null (GE artifact from index-out-of-range on
+            // intermediate copies that were removed).
+            const seenDst = new Set<number>()
+            for (const ep of edgesPayload) {
+              if (ep.dstIdx != null && allNodes[ep.dstIdx] && !seenDst.has(ep.dstIdx)) {
+                seenDst.add(ep.dstIdx)
                 if (filterLabels?.length) {
-                  for (const lbl of filterLabels) {
-                    degree += degInfo.byLabel[lbl] || 0
+                  // When a relationship type filter is specified, only count
+                  // edges whose edge label (from the ep or allNodes) matches
+                  const dLabel = allNodes[ep.dstIdx]._label
+                  if (filterLabels.includes(String(dLabel))) {
+                    degree++
                   }
                 } else {
-                  degree = degInfo.total
+                  degree++
                 }
               }
             }
@@ -3477,31 +3472,6 @@ export async function _executeQuery(
   }
   // GE 执行路径 - 仅在需要时才深拷贝 plan（_executeViaGraphEngine 内会 mutate plan.filters/plan.steps）
   const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
-  // Pre-save edge counts for pattern comprehension before GE mutation.
-  // Deep-clone __edges from nodes because GE seed may have already modified
-  // them in prior calls (same node objects persist across TCK scenarios).
-  const seedEdgeMap = new Map<string, { total: number; byLabel: Record<string, number> }>()
-
-  // Pre-save edge counts before GE mutation for pattern comprehension
-  _seedEdgeMap = seedEdgeMap // share with _executeViaGraphEngine
-  if (nodes) {
-    for (const node of nodes) {
-      const rawEdges = (node as any).__edges
-      if (Array.isArray(rawEdges) && rawEdges.length > 0) {
-        const edges: Array<{ label?: string }> = JSON.parse(JSON.stringify(rawEdges))
-        const byLabel: Record<string, number> = {}
-        let totalOut = 0
-        for (const e of edges) {
-          const lbl = e.label || ''
-          if (lbl) {
-            byLabel[lbl] = (byLabel[lbl] || 0) + 1
-            totalOut++
-          }
-        }
-        seedEdgeMap.set(String((node as any)._alias || node._label || ''), { total: totalOut, byLabel })
-      }
-    }
-  }
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
   // DML 语句无 RETURN 时不返回结果（Cypher 规范）
   // ── GROUP BY 聚合后处理 ──
