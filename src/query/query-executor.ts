@@ -2526,19 +2526,60 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
 
           for (let ri = 0; ri < rawWithEdges.length; ri++) {
             let degree = 0
-            // edgesPayload is extracted only from original seed nodes
-            // (see extractEdgesFromNodes call at seed time). Deduplicate
-            // by (srcIdx, dstIdx, label) and match edge label for filters.
-            for (const ep of edgesPayload) {
-              if (ep.dstIdx == null || !allNodes[ep.dstIdx]) continue
-              const key = `${ep.srcIdx}|${ep.dstIdx}|${ep.label || ''}`
-              if (seen.has(key)) continue
-              seen.add(key)
-              if (filterLabels?.length) {
-                const edgeLabel = ep.label ? String(ep.label) : ''
-                if (filterLabels.includes(edgeLabel)) degree++
-              } else {
-                degree++
+            const seen = new Set<string>()
+            // Compute degree from allNodes[sourceIdx].__edges rather than
+            // edgesPayload, which may carry dstIdx values relative to
+            // the TCK handler's createdNodes array (alias duplicates).
+            // Locate the source node: first try nodeGeIds via rowId,
+            // then fall back to scanSourceAlias for label-scan queries.
+            const rowId = (rawWithEdges[ri] as any).id
+            let sourceIdx = rowId != null ? nodeGeIds.indexOf(rowId) : -1
+            if (sourceIdx < 0 && scanSourceAlias) {
+              // For label-scanned queries, multiple rows in rawWithEdges
+              // correspond to different allNodes entries. Match by row
+              // props against allNodes[ni] properties to find the correct
+              // source node for each row.
+              const rowProps = (rawWithEdges[ri] as any).props || (rawWithEdges[ri] as any)
+              for (let ni = 0; ni < originalNodeCount; ni++) {
+                const n = allNodes[ni] as any
+                if (n._label !== plan.scanLabel && n._alias !== scanSourceAlias) continue
+                // Verify the row props match this node's properties.
+                // All row prop keys (except _label and numeric aliases)
+                // should match the corresponding node property values.
+                let match = true
+                for (const rk of Object.keys(rowProps)) {
+                  if (rk === '_label') continue
+                  if (rk === '__crossVarRows' || rk === '__edges' || rk.startsWith('__')) continue
+                  if (rk === scanSourceAlias) continue
+                  const rv = rowProps[rk]
+                  const nv = n[rk]
+                  if (rv != null && nv != null && String(rv) !== String(nv) && String(rv) !== String(nv)) {
+                    match = false
+                    break
+                  }
+                }
+                if (match) {
+                  sourceIdx = ni
+                  break
+                }
+              }
+            }
+            if (sourceIdx >= 0 && sourceIdx < originalNodeCount) {
+              const sourceEdges = (allNodes[sourceIdx] as any).__edges
+              if (sourceEdges && Array.isArray(sourceEdges)) {
+                for (const edge of sourceEdges) {
+                  const dstIdx = edge.dstIdx
+                  if (dstIdx == null || dstIdx >= originalNodeCount) continue
+                  if (!allNodes[dstIdx]) continue
+                  if (filterLabels?.length) {
+                    const edgeLabel = edge.label ? String(edge.label) : ''
+                    if (!filterLabels.includes(edgeLabel)) continue
+                  }
+                  const dedupKey = `${sourceIdx}|${dstIdx}|${edge.label || ''}`
+                  if (seen.has(dedupKey)) continue
+                  seen.add(dedupKey)
+                  degree++
+                }
               }
             }
             // Evaluate the full expression with pattern comprehension replaced by degree

@@ -882,6 +882,32 @@ Given('having executed:', async function (query: string) {
         }
       }
       
+      // Post-process edge indices: createdNodes may contain alias-duplicate
+      // entries that inflate srcIdx/dstIdx values. Map them back to actual
+      // st.nodes positions by building a reference→index lookup from
+      // createdNodes unique entries.
+      if (cEdges?.length) {
+        const refToStIdx = new Map<any, number>()
+        for (let si = 0; si < st.nodes.length; si++) {
+          refToStIdx.set(st.nodes[si], si)
+        }
+        // Walk every node's __edges and remap srcIdx/dstIdx to st.nodes
+        // indices, skipping edges whose endpoints don't exist in st.nodes.
+        for (const n of st.nodes) {
+          const edges = (n as any).__edges as any[] | undefined
+          if (!edges?.length) continue
+          const rebuilt: any[] = []
+          for (const e of edges) {
+            const realSrcIdx = refToStIdx.get(createdNodes[e.srcIdx])
+            const realDstIdx = refToStIdx.get(createdNodes[e.dstIdx])
+            if (realSrcIdx != null && realDstIdx != null) {
+              rebuilt.push({ ...e, srcIdx: realSrcIdx, dstIdx: realDstIdx })
+            }
+          }
+          ;(n as any).__edges = rebuilt
+        }
+      }
+      
       // If any UNWIND，为每个 UNWIND 元素创建额外的节点
       // 解析 UNWIND 后替换 createNodes 中的变量引用
       if (unwind && unwind.list) {
