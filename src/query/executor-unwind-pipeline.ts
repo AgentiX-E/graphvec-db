@@ -149,13 +149,16 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     }
   }
   if (query && plan.unwinds?.length) {
+    // Use matchAll to enumerate all UNWIND clauses by position, rather
+    // than matching by expression text. When multiple UNWIND clauses
+    // share the same source expression (e.g. two UNWIND range(...) AS
+    // different aliases), `query.match(UV + expr)` returned the first
+    // match every time, overwriting later aliases with the first one.
+    const allMatches = [...query.matchAll(/\bUNWIND\s+(.+?)\s+AS\s+(\w+)/gi)]
     for (let ui = 0; ui < plan.unwinds.length; ui++) {
-      const u = plan.unwinds[ui]
-      if (!u.var) continue
-      const uv = u.var.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      const uaMatch = query.match(new RegExp('UNWIND\\s+' + uv + '\\s+AS\\s+(\\w+)', 'i'))
-      if (uaMatch && uaMatch[1] !== u.name) {
-        plan.unwinds[ui].name = uaMatch[1]
+      const m = allMatches[ui]
+      if (m?.[2] && m[2] !== plan.unwinds[ui].name) {
+        plan.unwinds[ui].name = m[2]
       }
     }
   }
