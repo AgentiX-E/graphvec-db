@@ -1086,8 +1086,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               for (const k of Object.keys(targetNode)) {
                 if (k !== '_label' && k !== '__edges' && k !== 'props') {
                   geNode.__targetProps[k] = targetNode[k]
-              // Debug
-              process.stderr.write("ALLVARS: a=" + JSON.stringify(allVars.a) + " b=" + JSON.stringify(allVars.b) + " c=" + JSON.stringify(allVars.c) + " d=" + JSON.stringify(allVars.d) + " i=" + i + " targetIdx=" + targetIdx + " boundedPaths=" + (boundedPaths ? boundedPaths.length : 0) + "\n")
                 }
               }
               // source 节点属性存入 geNode.props（供 source 变量查询如 a.id）
@@ -2004,8 +2002,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 上面的 crossVarFilters 分支不执行，filteredWithLabels 仍为 records。
     // 此处用 filteredRecords 重新构建正确格式的结果行。
     // 支持多个 MATCH 变量（如 MATCH (n), (m) → 笛卡尔积）和单变量 MATCH。
-    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && (filteredRecords?.length || allNodes?.length)) {
-      // 手动从 query 文本提取 MATCH 变量和标签（ANTLR 只解析第一个模式）
       let hasMultiMatch = false
       const varLabelMap2: Record<string, string> = {}
       let inlineFilters: Array<{ source: string; property: string; operator: string; value: unknown; negated?: boolean }> = []
@@ -2148,7 +2144,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const cvr = r0.__crossVarRows || {};
           const durDate = cvr["dur"] ? cvr["dur"]["date"] : "?";
           const dur2Date = cvr["dur2"] ? cvr["dur2"]["date"] : "?";
-            console.error("T8_FORMATTED: rows=" + formattedRows.length + " allNodes=" + JSON.stringify(allNodes.map(n => n._label + ":" + (n.date||"?").toString().slice(0,20))) + "\n");
         }
         filteredWithLabels = formattedRows;
       }
@@ -3621,8 +3616,6 @@ export async function _executeQuery(
   }
   // GE 执行路径 - 仅在需要时才深拷贝 plan（_executeViaGraphEngine 内会 mutate plan.filters/plan.steps）
   const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
-  const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
-  // DML 语句无 RETURN 时不返回结果（Cypher 规范）
   // ── GROUP BY 聚合后处理 ──
   // 当 plan.aggregate 和 plan.groupBy 都存在时，对原始 nodes 做分组聚合
   if ((plan as any).groupBy?.length && (plan as any).aggregate) {
