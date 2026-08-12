@@ -186,8 +186,42 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const cnToAllNodeMap = new Map<number, number>()  // createNode index → allNodes index
     const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
     if (plan.createNodes?.length) {
-      for (let ci = 0; ci < plan.createNodes.length; ci++) {
-        const cn = plan.createNodes[ci]
+      // If the CREATE statement has an UNWIND prefix (e.g. "UNWIND [1,2,3] AS i
+      // CREATE ({num: i})"), expand the template into one node per unwound element
+      // so the DML pipeline correctly materializes all rows.
+      const uwExpanded = (plan.unwind && plan.unwind.list && plan.unwind.list.length) ? plan.unwind : null
+      // Clone createNodes before mutating in the expansion loop
+      let effectiveCreateNodes = plan.createNodes
+      if (uwExpanded) {
+        const expandedCns: typeof effectiveCreateNodes = []
+        for (let uwi = 0; uwi < uwExpanded.list.length; uwi++) {
+          const elem = uwExpanded.list[uwi]
+          for (const cn of plan.createNodes) {
+            const ecn = { ...cn }
+            if (cn.props) {
+              // Substitute unwound variable references in property values
+              const newProps: Record<string, any> = {}
+              for (const [k, v] of Object.entries(cn.props)) {
+                const raw = isTypedValue(v) ? v.value : v
+                if (typeof raw === 'string' && raw === uwExpanded.name) {
+                  newProps[k] = elem // raw element, no type wrapper needed
+                } else {
+                  newProps[k] = v
+                }
+              }
+              ecn.props = newProps as any
+            }
+            if (cn.alias === uwExpanded.name) {
+              // The alias is the unwind variable name; use a per-index suffix
+              ecn.alias = cn.alias + '_' + uwi
+            }
+            expandedCns.push(ecn)
+          }
+        }
+        effectiveCreateNodes = expandedCns
+      }
+      for (let ci = 0; ci < effectiveCreateNodes.length; ci++) {
+        const cn = effectiveCreateNodes[ci]
         // 跳过仅引用已匹配节点的 createNode（无 label 无 props，且变量名已存在 MATCH 中）
         if (cn.alias && matchVars.has(cn.alias) && !cn.label && (!cn.props || !Object.keys(cn.props).length)) {
           // 不创建新节点，但保留 _alias 引用

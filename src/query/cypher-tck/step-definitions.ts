@@ -671,6 +671,30 @@ Given('having executed:', async function (query: string) {
     }
   }
   if (pending) lines.push(pending)
+  // Merge UNWIND + CREATE/UNWIND+MATCH lines so they execute as a single
+  // pipeline rather than as isolated statements. The DML engine needs the
+  // unwound variable to be in scope when processing the CREATE template.
+  if (lines.length >= 2) {
+    const merged: string[] = []
+    let i = 0
+    while (i < lines.length) {
+      const cur = lines[i]
+      const next = lines[i + 1]
+      // UNWIND ... AS <var> followed by CREATE/MERGE/MATCH
+      const isUnwind = /^\s*(UNWIND\s+|OPTIONAL\s+MATCH\s+)/i.test(cur)
+      const isCreate = next && /^\s*(CREATE\s+|MERGE\s+|MATCH\s+|SET\s+|DELETE\s+|REMOVE\s+)/i.test(next)
+      if (isUnwind && isCreate && !cur.includes('CREATE') && !cur.includes('MERGE') 
+          && !next.includes('UNWIND')) {
+        merged.push(cur + ' ' + next)
+        i += 2
+      } else {
+        merged.push(cur)
+        i += 1
+      }
+    }
+    lines.length = 0
+    lines.push(...merged)
+  }
   if (lines.length > 1) {
     // 多语句场景 → 逐条递归执行
     for (const line of lines) {
