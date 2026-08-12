@@ -2008,14 +2008,41 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // 手动从 query 文本提取 MATCH 变量和标签（ANTLR 只解析第一个模式）
       let hasMultiMatch = false
       const varLabelMap2: Record<string, string> = {}
+      let inlineFilters: Array<{ source: string; property: string; operator: string; value: unknown; negated?: boolean }> = []
       if (query) {
         const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
         hasMultiMatch = !!(matchSection && matchSection[1].includes(','))
-        console.error("T8_MATCH_SECTION: hasMulti=" + hasMultiMatch + " clause=" + (matchSection ? matchSection[1].slice(0,100) : "none") + "\n")
         if (matchSection) {
           const clause = matchSection[1]
           const nodePatterns = [...clause.matchAll(/\((\w+)\s*:\s*(\w+)\)/g)]
           for (const np of nodePatterns) varLabelMap2[np[1]] = np[2]
+
+          // Extract inline property filters: `(var:Label {prop: value})` or `(var {prop: value})`
+          // ANTLR does NOT parse these into plan.filters — we need to extract them manually
+          // and inject them for GE filtering (critical for BigInt precision in scenarios like
+          // Comparison1 [10][11][12]).
+          const inlineFilterMatch = clause.match(/\((\w+)(?:\s*:\s*\w+)?\s*\{([^}]+)\}/)
+          if (inlineFilterMatch) {
+            const sourceVar = inlineFilterMatch[1]
+            const propsText = inlineFilterMatch[2]
+            // Parse `prop: value` pairs; value can be number, string, bigInt
+            const propPattern = /(\w+)\s*:\s*('(?:[^'\\]|\\.)*'|[+-]?\d{10,}|[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false)\s*/g
+            let pm: RegExpExecArray | null
+            while ((pm = propPattern.exec(propsText)) !== null) {
+              const propName = pm[1]
+              let propVal: unknown = pm[2]
+              // Unquote string literals
+              if (typeof propVal === 'string' && propVal.startsWith("'") && propVal.endsWith("'")) {
+                propVal = propVal.slice(1, -1)
+              } else if (typeof propVal === 'string' && /^[+-]?\d{10,}$/.test(propVal)) {
+                // BigInt: store as BigInt to preserve precision across GE comparisons
+                propVal = BigInt(propVal)
+              } else if (typeof propVal === 'string' && /^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(propVal)) {
+                propVal = Number(propVal)
+              }
+              inlineFilters.push({ source: sourceVar, property: propName, operator: 'EQ', value: propVal })
+            }
+          }
         }
       }
       // 从 MATCH 变量中提取所有变量名（支持有/无 label/有内联属性三种写法）
@@ -2057,9 +2084,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (fullLabel && typeof fullLabel === 'string') return fullLabel.split(':').includes(targetLabel2)
               return String(node._label) === targetLabel2;
             })
-            // 应用 plan.filters 过滤
+            // 应用 plan.filters 过滤（含内联属性过滤器）
             .filter(({ node }: { node: Record<string, unknown> }) => {
-              return (plan.filters || []).every((f: any) => {
+              const allFilters = [...(plan.filters || []), ...inlineFilters]
+              return allFilters.every((f: any) => {
                 if (f.source && f.source !== varName) return true;
                 const actualVal = node[f.property as string];
                 if (f.property && actualVal === undefined) return false;
