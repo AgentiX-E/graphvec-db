@@ -2714,6 +2714,13 @@ export function _evalBinary(s: string, row?: Record<string, unknown>): ExprValue
   const _tryFnCall = (t: string): unknown => {
     const fnParenIdx = t.indexOf('(')
     if (fnParenIdx > 0 && t.endsWith(')') && /^[\w.]+$/.test(t.slice(0, fnParenIdx))) {
+      // Skip boolean operator keywords — they are handled by _evalOr/_evalAnd/_evalNot,
+      // not as function calls. E.g., NOT(n.name = 'apa' AND false) must NOT be
+      // intercepted as a call to a non-existent "NOT" function.
+      const fnNameLower = t.slice(0, fnParenIdx).toLowerCase()
+      if (fnNameLower === 'not' || fnNameLower === 'and' || fnNameLower === 'or' || fnNameLower === 'xor') {
+        return undefined
+      }
       let depth = 0, matchEnd = -1
       for (let i = fnParenIdx; i < t.length; i++) {
         if (t[i] === '(') depth++
