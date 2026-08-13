@@ -205,7 +205,12 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // ── Expression column evaluation (non-path-variable) ──
     // When rc has an associated expression (e.g. "size([(n)--() | 1]) > 0 AS b"),
     // evaluate it via the expression engine before falling through to raw value.
-    if (!isPathVar && ecMap[rc] && ecMap[rc] !== rc) {
+    // Also evaluate when rc itself is a computed expression (function call like
+    // labels(m)/count(b), or a binary comparison like p1 = p2) even when the
+    // alias equals the expression text (ecMap[rc] === rc). A pure identifier or
+    // property access (n, n.name) is a plain value and needs no evaluation.
+    const _isComputedExpr = /^[a-zA-Z_]\w*\s*\(/.test(rc) || /[+*/<>=!]|\s+(?:IN|AND|OR|XOR|IS\s+NULL|IS\s+NOT\s+NULL)\s+/i.test(rc)
+    if (!isPathVar && ecMap[rc] && (ecMap[rc] !== rc || _isComputedExpr)) {
       // Only evaluate if row value is an edge-format placeholder ([:...])
       // or undefined. If already pre-computed (boolean, number, object), skip.
       const rowVal = row[rc]
