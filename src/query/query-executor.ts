@@ -2272,6 +2272,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (!rc || rc === '*' || rc.includes('.')) return false
       // 排除函数调用列（如 labels(m)、count(r)、type(r)）—— 它们是表达式，不是边变量
       if (/^\w+\s*\(.*\)/.test(rc)) return false
+      // 排除含运算符的表达式列（如 p1 = p2、a <> b）—— 比较/二元运算，不是边变量
+      if (/[+*/<>=!]|(\s+(?:IN|AND|OR|XOR|IS\s+NULL|IS\s+NOT\s+NULL)\s+)/i.test(rc)) return false
       if (nodeAliases.has(rc)) return false
       // 排除聚合函数参数列（如 'count(r)' 中 r 是参数，不是边变量 RETURN 列）
       if (plan.aggregate) {

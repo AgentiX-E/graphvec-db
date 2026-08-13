@@ -218,7 +218,11 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         || (typeof rowVal === 'string' && rowVal.startsWith('[:'))
       if (needsEval) {
       const fnMatch = ecMap[rc].match(/^([a-zA-Z_]\w*)\s*\(/);
-      if (fnMatch && /size|length|head|nodes|labels|collect|count|sum|avg|min|max|coalesce|toLower|toUpper|type|exists|id|all|any|none|single|reduce|reverse|tail|left|right|split|replace|substring|trim|ltrim|rtrim|toString|toInteger|toFloat|toBoolean|keys|properties|startNode|endNode|range|abs|sqrt|ceil|floor|round|sign|rand|pi|sin|cos|tan|asin|acos|atan|degrees|radians|log|log10|exp|e|haversin/i.test(fnMatch[1])) {
+      const isFnCall = !!fnMatch && /size|length|head|nodes|labels|collect|count|sum|avg|min|max|coalesce|toLower|toUpper|type|exists|id|all|any|none|single|reduce|reverse|tail|left|right|split|replace|substring|trim|ltrim|rtrim|toString|toInteger|toFloat|toBoolean|keys|properties|startNode|endNode|range|abs|sqrt|ceil|floor|round|sign|rand|pi|sin|cos|tan|asin|acos|atan|degrees|radians|log|log10|exp|e|haversin/i.test(fnMatch[1])
+      // Non-function computed expressions (binary comparisons like `p1 = p2`,
+      // arithmetic like `a + b`) are also valid and must be evaluated.
+      const isBinaryExpr = !isFnCall && (ecMap[rc] !== rc || /[+*/<>=!]/.test(ecMap[rc]))
+      if (isFnCall || isBinaryExpr) {
         const localCtx: Record<string, unknown> = {};
         for (const k of Object.keys(row)) {
           if (!k.startsWith('__')) localCtx[k] = row[k];
@@ -240,7 +244,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             continue;
           }
         } catch (_e: any) { /* fall through to raw value */ }
-        } // if (fnMatch)
+        } // if (isFnCall || isBinaryExpr)
       } // if (needsEval)
     } // expression column eval
 
