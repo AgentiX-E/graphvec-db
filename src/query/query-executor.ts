@@ -2002,6 +2002,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 上面的 crossVarFilters 分支不执行，filteredWithLabels 仍为 records。
     // 此处用 filteredRecords 重新构建正确格式的结果行。
     // 支持多个 MATCH 变量（如 MATCH (n), (m) → 笛卡尔积）和单变量 MATCH。
+    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && (filteredRecords?.length || allNodes?.length)) {
       let hasMultiMatch = false
       const varLabelMap2: Record<string, string> = {}
       let inlineFilters: Array<{ source: string; property: string; operator: string; value: unknown; negated?: boolean }> = []
@@ -3616,6 +3617,7 @@ export async function _executeQuery(
   }
   // GE 执行路径 - 仅在需要时才深拷贝 plan（_executeViaGraphEngine 内会 mutate plan.filters/plan.steps）
   const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
+  const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
   // ── GROUP BY 聚合后处理 ──
   // 当 plan.aggregate 和 plan.groupBy 都存在时，对原始 nodes 做分组聚合
   if ((plan as any).groupBy?.length && (plan as any).aggregate) {
