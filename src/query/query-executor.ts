@@ -2962,9 +2962,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             for (const step of (plan.steps || [])) {
               const tAlias = step.targetAlias
               if (tAlias && rawWithEdges[ri].__crossVarRows[tAlias]) {
-                rawWithEdges[ri].__crossVarRows[tAlias]._label = dstLabel
-                if (rawWithEdges[ri].__crossVarRows[tAlias].props) {
-                  rawWithEdges[ri].__crossVarRows[tAlias].props._label = dstLabel
+                const tv = rawWithEdges[ri].__crossVarRows[tAlias]
+                // Only repair labels GE actually defaulted (never overwrite an
+                // already-correct label, e.g. relationship-variable queries where
+                // the target node label is resolved directly).
+                if (tv._label === 'Default' || tv._label === ':Default' || tv._label === undefined) {
+                  tv._label = dstLabel
+                  if (tv.props) tv.props._label = dstLabel
                 }
               }
             }
@@ -2979,9 +2983,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           for (const step of (plan.steps || [])) {
             const tAlias = step.targetAlias
             if (tAlias && rawResult[ri][tAlias]) {
-              ;(rawResult[ri][tAlias] as any)._label = dstLabel
-              if ((rawResult[ri][tAlias] as any).props) {
-                ;(rawResult[ri][tAlias] as any).props._label = dstLabel
+              const tv = rawResult[ri][tAlias] as any
+              if (tv._label === 'Default' || tv._label === ':Default' || tv._label === undefined) {
+                tv._label = dstLabel
+                if (tv.props) tv.props._label = dstLabel
               }
             }
           }
@@ -3091,9 +3096,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (unwindVal) ctx[plan.unwind.name] = unwindVal
         }
         // 路径变量注入：WHERE length(p) = N 需要通过 ctx.p.length 评估
-        if (plan.pathVar && !(plan.pathVar in ctx)) {
+        if (plan.pathVar) {
+          // Path length = number of relationships = number of traverse steps.
+          // Ensure the path variable always carries a `.length` so `length(p)=N`
+          // evaluates correctly, even when the row already binds `p` to a
+          // `__path` object (which has no numeric `.length`).
           const nSteps = (plan.steps || []).length
-          ctx[plan.pathVar] = { length: nSteps }
+          const existing = ctx[plan.pathVar]
+          if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+            ctx[plan.pathVar] = { ...(existing as Record<string, unknown>), length: nSteps }
+          } else if (!(plan.pathVar in ctx)) {
+            ctx[plan.pathVar] = { length: nSteps }
+          }
         }
         // 预处理 whereBody：替换 length(var) = N → var.length = N
         // 表达式引擎不认识 length() 函数，但可以用 .length 属性访问

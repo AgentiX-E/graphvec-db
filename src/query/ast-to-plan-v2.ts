@@ -1376,16 +1376,21 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
   const propsNode = findChild(firstPattern, 'PropertiesContext')
   const properties = propsNode ? extractMapLiteral(propsNode) : null
 
-  // Extract edge steps (PatternElementChain)
-  const chains = findAllChildren(matchCtx, 'PatternElementChainContext')
+  // Extract edge steps (PatternElementChain), grouped by PatternElement.
+  // A MATCH pattern may contain comma-separated pattern parts, each a
+  // PatternElement = NodePattern (PatternElementChain)*. Processing each
+  // PatternElement independently ensures a comma-separated chain like
+  // `(a)--(b)--(c), (b)--(d)` correctly starts its second part from `b`
+  // instead of inheriting the previous part's trailing variable.
+  const patternElements = findAllChildren(matchCtx, 'PatternElementContext')
+    .filter((pe: any) => (pe.children || []).length > 0)
   const edges: ParsedEdgeStep[] = []
 
-  let currentSource = variable ?? ''
-  for (const chain of chains) {
+  const buildEdge = (chain: any, source: string): ParsedEdgeStep | null => {
     const relPattern = findChild(chain, 'RelationshipPatternContext')
     const targetPattern = findChild(chain, 'NodePatternContext')
 
-    if (!relPattern || !targetPattern) continue
+    if (!relPattern || !targetPattern) return null
 
     // Edge direction
     const hasLeft = findChild(relPattern, 'LeftArrowHeadContext')
@@ -1407,7 +1412,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
     // Deduct direction from arrow heads
     if (hasLeft && !hasRight) direction = 'in'
     else if (hasLeft && hasRight) direction = 'any'
-    else if (!hasLeft && !hasRight) direction = 'any'  // 无箭头 = 无向
+    else if (!hasLeft && !hasRight) direction = 'any'  // no arrow = undirected
 
     // ── Relationship variable extraction: MATCH ()-[a]->() → edgeVariable: 'a' ──
     // Within RelationshipPatternContext, the VariableContext child is the
@@ -1445,8 +1450,8 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
         }
       }
 
-      // ── 关系属性提取（edgeProps） ──
-      // MATCH ()-[r:KNOWS {name: 'monkey'}]->() — 提取 {name: 'monkey'}
+      // ── Relationship property extraction (edgeProps) ──
+      // MATCH ()-[r:KNOWS {name: 'monkey'}]->() — extract {name: 'monkey'}
       const edgePropsNode = findChild(relDetail, 'PropertiesContext')
       if (edgePropsNode) {
         edgeProps = extractMapLiteral(edgePropsNode)
@@ -1460,8 +1465,8 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
     const targetPropsNode = findChild(targetPattern, 'PropertiesContext')
     const targetProps = targetPropsNode ? extractMapLiteral(targetPropsNode) : null
 
-    edges.push({
-      source: currentSource,
+    return {
+      source,
       direction,
       edgeLabel,
       edgeProps,
@@ -1470,9 +1475,30 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
       targetProps,
       ...(rangeInfo ? { range: rangeInfo } : {}),
       ...(edgeVariable ? { edgeVariable } : {}),
-    })
+    }
+  }
 
-    currentSource = targetVar ?? ''
+  if (patternElements.length) {
+    for (const pe of patternElements) {
+      const peNodes = findAllChildren(pe, 'NodePatternContext')
+      const peChains = findAllChildren(pe, 'PatternElementChainContext')
+      // Source of chain ci is the node pattern at index ci within this element.
+      let currentSource = peNodes.length ? (findSymbolicName(findChild(peNodes[0], 'VariableContext')) ?? '') : ''
+      for (let ci = 0; ci < peChains.length; ci++) {
+        const edge = buildEdge(peChains[ci], currentSource)
+        if (edge) edges.push(edge)
+        // Advance to the target variable for the next chain in this element.
+        currentSource = edge?.targetAlias ?? ''
+      }
+    }
+  } else {
+    // Fallback for grammars without PatternElementContext: process flat chains.
+    let currentSource = variable ?? ''
+    for (const chain of findAllChildren(matchCtx, 'PatternElementChainContext')) {
+      const edge = buildEdge(chain, currentSource)
+      if (edge) edges.push(edge)
+      currentSource = edge?.targetAlias ?? ''
+    }
   }
 
   return {
