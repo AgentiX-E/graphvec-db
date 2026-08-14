@@ -137,6 +137,22 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         if (Array.isArray(val)) varCtx[alias] = val
       }
     }
+
+    // 补充提取：`WITH <函数调用> AS var`（如 WITH collect([0, 0.0]) AS numbers）。
+    // 上述列表字面量扫描只覆盖 `WITH [...] AS var` 裸列表，无法识别函数包裹的列表
+    // （collect(...)、range(...) 等）。此类表达式需物化到 varCtx，供 `UNWIND numbers AS arr`
+    // 解析。仅处理以 WITH 开头的查询——以 MATCH 开头的聚合投影由 GE 负责。
+    {
+      const withExprMatch = query.match(/^WITH\s+(\S.*?)\s+AS\s+(\w+)\b/is)
+      if (withExprMatch) {
+        const expr = withExprMatch[1].trim()
+        const alias = withExprMatch[2]
+        if (!(alias in varCtx) && /[a-zA-Z_]\w*\s*\(/.test(expr)) {
+          const val = _evaluateExpression(expr, varCtx)
+          if (val != null || Array.isArray(val)) varCtx[alias] = val
+        }
+      }
+    }
   }
 
   // Step 2: 执行 UNWIND 链（支持 N 级 UNWIND 笛卡尔积）
@@ -485,6 +501,49 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   // 如果 WITH 中没有投影列但 rows 不为空，保持现有 row
   if (!plan.with?.columns?.length && !rows.length && !plan.unwind) {
     rows = [{}]
+  }
+
+  // ── MATCH 扫描 + WHERE 过滤（管道变量注入模式）──
+  // `WITH collect(...) UNWIND ... WITH expected AS x MATCH (n) WHERE ... RETURN n`
+  // 在物化中间变量（如 expected）后，还需执行 MATCH 扫描并用 whereBody 过滤。
+  // 仅当：(a) 查询以 WITH/UNWIND 开头（管道变量注入，而非 GE 负责的 MATCH 聚合投影）；
+  // (b) 无遍历步骤（MATCH (n) 单节点扫描）；(c) 存在 whereBody。此精确条件避免
+  // 误伤 Comparison2/List12 等以 MATCH 开头的多步查询（它们由 GE 处理）。
+  const _pipelineStartsVarInjection = !!query && /^\s*(?:WITH|UNWIND)\b/is.test(query)
+  if (_pipelineStartsVarInjection && plan.hasMatch && !plan.aggregate && plan.steps?.length === 0 && plan.whereBody) {
+    // 提取 MATCH 变量名：从 RETURN/表达式列中的节点变量，回退到 query 正则
+    let matchVar = ''
+    if (query) {
+      const mm = query.match(/MATCH\s*\((\w+)/i)
+      if (mm) matchVar = mm[1]
+    }
+    if (!matchVar && plan.expressionColumns?.length) {
+      for (const ec of plan.expressionColumns) {
+        const e = typeof ec.expression === 'string' ? ec.expression : ''
+        if (/^[a-zA-Z_]\w*$/.test(e)) { matchVar = e; break }
+      }
+    }
+    if (!matchVar && plan.returnColumns?.length) {
+      const rc = plan.returnColumns.find(c => /^[a-zA-Z_]\w*$/.test(c) && c !== 'true' && c !== 'false' && c !== 'null')
+      if (rc) matchVar = rc
+    }
+    const candidateNodes: any[] = (_nodes?.length ? _nodes : [])
+    let matchedRows: Array<Record<string, unknown>> = []
+    for (const row of rows) {
+      const evalCtxBase: Record<string, unknown> = { ...varCtx, ...row }
+      if (candidateNodes.length === 0) continue
+      for (const node of candidateNodes) {
+        const evalCtx: Record<string, unknown> = { ...evalCtxBase }
+        if (matchVar) evalCtx[matchVar] = node
+        const val = _evaluateExpression(plan.whereBody!, evalCtx)
+        if (val === true) {
+          const outRow: Record<string, unknown> = { ...row }
+          if (matchVar) outRow[matchVar] = node
+          matchedRows.push(outRow)
+        }
+      }
+    }
+    rows = matchedRows
   }
 
   // ── RETURN 列映射 ──

@@ -3708,7 +3708,28 @@ export async function _executeQuery(
   // When a Cypher query has aggregation functions (collect, count, etc.) but no
   // rows were produced (e.g., empty graph + OPTIONAL MATCH), return a single
   // default row with null/zero aggregate values instead of an empty result.
-  if (execQueryResult.length === 0 && query && /\b(collect|count|sum|avg|min|max)\s*\(/i.test(query)) {
+  //
+  // Trigger only for a TRUE aggregation over rows — either a top-level
+  // plan.aggregate, or an aggregate function nested in a RETURN expression
+  // (e.g. size(collect(r))). A `collect([...])` literal-list builder in a
+  // leading WITH must NOT fake an empty-row aggregate, so exclude the
+  // `collect([...])` shape (collect immediately followed by `[`).
+  const _hasTrueAggregate = (() => {
+    if (plan.aggregate) return true
+    let hasAgg = false
+    for (const col of (plan.expressionColumns || [])) {
+      const expr = typeof col.expression === 'string' ? col.expression : (col.expression as any)?.expression || ''
+      if (/\b(collect|count|sum|avg|min|max)\s*\(/i.test(expr) && !/\bcollect\s*\(\s*\[/i.test(expr)) {
+        hasAgg = true
+        break
+      }
+    }
+    if (hasAgg) return true
+    // Also scan the leading WITH for a non-literal aggregate when there is no
+    // RETURN aggregation at all (kept for backward safety; literal collect([...]) excluded).
+    return false
+  })()
+  if (execQueryResult.length === 0 && _hasTrueAggregate && query && /\b(collect|count|sum|avg|min|max)\s*\(/i.test(query) && !/^\s*(?:WITH|UNWIND)\b/is.test(query)) {
     const defaultRow: QueryRow = {}
     for (const col of (plan.expressionColumns || [])) {
       const alias = col.alias || ''

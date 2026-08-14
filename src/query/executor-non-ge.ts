@@ -376,11 +376,24 @@ export async function _execNonGePaths(
   // ── 多子句交叉连接守卫 ──
   // `MATCH (a) WITH a MATCH (b) WHERE ...` 是“变量前向传递 + 第二个 MATCH”的
   // 交叉连接模式，不是 list/collect 投影管道。此类查询必须走 GE 主路径以构建
-  // a×b 笛卡尔积。检测信号：WITH 后还有第二个 MATCH 子句。
-  const _hasSecondMatchAfterWith = !!query && /WITH\b[^]*?\bMATCH\s*\(/is.test(query)
+  // a×b 笛卡尔积。检测信号：查询以 MATCH 开头，且 WITH 后还有第二个 MATCH 子句。
+  //
+  // 注意区分两类“WITH 后跟 MATCH”：
+  //   (1) 交叉连接：`MATCH (a) WITH a MATCH (b)` — 首个子句是 MATCH，第二个
+  //       MATCH 是笛卡尔积新起点，必须走 GE。
+  //   (2) 管道变量注入：`WITH collect(...) UNWIND ... WITH expected MATCH (n)`
+  //       首个子句是 WITH/UNWIND，MATCH 只是对已物化的 `expected` 变量做过滤，
+  //       必须走 unwind 管道（否则 `expected` 不会物化，WHERE 全空）。
+  // 因此守卫必须以查询是否“以 MATCH 开头”为前提。
+  const _hasSecondMatchAfterWith = !!query && /^\s*MATCH\b/is.test(query) && /WITH\b[^]*?\bMATCH\s*\(/is.test(query)
+  // 管道变量注入模式以 WITH/UNWIND 开头（如 `WITH collect(...) UNWIND ... WITH expected MATCH (n)`），
+  // 而非以 MATCH 开头。以 MATCH 开头的 `MATCH ... WITH collect(a) ... UNWIND ...` 是
+  // 聚合投影，必须走 GE，不能误入 unwind 管道。
+  const _startsWithWith = !!query && /^\s*(?:WITH|UNWIND)\b/is.test(query)
   if (!_hasSecondMatchAfterWith && (
       (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) ||
       (plan.hasMatch && plan.aggregate && (plan.unwind || plan.with)) ||
+      (_startsWithWith && plan.hasMatch && plan.unwind && plan.with && !plan.aggregate) ||
       (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && (plan.unwind || plan.with)))) {
     const result = _executeWithUnwindPipeline(plan, nodes, query)
     // Execute SET clauses on the matched nodes after pipeline projection
