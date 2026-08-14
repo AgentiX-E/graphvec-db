@@ -2992,7 +2992,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
-      const aggAlias = agg.alias || agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c'
+      // The parser stores `alias` as the function name (e.g. "count") when the
+      // query has no explicit `AS` clause. In that case the result column must
+      // use the full column expression (e.g. "count(r)") to match the RETURN
+      // column, not the bare function name.
+      const _realAlias = agg.alias && agg.alias !== agg.function ? agg.alias : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c')
+      const aggAlias = _realAlias
       const colMatch = (agg.column || '').match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
       const field = colMatch ? colMatch[1] : (agg.field || '*')
 

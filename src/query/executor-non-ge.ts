@@ -372,9 +372,16 @@ export async function _execNonGePaths(
   // so we let the unwind pipeline manage the full post-MATCH projection.
   // Also cover SET/DELETE DML types that have hasMatch+unwind/with: when the query
   // plan is a DML type, GE may not handle WITH correctly, so delegate to pipeline.
-  if ((!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) ||
+  //
+  // ── 多子句交叉连接守卫 ──
+  // `MATCH (a) WITH a MATCH (b) WHERE ...` 是“变量前向传递 + 第二个 MATCH”的
+  // 交叉连接模式，不是 list/collect 投影管道。此类查询必须走 GE 主路径以构建
+  // a×b 笛卡尔积。检测信号：WITH 后还有第二个 MATCH 子句。
+  const _hasSecondMatchAfterWith = !!query && /WITH\b[^]*?\bMATCH\s*\(/is.test(query)
+  if (!_hasSecondMatchAfterWith && (
+      (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) ||
       (plan.hasMatch && plan.aggregate && (plan.unwind || plan.with)) ||
-      (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && (plan.unwind || plan.with))) {
+      (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && (plan.unwind || plan.with)))) {
     const result = _executeWithUnwindPipeline(plan, nodes, query)
     // Execute SET clauses on the matched nodes after pipeline projection
     if (plan.type === 'SET' && plan.setClauses?.length) {
