@@ -566,31 +566,53 @@ function execCreateOnGe(ge: any, q: string): void {
   const edgeTokens = tokens.filter(t => t.type === 'edge')
   const createdNodes: Array<Record<string, unknown>> = []
   const nodeGeIds: number[] = []
+  // Map a node variable name (e.g. `n` in `(n:A)`) to its created index, so that
+  // a self-loop like `(n:A)-[:LOOP]->(n)` reuses the SAME node instead of creating
+  // a second, disconnected node. Anonymous `()`/`(:A)` nodes get a fresh index.
+  const varToNodeIdx = new Map<string, number>()
 
   for (const nt of nodeTokens) {
     const labels: string[] = []
     const props: Record<string, unknown> = {}
     const bi = nt.inner.indexOf('{')
-    if (bi >= 0) {
-      const labelPart = nt.inner.substring(0, bi).trim()
-      if (labelPart.startsWith(':')) labels.push(...labelPart.substring(1).split(':').filter(Boolean))
-      Object.assign(props, _parseProps(nt.inner.substring(bi)))
-    } else if (nt.inner.startsWith(':')) {
-      labels.push(...nt.inner.substring(1).split(':').filter(Boolean))
-    } else if (nt.inner) {
-      labels.push(...nt.inner.split(':').filter(Boolean))
+    const headPart = (bi >= 0 ? nt.inner.substring(0, bi) : nt.inner).trim()
+    // Split variable from labels: `n:A` → variable `n`, label `A`;
+    // `n` → variable `n`, no label; `:A` → no variable, label `A`; `` → anonymous.
+    let variable = ''
+    let rest = headPart
+    if (headPart && !headPart.startsWith(':')) {
+      const colonIdx = headPart.indexOf(':')
+      if (colonIdx >= 0) {
+        variable = headPart.substring(0, colonIdx).trim()
+        rest = headPart.substring(colonIdx)
+      } else {
+        variable = headPart
+        rest = ''
+      }
+    }
+    for (const part of rest.split(':').filter(Boolean)) labels.push(part)
+    if (bi >= 0) Object.assign(props, _parseProps(nt.inner.substring(bi)))
+
+    // Reuse an existing node when this token refers back to a seen variable
+    // (self-loop). Otherwise create a fresh node and record its variable.
+    if (variable && varToNodeIdx.has(variable)) {
+      continue
     }
     const node: Record<string, unknown> = { _label: labels[0] || 'Default', ...props }
     if (labels.length > 1) node.__fullLabel = labels.join(':')
     node.__edges = []
+    const nodeIdx = createdNodes.length
     createdNodes.push(node)
+    if (variable) varToNodeIdx.set(variable, nodeIdx)
     const h = _hashLabel(node._label as string)
     try { (ge as any).upsertNode(h, 'rn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
     nodeGeIds.push(h)
   }
 
-  // Phase 2: Build edges — link between consecutive node indices
-  for (let ei = 0; ei < edgeTokens.length && ei < createdNodes.length - 1; ei++) {
+  // Phase 2: Build edges — link between consecutive node tokens, honoring
+  // self-loop references (same variable reused). Each edge connects the i-th
+  // node token to the (i+1)-th node token (resolved through varToNodeIdx).
+  for (let ei = 0; ei < edgeTokens.length && ei < nodeTokens.length - 1; ei++) {
     const et = edgeTokens[ei]
     let edgeLabel = ''
     const edgeProps: Record<string, unknown> = {}
@@ -603,14 +625,28 @@ function execCreateOnGe(ge: any, q: string): void {
       edgeLabel = et.inner.substring(1).trim()
     }
 
+    // Resolve the source and target node tokens to concrete indices.
+    const srcToken = nodeTokens[ei]
+    const dstToken = nodeTokens[ei + 1]
+    const _varOf = (t: { inner: string }): string => {
+      const head = (t.inner.indexOf('{') >= 0 ? t.inner.substring(0, t.inner.indexOf('{')) : t.inner).trim()
+      if (!head || head.startsWith(':')) return ''
+      const ci = head.indexOf(':')
+      return (ci >= 0 ? head.substring(0, ci) : head).trim()
+    }
+    const srcVar = _varOf(srcToken)
+    const dstVar = _varOf(dstToken)
+    const srcIdx = srcVar && varToNodeIdx.has(srcVar) ? varToNodeIdx.get(srcVar)! : ei
+    const dstIdx = dstVar && varToNodeIdx.has(dstVar) ? varToNodeIdx.get(dstVar)! : ei + 1
+
     const arrow = arrows[ei] || '->'
-    const srcIdx = ei, dstIdx = ei + 1
     const geSrc = arrow === '<-' ? dstIdx : srcIdx
     const geDst = arrow === '<-' ? srcIdx : dstIdx
 
     // Push to source node's __edges (will be read by extractEdgesFromNodes)
     const edgeEntry = { srcIdx: geSrc, dstIdx: geDst, label: edgeLabel || 'T', props: Object.keys(edgeProps).length ? edgeProps : null }
-    createdNodes[srcIdx].__edges!.push(edgeEntry)
+    const srcNode = createdNodes[srcIdx]
+    if (srcNode && Array.isArray(srcNode.__edges)) srcNode.__edges.push(edgeEntry)
 
     // Also seed edge to persistent GE
     const typeId = _hashLabel(edgeLabel || 'T')

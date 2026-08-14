@@ -191,6 +191,8 @@ interface ParsedEdgeStep {
   targetProps: Record<string, unknown> | null
   edgeProps?: Record<string, unknown> | null
   range?: { min: number; max: number | null }
+  /** relationship variable from `MATCH ()-[a]->()` */
+  edgeVariable?: string | null
 }
 
 interface ParsedReturn {
@@ -649,10 +651,16 @@ function buildQueryPlan(query: string): QueryPlan {
   const plan = clausesToPlan(clauses)
 
   // ── Post-processing: ATTACH pathVar ──
-  // 当 buildQueryPlan 在 ANTLR 解析前剥离了 `p = ` 路径分配前缀时，
-  // 将路径变量名附加到 plan 以便执行层使用。
-  if (pathVar && !plan.pathVar) {
+  // When buildQueryPlan strips the `p = ` path-assignment prefix before ANTLR
+  // parsing, attach the FIRST path variable name to the plan (additional MATCH
+  // path variables are already recorded on their step.pathVariable).
+  if (pathVar) {
     plan.pathVar = pathVar
+    // Also attach the first path variable to the first traverse step so the
+    // executor can bind `p1` to a real path object.
+    if (plan.steps.length && !(plan.steps[0] as any).pathVariable) {
+      ;(plan.steps[0] as any).pathVariable = pathVar
+    }
   }
 
   // ── Post-processing: FOREACH — ANTLR doesn't support FOREACH syntax ──
@@ -897,25 +905,34 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
     switch (clause.type) {
       case 'MATCH': {
         hasMatch = true
-        // ── 路径分配检测: MATCH p = (a)-[*]->(b) → pathVar: 'p' ──
-        // ANTLR 不认识 `p = (` 语法，无法通过 extractMatch 提取路径分配模式。
-        // 直接从 clause text 中用正则提取。
+        // ── Path assignment detection: MATCH p = (a)-[*]->(b) → pathVar: 'p' ──
+        // ANTLR does not understand `p = (` syntax, so extract the path
+        // assignment pattern from the clause text via regex.
         const matchCtxText = clause.ctx.getText ? clause.ctx.getText() : ''
-        const pathAssignMatch = matchCtxText.match(/^(\w+)\s*=\s*\(/)
-        if (pathAssignMatch) {
-          plan.pathVar = pathAssignMatch[1]
-        }
+        // clause.ctx.getText() may include the leading `MATCH ` keyword (e.g.
+        // `MATCH p2 = (:A)<--()`). Tolerate the optional leading `MATCH `.
+        const pathAssignMatch = matchCtxText.match(/(?:^|\s)(\w+)\s*=\s*\(/)
         const parsed = extractMatch(clause.ctx)
         if (parsed) {
-          // 如果是第一个 MATCH，设置 scanLabel 和 steps
-          // 如果是后续 MATCH（逗号分隔），作为额外 scan + steps
+          // Attach this MATCH clause's path variable to its first traverse step
+          // so the executor can bind p1/p2 to real path objects
+          // (`MATCH p1 = (:A)-->() MATCH p2 = (:A)<--()`).
+          if (pathAssignMatch && parsed.edges.length) {
+            ;(parsed.edges[0] as any).pathVariable = pathAssignMatch[1]
+          }
           if (!plan.scanLabel && plan.steps.length === 0) {
             plan.scanLabel = parsed.label ?? plan.scanLabel
             plan.steps = parsed.edges
           } else {
-            // 第二个/更多 MATCH 暂存到 additionalMatches
-            const existingSteps = plan.steps
-            plan.steps = existingSteps.concat(parsed.edges)
+            // Second/further independent MATCH clause → stage as an independent
+            // pattern for the executor to cross-join (relationship identity
+            // `a = b`, path equality `p1 = p2`).
+            if (!plan.multiMatch) plan.multiMatch = []
+            plan.multiMatch.push({
+              scanLabel: parsed.label ?? null,
+              steps: parsed.edges,
+              variable: parsed.variable || undefined,
+            })
           }
         }
         break
@@ -1392,6 +1409,12 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
     else if (hasLeft && hasRight) direction = 'any'
     else if (!hasLeft && !hasRight) direction = 'any'  // 无箭头 = 无向
 
+    // ── Relationship variable extraction: MATCH ()-[a]->() → edgeVariable: 'a' ──
+    // Within RelationshipPatternContext, the VariableContext child is the
+    // relationship variable (distinct from labels/types in RelationshipDetailContext).
+    const relVarCtx = findChild(relPattern, 'VariableContext')
+    const edgeVariable = relVarCtx ? findSymbolicName(relVarCtx) : null
+
     // Edge label
     let rangeInfo: { min: number; max: number | null } | undefined = undefined
 
@@ -1446,6 +1469,7 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
       targetLabel,
       targetProps,
       ...(rangeInfo ? { range: rangeInfo } : {}),
+      ...(edgeVariable ? { edgeVariable } : {}),
     })
 
     currentSource = targetVar ?? ''

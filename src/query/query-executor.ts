@@ -92,11 +92,204 @@ function _geUpsertEdge(ge: any, srcId: number, dstId: number, typeId: number, pr
   }
 }
 
+/**
+ * _executeMultiMatchCrossJoin — cross-join executor for multiple MATCH patterns.
+ *
+ * Handles two or more independent MATCH patterns produced by adjacent or
+ * `WITH x`-separated `MATCH ... MATCH ...` clauses. Each pattern binds its own
+ * relationship variable (`[a]`/`[b]`) or path variable (`p1`/`p2`), the results
+ * are combined via a Cartesian product, and the WHERE / RETURN expressions are
+ * evaluated over the cross-joined bindings.
+ *
+ * Covered TCK scenarios:
+ *   - Comparison1 [5]: `MATCH ()-[a]->() WITH a MATCH ()-[b]->() WHERE a = b RETURN count(b)`
+ *   - Comparison1 [14]: `MATCH p1 = (:A)-->() MATCH p2 = (:A)<--() RETURN p1 = p2`
+ *
+ * Returns null when the plan does not qualify for multi-MATCH cross-join (the
+ * ordinary GE path handles those).
+ */
+async function _executeMultiMatchCrossJoin(
+  plan: QueryPlan,
+  nodes: Array<Record<string, unknown>>,
+  query?: string,
+): Promise<QueryRow[] | null> {
+  const mm = (plan as any).multiMatch as Array<{ scanLabel: string | null; steps: TraverseStep[]; variable?: string }> | undefined
+  if (!mm?.length) return null
+
+  // Assemble all independent patterns: pattern[0] = primary MATCH
+  // (plan.steps + plan.scanLabel), pattern[1..] = additional MATCH (multiMatch[i]).
+  const patterns: Array<{ scanLabel: string | null; steps: TraverseStep[] }> = [
+    { scanLabel: plan.scanLabel ?? null, steps: plan.steps || [] },
+    ...mm.map(p => ({ scanLabel: p.scanLabel ?? null, steps: p.steps || [] })),
+  ]
+  if (patterns.length < 2) return null
+  // Only cross-join when at least one pattern carries a relationship or path
+  // variable (otherwise the ordinary GE path already covers it).
+  const hasRelOrPathVar = patterns.some(p => p.steps.some((s: any) => s.edgeVariable || s.pathVariable))
+  if (!hasRelOrPathVar) return null
+
+  // Clone nodes and ensure __edges exists.
+  const allNodes: Array<Record<string, unknown>> = (nodes || []).map(n => {
+    const c: Record<string, unknown> = { ...n }
+    if (Array.isArray((n as any).__edges)) (c as any).__edges = [...(n as any).__edges] as any
+    return c
+  })
+  for (const nd of allNodes) if (!nd.__edges) nd.__edges = []
+
+  // Enumerate every relationship edge in the graph, keyed by srcIdx|dstIdx|label
+  // to provide stable relationship identity for `a = b` comparisons.
+  const rels: Array<Record<string, unknown>> = []
+  const relSeen = new Set<string>()
+  for (let i = 0; i < allNodes.length; i++) {
+    const edges = (allNodes[i] as any).__edges as Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> }> | undefined
+    if (!edges) continue
+    for (const e of edges) {
+      const key = `${e.srcIdx}|${e.dstIdx}|${e.label || ''}`
+      if (relSeen.has(key)) continue
+      relSeen.add(key)
+      const relObj: Record<string, unknown> = {
+        __edgeId: key,
+        __edgeLabel: e.label,
+        __edgeLabelStr: e.label,
+        _type: e.label,
+        _label: e.label,
+        srcIdx: e.srcIdx,
+        dstIdx: e.dstIdx,
+      }
+      if (e.props) for (const [k, v] of Object.entries(e.props)) relObj[k] = v
+      rels.push(relObj)
+    }
+  }
+
+  const nodeLabel = (i: number): string => String(allNodes[i]?.['_label'] || '')
+
+  // For single-edge patterns enumerate matching relationships by direction;
+  // for path/multi-step patterns use _walkMultiSteps. Each pattern emits a
+  // "match list" of variable-binding objects.
+  const matchLists: Array<Array<Record<string, unknown>>> = []
+  for (const pat of patterns) {
+    const matches: Array<Record<string, unknown>> = []
+    const step = pat.steps[0]
+    const edgeVar = (step as any)?.edgeVariable as string | undefined
+    const pathVar = (step as any)?.pathVariable as string | undefined
+
+    // Candidate start nodes, honoring scanLabel.
+    const startIdxs: number[] = []
+    for (let i = 0; i < allNodes.length; i++) {
+      if (pat.scanLabel) {
+        const nl = nodeLabel(i)
+        const fl = (allNodes[i] as any).__fullLabel
+        const labelMatches = fl && typeof fl === 'string'
+          ? fl.split(':').includes(pat.scanLabel)
+          : nl === pat.scanLabel
+        if (!labelMatches) continue
+      }
+      startIdxs.push(i)
+    }
+
+    if (pat.steps.length === 1 && !pathVar) {
+      // Single-step relationship pattern: enumerate matching edges directly.
+      for (const rel of rels) {
+        const s = rel.srcIdx as number, d = rel.dstIdx as number
+        // direction semantics: out → rel.srcIdx must be a start node; in → rel.dstIdx.
+        if (step.direction === 'out' && startIdxs.length !== allNodes.length && !startIdxs.includes(s)) continue
+        if (step.direction === 'in' && startIdxs.length !== allNodes.length && !startIdxs.includes(d)) continue
+        const m: Record<string, unknown> = {}
+        if (edgeVar) m[edgeVar] = rel
+        matches.push(m)
+      }
+    } else {
+      // Path or multi-step pattern: walk via _walkMultiSteps and build path objects.
+      for (const si of startIdxs) {
+        const paths = _walkMultiSteps(si, pat.steps, allNodes, undefined, plan.filters, undefined)
+        for (const path of paths) {
+          const m: Record<string, unknown> = {}
+          if (pathVar) {
+            // Build __path array: node0, edge0, node1, ...
+            const pathObjs: unknown[] = []
+            for (let pi = 0; pi < path.length; pi++) {
+              pathObjs.push(allNodes[path[pi]] || {})
+              if (pi < path.length - 1) {
+                const a = allNodes[path[pi]] as any
+                const edges = (a?.__edges || []) as Array<{ srcIdx: number; dstIdx: number; label: string; props?: any }>
+                const relEdge = edges.find(ee => ee.dstIdx === path[pi + 1] || ee.srcIdx === path[pi + 1])
+                pathObjs.push(relEdge || { _label: '', label: '' })
+              }
+            }
+            m[pathVar] = { __path: pathObjs }
+          }
+          matches.push(m)
+        }
+      }
+    }
+    matchLists.push(matches)
+  }
+
+  // Cartesian product cross-join.
+  let crossRows: Array<Record<string, unknown>> = [{}]
+  for (const matches of matchLists) {
+    const next: Array<Record<string, unknown>> = []
+    for (const base of crossRows) {
+      for (const m of matches) {
+        next.push({ ...base, ...m })
+      }
+    }
+    crossRows = next
+  }
+  if (!crossRows.length) return []
+
+  // Evaluate WHERE (relationship identity / path equality).
+  let filtered = crossRows
+  if (plan.whereBody) {
+    filtered = []
+    for (const row of crossRows) {
+      const val = _evaluateExpression(plan.whereBody, { ...row })
+      if (val === true) filtered.push(row)
+    }
+  }
+
+  // Build result rows.
+  const agg = plan.aggregate as any
+  // Aggregate alias resolution (consistent with the primary GE aggregation path):
+  // fall back to the original column text (e.g. count(b)) when alias equals the
+  // function name, otherwise use alias (e.g. count(*) AS c → c).
+  const alias = (agg?.alias && agg.alias !== agg.function)
+    ? agg.alias
+    : ((agg?.column || '').replace(/^.+?\s+AS\s+/i, '').trim() || agg?.field || agg?.column || 'c')
+  let out: QueryRow[]
+  if (plan.aggregate) {
+    out = [{ [alias]: filtered.length }]
+  } else {
+    // Expression columns (e.g. `p1 = p2`).
+    out = filtered.map(row => {
+      const r: QueryRow = {}
+      for (const ec of (plan.expressionColumns || [])) {
+        const expr = typeof ec.expression === 'string' ? ec.expression : (ec as any).expression
+        const ecAlias = ec.alias
+        r[ecAlias] = _evaluateExpression(expr, { ...row })
+      }
+      // Fall back to RETURN column names when no expression columns exist.
+      if (!Object.keys(r).length && plan.returnColumns?.length) {
+        for (const rc of plan.returnColumns) {
+          if (rc in row) r[rc] = row[rc]
+        }
+      }
+      return r
+    })
+  }
+
+  return out
+}
+
 /** GraphEngine 原生执行入口 */
 export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
   // ── 非 GE 路径（early exit）──
   const nonGeResult = await _execNonGePaths(plan, nodes, query)
   if (nonGeResult !== null) return nonGeResult
+
+  // ── Multi-MATCH cross-join (early exit) ──
+  const multiMatchResult = await _executeMultiMatchCrossJoin(plan, nodes, query)
+  if (multiMatchResult !== null) return multiMatchResult as unknown as QueryResult
 
   // ── 共享 GE 实例 ──
   let ge: GraphEngine | null = null
