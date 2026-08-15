@@ -1306,6 +1306,14 @@ function _walkMultiSteps(
             return e.dstIdx === last
           })
         }
+        // [FIX-WALK-CONNECTED]: direction='any' 时也检查反向边（CREATE 单向边 + MATCH 无向边）
+        if (!connected && steps.length > 0 && steps[si] && steps[si].direction === 'any') {
+          const idxNode = allNodes[idx] as any
+          connected = idxNode?.__edges?.some((e: any) => {
+            const neighborIdx = e.dstIdx === idx ? e.srcIdx : (e.srcIdx === idx ? e.dstIdx : -1)
+            return neighborIdx === last
+          })
+        }
         if (connected) {
           newPaths.push([...p, idx])
         }
