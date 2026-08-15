@@ -410,8 +410,13 @@ function buildQueryPlan(query: string): QueryPlan {
   const pathMatch = trimmed.match(/^(MATCH\s+)(\w+)\s*=\s*\(/i)
   if (pathMatch) {
     pathVar = pathMatch[2]
-    // 替换 `MATCH p = (a)...` → `MATCH (a)...`（保留 MATCH 关键字）
-    trimmed = pathMatch[1] + '(' + trimmed.substring(pathMatch.index! + pathMatch[0].indexOf('('))
+    // Strip only the `p = ` path-assignment token, keeping the leading
+    // `MATCH ` keyword and the pattern's opening `(`.
+    // `pathMatch[0]` already ends with `(`, so resume from that `(` instead of
+    // re-adding one (which previously produced a doubled `((` that ANTLR read as
+    // a spurious nested node pattern → duplicated traverse step).
+    // `MATCH p = (a)-->()`  →  `MATCH (a)-->()`
+    trimmed = pathMatch[1] + trimmed.substring(pathMatch.index! + pathMatch[0].length - 1)
   }
 
   // ── ADMIN COMMANDS: Handle before ANTLR parsing ──
