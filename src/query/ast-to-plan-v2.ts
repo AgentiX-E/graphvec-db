@@ -1732,6 +1732,10 @@ function extractReturn(returnCtx: any): ParsedReturn {
 function extractCreateNodes(createCtx: any): Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }> {
   const nodes: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }> = []
   const nodePatterns = findAllChildren(createCtx, 'NodePatternContext')
+  // Map a node variable to its first-created index so a shared source variable
+  // across comma-separated patterns (e.g. `(a)-[:T]->(:B), (a)-[:T]->(:C)`)
+  // yields a single node rather than a duplicate. Anonymous nodes stay unique.
+  const varToIdx = new Map<string, number>()
 
   for (const np of nodePatterns) {
     const variable = findSymbolicName(findChild(np, 'VariableContext')) ?? ''
@@ -1739,6 +1743,11 @@ function extractCreateNodes(createCtx: any): Array<{ alias: string; label: strin
     const label = labelCtx ? extractLabel(labelCtx) : null
     const propsNode = findChild(np, 'PropertiesContext')
     const props = propsNode ? extractMapLiteral(propsNode) : null
+    // Reuse a prior variable's node instead of emitting a duplicate (branching).
+    if (variable && varToIdx.has(variable)) {
+      continue
+    }
+    if (variable) varToIdx.set(variable, nodes.length)
     nodes.push({ alias: variable, label, props })
   }
 
@@ -1754,13 +1763,32 @@ function extractCreateEdges(createCtx: any): Array<{
     source: string; target: string; sourceIdx?: number; targetIdx?: number;
     label: string | null; direction: 'out' | 'in' | 'any'
   }> = []
-  // Track global index of NodePatternContext across all PatternElements within this CREATE
-  let nodeIdx = 0
+  // Map each NodePatternContext object to its dedup'd index, matching the
+  // order produced by extractCreateNodes: iterate nodes in document order,
+  // dedup only NAMED variables (reuse the first occurrence's index), and give
+  // every anonymous node a fresh, monotonically increasing index. This keeps
+  // shared middle nodes in a chain (e.g. `()-[:X]-()-[:X]->()`) stable across
+  // both edges without inflating indices.
+  const nodeToIdx = new Map<any, number>()
+  {
+    const varToIdx2 = new Map<string, number>()
+    let idx = 0
+    for (const np of findAllChildren(createCtx, 'NodePatternContext')) {
+      const variable = findSymbolicName(findChild(np, 'VariableContext')) ?? ''
+      if (variable && varToIdx2.has(variable)) {
+        nodeToIdx.set(np, varToIdx2.get(variable)!)
+      } else {
+        if (variable) varToIdx2.set(variable, idx)
+        nodeToIdx.set(np, idx)
+        idx++
+      }
+    }
+  }
 
   const patternElements = findAllChildren(createCtx, 'PatternElementContext')
   for (const pe of patternElements) {
     const peNodes = findAllChildren(pe, 'NodePatternContext')
-    if (peNodes.length < 2) { nodeIdx += peNodes.length; continue }
+    if (peNodes.length < 2) continue
 
     const chainCtxs = findAllChildren(pe, 'PatternElementChainContext')
     for (let ci = 0; ci < chainCtxs.length; ci++) {
@@ -1788,8 +1816,9 @@ function extractCreateEdges(createCtx: any): Array<{
       const dstNode = ci + 1 < peNodes.length ? peNodes[ci + 1] : null
       const sourceAlias = srcNode ? findSymbolicName(findChild(srcNode, 'VariableContext')) ?? '' : ''
       const targetAlias = dstNode ? findSymbolicName(findChild(dstNode, 'VariableContext')) ?? '' : ''
-      const baseSrcIdx = nodeIdx + ci
-      const baseTgtIdx = sourceAlias && sourceAlias === targetAlias ? nodeIdx + ci : nodeIdx + ci + 1
+      // Dedup'd node indices (stable for shared middle nodes in a chain).
+      const baseSrcIdx = srcNode ? nodeToIdx.get(srcNode)! : 0
+      const baseTgtIdx = dstNode ? nodeToIdx.get(dstNode)! : baseSrcIdx + 1
       // direction="in"（<-[]-）: Cypher 语法逆序，需要交换 sourceIdx 和 targetIdx
       // 存储层面总是 src→dst，方向用 direction 表示
       const realSrcIdx = direction === 'in' ? baseTgtIdx : baseSrcIdx
@@ -1806,7 +1835,6 @@ function extractCreateEdges(createCtx: any): Array<{
         direction,
       })
     }
-    nodeIdx += peNodes.length
   }
 
   return edges

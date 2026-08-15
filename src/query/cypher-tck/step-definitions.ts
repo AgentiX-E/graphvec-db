@@ -544,60 +544,59 @@ Given('a graph with:', function (dt: DataTable) {
 function execCreateOnGe(ge: any, q: string): void {
   // Parse the CREATE pattern and produce nodes with __edges for _executeQuery.
   // Supports: ()->(), ()-(), ()<-(), multiple edges: ()-[:T]->()-[:X]->()
+  // and comma-separated independent patterns sharing a source variable,
+  // e.g. `(a)-[:T]->(:B), (a)-[:T]->(:C)` (branching, NOT a linear chain).
   // Also supports standalone nodes: (:A), (:B {prop:1})
 
-  const regex = /\(([^)]*)\)|\[([^\]]*)\]/g
-  const tokens: Array<{ type: 'node' | 'edge'; inner: string }> = []
-  let m
-  while ((m = regex.exec(q)) !== null) {
-    if (m[1] !== undefined) tokens.push({ type: 'node', inner: m[1].trim() })
-    else if (m[2] !== undefined) tokens.push({ type: 'edge', inner: m[2].trim() })
+  // Split the body into top-level comma segments (a comma inside `{}`, `()` or
+  // `[]` does not split). Each segment is an independent path pattern whose
+  // first node may re-reference a variable from an earlier segment (branching).
+  const segments: string[] = []
+  {
+    let depth = 0
+    let start = 0
+    for (let i = 0; i < q.length; i++) {
+      const ch = q[i]
+      if (ch === '(' || ch === '[' || ch === '{') depth++
+      else if (ch === ')' || ch === ']' || ch === '}') depth--
+      else if (ch === ',' && depth === 0) {
+        segments.push(q.substring(start, i))
+        start = i + 1
+      }
+    }
+    segments.push(q.substring(start))
   }
 
-  if (!tokens.length) { st.nodes = []; return }
-
-  // Extract arrows
-  const arrowRegex = /(->|<-|--?)/g
-  const arrows: string[] = []
-  while ((m = arrowRegex.exec(q)) !== null) arrows.push(m[1])
-
-  // Phase 1: Build node list
-  const nodeTokens = tokens.filter(t => t.type === 'node')
-  const edgeTokens = tokens.filter(t => t.type === 'edge')
   const createdNodes: Array<Record<string, unknown>> = []
   const nodeGeIds: number[] = []
-  // Map a node variable name (e.g. `n` in `(n:A)`) to its created index, so that
-  // a self-loop like `(n:A)-[:LOOP]->(n)` reuses the SAME node instead of creating
-  // a second, disconnected node. Anonymous `()`/`(:A)` nodes get a fresh index.
+  // Map a node variable name (e.g. `n` in `(n:A)`) to its created index, shared
+  // across segments so that `(a)-[:T]->(:B), (a)-[:T]->(:C)` reuses `a` and a
+  // self-loop `(n:A)-[:LOOP]->(n)` reuses `n` (branching instead of duplicate).
   const varToNodeIdx = new Map<string, number>()
 
-  for (const nt of nodeTokens) {
+  const _varOf = (inner: string): string => {
+    const head = (inner.indexOf('{') >= 0 ? inner.substring(0, inner.indexOf('{')) : inner).trim()
+    if (!head || head.startsWith(':')) return ''
+    const ci = head.indexOf(':')
+    return (ci >= 0 ? head.substring(0, ci) : head).trim()
+  }
+
+  // Helper to CREATE a node from a token inner string, honoring variable reuse.
+  const _ensureNode = (inner: string): number => {
+    const variable = _varOf(inner)
+    if (variable && varToNodeIdx.has(variable)) return varToNodeIdx.get(variable)!
     const labels: string[] = []
     const props: Record<string, unknown> = {}
-    const bi = nt.inner.indexOf('{')
-    const headPart = (bi >= 0 ? nt.inner.substring(0, bi) : nt.inner).trim()
-    // Split variable from labels: `n:A` → variable `n`, label `A`;
-    // `n` → variable `n`, no label; `:A` → no variable, label `A`; `` → anonymous.
-    let variable = ''
+    const bi = inner.indexOf('{')
+    const headPart = (bi >= 0 ? inner.substring(0, bi) : inner).trim()
     let rest = headPart
     if (headPart && !headPart.startsWith(':')) {
       const colonIdx = headPart.indexOf(':')
-      if (colonIdx >= 0) {
-        variable = headPart.substring(0, colonIdx).trim()
-        rest = headPart.substring(colonIdx)
-      } else {
-        variable = headPart
-        rest = ''
-      }
+      if (colonIdx >= 0) rest = headPart.substring(colonIdx)
+      else rest = ''
     }
     for (const part of rest.split(':').filter(Boolean)) labels.push(part)
-    if (bi >= 0) Object.assign(props, _parseProps(nt.inner.substring(bi)))
-
-    // Reuse an existing node when this token refers back to a seen variable
-    // (self-loop). Otherwise create a fresh node and record its variable.
-    if (variable && varToNodeIdx.has(variable)) {
-      continue
-    }
+    if (bi >= 0) Object.assign(props, _parseProps(inner.substring(bi)))
     const node: Record<string, unknown> = { _label: labels[0] || 'Default', ...props }
     if (labels.length > 1) node.__fullLabel = labels.join(':')
     node.__edges = []
@@ -607,52 +606,77 @@ function execCreateOnGe(ge: any, q: string): void {
     const h = _hashLabel(node._label as string)
     try { (ge as any).upsertNode(h, 'rn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
     nodeGeIds.push(h)
+    return nodeIdx
   }
 
-  // Phase 2: Build edges — link between consecutive node tokens, honoring
-  // self-loop references (same variable reused). Each edge connects the i-th
-  // node token to the (i+1)-th node token (resolved through varToNodeIdx).
-  for (let ei = 0; ei < edgeTokens.length && ei < nodeTokens.length - 1; ei++) {
-    const et = edgeTokens[ei]
-    let edgeLabel = ''
-    const edgeProps: Record<string, unknown> = {}
-    const bi = et.inner.indexOf('{')
-    if (bi >= 0) {
-      const labelPart = et.inner.substring(0, bi).trim()
-      if (labelPart.startsWith(':')) edgeLabel = labelPart.substring(1).trim()
-      Object.assign(edgeProps, _parseProps(et.inner.substring(bi)))
-    } else if (et.inner.startsWith(':')) {
-      edgeLabel = et.inner.substring(1).trim()
+  const totalSegments = segments.length
+  let anyTokens = false
+  for (let si = 0; si < totalSegments; si++) {
+    const seg = segments[si]
+    const regex = /\(([^)]*)\)|\[([^\]]*)\]/g
+    const tokens: Array<{ type: 'node' | 'edge'; inner: string }> = []
+    let m
+    while ((m = regex.exec(seg)) !== null) {
+      if (m[1] !== undefined) tokens.push({ type: 'node', inner: m[1].trim() })
+      else if (m[2] !== undefined) tokens.push({ type: 'edge', inner: m[2].trim() })
     }
+    if (!tokens.length) continue
+    anyTokens = true
 
-    // Resolve the source and target node tokens to concrete indices.
-    const srcToken = nodeTokens[ei]
-    const dstToken = nodeTokens[ei + 1]
-    const _varOf = (t: { inner: string }): string => {
-      const head = (t.inner.indexOf('{') >= 0 ? t.inner.substring(0, t.inner.indexOf('{')) : t.inner).trim()
-      if (!head || head.startsWith(':')) return ''
-      const ci = head.indexOf(':')
-      return (ci >= 0 ? head.substring(0, ci) : head).trim()
+    const nodeTokens = tokens.filter(t => t.type === 'node')
+    const edgeTokens = tokens.filter(t => t.type === 'edge')
+
+    // Extract this segment's arrows (direction).
+    const arrowRegex = /(->|<-|--?)/g
+    const arrows: string[] = []
+    while ((m = arrowRegex.exec(seg)) !== null) arrows.push(m[1])
+
+    // Ensure the segment's leading node exists (reused if it names a known var).
+    const firstNodeIdx = _ensureNode(nodeTokens[0].inner)
+
+    // Build edges: within this segment, the i-th edge connects nodeTokens[i] to
+    // nodeTokens[i+1]. A re-referenced source variable resolves back through
+    // varToNodeIdx (branching); an anonymous node creates a fresh node. The
+    // segment's leading node index is reused as the first edge's source.
+    let curIdx = firstNodeIdx
+    for (let ei = 0; ei < edgeTokens.length && ei < nodeTokens.length - 1; ei++) {
+      const et = edgeTokens[ei]
+      let edgeLabel = ''
+      const edgeProps: Record<string, unknown> = {}
+      const bi = et.inner.indexOf('{')
+      if (bi >= 0) {
+        const labelPart = et.inner.substring(0, bi).trim()
+        if (labelPart.startsWith(':')) edgeLabel = labelPart.substring(1).trim()
+        Object.assign(edgeProps, _parseProps(et.inner.substring(bi)))
+      } else if (et.inner.startsWith(':')) {
+        edgeLabel = et.inner.substring(1).trim()
+      }
+
+      const srcToken = nodeTokens[ei]
+      const dstToken = nodeTokens[ei + 1]
+      const srcVar = _varOf(srcToken.inner)
+      // Source: reuse a named variable, else the running segment index (first
+      // edge reuses the leading node, later edges reuse the previous target).
+      const srcIdx = srcVar && varToNodeIdx.has(srcVar) ? varToNodeIdx.get(srcVar)! : curIdx
+      // Target: `_ensureNode` creates a fresh node for anonymous targets and
+      // reuses an existing index for named (self-loop / cross-segment) targets.
+      const dstIdx = _ensureNode(dstToken.inner)
+      curIdx = dstIdx
+
+      const arrow = arrows[ei] || '->'
+      const geSrc = arrow === '<-' ? dstIdx : srcIdx
+      const geDst = arrow === '<-' ? srcIdx : dstIdx
+
+      const edgeEntry = { srcIdx: geSrc, dstIdx: geDst, label: edgeLabel || 'T', props: Object.keys(edgeProps).length ? edgeProps : null }
+      const srcNode = createdNodes[geSrc]
+      if (srcNode && Array.isArray(srcNode.__edges)) srcNode.__edges.push(edgeEntry)
+
+      const typeId = _hashLabel(edgeLabel || 'T')
+      try { (ge as any).upsertEdge(nodeGeIds[geSrc], nodeGeIds[geDst], typeId, { props: edgeProps }) } catch {}
     }
-    const srcVar = _varOf(srcToken)
-    const dstVar = _varOf(dstToken)
-    const srcIdx = srcVar && varToNodeIdx.has(srcVar) ? varToNodeIdx.get(srcVar)! : ei
-    const dstIdx = dstVar && varToNodeIdx.has(dstVar) ? varToNodeIdx.get(dstVar)! : ei + 1
-
-    const arrow = arrows[ei] || '->'
-    const geSrc = arrow === '<-' ? dstIdx : srcIdx
-    const geDst = arrow === '<-' ? srcIdx : dstIdx
-
-    // Push to source node's __edges (will be read by extractEdgesFromNodes)
-    const edgeEntry = { srcIdx: geSrc, dstIdx: geDst, label: edgeLabel || 'T', props: Object.keys(edgeProps).length ? edgeProps : null }
-    const srcNode = createdNodes[srcIdx]
-    if (srcNode && Array.isArray(srcNode.__edges)) srcNode.__edges.push(edgeEntry)
-
-    // Also seed edge to persistent GE
-    const typeId = _hashLabel(edgeLabel || 'T')
-    try { (ge as any).upsertEdge(nodeGeIds[geSrc], nodeGeIds[geDst], typeId, { props: edgeProps }) } catch {}
   }
 
+  if (!anyTokens) { st.nodes = []; return }
   st.nodes = createdNodes
 }
 
@@ -741,6 +765,12 @@ Given('having executed:', async function (query: string) {
         if ((subPlan.type === 'CREATE' || subPlan.type === 'MERGE') && (subPlan as any).createNodes?.length) {
           const cns = (subPlan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
           for (const cn of cns) {
+            // Reuse an already-created node when this CREATE re-references a
+            // variable from a prior statement (e.g. `CREATE (a:A ...)` followed by
+            // `CREATE (a)-[:T]->(:B)` must not mint a fresh `:Default` node for `a`).
+            if (cn.alias && st.nodes.some((n: any) => n._alias === cn.alias)) {
+              continue
+            }
             const node: Record<string, unknown> = { _label: cn.label || 'Default' }
             if (cn.alias) node['_alias'] = cn.alias
             if (cn.props) {
