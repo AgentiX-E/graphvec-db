@@ -28,82 +28,221 @@ import { _execNonGePaths } from './executor-non-ge'
 
 /** 判断值是否为 typed-format 对象 { type: 'STRING', value: '...' } */
 
-/** 在 WHERE 中解析 pattern predicate（模式谓词），返回 true/false */
-function _evalPatternComprehension(patExpr: string): string {
-  if (patExpr.includes('*')) return 'false'
-  const patMatch = patExpr.match(/^\s*\((\s*\w+\s*)\)\s*(?:<-\s*\[|-\s*\[)\s*(?::(\w+))?\s*\]\s*->\s*\((\s*\w+)(?::(\w+))?\s*\)\s*$/)
-  if (!patMatch) return 'false'
-  const srcVar = patMatch[1]; const edgeLabel = patMatch[2] || null
-  const tgtVar = patMatch[3]; const tgtLabel = patMatch[4] || null
-  const srcNode: any = (globalThis as any).__ctx_pc?.[srcVar]
-  const tgtNode: any = (globalThis as any).__ctx_pc?.[tgtVar]
-  const allNodes: any[] = (globalThis as any).__allNodes_pc || []
-  if (!srcNode || !tgtNode) return 'false'
-  if (tgtLabel) {
-    const actualLabel = tgtNode._label || tgtNode.props?._label || ''
-    if (actualLabel !== tgtLabel) return 'false'
+/**
+ * Resolve a single Cypher pattern predicate (e.g. `(a)-[:T]->(b:TheLabel)`)
+ * to a boolean, given the current variable bindings (`ctx`) and the full node
+ * set (`allNodes`, whose entries carry `__edges: {srcIdx,dstIdx,label}[]`).
+ *
+ * The predicate is a WHERE-level pattern: it does NOT introduce new bindings,
+ * it only asserts that the referenced relationship/path exists between the two
+ * already-bound node variables.
+ */
+function _evalPatternPredicate(
+  pat: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): boolean | null {
+  const t = pat.trim()
+  // Match: (src[:Label])  <-|-[ [ :EdgeLabel[*] ] ]- ->|-  (tgt[:Label])
+  // Captures: 1=srcVar 2=srcLabel 3=leftArrow 4=edgeSpec 5=rightArrow 6=tgtVar 7=tgtLabel
+  const m = t.match(/^\((\w+)(?::([\w]+))?\)\s*(<-|-)\s*(\[[^\]]*\])?\s*(->|-)\s*\((\w+)(?::([\w]+))?\)$/)
+  if (!m) return null
+  const srcVar = m[1]
+  const srcLabel = m[2] || null
+  const leftArrow = m[3]
+  const edgeSpec = m[4] || ''
+  const rightArrow = m[5]
+  const tgtVar = m[6]
+  const tgtLabel = m[7] || null
+
+  // Resolve nodes from ctx. ctx values may be the node object directly, or a
+  // {props:{...}} wrapper, or a flattened props object.
+  const resolveNode = (v: unknown): Record<string, unknown> | null => {
+    if (!v || typeof v !== 'object') return null
+    return (v as Record<string, unknown>)
   }
+  const srcNode = resolveNode(ctx[srcVar])
+  const tgtNode = resolveNode(ctx[tgtVar])
+  if (!srcNode || !tgtNode) return null
+
+  // Locate the nodes within allNodes (reference equality). ctx values that
+  // came from __crossVarRows are direct references to allNodes entries.
   const srcIdx = allNodes.indexOf(srcNode)
   const tgtIdx = allNodes.indexOf(tgtNode)
-  if (srcIdx >= 0 && tgtIdx >= 0) {
-    for (const node of allNodes) {
-      if (!node.__edges || !Array.isArray(node.__edges)) continue
-      for (const e of node.__edges) {
-        if (e.label === undefined || e.label === null) continue
+  if (srcIdx < 0 || tgtIdx < 0) {
+    // Fall back: match by _alias (CREATE alias) which is stable per node.
+    const byAlias = (node: Record<string, unknown>): number =>
+      allNodes.findIndex((n: any) => n?._alias !== undefined && n._alias === (node as any)?._alias)
+    const sA = byAlias(srcNode)
+    const tA = byAlias(tgtNode)
+    if (sA < 0 || tA < 0) return null
+    return _edgeExists(sA, tA) ? true : false
+  }
+  return _edgeExists(srcIdx, tgtIdx)
+
+  function _edgeExists(si: number, ti: number): boolean {
+    // Target label constraint
+    if (tgtLabel) {
+      const tn: any = allNodes[ti]
+      const lbl = tn?._label || tn?.props?._label || ''
+      const full = (tn?.__fullLabel as string) || ''
+      if (lbl !== tgtLabel && !full.split(':').includes(tgtLabel)) return false
+    }
+    if (srcLabel) {
+      const sn: any = allNodes[si]
+      const lbl = sn?._label || sn?.props?._label || ''
+      const full = (sn?.__fullLabel as string) || ''
+      if (lbl !== srcLabel && !full.split(':').includes(srcLabel)) return false
+    }
+    // Parse edge spec: ":T" or ":T*" or "" (bare) or "T*"
+    let edgeLabel: string | null = null
+    let varLength = false
+    let inner = edgeSpec.replace(/^\[|\]$/g, '').trim()  // strip brackets
+    if (inner.startsWith(':')) inner = inner.slice(1)
+    if (inner.endsWith('*')) { varLength = true; inner = inner.slice(0, -1) }
+    if (inner) edgeLabel = inner
+
+    // Direction
+    let direction: 'out' | 'in' | 'any' = 'any'
+    if (leftArrow === '-' && rightArrow === '->') direction = 'out'
+    else if (leftArrow === '<-' && rightArrow === '-') direction = 'in'
+    else if (leftArrow === '-' && rightArrow === '-') direction = 'any'
+
+    const hasEdge = (from: number, to: number): boolean => {
+      const edges: any[] = (allNodes[from] as any)?.__edges || []
+      for (const e of edges) {
         if (edgeLabel && e.label !== edgeLabel) continue
-        if ((e.srcIdx === srcIdx && e.dstIdx === tgtIdx) || (e.srcIdx === tgtIdx && e.dstIdx === srcIdx)) return 'true'
+        if (e.srcIdx === from && e.dstIdx === to) return true
+        // Some edge storage lists the edge on the dst node as well
+        if (e.srcIdx === to && e.dstIdx === from) return true
       }
+      return false
     }
+
+    if (!varLength) {
+      if (direction === 'out') return hasEdge(si, ti)
+      if (direction === 'in') return hasEdge(ti, si)
+      // any: either direction
+      return hasEdge(si, ti) || hasEdge(ti, si)
+    }
+
+    // Variable-length: BFS over directed edges from si to ti (respecting
+    // direction). Zero-length (si === ti) is allowed by Cypher `*`.
+    if (si === ti) return true
+    const visited = new Set<number>([ si ])
+    let frontier = [ si ]
+    const maxHops = allNodes.length
+    for (let hop = 0; hop < maxHops; hop++) {
+      const next: number[] = []
+      for (const cur of frontier) {
+        const edges: any[] = (allNodes[cur] as any)?.__edges || []
+        for (const e of edges) {
+          if (edgeLabel && e.label !== edgeLabel) continue
+          let nbr = -1
+          if (direction === 'out' || direction === 'any') {
+            if (e.srcIdx === cur) nbr = e.dstIdx
+          }
+          if (nbr < 0 && (direction === 'in' || direction === 'any')) {
+            if (e.dstIdx === cur) nbr = e.srcIdx
+          }
+          if (nbr < 0) continue
+          if (nbr === ti) return true
+          if (!visited.has(nbr)) { visited.add(nbr); next.push(nbr) }
+        }
+      }
+      if (next.length === 0) break
+      frontier = next
+    }
+    return false
   }
-  return 'false'
 }
 
-function _resolvePatternComprehensions(expr: string): string {
-  const andOrPos = findFirstTopLevelAndOr(expr)
-  if (andOrPos >= 0) {
-    const left = expr.slice(0, andOrPos).trim()
-    const rest = expr.slice(andOrPos).trim()
-    const opMatch = rest.match(/^(AND|OR|XOR)\b/i)
-    if (opMatch) {
-      const op = opMatch[1].toUpperCase()
-      const right = rest.slice(opMatch[0].length).trim()
-      return _resolvePatternComprehensions(left) + ' ' + op + ' ' + _resolvePatternComprehensions(right)
+/**
+ * Rewrite a WHERE boolean expression, replacing every pattern-predicate
+ * sub-expression (e.g. `(a)-[:T]->(b:X)`) with its boolean literal
+ * (`true`/`false`), so `_evaluateExpression` can evaluate the remaining
+ * pure-boolean expression (property comparisons, AND/OR/XOR/NOT).
+ *
+ * The expression is scanned left to right tracking parentheses depth; any
+ * balanced parenthesized group that parses as a pattern predicate is resolved
+ * in-place. Non-pattern parenthesized groups are left intact.
+ */
+function _resolveWherePatternPredicates(
+  expr: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): string {
+  let out = ''
+  let i = 0
+  const n = expr.length
+  while (i < n) {
+    const ch = expr[i]
+    if (ch === '(') {
+      // A pattern predicate is `(src)  [-|<-[ ... ]-]  ->|-  (tgt)`.
+      // Find the closing paren of the source node group, then check whether a
+      // relationship spec follows and ends in a target node group.
+      const srcEnd = _findBalancedClose(expr, i)
+      if (srcEnd < 0) { out += ch; i++; continue }
+      // Attempt to match the relationship + target from srcEnd+1.
+      const patStart = i
+      // The source node text is `(src[:Label])`.
+      const srcText = expr.slice(i, srcEnd + 1)
+      // Find end of the full pattern: scan forward from srcEnd+1 for target group.
+      let k = srcEnd + 1
+      // Skip the relationship arrow/bracket section until we meet the target '('.
+      // Relationship pattern: optional whitespace, `<-` or `-`, optional `[...]`, `->` or `-`.
+      let patText = srcText
+      let matched = false
+      // Try progressively: check if expr[srcEnd+1..] starts with a relationship spec.
+      const rest = expr.slice(srcEnd + 1)
+      const relMatch = rest.match(/^\s*(?:<-|-)\s*\[?[^\]]*\]?\s*(?:->|-)\s*\(/)
+      if (relMatch) {
+        // relMatch[0] ends with '('. Find its length excluding final '(' .
+        const relPrefixLen = relMatch[0].length - 1
+        const tgtStart = srcEnd + 1 + relPrefixLen
+        const tgtEnd = _findBalancedClose(expr, tgtStart)
+        if (tgtEnd >= 0) {
+          patText = expr.slice(i, tgtEnd + 1)
+          const val = _evalPatternPredicate(patText, ctx, allNodes)
+          if (val !== null) {
+            out += val ? 'true' : 'false'
+            i = tgtEnd + 1
+            matched = true
+          }
+        }
+      }
+      if (!matched) {
+        // Not a pattern predicate. Emit the source group verbatim and continue.
+        out += srcText
+        i = srcEnd + 1
+      }
+      continue
     }
+    out += ch
+    i++
   }
-  const trimmed = expr.trim()
-  if (typeof trimmed !== 'string' || trimmed.length === 0) return expr
-  if (trimmed.startsWith('(') && trimmed.endsWith(')') && isBalancedParens(trimmed)) {
-    const inner = trimmed.slice(1, -1).trim()
-    if (_isPatternPredicate(trimmed)) return _evalPatternComprehension(trimmed)
-    return '(' + _resolvePatternComprehensions(inner) + ')'
-  }
-  if (_isPatternPredicate(trimmed)) return _evalPatternComprehension(trimmed)
-  return expr
+  return out
 }
 
-function findFirstTopLevelAndOr(s: string): number {
-  let depth = 0, inStr = false, strChar = ''
-  for (let i = 0; i < s.length; i++) {
-    if (inStr && s[i] === '\\') { i++; continue }
-    if (inStr) { if (s[i] === strChar) inStr = false; continue }
-    if (s[i] === "'" || s[i] === '"') { inStr = true; strChar = s[i]; continue }
-    if (s[i] === '(' || s[i] === '[' || s[i] === '{') { depth++; continue }
-    if (s[i] === ')' || s[i] === ']' || s[i] === '}') { depth--; continue }
-    if (depth === 0) {
-      if (s.slice(i, i+5) === ' AND ' || s.slice(i, i+4) === ' OR ' || s.slice(i, i+5) === ' XOR ') return i
-    }
+/** Find the index of the closing paren that balances the '(' at `start`. */
+function _findBalancedClose(s: string, start: number): number {
+  let depth = 0
+  let inStr = false
+  let strChar = ''
+  for (let j = start; j < s.length; j++) {
+    const c = s[j]
+    if (inStr && c === '\\') { j++; continue }
+    if (inStr) { if (c === strChar) inStr = false; continue }
+    if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+    if (c === '(') depth++
+    else if (c === ')') { depth--; if (depth === 0) return j }
   }
   return -1
 }
 
-function isBalancedParens(s: string): boolean {
-  let depth = 0
-  for (const ch of s) {
-    if (ch === '(') depth++
-    else if (ch === ')') { depth--; if (depth < 0) return false }
-  }
-  return depth === 0
-}
+// NOTE: `findFirstTopLevelAndOr` and `isBalancedParens` were removed together
+// with the old `_resolvePatternComprehensions`; the new pattern-predicate
+// resolution is handled by `_resolveWherePatternPredicates` / `_findBalancedClose`.
 
 function isTypedValue(v: unknown): v is { type: string; value: unknown } {
   return !!v && typeof v === 'object' && 'value' in v && 'type' in (v as any)
@@ -2745,6 +2884,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         return vars
       }),
     ])
+    // For edge-less multi/single-node MATCH (e.g. `MATCH (a), (b)` with no
+    // TraverseStep), the plan carries no `steps` and no `scanLabel`, so the
+    // bare node variables (`a`, `b`) would otherwise be misclassified as edge
+    // variables by the `edgeVarCols` filter below. Extract them from the MATCH
+    // clause of the original query and register them as node aliases so that
+    // `RETURN b` formats the node (not an edge) correctly.
+    if (!plan.steps?.length && query) {
+      const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
+      for (const mc of matchClauses) {
+        const clause = mc[1]
+        const vars = [...clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)].map(x => x[1]).filter(Boolean)
+        for (const v of vars) nodeAliases.add(v)
+      }
+    }
     if (scanSourceAlias) nodeAliases.add(scanSourceAlias)
     // edgeVarCols：识别边变量 RETURN 列（如 RETURN r），排除 RETURN i.var 等属性列
     // 属性列已被 dispatchWherePath 拆为简短名称（如 i.var→var），此时 nodeAliases 不含 var。
@@ -3407,6 +3560,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         let whereBodyExpr = whereExpr
         if (whereBodyExpr) {
           whereBodyExpr = whereBodyExpr.replace(/length\s*\(\s*(\w+)\s*\)/g, '$1.length')
+          // Resolve pattern predicates (e.g. `(a)-[:T]->(b:X)`) to boolean
+          // literals before expression evaluation. The expression engine cannot
+          // parse relationship patterns; substituting true/false lets it evaluate
+          // the surrounding AND/OR/NOT structure against the graph edges.
+          whereBodyExpr = _resolveWherePatternPredicates(whereBodyExpr, ctx, allNodes)
         }
         let evalVal: unknown
         const checkExpr = whereExpr
@@ -3424,7 +3582,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             try {
               const resultVal = _evaluateExpression(whereBodyExpr || checkExpr, ctx)
               evalVal = resultVal
-            } catch {
+            } catch (e: any) {
               evalVal = undefined
             }
           }
@@ -3474,7 +3632,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           try {
             const resultVal = _evaluateExpression(whereBodyExpr || checkExpr, ctx)
             evalVal = resultVal
-          } catch {
+          } catch (e: any) {
             // OPTIONAL MATCH 变量的条件在当前行上下文可能不可用
             evalVal = undefined
           }
