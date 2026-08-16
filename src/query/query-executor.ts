@@ -1411,12 +1411,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 // We must use pathResults so all steps' variables get populated.
                 boundedPaths = pathResults
               } else if (lastStep && lastStep.targetAlias === effectiveRetVar) {
-              } else if (lastStep && lastStep.targetAlias === effectiveRetVar) {
                 boundedTargetIndices = [...pathEnds].filter(idx => interEnds.has(idx))
                 boundedPaths = pathResults.filter(p => interEnds.has(p[p.length - 1]))
               } else {
+                // [FIX-MW2[2]]: RETURN 变量是中间变量（非最后一步 targetAlias）时，
+                // boundedTargetIndices 用 interEnds（中间变量节点的位置）做 RETURN 投影，
+                // 但 boundedPaths 必须保留完整路径 pathResults，否则 _allVars 填充会丢失
+                // 中间/末端变量（red、a）的绑定，导致 WHERE 求值 ctx 变量错位。
                 boundedTargetIndices = [...interEnds]
-                boundedPaths = intermediate
+                boundedPaths = pathResults
               }
             }
           }
@@ -1443,23 +1446,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // 构建所有步骤变量的节点数据（存于 props._allVars 以避免属性丢失）
               const allVars: Record<string, unknown> = geNode.props._allVars as Record<string, unknown>
               const lastStepV = plan.steps?.[plan.steps.length - 1]
-              if (lastStepV?.targetAlias) {
-                allVars[lastStepV.targetAlias] = { _label: targetNode._label || 'Default' }
-                for (const k of Object.keys(targetNode)) {
-                  if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[lastStepV.targetAlias][k] = targetNode[k]
-                }
-              }
+              // [FIX-MW2[2]]: 不再在此处用 targetNode(即 allNodes[targetIdx]) 绑定 lastStep 的 targetAlias。
+              // 当 RETURN 变量是中间变量时 targetIdx 指向中间节点（如 out=p1），而非最后一步目标（a=thing），
+              // 会把 a 错绑到 p1。改为由下方 [FIX-MW2[2]-allVars-fill] 用 matchingPath 正确定位 lastStep 目标。
               // 用 boundedPaths 补充中间节点和边标签Info
               if (boundedPaths?.length > 0) {
                 let matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
-                // [COMMA]: matchingPath 可能为空 —— interEnds 节点不在 path 末尾
-                // 改用 interEnds 在 path 中查找（path[defStepIdx] === targetIdx）
-                if (!matchingPath && _ceComma) {
-                  matchingPath = boundedPaths.find(p => {
-                    // defStep 是 steps 中首次定义 retVar 的步索引
-                    const defStepIdx = plan.steps?.findIndex((st: any) => st.targetAlias === lastTargetVar)
-                    return defStepIdx != null && defStepIdx >= 0 && p[defStepIdx] === targetIdx
-                  })
+                // [FIX-MW2[2]]: matchingPath 可能为空 —— 当 RETURN 变量是中间变量（非最后一步 targetAlias）时，
+                // targetIdx 是中间变量的路径位置，而 boundedPaths(完整路径) 的末尾是最后一步 target，二者不相等。
+                // 变量 var 是 steps[si].targetAlias 时，其路径位置为 si+1（path[si+1] === var 的节点索引）。
+                if (!matchingPath) {
+                  const retDefStepIdx = plan.steps?.findIndex((st: any) => st.targetAlias === (effectiveRetVar || lastTargetVar))
+                  matchingPath = boundedPaths.find(p =>
+                    retDefStepIdx != null && retDefStepIdx >= 0 && retDefStepIdx + 1 < p.length && p[retDefStepIdx + 1] === targetIdx
+                  )
                 }
                 if (matchingPath && matchingPath.length >= 2) {
                   const pathEdges: string[] = []
@@ -1494,7 +1494,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // [FIX-MW2[2]-allVars-fill]: 当 boundedPaths 只覆盖部分步骤时，
               // 对未覆盖的 steps 补充它们的中间节点到 _allVars
               if (boundedPaths?.length > 0 && plan.steps?.length > 1) {
-                const matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
+                let matchingPath = boundedPaths.find(p => p[p.length - 1] === targetIdx)
+                if (!matchingPath) {
+                  const retDefStepIdx = plan.steps?.findIndex((st: any) => st.targetAlias === (effectiveRetVar || lastTargetVar))
+                  matchingPath = boundedPaths.find(p =>
+                    retDefStepIdx != null && retDefStepIdx >= 0 && retDefStepIdx + 1 < p.length && p[retDefStepIdx + 1] === targetIdx
+                  )
+                }
                 if (matchingPath && matchingPath.length >= 2) {
                   const _covSteps = new Set<number>()
                   for (let psi = 0; psi < matchingPath.length - 1 && psi < plan.steps.length; psi++) {
@@ -1531,7 +1537,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 }
               }
               // source 节点——使用起始节点 allNodes[i] 而非 targetNode
-              if (lastStepV?.source) {
+              // [FIX-MW2[2]]: 仅当 lastStepV.source 是初始 source（steps[0].source）时才用 allNodes[i] 填充。
+              // 多步链里 lastStepV.source 是中间节点（如 red），应由 matchingPath 定位，不能覆盖成起始节点。
+              if (lastStepV?.source && lastStepV.source === plan.steps?.[0]?.source) {
                 allVars[lastStepV.source] = { _label: (allNodes[i]?._label || 'Default') as string }
                 for (const k of Object.keys(allNodes[i] || {})) {
                   if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) (allVars[lastStepV.source] as any)[k] = (allNodes[i] as any)[k]
@@ -1588,10 +1596,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (plan.steps?.length) {
                 const thisStep = plan.steps[plan.steps.length - 1]
                 // 绑定 targetAlias（If any命名目标且非空）
+                // [FIX-MW2[2]]: 优先用 allVars（由 matchingPath 正确定位）绑定 lastStep 的 targetAlias，
+                // 而非 targetNode（= allNodes[targetIdx]，当 RETURN 是中间变量时指向错误节点）。
                 if (thisStep.targetAlias) {
+                  const cvrSrc = allVars[thisStep.targetAlias] || targetNode
                   const cvrNode: Record<string, unknown> = {}
-                  for (const k of Object.keys(targetNode)) {
-                    if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) cvrNode[k] = targetNode[k as keyof typeof targetNode]
+                  for (const k of Object.keys(cvrSrc as any)) {
+                    if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) cvrNode[k] = (cvrSrc as any)[k]
                   }
                   geNode.__crossVarRows[thisStep.targetAlias] = { ...cvrNode, props: { ...cvrNode } }
                 }
