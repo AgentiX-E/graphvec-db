@@ -2636,7 +2636,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const varLabelMap2: Record<string, string> = {}
       let inlineFilters: Array<{ source: string; property: string; operator: string; value: unknown; negated?: boolean }> = []
       if (query) {
-        const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
+        const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+OPTIONAL|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
         hasMultiMatch = !!(matchSection && matchSection[1].includes(','))
         if (matchSection) {
           const clause = matchSection[1]
@@ -2676,7 +2676,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (!matchVarKeys2.length && query) {
         // 匹配所有 MATCH 中的节点变量： (n), (m), (a:Label), (b {prop})
         const allMatchVars: string[] = [];
-        const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis);
+        const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|OPTIONAL|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis);
         for (const mc of matchClauses) {
           const clause = mc[1];
           const vars = [...clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)].map(x => x[1]).filter(Boolean);
@@ -3819,23 +3819,37 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const rawEntry = Array.isArray(rawWithEdges) ? rawWithEdges[ri] : undefined
           if (rawEntry?.__crossVarRows && sourceVar && sourceVar in rawEntry.__crossVarRows) {
             const srcNodeRef = rawEntry.__crossVarRows[sourceVar] as any
-            const srcLabel = (srcNodeRef as any)?._label || ''
-            if (srcLabel) {
-              for (let si = 0; si < allNodes.length; si++) {
-                if ((allNodes[si] as any)._label === srcLabel) { srcNodeIdx = si; break }
+            // Resolve the SPECIFIC source node (not just any node sharing its
+            // label). Match by reference identity or full property content
+            // first; only fall back to label when the node has no distinguishing
+            // properties (e.g. a bare `(:X)` node).
+            const refKeys = Object.keys(srcNodeRef || {}).filter(k =>
+              !k.startsWith('_') && k !== '__edges' && k !== 'id'
+            )
+            // 1) Reference identity (already a member of allNodes).
+            let si = allNodes.indexOf(srcNodeRef)
+            // 2) Full-content match over distinguishing (non-undername) props.
+            if (si < 0 && refKeys.length) {
+              for (let k = 0; k < allNodes.length; k++) {
+                const cand = allNodes[k] as any
+                if ((cand?._label ?? '') !== (srcNodeRef?._label ?? '')) continue
+                if (refKeys.every(pk => cand?.[pk] === srcNodeRef?.[pk])) { si = k; break }
               }
             }
-            if (srcNodeIdx < 0) {
-              // 按 _alias 或节点匹配
-              for (let si = 0; si < allNodes.length; si++) {
-                const node = allNodes[si] as any
-                if (node._alias === sourceVar ||
-                    (node._label && (srcNodeRef as any)._label === node._label &&
-                     !Object.entries(srcNodeRef).some(([k,v]) => k!=='_label'&&k!=='__edges'&&k!=='_alias'&&node[k]!==v))) {
-                  srcNodeIdx = si; break
+            // 3) _alias match.
+            if (si < 0 && srcNodeRef?._alias) {
+              si = allNodes.findIndex((n: any) => n?._alias === srcNodeRef._alias)
+            }
+            // 4) Label-only fallback (ambiguous, used only when no props).
+            if (si < 0) {
+              const srcLabel = srcNodeRef?._label || ''
+              if (srcLabel) {
+                for (let k = 0; k < allNodes.length; k++) {
+                  if ((allNodes[k] as any)._label === srcLabel) { si = k; break }
                 }
               }
             }
+            srcNodeIdx = si
           }
           if (srcNodeIdx < 0 && sourceVar) {
             // 尝试从 row[sourceVar] 获取字符串化的节点值
@@ -3846,6 +3860,25 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (rowLabel) {
                 for (let si = 0; si < allNodes.length; si++) {
                   if ((allNodes[si] as any)._label === rowLabel[1]) { srcNodeIdx = si; break }
+                }
+              }
+            } else if (srcType === 'object' && srcVal !== null) {
+              // row[sourceVar] may itself be a node-props object (set by a prior
+              // OPTIONAL MATCH or _formatResultRow). Resolve it back to an
+              // allNodes index by matching label + distinguishing props.
+              const rv = srcVal as Record<string, unknown>
+              const rvLabel = (rv._label as string) || ''
+              const rvKeys = Object.keys(rv).filter(k => !k.startsWith('_') && k !== 'id')
+              if (rvLabel && rvKeys.length) {
+                for (let si = 0; si < allNodes.length; si++) {
+                  const cand = allNodes[si] as any
+                  if (String(cand?._label ?? '') !== rvLabel) continue
+                  if (rvKeys.every(pk => cand?.[pk] === rv[pk])) { srcNodeIdx = si; break }
+                }
+              }
+              if (srcNodeIdx < 0 && rvLabel) {
+                for (let si = 0; si < allNodes.length; si++) {
+                  if ((allNodes[si] as any)._label === rvLabel) { srcNodeIdx = si; break }
                 }
               }
             }
@@ -3877,18 +3910,52 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           if (srcNodeIdx >= 0 && optSteps.length) {
             const walkPaths = _walkMultiSteps(srcNodeIdx, optSteps, allNodes)
+            // Collect every variable bound along the OPTIONAL MATCH chain: the
+            // targetAlias of each step (intermediate hops included), plus the
+            // source of any step whose source !== the MATCH bound source (e.g.
+            // `OPTIONAL MATCH (y)-[:E2]->(z)` where `y` is itself optional).
+            const optBoundVars: Array<{ var: string; nodeIdx: number | null }> = []
+            for (const st of optSteps) {
+              if (st.source && st.source !== sourceVar) {
+                if (!optBoundVars.some(b => b.var === st.source)) optBoundVars.push({ var: st.source, nodeIdx: null })
+              }
+              if (st.targetAlias && !optBoundVars.some(b => b.var === st.targetAlias)) {
+                optBoundVars.push({ var: st.targetAlias, nodeIdx: null })
+              }
+            }
             if (walkPaths?.length) {
-              // 取第一条路径的最后节点
-              const lastNodeIdx = walkPaths[0][walkPaths[0].length - 1]
-              const targetNode = allNodes[lastNodeIdx] as any
-              const nodeProps = _mkNodeProps(targetNode)
-              // 无条件覆盖：OPTIONAL MATCH 结果优先于 _formatResultRow 的默认值
-              row[targetVar] = nodeProps
+              // walkPaths[k] = [srcIdx, hop1, hop2, ...]. The i-th step's target
+              // node index sits at path position i+1. Map each step's targetAlias
+              // to the corresponding node (intermediate hops included).
+              const path = walkPaths[0]
+              optSteps.forEach((st, si) => {
+                if (st.targetAlias) {
+                  const nodeAt = path[si + 1]
+                  const rec = optBoundVars.find(b => b.var === st.targetAlias)
+                  if (rec) rec.nodeIdx = nodeAt != null && nodeAt >= 0 ? nodeAt : null
+                }
+              })
+              // Back-fill any step whose source is itself an optional var (e.g.
+              // `y` in `(y)-[:E2]->(z)`), using the previous hop's node.
+              optSteps.forEach((st, si) => {
+                if (st.source && st.source !== sourceVar && si > 0) {
+                  const rec = optBoundVars.find(b => b.var === st.source)
+                  if (rec && rec.nodeIdx == null) {
+                    const nodeAt = path[si]
+                    rec.nodeIdx = nodeAt != null && nodeAt >= 0 ? nodeAt : null
+                  }
+                }
+              })
+              for (const bv of optBoundVars) {
+                if (bv.nodeIdx == null || bv.nodeIdx < 0) { row[bv.var] = null; continue }
+                row[bv.var] = _mkNodeProps(allNodes[bv.nodeIdx] as any)
+              }
               if (edgeVar) row[edgeVar] = null
             } else {
-              // OPTIONAL 路径不匹配：填充 null
-              if (sourceVar) row[sourceVar] = null
-              if (targetVar) row[targetVar] = null
+              // OPTIONAL path does not match: the source variable (already bound
+              // by the preceding MATCH) must be preserved; only the optional
+              // target/edge variables become null.
+              for (const bv of optBoundVars) row[bv.var] = null
               if (edgeVar) row[edgeVar] = null
             }
           } else if (optVarName && !sourceVar && !targetVar && !edgeVar) {
@@ -3898,8 +3965,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               : null
             row[optVarName] = nodeProps || null
           } else {
-            // 找不到 source 或无步骤
-            if (sourceVar) row[sourceVar] = null
+            // 找不到 source 或无步骤：同样只置空 optional target/edge，保留 source
             if (targetVar) row[targetVar] = null
             if (edgeVar) row[edgeVar] = null
             if (optVarName) row[optVarName] = null

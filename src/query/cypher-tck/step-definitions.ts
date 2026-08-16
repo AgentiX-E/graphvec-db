@@ -721,12 +721,18 @@ Given('having executed:', async function (query: string) {
   const rawLines = q.split('\n').map(s => s.trim()).filter(Boolean)
   const lines: string[] = []
   let pending = ''
+  // A bare CQL clause keyword on its own line (e.g. the multi-line TCK form
+  //   CREATE\n  (:X {val:1})-[:E1]->(:Y),\n  (:X {val:6})
+  // ) must be joined with the following pattern lines into a single statement.
+  // Otherwise `CREATE` would be treated as a complete (empty) statement and the
+  // node/edge pattern dropped.
+  const _isBareClauseKeyword = (s: string): boolean => /^(CREATE|MERGE|MATCH|DELETE|DETACH\s+DELETE|SET|REMOVE|RETURN|WITH|UNWIND|OPTIONAL\s+MATCH)$/i.test(s.trim())
   for (const line of rawLines) {
     if (pending) {
       pending += '\n' + line
-      if (!line.endsWith(',')) { lines.push(pending); pending = '' }
+      if (!line.endsWith(',') && !_isBareClauseKeyword(line)) { lines.push(pending); pending = '' }
     } else {
-      if (line.endsWith(',')) { pending = line }
+      if (line.endsWith(',') || _isBareClauseKeyword(line)) { pending = line }
       else { lines.push(line) }
     }
   }
