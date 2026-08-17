@@ -299,6 +299,18 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
     }
 
     const antlrExpr = plan.expressionColumns[i].expression
+    // When the expression is already correct but ANTLR's error recovery lost the
+    // `AS alias` (e.g. an octal literal `0o2613152366` tokenizes as `0` + `o...`,
+    // and the trailing `AS literal` gets swallowed), the alias is wrongly set to
+    // the expression itself. Repair the alias even though the expression matches.
+    if (rawAlias && plan.expressionColumns[i].alias !== rawAlias) {
+      const oldKey = plan.returnColumns[i]
+      plan.expressionColumns[i].alias = rawAlias
+      plan.returnColumns[i] = rawAlias
+      delete plan.returnAliasMap[oldKey]
+      plan.returnAliasMap[rawAlias] = rawExpr
+      continue
+    }
     if (!antlrExpr || antlrExpr === rawExpr) continue
 
     const isTruncated =
