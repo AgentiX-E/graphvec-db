@@ -4659,7 +4659,20 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
         const o = orderBy[i]
         const field = _orderByField(o)
         const dir = (o.direction || '').trim().toUpperCase()
-        const va = a[field] ?? null, vb = b[field] ?? null
+        // When the sort item is a composite expression (e.g.
+        // `NOT (a.bool AND a.bool2)` or `a.num + a.num2`), evaluate it against
+        // the row instead of looking up a single column. A bare identifier
+        // (property reference) keeps the fast `row[field]` lookup.
+        const expr = (o.expression as string) || ''
+        const isComposite = expr && !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(expr.trim())
+        let va: unknown, vb: unknown
+        if (isComposite) {
+          va = _evaluateExpression(expr, a as Record<string, unknown>)
+          vb = _evaluateExpression(expr, b as Record<string, unknown>)
+        } else {
+          va = a[field] ?? null
+          vb = b[field] ?? null
+        }
         let cmp = 0
         if (va === null && vb === null) cmp = 0
         else if (va === null) cmp = 1

@@ -191,11 +191,23 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   }
 
   // ── SyntaxError: NonConstantExpression ──
-  if (plan.orderBy?.length) {
-    for (const ob of plan.orderBy) {
-      if (ob.property && ob.property.split('.').length > 2) {
-        throw Object.assign(new Error('SyntaxError: NonConstantExpression'), { tckError: 'NonConstantExpression' })
-      }
+  // SKIP/LIMIT may take any *constant* expression (an integer literal, or an
+  // expression that does not reference variables such as `toInteger(rand()*9)`).
+  // Referencing a variable (`SKIP n.count`, `LIMIT n.count`) is rejected at
+  // compile time. Detect a variable reference as an identifier that is NOT a
+  // function call (not followed by `(`) and is not a literal/keyword/parameter.
+  const skipLimitExpr = query.match(/\b(?:SKIP|LIMIT)\s+(.+?)(?=\s+(?:ORDER\s+BY|RETURN|WITH|LIMIT|SKIP)|$)/i)
+  if (skipLimitExpr) {
+    const expr = skipLimitExpr[1].trim()
+    // A variable reference is an identifier followed by `.` (property access)
+    // or a bare identifier that is NOT a function call (no `(` after it).
+    // Function names and literals are constant expressions and are allowed.
+    const varRef = expr.match(/(?:^|[^\w$])([A-Za-z_][A-Za-z0-9_]*)\s*\./i)
+    const bareVar = expr.match(/^(?:[^()]*\s)?([A-Za-z_][A-Za-z0-9_]*)$/)
+    const isVarReference = (varRef !== null) ||
+      (bareVar !== null && !/^(?:true|false|null|toInteger|rand|floor|ceil|round|abs|size|length)$/i.test(bareVar[1]))
+    if (isVarReference && !/^\$/.test(expr) && !/^\d+$/.test(expr)) {
+      throw Object.assign(new Error('SyntaxError: NonConstantExpression'), { tckError: 'NonConstantExpression' })
     }
   }
 

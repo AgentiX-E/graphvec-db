@@ -396,12 +396,17 @@ export async function _execNonGePaths(
       (_startsWithWith && plan.hasMatch && plan.unwind && plan.with && !plan.aggregate) ||
       (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && (plan.unwind || plan.with)))) {
     const result = _executeWithUnwindPipeline(plan, nodes, query)
+    // Apply ORDER BY / SKIP / LIMIT on the unwind/with pipeline output.
+    // `_executeWithUnwindPipeline` only performs expansion + projection and
+    // never sorts or slices rows, so a `WITH x ORDER BY x LIMIT n` (promoted
+    // onto plan.orderBy / plan.limit by the parser) must be post-processed here.
+    const orderedResult = _postProcessResults(result as QueryRow[], plan)
     // Execute SET clauses on the matched nodes after pipeline projection
     if (plan.type === 'SET' && plan.setClauses?.length) {
       for (const sc of plan.setClauses) {
         if (sc.property) {
           const targetVarName = plan.unwind?.name
-          for (const row of (result as QueryRow[])) {
+          for (const row of (orderedResult as QueryRow[])) {
             const target = row[targetVarName!]
             if (target && typeof target === 'object') {
               const val = sc.value
@@ -413,7 +418,7 @@ export async function _execNonGePaths(
         }
       }
     }
-    return result
+    return orderedResult
   }
 
   // 纯 RETURN 字面量（无 MATCH 无 steps 非 DML）——不经过 GraphEngine

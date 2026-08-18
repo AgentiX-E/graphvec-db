@@ -1430,7 +1430,17 @@ export function _splitWithColumns(clauseBody: string): string[] {
  */
 function _resolveUnwindList(unwind: NonNullable<QueryPlan['unwind']>, varCtx: Record<string, unknown>): unknown[] {
   if (Array.isArray(unwind.list) && unwind.list.length > 0) {
-    return unwind.list
+    // The parser stores UNWIND list elements as raw text when they are not
+    // plain JSON (temporal literals like `date({year: 1910, ...})`, list
+    // literals like `['a', 1]`, octal integers, etc.). Evaluate each string
+    // element eagerly so the list resolves to real values before sorting /
+    // projection. Non-string elements (already-parsed numbers/booleans) pass
+    // through unchanged.
+    return unwind.list.map((item: unknown) => {
+      if (typeof item !== 'string') return item
+      const evaluated = _evaluateExpression(item, varCtx)
+      return evaluated === undefined ? item : evaluated
+    })
   }
   if (unwind.var) {
     // 尝试变量引用

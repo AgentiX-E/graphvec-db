@@ -1172,6 +1172,24 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
 
   plan.hasMatch = hasMatch
 
+  // ── Promote WITH ... ORDER BY / LIMIT / SKIP onto the top-level plan ──
+  // The WITH clause's ordering/slicing info is parsed into `plan.with`, but the
+  // execution layer (_postProcessResults) only reads top-level `plan.orderBy` /
+  // `plan.limit` / `plan.skip`. Without this promotion, a bare
+  // `WITH x ORDER BY x LIMIT 1` silently drops its ORDER BY and LIMIT (e.g. the
+  // entire WithOrderBy TCK suite returned unsorted, unlimited rows).
+  // Only promote when the top-level field is still empty, so an explicit
+  // RETURN ... ORDER BY (parsed above) always takes precedence.
+  if (!plan.orderBy?.length && plan.with?.orderBy?.length) {
+    plan.orderBy = plan.with.orderBy
+  }
+  if (plan.limit === undefined && plan.with?.limit !== undefined) {
+    plan.limit = plan.with.limit
+  }
+  if (plan.skip === undefined && plan.with?.skip !== undefined) {
+    plan.skip = plan.with.skip
+  }
+
   // ── DMLX-20: MATCH + REMOVE/SET/DELETE → type = 'MATCH_MODIFY' ──
   if (hasMatch && (plan.setClauses || plan.removeClauses || (plan.type === 'DELETE'))) {
     plan.type = 'MATCH_MODIFY'
@@ -1716,11 +1734,18 @@ function extractReturn(returnCtx: any): ParsedReturn {
     }
 
     if (name === 'SortItemContext') {
-      const sortText = getTextRecursive(node)
-      const parts = sortText.split(/\s+/)
-      const orderProp = parts[0].replace(/^\w+\./, '')
-      const orderDir = parts[1]?.toUpperCase() === 'DESC' ? 'DESC' as const : 'ASC' as const
-      orderBy.push({ property: orderProp, direction: orderDir })
+      // A sort item is `<expression> [ASC|ASCENDING|DESC|DESCENDING]`. The
+      // expression may be an arbitrary composite expression (e.g.
+      // `NOT (a.bool AND a.bool2)`, `a.num + a.num2`), not just a bare
+      // property. Split on whitespace would truncate it to its first token, so
+      // pull the full expression from the grammar's `expression()` child and
+      // read the direction from the dedicated direction tokens instead.
+      const exprNode = typeof node.expression === 'function' ? node.expression() : null
+      const exprText = exprNode ? getTextRecursive(exprNode).trim() : ''
+      const isDesc = !!(node.DESC?.() ?? null) || !!(node.DESCENDING?.() ?? null)
+      const orderDir = isDesc ? 'DESC' as const : 'ASC' as const
+      const orderProp = exprText.replace(/^\w+\./, '')
+      orderBy.push({ property: orderProp, expression: exprText, direction: orderDir })
       return
     }
 
@@ -2160,9 +2185,14 @@ function extractWith(withCtx: any): QueryPlan['with'] {
       return
     }
     if (name === 'SortItemContext') {
-      const sortText = getTextRecursive(node)
-      const parts = sortText.split(/\s+/)
-      orderBy.push({ property: parts[0], direction: parts[1]?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC' })
+      // See the identical note in `extractReturn`: the sort expression may be a
+      // composite expression, so read it from the `expression()` child and the
+      // direction from the dedicated ASC/DESC/ASCENDING/DESCENDING tokens.
+      const exprNode = typeof node.expression === 'function' ? node.expression() : null
+      const exprText = exprNode ? getTextRecursive(exprNode).trim() : ''
+      const isDesc = !!(node.DESC?.() ?? null) || !!(node.DESCENDING?.() ?? null)
+      const orderDir = isDesc ? 'DESC' as const : 'ASC' as const
+      orderBy.push({ property: exprText.replace(/^\w+\./, ''), expression: exprText, direction: orderDir })
       return
     }
     if (name === 'LimitContext') {
