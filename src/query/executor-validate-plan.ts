@@ -211,6 +211,51 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     }
   }
 
+  // ── SyntaxError: InvalidAggregation (aggregate function in ORDER BY) ──
+  // An ORDER BY item may only reference aggregations that were already
+  // projected by a preceding WITH clause (e.g. `WITH avg(x.age) AS avgAge
+  // ORDER BY $age + avg(x.age)`). Introducing a *new* aggregation in ORDER BY
+  // (`ORDER BY count(n)`, `ORDER BY max(n.num2)`) is a compile-time syntax
+  // error. Match each aggregate call against the set of WITH projection
+  // expressions (excluding the alias) to tell the two cases apart.
+  const orderByClauses = [...query.matchAll(/\bORDER\s+BY\s+(.+?)(?=\s+(?:RETURN|WITH|MATCH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|LIMIT|SKIP)\b|$)/gi)]
+  if (orderByClauses.length) {
+    // Collect projected expression texts from every WITH clause (strip `AS alias`).
+    const projectedExprs = new Set<string>()
+    const withClauses = [...query.matchAll(/\bWITH\s+(.+?)(?=\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)]
+    for (const wm of withClauses) {
+      const body = wm[1].replace(/\s+AS\s+\w+\s*(?=,|$)/gi, '') // strip trailing aliases
+      const items = body.split(',').map(s => s.trim()).filter(Boolean)
+      for (const it of items) {
+        // strip a remaining `AS alias`
+        const exprText = it.replace(/\s+AS\s+\w+$/i, '').trim()
+        if (exprText) projectedExprs.add(exprText)
+      }
+    }
+    for (const obm of orderByClauses) {
+      const obExpr = obm[1].replace(/\s+(?:ASC|ASCENDING|DESC|DESCENDING)\b/gi, '')
+      // Find each aggregate call, capturing the balanced argument list.
+      const aggRe = /\b(count|sum|avg|min|max|collect)\s*\(/gi
+      let m: RegExpExecArray | null
+      while ((m = aggRe.exec(obExpr)) !== null) {
+        const funcStart = m.index
+        // locate the closing parenthesis for this call
+        let depth = 0, j = m.index + m[0].length - 1
+        for (; j < obExpr.length; j++) {
+          if (obExpr[j] === '(') depth++
+          else if (obExpr[j] === ')') { depth--; if (depth === 0) break }
+        }
+        if (j >= obExpr.length) j = obExpr.length - 1
+        const callText = obExpr.slice(funcStart, j + 1)
+        // A call is allowed only if the exact call text is already projected.
+        const allowed = [...projectedExprs].some(pe => pe.replace(/\s+/g, '') === callText.replace(/\s+/g, ''))
+        if (!allowed) {
+          throw Object.assign(new Error('SyntaxError: InvalidAggregation'), { tckError: 'InvalidAggregation' })
+        }
+      }
+    }
+  }
+
   // ── SyntaxError: VariableAlreadyBound ──
   // 1. MATCH (n) CREATE (n:Person) — n 已在 MATCH 中绑定
   // Note: MATCH (x:X), (y:Y) CREATE (x)-[:R]->(y) 是合法的，x/y 在 createNodes 中
