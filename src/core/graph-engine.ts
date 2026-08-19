@@ -401,7 +401,9 @@ export class GraphEngine {
       defaultRetention: this.config.defaultRetention,
       overgraph: this.config.overgraph,
       compress: this.config.storageCompression,
-      compressionStrategy: this.config.storageCompression ? 'msgpack' : 'none',
+      // Default to msgpack so property insertion order is preserved across
+      // Rust persistence (order is a correctness requirement, not compression).
+      compressionStrategy: 'msgpack',
     }
     this.storage.open(storageConfig)
 

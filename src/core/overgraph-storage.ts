@@ -329,16 +329,15 @@ class LRUMap<K, V> {
 // ═══════════════════════════════════════════════
 
 /**
- * 属性 MsgPack 编码的存储键。
- * 当压缩启用时，props 被编码为一个 __msgpack key 下的 number[]。
+ * Storage key for msgpack-encoded props. The entire props object is encoded
+ * under a single `__c` key as a number[] so that Rust's HashMap cannot reorder
+ * the individual property keys — preserving insertion order across persistence.
  */
 const PROPS_COMPRESSED_KEY = '__c'
 
 /**
- * 序列化属性对象。
- * 当 compressionStrategy === 'msgpack' 时使用 msgpackr encode，
- * 结果以 number[] 形式存储（可被 serde_json 处理）。
- * 否则原样返回。
+ * Serialize a props object. When strategy is 'msgpack', encode to a single-key
+ * msgpack blob (order-preserving). Otherwise return the bare object.
  */
 function _serializeProps(props: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (props === undefined || props === null) return undefined
@@ -348,10 +347,8 @@ function _serializeProps(props: Record<string, unknown> | undefined): Record<str
 }
 
 /**
- * 反序列化属性对象。
- * 检测是否以 __msgpack key 下的 number[] 形式存储，
- * 如果是则解码返回原始对象。
- * 否则直接返回（原始 JSON 对象）。
+ * Deserialize a props object. Detects the `__c` msgpack blob form and decodes
+ * it back to the original (order-preserved) object; otherwise returns as-is.
  */
 function _deserializeProps(data: unknown): Record<string, unknown> | undefined {
   if (data === undefined || data === null) return undefined
@@ -433,7 +430,11 @@ export class OverGraphStorage implements StorageProvider {
 
     // 存储压缩配置
     this._compress = config.compress === true
-    this._compressionStrategy = config.compressionStrategy ?? (this._compress ? 'msgpack' : 'none')
+    // Default to msgpack: it preserves property insertion order across Rust
+    // persistence (a single __c blob key cannot be reordered by HashMap) while
+    // also being compact. 'none' is an explicit opt-out to bare JSON (which may
+    // lose key order after flush/reopen).
+    this._compressionStrategy = config.compressionStrategy ?? 'msgpack'
 
     // 地理索引配置
     if (config.geoSpatial) {
@@ -494,7 +495,7 @@ export class OverGraphStorage implements StorageProvider {
 
   upsertNode(typeId: number, name: string, opts?: UpsertNodeOptions): NodeId {
     const rawProps = opts?.props as Record<string, unknown> | undefined
-    const props = this._compress && this._compressionStrategy === 'msgpack'
+    const props = this._compressionStrategy === 'msgpack'
       ? _serializeProps(rawProps)
       : rawProps
     const id = this._db!.upsertNode(String(typeId), name, {
@@ -579,7 +580,7 @@ export class OverGraphStorage implements StorageProvider {
       const mapped = chunk.map(i => ({
         labels: [String(i.typeId)],
         key: i.name,
-        props: this._compress && this._compressionStrategy === 'msgpack'
+        props: this._compressionStrategy === 'msgpack'
           ? _serializeProps(i.props)
           : i.props,
       }))
@@ -607,7 +608,7 @@ export class OverGraphStorage implements StorageProvider {
     temporalValidity?: { start?: number; end?: number }
     weight?: number
   }): number {
-    const props = this._compress && this._compressionStrategy === 'msgpack'
+    const props = this._compressionStrategy === 'msgpack'
       ? _serializeProps(opts?.props)
       : opts?.props
     const rawProps = opts?.props
@@ -640,7 +641,7 @@ export class OverGraphStorage implements StorageProvider {
         from: i.src,
         to: i.dst,
         label: String(i.typeId),
-        props: this._compress && this._compressionStrategy === 'msgpack'
+        props: this._compressionStrategy === 'msgpack'
           ? _serializeProps(i.props)
           : i.props,
         weight: i.weight,

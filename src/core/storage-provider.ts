@@ -34,15 +34,18 @@ export interface StorageConfig {
   }
 
   /**
-   * 启用属性压缩（使用 msgpackr）
-   * 当 compress 为 true 时，节点/边的 props 使用 MsgPack 二进制格式存储
-   * 而非 JSON 字符串，可节省 20-30% 空间。
+   * Enable property compression (msgpackr).
+   * Property serialization defaults to msgpack even when compress is false,
+   * because msgpack is the only format that preserves property insertion order
+   * across the Rust persistence layer (see compressionStrategy).
    */
   compress?: boolean
 
   /**
-   * 压缩策略。'none' = 不压缩（JSON），'msgpack' = 使用 msgpackr 压缩
-   * 仅在 compress: true 时生效。默认 'msgpack'。
+   * Serialization strategy. 'msgpack' (default) encodes props as a single
+   * msgpack blob keyed under `__c`, which preserves property insertion order
+   * across flush/reopen — a correctness requirement. 'none' stores props as a
+   * bare JSON object, which Rust may reorder (HashMap) after persistence.
    */
   compressionStrategy?: 'none' | 'msgpack'
 
