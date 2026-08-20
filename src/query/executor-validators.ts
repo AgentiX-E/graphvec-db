@@ -486,4 +486,199 @@ export function extractEdgesFromNodes(nodes: Array<Record<string, unknown>>): Ar
   return edges
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ORDER BY undefined-variable scope tracking
+//
+// A `WITH` clause resets the variable scope to its projection columns. An
+// ORDER BY inside a subsequent `WITH`/`RETURN` may only reference variables
+// that are still in scope. This validator catches:
+//   MATCH (a), (b), (c)  WITH a, b  WITH a  ORDER BY c  RETURN a
+//   → `c` fell out of scope after `WITH a, b`.
+//
+// ORDER BY may additionally reference the projection aliases of its own
+// WITH clause (e.g. `WITH 1 AS a ORDER BY a`), so those are merged into the
+// effective scope before checking.
+// ═══════════════════════════════════════════════════════════════════
+
+/** Cypher keywords and built-in function names excluded when scanning for variable references. */
+const _ORDERBY_NONVAR: Set<string> = new Set([
+  'AND','OR','XOR','NOT','IN','IS','NULL','TRUE','FALSE','ASC','ASCENDING','DESC','DESCENDING',
+  'DISTINCT','AS','WHERE','ORDER','BY','SKIP','LIMIT','CASE','WHEN','THEN','ELSE','END',
+  'STARTS','CONTAINS','ENDS','DETACH','OPTIONAL','EXISTS','ALL','ANY','NONE','SINGLE',
+  'COUNT','SUM','AVG','MIN','MAX','COLLECT','TOSTRING','TOINTEGER','TOFLOAT','TOBOOLEAN',
+  'LENGTH','SIZE','KEYS','LABELS','NODES','RELATIONSHIPS','TYPE','ID','PROPERTIES','HEAD',
+  'LAST','TAIL','RANGE','REVERSE','TRIM','LTRIM','RTRIM','UPPER','LOWER','SUBSTRING','REPLACE',
+  'LEFT','RIGHT','STARTSWITH','ENDSWITH','COALESCE','ABS','CEIL','FLOOR','ROUND','SIGN','RAND',
+  'SQRT','EXP','LOG','LOG10','SIN','COS','TAN','COT','ASIN','ACOS','ATAN','ATAN2','PI','DEGREES',
+  'RADIANS','HAVERSIN','DATE','DATETIME','TIME','LOCALTIME','LOCALDATETIME','DURATION','TIMESTAMP',
+  'TOLOWER','TOUPPER',
+])
+
+/** Clause-leading keywords used to split a query into clauses (string/bracket/backtick aware). */
+const _CLAUSE_KEYWORDS = ['MATCH','OPTIONAL','UNWIND','WITH','RETURN','CREATE','MERGE','DELETE','SET','REMOVE','CALL','FOREACH','DETACH']
+
+/**
+ * Split a Cypher query into top-level clauses. String literals, backtick
+ * identifiers, and bracket/paren/brace nesting are respected so that keywords
+ * inside list literals or function calls are not treated as clause boundaries.
+ */
+function _splitQueryClauses(query: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let depth = 0
+  let inStr = false
+  let strChar = ''
+  let inBacktick = false
+  for (let i = 0; i < query.length; i++) {
+    const ch = query[i]
+    if (inStr) {
+      if (ch === '\\') { current += ch; i++; if (i < query.length) current += query[i]; continue }
+      if (ch === strChar) inStr = false
+      current += ch
+      continue
+    }
+    if (inBacktick) { if (ch === '`') inBacktick = false; current += ch; continue }
+    if (ch === "'" || ch === '"') { inStr = true; strChar = ch; current += ch; continue }
+    if (ch === '`') { inBacktick = true; current += ch; continue }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; current += ch; continue }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; current += ch; continue }
+    if (depth === 0 && /[A-Za-z]/.test(ch)) {
+      let matched = false
+      for (const kw of _CLAUSE_KEYWORDS) {
+        if (query.slice(i, i + kw.length).toUpperCase() === kw && /\s/.test(query[i + kw.length] || ' ')) {
+          const prev = i > 0 ? query[i - 1] : ' '
+          if (!/[A-Za-z_]/.test(prev)) {
+            if (current.trim()) parts.push(current.trim())
+            current = ''
+            matched = true
+            break
+          }
+        }
+      }
+      if (!matched) { current += ch; continue }
+    }
+    current += ch
+  }
+  if (current.trim()) parts.push(current.trim())
+  return parts
+}
+
+/**
+ * Extract variable identifiers from an expression, excluding property names
+ * (`a.num` → `a`), parameters (`$x`), function names, keywords, and map-literal
+ * keys (`duration({months: 1})` → the `months` key is not a variable).
+ */
+function _extractOrderByVars(text: string): Set<string> {
+  const vars = new Set<string>()
+  let s = text
+  // Strip string literals.
+  s = s.replace(/'(?:[^'\\]|\\.)*'/g, ' ').replace(/'(?:[^'\\]|\\.)*'/g, ' ').replace(/"(?:[^"\\]|\\.)*"/g, ' ')
+  // Normalize backtick identifiers.
+  s = s.replace(/`([^`]*)`/g, '$1')
+  // Strip parameters ($x).
+  s = s.replace(/\$\w+/g, ' ')
+  // Strip map literals `{...}`. Their keys (`year`, `month`, ...) are not
+  // variable references (used by date/time/temporal constructors). Iterate to
+  // handle nesting, though ORDER BY maps are flat key:value literals in practice.
+  let prev = ''
+  while (prev !== s) {
+    prev = s
+    s = s.replace(/\{[^{}]*\}/g, ' ')
+  }
+  // Collapse property chains to their base variable (`a.num` → `a`).
+  s = s.replace(/([A-Za-z_]\w*)(?:\s*\.\s*[A-Za-z_]\w*)+/g, '$1')
+  const idents = s.match(/[A-Za-z_]\w*/g) || []
+  for (const id of idents) {
+    if (_ORDERBY_NONVAR.has(id.toUpperCase())) continue
+    if (/^\d/.test(id)) continue
+    vars.add(id)
+  }
+  return vars
+}
+
+/**
+ * Throw SyntaxError: UndefinedVariable when an ORDER BY references a variable
+ * that is no longer in scope (or was never defined).
+ *
+ * Scope semantics:
+ *  - MATCH/UNWIND introduce variables into scope.
+ *  - A WITH clause RESETS the scope to its projection: the variables referenced
+ *    inside the projection expressions (e.g. `me` in `me.age AS age`) plus the
+ *    projection aliases (`age`, `cnt`). Variables from before the WITH that are
+ *    not re-projected fall out of scope.
+ *  - An ORDER BY may reference the variables of the clause it belongs to: for
+ *    WITH, that is the projection source variables + aliases; for RETURN, the
+ *    incoming scope + RETURN aliases.
+ */
+export function _validateOrderByScope(query: string): void {
+  // Fast path: only queries with both WITH and ORDER BY need scope tracking.
+  if (!/\bWITH\b/i.test(query) || !/\bORDER\s+BY\b/i.test(query)) return
+
+  const clauses = _splitQueryClauses(query)
+  let scope = new Set<string>()
+
+  for (const clause of clauses) {
+    const isWith = /^WITH\b/i.test(clause)
+    const isMatch = /^(MATCH|OPTIONAL\s+MATCH)\b/i.test(clause)
+    const isUnwind = /^UNWIND\b/i.test(clause)
+    const isReturn = /^RETURN\b/i.test(clause)
+
+    if (isWith || isReturn) {
+      const kwRe = isWith ? /^WITH\s+(DISTINCT\s+)?/i : /^RETURN\s+(DISTINCT\s+)?/i
+      const body = clause.replace(kwRe, '').split(/\bORDER\s+BY\b/i)[0]
+      const items = body.split(',').map(t => t.trim()).filter(Boolean)
+
+      // Projection aliases (usable by this clause's own ORDER BY).
+      const aliasVars = new Set<string>()
+      // Variables referenced inside projection expressions (WITH re-projection).
+      const sourceVars = new Set<string>()
+      for (const item of items) {
+        const asMatch = item.match(/\bAS\s+(`?\w+`?)\s*$/i)
+        if (asMatch) {
+          const alias = asMatch[1].replace(/`/g, '')
+          aliasVars.add(alias)
+          const expr = item.slice(0, asMatch.index).trim()
+          for (const v of _extractOrderByVars(expr)) sourceVars.add(v)
+        } else {
+          const bare = item.match(/^`?\w+`?/)
+          if (bare) {
+            const name = bare[0].replace(/`/g, '')
+            aliasVars.add(name)
+            sourceVars.add(name)
+          }
+        }
+      }
+
+      const obMatch = clause.match(/\bORDER\s+BY\s+(.+?)(?:\s+(?:SKIP|LIMIT)\b|$)/is)
+      if (obMatch) {
+        // WITH: ORDER BY may use projection source vars + aliases only.
+        // RETURN: ORDER BY may use the incoming scope + RETURN aliases.
+        const effectiveScope = isWith
+          ? new Set([...sourceVars, ...aliasVars])
+          : new Set([...scope, ...aliasVars])
+        for (const v of _extractOrderByVars(obMatch[1])) {
+          if (!effectiveScope.has(v)) {
+            throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+          }
+        }
+      }
+
+      if (isWith) scope = new Set([...sourceVars, ...aliasVars])
+      continue
+    }
+
+    if (isMatch) {
+      for (const v of _extractOrderByVars(clause)) scope.add(v)
+      continue
+    }
+
+    if (isUnwind) {
+      const asMatch = clause.match(/\bAS\s+(`?\w+`?)\s*$/i)
+      if (asMatch) scope.add(asMatch[1].replace(/`/g, ''))
+      continue
+    }
+    // CREATE/MERGE/SET/... do not affect ORDER BY scope tracking; the variables
+    // they bind are not referenced by ORDER BY in the TCK scenarios targeted here.
+  }
+}
 

@@ -5,7 +5,7 @@
  */
 
 import type { QueryPlan } from './query-types'
-import { _validateUndefinedVariables, _validateUnknownFunctions, extractVariablesFromClause } from './executor-validators'
+import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, extractVariablesFromClause } from './executor-validators'
 import { _validateLiterals, _splitTopLevel } from './expression-engine'
 
 export function _validatePlan(plan: QueryPlan, query?: string): void {
@@ -21,6 +21,11 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // Keep original query for other validators
   const queryForVarCheck = _stripListPredicates(query)
   _validateUndefinedVariables(queryForVarCheck, plan)
+
+  // ── SyntaxError: UndefinedVariable (ORDER BY scope) ──
+  // A WITH clause resets the variable scope, so ORDER BY may only reference
+  // variables still in scope (or projection aliases of its own WITH).
+  _validateOrderByScope(query)
 
   // ═══════════════════════════════════════════════════════════════
   // Literals SyntaxError (编译时字面量检查)
