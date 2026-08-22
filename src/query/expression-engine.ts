@@ -1120,6 +1120,28 @@ export function _isoWeekNumber(d: Date): number {
   return Math.floor((d.getTime() - w1.getTime()) / (7 * 86400000)) + 1
 }
 
+/** Construct a UTC Date from calendar year/month/day components without the
+ *  0-99 → 1900+ year mapping that `new Date(Date.UTC(year, ...))` applies to
+ *  two-digit years. Cypher temporal literals legitimately use years like 1
+ *  (e.g. `date({year: 1})`), which must map to 0001, not 1901.
+ *
+ *  `Date.UTC(1, 0, 1)` returns 1901-01-01 because the Date constructor folds
+ *  years 0-99 into 1900-1999. `setUTCFullYear` does not apply that fold, so we
+ *  build from the epoch and set the full year explicitly. */
+function _utcDateFromYmd(year: number, monthIndex: number, day: number): Date {
+  const d = new Date(0)
+  d.setUTCFullYear(year, monthIndex, day)
+  d.setUTCHours(0, 0, 0, 0)
+  return d
+}
+
+/** Format a Date as a zero-padded ISO calendar date `YYYY-MM-DD`. Unlike a bare
+ *  `getUTCFullYear()` (which returns `1` for year 1), the year is left-padded
+ *  to four digits so `date({year: 1})` yields `0001-01-01`, matching Cypher. */
+function _fmtUtcDate(d: Date): string {
+  return String(d.getUTCFullYear()).padStart(4, '0') + "-" + String(d.getUTCMonth() + 1).padStart(2, '0') + "-" + String(d.getUTCDate()).padStart(2, '0')
+}
+
 export function _resolveDateFromMap(map: Record<string, unknown>): Date {
   if (map.date != null) {
     const baseStr = typeof map.date === 'string' ? map.date : String(map.date)
@@ -1131,7 +1153,7 @@ export function _resolveDateFromMap(map: Record<string, unknown>): Date {
       if (map.year != null) year = Number(map.year)
       if (map.month != null) month2 = Number(map.month)
       if (map.day != null) day2 = Number(map.day)
-      const base = new Date(Date.UTC(year, month2 - 1, day2))
+      const base = _utcDateFromYmd(year, month2 - 1, day2)
       if (map.week != null || map.dayOfWeek != null || map.quarter != null || map.ordinalDay != null) {
         // dateDow 取原始 date 的 dayOfWeek（当 map.year 覆盖时，base 日期变了，但 dayOfWeek 继承不变！）
         const origDate = map.date ? new Date(typeof map.date === 'string' ? map.date.replace(/T.*$/, '') : String(map.date).replace(/T.*$/, '')) : base
@@ -1144,16 +1166,16 @@ export function _resolveDateFromMap(map: Record<string, unknown>): Date {
           // quarter: 保持 other 的 dayOfQuarter（从 Q1 开始的天数偏移）
           if (map.dayOfQuarter != null) {
             const dq = Number(map.dayOfQuarter)
-            const qDate = new Date(Date.UTC(isoY, qm - 1, dq))
+            const qDate = _utcDateFromYmd(isoY, qm - 1, dq)
             return qDate
           }
           // 保留 other 的 dayOfQuarter（不是简单改 month！）
-          const otherDoQ = Math.ceil((new Date(Date.UTC(isoY, month2 - 1, day2)).getTime() - new Date(Date.UTC(isoY, Math.floor((month2 - 1) / 3) * 3, 1)).getTime()) / 86400000) + 1
-          return new Date(Date.UTC(isoY, qm - 1, 1 + otherDoQ - 1))
+          const otherDoQ = Math.ceil((_utcDateFromYmd(isoY, month2 - 1, day2).getTime() - _utcDateFromYmd(isoY, Math.floor((month2 - 1) / 3) * 3, 1).getTime()) / 86400000) + 1
+          return _utcDateFromYmd(isoY, qm - 1, 1 + otherDoQ - 1)
         }
         if (map.ordinalDay != null) {
           const od = Number(map.ordinalDay)
-          return new Date(Date.UTC(isoY, 0, od))
+          return _utcDateFromYmd(isoY, 0, od)
         }
         // week/dayOfWeek 处理
         const w1Mon = _isoWeek1Monday(isoY)
@@ -1185,11 +1207,11 @@ export function _resolveDateFromMap(map: Record<string, unknown>): Date {
     }
   }
   if (map.ordinalDay != null) {
-    const d = new Date(Date.UTC(year, 0, 1))
+    const d = _utcDateFromYmd(year, 0, 1)
     d.setUTCDate(d.getUTCDate() + Number(map.ordinalDay) - 1)
     return d
   }
-  return new Date(Date.UTC(year, month - 1, day))
+  return _utcDateFromYmd(year, month - 1, day)
 }
 
 /** Unwrap a value to its raw data object, handling NodeRecord/EdgeRecord wrappers */
@@ -1496,14 +1518,14 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         // If any week/quarter/ordinalDay 需要走 _resolveDateFromMap（保留 other 的 dayOfWeek）
         if (map.week != null || map.quarter != null || map.ordinalDay != null || map.dayOfWeek != null) {
           const d = _resolveDateFromMap(map)
-          return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+          return _fmtUtcDate(d);
         }
         let dateStr = map.date.includes('T') ? map.date.slice(0, map.date.indexOf('T')) : map.date
         dateStr = _mergeDateStr(dateStr, map)
         return dateStr
       }
       const d = _resolveDateFromMap(map);
-      return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+      return _fmtUtcDate(d);
     }
     return null;
   },
@@ -1662,7 +1684,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (map.time != null && typeof map.time === 'string') {
         const timePart = (map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time).replace(/\[[^\]]+\]$/, '').replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')
         const d = _resolveDateFromMap(map);
-        const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+        const dateStr = _fmtUtcDate(d);
         return dateStr + 'T' + _mergeTimeStr(timePart, map)
       }
       if (map.datetime != null && typeof map.datetime === 'string') {
@@ -1679,7 +1701,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         return dateStr + "T" + _formatTime(hour, minute, second, nanosecond);
       }
       const d = _resolveDateFromMap(map);
-      const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+      const dateStr = _fmtUtcDate(d);
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
       return dateStr + "T" + _formatTime(hour, minute, second, nanosecond);
     }
@@ -1820,7 +1842,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (map.time != null && typeof map.time === 'string') {
         let timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
         const d = _resolveDateFromMap(map);
-        const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+        const dateStr = _fmtUtcDate(d);
         const hasOwnTz = /[Z+-]/.test(timePart.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))
         const timeTz = hasOwnTz ? (timePart.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/) || [''])[0] : ''
         if (map.timezone != null) {
@@ -1890,7 +1912,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         return dateStr + "T" + _formatTime(hour, minute, second, nanosecond) + origTz
       }
       const d = _resolveDateFromMap(map);
-      const dateStr = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
+      const dateStr = _fmtUtcDate(d);
       const { hour, minute, second, nanosecond } = _extractTimeMap(map);
       const tz = map.timezone != null ? _formatTimezone(_resolveNamedTimezone(String(map.timezone), d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), Number(hour), Number(minute))) : (map.time != null && typeof map.time === 'string' ? (map.time.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/) || [''])[0] || 'Z' : 'Z');
       return dateStr + "T" + _formatTime(hour, minute, second, nanosecond) + tz;
@@ -2113,7 +2135,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       const timeTz = sb.match(/[+-]\d{2}:?\d{2}(?:\[[^\]]+\])?$/);
       if (timeTz) sa = sa + "T00:00:00" + timeTz[0];
       else sa = sa + "T00:00:00";
-      console.log('=== DUR DATE+TIME === sa:', sa, 'sb:', sb, 'timeTz:', timeTz);
     } else if (isDateVal(sb) && isTimeVal(sa)) {
       sa = sb + "T" + sa;
       const timeTz = sa.match(/[+-]\d{2}:?\d{2}(?:\[[^\]]+\])?$/);
@@ -3543,7 +3564,6 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
       if (left == null || right == null) return null
-      if (t.includes('dur.date') && t.includes('+')) console.error('T8_PLUS_DUR: t=' + t + ' l=' + (typeof left === 'string' ? left.slice(0,30) : typeof left) + ' r=' + (typeof right === 'string' ? right.slice(0,30) : typeof right) + '\n')
       // Cypher + 语义: list+list(拼接), list+scalar(追加), scalar+list(前置), number+number(加法), string+any(连接)
       if (Array.isArray(left) && Array.isArray(right)) return [...left, ...right]
       if (Array.isArray(left) && !Array.isArray(right)) return [...left, right]
@@ -4624,6 +4644,51 @@ export function _enrichWithAggregates(cols: Array<{ expression: string; alias?: 
 // _orderByField / _postProcessResults
 // ══════════════════════════════════════════════════════════
 
+/** Normalize a temporal value so it sorts by absolute instant rather than by
+ *  its (timezone-dependent) textual representation.
+ *
+ *  Cypher orders `time` / `datetime` values on the same instant axis regardless
+ *  of their stored offset: `12:31:14+01:00` (UTC 11:31:14) must precede
+ *  `12:30:14+00:15` (UTC 12:15:14), even though their local clock text would
+ *  order them the other way. Only values that carry an explicit offset are
+ *  normalized; naive `date` / `localdatetime` / ordinary strings sort by text,
+ *  which is already correct for them.
+ *
+ *  Returns a comparable UTC string (`...Z`) for offset-bearing temporal values,
+ *  or `null` when the value should fall back to the default textual comparison. */
+function _temporalSortKey(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const s = v.trim()
+  // `datetime` / `localdatetime` carry a `T`; `time` does not. The offset suffix
+  // (`Z`, `+HH:MM`, `-HH:MM`) signals an offset-bearing value. A `time` may omit
+  // seconds entirely (`10:35-08:00`), so the seconds/nanos group is optional.
+  const dt = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/)
+  const tm = s.match(/^(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/)
+  if (!dt && !tm) return null
+
+  const isDateTime = !!dt
+  if (isDateTime) {
+    const m = dt!
+    const year = parseInt(m[1], 10), month = parseInt(m[2], 10), day = parseInt(m[3], 10)
+    const hour = parseInt(m[4], 10), minute = parseInt(m[5], 10), second = parseInt(m[6], 10)
+    const nanos = (m[7] || '.0').slice(1).padEnd(9, '0')
+    const offsetMin = _parseTzOffset(m[8])
+    const utc = _utcDateFromYmd(year, month - 1, day)
+    utc.setUTCHours(hour, minute, second, 0)
+    utc.setUTCMinutes(utc.getUTCMinutes() - offsetMin)
+    return `${_fmtUtcDate(utc)}T${String(utc.getUTCHours()).padStart(2, '0')}:${String(utc.getUTCMinutes()).padStart(2, '0')}:${String(utc.getUTCSeconds()).padStart(2, '0')}.${nanos}Z`
+  }
+  const m = tm!
+  const hour = parseInt(m[1], 10), minute = parseInt(m[2], 10)
+  const second = m[3] != null ? parseInt(m[3], 10) : 0
+  const nanos = (m[4] || '.0').slice(1).padEnd(9, '0')
+  const offsetMin = _parseTzOffset(m[5])
+  const utc = _utcDateFromYmd(1970, 0, 1)
+  utc.setUTCHours(hour, minute, second, 0)
+  utc.setUTCMinutes(utc.getUTCMinutes() - offsetMin)
+  return `${String(utc.getUTCHours()).padStart(2, '0')}:${String(utc.getUTCMinutes()).padStart(2, '0')}:${String(utc.getUTCSeconds()).padStart(2, '0')}.${nanos}Z`
+}
+
 export function _orderByField(o: any): string {
   let field = o.field || o.property || o.column || o.expression || o.col
   if (!field) {
@@ -4678,7 +4743,15 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
         else if (va === null) cmp = 1
         else if (vb === null) cmp = -1
         else if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
-        else cmp = String(va).localeCompare(String(vb))
+        else {
+          // Offset-bearing temporal values sort by absolute instant (UTC), not
+          // by their local clock text. When both sides normalize, compare the
+          // UTC keys; otherwise fall back to plain textual ordering.
+          const ta = _temporalSortKey(va)
+          const tb = _temporalSortKey(vb)
+          if (ta !== null && tb !== null) cmp = ta.localeCompare(tb)
+          else cmp = String(va).localeCompare(String(vb))
+        }
         if (cmp !== 0) return dir === 'DESC' ? -cmp : cmp
       }
       return 0
