@@ -4644,6 +4644,71 @@ export function _enrichWithAggregates(cols: Array<{ expression: string; alias?: 
 // _orderByField / _postProcessResults
 // ══════════════════════════════════════════════════════════
 
+/** Rank a Cypher value by its type for ORDER BY, defining a deterministic
+ *  cross-type total order (ascending). The ordering is inferred from the
+ *  openCypher WithOrderBy TCK, which exercises heterogenous lists (`['a']`,
+ *  `[1]`, `[1, null]`, `[null, 1]`) and expects `string < number < null`.
+ *  `null` sorts last (Cypher's default NULLS LAST for ascending ORDER BY),
+ *  so it is assigned the highest rank.
+ *
+ *  Numbers (both `number` and `bigint`) share one rank and are compared
+ *  numerically; booleans sort before numbers (`false` < `true` < number);
+ *  strings sort between booleans and numbers. Temporal strings are compared
+ *  by their absolute instant via `_temporalSortKey` before falling back to
+ *  lexical order, so `date`/`time`/`datetime` values order correctly. */
+function _orderByTypeRank(v: unknown): number {
+  if (v === null || v === undefined) return 100
+  const t = typeof v
+  switch (t) {
+    case 'boolean': return 0
+    case 'number':
+    case 'bigint': return 2
+    case 'string': return 1
+    default: return 50 // objects, maps, lists — handled elsewhere, keep distinct
+  }
+}
+
+/** Compare two Cypher values for ORDER BY, returning a deterministic total
+ *  order (-1, 0, or 1). Unlike `_compareValues` (which models three-valued
+ *  predicate logic and returns null on null / cross-type), this comparator is
+ *  total: `null` sorts last, and cross-type pairs order by `_orderByTypeRank`. */
+function _compareOrderByValue(a: unknown, b: unknown): number {
+  if (a === b) return 0
+  if (a === null || a === undefined) return 1
+  if (b === null || b === undefined) return -1
+
+  const ta = typeof a, tb = typeof b
+
+  // Lists sort by element-wise lexicographic order (empty list first).
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const minLen = Math.min(a.length, b.length)
+    for (let i = 0; i < minLen; i++) {
+      const cmp = _compareOrderByValue(a[i], b[i])
+      if (cmp !== 0) return cmp
+    }
+    return a.length - b.length
+  }
+
+  // Same-type numeric comparison.
+  if (ta === 'number' && tb === 'number') return a < b ? -1 : 1
+  if ((ta === 'bigint' && tb === 'bigint')) return a < b ? -1 : 1
+
+  // Temporal strings order by absolute instant; kept inside the string branch
+  // so ordinary strings still fall back to lexical order.
+  if (ta === 'string' && tb === 'string') {
+    const taKey = _temporalSortKey(a)
+    const tbKey = _temporalSortKey(b)
+    if (taKey !== null && tbKey !== null) return taKey < tbKey ? -1 : taKey > tbKey ? 1 : 0
+    return a < b ? -1 : a > b ? 1 : 0
+  }
+
+  // Cross-type: order by type rank, then fall back to string form for stability.
+  const ra = _orderByTypeRank(a), rb = _orderByTypeRank(b)
+  if (ra !== rb) return ra < rb ? -1 : 1
+  const sa = String(a), sb = String(b)
+  return sa < sb ? -1 : sa > sb ? 1 : 0
+}
+
 /** Normalize a temporal value so it sorts by absolute instant rather than by
  *  its (timezone-dependent) textual representation.
  *
@@ -4742,6 +4807,7 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
         if (va === null && vb === null) cmp = 0
         else if (va === null) cmp = 1
         else if (vb === null) cmp = -1
+        else if (Array.isArray(va) || Array.isArray(vb)) cmp = _compareOrderByValue(va, vb)
         else if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
         else {
           // Offset-bearing temporal values sort by absolute instant (UTC), not
