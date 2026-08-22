@@ -11,6 +11,7 @@ import fs from 'fs'
 import crypto from 'crypto'
 import { parseQuery, _executeQuery, _validatePlan, _clearGeInstances } from '../query-engine'
 import { _evalBinary, _isExprValue } from '../expression-engine'
+import { _resolveUnwindList } from '../query-parser'
 import { GraphEngine } from '../../core/graph-engine'
 import { globalRegistry as _globalProcedureRegistry, type CypherProcedure } from '../procedure-registry'
 import { extractEdgesFromNodes } from '../executor-validators'
@@ -1007,34 +1008,11 @@ Given('having executed:', async function (query: string) {
       // If any UNWIND，为每个 UNWIND 元素创建额外的节点
       // 解析 UNWIND 后替换 createNodes 中的变量引用
       if (unwind && unwind.list) {
-        // 解析 UNWIND 列表：可能是 JS 数组或字符串 "[1,2,3]" / "['a','b','c']"
-        let listVals: unknown[] = []
-        if (Array.isArray(unwind.list)) {
-          listVals = unwind.list
-        } else if (typeof unwind.list === 'string') {
-          // e.g. "['a', 'b', 'c']" or "[1, 2, 3]"
-          const trimmed = unwind.list.trim()
-          if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-            try { listVals = JSON.parse(trimmed) } catch {}
-          }
-          // fallback: 尝试手动解析（JSON.parse 可能失败于单引号）
-          if (!listVals.length) {
-            const inner = trimmed.slice(1, -1)
-            for (const part of inner.split(',')) {
-              const p = part.trim()
-              // 去掉引号
-              if ((p.startsWith("'") && p.endsWith("'")) || (p.startsWith('"') && p.endsWith('"'))) {
-                listVals.push(p.slice(1, -1))
-              } else if (p === 'true') listVals.push(true)
-              else if (p === 'false') listVals.push(false)
-              else if (p === 'null') listVals.push(null)
-              else {
-                const n = Number(p)
-                listVals.push(isNaN(n) ? p : n)
-              }
-            }
-          }
-        }
+        // Resolve the UNWIND list to concrete values via the same authoritative
+        // helper the executor uses (`_resolveUnwindList`), so string literals
+        // stored as quoted raw text (`'a'`) are restored to `a` — including the
+        // empty string and whitespace — and temporal/range expressions evaluate.
+        const listVals: unknown[] = _resolveUnwindList(unwind, {})
         // 确保 createNodes 模板存在
         const cnTemplate = cns.length > 0 ? cns[0] : null
         if (cnTemplate) {

@@ -603,9 +603,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // Clone createNodes before mutating in the expansion loop
       let effectiveCreateNodes = plan.createNodes
       if (uwExpanded) {
+        // Resolve list elements to their concrete values (string literals are
+        // stored as quoted raw text, temporal/range expressions as bare text).
+        const resolvedList = _resolveUnwindList(uwExpanded, {})
         const expandedCns: typeof effectiveCreateNodes = []
         for (let uwi = 0; uwi < uwExpanded.list.length; uwi++) {
-          const elem = uwExpanded.list[uwi]
+          const elem = resolvedList[uwi] ?? uwExpanded.list[uwi]
           for (const cn of plan.createNodes) {
             const ecn = { ...cn }
             if (cn.props) {

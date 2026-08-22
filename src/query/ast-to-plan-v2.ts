@@ -30,10 +30,10 @@ function _splitListItems(s: string): string[] {
       inStr = true
       strChar = ch
       current += ch
-    } else if (ch === '[' || ch === '{') {
+    } else if (ch === '[' || ch === '{' || ch === '(') {
       depth++
       current += ch
-    } else if (ch === ']' || ch === '}') {
+    } else if (ch === ']' || ch === '}' || ch === ')') {
       depth--
       current += ch
     } else if (ch === ',' && depth === 0) {
@@ -2017,31 +2017,31 @@ function extractUnwind(unwindCtx: any): QueryPlan['unwind'] {
   let varRef: string | undefined
 
   if (text.startsWith('[') && text.endsWith(']')) {
-    // Literal list
-    try {
-      list = JSON.parse(text)
-    } catch {
-      // 如果 JSON.parse 失败（如使用单引号），手动解析列表
-      const inner = text.slice(1, -1).trim()
-      if (inner) {
-        // 先尝试用逗号分割，再去除引号和空格
-        const items = _splitListItems(inner)
-        list = items.map(item => {
-          const trimmed = item.trim()
-          if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
-              (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
-            return trimmed.slice(1, -1)
-          }
-          if (trimmed.toLowerCase() === 'true') return true
-          if (trimmed.toLowerCase() === 'false') return false
-          if (trimmed.toLowerCase() === 'null') return null
-          const num = Number(trimmed)
-          if (!isNaN(num)) return num
+    // Literal list. Parse elements uniformly: a string literal keeps its
+    // quotes as raw text (so `_resolveUnwindList` → `_evaluateExpression`
+    // can faithfully restore the string value, including the empty string
+    // `''` and a whitespace-only string `' '`). Numbers/booleans/null resolve
+    // to their JS values; anything else (temporal constructors, `range(...)`,
+    // nested list literals, etc.) stays raw text for the expression engine.
+    const inner = text.slice(1, -1).trim()
+    if (inner) {
+      list = _splitListItems(inner).map(item => {
+        const trimmed = item.trim()
+        if ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+            (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+          // Keep the quotes: the element is a string literal, not a variable/
+          // expression. This preserves the empty string and whitespace.
           return trimmed
-        })
-      } else {
-        list = text as unknown[]
-      }
+        }
+        if (trimmed.toLowerCase() === 'true') return true
+        if (trimmed.toLowerCase() === 'false') return false
+        if (trimmed.toLowerCase() === 'null') return null
+        const num = Number(trimmed)
+        if (!isNaN(num)) return num
+        return trimmed
+      })
+    } else {
+      list = []
     }
   } else {
     // Variable reference
