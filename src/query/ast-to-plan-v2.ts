@@ -1150,7 +1150,10 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         break
       }
       case 'WITH': {
-        plan.with = extractWith(clause.ctx)
+        const w = extractWith(clause.ctx)
+        plan.with = w
+        if (!plan.withChain) plan.withChain = []
+        plan.withChain.push(w)
         break
       }
     }

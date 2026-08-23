@@ -3018,7 +3018,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 而 _executeViaGraphEngine 直接调用 GE._executeQueryPlan 绕过了 WITH 处理。
     // 此处用表达式引擎对 WITH 列求值，将结果放到 rawRow.props 中。
     // 也会将 WITH 列表中的标识符字符串解析为实际节点值。
-    if (plan.with?.columns?.length) {
+    // ── WITH 子句后处理：对 GE 返回的 raw rows 应用 WITH 投影 ──
+    // 当 plan.with.columns 存在时（MATCH ... WITH [...] AS list RETURN ...），
+    // GE 的下层 _executeQueryPlan 不处理 WITH 子句（仅在 GE.query() 中处理），
+    // 而 _executeViaGraphEngine 直接调用 GE._executeQueryPlan 绕过了 WITH 处理。
+    // 此处用表达式引擎对 WITH 列求值，将结果放到 rawRow.props 中。
+    // 也会将 WITH 列表中的标识符字符串解析为实际节点值。
+    //
+    // 多 WITH 管道：withChain 保留所有 WITH 子句（按出现顺序）。当存在两个及
+    // 以上 WITH 时（如 `WITH a, a.num+a.num2 AS sum WITH a, a.num2%3 AS mod
+    // ORDER BY sum`），后一个 WITH 的 ORDER BY / 表达式可能引用前一个 WITH 的
+    // 投影别名（sum）。因此必须顺序应用每个 WITH，把上一步的 alias 先写入
+    // props，使其在下一步的求值作用域中可见。
+    const withChainToApply =
+      (plan.withChain && plan.withChain.length > 1 ? plan.withChain : (plan.with ? [plan.with] : []))
+    if (withChainToApply.length) {
       for (const rawRow of rawWithEdges) {
         // Snapshot node variables that alias rawRow.props before writing WITH
         // projection aliases back into props.  For a single-node MATCH the row
@@ -3035,48 +3049,54 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
           }
         }
-        for (const wc of plan.with.columns) {
-          const alias = typeof wc === 'object' ? wc.alias : null
-          if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
-          const wcExpr = typeof wc.expression === 'string' ? wc.expression :
-            (wc.expression?.type === 'LIST'
-              ? '[' + (wc.expression.items || []).map((i: any) => i.name ?? i.value ?? '').join(', ') + ']'
-              : null)
-          if (!wcExpr) continue
-          // Build varCtx from rawRow
-          const rc: Record<string, unknown> = {}
-          if (rawRow.props) {
-            for (const [k, v] of Object.entries(rawRow.props)) {
-              if (!k.startsWith('_') && k !== alias) rc[k] = v
-            }
-          }
-          if (rawRow.__crossVarRows) {
-            for (const [k, v] of Object.entries(rawRow.__crossVarRows)) {
-              if (!(k in rc)) rc[k] = v
-            }
-          }
-          // 将 MATCH 变量注入 rc（支持 v.date 等属性访问表达式）
-          const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
-          const _firstVar = _exprVars?.[0]
-          if (_firstVar && rawRow?.props && !(_firstVar in rc)) {
-            rc[_firstVar] = rawRow.props
-          }
-          try {
-            const evaluated = _evalBinary(wcExpr, rc)
-            if (evaluated !== undefined && evaluated !== null) {
-              // 清理节点对象中的内部属性（__edges、props 等），避免输出为 props: (...)
-              if (typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)) {
-                const cleanVal: Record<string, unknown> = {}
-                for (const [ek, ev] of Object.entries(evaluated as Record<string, unknown>)) {
-                  if (ek !== '__edges' && ek !== 'props' && !ek.startsWith('__')) cleanVal[ek] = ev
-                }
-                rawRow.props[alias] = cleanVal
-              } else {
-                rawRow.props[alias] = evaluated
+        for (const withClause of withChainToApply) {
+          for (const wc of withClause.columns || []) {
+            const alias = typeof wc === 'object' ? wc.alias : null
+            if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
+            const wcExpr = typeof wc.expression === 'string' ? wc.expression :
+              (wc.expression?.type === 'LIST'
+                ? '[' + (wc.expression.items || []).map((i: any) => i.name ?? i.value ?? '').join(', ') + ']'
+                : null)
+            if (!wcExpr) continue
+            // Build varCtx from rawRow.  Do NOT exclude a key merely because it
+            // equals the alias: in a shadowing pipeline (`WITH x AS y ... WITH
+            // y % 3 AS y`) the alias reuses a prior projection whose OLD value
+            // must remain visible to the right-hand side (`y % 3` reads the old
+            // `y`).  Excluding it here left the variable undefined → NaN.
+            const rc: Record<string, unknown> = {}
+            if (rawRow.props) {
+              for (const [k, v] of Object.entries(rawRow.props)) {
+                if (!k.startsWith('_')) rc[k] = v
               }
             }
-          } catch {
-            // Fallback: keep GE's value
+            if (rawRow.__crossVarRows) {
+              for (const [k, v] of Object.entries(rawRow.__crossVarRows)) {
+                if (!(k in rc)) rc[k] = v
+              }
+            }
+            // 将 MATCH 变量注入 rc（支持 v.date 等属性访问表达式）
+            const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
+            const _firstVar = _exprVars?.[0]
+            if (_firstVar && rawRow?.props && !(_firstVar in rc)) {
+              rc[_firstVar] = rawRow.props
+            }
+            try {
+              const evaluated = _evalBinary(wcExpr, rc)
+              if (evaluated !== undefined && evaluated !== null) {
+                // 清理节点对象中的内部属性（__edges、props 等），避免输出为 props: (...)
+                if (typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)) {
+                  const cleanVal: Record<string, unknown> = {}
+                  for (const [ek, ev] of Object.entries(evaluated as Record<string, unknown>)) {
+                    if (ek !== '__edges' && ek !== 'props' && !ek.startsWith('__')) cleanVal[ek] = ev
+                  }
+                  rawRow.props[alias] = cleanVal
+                } else {
+                  rawRow.props[alias] = evaluated
+                }
+              }
+            } catch {
+              // Fallback: keep GE's value
+            }
           }
         }
       }

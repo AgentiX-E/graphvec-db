@@ -274,6 +274,18 @@ export interface QueryPlan {
     skip: number | undefined
     aggregate?: AggregateClause
   }
+  /** 多 WITH 管道：按出现顺序保留的每个 WITH 子句（含 WITH chain） */
+  withChain?: Array<{
+    columns: Array<{
+      expression: string
+      alias: string | null
+    }>
+    filters: FilterClause[]
+    orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
+    limit: number | undefined
+    skip: number | undefined
+    aggregate?: AggregateClause
+  }>
   /** 集合运算类型 */
   unionType?: 'union' | 'union_all' | 'intersect' | 'subtract'
   /** 集合运算右半部分 */
