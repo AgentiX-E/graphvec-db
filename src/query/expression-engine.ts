@@ -3581,7 +3581,20 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue
       if (_isDurationStr(left) && _isDateTimeStr(right)) return _dateTimeAddDuration(right, left)
       return typeof left === 'string' || typeof right === 'string' ? String(left) + String(right) : Number(left) + Number(right)
     }
-    if (t[i] === '-' && !_inBrackets(t, i) && !_inString(t, i) && i > 0 && !'+-*/%('.includes(t[i - 1]) && !'eE'.includes(t[i - 1])) {
+    // A `-` is only a binary subtraction operator when it is not preceded
+    // (ignoring whitespace) by another operator — e.g. in `5 * -1`, `5 - -1`,
+    // or `foo(-1)` the `-` is a unary minus, not subtraction.  Whitespace
+    // between the operator and the minus (`5 * -1`) previously slipped past
+    // the `t[i-1]` guard, so skip whitespace to find the true preceding char.
+    // The `e`/`E` guard (scientific notation such as `5e-3`) must keep looking
+    // at the *adjacent* char `t[i-1]` only — skipping whitespace would wrongly
+    // treat a variable ending in `e` (e.g. `date - x`) as scientific notation.
+    const _prevNonSpace = (() => {
+      let j = i - 1
+      while (j >= 0 && /\s/.test(t[j])) j--
+      return j >= 0 ? t[j] : ''
+    })()
+    if (t[i] === '-' && !_inBrackets(t, i) && !_inString(t, i) && i > 0 && !'+-*/%('.includes(_prevNonSpace) && !'eE'.includes(t[i - 1])) {
       const left = _evalAddSub(t.slice(0, i), row)
       const right = _evalMulDiv(t.slice(i + 1), row)
       if (left == null || right == null) { return null }
