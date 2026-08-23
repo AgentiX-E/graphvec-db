@@ -3020,6 +3020,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 也会将 WITH 列表中的标识符字符串解析为实际节点值。
     if (plan.with?.columns?.length) {
       for (const rawRow of rawWithEdges) {
+        // Snapshot node variables that alias rawRow.props before writing WITH
+        // projection aliases back into props.  For a single-node MATCH the row
+        // is built with `props` and `__crossVarRows[v]` referencing the *same*
+        // node object (see the edge-less MATCH row builder below), so assigning
+        // `props[alias] = <projection>` would also pollute the node variable,
+        // e.g. `MATCH (a) WITH a, a.num+a.num2 AS sum` would leave `a` carrying
+        // a bogus `sum` property.  Break the alias by shallow-copying the node
+        // into __crossVarRows before any such mutation.
+        if (rawRow.__crossVarRows && rawRow.props && typeof rawRow.props === 'object') {
+          for (const vn of Object.keys(rawRow.__crossVarRows)) {
+            if (rawRow.__crossVarRows[vn] === rawRow.props) {
+              rawRow.__crossVarRows[vn] = { ...rawRow.props }
+            }
+          }
+        }
         for (const wc of plan.with.columns) {
           const alias = typeof wc === 'object' ? wc.alias : null
           if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
