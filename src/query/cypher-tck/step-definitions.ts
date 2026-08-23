@@ -19,6 +19,58 @@ import { extractEdgesFromNodes } from '../executor-validators'
 interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any; pDir?: string; params?: Record<string, string> }
 const st: St = { nodes: [], q: '', res: [], err: null, params: {} }
 
+/**
+ * Strip Cypher comments (`//` line and `/* *​/` block) while respecting
+ * string literals (single/double quote), backtick-quoted identifiers, and
+ * escaped characters.  openCypher TCK `.feature` docstrings frequently embed
+ * `// ...` annotations inside multi-line CREATE clauses (e.g. to document a
+ * computed value).  If left in place those comments break our manual
+ * multi-statement splitter, which keys on trailing commas and bare clause
+ * keywords — a line such as `CREATE (..), //annotation` no longer ends with
+ * a comma, so the following node line is treated as a separate statement and
+ * the extra nodes are dropped.
+ */
+function _stripCypherComments(q: string): string {
+  const out: string[] = []
+  let i = 0
+  const n = q.length
+  while (i < n) {
+    const ch = q[i]
+    if (ch === "'" || ch === '"') {
+      const start = i
+      i++
+      while (i < n) {
+        if (q[i] === '\\') { i += 2; continue }
+        if (q[i] === ch) { i++; break }
+        i++
+      }
+      out.push(q.slice(start, i))
+      continue
+    }
+    if (ch === '`') {
+      const start = i
+      i++
+      while (i < n && q[i] !== '`') i++
+      if (i < n) i++
+      out.push(q.slice(start, i))
+      continue
+    }
+    if (ch === '/' && q[i + 1] === '/') {
+      while (i < n && q[i] !== '\n') i++
+      continue
+    }
+    if (ch === '/' && q[i + 1] === '*') {
+      i += 2
+      while (i < n && !(q[i] === '*' && q[i + 1] === '/')) i++
+      if (i < n) i += 2
+      continue
+    }
+    out.push(ch)
+    i++
+  }
+  return out.join('')
+}
+
 Before(function () {
   st.nodes = []; st.q = ''; st.res = []; st.err = null; st.params = {}
   if (st.pGe) { try { st.pGe.close() } catch {}; st.pGe = undefined }
@@ -716,7 +768,7 @@ function _syncNodesFromGe(): void {
 }
 
 Given('having executed:', async function (query: string) {
-  const q = query.trim()
+  const q = _stripCypherComments(query).trim()
   // 支持多语句：按行分割，逐条执行。
   // Improvements:合并以逗号结尾的行（多行 CREATE 链不被切碎）
   const rawLines = q.split('\n').map(s => s.trim()).filter(Boolean)
@@ -1288,13 +1340,13 @@ function parseTckValue(val: string | null): unknown {
 }
 
 When('executing query:', async function (query: string) {
-  st.q = query.trim()
+  st.q = _stripCypherComments(query).trim()
   // Having executed 已经把节点注入 st.nodes，直接用 run()
   await run(st.q)
 })
 
 When('executing control query:', async function (query: string) {
-  st.q = query.trim()
+  st.q = _stripCypherComments(query).trim()
   if (st.pGe && st.q.includes('-')) {
     _runOnPersistGe(st.q)
   } else {
