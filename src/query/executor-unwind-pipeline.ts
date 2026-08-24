@@ -92,6 +92,120 @@ function _materializePreUnwindProjections(query: string, varCtx: Record<string, 
   }
 }
 
+/**
+ * Materialize cross-row `collect(...)` aggregations nested inside RETURN
+ * expressions, collapsing the result to a single aggregated row.
+ *
+ * The per-row expression engine `collect` kernel is single-row (it wraps one
+ * value in a list).  When a RETURN expression nests `collect` inside a list
+ * predicate — e.g. `ALL(ok IN collect((size(list)=0)=empty) WHERE ok)` — the
+ * collect must gather over *all* rows before the predicate is evaluated.
+ * Returns `null` when no cross-row collect is present (so Step 5 proceeds
+ * normally), otherwise returns the single aggregated row set.
+ */
+function _materializeReturnAggregates(
+  plan: QueryPlan,
+  rows: Array<Record<string, unknown>>,
+  varCtx: Record<string, unknown>
+): Array<Record<string, unknown>> | null {
+  // Only materialize cross-row collect when the parser did NOT synthesize a
+  // top-level plan.aggregate.  A top-level `collect(x) AS y` / `count(x) AS y`
+  // already sets plan.aggregate (and is handled downstream by Step 4); we must
+  // not collapse those rows here, or we would change their (already-broken but
+  // distinct) top-level-aggregation semantics.
+  if (plan.aggregate) return null
+  const exprCols = (plan.expressionColumns || [])
+  let hasCrossRowCollect = false
+  const matExprs: Array<{ alias: string; expr: string }> = []
+  for (const ec of exprCols) {
+    const expr = typeof ec.expression === 'string' ? ec.expression : ''
+    if (!expr) continue
+    // `collect(` that is not a literal-list builder (`collect([...])`).
+    if (/\bcollect\s*\(/i.test(expr) && !/\bcollect\s*\(\s*\[/i.test(expr)) {
+      hasCrossRowCollect = true
+    }
+    matExprs.push({ alias: ec.alias || '', expr })
+  }
+  if (!hasCrossRowCollect || rows.length === 0) return null
+
+  // Collapse to one aggregate row.  Aggregate semantics without an explicit
+  // grouping key yield a single row; non-aggregate columns take the first
+  // row's value.
+  const base: Record<string, unknown> = { ...rows[0] }
+
+  for (const { alias, expr } of matExprs) {
+    if (!alias) continue
+    base[alias] = _evalExprWithCrossRowCollect(expr, rows, varCtx)
+  }
+  return [base]
+}
+
+/**
+ * Evaluate an expression whose `collect(...)` calls gather over `rows`
+ * (rather than the current single row).  Each `collect(inner)` is expanded to
+ * its collected list literal before the surrounding expression is evaluated.
+ */
+function _evalExprWithCrossRowCollect(
+  expr: string,
+  rows: Array<Record<string, unknown>>,
+  varCtx: Record<string, unknown>
+): unknown {
+  // Replace every `collect(...)` (parenthesis-aware, skipping `collect([...])`
+  // literal builders) with the list of inner values gathered across all rows.
+  let expanded = expr
+  let idx = 0
+  while (true) {
+    const m = /\bcollect\s*\(/i.exec(expanded.slice(idx))
+    if (!m) break
+    const collectStart = idx + m.index
+    const openParen = collectStart + m[0].length - 1
+    // Skip literal-list builders `collect([...])`.
+    if (/^\s*\[/.test(expanded.slice(openParen + 1))) {
+      idx = openParen + 1
+      continue
+    }
+    // Find the matching close parenthesis (depth-aware).
+    let depth = 0
+    let closeParen = -1
+    let inStr = false
+    let strChar = ''
+    for (let i = openParen; i < expanded.length; i++) {
+      const ch = expanded[i]
+      if (inStr) {
+        if (ch === '\\') { i++; continue }
+        if (ch === strChar) inStr = false
+        continue
+      }
+      if (ch === "'" || ch === '"') { inStr = true; strChar = ch; continue }
+      if (ch === '(') depth++
+      else if (ch === ')') { depth--; if (depth === 0) { closeParen = i; break } }
+    }
+    if (closeParen < 0) break
+    const inner = expanded.slice(openParen + 1, closeParen)
+    const collected: unknown[] = []
+    for (const row of rows) {
+      const val = _evaluateExpression(inner, { ...varCtx, ...row })
+      collected.push(val)
+    }
+    expanded = expanded.slice(0, collectStart) +
+      _jsonLiteral(collected) +
+      expanded.slice(closeParen + 1)
+    idx = collectStart + 1
+  }
+  return _evaluateExpression(expanded, { ...varCtx, ...rows[0] })
+}
+
+/** Serialize a collected list of Cypher values to a re-evaluable literal. */
+function _jsonLiteral(values: unknown[]): string {
+  if (values.length === 0) return '[]'
+  return '[' + values.map(v => {
+    if (typeof v === 'string') return JSON.stringify(v)
+    if (v === null || v === undefined) return 'null'
+    if (typeof v === 'bigint') return v.toString()
+    return String(v)
+  }).join(', ') + ']'
+}
+
 /** Shallow-deep copy: clone arrays and plain objects for value capture. */
 function _deepCopyForCapture(val: unknown): unknown {
   if (Array.isArray(val)) return val.map(v => _deepCopyForCapture(v))
@@ -641,14 +755,26 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       const withParts = query.split(/\bWITH\s+/i).filter(Boolean)
       if (withParts.length > 1) {
         const lastWith = withParts[withParts.length - 1]
-        const whereMatch = lastWith.match(/\bWHERE\s+(.+?)(?:\s+(?:RETURN|WITH|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT)\s|$)/is)
-        if (whereMatch && !whereMatch[1].includes('[')) whereText = whereMatch[1].trim()
+        // Bracket-aware: exclude the WHERE inside a list predicate
+        // (`[x IN ... WHERE ...]` or `ALL(... WHERE ...)`), which is not a
+        // WITH-WHERE filter.  Otherwise `RETURN ALL(ok IN collect(...) WHERE ok)`
+        // would treat `WHERE ok` as a top-level WITH-WHERE and wipe every row.
+        const wherePos = _findWhereOutsideBrackets(lastWith)
+        if (wherePos >= 0) {
+          const whereBody = lastWith.substring(wherePos + 6).trim()
+          const endMatch = whereBody.match(/\b(?:RETURN|WITH|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT|UNWIND)\b/i)
+          whereText = endMatch ? whereBody.substring(0, endMatch.index).trim() : whereBody.trim()
+        }
       }
     }
     // Fallback：全局第一个 WHERE（用于无多级 WITH 的场景）
     if (!whereText) {
-      const globalWhereMatch = query.match(/\bWHERE\s+(.+?)(?:\s+(?:RETURN|WITH|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT)\s|$)/is)
-      if (globalWhereMatch && !globalWhereMatch[1].includes('[')) whereText = globalWhereMatch[1].trim()
+      const globalWherePos = _findWhereOutsideBrackets(query)
+      if (globalWherePos >= 0) {
+        const whereBody = query.substring(globalWherePos + 6).trim()
+        const endMatch = whereBody.match(/\b(?:RETURN|WITH|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT|UNWIND)\b/i)
+        whereText = endMatch ? whereBody.substring(0, endMatch.index).trim() : whereBody.trim()
+      }
     }
     if (whereText) {
       // 有 MATCH 的 WHERE 由 MATCH 路径处理（hasMatch=true），只有无 MATCH 的 WITH WHERE 才在此处理
@@ -708,6 +834,32 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         return [{ [aggAlias]: values.length ? Math.min(...values) : 0 }]
       default:
         return [{ [aggAlias]: 0 }]
+    }
+  }
+
+  // Step 4.5: RETURN-expression cross-row aggregation.
+  // When a RETURN expression nests an aggregate function inside a list
+  // predicate (e.g. `ALL(ok IN collect((size(list)=0)=empty) WHERE ok)`),
+  // the parser does not synthesize plan.aggregate (its detector only matches
+  // a *top-level* aggregate call).  The per-row expression engine `collect`
+  // kernel is single-row (it wraps one value in a list), so Step 5 would
+  // evaluate the predicate against a single-element list.  Materialize each
+  // cross-row `collect(...)` over all rows first, then collapse to a single
+  // row so the surrounding predicate sees the full collected list.
+  if (plan.returnColumns?.length && rows.length > 0) {
+    const collected = _materializeReturnAggregates(plan, rows, varCtx)
+    // Cross-row collect aggregation has been materialized to a single row.
+    // Map it directly onto the RETURN output and return, bypassing Step 5's
+    // per-row re-evaluation (which would use the single-row collect kernel and
+    // collapse e.g. size(collect(x)) back to 1).
+    if (collected) {
+      const out: QueryRow = {}
+      for (const rc of plan.returnColumns) {
+        const key = rc.replace(/^\w+\./, '')
+        out[rc] = (collected[0][key] !== null && collected[0][key] !== undefined)
+          ? collected[0][key] : (collected[0][rc] !== null && collected[0][rc] !== undefined ? collected[0][rc] : null)
+      }
+      return [out]
     }
   }
 
