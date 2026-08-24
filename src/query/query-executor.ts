@@ -4359,8 +4359,14 @@ export async function _executeQuery(
   // and no procedure calls, bypass GE entirely.  The query-executor's
   // expression engine evaluates temporal functions (date(), datetime(), etc.)
   // while GE's _executeWithClause would skip them, leaving stale data.
+  // NOTE: a bare `WITH ... RETURN ...` only.  If an UNWIND is present the query
+  // is a real row-expanding pipeline (e.g. `WITH [...] AS v UNWIND v AS x
+  // WITH numOfValues, collect(x) AS orderedX RETURN ...`) and must go through
+  // _executeWithUnwindPipeline; the fast path would evaluate the final WITH
+  // against an empty context and drop numOfValues, throwing at range().
   if (plan.type === 'QUERY' && !plan.hasMatch && !plan.steps?.length &&
-      !plan.callProcedure && (plan.with?.columns?.length || plan.expressionColumns?.length)) {
+      !plan.callProcedure && !plan.unwind && !plan.unwinds?.length &&
+      (plan.with?.columns?.length || plan.expressionColumns?.length)) {
     const hasAnyNonAggExpr = plan.with?.columns?.some((wc: any) => {
       const expr = typeof wc === 'object' ? wc.expression : wc
       return typeof expr === 'string' && expr.includes('(')

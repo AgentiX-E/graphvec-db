@@ -5,7 +5,7 @@
  */
 
 import type { QueryPlan, QueryRow } from './query-types'
-import { _evaluateExpression } from './expression-engine'
+import { _evaluateExpression, _compareOrderByValue } from './expression-engine'
 import { _resolveUnwindList, _splitWithColumns, _findWhereOutsideBrackets } from './query-parser'
 
 /**
@@ -53,6 +53,45 @@ function _preProcessAggregateWith(
   }
 }
 
+/**
+ * Materialize WITH projections that occur *before* the first UNWIND in a pure
+ * WITH/UNWIND pipeline (no MATCH).  In a pipeline like
+ *
+ *   WITH [true,false] AS values
+ *   WITH values, size(values) AS numOfValues
+ *   UNWIND values AS value
+ *   ...
+ *
+ * the initial branch only materializes the first list literal (`values`); the
+ * intermediate projection `numOfValues` is silently dropped, so a later
+ * `range(0, numOfValues-1)` evaluates `numOfValues` as null and throws.  Walk
+ * every WITH clause up to (but excluding) the first UNWIND and evaluate each
+ * aliased column in order, feeding earlier aliases into later ones.
+ */
+function _materializePreUnwindProjections(query: string, varCtx: Record<string, unknown>): void {
+  // Up to the first UNWIND only — projections after UNWIND depend on the
+  // row-wise expansion and must NOT be materialized here.
+  const unwindIdx = query.search(/\bUNWIND\b/i)
+  const prefix = unwindIdx >= 0 ? query.slice(0, unwindIdx) : query
+  const withRegex = /\bWITH\s+(.+?)(?=\s+(?:WITH|UNWIND|RETURN)\b|$)/gis
+  let m: RegExpExecArray | null
+  while ((m = withRegex.exec(prefix)) !== null) {
+    const clauseBody = m[1].trim()
+    const columns = _splitWithColumns(clauseBody)
+    for (const col of columns) {
+      const eqIdx = col.search(/\s+AS\s+/i)
+      if (eqIdx < 0) continue
+      const expr = col.substring(0, eqIdx).trim()
+      const alias = col.substring(eqIdx + 3).trim()
+      // Do not overwrite an already-materialized alias (e.g. the first list
+      // literal `values` handled by the main branch above).
+      if (alias in varCtx) continue
+      const val = _evaluateExpression(expr, varCtx)
+      varCtx[alias] = val !== undefined ? _deepCopyForCapture(val) : null
+    }
+  }
+}
+
 /** Shallow-deep copy: clone arrays and plain objects for value capture. */
 function _deepCopyForCapture(val: unknown): unknown {
   if (Array.isArray(val)) return val.map(v => _deepCopyForCapture(v))
@@ -96,6 +135,14 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   if (plan.hasMatch && plan.with && query &&
       (plan.aggregate || plan.type === 'SET' || plan.type === 'DELETE')) {
     _preProcessAggregateWith(varCtx, _preAggAliases, plan, query, _nodes)
+  }
+
+  // Materialize intermediate WITH projections before the first UNWIND in a
+  // pure WITH/UNWIND pipeline (no MATCH).  These are not aggregate clauses and
+  // are otherwise dropped, e.g. `WITH values, size(values) AS numOfValues`
+  // must expose numOfValues to a later RETURN range(0, numOfValues-1).
+  if (query && !plan.hasMatch && plan.unwind) {
+    _materializePreUnwindProjections(query, varCtx)
   }
 
   // 从原始 query 文本提取所有 WITH [...] AS var 的列表字面量（即使没有 UNWIND）
@@ -334,7 +381,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
 
   // ── 中间 WITH 投影 ──
   if (query && rows.length && plan.unwind) {
-    const nonListWithClauses: Array<{ cols: string; where: string | null }> = []
+    const nonListWithClauses: Array<{ cols: string; where: string | null; orderBy: string | null }> = []
     {
       let i = 0
       while (i < query.length) {
@@ -345,13 +392,19 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         let endIdx = afterWith.search(/\b(?:UNWIND|WITH|RETURN|ORDER\s+BY|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE)\b/i)
         if (endIdx < 0) endIdx = afterWith.length
         const clauseBody = afterWith.substring(0, endIdx).trim()
+        // Capture a trailing `ORDER BY <expr> [ASC|DESC]` for this WITH clause.
+        // A projection inside a middle WITH (e.g. `WITH size(...) AS x, value,
+        // numOfValues ORDER BY value`) must sort its rows before a later collect
+        // aggregation, otherwise collect() sees the pre-sort row order.
+        const orderByMatch = afterWith.substring(endIdx).match(/^\s*ORDER\s+BY\s+(.+?)(?=\s+(?:SKIP|LIMIT|WITH|UNWIND|RETURN|CREATE|MERGE|DELETE|SET|REMOVE)\b|$)/is)
+        const orderByExpr = orderByMatch ? orderByMatch[1].trim() : null
         const whereMatch = clauseBody.match(/^(.+?)\s+WHERE\s+(.+)$/is)
         // 括号深度感知的 WHERE 检测：屏蔽列表推导 [y IN ... WHERE ...] 和函数调用内 WHERE
         const wherePos = _findWhereOutsideBrackets(clauseBody)
         if (wherePos >= 0) {
-          nonListWithClauses.push({ cols: clauseBody.substring(0, wherePos).trim(), where: clauseBody.substring(wherePos + 5).trim() })
+          nonListWithClauses.push({ cols: clauseBody.substring(0, wherePos).trim(), where: clauseBody.substring(wherePos + 5).trim(), orderBy: orderByExpr })
         } else {
-          nonListWithClauses.push({ cols: clauseBody, where: null })
+          nonListWithClauses.push({ cols: clauseBody, where: null, orderBy: orderByExpr })
         }
         i = absPos + 4 + 1
       }
@@ -388,6 +441,21 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
           const val = _evaluateExpression(mwc.where!, fullCtx)
           return val === true
         })
+      }
+      // Sort rows by this middle WITH's ORDER BY expression, before any later
+      // collect aggregation.  Uses Cypher value ordering so booleans/temporal
+      // values order consistently with the comparison semantics.
+      if (mwc.orderBy) {
+        const obExpr = mwc.orderBy.replace(/\s+(?:ASC|DESC)\s*$/i, '').trim()
+        const obDesc = /\s+DESC\s*$/i.test(mwc.orderBy)
+        const obCtxs = rows.map(row => _evaluateExpression(obExpr, { ...varCtx, ...row }))
+        const idxOrder = rows.map((_, i) => i).sort((a, b) => {
+          const va = obCtxs[a]
+          const vb = obCtxs[b]
+          const cmp = _compareOrderByValue(va, vb)
+          return obDesc ? -cmp : cmp
+        })
+        rows = idxOrder.map(i => rows[i])
       }
     }
   }

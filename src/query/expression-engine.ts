@@ -3225,19 +3225,17 @@ export function _compareValues(a: unknown, b: unknown, op: string): boolean | nu
     case '<': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
-        const aMs = _temporalToMs(a)
-        const bMs = _temporalToMs(b)
-        if (aMs !== undefined && bMs !== undefined) return aMs < bMs
-        return a < b  // 字典序
+        const c = _temporalCompareStrings(a, b)
+        if (c !== undefined) return c < 0
+        return a < b  // 字典序（naive temporal / 普通字符串，保留精度）
       }
       return Number(a) < Number(b)
     }
     case '>': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
-        const aMs = _temporalToMs(a)
-        const bMs = _temporalToMs(b)
-        if (aMs !== undefined && bMs !== undefined) return aMs > bMs
+        const c = _temporalCompareStrings(a, b)
+        if (c !== undefined) return c > 0
         return a > b
       }
       return Number(a) > Number(b)
@@ -3245,9 +3243,8 @@ export function _compareValues(a: unknown, b: unknown, op: string): boolean | nu
     case '<=': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
-        const aMs = _temporalToMs(a)
-        const bMs = _temporalToMs(b)
-        if (aMs !== undefined && bMs !== undefined) return aMs <= bMs
+        const c = _temporalCompareStrings(a, b)
+        if (c !== undefined) return c <= 0
         return a <= b
       }
       return Number(a) <= Number(b)
@@ -3255,15 +3252,36 @@ export function _compareValues(a: unknown, b: unknown, op: string): boolean | nu
     case '>=': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
-        const aMs = _temporalToMs(a)
-        const bMs = _temporalToMs(b)
-        if (aMs !== undefined && bMs !== undefined) return aMs >= bMs
+        const c = _temporalCompareStrings(a, b)
+        if (c !== undefined) return c >= 0
         return a >= b
       }
       return Number(a) >= Number(b)
     }
   }
   return false
+}
+
+/**
+ * Compare two time/datetime string values using a precision-preserving UTC key.
+ *
+ * The legacy `_temporalToMs` route collapsed values to milliseconds, which made
+ * two distinct localtimes such as `12:31:14.645876123` and `12:31:14.645876124`
+ * compare equal — breaking `x < value` predicates that must agree with the
+ * ORDER BY ordering (which uses `_temporalSortKey` and preserves nanoseconds).
+ *
+ * Returns a total order (-1, 0, 1) when both strings are offset-bearing
+ * temporal values (normalized to the same UTC axis), or `undefined` when the
+ * pair should fall back to plain lexical comparison (naive localtime /
+ * localdatetime / date, where lexicographic order is already the correct
+ * temporal order and preserves the full nanosecond precision).
+ */
+function _temporalCompareStrings(a: string, b: string): number | undefined {
+  const ka = _temporalSortKey(a)
+  const kb = _temporalSortKey(b)
+  if (ka === null || kb === null) return undefined
+  if (ka === kb) return 0
+  return ka < kb ? -1 : 1
 }
 
 export /** 将 time/datetime 字符串解析为 UTC 毫秒值，用于时态比较 */
@@ -4685,7 +4703,7 @@ function _orderByTypeRank(v: unknown): number {
  *  order (-1, 0, or 1). Unlike `_compareValues` (which models three-valued
  *  predicate logic and returns null on null / cross-type), this comparator is
  *  total: `null` sorts last, and cross-type pairs order by `_orderByTypeRank`. */
-function _compareOrderByValue(a: unknown, b: unknown): number {
+export function _compareOrderByValue(a: unknown, b: unknown): number {
   if (a === b) return 0
   if (a === null || a === undefined) return 1
   if (b === null || b === undefined) return -1
