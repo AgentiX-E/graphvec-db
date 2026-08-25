@@ -143,3 +143,48 @@ describe('WITH-WHERE filter is bracket-aware', () => {
     expect(r).toEqual([{ ok: true }])
   })
 })
+
+describe('WITH aggregate projection reduces scalar aggregates', () => {
+  it('WITH count(x) AS c RETURN c', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x WITH count(x) AS c RETURN c')
+    expect(r).toEqual([{ c: 3 }])
+  })
+
+  it('WITH count(*) AS c RETURN c', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x WITH count(*) AS c RETURN c')
+    expect(r).toEqual([{ c: 3 }])
+  })
+
+  it('WITH count(x) skips null values', async () => {
+    const r = await run('WITH [1, null, 3] AS xs UNWIND xs AS x WITH count(x) AS c RETURN c')
+    expect(r).toEqual([{ c: 2 }])
+  })
+
+  it('WITH sum(x) AS s RETURN s', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x WITH sum(x) AS s RETURN s')
+    expect(r).toEqual([{ s: 6 }])
+  })
+
+  it('WITH sum(x) skips null', async () => {
+    const r = await run('WITH [1, null, 3] AS xs UNWIND xs AS x WITH sum(x) AS s RETURN s')
+    expect(r).toEqual([{ s: 4 }])
+  })
+
+  it('WITH avg(x) AS a RETURN a', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x WITH avg(x) AS a RETURN a')
+    expect(r).toEqual([{ a: 2 }])
+  })
+
+  it('WITH max(x) / min(x) reduce to a single value', async () => {
+    const mx = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x WITH max(x) AS m RETURN m')
+    const mn = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x WITH min(x) AS m RETURN m')
+    expect(mx).toEqual([{ m: 3 }])
+    expect(mn).toEqual([{ m: 1 }])
+  })
+
+  it('WITH collect(x) still returns the full list', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x WITH collect(x) AS c RETURN c')
+    expect(r).toEqual([{ c: [1, 2, 3] }])
+  })
+})
+

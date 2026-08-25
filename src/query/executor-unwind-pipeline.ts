@@ -126,6 +126,47 @@ function _aggTypeRank(v: unknown): number {
 }
 
 /**
+ * Compute the final value of an aggregate WITH projection column from the
+ * per-row values collected by Step 3.  `collect` returns the raw list; the
+ * scalar aggregates reduce the list (count counts non-null values, sum/avg
+ * accumulate numbers, max/min pick the extreme via the Cypher value hierarchy).
+ */
+function _computeAggregate(fn: string, rows: unknown[]): unknown {
+  switch (fn) {
+    case 'collect':
+      return rows
+    case 'count': {
+      // count(v) counts non-null values; count(*) pushes a literal 1 per row so
+      // its length already equals the row count (nulls never appear).
+      return rows.filter(v => v !== null && v !== undefined).length
+    }
+    case 'sum': {
+      const nums = rows.filter((v): v is number | bigint => typeof v === 'number' || typeof v === 'bigint')
+      if (!nums.length) return 0
+      return nums.reduce((a, b) => (a as any) + (b as any), 0)
+    }
+    case 'avg': {
+      const nums = rows.filter((v): v is number | bigint => typeof v === 'number' || typeof v === 'bigint')
+      if (!nums.length) return 0
+      return nums.reduce((a, b) => (a as any) + (b as any), 0) / nums.length
+    }
+    case 'max':
+    case 'min': {
+      const comparable = rows.filter((v: unknown) => v !== null && v !== undefined)
+      if (!comparable.length) return null
+      let best = comparable[0]
+      for (let i = 1; i < comparable.length; i++) {
+        const cmp = _aggCompare(comparable[i], best)
+        if (fn === 'max' ? cmp > 0 : cmp < 0) best = comparable[i]
+      }
+      return best
+    }
+    default:
+      return rows
+  }
+}
+
+/**
  * Materialize cross-row `collect(...)` aggregations nested inside RETURN
  * expressions, collapsing the result to a single aggregated row.
  *
@@ -613,11 +654,17 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
     const isAggCol: boolean[] = plan.with.columns.map(col => typeof col.expression === 'string' ? aggFnPattern.test(col.expression) : false)
     const hasAgg = isAggCol.some(Boolean)
-    const aggCols: Array<{ alias: string; rows: unknown[] }> = []
+    const aggCols: Array<{ alias: string; fn: string; rows: unknown[] }> = []
     if (hasAgg) {
       for (let i = 0; i < plan.with.columns.length; i++) {
         if (isAggCol[i]) {
-          aggCols.push({ alias: plan.with.columns[i].alias || plan.with.columns[i].expression, rows: [] })
+          const colExpr = typeof plan.with.columns[i].expression === 'string' ? plan.with.columns[i].expression : ''
+          const fnMatch = colExpr.match(/^\s*(collect|count|sum|avg|max|min)\s*\(/i)
+          aggCols.push({
+            alias: plan.with.columns[i].alias || plan.with.columns[i].expression,
+            fn: fnMatch ? fnMatch[1].toLowerCase() : 'collect',
+            rows: [],
+          })
         }
       }
     }
@@ -692,7 +739,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     if (hasAgg && aggCols.some(ac => ac.rows.length > 0)) {
       const aggRow: Record<string, unknown> = {}
       for (const ac of aggCols) {
-        aggRow[ac.alias] = ac.rows  // collect → 整个数组
+        aggRow[ac.alias] = _computeAggregate(ac.fn, ac.rows)
       }
       // 保留非聚合列（取第一行的值即可）
       if (rows.length > 0) {
