@@ -60,15 +60,69 @@ describe('RETURN-expression cross-row collect aggregation', () => {
     expect(r).toEqual([{ lit: [[1, 2]] }])
   })
 
-  it('top-level collect(x) AS y (plan.aggregate) is left to the aggregate path', async () => {
-    // plan.aggregate is synthesized for a top-level collect; our cross-row
-    // materializer must not collapse these rows (that is a separate concern).
+})
+
+describe('UNWIND + top-level RETURN aggregation', () => {
+  it('count(x) aggregates across UNWIND rows', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x RETURN count(x) AS n')
+    expect(r).toEqual([{ n: 3 }])
+  })
+
+  it('count(*) aggregates across UNWIND rows', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x RETURN count(*) AS c')
+    expect(r).toEqual([{ c: 3 }])
+  })
+
+  it('sum(x) aggregates across UNWIND rows', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x RETURN sum(x) AS s')
+    expect(r).toEqual([{ s: 6 }])
+  })
+
+  it('avg(x) aggregates across UNWIND rows', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x RETURN avg(x) AS a')
+    expect(r).toEqual([{ a: 2 }])
+  })
+
+  it('max(x) / min(x) aggregate across UNWIND rows', async () => {
+    const mx = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x RETURN max(x) AS m')
+    const mn = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x RETURN min(x) AS m')
+    expect(mx).toEqual([{ m: 3 }])
+    expect(mn).toEqual([{ m: 1 }])
+  })
+
+  it('max(x) / min(x) work over strings (lexicographic)', async () => {
+    const mx = await run("UNWIND ['b', 'a', 'c'] AS x RETURN max(x) AS m")
+    const mn = await run("UNWIND ['b', 'a', 'c'] AS x RETURN min(x) AS m")
+    expect(mx).toEqual([{ m: 'c' }])
+    expect(mn).toEqual([{ m: 'a' }])
+  })
+
+  it('max(x) / min(x) work over lists (lexicographic)', async () => {
+    const mx = await run('UNWIND [[3], [1, 2], [1]] AS x RETURN max(x) AS m')
+    const mn = await run('UNWIND [[3], [1, 2], [1]] AS x RETURN min(x) AS m')
+    expect(mx).toEqual([{ m: [3] }])
+    expect(mn).toEqual([{ m: [1] }])
+  })
+
+  it('max(x) / min(x) over mixed types follow Cypher value hierarchy', async () => {
+    // hierarchy (least → greatest): list < string < boolean < number
+    const mx = await run("UNWIND [1, 'a', null, [1, 2], 0.2, 'b'] AS x RETURN max(x) AS m")
+    const mn = await run("UNWIND [1, 'a', null, [1, 2], 0.2, 'b'] AS x RETURN min(x) AS m")
+    expect(mx).toEqual([{ m: 1 }])
+    expect(mn).toEqual([{ m: [1, 2] }])
+  })
+
+  it('collect(x) aggregates across UNWIND rows into a single list', async () => {
+    const r = await run('WITH [1, 2, 3] AS xs UNWIND xs AS x RETURN collect(x) AS allx')
+    expect(r).toEqual([{ allx: [1, 2, 3] }])
+  })
+
+  it('multi-UNWIND cross-product is counted over all rows', async () => {
+    // 5 stops × 8 steps = 40 rows
     const r = await run(
-      'WITH [1, 2, 3] AS xs UNWIND xs AS x RETURN collect(x) AS allx',
+      'WITH [1, 2] AS a, [10, 20, 30] AS b UNWIND a AS x UNWIND b AS y RETURN count(*) AS c',
     )
-    // Current behaviour: the top-level-aggregation-in-UNWIND path is still
-    // per-row (3 rows).  Guard against accidental regression to a single row.
-    expect(r).toHaveLength(3)
+    expect(r).toEqual([{ c: 6 }])
   })
 })
 

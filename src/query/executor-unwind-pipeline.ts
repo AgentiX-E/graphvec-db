@@ -93,6 +93,39 @@ function _materializePreUnwindProjections(query: string, varCtx: Record<string, 
 }
 
 /**
+ * Compare two Cypher values for max/min aggregation, returning a deterministic
+ * total order (-1, 0, 1).  Follows the Cypher value hierarchy for cross-type
+ * comparisons — list < string < boolean < number — and within-type rules
+ * (numeric order, lexicographic strings/lists).
+ */
+function _aggCompare(a: unknown, b: unknown): number {
+  if (a === b) return 0
+  const ra = _aggTypeRank(a), rb = _aggTypeRank(b)
+  if (ra !== rb) return ra < rb ? -1 : 1
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const minLen = Math.min(a.length, b.length)
+    for (let i = 0; i < minLen; i++) {
+      const c = _aggCompare(a[i], b[i])
+      if (c !== 0) return c
+    }
+    return a.length - b.length
+  }
+  if (ra === 3) return (a as number) < (b as number) ? -1 : 1 // numbers/bigint
+  if (ra === 1) return (a as string) < (b as string) ? -1 : 1 // strings
+  return String(a) < String(b) ? -1 : 1 // fallback (booleans)
+}
+
+/** Type rank for aggregation: list=0, string=1, boolean=2, number=3. */
+function _aggTypeRank(v: unknown): number {
+  if (Array.isArray(v)) return 0
+  const t = typeof v
+  if (t === 'string') return 1
+  if (t === 'boolean') return 2
+  if (t === 'number' || t === 'bigint') return 3
+  return 0 // maps/other structures — treat as list rank (least)
+}
+
+/**
  * Materialize cross-row `collect(...)` aggregations nested inside RETURN
  * expressions, collapsing the result to a single aggregated row.
  *
@@ -789,11 +822,36 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   }
 
   // Step 4: 聚合（count/sum/avg/max/min）
-  // Only run if plan.with.columns aggregate projection (Step 3) didn't already handle it.
-  if (plan.aggregate && !plan.with?.columns?.length) {
+  // Step 3 only aggregates *with.columns* aggregate columns.  plan.aggregate may
+  // instead come from a top-level RETURN aggregate (e.g. `WITH [1,2,3] AS xs
+  // UNWIND xs AS x RETURN count(x) AS n`), in which case with.columns holds only
+  // non-aggregate (e.g. literal-list) projections and the aggregate still needs
+  // cross-row handling here.  Skip Step 4 only when a with.columns column is
+  // itself an aggregate (Step 3 already collapsed to a single row).
+  //
+  // This cross-row handling applies ONLY to UNWIND pipelines.  Without UNWIND,
+  // a plan.aggregate with non-empty with.columns (e.g. `WITH 1 AS a, 2 AS b
+  // RETURN collect([a,b])`) is a literal-list builder resolved elsewhere and
+  // must keep the original `!with.columns.length` behaviour.
+  const _hasUnwind = !!(plan.unwind || plan.unwinds?.length)
+  const _withHasAggCol = (() => {
+    if (!plan.with?.columns?.length) return false
+    const p = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
+    return plan.with.columns.some(col => typeof col.expression === 'string' && p.test(col.expression))
+  })()
+  const _step4Eligible = _hasUnwind ? !_withHasAggCol : !plan.with?.columns?.length
+  if (plan.aggregate && _step4Eligible) {
     const agg = plan.aggregate as any
     const aggFn = (agg.function || agg.type || '').toLowerCase()
-    const aggAlias = agg.alias || (agg.column && agg.column.replace(/^.+?\s+AS\s+/i, '').trim()) || agg.field || agg.column || 'count(*)'
+    // Output key must match plan.returnColumns.  For an *unaliased* aggregate
+    // (e.g. `RETURN max(x)`) the parser strips `(x)` and sets agg.alias = `max`,
+    // while returnColumns[0] keeps the full `max(x)` — the TCK expects the full
+    // form.  Prefer returnColumns[0] when it is itself an aggregate call.
+    const _rc0 = plan.returnColumns?.[0]
+    const _rc0IsAgg = _rc0 !== undefined && /\w+\s*\(/.test(String(_rc0))
+    const aggAlias = _rc0IsAgg
+      ? String(_rc0)
+      : (agg.alias || (agg.column && agg.column.replace(/^.+?\s+AS\s+/i, '').trim()) || agg.field || agg.column || 'count(*)')
 
     // 从聚合列提取字段名：count(*)=*, count(v)=v
     const colMatch = (agg.column || '').match(/^\w+\((.+?)\)(?:\s+AS\s+\w+)?$/i)
@@ -829,9 +887,21 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       case 'avg':
         return [{ [aggAlias]: values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0 }]
       case 'max':
-        return [{ [aggAlias]: values.length ? Math.max(...values) : 0 }]
-      case 'min':
-        return [{ [aggAlias]: values.length ? Math.min(...values) : 0 }]
+      case 'min': {
+        // max/min operate over *any* comparable Cypher type (numbers, strings,
+        // lists, temporal values, cross-type by type rank) — not just numbers.
+        // Use a dedicated aggregate comparator instead of Math.max/min + Number
+        // coercion (which collapsed strings/lists to NaN → 0).  Nulls are
+        // already filtered above.
+        const comparable = rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined)
+        if (!comparable.length) return [{ [aggAlias]: null }]
+        let best = comparable[0]
+        for (let i = 1; i < comparable.length; i++) {
+          const cmp = _aggCompare(comparable[i], best)
+          if (aggFn === 'max' ? cmp > 0 : cmp < 0) best = comparable[i]
+        }
+        return [{ [aggAlias]: best }]
+      }
       default:
         return [{ [aggAlias]: 0 }]
     }
