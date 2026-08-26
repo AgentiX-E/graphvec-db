@@ -868,6 +868,36 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     }
   }
 
+  // Apply a WITH-clause SKIP/LIMIT *before* Step 4 aggregation.  A WITH clause
+  // carrying `LIMIT n` (e.g. `UNWIND range(...) AS i WITH i LIMIT 3000 RETURN
+  // sum(i)`) must truncate the expanded rows *before* the aggregate reduces
+  // them: `sum` over the first 3000 rows yields 3004498500, whereas summing
+  // every expanded row then post-processing the (single) result row would be a
+  // no-op (LIMIT 3000 on one row).  Only `plan.with.limit` / `plan.with.skip`
+  // are trusted here — a top-level RETURN LIMIT is applied downstream by
+  // `_postProcessResults` and must NOT double-truncate the aggregate input.
+  if (plan.with?.skip !== undefined && plan.with.skip > 0) {
+    rows = rows.slice(plan.with.skip)
+  }
+  if (plan.with?.limit !== undefined && plan.with.limit >= 0) {
+    rows = rows.slice(0, plan.with.limit)
+  }
+  // Once the WITH-clause slice is applied here (before aggregation), clear the
+  // *promoted* top-level `plan.skip` / `plan.limit`.  The parser promotes
+  // `plan.with.skip/limit` onto `plan.skip/limit` so that the non-UNWIND (GE)
+  // path — which only reads the top-level fields — can honor `WITH ... SKIP /
+  // LIMIT` via `_postProcessResults`.  But for the UNWIND pipeline the slice is
+  // already applied above, so leaving the promoted fields in place would make
+  // `_postProcessResults` slice *again* (a `WITH i SKIP 2 RETURN collect(i)`
+  // would collapse to `[]`).  Clear them only when the WITH clause actually
+  // carried a slice; a *top-level* `RETURN ... SKIP/LIMIT` (parsed directly onto
+  // `plan.skip/limit`, with no `plan.with.skip/limit`) is left untouched for
+  // `_postProcessResults`.
+  if (plan.with?.skip !== undefined || plan.with?.limit !== undefined) {
+    ;(plan as { skip?: number; limit?: number }).skip = undefined
+    ;(plan as { skip?: number; limit?: number }).limit = undefined
+  }
+
   // Step 4: 聚合（count/sum/avg/max/min）
   // Step 3 only aggregates *with.columns* aggregate columns.  plan.aggregate may
   // instead come from a top-level RETURN aggregate (e.g. `WITH [1,2,3] AS xs
@@ -900,34 +930,44 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       ? String(_rc0)
       : (agg.alias || (agg.column && agg.column.replace(/^.+?\s+AS\s+/i, '').trim()) || agg.field || agg.column || 'count(*)')
 
-    // 从聚合列提取字段名：count(*)=*, count(v)=v
-    const colMatch = (agg.column || '').match(/^\w+\((.+?)\)(?:\s+AS\s+\w+)?$/i)
-    const field = colMatch ? colMatch[1] : (agg.field || '*')
+    // Extract the aggregated field name: count(*)=*, count(v)=v, and skip an
+    // optional DISTINCT keyword.  Prefer `agg.field` (the parser already strips
+    // DISTINCT); fall back to re-parsing `agg.column` with a DISTINCT-aware
+    // regex so `collect(DISTINCT x)` resolves to `x` rather than `DISTINCT x`.
+    const colMatch = (agg.column || '').match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
+    const field = (agg.field !== undefined && agg.field !== '') ? agg.field : (colMatch ? colMatch[1] : (agg.field || '*'))
+    // Whether the aggregate call carries a DISTINCT modifier (`collect(DISTINCT
+    // x)`, `count(DISTINCT x)`).  Determinatively derived from the column text.
+    const isDistinct = /\bDISTINCT\b/i.test(agg.column || '')
 
     if (aggFn === 'count') {
       if (field === '*') {
         // count(*): 行数
         return [{ [aggAlias]: rows.length }]
       }
-      // count(expr): 非 null 行数
-      const nonNull = rows.filter(r => {
-        const v = r[field]
-        return v !== null && v !== undefined
-      })
-      return [{ [aggAlias]: nonNull.length }]
+      // count(expr): 非 null 行数 (DISTINCT de-duplicates before counting)
+      const nonNull = rows
+        .map(r => r[field])
+        .filter((v: unknown) => v !== null && v !== undefined)
+      const distinctNonNull = isDistinct ? [...new Set(nonNull.map(v => JSON.stringify(v)))].length : nonNull.length
+      return [{ [aggAlias]: distinctNonNull }]
     }
 
-    // sum/avg/min/max: 从 field 收集数值
-    const values = rows
+    // sum/avg/min/max: 从 field 收集数值 (DISTINCT de-duplicates first)
+    const rawValues = rows
       .map(r => r[field])
       .filter((v: unknown) => v !== null && v !== undefined)
+    const distinctRaw = isDistinct ? [...new Set(rawValues.map(v => JSON.stringify(v)))].map(s => JSON.parse(s)) : rawValues
+    const values = distinctRaw
       .map(Number)
       .filter((v: number) => !isNaN(v))
 
     switch (aggFn) {
       case 'collect':
-        // collect(expr): gather all values into a list
-        const collected = rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined)
+        // collect(expr): gather all values into a list (DISTINCT de-duplicates)
+        const collected = isDistinct
+          ? [...new Set(rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined).map(v => JSON.stringify(v)))].map(s => JSON.parse(s))
+          : rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined)
         return [{ [aggAlias]: collected }]
       case 'sum':
         return [{ [aggAlias]: values.reduce((a: number, b: number) => a + b, 0) }]

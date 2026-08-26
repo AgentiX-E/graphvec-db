@@ -421,10 +421,13 @@ function _parseQueryImpl(query: string): QueryPlan {
   }
 
   // ── returnColumns 拆解：b.name → name （去掉变量前缀） ──
+  // Only strip the variable prefix on a *top-level* `var.prop` reference
+  // (`b.name` → `name`).  A `.` inside a function call (`sum(n.num)`,
+  // `collect(a.id)`) or a decimal literal (`1.5`) must be preserved verbatim,
+  // otherwise `indexOf('.')` would wrongly truncate `sum(n.num)` to `num)`.
   if (plan.returnColumns?.length) {
     plan.returnColumns = plan.returnColumns.map((rc: string) => {
-      const dotIdx = rc.indexOf('.')
-      if (dotIdx >= 0) return rc.substring(dotIdx + 1)
+      if (/^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(rc)) return rc.substring(rc.indexOf('.') + 1)
       return rc
     })
   }
@@ -436,18 +439,19 @@ function _parseQueryImpl(query: string): QueryPlan {
       // 只在顶层拆分 b.name → name，跳过表达式内的 .（如 1.5, func().prop）
       // Note: 不修改 expression（用于求值），只修改 alias（用作结果列名）
       let dotIdx = -1
-      if (/^[a-zA-Z_]\w*\.\w+$/.test(alias)) {
+      const _topLevelProp = /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(alias)
+      if (_topLevelProp) {
         dotIdx = alias.indexOf('.')
       }
       const cleanExpr = dotIdx >= 0 ? alias.substring(dotIdx + 1) : expr
-      const cleanAlias = alias.indexOf('.') >= 0 ? alias.split('.').pop()! : alias
+      const cleanAlias = _topLevelProp ? alias.split('.').pop()! : alias
       return { expression: expr, alias: cleanAlias }
     })
     // 同步更新 returnAliasMap
     if (plan.returnAliasMap) {
       const newAliasMap: Record<string, string> = {}
       for (const [key, val] of Object.entries(plan.returnAliasMap)) {
-        const cleanKey = key.indexOf('.') >= 0 ? key.split('.').pop()! : key
+        const cleanKey = /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(key) ? key.split('.').pop()! : key
         // 保留原始表达式值（如 'd.year'），不裁剪为 'year'
         newAliasMap[cleanKey] = val
       }

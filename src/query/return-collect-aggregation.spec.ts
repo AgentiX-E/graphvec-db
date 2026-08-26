@@ -188,3 +188,52 @@ describe('WITH aggregate projection reduces scalar aggregates', () => {
   })
 })
 
+describe('DISTINCT aggregate modifiers over UNWIND rows', () => {
+  it('collect(DISTINCT x) de-duplicates and drops nulls', async () => {
+    const r = await run('UNWIND [null, 1, null, 1, 2] AS x RETURN collect(DISTINCT x) AS c')
+    expect(r).toEqual([{ c: [1, 2] }])
+  })
+
+  it('collect(DISTINCT x) over all-null returns an empty list', async () => {
+    const r = await run('UNWIND [null, null] AS x RETURN collect(DISTINCT x) AS c')
+    expect(r).toEqual([{ c: [] }])
+  })
+
+  it('collect(x) without DISTINCT preserves duplicates', async () => {
+    const r = await run('UNWIND [1, 1, 2] AS x RETURN collect(x) AS c')
+    expect(r).toEqual([{ c: [1, 1, 2] }])
+  })
+
+  it('count(DISTINCT x) counts unique non-null values', async () => {
+    const r = await run('UNWIND [1, 1, 2, 2, null] AS x RETURN count(DISTINCT x) AS c')
+    expect(r).toEqual([{ c: 2 }])
+  })
+
+  it('sum(DISTINCT x) sums unique values', async () => {
+    const r = await run('UNWIND [1, 1, 2, 5] AS x RETURN sum(DISTINCT x) AS s')
+    expect(r).toEqual([{ s: 8 }])
+  })
+
+  it('avg(DISTINCT x) averages unique values', async () => {
+    const r = await run('UNWIND [10, 10, 20] AS x RETURN avg(DISTINCT x) AS a')
+    expect(r).toEqual([{ a: 15 }])
+  })
+})
+
+describe('WITH-clause LIMIT/SKIP applied before UNWIND aggregation', () => {
+  it('sum(i) respects WITH i LIMIT n', async () => {
+    const r = await run('UNWIND range(1, 5) AS i WITH i LIMIT 3 RETURN sum(i) AS s')
+    expect(r).toEqual([{ s: 6 }])
+  })
+
+  it('collect(i) respects WITH i SKIP n', async () => {
+    const r = await run('UNWIND range(1, 5) AS i WITH i SKIP 2 RETURN collect(i) AS c')
+    expect(r).toEqual([{ c: [3, 4, 5] }])
+  })
+
+  it('count(i) respects WITH i LIMIT n', async () => {
+    const r = await run('UNWIND range(1, 5) AS i WITH i LIMIT 2 RETURN count(i) AS c')
+    expect(r).toEqual([{ c: 2 }])
+  })
+})
+

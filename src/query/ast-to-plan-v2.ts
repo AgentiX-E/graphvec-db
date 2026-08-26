@@ -1758,6 +1758,14 @@ function extractReturn(returnCtx: any): ParsedReturn {
       return
     }
 
+    if (name === 'SkipContext') {
+      // `SKIP n` lives in ReturnBody alongside LIMIT, as a `SkipContext` whose
+      // integer is an `IntegerLiteralContext` (mirroring `LimitContext`).
+      const intLit = findChild(node, 'IntegerLiteralContext')
+      if (intLit) skip = parseInt(getTextRecursive(intLit), 10)
+      return
+    }
+
     for (const child of node.children) walk(child)
   }
 
@@ -2156,6 +2164,7 @@ function extractWith(withCtx: any): QueryPlan['with'] {
   const filters: FilterClause[] = []
   let orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }> = []
   let limit: number | undefined
+  let skip: number | undefined
   let aggregate: AggregateClause | undefined
 
   function walk(node: any) {
@@ -2173,7 +2182,7 @@ function extractWith(withCtx: any): QueryPlan['with'] {
       }
       return
     }
-    if (name.endsWith('Context') && !['SortItemContext', 'LimitContext', 'WithClauseContext'].includes(name)) {
+    if (name.endsWith('Context') && !['SortItemContext', 'LimitContext', 'SkipContext', 'WithClauseContext'].includes(name)) {
       // 某些上下文节点可能直接包含列表字面量而不经过 ReturnItemContext
       // （如 WITH [...] AS x — ANTLR 可能不将其解析为 ReturnItemContext）
       const text = getTextRecursive(node)
@@ -2203,12 +2212,17 @@ function extractWith(withCtx: any): QueryPlan['with'] {
       if (intLit) limit = parseInt(getTextRecursive(intLit), 10)
       return
     }
+    if (name === 'SkipContext') {
+      const intLit = findChild(node, 'IntegerLiteralContext')
+      if (intLit) skip = parseInt(getTextRecursive(intLit), 10)
+      return
+    }
 
     for (const child of node.children) walk(child)
   }
 
   walk(withCtx)
-  return { columns, filters, orderBy, limit, skip: undefined, aggregate }
+  return { columns, filters, orderBy, limit, skip, aggregate }
 }
 
 // ═══════════════════════════════════════════════════════════════
