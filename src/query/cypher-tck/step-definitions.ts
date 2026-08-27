@@ -823,7 +823,29 @@ Given('having executed:', async function (query: string) {
         // 如果是 CREATE/MERGE，直接处理（注入 GE 和 st.nodes）
         if ((subPlan.type === 'CREATE' || subPlan.type === 'MERGE') && (subPlan as any).createNodes?.length) {
           const cns = (subPlan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
-          for (const cn of cns) {
+          // UNWIND + CREATE: expand the createNode template once per unwound
+          // element (e.g. `UNWIND range(0,10) AS i CREATE (s:S)` must mint 11
+          // nodes, not a single one).  Resolve the unwound list from either a
+          // literal list or an expression (`range(...)`) via _resolveUnwindList.
+          const uw = (subPlan as any).unwind as { list?: unknown[]; var?: string; name?: string } | undefined
+          let expandedCns = cns
+          if (uw && (uw.list?.length || uw.var)) {
+            const resolved = (uw.list && uw.list.length) ? uw.list : _resolveUnwindList({ list: uw.list || [], var: uw.var, name: uw.name || '' } as any, {})
+            const out: typeof cns = []
+            for (let ui = 0; ui < resolved.length; ui++) {
+              for (const cn of cns) {
+                const ecn = { ...cn }
+                // Each unwound iteration mints an independent node bound to the
+                // CREATE variable; give it a unique alias (`s_0`, `s_1`, ...) so
+                // the alias-dedup below does not collapse the expansion back to a
+                // single node, while downstream statements can still resolve `s`.
+                if (cn.alias) ecn.alias = cn.alias + '_' + ui
+                out.push(ecn)
+              }
+            }
+            expandedCns = out
+          }
+          for (const cn of expandedCns) {
             // Reuse an already-created node when this CREATE re-references a
             // variable from a prior statement (e.g. `CREATE (a:A ...)` followed by
             // `CREATE (a)-[:T]->(:B)` must not mint a fresh `:Default` node for `a`).

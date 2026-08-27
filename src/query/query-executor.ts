@@ -12,7 +12,7 @@ import { parseCypherToPlan } from './ast-to-plan-v2'
 import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
 import { globalRegistry as _procedureRegistry } from './procedure-registry'
-import { _evalBinary, _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver } from './expression-engine'
+import { _evalBinary, _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver, _computeAggregate, _lastTopLevelComma } from './expression-engine'
 import { _walkMultiSteps, _pathEndIndices, _stepMatchConstraint, _resolveUnwindList, _extractWithClausesAfterUnwind, _applyYieldAliases, resolveVariableNodeIdx, _findWhereOutsideBrackets, _fastDedup, _fastIntersect, _fastSubtract } from './query-parser'
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
 import type { QueryPlan, FilterClause, TraverseStep, AggregateClause, SetClause, InternalNode } from './query-types'
@@ -599,7 +599,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // If the CREATE statement has an UNWIND prefix (e.g. "UNWIND [1,2,3] AS i
       // CREATE ({num: i})"), expand the template into one node per unwound element
       // so the DML pipeline correctly materializes all rows.
-      const uwExpanded = (plan.unwind && plan.unwind.list && plan.unwind.list.length) ? plan.unwind : null
+      const uwExpanded = (plan.unwind && (plan.unwind.list?.length || plan.unwind.var)) ? plan.unwind : null
       // Clone createNodes before mutating in the expansion loop
       let effectiveCreateNodes = plan.createNodes
       if (uwExpanded) {
@@ -607,7 +607,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // stored as quoted raw text, temporal/range expressions as bare text).
         const resolvedList = _resolveUnwindList(uwExpanded, {})
         const expandedCns: typeof effectiveCreateNodes = []
-        for (let uwi = 0; uwi < uwExpanded.list.length; uwi++) {
+        for (let uwi = 0; uwi < resolvedList.length; uwi++) {
           const elem = resolvedList[uwi] ?? uwExpanded.list[uwi]
           for (const cn of plan.createNodes) {
             const ecn = { ...cn }
@@ -3688,6 +3688,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
+      // percentileDisc/percentileCont are computed inside the graph engine's
+      // `_execAggregation` (which returns a single aggregated row).  Re-running
+      // the aggregation here against that already-collapsed row would find no
+      // value column and overwrite the correct result with 0, so short-circuit.
+      if (aggFn === 'percentiledisc' || aggFn === 'percentilecont') {
+        // GE has already produced the correct single-row result; leave it as-is.
+      } else {
       // The parser stores `alias` as the function name (e.g. "count") when the
       // query has no explicit `AS` clause. In that case the result column must
       // use the full column expression (e.g. "count(r)") to match the RETURN
@@ -3715,6 +3722,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             aggRow[aggAlias] = nonNull.length
           }
         }
+      } else if (aggFn === 'percentiledisc' || aggFn === 'percentilecont') {
+        // Unreachable: percentile is short-circuited above because the graph
+        // engine already computed it.  Kept as a defensive no-op guard.
+        aggRow[aggAlias] = result[0]?.[aggAlias] ?? 0
       } else {
         // sum/avg/min/max
         const values = result
@@ -3732,6 +3743,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
       result.length = 0
       result.push(aggRow)
+      }
     }
 
     // If WHERE cleared everything but plan.filters exists, rebuild result from raw GE data

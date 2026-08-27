@@ -19,6 +19,7 @@ const BUILTIN_FN_NAMES = new Set([
   'round', 'sign', 'rand', 'sqrt', 'exp', 'log', 'log10',
   'sin', 'cos', 'tan', 'cot', 'asin', 'acos', 'atan', 'atan2',
   'pi', 'degrees', 'radians', 'haversin',
+  'percentiledisc', 'percentilecont',
   'datetime', 'localtime', 'locatetime', 'time', 'date', 'localdatetime',
   'duration',
   'timestamp',

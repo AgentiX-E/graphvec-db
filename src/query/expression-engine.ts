@@ -43,6 +43,10 @@ export interface AggColumnInfo {
   prop: string
   distinct?: boolean
   alias?: string | null
+  /** For percentileDisc/percentileCont: the raw percentile argument expression
+   *  (the second argument), evaluated as a scalar. `null` for single-argument
+   *  aggregates. */
+  pctArg?: string | null
 }
 
 /** BigInt JSON 序列化/反序列化辅助 */
@@ -1459,7 +1463,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     // Simplified: returns the value at the floor index
     const v = _evalBinary(a, r);
     const perc = Number(_evalBinary(p, r));
-    if (Array.isArray(v) && v.length > 0 && typeof perc === 'number' && perc >= 0 && perc <= 1) {
+    if (isNaN(perc) || perc < 0 || perc > 1) {
+      throw Object.assign(new Error('ArgumentError: NumberOutOfRange'), { tckError: 'NumberOutOfRange' });
+    }
+    if (Array.isArray(v) && v.length > 0) {
       const sorted = [...v].sort((a: any, b: any) => a - b);
       const idx = Math.ceil(perc * sorted.length) - 1;
       return sorted[Math.max(0, idx)];
@@ -1470,7 +1477,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     // percentileCont returns an interpolated value at the percentile between two values
     const v = _evalBinary(a, r);
     const perc = Number(_evalBinary(p, r));
-    if (Array.isArray(v) && v.length > 0 && typeof perc === 'number' && perc >= 0 && perc <= 1) {
+    if (isNaN(perc) || perc < 0 || perc > 1) {
+      throw Object.assign(new Error('ArgumentError: NumberOutOfRange'), { tckError: 'NumberOutOfRange' });
+    }
+    if (Array.isArray(v) && v.length > 0) {
       const sorted = [...v].sort((a: any, b: any) => a - b);
       const idx = perc * (sorted.length - 1);
       const lo = Math.floor(idx);
@@ -4506,7 +4516,7 @@ export function _isPureLiteralExpr(s: string): boolean {
 
 
 /** 解析单个聚合表达式字符串，如 'count(*)', 'AVG(n.score)', 'SUM(DISTINCT age)' */
-export function _parseAggregate(expr: string): { fn: string; field: string; prop: string; distinct: boolean; alias: string | null } | null {
+export function _parseAggregate(expr: string): { fn: string; field: string; prop: string; distinct: boolean; alias: string | null; pctArg?: string | null } | null {
   const trimmed = expr.trim()
   // 需要至少一个字符作为 field（count 和 collect 允许 *）
   const match = trimmed.match(/^(\w+)\s*\(\s*(DISTINCT\s+)?(.+?)?\s*\)\s*(?:AS\s+(\w+))?\s*$/i)
@@ -4516,9 +4526,35 @@ export function _parseAggregate(expr: string): { fn: string; field: string; prop
   const rawField = (match[3] || '').trim()
   // count() 无参数（空括号）无效
   if (!rawField) return null
-  const field = rawField
+
+  // Percentile functions take two arguments: `percentileDisc(value, p)` /
+  // `percentileCont(value, p)`.  Split on the LAST top-level comma so the value
+  // expression (which may itself contain commas inside a nested call) is kept
+  // intact, and the trailing percentile argument is captured separately.
+  let field = rawField
+  let pctArg: string | null = null
+  if (fn === 'PERCENTILEDISC' || fn === 'PERCENTILECONT') {
+    const lastComma = _lastTopLevelComma(rawField)
+    if (lastComma >= 0) {
+      field = rawField.slice(0, lastComma).trim()
+      pctArg = rawField.slice(lastComma + 1).trim()
+    }
+  }
   const prop = field === '*' ? '*' : field.includes('.') ? field.split('.').pop()! : field
-  return { fn, field, prop, distinct, alias: match[4] || null }
+  return { fn, field, prop, distinct, alias: match[4] || null, pctArg }
+}
+
+/** Index of the last top-level comma (depth 0, outside parentheses) in `s`, or -1. */
+export function _lastTopLevelComma(s: string): number {
+  let depth = 0
+  let last = -1
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (c === '(') depth++
+    else if (c === ')') depth--
+    else if (c === ',' && depth === 0) last = i
+  }
+  return last
 }
 
 /** 提取列列表中的聚合列和 GROUP BY 列 */
@@ -4588,7 +4624,7 @@ export function _executeAggregation(rows: QueryRow[], aggCols: AggColumnInfo[], 
     for (const ac of aggCols) {
       const key = ac.alias || ac.fn.toLowerCase()
       const values = _extractValues(rows, ac.prop, ac.distinct)
-      out[key] = _computeAggregate(ac.fn, values)
+      out[key] = _computeAggregate(ac.fn, values, ac.pctArg)
     }
     return [out]
   }
@@ -4613,7 +4649,7 @@ export function _executeAggregation(rows: QueryRow[], aggCols: AggColumnInfo[], 
     for (const ac of aggCols) {
       const key = ac.alias || ac.fn.toLowerCase()
       const values = _extractValues(groupRows, ac.prop, ac.distinct)
-      out[key] = _computeAggregate(ac.fn, values)
+      out[key] = _computeAggregate(ac.fn, values, ac.pctArg)
     }
     result.push(out)
   }
@@ -4621,11 +4657,19 @@ export function _executeAggregation(rows: QueryRow[], aggCols: AggColumnInfo[], 
 }
 
 /** 计算单个聚合值，包含 AVG 精度修复 */
-export function _computeAggregate(fn: string, values: unknown[]): number | null {
+export function _computeAggregate(fn: string, values: unknown[], pctArg?: string | null): number | null {
   if (!values.length) return fn === 'AVG' ? null : 0
 
   if (fn === 'COUNT') return values.length
   if (fn === 'COLLECT') return values
+
+  // Percentile aggregates consume the value list plus a scalar percentile
+  // argument (the second call argument).  They are handled before the generic
+  // numeric reduction because they need the sorted list and the percentile
+  // parameter, and must validate the percentile range (0..1) at runtime.
+  if (fn === 'PERCENTILEDISC' || fn === 'PERCENTILECONT') {
+    return _computePercentile(fn, values, pctArg)
+  }
 
   const nums = values.map(v => typeof v === 'number' ? v : Number(v)).filter(v => !isNaN(v))
   if (!nums.length) return fn === 'AVG' ? null : 0
@@ -4646,6 +4690,56 @@ export function _computeAggregate(fn: string, values: unknown[]): number | null 
     default:
       return 0
   }
+}
+
+/**
+ * Compute a percentile aggregate over `values` for the given percentile arg.
+ *
+ * `pctArg` is the raw scalar expression string (e.g. `"0.5"` or
+ * `"$percentile"`); when it is a bare numeric literal it is parsed directly,
+ * otherwise it has already been resolved to a number by the caller.  A
+ * percentile outside [0, 1] raises an ArgumentError carrying
+ * `tckError: 'NumberOutOfRange'` to match the openCypher TCK.
+ *
+ * `percentileDisc` returns the nearest rank in the sorted list (the value at
+ * index `ceil(p * n) - 1`): p=0 → min, p=1 → max, p=0.5 → the median.
+ * `percentileCont` linearly interpolates between the two surrounding ranks at
+ * position `p * (n - 1)`.
+ */
+function _computePercentile(fn: string, values: unknown[], pctArg?: string | null): number | null {
+  const nums = values
+    .map(v => (typeof v === 'number' || typeof v === 'bigint' ? v : Number(v)))
+    .map(v => (typeof v === 'bigint' ? Number(v) : v))
+    .filter(v => typeof v === 'number' && !isNaN(v))
+    .sort((a, b) => a - b)
+  if (!nums.length) return null
+
+  // Resolve the percentile argument: prefer a pre-resolved number, otherwise
+  // parse a bare numeric literal.  Any non-numeric / unresolved value falls
+  // through to the range check and raises NumberOutOfRange.
+  let p: number
+  if (typeof pctArg === 'number' && !isNaN(pctArg)) {
+    p = pctArg
+  } else if (pctArg != null && /^-?\d*\.?\d+$/.test(pctArg.trim())) {
+    p = Number(pctArg.trim())
+  } else {
+    p = NaN
+  }
+  if (isNaN(p) || p < 0 || p > 1) {
+    throw Object.assign(new Error('ArgumentError: NumberOutOfRange'), { tckError: 'NumberOutOfRange' })
+  }
+
+  if (fn === 'PERCENTILEDISC') {
+    const idx = Math.ceil(p * nums.length) - 1
+    return nums[Math.max(0, Math.min(idx, nums.length - 1))]
+  }
+  // PERCENTILECONT: linear interpolation
+  const pos = p * (nums.length - 1)
+  const lo = Math.floor(pos)
+  const hi = Math.ceil(pos)
+  if (lo === hi) return nums[lo]
+  const frac = pos - lo
+  return nums[lo] + frac * (nums[hi] - nums[lo])
 }
 
 /**

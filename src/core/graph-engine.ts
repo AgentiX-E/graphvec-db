@@ -2234,7 +2234,14 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
     // 提取实际属性名：如 n.age → age，n.score → score
     const rawField = agg.field ?? ''
-    const propName = rawField.includes('.') ? rawField.split('.')[1] : rawField
+    // percentileDisc/percentileCont take two arguments: `percentileDisc(v, p)`.
+    // Split on the last top-level comma so the value expression and the scalar
+    // percentile argument are separated (the value expression may itself contain
+    // commas inside a nested call).
+    const _pctComma = _lastTopLevelCommaIdx(rawField)
+    const _valField = _pctComma >= 0 ? rawField.slice(0, _pctComma).trim() : rawField
+    const _pctText = _pctComma >= 0 ? rawField.slice(_pctComma + 1).trim() : ''
+    const propName = _valField.includes('.') ? _valField.split('.')[1] : _valField
 
     let value: number
 
@@ -2253,6 +2260,10 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
         break
       case 'min':
         value = this._aggregateMin(nodes, propName)
+        break
+      case 'percentiledisc':
+      case 'percentilecont':
+        value = this._aggregatePercentile(agg.type, nodes, propName, _pctText)
         break
       default:
         value = 0
@@ -2417,6 +2428,38 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       if (typeof val === 'number' && val < min) min = val
     }
     return min === Infinity ? 0 : min
+  }
+
+  /** Compute a percentile aggregate (`percentiledisc` / `percentilecont`)
+   *  over the numeric values of `field` across `nodes`, for the scalar
+   *  percentile argument `pctText` (a bare numeric literal).  A percentile
+   *  outside [0, 1] raises an ArgumentError carrying
+   *  `tckError: 'NumberOutOfRange'` to match the openCypher TCK. */
+  private _aggregatePercentile(fnType: string, nodes: NodeRecord[], field: string, pctText: string): number {
+    const nums: number[] = []
+    for (const n of nodes) {
+      const val = n.props?.[field]
+      if (typeof val === 'number' && !isNaN(val)) nums.push(val)
+    }
+    if (!nums.length) return 0
+    nums.sort((a, b) => a - b)
+
+    const p = Number(pctText)
+    if (isNaN(p) || p < 0 || p > 1) {
+      throw Object.assign(new Error('ArgumentError: NumberOutOfRange'), { tckError: 'NumberOutOfRange' })
+    }
+
+    if (fnType === 'percentiledisc') {
+      const idx = Math.ceil(p * nums.length) - 1
+      return nums[Math.max(0, Math.min(idx, nums.length - 1))]
+    }
+    // percentilecont: linear interpolation between the two surrounding ranks
+    const pos = p * (nums.length - 1)
+    const lo = Math.floor(pos)
+    const hi = Math.ceil(pos)
+    if (lo === hi) return nums[lo]
+    const frac = pos - lo
+    return nums[lo] + frac * (nums[hi] - nums[lo])
   }
 
   /** 扫描所有节点 */
@@ -3501,4 +3544,17 @@ function propSort(
     const cmp = va < vb ? -1 : va > vb ? 1 : 0
     return direction === 'DESC' ? -cmp : cmp
   })
+}
+
+/** Index of the last top-level comma (depth 0, outside parentheses) in `s`, or -1. */
+function _lastTopLevelCommaIdx(s: string): number {
+  let depth = 0
+  let last = -1
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (c === '(') depth++
+    else if (c === ')') depth--
+    else if (c === ',' && depth === 0) last = i
+  }
+  return last
 }
