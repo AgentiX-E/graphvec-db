@@ -2040,7 +2040,14 @@ function extractRemoveClauses(removeCtx: any): QueryPlan['removeClauses'] {
 // ═══════════════════════════════════════════════════════════════
 
 function extractUnwind(unwindCtx: any): QueryPlan['unwind'] {
-  const varCtx = findChild(unwindCtx, 'VariableContext')
+  // The bound variable is the one following `AS`, which is always the LAST
+  // VariableContext within the UNWIND clause.  Using findChild (first match)
+  // is wrong here: when the list expression itself references a variable —
+  // `UNWIND range(0, i) AS j` — the first VariableContext is `i` (from the
+  // `range` argument), not the bound `j`.  Take the trailing VariableContext
+  // instead so the bound name is correct regardless of the list expression.
+  const varCtxs = findAllChildren(unwindCtx, 'VariableContext')
+  const varCtx = varCtxs.length ? varCtxs[varCtxs.length - 1] : null
   const name = varCtx ? getTextRecursive(varCtx) : ''
 
   // List expression

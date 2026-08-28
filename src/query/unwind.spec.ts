@@ -9,7 +9,7 @@
  * 5. 嵌套展开
  */
 import { describe, it, expect } from 'vitest'
-import { _executeQuery, QueryPlan } from '../query/query-engine'
+import { _executeQuery, QueryPlan, parseQuery } from '../query/query-engine'
 
 describe('UNWIND executor', () => {
   it('unwinds literal array', () => {
@@ -161,5 +161,40 @@ describe('UNWIND executor', () => {
     }
     const result = _executeQuery(plan, [])
     expect(result).toHaveLength(2)
+  })
+})
+
+describe('UNWIND parser (extractUnwind bound-variable name)', () => {
+  // Regression guard: `UNWIND range(0, i) AS j` must bind `j`, not the `i`
+  // that appears inside the range expression.  The bound name is always the
+  // trailing VariableContext after `AS`.
+
+  it('binds the AS name when the list expression references a variable', () => {
+    const plan = parseQuery('UNWIND range(0, i) AS j CREATE (s)-[:REL]->()')
+    expect(plan.unwind?.name).toBe('j')
+    expect(plan.unwind?.var).toBe('range(0, i)')
+  })
+
+  it('binds the AS name with multiple variables in the range expression', () => {
+    const plan = parseQuery('UNWIND range(i, k) AS dest RETURN dest')
+    expect(plan.unwind?.name).toBe('dest')
+    expect(plan.unwind?.var).toBe('range(i, k)')
+  })
+
+  it('binds the AS name for a literal list (no variables in the expression)', () => {
+    const plan = parseQuery('UNWIND [1, 2, 3] AS x RETURN x')
+    expect(plan.unwind?.name).toBe('x')
+    expect(plan.unwind?.list).toEqual([1, 2, 3])
+  })
+
+  it('binds the AS name for a string literal list', () => {
+    const plan = parseQuery("UNWIND ['a', 'b'] AS v RETURN v")
+    expect(plan.unwind?.name).toBe('v')
+  })
+
+  it('binds the AS name for a plain variable list', () => {
+    const plan = parseQuery('UNWIND someList AS z RETURN z')
+    expect(plan.unwind?.name).toBe('z')
+    expect(plan.unwind?.var).toBe('someList')
   })
 })
