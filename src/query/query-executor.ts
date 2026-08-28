@@ -4476,7 +4476,12 @@ export async function _executeQuery(
           const ec = exprs.find(e => e.alias === gb || e.expression === gb || e.expression.endsWith('.' + gb))
           row[ec?.alias || gb] = ec ? _evalBinary(ec.expression, { n: groupRows[0] }) : (groupRows[0] as any)[gb as string]
         }
-        const aggField = agg.field === '*' ? null : agg.field
+        // Strip the `var.` prefix from the aggregate field (`n.num` → `num`)
+        // so it addresses the flat node property, matching how groupBy keys are
+        // resolved above (`n.name` → `name`).
+        const aggField = agg.field === '*' || agg.field == null
+          ? null
+          : agg.field.includes('.') ? agg.field.split('.').pop()! : agg.field
         if (agg.function === 'count') {
           row[agg.column] = aggField === null ? groupRows.length : groupRows.filter(n => (n as any)[aggField!] != null).length
         } else if (agg.function === 'sum') {

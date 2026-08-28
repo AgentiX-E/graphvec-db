@@ -1007,6 +1007,28 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           }
           if (alias) agg.alias = alias
           plan.aggregate = agg
+
+          // Implicit GROUP BY: `RETURN n.name, sum(n.num)` groups by the
+          // non-aggregate column `n.name`.  ANTLR only sets plan.groupBy for an
+          // explicit `GROUP BY` clause (see the post-processing pass below), so
+          // harvest the remaining non-aggregate RETURN columns here.  Each key
+          // is stripped of its `var.` prefix to match the explicit-GROUP-BY
+          // shape (`name`), and bare variable/`*` references are skipped (they
+          // are not scalar grouping keys).
+          if (!plan.groupBy) {
+            const implicitKeys: string[] = []
+            for (const c of ret.columns) {
+              const cExpr = c.expression
+              if (!cExpr) continue
+              // Skip aggregate calls (only non-aggregate columns group).
+              if (/\b(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(/i.test(cExpr)) continue
+              // Skip list comprehensions (not a scalar grouping key).
+              if (cExpr.startsWith('[') && cExpr.includes('IN') && cExpr.includes('|')) continue
+              const key = cExpr.includes('.') ? cExpr.split('.').pop()! : cExpr
+              if (key && key !== '*' && !implicitKeys.includes(key)) implicitKeys.push(key)
+            }
+            if (implicitKeys.length) plan.groupBy = implicitKeys
+          }
         }
 
         // Also check return columns for aggregate patterns (fallback)

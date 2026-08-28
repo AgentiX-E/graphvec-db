@@ -96,3 +96,72 @@ describe('C-06: GROUP BY', () => {
     expect(plan.groupBy).toBeUndefined()
   })
 })
+
+describe('C-06b: Implicit GROUP BY (aggregate + non-aggregate column)', () => {
+  // A RETURN clause mixing an aggregate call with plain columns implicitly groups
+  // by the plain columns — e.g. `RETURN n.name, sum(n.num)` groups by n.name.
+
+  it('implicitly groups by a single non-aggregate column (sum)', () => {
+    const plan = parseQuery('MATCH (n) RETURN n.name, sum(n.num)')
+    expect(plan.aggregate?.function).toBe('sum')
+    expect(plan.groupBy).toEqual(['name'])
+  })
+
+  it('implicitly groups by multiple non-aggregate columns (count)', () => {
+    const plan = parseQuery('MATCH (n) RETURN n.name, n.city, count(*)')
+    expect(plan.aggregate?.function).toBe('count')
+    expect(plan.groupBy).toEqual(['name', 'city'])
+  })
+
+  it('does not set groupBy for a pure aggregate (no non-aggregate column)', () => {
+    const plan = parseQuery('MATCH (n) RETURN sum(n.num)')
+    expect(plan.aggregate?.function).toBe('sum')
+    expect(plan.groupBy).toBeUndefined()
+  })
+
+  it('sums only non-null values within each group', async () => {
+    const plan = parseQuery('MATCH (n) RETURN n.name, sum(n.num)')
+    const data: Array<Record<string, unknown>> = [
+      { _label: 'X', name: 'a', num: 33 },
+      { _label: 'X', name: 'a' },               // null num — must be skipped
+      { _label: 'X', name: 'a', num: 42 },
+      { _label: 'X', name: 'b', num: 10 },
+    ]
+    const results = await _executeQuery(plan, data) as Array<Record<string, unknown>>
+    // Two groups: a → 33+42=75, b → 10
+    expect(results).toHaveLength(2)
+    const byName = new Map(results.map(r => [r['name'], r['sum(n.num)']]))
+    expect(byName.get('a')).toBe(75)
+    expect(byName.get('b')).toBe(10)
+  })
+
+  it('counts non-null values per group (count(prop))', async () => {
+    const plan = parseQuery('MATCH (n) RETURN n.name, count(n.num)')
+    const data: Array<Record<string, unknown>> = [
+      { _label: 'X', name: 'a', num: 1 },
+      { _label: 'X', name: 'a' },
+      { _label: 'X', name: 'a', num: 2 },
+      { _label: 'X', name: 'b', num: 9 },
+    ]
+    const results = await _executeQuery(plan, data) as Array<Record<string, unknown>>
+    const byName = new Map(results.map(r => [r['name'], r['count(n.num)']]))
+    expect(byName.get('a')).toBe(2)   // two non-null num
+    expect(byName.get('b')).toBe(1)
+  })
+
+  it('averages per group (avg)', async () => {
+    const plan = parseQuery('MATCH (n) RETURN n.name, avg(n.num)')
+    const data: Array<Record<string, unknown>> = [
+      { _label: 'X', name: 'a', num: 10 },
+      { _label: 'X', name: 'a', num: 20 },
+    ]
+    const results = await _executeQuery(plan, data) as Array<Record<string, unknown>>
+    expect(results).toHaveLength(1)
+    expect(results[0]['avg(n.num)']).toBe(15)
+  })
+
+  it('keeps explicit GROUP BY unchanged (does not re-harvest)', () => {
+    const plan = parseQuery('MATCH (n:Person) RETURN n.name, count(n.age) GROUP BY n.name')
+    expect(plan.groupBy).toEqual(['name'])
+  })
+})
