@@ -815,7 +815,13 @@ Given('having executed:', async function (query: string) {
     lines.push(...merged)
   }
   if (lines.length > 1) {
-    // 多语句场景 → 逐条递归执行
+    // 多语句场景 → 逐条递归执行。
+    // A lightweight row-aligned variable environment lets later statements in a
+    // multi-statement seed reference variables bound by earlier UNWIND/CREATE
+    // statements (e.g. `UNWIND range(0,10) AS i CREATE (s:S) WITH s, i
+    // UNWIND range(0,i) AS j CREATE (s)-[:REL]->()`).  Values are stored as
+    // index-aligned arrays so `vars.get('s')[k]` pairs with `vars.get('i')[k]`.
+    const varEnv = new Map<string, unknown[]>()
     for (const line of lines) {
       try {
         const subPlan = parseQuery(line)
@@ -823,14 +829,48 @@ Given('having executed:', async function (query: string) {
         // 如果是 CREATE/MERGE，直接处理（注入 GE 和 st.nodes）
         if ((subPlan.type === 'CREATE' || subPlan.type === 'MERGE') && (subPlan as any).createNodes?.length) {
           const cns = (subPlan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
+          const createEdges = (subPlan as any).createEdges as Array<{ source: string; target: string; sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
+          const uw = (subPlan as any).unwind as { list?: unknown[]; var?: string; name?: string } | undefined
+          // Row-aligned edge expansion: when the CREATE references a node
+          // variable already bound to multiple nodes by an earlier UNWIND
+          // (e.g. `UNWIND range(0,i) AS j CREATE (s)-[:REL]->()`), the node
+          // template must NOT re-expand the node list.  Instead each bound node
+          // mints its own edges.  Detected by an edge whose source is a
+          // multi-node variable in varEnv and whose UNWIND var references that
+          // same variable (or another varEnv-bound value).
+          const srcIsMultiBound = createEdges?.some(ce => ce.source && (varEnv.get(ce.source)?.length ?? 0) > 1)
+          if (srcIsMultiBound && uw?.var && createEdges?.length) {
+            const srcNodes = varEnv.get(createEdges[0].source!)!
+            const unwoundVar = uw.var.match(/([a-zA-Z_]\w*)\s*\)\s*$/)
+            const outerList = unwoundVar ? varEnv.get(unwoundVar[1]) : undefined
+            for (let k = 0; k < srcNodes.length; k++) {
+              const srcNode = srcNodes[k] as Record<string, unknown>
+              const srcIdx = st.nodes.indexOf(srcNode)
+              if (srcIdx < 0) continue
+              // Resolve inner unwind list for this row: `range(0, i[k])` → i[k]+1.
+              let innerCount = 1
+              if (outerList && typeof outerList[k] === 'number') innerCount = (outerList[k] as number) + 1
+              for (const ce of createEdges) {
+                for (let jc = 0; jc < innerCount; jc++) {
+                  const dst: Record<string, unknown> = { _label: 'Default' }
+                  st.nodes.push(dst)
+                  const dstIdx = st.nodes.length - 1
+                  if (!st.nodes[srcIdx].__edges) st.nodes[srcIdx].__edges = []
+                  st.nodes[srcIdx].__edges.push({ srcIdx, dstIdx, label: ce.label || 'REL', props: ce.props || null })
+                }
+              }
+            }
+            continue
+          }
           // UNWIND + CREATE: expand the createNode template once per unwound
           // element (e.g. `UNWIND range(0,10) AS i CREATE (s:S)` must mint 11
           // nodes, not a single one).  Resolve the unwound list from either a
           // literal list or an expression (`range(...)`) via _resolveUnwindList.
-          const uw = (subPlan as any).unwind as { list?: unknown[]; var?: string; name?: string } | undefined
           let expandedCns = cns
+          let resolvedList: unknown[] | null = null
           if (uw && (uw.list?.length || uw.var)) {
-            const resolved = (uw.list && uw.list.length) ? uw.list : _resolveUnwindList({ list: uw.list || [], var: uw.var, name: uw.name || '' } as any, {})
+            resolvedList = (uw.list && uw.list.length) ? uw.list : _resolveUnwindList({ list: uw.list || [], var: uw.var, name: uw.name || '' } as any, {})
+            const resolved = resolvedList
             const out: typeof cns = []
             for (let ui = 0; ui < resolved.length; ui++) {
               for (const cn of cns) {
@@ -844,7 +884,12 @@ Given('having executed:', async function (query: string) {
               }
             }
             expandedCns = out
+            // Bind the UNWIND variable to its resolved list so a later statement
+            // like `UNWIND range(0, i) ...` can read `i` (already a concrete list
+            // of values).  Only store resolved numeric/atomic lists.
+            if (uw.name) varEnv.set(uw.name, resolved.slice())
           }
+          const createdNodes: Record<string, unknown>[] = []
           for (const cn of expandedCns) {
             // Reuse an already-created node when this CREATE re-references a
             // variable from a prior statement (e.g. `CREATE (a:A ...)` followed by
@@ -873,12 +918,20 @@ Given('having executed:', async function (query: string) {
               }
             }
             st.nodes.push(node)
+            createdNodes.push(node)
             try { seedGe(persistGe(), node) } catch {}
           }
+          // Bind the CREATE node variable to its created node objects so a later
+          // statement (`CREATE (s)-[:REL]->()`) can enumerate the expanded nodes.
+          // The base alias (e.g. `s` from `s_0`, `s_1`, ...) maps to the ordered
+          // list of created nodes, index-aligned with the UNWIND variable above.
+          if (expandedCns[0]?.alias && expandedCns.length > 1) {
+            const baseAlias = String(expandedCns[0].alias).replace(/_\d+$/, '')
+            varEnv.set(baseAlias, createdNodes.slice())
+          }
           // 注入边（createEdges）——使用 alias 查找替代 sourceIdx/targetIdx
-          const cEdges = (subPlan as any).createEdges as Array<{ source: string; target: string; sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
-          if (cEdges?.length) {
-            for (const ce of cEdges) {
+          if (createEdges?.length) {
+            for (const ce of createEdges) {
               let srcIdx = -1, dstIdx = -1
               // 优先通过 alias 查找
               if (ce.source) {

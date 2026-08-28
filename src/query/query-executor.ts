@@ -3074,6 +3074,22 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 if (!(k in rc)) rc[k] = v
               }
             }
+            // Restore outgoing-edge context on node variables: GE result rows
+            // carry `_label`/`_alias` but drop `__edges`, which pattern
+            // comprehensions like `[(n)-->() | 1]` need to compute degrees.
+            // Look the node up in allNodes by `_alias` and attach its `__edges`
+            // so downstream expression evaluation sees them.
+            for (const k of Object.keys(rc)) {
+              const rcv = rc[k] as any
+              if (rcv && typeof rcv === 'object' && !Array.isArray(rcv) && rcv.__edges === undefined) {
+                const byAlias = rcv._alias
+                  ? (allNodes as any[]).find((a: any) => a._alias === rcv._alias)
+                  : undefined
+                if (byAlias && Array.isArray(byAlias.__edges)) {
+                  rcv.__edges = byAlias.__edges
+                }
+              }
+            }
             // 将 MATCH 变量注入 rc（支持 v.date 等属性访问表达式）
             const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
             const _firstVar = _exprVars?.[0]

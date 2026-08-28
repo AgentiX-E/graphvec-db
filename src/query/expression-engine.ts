@@ -4123,6 +4123,28 @@ export function _evalLiteral(s: string, row?: Record<string, unknown>): ExprValu
       }
       return result
     }
+    // Pattern comprehension: [ (src)-[r:TYPE]->(tgt) | expr ]  or  [ (src)-->() | expr ]
+    // Enumerate every relationship matched by the pattern and return the list
+    // of expression results (one per match).  The source node is resolved from
+    // the current row; its `__edges` list holds its outgoing relationships (in
+    // the allNodes seed shape each node carries its own outgoing edges).
+    const PC_RE = /^\s*\((\w+)(?::[\w]+)?\)\s*(?:<-|-)\s*(?:\[:?([\w]+)\]|\[([\w]+)\])?\s*(?:->|-)\s*(?:\((\w+)(?::[\w]+)?\)|\(\))\s*\|\s*(.+)\s*$/s
+    const pcMatch = inner.match(PC_RE)
+    if (pcMatch) {
+      const srcVar = pcMatch[1]
+      const edgeLabel = pcMatch[2] || pcMatch[3] || null
+      const retExpr = pcMatch[5]
+      const srcNode = row[srcVar]
+      if (!srcNode || typeof srcNode !== 'object') return null
+      const edges: Array<{ srcIdx: number; dstIdx: number; label?: string }> =
+        (srcNode as any).__edges || []
+      const result: unknown[] = []
+      for (const e of edges) {
+        if (edgeLabel && e.label && e.label !== edgeLabel) continue
+        result.push(_evaluateExpression(retExpr, row as any))
+      }
+      return result
+    }
     // 普通列表字面量
     return inner ? _parseCommaList(inner).map(item => _evalBinary(item.trim(), row)) : []
   }
@@ -4658,7 +4680,9 @@ export function _executeAggregation(rows: QueryRow[], aggCols: AggColumnInfo[], 
 
 /** 计算单个聚合值，包含 AVG 精度修复 */
 export function _computeAggregate(fn: string, values: unknown[], pctArg?: string | null): number | null {
-  if (!values.length) return fn === 'AVG' ? null : 0
+  // AVG and the percentiles are "no valid numeric value" aggregates: an empty
+  // (or all-null) input yields NULL, not 0.  COUNT/SUM fall back to 0.
+  if (!values.length) return (fn === 'AVG' || fn === 'PERCENTILEDISC' || fn === 'PERCENTILECONT') ? null : 0
 
   if (fn === 'COUNT') return values.length
   if (fn === 'COLLECT') return values
