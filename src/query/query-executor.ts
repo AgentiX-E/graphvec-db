@@ -4498,7 +4498,11 @@ export async function _executeQuery(
         }
         result.push(row)
       }
-      return result
+      // Route the grouped result through _postProcessResults so HAVING (and any
+      // ORDER BY / SKIP / LIMIT) is applied, matching the normal return path at
+      // the bottom of _executeViaGraphEngine.  Without this the early return
+      // above silently drops the HAVING filter.
+      return _postProcessResults(result, plan as any)
     }
   }
   const isDML = ['CREATE', 'MERGE', 'DELETE', 'SET', 'REMOVE'].includes(plan.type || '')

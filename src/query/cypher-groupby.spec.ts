@@ -53,18 +53,18 @@ describe('C-06: GROUP BY', () => {
   })
 
   // TC6: _executeQuery with GROUP BY + HAVING
-  it('_executeQuery GROUP BY with HAVING filter', () => {
+  it('_executeQuery GROUP BY with HAVING filter', async () => {
     const plan = parseQuery('MATCH (n:Person) RETURN n.name, count(n.age) GROUP BY n.name HAVING count(n.age) > 1')
     const data: Array<Record<string, unknown>> = [
-      { name: 'Alice', type: 'Person', props: { age: 30 } },
-      { name: 'Alice', type: 'Person', props: { age: 35 } },
-      { name: 'Bob', type: 'Person', props: { age: 20 } },
-      { name: 'Charlie', type: 'Person', props: { age: 40 } },
-      { name: 'Charlie', type: 'Person', props: { age: 50 } },
-      { name: 'Charlie', type: 'Person', props: { age: 60 } },
+      { _label: 'Person', name: 'Alice', age: 30 },
+      { _label: 'Person', name: 'Alice', age: 35 },
+      { _label: 'Person', name: 'Bob', age: 20 },
+      { _label: 'Person', name: 'Charlie', age: 40 },
+      { _label: 'Person', name: 'Charlie', age: 50 },
+      { _label: 'Person', name: 'Charlie', age: 60 },
     ]
 
-    const results = _executeQuery(plan, data)
+    const results = await _executeQuery(plan, data) as Array<Record<string, unknown>>
 
     // Alice: 2 rows → count=2, Charlie: 3 rows → count=3, Bob: 1 row → count=1 (filtered out by HAVING > 1)
     expect(results.length).toBe(2)
@@ -77,14 +77,14 @@ describe('C-06: GROUP BY', () => {
   })
 
   // TC7: 空结果
-  it('HAVING filter with no matches', () => {
+  it('HAVING filter with no matches', async () => {
     const plan = parseQuery('MATCH (n:Person) RETURN n.name, count(n.name) GROUP BY n.name HAVING count(n.name) > 999')
     const data: Array<Record<string, unknown>> = [
-      { name: 'Alice', type: 'Person' },
-      { name: 'Bob', type: 'Person' },
+      { _label: 'Person', name: 'Alice' },
+      { _label: 'Person', name: 'Bob' },
     ]
 
-    const results = _executeQuery(plan, data)
+    const results = await _executeQuery(plan, data) as Array<Record<string, unknown>>
     expect(results.length).toBe(0)
   })
 
