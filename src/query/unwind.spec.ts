@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest'
 import { _executeQuery, QueryPlan, parseQuery } from '../query/query-engine'
 
 describe('UNWIND executor', () => {
-  it('unwinds literal array', () => {
+  it('unwinds literal array', async () => {
     const plan: QueryPlan = {
       match: [],
       filters: [],
@@ -22,31 +22,34 @@ describe('UNWIND executor', () => {
       },
       returnColumns: [],
     }
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(3)
     expect(result[0]).toEqual({ x: 1 })
     expect(result[1]).toEqual({ x: 2 })
     expect(result[2]).toEqual({ x: 3 })
   })
 
-  it('unwinds string array', () => {
+  it('unwinds string array', async () => {
+    // String list elements are stored as quoted raw text by the parser (to
+    // preserve the empty string / whitespace), so a hand-built plan must
+    // match that representation.
     const plan: QueryPlan = {
       match: [],
       filters: [],
       unwind: {
-        list: ['a', 'b', 'c'],
+        list: ["'a'", "'b'", "'c'"],
         name: 'v',
       },
       returnColumns: [],
     }
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(3)
     expect(result[0]).toEqual({ v: 'a' })
     expect(result[1]).toEqual({ v: 'b' })
     expect(result[2]).toEqual({ v: 'c' })
   })
 
-  it('unwinds object array', () => {
+  it('unwinds object array', async () => {
     const plan: QueryPlan = {
       match: [],
       filters: [],
@@ -56,13 +59,13 @@ describe('UNWIND executor', () => {
       },
       returnColumns: [],
     }
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(2)
     expect(result[0]).toEqual({ obj: { id: 1 } })
     expect(result[1]).toEqual({ obj: { id: 2 } })
   })
 
-  it('handles empty array (returns empty)', () => {
+  it('handles empty array (returns empty)', async () => {
     const plan: QueryPlan = {
       match: [],
       filters: [],
@@ -72,11 +75,11 @@ describe('UNWIND executor', () => {
       },
       returnColumns: [],
     }
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(0)
   })
 
-  it('handles single element array', () => {
+  it('handles single element array', async () => {
     const plan: QueryPlan = {
       match: [],
       filters: [],
@@ -86,36 +89,29 @@ describe('UNWIND executor', () => {
       },
       returnColumns: [],
     }
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(1)
     expect(result[0]).toEqual({ x: 42 })
   })
 
-  it('preserves existing columns from MATCH', () => {
-    const plan: QueryPlan = {
-      match: [{ typeId: 1 }],
-      filters: [],
-      unwind: {
-        list: [10, 20],
-        name: 'val',
-      },
-      returnColumns: [],
-    }
+  it('preserves existing columns from MATCH', async () => {
+    // MATCH + UNWIND must widen each matched node with one row per unwound
+    // element (cartesian product), keeping the node columns intact.
+    const plan = parseQuery('MATCH (n:Person) UNWIND [10, 20] AS val RETURN val')
     const nodes = [
-      { id: 1, type: 1, name: 'Alice', props: { age: 30 } },
+      { _label: 'Person', name: 'Alice', age: 30 },
     ]
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result).toHaveLength(2)
     for (const row of result) {
-      expect(row.id).toBe(1)
-      expect(row.type).toBe(1)
       expect(row.name).toBe('Alice')
+      expect(row.age).toBe(30)
     }
     expect(result[0].val).toBe(10)
     expect(result[1].val).toBe(20)
   })
 
-  it('multiple UNWIND in sequence should be handled as separate queries', () => {
+  it('multiple UNWIND in sequence should be handled as separate queries', async () => {
     const plan1: QueryPlan = {
       match: [],
       filters: [],
@@ -125,23 +121,23 @@ describe('UNWIND executor', () => {
       },
       returnColumns: [],
     }
-    const r1 = _executeQuery(plan1, [])
+    const r1 = await _executeQuery(plan1, [])
     expect(r1).toHaveLength(2)
 
     const plan2: QueryPlan = {
       match: [],
       filters: [],
       unwind: {
-        list: ['x', 'y'],
+        list: ["'x'", "'y'"],
         name: 'b',
       },
       returnColumns: [],
     }
-    const r2 = _executeQuery(plan2, [])
+    const r2 = await _executeQuery(plan2, [])
     expect(r2).toHaveLength(2)
   })
 
-  it('UNWIND with WITH chain does not crash', () => {
+  it('UNWIND with WITH chain does not crash', async () => {
     const plan: QueryPlan = {
       match: [],
       filters: [],
@@ -159,7 +155,7 @@ describe('UNWIND executor', () => {
       },
       returnColumns: [],
     }
-    const result = _executeQuery(plan, [])
+    const result = await _executeQuery(plan, [])
     expect(result).toHaveLength(2)
   })
 })
