@@ -194,3 +194,43 @@ describe('UNWIND parser (extractUnwind bound-variable name)', () => {
     expect(plan.unwind?.var).toBe('someList')
   })
 })
+
+describe('UNWIND executor: MATCH variable property projection', () => {
+  // Regression guard: `MATCH (n) UNWIND ... RETURN n.prop` must project `n.prop`
+  // from the matched node (held in varCtx), not null.  The matched variable `n`
+  // lives in varCtx while the unwound row only carries the unwind alias.
+
+  it('projects a node property alongside the unwound value', async () => {
+    const q = 'MATCH (n:Person) UNWIND [10, 20] AS val RETURN n.age, val'
+    const plan = parseQuery(q)
+    const nodes = [{ _label: 'Person', name: 'Alice', age: 30 }]
+    const result = await _executeQuery(plan, nodes, q)
+    expect(result).toHaveLength(2)
+    expect(result[0].age).toBe(30)
+    expect(result[0].val).toBe(10)
+    expect(result[1].age).toBe(30)
+    expect(result[1].val).toBe(20)
+  })
+
+  it('projects a string node property in the cartesian product', async () => {
+    const q = 'MATCH (n:Person) UNWIND [1, 2] AS i RETURN n.name, i'
+    const plan = parseQuery(q)
+    const nodes = [{ _label: 'Person', name: 'Bob', age: 25 }]
+    const result = await _executeQuery(plan, nodes, q)
+    expect(result).toHaveLength(2)
+    expect(result[0].name).toBe('Bob')
+    expect(result[0].i).toBe(1)
+    expect(result[1].name).toBe('Bob')
+    expect(result[1].i).toBe(2)
+  })
+
+  it('preserves matched node columns for a plain RETURN val', async () => {
+    const q = 'MATCH (n:Person) UNWIND [10, 20] AS val RETURN val'
+    const plan = parseQuery(q)
+    const nodes = [{ _label: 'Person', name: 'Alice', age: 30 }]
+    const result = await _executeQuery(plan, nodes, q)
+    expect(result).toHaveLength(2)
+    expect(result[0].val).toBe(10)
+    expect(result[1].val).toBe(20)
+  })
+})

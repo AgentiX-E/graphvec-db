@@ -309,9 +309,16 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       stepSrc = matchMatch?.[1]
     }
     if (stepSrc) {
-      // For aggregation like collect(a), inject all matching nodes
-      // Use array for collect() compatibility
-      varCtx[stepSrc] = _nodes.length === 1 ? _nodes[0] : _nodes
+      // Only inject the MATCH variable when the caller has not already bound
+      // it.  In the MATCH+UNWIND pipeline the caller passes `initialVarCtx`
+      // with the correct `n → node` binding (from `__crossVarRows` or the
+      // fallback) and `_nodes` here is `[matchVarCtx]` — overwriting would nest
+      // the node as `{ n: node }` and break `n.prop` projection.
+      if (!(stepSrc in varCtx)) {
+        // For aggregation like collect(a), inject all matching nodes
+        // Use array for collect() compatibility
+        varCtx[stepSrc] = _nodes.length === 1 ? _nodes[0] : _nodes
+      }
     }
   }
 
@@ -1035,7 +1042,10 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         if (expr === rc && plan.expressionColumns?.[i]?.expression && plan.expressionColumns[i].expression !== rc) {
           expr = plan.expressionColumns[i].expression
         }
-        const val = _evaluateExpression(expr, row)
+        // Evaluate against varCtx as well as the row: a MATCH variable (e.g.
+        // `n` in `MATCH (n) UNWIND ... RETURN n.age`) lives in varCtx, not in
+        // the unwound row, so `n.age` would otherwise resolve to null.
+        const val = _evaluateExpression(expr, { ...varCtx, ...row })
         out[rc] = val !== null && val !== undefined ? val : null
       }
       return out

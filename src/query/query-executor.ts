@@ -4171,6 +4171,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // 回退：从 result row 推断变量
         if (!Object.keys(matchVarCtx).length) {
           const row = result[rowIdx]
+          // Bind the MATCH source variable (e.g. `n` in `MATCH (n)`) to the
+          // node object so a later `n.prop` projection resolves.  Without this
+          // the fallback only flattens node properties into standalone keys
+          // (`age`, `name`) and the variable name itself is lost, so
+          // `RETURN n.age` projects to null.
+          const srcVar = query?.match(/MATCH\s*\((\w+)/i)?.[1]
+          const nodeObj = (rawEntry && typeof rawEntry === 'object' && 'props' in rawEntry && rawEntry.props && typeof rawEntry.props === 'object')
+            ? rawEntry.props
+            : row
+          if (srcVar && nodeObj && typeof nodeObj === 'object' && !(srcVar in matchVarCtx)) {
+            matchVarCtx[srcVar] = nodeObj
+          }
           for (const [key, val] of Object.entries(row)) {
             if (hasProps(val)) {
               matchVarCtx[key] = val.props
