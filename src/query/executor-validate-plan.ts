@@ -5,7 +5,7 @@
  */
 
 import type { QueryPlan } from './query-types'
-import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, extractVariablesFromClause } from './executor-validators'
+import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, extractVariablesFromClause } from './executor-validators'
 import { _validateLiterals, _splitTopLevel } from './expression-engine'
 
 export function _validatePlan(plan: QueryPlan, query?: string): void {
@@ -26,6 +26,16 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // A WITH clause resets the variable scope, so ORDER BY may only reference
   // variables still in scope (or projection aliases of its own WITH).
   _validateOrderByScope(query)
+
+  // ── SyntaxError: UnexpectedSyntax ──
+  // A bare pattern (e.g. `(n)-[]->()`) is not a value expression and may only
+  // appear in MATCH/CREATE/MERGE/WHERE, never as a RETURN/WITH/SET operand.
+  _validatePatternPosition(query)
+
+  // ── SyntaxError: InvalidArgumentType ──
+  // A pattern predicate must contain a relationship; a bare node pattern such
+  // as `WHERE (n)` is invalid.
+  _validateWhereSelfPattern(query)
 
   // ═══════════════════════════════════════════════════════════════
   // Literals SyntaxError (编译时字面量检查)

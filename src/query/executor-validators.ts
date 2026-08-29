@@ -313,10 +313,23 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
       }
     }
   }
-  if (whereMatch && matchVars.length === 0) return
+  // 合并 MATCH 变量和 WITH 变量（在 EARLY RETURN 之前构建，供 pattern 校验使用）。
+  // Note: deliberately EXCLUDE createEdgeVars/createNodeVars — a WHERE pattern
+  // predicate only sees the MATCH/WITH scope, so a relationship variable (e.g.
+  // `r` in `WHERE (n)-[r]->()`) is unbound unless MATCH/WITH binds it.
+  const definedVarSet = new Set([...matchVars, ...withVars, ...callYieldVars])
+
+  if (whereMatch && matchVars.length === 0) {
+    // Even with no MATCH variables, a WHERE pattern predicate may still
+    // reference unbound variables (e.g. `WHERE (a)`); validate those first.
+    _validatePatternPredicateVariables(query, definedVarSet)
+    return
+  }
   const whereBody = whereMatch ? whereMatch[1] : ''
   // 如果 whereBody 以 ") AS alias" 结尾，剥离后缀（list predicate 的结束括号被误捕获）
   const whereClean = whereBody.replace(/\)\s*AS\s+\w+\s*$/i, '').trim()
+  // Validate variables introduced inside WHERE pattern predicates.
+  _validatePatternPredicateVariables(query, definedVarSet)
   // 合并 MATCH 变量和 WITH 变量
   const definedVars = [...new Set([...matchVars, ...withVars, ...callYieldVars])]
   // 去掉字符串常量（替换为空格，避免字符串内容被当作变量名）
@@ -347,6 +360,77 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
     if (_TCK_KEYWORDS.has(vu)) continue
     if (/^\d/.test(v)) continue
     if (!definedVars.includes(v) && !definedVars.includes(vu)) {
+      throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+    }
+  }
+}
+
+/**
+ * Validate variables introduced inside a WHERE pattern predicate.
+ *
+ * openCypher requires every variable referenced in a pattern predicate to be
+ * bound in an enclosing scope (MATCH / WITH / CREATE / MERGE).  A pattern
+ * predicate may NOT introduce new variables: both its node endpoints and its
+ * relationship variable must already be bound.  Anonymous endpoints (`()`,
+ * `(:Label)`) are exempt, as are already-bound variables like `n` from
+ * `MATCH (n)`.
+ *
+ * Examples that must throw UndefinedVariable:
+ *   MATCH (n) WHERE (a)-[r]->(n) RETURN n   // a unbound
+ *   MATCH (n) WHERE (n)-[r]->()   RETURN n  // r unbound (relationship var)
+ *   MATCH (n) WHERE (a)            RETURN n  // a unbound (bare node pattern)
+ */
+function _validatePatternPredicateVariables(query: string, definedVars: Set<string>): void {
+  const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
+  if (!whereMatch) return
+  const whereBody = whereMatch[1].trim()
+
+  // Walk the WHERE body extracting pattern predicates: sequences of the form
+  //   (var[:Label]) <|- [-] [var:Type[*range]] ->|- (var[:Label])
+  //
+  // Endpoints may be bare anonymous `()`, labelled anonymous `(:Label)`, named
+  // `(var)`, `(var:Label)`, and may carry an optional `{...}` property map.
+  const NODE = '\\(([A-Za-z_]\\w*)?(?::[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*\\{[^}]*\\})?\\s*\\)'
+  const patternPredRE = new RegExp(
+    NODE + '\\s*(?:<-\\s*\\[[^\\]]*\\]\\s*-|-\\s*\\[[^\\]]*\\]\\s*(?:->|-)|-\\s*->|-\\s*-)\\s*' + NODE,
+    'g'
+  )
+  let pm: RegExpExecArray | null
+  while ((pm = patternPredRE.exec(whereBody)) !== null) {
+    const full = pm[0]
+    // Collect candidate variable names from the whole pattern string.
+    // Node variable: the identifier right after `(` (before `:` or `)`).
+    const nodeVars = [...full.matchAll(/\(([A-Za-z_]\w*)\s*(?::|\)|\{|$)/g)].map(m => m[1]).filter(Boolean)
+    // Relationship variable: the identifier right after `[` when it is
+    // followed by `:` (i.e. `[r:REL]`), or a bare `[r]` / `[r {}]`.  A leading
+    // `:` (`[:REL]`) means no relationship variable.
+    const relVars: string[] = []
+    for (const rm of full.matchAll(/\[([^\]]*)\]/g)) {
+      const inner = rm[1].trim()
+      if (!inner) continue
+      if (inner.startsWith(':')) continue            // `[:REL]` -> no variable
+      const name = inner.match(/^([A-Za-z_]\w*)/)
+      if (name) relVars.push(name[1])
+    }
+    for (const v of [...nodeVars, ...relVars]) {
+      if (!v) continue
+      if (definedVars.has(v)) continue
+      throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+    }
+    // Allow chained patterns (`(a)-[]->(:C)<-[]-(b)`) to overlap: rewind the
+    // last index so the next segment starting at the shared middle node is
+    // still matched by the next iteration.
+    patternPredRE.lastIndex = Math.max(patternPredRE.lastIndex - 2, pm.index + 1)
+  }
+
+  // Bare node pattern used as a predicate: `WHERE (n)` or `WHERE (a)` where the
+  // variable is not bound.  A parenthesised single variable/identifier is a
+  // pattern predicate (not a grouping), so it must be bound.
+  const bareNodeRE = /^\s*\(\s*(\w+)(?::[A-Za-z_]\w*)?\s*\)\s*$/i
+  const bm = whereBody.match(bareNodeRE)
+  if (bm) {
+    const v = bm[1]
+    if (v && !definedVars.has(v)) {
       throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
     }
   }
