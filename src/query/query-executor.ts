@@ -44,110 +44,149 @@ function _evalPatternPredicate(
 ): boolean | null {
   const t = pat.trim()
   // Match: (src[:Label])  <-|-[ [ :EdgeLabel[*] ] ]- ->|-  (tgt[:Label])
+  // Either endpoint may be anonymous (empty variable name, e.g. `()` or
+  // `(:C)`), which denotes an existence check rather than a specific node.
   // Captures: 1=srcVar 2=srcLabel 3=leftArrow 4=edgeSpec 5=rightArrow 6=tgtVar 7=tgtLabel
-  const m = t.match(/^\((\w+)(?::([\w]+))?\)\s*(<-|-)\s*(\[[^\]]*\])?\s*(->|-)\s*\((\w+)(?::([\w]+))?\)$/)
+  const m = t.match(/^\((\w*)(?::([\w]+))?\)\s*(<-|-)\s*(\[[^\]]*\])?\s*(->|-)\s*\((\w*)(?::([\w]+))?\)$/)
   if (!m) return null
-  const srcVar = m[1]
+  const srcVar = m[1] || null
   const srcLabel = m[2] || null
   const leftArrow = m[3]
   const edgeSpec = m[4] || ''
   const rightArrow = m[5]
-  const tgtVar = m[6]
+  const tgtVar = m[6] || null
   const tgtLabel = m[7] || null
 
-  // Resolve nodes from ctx. ctx values may be the node object directly, or a
+  // Resolve a node from ctx. ctx values may be the node object directly, a
   // {props:{...}} wrapper, or a flattened props object.
   const resolveNode = (v: unknown): Record<string, unknown> | null => {
     if (!v || typeof v !== 'object') return null
     return (v as Record<string, unknown>)
   }
-  const srcNode = resolveNode(ctx[srcVar])
-  const tgtNode = resolveNode(ctx[tgtVar])
-  if (!srcNode || !tgtNode) return null
 
-  // Locate the nodes within allNodes (reference equality). ctx values that
-  // came from __crossVarRows are direct references to allNodes entries.
-  const srcIdx = allNodes.indexOf(srcNode)
-  const tgtIdx = allNodes.indexOf(tgtNode)
-  if (srcIdx < 0 || tgtIdx < 0) {
-    // Fall back: match by _alias (CREATE alias) which is stable per node.
-    const byAlias = (node: Record<string, unknown>): number =>
-      allNodes.findIndex((n: any) => n?._alias !== undefined && n._alias === (node as any)?._alias)
-    const sA = byAlias(srcNode)
-    const tA = byAlias(tgtNode)
-    if (sA < 0 || tA < 0) return null
-    return _edgeExists(sA, tA) ? true : false
+  // Parse the edge spec once for reuse by both the named and anonymous paths.
+  // edgeSpec is like `[:REL1]`, `[:REL1*]`, `[:REL1*2..3]`, or `[]`.
+  let edgeLabel: string | null = null
+  let varLength = false
+  let varMin = 1
+  let varMax: number | null = null
+  {
+    let inner = edgeSpec.replace(/^\[|\]$/g, '').trim()
+    if (inner.startsWith(':')) inner = inner.slice(1)
+    const vlm = inner.match(/^([\w|]*)\*(\d+)?(?:\.\.(\d+)?)?$/)
+    if (vlm) {
+      varLength = true
+      edgeLabel = vlm[1] || null
+      varMin = vlm[2] ? parseInt(vlm[2], 10) : 1
+      varMax = vlm[3] ? parseInt(vlm[3], 10) : null
+    } else {
+      edgeLabel = inner || null
+    }
   }
-  return _edgeExists(srcIdx, tgtIdx)
+  // Direction
+  let direction: 'out' | 'in' | 'any' = 'any'
+  if (leftArrow === '-' && rightArrow === '->') direction = 'out'
+  else if (leftArrow === '<-' && rightArrow === '-') direction = 'in'
+  else if (leftArrow === '-' && rightArrow === '-') direction = 'any'
 
-  function _edgeExists(si: number, ti: number): boolean {
-    // Target label constraint
+  const labelMatches = (node: any, label: string | null): boolean => {
+    if (!label) return true
+    const lbl = node?._label || node?.props?._label || ''
+    const full = (node?.__fullLabel as string) || ''
+    return lbl === label || full.split(':').includes(label)
+  }
+  const edgeTypeMatches = (e: any): boolean => {
+    if (!edgeLabel) return true
+    // edgeLabel may be a pipe-separated union (`REL1|REL2|REL3`).
+    const types = edgeLabel.split('|').filter(Boolean)
+    return types.length === 0 || types.includes(e.label)
+  }
+
+  // Locate a node index in allNodes (reference equality first, then _alias,
+  // then label+property fingerprint for anonymous nodes).
+  const nodeIndexOf = (node: Record<string, unknown>): number => {
+    let idx = allNodes.indexOf(node)
+    if (idx >= 0) return idx
+    const alias = (node as any)?._alias
+    if (alias !== undefined) {
+      idx = allNodes.findIndex((n: any) => n?._alias !== undefined && n._alias === alias)
+      if (idx >= 0) return idx
+    }
+    // Anonymous nodes (e.g. `(:C)`) carry no `_alias`; match by fingerprint —
+    // label plus every own property excluding the volatile `__edges` array.
+    const fingerprint = (n: any): string => {
+      const label = n?._label ?? n?.props?._label ?? ''
+      const keys = Object.keys(n || {}).filter(k => k !== '__edges' && k !== '_alias' && k !== 'props' && !k.startsWith('__')).sort()
+      const parts = keys.map(k => `${k}=${JSON.stringify(n[k])}`)
+      return label + '|' + parts.join('|')
+    }
+    const fp = fingerprint(node)
+    idx = allNodes.findIndex((n: any) => fingerprint(n) === fp)
+    return idx
+  }
+
+  // Resolve a named endpoint to its index in allNodes (or null if anonymous).
+  const resolveEndpoint = (varName: string | null, label: string | null): { idx: number | null; ok: boolean } => {
+    if (!varName) return { idx: null, ok: true }  // anonymous endpoint: existence check
+    const node = resolveNode(ctx[varName])
+    if (!node) return { idx: null, ok: false }  // named but unresolvable → null
+    const idx = nodeIndexOf(node)
+    if (idx < 0) return { idx: null, ok: false }
+    if (!labelMatches(node, label)) return { idx: null, ok: false }
+    return { idx, ok: true }
+  }
+
+  const src = resolveEndpoint(srcVar, srcLabel)
+  const tgt = resolveEndpoint(tgtVar, tgtLabel)
+  if (!src.ok || !tgt.ok) return null
+
+  // Helper: does a single edge (si -> ti stored on allNodes[si].__edges) match
+  // the current direction + type + target-label constraints?
+  const edgeExistsFromTo = (si: number, ti: number): boolean => {
     if (tgtLabel) {
-      const tn: any = allNodes[ti]
-      const lbl = tn?._label || tn?.props?._label || ''
-      const full = (tn?.__fullLabel as string) || ''
-      if (lbl !== tgtLabel && !full.split(':').includes(tgtLabel)) return false
+      if (!labelMatches(allNodes[ti], tgtLabel)) return false
     }
     if (srcLabel) {
-      const sn: any = allNodes[si]
-      const lbl = sn?._label || sn?.props?._label || ''
-      const full = (sn?.__fullLabel as string) || ''
-      if (lbl !== srcLabel && !full.split(':').includes(srcLabel)) return false
+      if (!labelMatches(allNodes[si], srcLabel)) return false
     }
-    // Parse edge spec: ":T" or ":T*" or "" (bare) or "T*"
-    let edgeLabel: string | null = null
-    let varLength = false
-    let inner = edgeSpec.replace(/^\[|\]$/g, '').trim()  // strip brackets
-    if (inner.startsWith(':')) inner = inner.slice(1)
-    if (inner.endsWith('*')) { varLength = true; inner = inner.slice(0, -1) }
-    if (inner) edgeLabel = inner
-
-    // Direction
-    let direction: 'out' | 'in' | 'any' = 'any'
-    if (leftArrow === '-' && rightArrow === '->') direction = 'out'
-    else if (leftArrow === '<-' && rightArrow === '-') direction = 'in'
-    else if (leftArrow === '-' && rightArrow === '-') direction = 'any'
-
-    const hasEdge = (from: number, to: number): boolean => {
-      const edges: any[] = (allNodes[from] as any)?.__edges || []
-      for (const e of edges) {
-        if (edgeLabel && e.label !== edgeLabel) continue
-        if (e.srcIdx === from && e.dstIdx === to) return true
-        // Some edge storage lists the edge on the dst node as well
-        if (e.srcIdx === to && e.dstIdx === from) return true
-      }
-      return false
+    const edges: any[] = (allNodes[si] as any)?.__edges || []
+    for (const e of edges) {
+      if (!edgeTypeMatches(e)) continue
+      // Strictly directed: only accept an edge whose stored srcIdx→dstIdx
+      // matches si→ti.  (The caller handles direction by swapping args for
+      // `in` and OR-ing both for `any`, so we must not match the reverse here.)
+      if (e.srcIdx === si && e.dstIdx === ti) return true
     }
+    return false
+  }
 
-    if (!varLength) {
-      if (direction === 'out') return hasEdge(si, ti)
-      if (direction === 'in') return hasEdge(ti, si)
-      // any: either direction
-      return hasEdge(si, ti) || hasEdge(ti, si)
-    }
-
-    // Variable-length: BFS over directed edges from si to ti (respecting
-    // direction). Zero-length (si === ti) is allowed by Cypher `*`.
-    if (si === ti) return true
-    const visited = new Set<number>([ si ])
-    let frontier = [ si ]
-    const maxHops = allNodes.length
-    for (let hop = 0; hop < maxHops; hop++) {
+  // BFS from a start index, honoring direction + type + min/max hop bounds.
+  // Returns true if any reachable node satisfies `accept(idx)`.
+  const reachable = (start: number, accept: (idx: number) => boolean): boolean => {
+    const visited = new Set<number>([ start ])
+    let frontier = [ start ]
+    const maxHops = varMax ?? allNodes.length
+    for (let hop = 1; hop <= maxHops; hop++) {
       const next: number[] = []
       for (const cur of frontier) {
         const edges: any[] = (allNodes[cur] as any)?.__edges || []
         for (const e of edges) {
-          if (edgeLabel && e.label !== edgeLabel) continue
+          if (!edgeTypeMatches(e)) continue
           let nbr = -1
-          if (direction === 'out' || direction === 'any') {
+          if (direction === 'out' && e.srcIdx === cur) nbr = e.dstIdx
+          else if (direction === 'in' && e.dstIdx === cur) nbr = e.srcIdx
+          else if (direction === 'any') {
             if (e.srcIdx === cur) nbr = e.dstIdx
-          }
-          if (nbr < 0 && (direction === 'in' || direction === 'any')) {
-            if (e.dstIdx === cur) nbr = e.srcIdx
+            else if (e.dstIdx === cur) nbr = e.srcIdx
           }
           if (nbr < 0) continue
-          if (nbr === ti) return true
-          if (!visited.has(nbr)) { visited.add(nbr); next.push(nbr) }
+          if (visited.has(nbr)) continue
+          if (accept(nbr)) {
+            // hop must be within [varMin, varMax] for var-length patterns
+            if (!varLength || (hop >= varMin && (varMax === null || hop <= varMax))) return true
+          }
+          visited.add(nbr)
+          next.push(nbr)
         }
       }
       if (next.length === 0) break
@@ -155,6 +194,46 @@ function _evalPatternPredicate(
     }
     return false
   }
+
+  // Anonymous target: existence check — does the source reach at least one
+  // node satisfying the direction/type/hop constraints?  For zero-length the
+  // source itself counts (`(n)-[:T*0]-()` is trivially true when n matches).
+  if (tgt.idx === null) {
+    const start = src.idx
+    if (start === null) return null  // both anonymous: undefined (rare, handled upstream)
+    if (!varLength) {
+      // Single hop: any matching neighbor in the right direction.
+      const edges: any[] = (allNodes[start] as any)?.__edges || []
+      for (const e of edges) {
+        if (!edgeTypeMatches(e)) continue
+        let nbr = -1
+        if (direction === 'out' && e.srcIdx === start) nbr = e.dstIdx
+        else if (direction === 'in' && e.dstIdx === start) nbr = e.srcIdx
+        else if (direction === 'any' && (e.srcIdx === start || e.dstIdx === start)) nbr = e.srcIdx === start ? e.dstIdx : e.srcIdx
+        if (nbr < 0) continue
+        if (tgtLabel && !labelMatches(allNodes[nbr], tgtLabel)) continue
+        return true
+      }
+      return false
+    }
+    // Var-length: reachable() with accept = any node matching tgtLabel.
+    return reachable(start, (idx) => tgtLabel ? labelMatches(allNodes[idx], tgtLabel) : true)
+  }
+
+  // Both endpoints named: check connectivity between the two specific nodes.
+  if (src.idx === null) return null
+  if (!varLength) {
+    if (direction === 'out') return edgeExistsFromTo(src.idx, tgt.idx)
+    if (direction === 'in') return edgeExistsFromTo(tgt.idx, src.idx)
+    return edgeExistsFromTo(src.idx, tgt.idx) || edgeExistsFromTo(tgt.idx, src.idx)
+  }
+  // Var-length between two named nodes: BFS from src, accept = reach tgt.
+  if (src.idx === tgt.idx) {
+    // Zero-length allowed by `*` (and `*0..n`).
+    if (varMin === 0) return true
+    return false
+  }
+  return reachable(src.idx, (idx) => idx === tgt.idx)
 }
 
 /**
@@ -3622,24 +3701,23 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         }
         let evalVal: unknown
         const checkExpr = whereExpr
-        if (_isPatternPredicate(checkExpr) || (whereBodyExpr && whereBodyExpr !== checkExpr)) {
-          // Pattern Comprehension（如 (n)-[]->() 或 (n)-[:REL1]->()）由 GE steps 已执行。
-          // 如果 length(p) 已替换为 p.length，isPatternPredicate 可能不匹配，
-          // 但长度评估已经在 whereBodyExpr 中处理，所以走表达式求值路径。
-          if (_isPatternPredicate(checkExpr)) {
-            // 原始 whereBody 是 Pattern Comprehension
-            const isNegated = checkExpr.trim().startsWith('NOT ')
-            evalVal = isNegated ? false : true
-          } else {
-            // whereBodyExpr !== checkExpr（如 length(p)=1 → p.length=1）
-            // 或 _isPatternPredicate 为 false 的非 pattern 查询
-            try {
-              const resultVal = _evaluateExpression(whereBodyExpr || checkExpr, ctx)
-              evalVal = resultVal
-            } catch (e: any) {
-              evalVal = undefined
-            }
+        if (whereBodyExpr && whereBodyExpr !== checkExpr) {
+          // `_resolveWherePatternPredicates` rewrote the WHERE body (pattern
+          // predicates substituted with `true`/`false`, or `length(...)`
+          // rewritten to `x.length`).  Evaluate the rewritten expression so the
+          // resolved pattern-predicate results actually drive the filter.
+          try {
+            evalVal = _evaluateExpression(whereBodyExpr, ctx)
+          } catch (e: any) {
+            evalVal = undefined
           }
+        } else if (_isPatternPredicate(checkExpr)) {
+          // Pattern predicate that `_resolveWherePatternPredicates` could not
+          // rewrite (e.g. an anonymous-only pattern like `(n)-->()` whose
+          // source variable was unresolvable).  Fall back to a conservative
+          // value so the surrounding structure still evaluates.
+          const isNegated = checkExpr.trim().startsWith('NOT ')
+          evalVal = isNegated ? false : true
         } else if (/^exists\s*\{/i.test(checkExpr.trim())) {
           // EXISTS { ... } 子查询
           const ebody = checkExpr.trim()
