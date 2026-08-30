@@ -2269,6 +2269,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const needSourceVar = plan.returnColumns?.some((rc: string) => {
       const firstStep = plan.steps?.[0]
       if (!firstStep || !firstStep.source) return false
+      // When the pattern binds a path variable (`MATCH p = (n:X)-->() RETURN n`),
+      // the multi-step walk already populated `__crossVarRows[n]` with the correct
+      // source node.  Re-running the source-target remap here would look up the
+      // target's *undirected* neighbours (including its own outgoing targets) and
+      // inflate the row count.  Skip remapping for path-variable patterns.
+      if (firstStep.pathVariable) return false
       // 直接匹配变量名（RETURN n）
       if (rc === firstStep.source) return true
       // 匹配属性投影（RETURN n.id）
@@ -3298,11 +3304,26 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           rawWithEdges.push(row)
         }
       } else {
-        // Single-row path variable: build path object from r.props / __targetProps
+        // Single-row path variable: build path object from the bound source node
+        // and the target node.  The source binding lives in `__crossVarRows[source]`
+        // (populated by the multi-step walk); `r.props`/`__targetProps` carry the
+        // target node.  Falling back to `r.props` for the source would produce a
+        // self-loop `[target, target]` path and break `nodes(p)` for queries like
+        // `MATCH p = (n:X)-->() RETURN nodes(p)`.
+        const sourceVar = plan.steps?.[0]?.source
         for (const r of rawWithEdges) {
           for (const pv of pathVars) {
+            const boundSrc = sourceVar ? (r as any)?.__crossVarRows?.[sourceVar] : undefined
             const srcNode: Record<string, unknown> = {}
-            if (r.props && typeof r.props === 'object') {
+            if (boundSrc && typeof boundSrc === 'object') {
+              for (const [k, v] of Object.entries(boundSrc)) {
+                if (!k.startsWith('__') && k !== 'props' && k !== pv) srcNode[k] = v
+              }
+              if ((boundSrc as any)._alias && aliasToLabel[(boundSrc as any)._alias as string]) {
+                srcNode._label = aliasToLabel[(boundSrc as any)._alias as string]
+              }
+            }
+            if (!Object.keys(srcNode).length && r.props && typeof r.props === 'object') {
               for (const [k, v] of Object.entries(r.props)) {
                 if (!k.startsWith('__') && k !== pv) srcNode[k] = v
               }
