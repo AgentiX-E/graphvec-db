@@ -4072,7 +4072,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
  *   `:B`         → { var: '', label: 'B', props: '' }
  *   `n:A {k:1}`  → { var: 'n', label: 'A', props: '{k:1}' }
  */
-function _parsePatternNodeTok(inner: string): { var: string; label: string; props: string } {
+export function _parsePatternNodeTok(inner: string): { var: string; label: string; props: string } {
   const tok = inner.trim()
   let varName = ''
   let label = ''
@@ -4104,7 +4104,7 @@ function _parsePatternNodeTok(inner: string): { var: string; label: string; prop
  *   `*`       → { var: '', label: '', varLen: true, props: '' }
  *   `r:T {k}` → { var: 'r', label: 'T', varLen: false, props: '{k}' }
  */
-function _parsePatternRelTok(inner: string): { var: string; label: string; varLen: boolean; props: string } {
+export function _parsePatternRelTok(inner: string): { var: string; label: string; varLen: boolean; props: string } {
   const tok = inner.trim()
   if (!tok) return { var: '', label: '', varLen: false, props: '' }
   let varLen = false
@@ -4133,7 +4133,7 @@ function _parsePatternRelTok(inner: string): { var: string; label: string; varLe
 }
 
 /** Find the index of the top-level `|` separator (depth 0 across ()[]{}). */
-function _findPipeSep(s: string): number {
+export function _findPipeSep(s: string): number {
   let depth = 0
   let inStr = false
   let strChar = ''
@@ -4157,7 +4157,7 @@ function _findPipeSep(s: string): number {
  * across the full `allNodes` array.  Returns one entry per relationship with
  * the source index, target index and direction relative to the queried node.
  */
-function _incidentEdges(allNodes: any[], nodeIdx: number): Array<{ srcIdx: number; dstIdx: number; label: string; props: any; dir: 'out' | 'in' }> {
+export function _incidentEdges(allNodes: any[], nodeIdx: number): Array<{ srcIdx: number; dstIdx: number; label: string; props: any; dir: 'out' | 'in' }> {
   const out: Array<{ srcIdx: number; dstIdx: number; label: string; props: any; dir: 'out' | 'in' }> = []
   // Deduplicate by (srcIdx, dstIdx, label).  The executor may store the same
   // logical relationship once per endpoint (e.g. an outgoing A→B edge recorded
@@ -4191,7 +4191,7 @@ function _incidentEdges(allNodes: any[], nodeIdx: number): Array<{ srcIdx: numbe
  * Returns arrays of `{ nodeIdx, edge }` steps where `nodeIdx` is the node
  * reached and `edge` records the relationship traversed (with its `_dir`).
  */
-function _walkVarLenPaths(
+export function _walkVarLenPaths(
   allNodes: any[],
   srcIdx: number,
   dir: 'out' | 'in' | 'any',
@@ -4231,7 +4231,7 @@ function _walkVarLenPaths(
  * to `p`; node/relationship variables introduced by the pattern are bound for
  * the projection expression as well.
  */
-function _evalPatternComprehension(inner: string, row?: Record<string, unknown>): ExprValue | null {
+export function _evalPatternComprehension(inner: string, row?: Record<string, unknown>): ExprValue | null {
   const pipeIdx = _findPipeSep(inner)
   if (pipeIdx < 0) return null
   let patternText = inner.slice(0, pipeIdx).trim()
