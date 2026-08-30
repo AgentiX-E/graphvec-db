@@ -302,22 +302,42 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   // from allNodes into varCtx so aggregate expressions like collect(a) can
   // resolve the MATCH variable 'a'.
   if (plan.hasMatch && _nodes.length > 0) {
-    // Try to get the variable name from plan.steps, then fall back to query regex
-    let stepSrc = plan.steps?.[0]?.source
-    if (!stepSrc && query) {
-      const matchMatch = query.match(/MATCH\s*\((\w+)\b/i)
-      stepSrc = matchMatch?.[1]
-    }
-    if (stepSrc) {
-      // Only inject the MATCH variable when the caller has not already bound
-      // it.  In the MATCH+UNWIND pipeline the caller passes `initialVarCtx`
-      // with the correct `n → node` binding (from `__crossVarRows` or the
-      // fallback) and `_nodes` here is `[matchVarCtx]` — overwriting would nest
-      // the node as `{ n: node }` and break `n.prop` projection.
-      if (!(stepSrc in varCtx)) {
-        // For aggregation like collect(a), inject all matching nodes
-        // Use array for collect() compatibility
-        varCtx[stepSrc] = _nodes.length === 1 ? _nodes[0] : _nodes
+    // Detect a multi-variable MATCH such as `MATCH (a:A), (b:B)`. In that case
+    // every variable must be bound to its own label-filtered node (a single
+    // node, not the whole array), otherwise a pattern comprehension like
+    // `[p = (a)-[*]->(b) | p]` receives the full node array as `a` and fails to
+    // resolve the source node.
+    const multiVars = query
+      ? [...query.matchAll(/\(\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*\)/g)].map(mm => ({ name: mm[1], label: mm[2] }))
+      : []
+    if (multiVars.length >= 2) {
+      for (const { name, label } of multiVars) {
+        if (name in varCtx) continue
+        const target = _nodes.find((n: any) => {
+          const fullLabel = n?.__fullLabel || n?._label || ''
+          const labels = String(fullLabel).replace(/^:/, '').split(':').filter(Boolean)
+          return labels.includes(label) || String(n?._label) === label
+        })
+        if (target !== undefined) varCtx[name] = target
+      }
+    } else {
+      // Try to get the variable name from plan.steps, then fall back to query regex
+      let stepSrc = plan.steps?.[0]?.source
+      if (!stepSrc && query) {
+        const matchMatch = query.match(/MATCH\s*\((\w+)\b/i)
+        stepSrc = matchMatch?.[1]
+      }
+      if (stepSrc) {
+        // Only inject the MATCH variable when the caller has not already bound
+        // it.  In the MATCH+UNWIND pipeline the caller passes `initialVarCtx`
+        // with the correct `n → node` binding (from `__crossVarRows` or the
+        // fallback) and `_nodes` here is `[matchVarCtx]` — overwriting would nest
+        // the node as `{ n: node }` and break `n.prop` projection.
+        if (!(stepSrc in varCtx)) {
+          // For aggregation like collect(a), inject all matching nodes
+          // Use array for collect() compatibility
+          varCtx[stepSrc] = _nodes.length === 1 ? _nodes[0] : _nodes
+        }
       }
     }
   }

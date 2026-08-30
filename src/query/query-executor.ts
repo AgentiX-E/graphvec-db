@@ -18,6 +18,7 @@ import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from '
 import type { QueryPlan, FilterClause, TraverseStep, AggregateClause, SetClause, InternalNode } from './query-types'
 import { parseQuery } from './query-parser'
 import { _geInstanceRegistry, _gePool, _geDirRegistry, _indexRegistry, DEFAULT_DATABASE, DEFAULT_LIMIT, IndexEntry, ConstraintEntry, _registerIndex, _dropIndex, _getAllIndexes, _getIndex, _clearIndexes, _registerConstraint, _dropConstraint, _getAllConstraints, _clearConstraints, _getActiveDatabase, _setActiveDatabase, _createDatabase, _dropDatabase, _getAllDatabases, _clearDatabases, _clearGeInstances } from './executor-registry'
+import { _setActivePatternNodes } from './pattern-comprehension-state'
 import { GEPool } from './ge-pool'
 import { _formatResultRow, _deepStripInternal, _executeVarLenPath, parseCsvContent } from './executor-common'
 import { _executeWithUnwindPipeline } from './executor-unwind-pipeline'
@@ -579,13 +580,28 @@ async function _executeMultiMatchCrossJoin(
 
 /** GraphEngine 原生执行入口 */
 export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
+  // Expose the full node array (with __edges) to the pattern-comprehension
+  // evaluator up front, so both the non-GE early-exit paths below and the main
+  // GE path can resolve a row-scoped node's relationships via its `_alias`.
+  // The parallel setter inside the main path is kept for the DML/create-node
+  // `allNodes` (which may differ from the raw `nodes` argument); this early set
+  // covers the `_execNonGePaths` / `_executeMultiMatchCrossJoin` branches that
+  // return before reaching it.
+  _setActivePatternNodes(nodes as Array<Record<string, unknown>>)
+
   // ── 非 GE 路径（early exit）──
   const nonGeResult = await _execNonGePaths(plan, nodes, query)
-  if (nonGeResult !== null) return nonGeResult
+  if (nonGeResult !== null) {
+    _setActivePatternNodes(null)
+    return nonGeResult
+  }
 
   // ── Multi-MATCH cross-join (early exit) ──
   const multiMatchResult = await _executeMultiMatchCrossJoin(plan, nodes, query)
-  if (multiMatchResult !== null) return multiMatchResult as unknown as QueryResult
+  if (multiMatchResult !== null) {
+    _setActivePatternNodes(null)
+    return multiMatchResult as unknown as QueryResult
+  }
 
   // ── 共享 GE 实例 ──
   let ge: GraphEngine | null = null
@@ -643,6 +659,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     for (const node of allNodes) {
       if (!node.__edges) node.__edges = []
     }
+    // Assign a deterministic internal alias to anonymous nodes (no `_alias`)
+    // so pattern-comprehension back-tracking that relies on node identity can
+    // uniquely resolve them (multiple same-label/same-props anonymous nodes
+    // cannot be told apart by fingerprint alone).  The `__` prefix keeps the
+    // alias out of user-visible node properties.
+    for (let ai = 0; ai < allNodes.length; ai++) {
+      const anode = allNodes[ai] as any
+      if (anode._alias === undefined || anode._alias === null || anode._alias === '') {
+        anode._alias = `__n${ai}`
+      }
+    }
     for (const node of allNodes) {
       if (node._label && String(node._label).includes(':')) {
         node.__fullLabel = String(node._label)
@@ -674,6 +701,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
     const cnToAllNodeMap = new Map<number, number>()  // createNode index → allNodes index
     const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
+
+    // Expose the full node array (with __edges) to the pattern-comprehension
+    // evaluator, which resolves a row-scoped node's relationships via its
+    // `_alias`.  Cleared in the `finally` block below.
+    _setActivePatternNodes(allNodes)
+
     if (plan.createNodes?.length) {
       // If the CREATE statement has an UNWIND prefix (e.g. "UNWIND [1,2,3] AS i
       // CREATE ({num: i})"), expand the template into one node per unwound element
@@ -2157,6 +2190,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
 
           // 无向边 direction any 时 GE 存储无节点数据，删掉 aggregate 让 QE 聚合
           if (planForGe.steps?.[0]?.direction === 'any') delete planForGe.aggregate
+          // GE cannot evaluate a pattern-comprehension / arbitrary-expression
+          // aggregate field (e.g. `count([p = (n)-[:T]->() | p])`).  Drop the
+          // aggregate so QE's post-aggregation path (~line 3798) evaluates the
+          // comprehension over the raw matched rows and then aggregates.
+          const _aggField = planForGe.aggregate?.field
+          if (_aggField != null && _aggField !== '*' && /[\[\(]/.test(String(_aggField))) {
+            delete planForGe.aggregate
+          }
           // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
           delete planForGe.skip; delete planForGe.limit
           const __t5PlanForGeKeys = Object.keys(planForGe)
@@ -3806,8 +3847,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // count(b) where b is a node/rel variable = count everything
           // We need to check if the field is a MATCH variable (node/rel) vs a property
           const isNodeOrRelVar = field && /^[a-zA-Z_]\w*$/.test(field) && result.every(r => !(field in r))
+          // Pattern comprehension / expression aggregate field (e.g.
+          // `count([p = (n)-[:T]->() | p])`): the GE path cannot evaluate it, so
+          // we evaluate the field Expression against each raw row's variable
+          // bindings and count the non-null results.
+          const isExpressionField = field && /[\[\(]/.test(field)
           if (isNodeOrRelVar) {
             aggRow[aggAlias] = result.length
+          } else if (isExpressionField) {
+            const nonNull = rawWithEdges.filter((rw: any) => {
+              const ctx: Record<string, unknown> = { ...(rw.props || rw) }
+              let v: unknown
+              try { v = _evalBinary(field, ctx) } catch { v = undefined }
+              return v !== null && v !== undefined
+            })
+            aggRow[aggAlias] = nonNull.length
           } else {
             const nonNull = result.filter(r => {
               const v = r[field]
@@ -4386,6 +4440,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         pool.releaseConnection(ge)
       } catch { /* 池尚未初始化或已销毁 */ }
     }
+    // Clear the pattern-comprehension node index so a stale node array never
+    // leaks into a subsequent (unrelated) query execution.
+    _setActivePatternNodes(null)
   }
 }
 

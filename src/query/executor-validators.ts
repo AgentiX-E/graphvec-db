@@ -38,9 +38,40 @@ export function extractMatchClause(query: string): string {
  * Cypher TCK: MATCH (n) RETURN (n)-[]->() 应报 UnexpectedSyntax
  */
 export function _validatePatternPosition(query: string): void {
-  // Pattern 语法 = `(...)-[...]-(...)` 或 `(...)-[...]->(...)` 或 `(...)<-[...]-(...)`
-  // 不能与 MATCH / WHERE / CREATE / MERGE 等子句开头混淆
-  const patternRE = /\([^)]*\)\s*(?:<-\s*\[[^\]]*\]\s*-|-\s*\[[^\]]*\]\s*(?:->|-)|\s*--\s*)\([^)]*\)/
+  // Pattern syntax = `(...)-[...]-(...)` or `(...)-[...]->(...)` or `(...)<-[...]-(...)`
+  // or `(...)-->(...)`.  Must not be confused with MATCH / WHERE / CREATE / MERGE
+  // clause openings.
+  // The node endpoints `( ... )` must NOT contain a `[` bracket character: a
+  // leading `[p = ` or `[` (pattern comprehension) would otherwise be swallowed
+  // by `[^)]*`, mislocating the pattern at the opening `(` of the comprehension.
+  const patternRE = /\([^)\[]*\)\s*(?:<-\s*\[[^\]]*\]\s*-|-\s*\[[^\]]*\]\s*(?:->|-)|-\s*->|--)\s*\([^)\[]*\)/
+
+  // A pattern comprehension `[p = (n)-->() | expr]` is legal in RETURN/WITH;
+  // only a BARE pattern (not wrapped in `[...]`) is UnexpectedSyntax.  A
+  // pattern is "inside a comprehension" if, at its starting index, there is an
+  // unclosed `[` bracket — i.e. the nearest enclosing bracket on the left is a
+  // list/comprehension opener rather than a `(` group.
+  const isInsideComprehension = (body: string, idx: number): boolean => {
+    // Track only `[`/`]` depth, but reset the "last opener" whenever a `(`
+    // or `{` intervenes at the same or shallower depth (a `(` group does not
+    // make it a comprehension).
+    let bracketDepth = 0
+    let lastOpenBracket = -1
+    for (let i = 0; i < idx; i++) {
+      const ch = body[i]
+      if (ch === '[') {
+        if (bracketDepth === 0) lastOpenBracket = i
+        bracketDepth++
+      } else if (ch === ']') {
+        bracketDepth--
+        if (bracketDepth <= 0) { bracketDepth = 0; lastOpenBracket = -1 }
+      }
+    }
+    // The pattern begins right after `[p = ` (or `[ `) when inside a
+    // comprehension; ensure the last open bracket is still unclosed.
+    return bracketDepth > 0 && lastOpenBracket >= 0
+  }
+
   // 检测 RETURN 列中的裸 pattern（不是在函数参数中）
   const returnMatch = query.match(/RETURN\s+(.+?)(?:\s+(?:ORDER\s+BY|SKIP|LIMIT|WHERE|CREATE|MERGE|MATCH|WITH|CALL|UNWIND)\s|$)/is)
   if (returnMatch) {
@@ -50,7 +81,9 @@ export function _validatePatternPosition(query: string): void {
       const before = returnBody.substring(0, barePattern.index)
       // pattern 不在函数参数中 → 是裸 pattern
       if (!before.includes('(') || before.lastIndexOf('(') < before.lastIndexOf(')')) {
-        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+        if (!isInsideComprehension(returnBody, barePattern.index)) {
+          throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+        }
       }
     }
   }
@@ -62,7 +95,9 @@ export function _validatePatternPosition(query: string): void {
     if (barePattern) {
       const before = withBody.substring(0, barePattern.index)
       if (!before.includes('(') || before.lastIndexOf('(') < before.lastIndexOf(')')) {
-        throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+        if (!isInsideComprehension(withBody, barePattern.index)) {
+          throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
+        }
       }
     }
   }

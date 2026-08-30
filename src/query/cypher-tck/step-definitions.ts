@@ -336,6 +336,30 @@ function _toEdgeNotation(val: Record<string, unknown>): string {
   return label ? `[:${label} {${propStr}}]` : `[: {${propStr}}]`
 }
 
+/**
+ * Render a path object `{ __path: [...], __pathEdges: [...] }` into TCK path
+ * notation `<(:A)-[:T]->(:B)>`.  Each edge carries a `__dir` field ('out' means
+ * the anchor at `__path[i]` points toward `__path[i+1]`; 'in' means the edge
+ * points back from the neighbour toward the anchor).
+ */
+function _toPathNotation(val: Record<string, unknown>): string {
+  const nodes = Array.isArray(val.__path) ? (val.__path as any[]) : []
+  const edges = Array.isArray(val.__pathEdges) ? (val.__pathEdges as any[]) : []
+  const parts: string[] = []
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]
+    parts.push(node && typeof node === 'object' ? (toNodeNotation(node) ?? '()') : '()')
+    if (i < edges.length) {
+      const edge = edges[i]
+      const dir = (edge && typeof edge === 'object' ? (edge as any)._dir : undefined) || 'out'
+      const edgeNotation = edge && typeof edge === 'object' ? _toEdgeNotation(edge as any) : '[]'
+      if (dir === 'in') parts.push('<-' + edgeNotation + '-')
+      else parts.push('-' + edgeNotation + '->')
+    }
+  }
+  return '<' + parts.join('') + '>'
+}
+
 /** 检测两个字符串是否表示同一个数字，但一个带 .0 一个不带 */
 function _isFloatZeroMatch(actual: string, expected: string): boolean {
   if (actual === expected) return false
@@ -400,6 +424,10 @@ function _stringifyVal(val: unknown): string {
     return '[' + val.map(v => {
       if (typeof v === 'string') return "'" + v.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"
       if (typeof v === 'bigint') return String(v)
+      // When an array element is a path object → <(:A)-[:T]->(:B)>
+      if (typeof v === 'object' && v !== null && '__path' in (v as any) && '__pathEdges' in (v as any)) {
+        return _toPathNotation(v as any)
+      }
       // 数组元素是节点对象时 → 使用 toNodeNotation
       if (typeof v === 'object' && v !== null && '_label' in (v as any)) {
         const nn = toNodeNotation(v)
@@ -414,6 +442,10 @@ function _stringifyVal(val: unknown): string {
     }).join(', ') + ']'
   }
   if (typeof val === 'object' && val !== null) {
+    // Path object → <(:A)-[:T]->(:B)>
+    if ('__path' in (val as any) && '__pathEdges' in (val as any)) {
+      return _toPathNotation(val as Record<string, unknown>)
+    }
     // 节点对象 → toNodeNotation（避免输出 {_label: 'A', name: 'a'}）
     if ('_label' in (val as any)) {
       const nn = toNodeNotation(val)
@@ -890,11 +922,19 @@ Given('having executed:', async function (query: string) {
             if (uw.name) varEnv.set(uw.name, resolved.slice())
           }
           const createdNodes: Record<string, unknown>[] = []
+          // Map each createNode template index → global st.nodes index, so edge
+          // injection can resolve `sourceIdx`/`targetIdx` (which are LOCAL to the
+          // current statement) to the correct global node.  This is essential for
+          // anonymous endpoints like `CREATE (a)-[:HAS]->()` where `ce.target` is
+          // empty and `ce.targetIdx` (here 1) must NOT collide with a global node
+          // created by a prior statement.
+          const cnsNodeIdx: number[] = []
           for (const cn of expandedCns) {
             // Reuse an already-created node when this CREATE re-references a
             // variable from a prior statement (e.g. `CREATE (a:A ...)` followed by
             // `CREATE (a)-[:T]->(:B)` must not mint a fresh `:Default` node for `a`).
             if (cn.alias && st.nodes.some((n: any) => n._alias === cn.alias)) {
+              cnsNodeIdx.push(st.nodes.findIndex((n: any) => n._alias === cn.alias))
               continue
             }
             const node: Record<string, unknown> = { _label: cn.label || 'Default' }
@@ -919,6 +959,7 @@ Given('having executed:', async function (query: string) {
             }
             st.nodes.push(node)
             createdNodes.push(node)
+            cnsNodeIdx.push(st.nodes.length - 1)
             try { seedGe(persistGe(), node) } catch {}
           }
           // Bind the CREATE node variable to its created node objects so a later
@@ -939,13 +980,13 @@ Given('having executed:', async function (query: string) {
                   if ((st.nodes[si] as any)._alias === ce.source) { srcIdx = si; break }
                 }
               }
-              if (srcIdx < 0) srcIdx = ce.sourceIdx
+              if (srcIdx < 0) srcIdx = cnsNodeIdx[ce.sourceIdx] ?? ce.sourceIdx
               if (ce.target) {
                 for (let si = 0; si < st.nodes.length; si++) {
                   if ((st.nodes[si] as any)._alias === ce.target) { dstIdx = si; break }
                 }
               }
-              if (dstIdx < 0) dstIdx = ce.targetIdx
+              if (dstIdx < 0) dstIdx = cnsNodeIdx[ce.targetIdx] ?? ce.targetIdx
               if (srcIdx >= 0 && srcIdx < st.nodes.length && dstIdx >= 0 && dstIdx < st.nodes.length) {
                 if (!st.nodes[srcIdx].__edges) st.nodes[srcIdx].__edges = []
                 st.nodes[srcIdx].__edges.push({

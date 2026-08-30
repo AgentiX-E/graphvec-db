@@ -66,8 +66,11 @@ function _deepStripInternal(obj: unknown): unknown {
   if (obj && typeof obj === 'object') {
     const clean: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(obj)) {
-      // 仅删除 _alias 和 __ 开头的内部属性，保留 _label（toNodeNotation 需要）
-      if (k === '_alias' || k.startsWith('__')) continue
+      // Strip `_alias` and `__`-prefixed internal properties, keeping `_label`
+      // (toNodeNotation needs it).  Exception: preserve `__path`/`__pathEdges`
+      // (the internal path-object representation) which the serialization layer
+      // renders as TCK path notation <(:A)-[:T]->(:B)>.
+      if (k === '_alias' || (k.startsWith('__') && k !== '__path' && k !== '__pathEdges')) continue
       clean[k] = _deepStripInternal(v)
     }
     return clean

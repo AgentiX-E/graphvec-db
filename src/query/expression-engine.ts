@@ -14,6 +14,10 @@
  * - 所有辅助函数
  */
 
+// Pattern comprehension requires access to the full node array (with __edges),
+// which lives in a dependency-free companion module to avoid a circular import.
+import { _getActivePatternNodes } from './pattern-comprehension-state'
+
 // ============================================================
 // 类型定义
 // ============================================================
@@ -109,6 +113,15 @@ export function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Rec
     case 'NULL': return null
     case 'LIST': {
       const items = Array.isArray(expr.items) ? expr.items : []
+      // A single STRING item containing a top-level `|` is a pattern/list
+      // comprehension (`[p = (a)-[*]->(b) | p]`), not a plain string literal.
+      // Re-wrap it in brackets so `_evalBinary` runs the comprehension.
+      if (items.length === 1 && typeof items[0] === 'object' && items[0] !== null) {
+        const item = items[0] as Record<string, unknown>
+        if (String(item.type || '').toUpperCase() === 'STRING' && typeof item.value === 'string' && _findPipeSep(item.value) >= 0) {
+          return _evalBinary('[' + item.value + ']', _row || {})
+        }
+      }
       return items.map((item: unknown) => {
         if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type) {
           const typed = item as Record<string, unknown>
@@ -4051,6 +4064,346 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
   return _evalLiteral(t, row)
 }
 
+/**
+ * Parse a node pattern token — the text inside `( ... )` — into its variable
+ * name, label(s) and property-map literal.  Examples:
+ *   ``            → { var: '', label: '', props: '' }
+ *   `n`          → { var: 'n', label: '', props: '' }
+ *   `:B`         → { var: '', label: 'B', props: '' }
+ *   `n:A {k:1}`  → { var: 'n', label: 'A', props: '{k:1}' }
+ */
+function _parsePatternNodeTok(inner: string): { var: string; label: string; props: string } {
+  const tok = inner.trim()
+  let varName = ''
+  let label = ''
+  let props = ''
+  const braceIdx = tok.indexOf('{')
+  const head = (braceIdx >= 0 ? tok.slice(0, braceIdx) : tok).trim()
+  if (braceIdx >= 0) props = tok.slice(braceIdx)
+  if (head && !head.startsWith(':')) {
+    const colonIdx = head.indexOf(':')
+    if (colonIdx >= 0) {
+      varName = head.slice(0, colonIdx).trim()
+      label = head.slice(colonIdx + 1).trim()
+    } else {
+      varName = head.trim()
+    }
+  } else if (head.startsWith(':')) {
+    label = head.slice(1).trim()
+  }
+  return { var: varName, label, props }
+}
+
+/**
+ * Parse a relationship pattern token — the text inside `[ ... ]` — into its
+ * variable name, type label, variable-length spec (`*`, `*min..max`) and
+ * property-map literal.  Examples:
+ *   ``        → { var: '', label: '', varLen: false, props: '' }
+ *   `:T`      → { var: '', label: 'T', varLen: false, props: '' }
+ *   `r:T`     → { var: 'r', label: 'T', varLen: false, props: '' }
+ *   `*`       → { var: '', label: '', varLen: true, props: '' }
+ *   `r:T {k}` → { var: 'r', label: 'T', varLen: false, props: '{k}' }
+ */
+function _parsePatternRelTok(inner: string): { var: string; label: string; varLen: boolean; props: string } {
+  const tok = inner.trim()
+  if (!tok) return { var: '', label: '', varLen: false, props: '' }
+  let varLen = false
+  const varLenMatch = tok.match(/\*[0-9.]*([0-9]+)?/)
+  if (tok.includes('*')) varLen = true
+  // Strip the length quantifier and property map first.
+  let rest = tok
+  const braceIdx = rest.indexOf('{')
+  let props = ''
+  if (braceIdx >= 0) { props = rest.slice(braceIdx); rest = rest.slice(0, braceIdx).trim() }
+  rest = rest.replace(/\*[^\s]*/, '').trim()
+  let varName = ''
+  let label = ''
+  if (rest.startsWith(':')) {
+    label = rest.slice(1).trim()
+  } else if (rest) {
+    const colonIdx = rest.indexOf(':')
+    if (colonIdx >= 0) {
+      varName = rest.slice(0, colonIdx).trim()
+      label = rest.slice(colonIdx + 1).trim()
+    } else {
+      varName = rest.trim()
+    }
+  }
+  return { var: varName, label, varLen, props }
+}
+
+/** Find the index of the top-level `|` separator (depth 0 across ()[]{}). */
+function _findPipeSep(s: string): number {
+  let depth = 0
+  let inStr = false
+  let strChar = ''
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (inStr) {
+      if (c === '\\') { i++; continue }
+      if (c === strChar) inStr = false
+      continue
+    }
+    if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+    if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ')' || c === ']' || c === '}') depth--
+    else if (c === '|' && depth === 0) return i
+  }
+  return -1
+}
+
+/**
+ * Enumerate the relationships incident to a node (both outgoing and incoming)
+ * across the full `allNodes` array.  Returns one entry per relationship with
+ * the source index, target index and direction relative to the queried node.
+ */
+function _incidentEdges(allNodes: any[], nodeIdx: number): Array<{ srcIdx: number; dstIdx: number; label: string; props: any; dir: 'out' | 'in' }> {
+  const out: Array<{ srcIdx: number; dstIdx: number; label: string; props: any; dir: 'out' | 'in' }> = []
+  // Deduplicate by (srcIdx, dstIdx, label).  The executor may store the same
+  // logical relationship once per endpoint (e.g. an outgoing A→B edge recorded
+  // on both A.__edges and B.__edges), and a graph traversal must not enumerate
+  // the same relationship twice.  Without this guard a variable-length pattern
+  // comprehension over such data returns duplicate paths.
+  const seen = new Set<string>()
+  for (let ni = 0; ni < allNodes.length; ni++) {
+    const edges = (allNodes[ni] as any)?.__edges
+    if (!Array.isArray(edges)) continue
+    for (const e of edges) {
+      const srcIdx = typeof e.srcIdx === 'number' ? e.srcIdx : -1
+      const dstIdx = typeof e.dstIdx === 'number' ? e.dstIdx : -1
+      let dir: 'out' | 'in'
+      if (srcIdx === nodeIdx) dir = 'out'
+      else if (dstIdx === nodeIdx) dir = 'in'
+      else continue
+      const key = `${srcIdx}|${dstIdx}|${e.label || ''}|${dir}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ srcIdx, dstIdx, label: e.label || '', props: e.props ?? {}, dir })
+    }
+  }
+  return out
+}
+
+/**
+ * Enumerate every simple path (no repeated node) of length ≥ 1 departing from
+ * `srcIdx`, honoring a step direction and an optional relationship label.  Used
+ * by variable-length pattern comprehensions (`[p = (a)-[*..]->(b) | p]`).
+ * Returns arrays of `{ nodeIdx, edge }` steps where `nodeIdx` is the node
+ * reached and `edge` records the relationship traversed (with its `_dir`).
+ */
+function _walkVarLenPaths(
+  allNodes: any[],
+  srcIdx: number,
+  dir: 'out' | 'in' | 'any',
+  relLabel: string,
+  maxSteps: number,
+): Array<Array<{ nodeIdx: number; edge: { srcIdx: number; dstIdx: number; label: string; props: any; dir: 'out' | 'in' } }>> {
+  const paths: Array<Array<{ nodeIdx: number; edge: any }>> = []
+  // BFS frontier: each entry is the sequence of steps taken so far.
+  const queue: Array<{ at: number; steps: Array<{ nodeIdx: number; edge: any }> }> = [{ at: srcIdx, steps: [] }]
+  while (queue.length) {
+    const { at, steps } = queue.shift()!
+    if (steps.length >= maxSteps) continue
+    // Hop-count upper bound guards against pathological graphs; variable-length
+    // matches over real TCK graphs stay far below this.
+    const visited = new Set<number>([srcIdx, ...steps.map(s => s.nodeIdx)])
+    for (const e of _incidentEdges(allNodes, at)) {
+      if (dir === 'out' && e.dir !== 'out') continue
+      if (dir === 'in' && e.dir !== 'in') continue
+      if (relLabel && e.label !== relLabel) continue
+      const nextIdx = e.dir === 'out' ? e.dstIdx : e.srcIdx
+      if (nextIdx < 0 || nextIdx >= allNodes.length) continue
+      if (visited.has(nextIdx)) continue
+      const nextSteps = [...steps, { nodeIdx: nextIdx, edge: { ...e, _dir: e.dir } }]
+      paths.push(nextSteps)
+      queue.push({ at: nextIdx, steps: nextSteps })
+    }
+  }
+  return paths
+}
+
+/**
+ * Evaluate a pattern comprehension `[ <pathVar> = <pattern> | <expr> ]`.
+ *
+ * Semantics (per openCypher): enumerate every relationship matched by the
+ * pattern anchored at the row-scoped source node and collect the projection
+ * expression for each match.  A leading `p =` binds the resulting path object
+ * to `p`; node/relationship variables introduced by the pattern are bound for
+ * the projection expression as well.
+ */
+function _evalPatternComprehension(inner: string, row?: Record<string, unknown>): ExprValue | null {
+  const pipeIdx = _findPipeSep(inner)
+  if (pipeIdx < 0) return null
+  let patternText = inner.slice(0, pipeIdx).trim()
+  const projExpr = inner.slice(pipeIdx + 1).trim()
+
+  // Optional path variable: `p = (n)-->()`
+  let pathVar = ''
+  const eqMatch = patternText.match(/^([A-Za-z_]\w*)\s*=\s*(.+)$/s)
+  if (eqMatch) { pathVar = eqMatch[1]; patternText = eqMatch[2].trim() }
+
+  // Parse a single-step pattern: `(src) [dir] [rel] [dir] (tgt)`.
+  // Direction forms: `-->`, `<--`, `--`, `-`, possibly with a relationship
+  // bracket `[...]` in between.  We scan characters to be robust against every
+  // arrow spelling.
+  const srcM = patternText.match(/^\(([^)]*)\)/)
+  if (!srcM) return null
+  const srcTok = _parsePatternNodeTok(srcM[1])
+  let rest = patternText.slice(srcM[0].length)
+
+  // Extract the relationship bracket if present: the first `[ ... ]`.
+  let relTok = { var: '', label: '', varLen: false, props: '' }
+  if (rest.includes('[')) {
+    const rbOpen = rest.indexOf('[')
+    const rbClose = rest.indexOf(']')
+    if (rbClose > rbOpen) {
+      relTok = _parsePatternRelTok(rest.slice(rbOpen + 1, rbClose))
+      rest = rest.slice(rbClose + 1)
+    }
+  }
+  // After the relationship, capture the trailing `(tgt)` and the arrows around
+  // it.  The remaining text looks like `-->(:B)` / `->()` / `-(b)` etc.
+  const tgtM = rest.match(/\(([^)]*)\)\s*$/)
+  if (!tgtM) return null
+  const tgtTok = _parsePatternNodeTok(tgtM[1])
+  const arrowText = rest.slice(0, tgtM.index ?? rest.length).trim()
+  // arrowText is one of: `-->`, `->`, `<--`, `<-`, `--`, `-`, `` (with `[]`).
+  const hasIn = arrowText.includes('<')
+  const hasOut = arrowText.includes('>')
+  let dir: 'out' | 'in' | 'any' = 'any'
+  if (hasOut && !hasIn) dir = 'out'
+  else if (hasIn && !hasOut) dir = 'in'
+  else dir = 'any'
+
+  // Resolve the source node.
+  const srcNodeInRow = row?.[srcTok.var]
+  if (!srcNodeInRow || typeof srcNodeInRow !== 'object') return null
+  const allNodes = _getActivePatternNodes()
+  if (!allNodes || !allNodes.length) return null
+  const srcAlias = (srcNodeInRow as any)?._alias
+  let srcIdx = allNodes.findIndex((n: any) => n?._alias !== undefined && srcAlias !== undefined && n._alias === srcAlias)
+  if (srcIdx < 0) {
+    // Fallback for anonymous nodes (no `_alias`): match by label + property
+    // fingerprint, excluding the volatile `__edges` array.
+    const fingerprint = (n: any): string => {
+      const label = n?._label ?? n?.props?._label ?? ''
+      const keys = Object.keys(n || {}).filter(k => k !== '__edges' && k !== '_alias' && k !== 'props' && !k.startsWith('__')).sort()
+      return label + '|' + keys.map(k => `${k}=${JSON.stringify(n[k])}`).join('|')
+    }
+    const fp = fingerprint(srcNodeInRow)
+    srcIdx = allNodes.findIndex((n: any) => fingerprint(n) === fp)
+  }
+  if (srcIdx < 0) return []  // unknown source: no matches (not an error)
+  const srcAllNode = allNodes[srcIdx] as any
+
+  // Build a lightweight node value for binding/projection: preserve the label
+  // and every user property, excluding internal fields.
+  const toNodeVal = (allNode: any): Record<string, unknown> => {
+    const node: Record<string, unknown> = {}
+    const lbl = allNode?.__fullLabel || allNode?._label
+    if (lbl && lbl !== 'Default') node._label = lbl
+    if (allNode?._alias !== undefined) node._alias = allNode._alias
+    for (const k of Object.keys(allNode || {})) {
+      if (k === '__edges' || k === '_alias' || k === '__fullLabel' || k === '_label' || k === 'props' || k.startsWith('__')) continue
+      node[k] = (allNode as any)[k]
+    }
+    return node
+  }
+  const toEdgeVal = (label: string, props: any): Record<string, unknown> => {
+    const edge: Record<string, unknown> = {}
+    if (label) edge._type = label
+    for (const k of Object.keys(props || {})) edge[k] = props[k]
+    return edge
+  }
+
+  const matches: Array<{ path: any; extraCtx: Record<string, unknown> }> = []
+  const srcVal = toNodeVal(srcAllNode)
+
+  // Helper: test whether a candidate endpoint node satisfies the target node
+  // predicate (label and, when bound to a row variable, identity).
+  const tgtMatches = (candNode: any): boolean => {
+    if (tgtTok.label) {
+      const tLabel = candNode?.__fullLabel || candNode?._label
+      const clean = (tLabel && tLabel !== 'Default' ? String(tLabel) : '').replace(/^:/, '').split(':')
+      if (!clean.includes(tgtTok.label.replace(/^:/, ''))) return false
+    }
+    if (tgtTok.var && row && tgtTok.var in row) {
+      const boundNode = row[tgtTok.var] as any
+      const boundAlias = boundNode?._alias
+      if (boundAlias !== undefined && candNode?._alias !== boundAlias) return false
+    }
+    return true
+  }
+
+    if (relTok.varLen) {
+    // Variable-length pattern: enumerate every simple path (length ≥ 1) from
+    // the source and keep those whose endpoint matches the target predicate.
+    const maxSteps = Math.max(allNodes.length, 1)
+    const paths = _walkVarLenPaths(allNodes, srcIdx, dir, relTok.label, maxSteps)
+    for (const steps of paths) {
+      const last = steps[steps.length - 1]
+      const endNode = allNodes[last.nodeIdx] as any
+      if (!tgtMatches(endNode)) continue
+
+      const nodeVals = [srcVal, ...steps.map(s => toNodeVal(allNodes[s.nodeIdx]))]
+      const edgeVals = steps.map(s => {
+        const ev = toEdgeVal(s.edge.label, s.edge.props)
+        ;(ev as any)._dir = s.edge.dir === 'out' ? 'out' : 'in'
+        return ev
+      })
+      const path = { __path: nodeVals, __pathEdges: edgeVals }
+      const endVal = toNodeVal(endNode)
+
+      const extraCtx: Record<string, unknown> = {}
+      if (pathVar) extraCtx[pathVar] = path
+      if (tgtTok.var && !(tgtTok.var in (row || {}))) extraCtx[tgtTok.var] = endVal
+      if (relTok.var) extraCtx[relTok.var] = edgeVals
+      matches.push({ path, extraCtx })
+    }
+  } else {
+    const edges = _incidentEdges(allNodes, srcIdx)
+    for (const e of edges) {
+      // Direction filter.
+      if (dir === 'out' && e.dir !== 'out') continue
+      if (dir === 'in' && e.dir !== 'in') continue
+      // Relationship label filter.
+      if (relTok.label && e.label !== relTok.label) continue
+
+      // Target node = the endpoint on the other side of the source.
+      const otherIdx = e.dir === 'out' ? e.dstIdx : e.srcIdx
+      if (otherIdx < 0 || otherIdx >= allNodes.length) continue
+      const otherNode = allNodes[otherIdx] as any
+
+      if (!tgtMatches(otherNode)) continue
+
+      const tgtVal = toNodeVal(otherNode)
+      const edgeVal = toEdgeVal(e.label, e.props)
+      // Path object ordering reflects traversal direction: for an incoming edge
+      // the source node is still the anchor, and the edge points back from the
+      // neighbouring node.  `__path` holds [anchor, neighbour]; the direction is
+      // carried by the edge so the renderer can emit `<x-[:T]->y>` vs `<x<-[:T]-y>`.
+      const path = { __path: [srcVal, tgtVal], __pathEdges: [edgeVal] }
+      // Encode direction on the edge value so the renderer can orient the arrow.
+      // Use a single-underscore key (`_dir`) so `_deepStripInternal` (which strips
+      // `_alias` and `__`-prefixed keys) preserves it through result shaping.
+      ;(edgeVal as any)._dir = e.dir === 'out' ? 'out' : 'in'
+
+      const extraCtx: Record<string, unknown> = {}
+      if (pathVar) extraCtx[pathVar] = path
+      if (tgtTok.var && !(tgtTok.var in (row || {}))) extraCtx[tgtTok.var] = tgtVal
+      if (relTok.var) extraCtx[relTok.var] = edgeVal
+      matches.push({ path, extraCtx })
+    }
+  }
+
+  const result: unknown[] = []
+  for (const match of matches) {
+    const evalCtx: Record<string, unknown> = { ...(row || {}), ...match.extraCtx }
+    result.push(_evaluateExpression(projExpr, evalCtx))
+  }
+  return result
+}
+
 export function _evalLiteral(s: string, row?: Record<string, unknown>): ExprValue {
   const v = s.trim()
   if (v === 'null') return null
@@ -4123,11 +4476,32 @@ export function _evalLiteral(s: string, row?: Record<string, unknown>): ExprValu
       }
       return result
     }
-    // Pattern comprehension: [ (src)-[r:TYPE]->(tgt) | expr ]  or  [ (src)-->() | expr ]
+    // Pattern comprehension: [p = (n)-->() | p]  or  [(n)-[:T]->(b) | b.name]
     // Enumerate every relationship matched by the pattern and return the list
-    // of expression results (one per match).  The source node is resolved from
-    // the current row; its `__edges` list holds its outgoing relationships (in
-    // the allNodes seed shape each node carries its own outgoing edges).
+    // of expression results (one per match).  Detection is structural: after
+    // stripping an optional `var =` prefix, the left side of the top-level `|`
+    // must contain a node-to-node pattern fragment `( ... ) ... ( ... )` where
+    // the middle is either an arrow or a relationship bracket.
+    const _looksLikePc = (s: string): boolean => {
+      const pipeIdx = _findPipeSep(s)
+      if (pipeIdx < 0) return false
+      let left = s.slice(0, pipeIdx).trim()
+      left = left.replace(/^([A-Za-z_]\w*)\s*=\s*/, '')  // drop `p = `
+      // Must start with a node, end with a node, and connect them with a
+      // relationship / arrow in between.
+      if (!left.startsWith('(')) return false
+      const lastClose = left.lastIndexOf(')')
+      if (lastClose < 0) return false
+      const between = left.slice(left.indexOf(')') + 1, lastClose).trim()
+      // `between` should be non-empty and contain a relationship bracket or a
+      // dash (arrow).  Guard against plain `(a)(b)` (two adjacent nodes).
+      return between.length > 0 && (/\[.*\]/.test(between) || between.includes('-') || between.includes('<') || between.includes('>'))
+    }
+    if (_looksLikePc(inner)) {
+      const pcResult = _evalPatternComprehension(inner, row)
+      if (pcResult !== null) return pcResult
+    }
+    // Legacy single-step pattern comprehension fallback (kept for compatibility).
     const PC_RE = /^\s*\((\w+)(?::[\w]+)?\)\s*(?:<-|-)\s*(?:\[:?([\w]+)\]|\[([\w]+)\])?\s*(?:->|-)\s*(?:\((\w+)(?::[\w]+)?\)|\(\))\s*\|\s*(.+)\s*$/s
     const pcMatch = inner.match(PC_RE)
     if (pcMatch) {
@@ -4506,6 +4880,10 @@ export function _detectMissingCommas(expr: string): boolean {
 export function _isPureLiteralExpr(s: string): boolean {
   // List comprehensions: [var IN list | expr] are not pure literals
   if (s.startsWith('[') && /\sIN\s/.test(s) && /\|/.test(s)) return false
+  // Pattern comprehensions: [p = (n)-->() | expr] or [(n)-[:T]->(m) | expr]
+  // produce a list of paths/values and are not plain list literals — the
+  // embedded `(a)-[...]->(b)` pattern must not be scanned as list items.
+  if (s.startsWith('[') && /\s*\(\w*(?::\w+)?\)\s*(?:<-\s*\[[^\]]*\]\s*-|-\s*\[[^\]]*\]\s*(?:->|-)|-\s*->|--)/.test(s)) return false
   let depth = 0, inStr = false, strChar = ''
   for (let i = 0; i < s.length; i++) {
     if (inStr) { if (s[i] === '\\') { i++; continue }; if (s[i] === strChar) inStr = false; continue }
