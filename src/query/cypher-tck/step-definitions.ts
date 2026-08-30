@@ -297,7 +297,7 @@ function toNodeNotation(val: unknown): string | undefined {
   const label = labels.join(':')
   const props: Record<string, unknown> = {}
   for (const k of Object.keys(obj)) {
-    if (k === '_label' || k === '__fullLabel' || k === '__edges' || k === 'props' || k.startsWith('_all')) continue
+    if (k === '_label' || k === '__fullLabel' || k === '__edges' || k === 'props' || k === '_alias' || k.startsWith('_all') || k.startsWith('__')) continue
     if (typeof obj[k] !== 'function') props[k] = obj[k]
   }
   const propKeys = Object.keys(props)

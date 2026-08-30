@@ -2198,6 +2198,22 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (_aggField != null && _aggField !== '*' && /[\[\(]/.test(String(_aggField))) {
             delete planForGe.aggregate
           }
+          // When the WITH clause mixes a pattern-comprehension (or arbitrary
+          // expression) column with an aggregate (e.g. `WITH [p=(n)-->()|p] AS ps,
+          // count(b) AS c`), GE cannot evaluate the comprehension column nor
+          // group by it, so it collapses everything into a single global `count`.
+          // Drop the aggregate so QE's post-aggregation path groups over the raw
+          // matched rows and evaluates both columns itself.
+          const _withHasComprehensionCol = (planForGe.with?.columns || []).some((c: any) => {
+            const expr = c?.expression
+            return expr && (
+              (typeof expr === 'string' && /[\[\(]/.test(expr)) ||
+              (expr.type === 'LIST' && (expr.items || []).some((it: any) => it?.type === 'STRING' && String(it.value).includes('|')))
+            )
+          })
+          if (_withHasComprehensionCol && planForGe.aggregate != null) {
+            delete planForGe.aggregate
+          }
           // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
           delete planForGe.skip; delete planForGe.limit
           const __t5PlanForGeKeys = Object.keys(planForGe)
@@ -3820,7 +3836,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── 聚合处理 ──
-    if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length) {
+    // When the WITH clause mixes a pattern-comprehension column with an
+    // aggregate (e.g. `WITH [p=(n)-->()|p] AS ps, count(b) AS c`), the GE path
+    // already produced correctly-grouped rows (each carrying both the
+    // comprehension column and the per-group count).  Re-running the global
+    // `count` here would collapse those grouped rows into a single wrong row,
+    // so skip this aggregation pass in that case.
+    const _withHasComprehensionCol = (plan.with?.columns || []).some((wc: any) => {
+      const expr = wc?.expression
+      return expr && (
+        (typeof expr === 'string' && /[\[\(]/.test(expr) && expr.includes('|')) ||
+        (expr.type === 'LIST' && (expr.items || []).some((it: any) => it?.type === 'STRING' && String(it.value).includes('|')))
+      )
+    })
+    if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length && !_withHasComprehensionCol) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
       // percentileDisc/percentileCont are computed inside the graph engine's

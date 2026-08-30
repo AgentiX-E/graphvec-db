@@ -12,11 +12,13 @@ import {
   _extractAggColumns,
   _hasAggregates,
   _executeAggregation,
-  _executeQuery,
   _enrichWithAggregates,
-  parseQuery,
   QueryRow,
   AggColumnInfo,
+} from './expression-engine'
+import {
+  _executeQuery,
+  parseQuery,
 } from './query-engine'
 
 // ── _parseAggregate ──

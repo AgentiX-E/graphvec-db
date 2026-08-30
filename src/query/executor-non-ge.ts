@@ -392,7 +392,7 @@ export async function _execNonGePaths(
   const _startsWithWith = !!query && /^\s*(?:WITH|UNWIND)\b/is.test(query)
   if (!_hasSecondMatchAfterWith && (
       (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) ||
-      (plan.hasMatch && plan.aggregate && (plan.unwind || plan.with)) ||
+      (plan.hasMatch && plan.aggregate && (plan.unwind || plan.with) && !(plan.steps?.length > 0)) ||
       (_startsWithWith && plan.hasMatch && plan.unwind && plan.with && !plan.aggregate) ||
       (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && (plan.unwind || plan.with)))) {
     const result = _executeWithUnwindPipeline(plan, nodes, query)
