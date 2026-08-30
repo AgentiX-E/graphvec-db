@@ -330,80 +330,80 @@ describe('_executeQuery — Standalone query execution with aggregation', () => 
   }
 
   // a. COUNT(*) over 10 nodes → returns 10
-  it('a. COUNT(*) via RETURN aggregate', () => {
+  it('a. COUNT(*) via RETURN aggregate', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) RETURN count(n)')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
-    expect(result[0].count).toBe(10)
+    expect(result[0]['count(n)']).toBe(10)
   })
 
   // b. COUNT(name) over 10 nodes → returns 10
-  it('b. COUNT(name) via RETURN', () => {
+  it('b. COUNT(name) via RETURN', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) RETURN count(n.name)')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
-    expect(result[0].count).toBe(10)
+    expect(result[0]['count(n.name)']).toBe(10)
   })
 
   // c. SUM(age) over nodes
-  it('c. SUM(age) via RETURN', () => {
+  it('c. SUM(age) via RETURN', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) RETURN sum(n.age)')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
     // ages: 30+25+35+28+32+27+40+22+38+33 = 310
-    expect(result[0].sum).toBe(310)
+    expect(result[0]['sum(n.age)']).toBe(310)
   })
 
   // d. AVG(age) over nodes
-  it('d. AVG(age) via RETURN', () => {
+  it('d. AVG(age) via RETURN', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) RETURN avg(n.age)')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
     // avg = 310/10 = 31
-    expect(result[0].avg).toBe(31)
+    expect(result[0]['avg(n.age)']).toBe(31)
   })
 
   // e. MIN(age) and MAX(age)
-  it('e. MIN(age) via RETURN', () => {
+  it('e. MIN(age) via RETURN', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) RETURN min(n.age)')
-    const result = _executeQuery(plan, nodes)
-    expect(result[0].min).toBe(22)
+    const result = await _executeQuery(plan, nodes)
+    expect(result[0]['min(n.age)']).toBe(22)
   })
 
-  it('e2. MAX(age) via RETURN', () => {
+  it('e2. MAX(age) via RETURN', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) RETURN max(n.age)')
-    const result = _executeQuery(plan, nodes)
-    expect(result[0].max).toBe(40)
+    const result = await _executeQuery(plan, nodes)
+    expect(result[0]['max(n.age)']).toBe(40)
   })
 
   // f. COUNT with alias
-  it('f. COUNT(n) AS cnt via RETURN', () => {
+  it('f. COUNT(n) AS cnt via RETURN', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) RETURN count(n) AS cnt')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result[0].cnt).toBe(10)
   })
 
   // g. WITH aggregation: WITH count(*) AS cnt RETURN cnt
-  it('g. WITH count(*) AS cnt', () => {
+  it('g. WITH count(*) AS cnt', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) WITH count(*) AS cnt RETURN cnt')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
     expect(result[0].cnt).toBe(10)
   })
 
   // h. WITH aggregation + filter (HAVING equivalent)
-  it('h. WITH count(*) AS cnt WHERE cnt > 1', () => {
+  it('h. WITH count(*) AS cnt WHERE cnt > 1', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) WITH count(*) AS cnt WHERE cnt > 1 RETURN cnt')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
     expect(result[0].cnt).toBe(10)
   })
@@ -427,28 +427,28 @@ describe('_executeQuery — Standalone query execution with aggregation', () => 
   })
 
   // i. WITH ORDER BY aggregated value
-  it('i. WITH count(*) AS cnt ORDER BY cnt', () => {
+  it('i. WITH count(*) AS cnt ORDER BY cnt', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) WITH count(*) AS cnt ORDER BY cnt RETURN cnt')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
     expect(result[0].cnt).toBe(10)
   })
 
   // j. Empty set: COUNT on no nodes
-  it('j. Empty set: COUNT on empty → 0', () => {
+  it('j. Empty set: COUNT on empty → 0', async () => {
     const nodes: Array<Record<string, unknown>> = []
     const plan = parseQuery('MATCH (n) WHERE n.age > 200 RETURN count(n)')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
-    expect(result[0].count).toBe(0)
+    expect(result[0]['count(n)']).toBe(0)
   })
 
   // k. Mixed aggregation with non-aggregate — group by node
-  it('k. WITH n, count(*) AS cnt RETURN n, cnt — group by n', () => {
+  it('k. WITH n, count(*) AS cnt RETURN n, cnt — group by n', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) WITH n, count(*) AS cnt RETURN n, cnt')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     // Each node gets count 1 (each is unique by identity)
     expect(result.length).toBe(10)
     // Since we project by column name, cnt should be 1 for each
@@ -458,65 +458,65 @@ describe('_executeQuery — Standalone query execution with aggregation', () => 
   })
 
   // l. WITH aggregation where cnt > 0 with ORDER BY and LIMIT
-  it('l. WITH count(*) AS cnt ORDER BY cnt DESC LIMIT 5', () => {
+  it('l. WITH count(*) AS cnt ORDER BY cnt DESC LIMIT 5', async () => {
     const nodes = createNodes()
     const plan = parseQuery('MATCH (n) WITH count(*) AS cnt ORDER BY cnt DESC LIMIT 5 RETURN cnt')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
     expect(result[0].cnt).toBe(10)
   })
 
   // m. SUM on filtered nodes (WHERE on MATCH)
-  it('m. SUM on age > 30', () => {
+  it('m. SUM on age > 30', async () => {
     const nodes = createNodes()
     // Ages > 30: 35(Charlie), 32(Eve), 40(Grace), 38(Ivy), 33(Jack) = 178
     const plan = parseQuery('MATCH (n) WHERE n.age > 30 RETURN sum(n.age)')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
-    expect(result[0].sum).toBe(178)
+    expect(result[0]['sum(n.age)']).toBe(178)
   })
 
   // n. COUNT(DISTINCT name) via WITH
-  it('n. COUNT(DISTINCT name) via WITH', () => {
+  it('n. COUNT(DISTINCT name) via WITH', async () => {
     const nodes = createNodesWithNames()
     const plan = parseQuery('MATCH (n) WITH count(DISTINCT n.name) AS unique_names RETURN unique_names')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
     expect(result[0].unique_names).toBe(5) // X, Y, Z, W, V
   })
 
   // o. AVG with WHERE filter
-  it('o. AVG with WHERE filter', () => {
+  it('o. AVG with WHERE filter', async () => {
     const nodes = createNodes()
     // Ages > 30: 35, 32, 40, 38, 33 → avg = 178/5 = 35.6
     const plan = parseQuery('MATCH (n) WHERE n.age > 30 RETURN avg(n.age)')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(1)
-    expect(result[0].avg).toBe(35.6)
+    expect(result[0]['avg(n.age)']).toBe(35.6)
   })
 
   // p. Complex: MATCH + OPTIONAL MATCH + WITH aggregation + ORDER BY + LIMIT
-  it('p. Complex query with aggregation', () => {
+  it('p. Complex query with aggregation', async () => {
     const nodes = createNodes()
     // MATCH (n) WITH n, count(*) AS friends ORDER BY friends DESC LIMIT 5 RETURN n, friends
     // Each node is unique, so count per node = 1
     const plan = parseQuery('MATCH (n) WITH n, count(*) AS friends ORDER BY friends DESC LIMIT 5 RETURN n, friends')
-    const result = _executeQuery(plan, nodes)
+    const result = await _executeQuery(plan, nodes)
     expect(result.length).toBe(5) // LIMIT 5
     expect(result[0].friends).toBe(1) // each node has count=1
   })
 
   // q. Verify all 10 nodes pass through with count on distinct name vs total count
-  it('q. COUNT vs COUNT(DISTINCT name) comparison', () => {
+  it('q. COUNT vs COUNT(DISTINCT name) comparison', async () => {
     const nodes = createNodesWithNames()
     // WITH count(*) AS total, count(DISTINCT n.name) AS unique RETURN total, unique
     // This won't work in the simplified parser, so test via individual queries
     const planTotal = parseQuery('MATCH (n) RETURN count(n)')
-    const resultTotal = _executeQuery(planTotal, nodes)
-    expect(resultTotal[0].count).toBe(10)
+    const resultTotal = await _executeQuery(planTotal, nodes)
+    expect(resultTotal[0]['count(n)']).toBe(10)
 
     const planUnique = parseQuery('MATCH (n) WITH count(DISTINCT n.name) AS unique_names RETURN unique_names')
-    const resultUnique = _executeQuery(planUnique, nodes)
+    const resultUnique = await _executeQuery(planUnique, nodes)
     expect(resultUnique[0].unique_names).toBe(5)
   })
 })
@@ -650,7 +650,7 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
   // These tests import and use graph-engine through the query function
   // Using _executeQuery for standalone execution that mocks graph engine behavior
 
-  it('a. GROUP BY single key with COUNT', () => {
+  it('a. GROUP BY single key with COUNT', async () => {
     const rows: QueryRow[] = [
       { name: 'Alice', dept: 'Engineering' },
       { name: 'Bob', dept: 'Engineering' },
@@ -660,7 +660,7 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
     ]
     const plan = parseQuery('MATCH (n) RETURN n.dept, count(*) AS cnt GROUP BY n.dept')
     // Simulate: scan matches all rows
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     expect(result.length).toBe(2) // Engineering + Sales
 
     const engRow = result.find(r => r.dept === 'Engineering')
@@ -672,7 +672,7 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
     expect(salesRow!.cnt).toBe(2)
   })
 
-  it('b. GROUP BY with SUM', () => {
+  it('b. GROUP BY with SUM', async () => {
     const rows: QueryRow[] = [
       { name: 'Alice', dept: 'Engineering', age: 30 },
       { name: 'Bob', dept: 'Engineering', age: 25 },
@@ -681,7 +681,7 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
       { name: 'Eve', dept: 'Engineering', age: 40 },
     ]
     const plan = parseQuery('MATCH (n) RETURN n.dept, sum(n.age) AS total_age GROUP BY n.dept')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     expect(result.length).toBe(2)
 
     const engRow = result.find(r => r.dept === 'Engineering')
@@ -693,7 +693,7 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
     expect(salesRow!.total_age).toBe(63) // 35 + 28
   })
 
-  it('c. GROUP BY with AVG', () => {
+  it('c. GROUP BY with AVG', async () => {
     const rows: QueryRow[] = [
       { name: 'Alice', dept: 'Engineering', age: 30 },
       { name: 'Bob', dept: 'Engineering', age: 20 },
@@ -701,7 +701,7 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
       { name: 'Diana', dept: 'Sales', age: 60 },
     ]
     const plan = parseQuery('MATCH (n) RETURN n.dept, avg(n.age) AS avg_age GROUP BY n.dept')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     expect(result.length).toBe(2)
 
     const engRow = result.find(r => r.dept === 'Engineering')
@@ -713,7 +713,7 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
     expect(salesRow!.avg_age).toBe(50) // avg(40, 60)
   })
 
-  it('d. GROUP BY with MIN and MAX', () => {
+  it('d. GROUP BY with MIN and MAX', async () => {
     const rows: QueryRow[] = [
       { name: 'Alice', dept: 'Engineering', age: 30 },
       { name: 'Bob', dept: 'Engineering', age: 20 },
@@ -722,19 +722,19 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
     ]
 
     const planMin = parseQuery('MATCH (n) RETURN n.dept, min(n.age) AS min_age GROUP BY n.dept')
-    const resultMin = _executeQuery(planMin, rows)
+    const resultMin = await _executeQuery(planMin, rows)
     expect(resultMin.length).toBe(2)
     expect(resultMin.find(r => r.dept === 'Engineering')!.min_age).toBe(20)
     expect(resultMin.find(r => r.dept === 'Sales')!.min_age).toBe(40)
 
     const planMax = parseQuery('MATCH (n) RETURN n.dept, max(n.age) AS max_age GROUP BY n.dept')
-    const resultMax = _executeQuery(planMax, rows)
+    const resultMax = await _executeQuery(planMax, rows)
     expect(resultMax.length).toBe(2)
     expect(resultMax.find(r => r.dept === 'Engineering')!.max_age).toBe(30)
     expect(resultMax.find(r => r.dept === 'Sales')!.max_age).toBe(60)
   })
 
-  it('e. GROUP BY with WHERE filter (pre-aggregation)', () => {
+  it('e. GROUP BY with WHERE filter (pre-aggregation)', async () => {
     const rows: QueryRow[] = [
       { name: 'Alice', dept: 'Engineering', age: 30 },
       { name: 'Bob', dept: 'Engineering', age: 25 },
@@ -744,7 +744,7 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
     ]
     // WHERE age > 28 → Alice(30), Charlie(35), Eve(45) → Engineering: 2, Sales: 1
     const plan = parseQuery('MATCH (n) WHERE n.age > 28 RETURN n.dept, count(*) AS cnt GROUP BY n.dept')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     expect(result.length).toBe(2)
 
     const engRow = result.find(r => r.dept === 'Engineering')
@@ -756,10 +756,10 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
     expect(salesRow!.cnt).toBe(1)
   })
 
-  it('f. Empty result set with GROUP BY', () => {
+  it('f. Empty result set with GROUP BY', async () => {
     const rows: QueryRow[] = []
     const plan = parseQuery('MATCH (n) RETURN n.dept, count(*) AS cnt GROUP BY n.dept')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     // Empty with GROUP BY → empty array (no groups to form)
     expect(result.length).toBe(0)
   })
@@ -769,37 +769,37 @@ describe('GROUP BY — Execution (via graph-engine)', () => {
 
 describe('Aggregate with bare identifier — execution', () => {
 
-  it('a. COUNT on bare node ref returns total count', () => {
+  it('a. COUNT on bare node ref returns total count', async () => {
     const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ id: i, name: `Node_${i}` }))
     const plan = parseQuery('MATCH (n) RETURN count(n)')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     expect(result.length).toBe(1)
-    expect(result[0].count).toBe(10)
+    expect(result[0]['count(n)']).toBe(10)
   })
 
-  it('b. SUM with WHERE filter', () => {
+  it('b. SUM with WHERE filter', async () => {
     const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ age: i + 1 }))
     const plan = parseQuery('MATCH (n) WHERE n.age > 5 RETURN sum(n.age)')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     // ages > 5: 6+7+8+9+10 = 40
-    expect(result[0].sum).toBe(40)
+    expect(result[0]['sum(n.age)']).toBe(40)
   })
 
-  it('c. AVG with WHERE filter', () => {
+  it('c. AVG with WHERE filter', async () => {
     const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ age: (i + 1) * 10 }))
     // ages: 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
     const plan = parseQuery('MATCH (n) WHERE n.age > 50 RETURN avg(n.age)')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     // ages > 50: 60, 70, 80, 90, 100 → avg = 80
-    expect(result[0].avg).toBe(80)
+    expect(result[0]['avg(n.age)']).toBe(80)
   })
 
-  it('d. Empty set with bare aggregate', () => {
+  it('d. Empty set with bare aggregate', async () => {
     const rows: QueryRow[] = []
     const plan = parseQuery('MATCH (n) WHERE n.age > 200 RETURN count(n)')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     expect(result.length).toBe(1)
-    expect(result[0].count).toBe(0)
+    expect(result[0]['count(n)']).toBe(0)
   })
 })
 
@@ -807,10 +807,10 @@ describe('Aggregate with bare identifier — execution', () => {
 
 describe('ORDER BY with aggregate', () => {
 
-  it('a. RETURN aggregate ORDER BY aggregate alias', () => {
+  it('a. RETURN aggregate ORDER BY aggregate alias', async () => {
     const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ id: i }))
     const plan = parseQuery('MATCH (n) RETURN count(n) AS cnt ORDER BY cnt')
-    const result = _executeQuery(plan, rows)
+    const result = await _executeQuery(plan, rows)
     expect(result.length).toBe(1)
     expect(result[0].cnt).toBe(10)
   })

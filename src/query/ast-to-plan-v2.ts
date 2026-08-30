@@ -2251,6 +2251,31 @@ function extractWith(withCtx: any): QueryPlan['with'] {
   }
 
   walk(withCtx)
+
+  // Detect an aggregate call in the WITH projections (e.g.
+  // `WITH count(*) AS cnt`) and surface it as `with.aggregate` so the graph
+  // engine's `_executeWithClause` folds the rows instead of treating the call
+  // as a scalar projection over each row (which would yield count=1).
+  if (!aggregate) {
+    for (const col of columns) {
+      const expr = (col.expression || '').trim()
+      // Skip pure identifiers and list comprehensions.
+      if (!expr || !/^[a-zA-Z_]\w*\s*\(/.test(expr)) continue
+      if (expr.startsWith('[') && expr.includes('IN') && expr.includes('|')) continue
+      const m = expr.match(/^(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(\s*(.*?)\s*\)$/i)
+      if (m) {
+        aggregate = {
+          function: m[1].toLowerCase(),
+          type: m[1].toLowerCase(),
+          column: expr,
+          alias: col.alias || undefined,
+          field: m[2] || '*',
+        }
+        break
+      }
+    }
+  }
+
   return { columns, filters, orderBy, limit, skip, aggregate }
 }
 

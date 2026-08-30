@@ -390,9 +390,17 @@ export async function _execNonGePaths(
   // 而非以 MATCH 开头。以 MATCH 开头的 `MATCH ... WITH collect(a) ... UNWIND ...` 是
   // 聚合投影，必须走 GE，不能误入 unwind 管道。
   const _startsWithWith = !!query && /^\s*(?:WITH|UNWIND)\b/is.test(query)
+  // A scalar aggregate in WITH (count/sum/avg/max/min — NOT collect) is now
+  // folded by the graph engine's `_executeWithClause` (which reads
+  // `with.aggregate`, populated by `extractWith`).  Only `collect(...)` list
+  // projections (which GE's WITH handling cannot evaluate) must stay on the
+  // unwind pipeline.  Routing a `WITH count(*) AS cnt` to the pipeline here
+  // collapses it to count=1, so exclude the scalar-aggregate case.
+  const _withScalarAggOnly = !!(plan.with?.columns?.length && plan.with.columns.every((wc: any) =>
+    typeof wc?.expression === 'string' && /^\s*(count|sum|avg|max|min)\s*\(/i.test(wc.expression)))
   if (!_hasSecondMatchAfterWith && (
       (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) ||
-      (plan.hasMatch && plan.aggregate && (plan.unwind || plan.with) && !(plan.steps?.length > 0)) ||
+      (plan.hasMatch && plan.aggregate && (plan.unwind || plan.with) && !(plan.steps?.length > 0) && !_withScalarAggOnly) ||
       (_startsWithWith && plan.hasMatch && plan.unwind && plan.with && !plan.aggregate) ||
       (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && (plan.unwind || plan.with)))) {
     const result = _executeWithUnwindPipeline(plan, nodes, query)

@@ -1355,10 +1355,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 只匹配作为 SQL 关键字的 OR（列名如 ordinalDay 不触发）
     const _isQueryOrKeyword = (q: string): boolean => /\bOR\b/i.test(q)
     const hasOR = query ? _isQueryOrKeyword(query) : false
-    const geCapableOps = new Set(['EQ', 'NEQ', 'IN', 'STARTS_WITH', 'ENDS_WITH', 'CONTAINS', 'IS_NULL', 'IS_NOT_NULL'])
+    // GE 的 `_matchFilter`（graph-engine.ts）已实现 GT/GTE/LT/LTE 数值比较，
+    // 因此这些运算符无需下放给 QE 二次补偿——尤其是在聚合路径：若保留在
+    // geUnsupportedOps，GE 会在未过滤时先聚合，产生的单行结果丢掉了节点属性，
+    // 后续 QE 二次过滤（line 2244）便无法再按 `age > 30` 过滤，导致 sum/count 错误。
+    const geCapableOps = new Set(['EQ', 'NEQ', 'IN', 'STARTS_WITH', 'ENDS_WITH', 'CONTAINS', 'IS_NULL', 'IS_NOT_NULL', 'GT', 'GTE', 'LT', 'LTE'])
     const geFilters = (plan.filters || []).filter(f => !(edgeFilters as any[]).includes(f))
-    // 从 GE filter 中移除 GE 不支持的运算符，由 query-engine 在后处理中补偿
-    const geUnsupportedOps = new Set(['GT', 'GTE', 'LT', 'LTE'])
+    // 从 GE filter 中移除 GE 仍然不支持的运算符，由 query-engine 在后处理中补偿
+    const geUnsupportedOps = new Set<string>([])
     const queryEngineFilters = geFilters.filter(f => geUnsupportedOps.has(f.operator))
     const geFiltered = geFilters.filter(f => !geUnsupportedOps.has(f.operator))
 
@@ -3890,7 +3894,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const field = colMatch ? colMatch[1] : (agg.field || '*')
 
       const aggRow: QueryRow = {}
-      if (aggFn === 'count') {
+      // The graph engine already folded the aggregate into a single synthetic
+      // node when `plan.aggregate` reached it (see graph-engine.ts
+      // `_execAggregation`).  Detect that case — a lone GE row whose `props`
+      // carries the aggregate value under the function/alias key — and surface
+      // it directly under the canonical result alias instead of recomputing
+      // (which would wrongly read `result.length` as 1).
+      const _geAggKey = agg.alias && agg.alias !== agg.function ? agg.alias : (agg.function || agg.type || 'count')
+      const _geAggRow = (rawWithEdges?.length === 1 && rawWithEdges[0]?.props && typeof rawWithEdges[0].props === 'object' && _geAggKey in rawWithEdges[0].props)
+        ? rawWithEdges[0].props[_geAggKey]
+        : undefined
+      if (_geAggRow !== undefined && !(aggFn === 'percentiledisc' || aggFn === 'percentilecont')) {
+        aggRow[aggAlias] = _geAggRow
+      } else if (aggFn === 'count') {
         if (field === '*') {
           aggRow[aggAlias] = result.length
         } else {
@@ -4624,7 +4640,7 @@ export async function _executeQuery(
   // 当 plan.aggregate 和 plan.groupBy 都存在时，对原始 nodes 做分组聚合
   if ((plan as any).groupBy?.length && (plan as any).aggregate) {
     const groupByCols = (plan as any).groupBy as string[]
-    const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string }
+    const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string; alias?: string }
     const exprs = (plan as any).expressionColumns as Array<{expression:string;alias:string}> | undefined
     
     if (exprs) {
@@ -4679,19 +4695,24 @@ export async function _executeQuery(
         const aggField = agg.field === '*' || agg.field == null
           ? null
           : agg.field.includes('.') ? agg.field.split('.').pop()! : agg.field
+        // Resolution key for the aggregated value: use the explicit `AS` alias
+        // (`agg.alias`) when present; otherwise surface the full column text
+        // (e.g. `count(*)`) to match the RETURN column, mirroring the non-grouped
+        // aggregate path's `aggAlias` precedence.
+        const aggKey = agg.alias || agg.column
         if (agg.function === 'count') {
-          row[agg.column] = aggField === null ? groupRows.length : groupRows.filter(n => (n as any)[aggField!] != null).length
+          row[aggKey] = aggField === null ? groupRows.length : groupRows.filter(n => (n as any)[aggField!] != null).length
         } else if (agg.function === 'sum') {
-          row[agg.column] = groupRows.reduce((acc, n) => acc + (Number((n as any)[aggField!]) || 0), 0)
+          row[aggKey] = groupRows.reduce((acc, n) => acc + (Number((n as any)[aggField!]) || 0), 0)
         } else if (agg.function === 'avg') {
           const sum = groupRows.reduce((acc, n) => acc + (Number((n as any)[aggField!]) || 0), 0)
-          row[agg.column] = sum / groupRows.length
+          row[aggKey] = sum / groupRows.length
         } else if (agg.function === 'min') {
-          row[agg.column] = Math.min(...groupRows.map(n => Number((n as any)[aggField!]) || 0))
+          row[aggKey] = Math.min(...groupRows.map(n => Number((n as any)[aggField!]) || 0))
         } else if (agg.function === 'max') {
-          row[agg.column] = Math.max(...groupRows.map(n => Number((n as any)[aggField!]) || 0))
+          row[aggKey] = Math.max(...groupRows.map(n => Number((n as any)[aggField!]) || 0))
         } else {
-          row[agg.column] = groupRows.length
+          row[aggKey] = groupRows.length
         }
         result.push(row)
       }
