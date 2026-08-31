@@ -201,6 +201,7 @@ interface ParsedReturn {
   limit: number | undefined
   skip: number | undefined
   aggregate: AggregateClause | undefined
+  aggregates: AggregateClause[] | undefined
 }
 
 interface ParsedClause {
@@ -1014,6 +1015,27 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           if (alias) agg.alias = alias
           plan.aggregate = agg
 
+          // Mirror the full aggregate list (multi-aggregate RETURN) by mapping
+          // each parsed aggregate through the same DISTINCT/field/alias
+          // splitting so `plan.aggregates` carries complete clauses for
+          // `RETURN collect(DISTINCT a.x) AS a, collect(DISTINCT b.x) AS b`.
+          if (ret.aggregates && ret.aggregates.length > 1) {
+            plan.aggregates = ret.aggregates.map((a: any) => {
+              const col = a.column || ''
+              const am = col.match(/AS\s+(\w+)$/i)
+              const fm = col.match(/^\w+\(\s*(DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
+              const clause: any = {
+                function: a.function,
+                column: col,
+                type: a.function,
+                field: fm ? fm[2] : undefined,
+                distinct: fm ? !!fm[1] : false,
+              }
+              if (am) clause.alias = am[1]
+              return clause
+            })
+          }
+
           // Implicit GROUP BY: `RETURN n.name, sum(n.num)` groups by the
           // non-aggregate column `n.name`.  ANTLR only sets plan.groupBy for an
           // explicit `GROUP BY` clause (see the post-processing pass below), so
@@ -1739,6 +1761,7 @@ function extractReturn(returnCtx: any): ParsedReturn {
   let limit: number | undefined
   let skip: number | undefined
   let aggregate: AggregateClause | undefined
+  let aggregates: AggregateClause[] | undefined
 
   function walk(node: any) {
     if (!node || !node.children) return
@@ -1754,11 +1777,20 @@ function extractReturn(returnCtx: any): ParsedReturn {
         columns.push({ expression: text, alias: null })
       }
 
-      // Check for aggregation
-      if (!aggregate && /\b(count|sum|avg|max|min|collect)\s*\(/i.test(text)) {
+      // Check for aggregation — collect every aggregate call, not just the
+      // first, so `RETURN collect(DISTINCT a.x) AS a, collect(DISTINCT b.x) AS b`
+      // yields two aggregate clauses.  Note percentileDisc/percentileCont are
+      // deliberately EXCLUDED here: they carry a two-argument form whose value
+      // may be a prior WITH column (not a node property), which the graph
+      // engine's aggregation path cannot resolve — they stay on the expression
+      // path that raises NumberOutOfRange/ArgumentError correctly.
+      if (/\b(count|sum|avg|max|min|collect)\s*\(/i.test(text)) {
         const fnMatch = text.match(/^\s*(count|sum|avg|max|min|collect)\s*\(/i)
         if (fnMatch) {
-          aggregate = { function: fnMatch[1].toLowerCase(), column: text, distinct: false }
+          const aggClause: AggregateClause = { function: fnMatch[1].toLowerCase(), column: text, distinct: false }
+          if (!aggregate) aggregate = aggClause
+          if (!aggregates) aggregates = []
+          aggregates.push(aggClause)
         }
       }
       return
@@ -1798,7 +1830,7 @@ function extractReturn(returnCtx: any): ParsedReturn {
   }
 
   walk(returnCtx)
-  return { columns, orderBy, limit, skip, aggregate }
+  return { columns, orderBy, limit, skip, aggregate, aggregates }
 }
 
 // ═══════════════════════════════════════════════════════════════

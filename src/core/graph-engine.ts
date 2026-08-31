@@ -2254,11 +2254,19 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     const _pctText = _pctComma >= 0 ? rawField.slice(_pctComma + 1).trim() : ''
     const propName = _valField.includes('.') ? _valField.split('.')[1] : _valField
 
-    let value: number
+    let value: unknown
 
     switch (agg.type) {
       case 'count':
-        value = this._aggregateCount(nodes, propName, agg.distinct === true)
+        // Pass the *full* value expression (e.g. `a.name`) so `_aggregateCount`
+        // can distinguish a property reference (`.name` → count non-null values,
+        // yielding 0 when the property is absent) from a bare variable reference
+        // (`n` → count nodes).  Stripping the `var.` prefix here to `name` would
+        // collapse that distinction and wrongly fall back to the node count.
+        value = this._aggregateCount(nodes, _valField, agg.distinct === true)
+        break
+      case 'collect':
+        value = this._aggregateCollect(nodes, _valField, agg.distinct === true)
         break
       case 'sum':
         value = this._aggregateSum(nodes, propName)
@@ -2297,7 +2305,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    */
   private _execGroupByAggregation(
     nodes: NodeRecord[],
-    agg: { type: string; field?: string; alias?: string },
+    agg: { type: string; field?: string; alias?: string; distinct?: boolean },
     groupBy: string[],
   ): NodeRecord[] {
     // 按 GROUP BY 列分组
@@ -2318,11 +2326,17 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     const results: NodeRecord[] = []
     let idx = 0
     for (const [key, groupNodes] of groups.entries()) {
-      let aggValue: number
+      let aggValue: unknown
 
       switch (agg.type) {
         case 'count':
-          aggValue = this._aggregateCount(groupNodes, propName)
+          // Preserve the full value expression so a property reference
+          // (`a.name`) is counted as non-null values (0 when absent) rather
+          // than falling back to the node count.
+          aggValue = this._aggregateCount(groupNodes, rawField, agg.distinct === true)
+          break
+        case 'collect':
+          aggValue = this._aggregateCollect(groupNodes, rawField, agg.distinct === true)
           break
         case 'sum':
           aggValue = this._aggregateSum(groupNodes, propName)
@@ -2361,6 +2375,34 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     }
 
     return results
+  }
+
+  /** Collect the non-null values of `field` across `nodes` into an array.
+   *  `collect(x)` filters out null/undefined so a null binding (`OPTIONAL MATCH`
+   *  that matched nothing) contributes nothing, yielding `[]` for an empty or
+   *  all-null group.  When `distinct` is set, duplicates are removed. */
+  private _aggregateCollect(nodes: NodeRecord[], field?: string, distinct = false): unknown[] {
+    const values: unknown[] = []
+    const seen = new Set<unknown>()
+    for (const n of nodes) {
+      let val: unknown
+      if (!field || field === '*' || field === '') {
+        // collect(*) — collect whole node records (identity)
+        val = n
+      } else if (field.includes('.')) {
+        const propName = field.split('.')[1]
+        val = n.props?.[propName]
+      } else {
+        val = n.props?.[field]
+      }
+      if (val === null || val === undefined) continue
+      if (distinct) {
+        if (seen.has(val)) continue
+        seen.add(val)
+      }
+      values.push(val)
+    }
+    return values
   }
 
   /** 对节点数组计数 */

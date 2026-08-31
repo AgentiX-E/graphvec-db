@@ -755,6 +755,7 @@ function _parseQueryImpl(query: string): QueryPlan {
   if (!plan.aggregate) {
     const AGG_FNS = new Set(['count','sum','avg','max','min','collect','stdev','stdevp','percentilecont','percentiledisc'])
     const columns = plan.with?.columns?.length ? plan.with.columns : (plan.expressionColumns?.length ? plan.expressionColumns : [])
+    const aggregated: any[] = []
     for (const col of columns) {
       const expr = typeof col.expression === 'string' ? col.expression : (col.expression?.expression || '')
       // Exclude list comprehensions: [x IN ... | expr]
@@ -767,7 +768,7 @@ function _parseQueryImpl(query: string): QueryPlan {
         // expression (including the percentile scalar argument) in `field` — the
         // graph engine splits `percentileCont(x, 0.5)` itself.
         const distinctMatch = (expr as string).match(/^\w+\(\s*(DISTINCT\s+)?(.+?)\s*\)$/i)
-        plan.aggregate = {
+        const aggClause = {
           function: aggMatch[1].toLowerCase(),
           column: expr,
           type: aggMatch[1].toLowerCase(),
@@ -775,27 +776,31 @@ function _parseQueryImpl(query: string): QueryPlan {
           field: distinctMatch ? distinctMatch[2] : aggMatch[2],
           distinct: distinctMatch ? !!distinctMatch[1] : undefined,
         }
-        // Implicit GROUP BY: in `RETURN a.name, count(*)` the non-aggregate
-        // column `a.name` is an implicit grouping key.  ANTLR only sets
-        // plan.groupBy for an explicit `GROUP BY` clause, so harvest the
-        // remaining non-aggregate columns here (only when no explicit GROUP BY
-        // was parsed — i.e. plan.groupBy is still unset).  Each key is stripped
-        // of its `var.` prefix to match the explicit-GROUP-BY shape (`name`).
-        if (!plan.groupBy) {
-          const implicitKeys: string[] = []
-          for (const c of columns) {
-            const cExpr = typeof c.expression === 'string' ? c.expression : (c.expression?.expression || '')
-            if (!cExpr) continue
-            // Skip the aggregate column itself and any other aggregate call.
-            if (_parseAggregate(cExpr)) continue
-            // Skip list comprehensions (not a scalar grouping key).
-            if (cExpr.startsWith('[') && cExpr.includes('IN') && cExpr.includes('|')) continue
-            const key = cExpr.includes('.') ? cExpr.split('.').pop()! : cExpr
-            if (key && !implicitKeys.includes(key)) implicitKeys.push(key)
-          }
-          if (implicitKeys.length) plan.groupBy = implicitKeys
+        aggregated.push(aggClause)
+      }
+    }
+    if (aggregated.length) {
+      plan.aggregate = aggregated[0]
+      plan.aggregates = aggregated
+      // Implicit GROUP BY: in `RETURN a.name, count(*)` the non-aggregate
+      // column `a.name` is an implicit grouping key.  ANTLR only sets
+      // plan.groupBy for an explicit `GROUP BY` clause, so harvest the
+      // remaining non-aggregate columns here (only when no explicit GROUP BY
+      // was parsed — i.e. plan.groupBy is still unset).  Each key is stripped
+      // of its `var.` prefix to match the explicit-GROUP-BY shape (`name`).
+      if (!plan.groupBy) {
+        const implicitKeys: string[] = []
+        for (const c of columns) {
+          const cExpr = typeof c.expression === 'string' ? c.expression : (c.expression?.expression || '')
+          if (!cExpr) continue
+          // Skip the aggregate column itself and any other aggregate call.
+          if (_parseAggregate(cExpr)) continue
+          // Skip list comprehensions (not a scalar grouping key).
+          if (cExpr.startsWith('[') && cExpr.includes('IN') && cExpr.includes('|')) continue
+          const key = cExpr.includes('.') ? cExpr.split('.').pop()! : cExpr
+          if (key && !implicitKeys.includes(key)) implicitKeys.push(key)
         }
-        break
+        if (implicitKeys.length) plan.groupBy = implicitKeys
       }
     }
   }

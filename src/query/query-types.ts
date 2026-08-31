@@ -251,6 +251,10 @@ export interface QueryPlan {
   hasMatch?: boolean
   /** 聚合子句（如 count, sum, avg, max, min） */
   aggregate?: AggregateClause
+  /** All aggregate clauses (supports multiple aggregates in a single RETURN,
+   *  e.g. `RETURN agg1(...), agg2(...)`).  Consistent with `aggregate`: for a
+   *  single aggregate both are equivalent; for several, `aggregate` holds the first. */
+  aggregates?: AggregateClause[]
   /** GROUP BY 列 */
   groupBy?: string[]
   /** HAVING 过滤器 */

@@ -2202,6 +2202,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (_aggField != null && _aggField !== '*' && /[\[\(]/.test(String(_aggField))) {
             delete planForGe.aggregate
           }
+          // OPTIONAL MATCH binds variables (possibly null) that the graph
+          // engine's aggregation path never sees — GE runs before the optional
+          // match is resolved, so a `collect(x)` over an OPTIONAL MATCH target
+          // would read `x` off the source node's props and collapse to the wrong
+          // value.  Drop the aggregate so QE's post-aggregation path folds the
+          // aggregate over the OPTIONAL MATCH-expanded rows instead.
+          if (planForGe.optionalMatchSteps?.length && planForGe.aggregate != null) {
+            delete planForGe.aggregate
+          }
           // When the WITH clause mixes a pattern-comprehension (or arbitrary
           // expression) column with an aggregate (e.g. `WITH [p=(n)-->()|p] AS ps,
           // count(b) AS c`), GE cannot evaluate the comprehension column nor
@@ -2220,13 +2229,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
           delete planForGe.skip; delete planForGe.limit
-          const __t5PlanForGeKeys = Object.keys(planForGe)
-          const __t5PlanForGeFilters = JSON.stringify((planForGe.filters || []).map((f: any) => f.property))
-          const __t5PlanForGeEC = (planForGe.expressionColumns || []).length
-          const __t5PlanForGeReturn = (planForGe.returnColumns || []).length
-          const __t5PlanForGeWith = planForGe.with ? 'Y' : 'N'
-          const __t5RawRecords = _geExecQueryPlan(ge, planForGe)
-          return __t5RawRecords
+          return _geExecQueryPlan(ge, planForGe)
         })()
     // Fallback: useEdgeWalk=false 且 hasMatch 时，从 GE 获取全部节点
     // Note: 当 GE 的标签扫描返回空（标签不匹配）时，不可回退到全量扫描，
@@ -3957,6 +3960,32 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // Unreachable: percentile is short-circuited above because the graph
         // engine already computed it.  Kept as a defensive no-op guard.
         aggRow[aggAlias] = result[0]?.[aggAlias] ?? 0
+      } else if (aggFn === 'collect') {
+        // collect(value) — fold every non-null `value` across the expanded rows
+        // into a list (deduplicated when DISTINCT).  `result` here is the set of
+        // OPTIONAL MATCH-expanded rows, so `collect(f.num)` over three `f`
+        // bindings yields `[42, 43, 44]` and over an all-null binding yields `[]`.
+        const collected: unknown[] = []
+        const seen = new Set<unknown>()
+        for (const r of result) {
+          let v: unknown
+          if (field === '*' || field === '') {
+            v = r
+          } else if (field.includes('.')) {
+            const [varName, propName] = field.split('.')
+            const obj = r[varName]
+            v = (obj && typeof obj === 'object') ? (obj as any)[propName] : undefined
+          } else {
+            v = r[field]
+          }
+          if (v === null || v === undefined) continue
+          if (agg.distinct === true) {
+            if (seen.has(v)) continue
+            seen.add(v)
+          }
+          collected.push(v)
+        }
+        aggRow[aggAlias] = collected
       } else {
         // sum/avg/min/max
         const values = result
@@ -4104,6 +4133,44 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     if (plan.optionalMatchSteps?.length && result.length) {
       for (const opt of plan.optionalMatchSteps) {
         const optSteps = opt.steps || []
+        // OPTIONAL MATCH on a bare single-node pattern (no relationship steps),
+        // e.g. `OPTIONAL MATCH (f:DoesExist)`.  Each matching node must expand
+        // the current rows into one row per node (so a later `collect(f.num)`
+        // folds over every f), rather than binding only the first match.  When
+        // there is no match the variable becomes null on the existing row.
+        const _singleNodeOptional =
+          optSteps.length === 0 && !opt.variableName.startsWith('__') && (opt.scanLabel != null)
+        if (_singleNodeOptional) {
+          const _mkProps = (n: any): Record<string, unknown> => {
+            const p: Record<string, unknown> = {}
+            if (!n) return p
+            for (const k of Object.keys(n)) {
+              if (k !== '__edges' && !k.startsWith('_')) p[k] = n[k]
+            }
+            if (n._label) p._label = n._label
+            return p
+          }
+          const matches = (opt.scanLabel == null)
+            ? allNodes
+            : allNodes.filter(n => (n as any)._label === opt.scanLabel)
+          const expanded: Array<Record<string, unknown>> = []
+          for (const row of result) {
+            if (matches.length === 0) {
+              const r2: Record<string, unknown> = { ...row }
+              r2[opt.variableName] = null
+              expanded.push(r2)
+            } else {
+              for (const m of matches) {
+                const r2: Record<string, unknown> = { ...row }
+                r2[opt.variableName] = _mkProps(m as any)
+                expanded.push(r2)
+              }
+            }
+          }
+          result.length = 0
+          result.push(...expanded)
+          continue
+        }
         for (let ri = 0; ri < result.length; ri++) {
           const row = result[ri]
           // 解析 source 变量对应的 allNodes 索引
@@ -4278,7 +4345,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // OPTIONAL MATCH 后处理：OPTIONAL MATCH 设置的变量可能改变了 RETURN 表达式的求值结果。
     // 重新计算受影响的列。
     if (plan.optionalMatchSteps?.length && result.length) {
-      const optMatchVarNames = new Set(plan.optionalMatchSteps.map(om => om.variableName).filter(Boolean))
+      // Collect EVERY variable an OPTIONAL MATCH binds — not just `variableName`
+      // (which holds the pattern's starting node, e.g. `n` in
+      // `OPTIONAL MATCH (n)-[:R]->(x)`).  The target (and any intermediate hop)
+      // lives in the step's `targetAlias`/`source`, and an aggregate such as
+      // `collect(x)` references the TARGET variable `x`, so it must be included
+      // here or the re-evaluation below silently skips the column.
+      const optMatchVarNames = new Set<string>()
+      for (const om of plan.optionalMatchSteps) {
+        if (om.variableName) optMatchVarNames.add(om.variableName)
+        for (const st of om.steps || []) {
+          if (st.targetAlias) optMatchVarNames.add(st.targetAlias)
+          if (st.edgeAlias) optMatchVarNames.add(st.edgeAlias)
+        }
+      }
       if (optMatchVarNames.size && plan.expressionColumns?.length) {
         const aliasToExpr: Record<string, string> = {}
         for (const ec of plan.expressionColumns) {
@@ -4311,6 +4391,66 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
       }
+    }
+
+    // ── Multi-aggregate fold (after OPTIONAL MATCH expansion) ──
+    // A query with several aggregates and no GROUP BY whose variables come from
+    // OPTIONAL MATCH (e.g. `OPTIONAL MATCH (f:X) OPTIONAL MATCH (n:Y) RETURN
+    // collect(DISTINCT n.num) AS a, collect(DISTINCT f.num) AS b`) has, by this
+    // point, been expanded into one row per OPTIONAL MATCH binding.  Collapse
+    // those rows into a single row, evaluating every aggregate across the full
+    // row set (null/undefined excluded; DISTINCT deduplicates) — this is the
+    // cross-row fold that a single-row expression eval above cannot provide.
+    if ((plan.aggregates?.length ?? 0) > 1 && !plan.groupBy?.length &&
+        plan.optionalMatchSteps?.length && result.length > 0) {
+      const foldRow: QueryRow = {}
+      for (const agg of plan.aggregates as any[]) {
+        const aggFn = (agg.function || agg.type || '').toLowerCase()
+        const aggAlias = (agg.alias && agg.alias !== agg.function)
+          ? agg.alias
+          : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c')
+        const colMatch = (agg.column || '').match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
+        const field = colMatch ? colMatch[1] : (agg.field || '*')
+        const readVal = (r: QueryRow): unknown => {
+          if (field === '*' || field === '') return r
+          if (field.includes('.')) {
+            const [vn, pn] = field.split('.')
+            const obj = r[vn]
+            return (obj && typeof obj === 'object') ? (obj as any)[pn] : undefined
+          }
+          return r[field]
+        }
+        if (aggFn === 'collect') {
+          const collected: unknown[] = []
+          const seen = new Set<unknown>()
+          for (const r of result) {
+            const v = readVal(r)
+            if (v === null || v === undefined) continue
+            if (agg.distinct === true) { if (seen.has(v)) continue; seen.add(v) }
+            collected.push(v)
+          }
+          foldRow[aggAlias] = collected
+        } else if (aggFn === 'count') {
+          foldRow[aggAlias] = result.filter(r => {
+            const v = readVal(r)
+            return v !== null && v !== undefined
+          }).length
+        } else {
+          const values = result.map(readVal)
+            .filter((v: unknown) => v !== null && v !== undefined)
+            .map(Number)
+            .filter((v: number) => !isNaN(v))
+          switch (aggFn) {
+            case 'sum': foldRow[aggAlias] = values.reduce((a: number, b: number) => a + b, 0); break
+            case 'avg': foldRow[aggAlias] = values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0; break
+            case 'max': foldRow[aggAlias] = values.length ? Math.max(...values) : 0; break
+            case 'min': foldRow[aggAlias] = values.length ? Math.min(...values) : 0; break
+            default: foldRow[aggAlias] = 0
+          }
+        }
+      }
+      result.length = 0
+      result.push(foldRow)
     }
 
     // ── type() 函数后处理 ──
@@ -4674,8 +4814,13 @@ export async function _executeQuery(
   const planCopy = JSON.parse(JSON.stringify(plan, _bigintReplacer), _bigintReviver) as QueryPlan
   const execQueryResult = await _executeViaGraphEngine(planCopy, nodes, query)
   // ── GROUP BY 聚合后处理 ──
-  // 当 plan.aggregate 和 plan.groupBy 都存在时，对原始 nodes 做分组聚合
-  if ((plan as any).groupBy?.length && (plan as any).aggregate) {
+  // When both plan.aggregate and plan.groupBy are present, group-aggregate the raw nodes.
+  // Exception: when the query carries an OPTIONAL MATCH, the graph-engine path
+  // has already folded the aggregate (via the OPTIONAL MATCH post-processing /
+  // expression re-evaluation in `_executeViaGraphEngine`), so re-grouping the
+  // raw `nodes` here would drop the OPTIONAL MATCH variables (e.g. `collect(x)`
+  // where `x` is null-only) and overwrite the correct result.
+  if ((plan as any).groupBy?.length && (plan as any).aggregate && !plan.optionalMatchSteps?.length) {
     const groupByCols = (plan as any).groupBy as string[]
     const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string; alias?: string }
     const exprs = (plan as any).expressionColumns as Array<{expression:string;alias:string}> | undefined
@@ -4732,11 +4877,15 @@ export async function _executeQuery(
         const aggField = agg.field === '*' || agg.field == null
           ? null
           : agg.field.includes('.') ? agg.field.split('.').pop()! : agg.field
-        // Resolution key for the aggregated value: use the explicit `AS` alias
-        // (`agg.alias`) when present; otherwise surface the full column text
-        // (e.g. `count(*)`) to match the RETURN column, mirroring the non-grouped
-        // aggregate path's `aggAlias` precedence.
-        const aggKey = agg.alias || agg.column
+        // Resolution key for the aggregated value: surface the full column
+        // expression (e.g. `count(n.num)`) when there is no explicit `AS` alias.
+        // The parser stores `alias` as the bare function name ("count") in that
+        // case, so we must not use it directly — that would produce a `count`
+        // key the RETURN column (`count(n.num)`) never defines.  Mirror the
+        // non-grouped aggregate path's `_realAlias` precedence exactly.
+        const aggKey = (agg.alias && agg.alias !== agg.function)
+          ? agg.alias
+          : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c')
         if (agg.function === 'count') {
           row[aggKey] = aggField === null ? groupRows.length : groupRows.filter(n => (n as any)[aggField!] != null).length
         } else if (agg.function === 'sum') {
