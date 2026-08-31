@@ -999,11 +999,17 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           const aggColumn = ret.aggregate.column || ''
           const aliasMatch = aggColumn.match(/AS\s+(\w+)$/i)
           const alias = aliasMatch ? aliasMatch[1] : undefined
-          
+          // Split the DISTINCT modifier from the value expression so the graph
+          // engine resolves the property correctly and applies unique-count
+          // semantics (e.g. `count(DISTINCT n.name)` → field "n.name", distinct).
+          const fnFieldMatch = aggColumn.match(/^\w+\(\s*(DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
+
           const agg: any = {
             function: ret.aggregate.function,
             column: ret.aggregate.column,
             type: ret.aggregate.function,
+            field: fnFieldMatch ? fnFieldMatch[2] : undefined,
+            distinct: fnFieldMatch ? !!fnFieldMatch[1] : false,
           }
           if (alias) agg.alias = alias
           plan.aggregate = agg
@@ -2262,14 +2268,18 @@ function extractWith(withCtx: any): QueryPlan['with'] {
       // Skip pure identifiers and list comprehensions.
       if (!expr || !/^[a-zA-Z_]\w*\s*\(/.test(expr)) continue
       if (expr.startsWith('[') && expr.includes('IN') && expr.includes('|')) continue
-      const m = expr.match(/^(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(\s*(.*?)\s*\)$/i)
+      const m = expr.match(/^(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(\s*(DISTINCT\s+)?(.*?)\s*\)$/i)
       if (m) {
+        // Strip the DISTINCT modifier from the value expression and surface it as
+        // a boolean so the graph engine can apply unique-count semantics without
+        // mis-parsing `DISTINCT n.name` as a property path.
         aggregate = {
           function: m[1].toLowerCase(),
           type: m[1].toLowerCase(),
           column: expr,
           alias: col.alias || undefined,
-          field: m[2] || '*',
+          field: m[3] || '*',
+          distinct: !!m[2],
         }
         break
       }

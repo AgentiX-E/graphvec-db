@@ -1868,6 +1868,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       let value: number
       const aggField = withClause.aggregate!.field ?? '*'
       const aggType = (withClause.aggregate!.type || 'count').toLowerCase()
+      const aggDistinct = withClause.aggregate!.distinct === true
 
       if (aggField === '*') {
         value = rows.length
@@ -1875,10 +1876,20 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
         const propName = aggField.includes('.') ? aggField.split('.').pop()! : aggField
         switch (aggType) {
           case 'count':
-            value = rows.filter(r => {
-              const v = r.props?.[propName]
-              return v !== null && v !== undefined
-            }).length
+            if (aggDistinct) {
+              // COUNT(DISTINCT x): count unique non-null property values.
+              const seen = new Set<unknown>()
+              for (const r of rows) {
+                const v = r.props?.[propName]
+                if (v !== null && v !== undefined) seen.add(v)
+              }
+              value = seen.size
+            } else {
+              value = rows.filter(r => {
+                const v = r.props?.[propName]
+                return v !== null && v !== undefined
+              }).length
+            }
             break
           case 'sum':
             value = rows.reduce((sum, r) => sum + (Number(r.props?.[propName]) || 0), 0)
@@ -2224,7 +2235,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    */
   private _execAggregation(
     nodes: NodeRecord[],
-    agg: { type: string; field?: string; alias?: string },
+    agg: { type: string; field?: string; alias?: string; distinct?: boolean },
     groupBy?: string[],
   ): NodeRecord[] {
     // If any GROUP BY 列，执行分组聚合
@@ -2247,7 +2258,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
     switch (agg.type) {
       case 'count':
-        value = this._aggregateCount(nodes, propName)
+        value = this._aggregateCount(nodes, propName, agg.distinct === true)
         break
       case 'sum':
         value = this._aggregateSum(nodes, propName)
@@ -2353,14 +2364,26 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }
 
   /** 对节点数组计数 */
-  private _aggregateCount(nodes: NodeRecord[], field?: string): number {
+  private _aggregateCount(nodes: NodeRecord[], field?: string, distinct = false): number {
     if (!field || field === '' || field === '*') {
+      if (distinct) {
+        // COUNT(DISTINCT *) — count unique nodes (identity); fall back to total.
+        return nodes.length
+      }
       return nodes.length
     }
     // 若 field 包含 '.'（如 n.age），提取属性名后进行非 null 统计
     if (field.includes('.')) {
       const propName = field.split('.')[1]
       if (!propName) return nodes.length
+      if (distinct) {
+        const seen = new Set<unknown>()
+        for (const n of nodes) {
+          const val = n.props?.[propName]
+          if (val !== null && val !== undefined) seen.add(val)
+        }
+        return seen.size
+      }
       let count = 0
       for (const n of nodes) {
         const val = n.props?.[propName]
@@ -2377,6 +2400,15 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       }
     }
     if (hasProp) {
+      if (distinct) {
+        // COUNT(DISTINCT col) semantics: count distinct non-null values
+        const seen = new Set<unknown>()
+        for (const n of nodes) {
+          const val = n.props?.[field]
+          if (val !== null && val !== undefined) seen.add(val)
+        }
+        return seen.size
+      }
       // 按 COUNT(col) 语义：统计该属性非空的节点数
       let count = 0
       for (const n of nodes) {

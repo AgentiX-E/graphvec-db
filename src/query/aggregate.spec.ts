@@ -408,6 +408,25 @@ describe('_executeQuery — Standalone query execution with aggregation', () => 
     expect(result[0].cnt).toBe(10)
   })
 
+  // h. HAVING that actually filters (post-aggregation WHERE) — `cnt > 100`
+  // must drop the single aggregated row, not silently keep it.  This guards the
+  // distinction between MATCH-WHERE (pre-aggregation) and WITH-WHERE (HAVING,
+  // post-aggregation).
+  it('h. WITH count(*) AS cnt WHERE cnt > 100 filters out the row', async () => {
+    const nodes = createNodes()
+    const plan = parseQuery('MATCH (n) WITH count(*) AS cnt WHERE cnt > 100 RETURN cnt')
+    const result = await _executeQuery(plan, nodes)
+    expect(result.length).toBe(0)
+  })
+
+  it('h. WITH count(*) AS cnt WHERE cnt = 10 keeps the row', async () => {
+    const nodes = createNodes()
+    const plan = parseQuery('MATCH (n) WITH count(*) AS cnt WHERE cnt = 10 RETURN cnt')
+    const result = await _executeQuery(plan, nodes)
+    expect(result.length).toBe(1)
+    expect(result[0].cnt).toBe(10)
+  })
+
   it('h2. WHERE filter in WITH (parser limit — test via _executeAggregation)', () => {
     const rows: QueryRow[] = Array.from({ length: 10 }, (_, i) => ({ id: i, name: `Node_${i}` }))
     const aggCols: AggColumnInfo[] = [{ fn: 'COUNT', field: '*', prop: '*', distinct: false, alias: 'cnt' }]

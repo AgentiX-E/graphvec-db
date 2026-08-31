@@ -761,12 +761,19 @@ function _parseQueryImpl(query: string): QueryPlan {
       if ((expr as string).startsWith('[') && (expr as string).includes('IN') && (expr as string).includes('|')) continue
       const aggMatch = (expr as string).match(/^(\w+)\(\s*(.+?)\s*\)$/i)
       if (aggMatch && col.alias && AGG_FNS.has(aggMatch[1].toLowerCase())) {
+        // Strip the DISTINCT modifier from the value expression and surface it
+        // as a boolean so the graph engine applies unique-count semantics without
+        // mis-parsing `DISTINCT n.name` as a property path.  Keep the full value
+        // expression (including the percentile scalar argument) in `field` — the
+        // graph engine splits `percentileCont(x, 0.5)` itself.
+        const distinctMatch = (expr as string).match(/^\w+\(\s*(DISTINCT\s+)?(.+?)\s*\)$/i)
         plan.aggregate = {
           function: aggMatch[1].toLowerCase(),
           column: expr,
           type: aggMatch[1].toLowerCase(),
           alias: col.alias || '',
-          field: aggMatch[2],
+          field: distinctMatch ? distinctMatch[2] : aggMatch[2],
+          distinct: distinctMatch ? !!distinctMatch[1] : undefined,
         }
         // Implicit GROUP BY: in `RETURN a.name, count(*)` the non-aggregate
         // column `a.name` is an implicit grouping key.  ANTLR only sets

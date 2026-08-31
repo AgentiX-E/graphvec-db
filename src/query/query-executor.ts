@@ -2211,7 +2211,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const _withHasComprehensionCol = (planForGe.with?.columns || []).some((c: any) => {
             const expr = c?.expression
             return expr && (
-              (typeof expr === 'string' && /[\[\(]/.test(expr)) ||
+              (typeof expr === 'string' && /[\[\(]/.test(expr) && (expr as string).includes('|')) ||
               (expr.type === 'LIST' && (expr.items || []).some((it: any) => it?.type === 'STRING' && String(it.value).includes('|')))
             )
           })
@@ -3204,6 +3204,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 ? '[' + (wc.expression.items || []).map((i: any) => i.name ?? i.value ?? '').join(', ') + ']'
                 : null)
             if (!wcExpr) continue
+            // Skip aggregate columns (`count(...)`, `sum(...)`, etc.): the graph
+            // engine's `_execAggregation` already folded them into the synthetic
+            // result row.  Re-evaluating them here as a scalar expression would
+            // recompute `count(DISTINCT n.name)` against the collapsed row (which
+            // no longer carries the raw node properties) and overwrite the correct
+            // value with 0.
+            if (typeof wcExpr === 'string' && /^\s*(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(/i.test(wcExpr)) continue
             // Build varCtx from rawRow.  Do NOT exclude a key merely because it
             // equals the alias: in a shadowing pipeline (`WITH x AS y ... WITH
             // y % 3 AS y`) the alias reuses a prior projection whose OLD value
@@ -3599,7 +3606,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // GE 的 _matchFilter 只支持简单属性比较。对于包含 AND/OR/XOR/NOT/括号等复杂 boolean 逻辑，
     // 以及函数表达式（type(r)、labels()等），在 GE 执行后用 _evaluateExpression 做后过滤。
     // Note: 即使 plan.aggregate 存在，也必须先应用 WHERE 再聚合。
-    if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind)) {
+    // HAVING detection: a WHERE clause that filters an aggregate produced by a
+    // WITH clause (e.g. `WITH count(*) AS cnt WHERE cnt > 100`).  Such a filter
+    // must be applied *after* aggregation (see the HAVING block below), not here
+    // before it — the WHERE column (`cnt`) only exists once the aggregate is
+    // folded.  Applying it here against the pre-aggregation rows would see no
+    // `cnt` and drop every row, then the aggregation block would rebuild from
+    // `rawWithEdges`, silently restoring the un-filtered rows.
+    const _withAggCols = (plan.with?.columns || []).filter(c =>
+      typeof c?.expression === 'string' && /^\s*(count|sum|avg|max|min|collect)\s*\(/i.test(c.expression))
+    const _isHaving = !!(plan.aggregate && plan.with?.columns?.length && plan.whereBody && _withAggCols.length)
+    if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind) && !_isHaving) {
       // Fix GE Default labels on target nodes in __crossVarRows before WHERE eval.
       // GE sets _label='Default' on matched target nodes; restore from allNodes.
       const allN = nodes
@@ -3958,6 +3975,26 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       result.length = 0
       result.push(aggRow)
       }
+    }
+
+    // ── HAVING: post-aggregation WHERE filter ──
+    // A `WITH count(*) AS cnt WHERE cnt > 100` carries a WHERE clause that
+    // references the *aggregated* column (`cnt`), so it must be evaluated after
+    // the aggregate is folded.  This is the HAVING semantics that the pre-
+    // aggregation WHERE block above correctly skips (via `_isHaving`).
+    if (_isHaving && result.length) {
+      const _havingFiltered: QueryRow[] = []
+      for (const row of result) {
+        let keep = true
+        try {
+          keep = _evaluateExpression(plan.whereBody!, row) === true
+        } catch {
+          keep = false
+        }
+        if (keep) _havingFiltered.push(row)
+      }
+      result.length = 0
+      result.push(..._havingFiltered)
     }
 
     // If WHERE cleared everything but plan.filters exists, rebuild result from raw GE data
