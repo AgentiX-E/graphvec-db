@@ -5,6 +5,7 @@
  */
 
 import type { QueryPlan, QueryRow } from './query-types'
+import { _evaluateExpression } from './expression-engine'
 
 /**
  * 为 DML（CREATE）带 RETURN 构造结果行。
