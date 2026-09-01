@@ -4327,10 +4327,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (edgeVar) row[edgeVar] = null
             }
           } else if (optVarName && !sourceVar && !targetVar && !edgeVar) {
-            // 单节点模式：OPTIONAL MATCH (n) / (n:Label)
+            // Single-node pattern: OPTIONAL MATCH (n) / (n:Label).  Without a
+            // scanLabel the bare `(n)` binds the first existing node (any node),
+            // mirroring MATCH (n) but null when the graph is empty.
             const nodeProps = opt.scanLabel
               ? _mkNodeProps(allNodes.find(n => (n as any)._label === opt.scanLabel))
-              : null
+              : (allNodes.length ? _mkNodeProps(allNodes[0] as any) : null)
             row[optVarName] = nodeProps || null
           } else {
             // 找不到 source 或无步骤：同样只置空 optional target/edge，保留 source
