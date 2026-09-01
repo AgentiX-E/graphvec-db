@@ -192,7 +192,9 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
   const createEdgeVars: string[] = [...query.matchAll(/\[(\w+)\s*(?::|])/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v))
   const createNodeVars: string[] = [...query.matchAll(/(?:CREATE|MERGE)\s+(.*?)(?:\s+(?:SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\b|$)/gis)].flatMap(cm => {
     const clause = cm[1];
-    return [...clause.matchAll(/\((\w+)\s*(?::|\))/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v));
+    // `{` enables `(n {prop: val})` inline-property nodes; otherwise a bare
+    // `n` followed by a space + map is not recognized as a defined variable.
+    return [...clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)].map(m => m[1]).filter(v => v && !/^[\d]/.test(v));
   })
   // 提取 CALL YIELD 定义的变量
   const callYieldVars: string[] = [...query.matchAll(/YIELD\s+(.+?)(?:\s+(?:RETURN|WITH|WHERE|CALL)\s|$)/gis)].flatMap(ym => {

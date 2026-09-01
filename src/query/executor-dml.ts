@@ -105,6 +105,38 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
     const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
     if (aliasMap && rc in aliasMap) {
       const expr = aliasMap[rc]  // 原始表达式如 "n.name"
+      // Dynamic property access (n['nam' + 'e']) and parameterized lookup
+      // (n[$idx]) carry no `.` separator, so a naive prop-name split cannot
+      // resolve them. Route those (and any non-`n.prop` expression) through the
+      // expression engine with the created node's props in scope.
+      if (!expr.includes('.')) {
+        const varCtx: Record<string, unknown> = {}
+        for (const node of allNodes) {
+          const p = (node['props'] as Record<string, unknown>) || node
+          for (const [k, v] of Object.entries(p)) {
+            if (!k.startsWith('_')) varCtx[k] = v as unknown
+          }
+        }
+        // Bind each created node by alias too (n -> its props).
+        for (const cn of insertNodes) {
+          if (cn.alias) {
+            const clean: Record<string, unknown> = {}
+            if (cn.props) for (const [k, v] of Object.entries(cn.props)) {
+              clean[k] = (v && (v as any).value !== undefined) ? (v as any).value : v
+            }
+            if (cn.label) clean['_label'] = cn.label
+            varCtx[cn.alias] = clean
+          }
+        }
+        // Parameters ($idx) are resolved by the expression engine; inject them
+        // from plan.parameters if present.
+        const params = (plan as any).parameters || {}
+        for (const [k, v] of Object.entries(params)) varCtx[k] = v
+        try {
+          const dynVal = _evaluateExpression(expr, varCtx)
+          if (dynVal !== undefined && dynVal !== null) { row[rc] = dynVal; continue }
+        } catch (_e) { /* fall through to property split below */ }
+      }
       const propPart = expr.includes('.') ? expr.split('.').pop()! : expr
       // 遍历所有节点找 propPart
       let aliasVal: unknown = undefined
