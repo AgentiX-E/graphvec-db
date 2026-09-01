@@ -477,16 +477,51 @@ function normalizeCell(s: string): string {
   return s
 }
 
-function cmp(dt: DataTable, ordered = false): void {
+/** Normalize the element order of a rendered list cell like `['b', 'a', 'c']`
+ *  into a canonical sorted form for order-insensitive list comparison. */
+function _normalizeListCell(s: string): string {
+  const m = s.match(/^\[(.*)\]$/)
+  if (!m) return s
+  const inner = m[1].trim()
+  if (!inner) return s // empty list — nothing to sort
+  // Split on ", " but only at top level (commas inside quoted strings or
+  // nested brackets are handled by the simple heuristics below). For TCK list
+  // cells produced by `_stringifyVal`/`normalizeCell`, elements are separated
+  // by ", " and string elements are single-quoted.
+  const elems = inner.split(', ').map((e: string) => e.trim())
+  // Guard: if any element still contains an unbalanced quote or bracket, the
+  // split was ambiguous — fall back to the raw string rather than corrupt it.
+  const isAmbiguous = elems.some((e: string) => {
+    const quotes = (e.match(/'/g) || []).length
+    const open = (e.match(/\[/g) || []).length
+    const close = (e.match(/\]/g) || []).length
+    return quotes % 2 !== 0 || open !== close
+  })
+  if (isAmbiguous) return s
+  elems.sort()
+  return '[' + elems.join(', ') + ']'
+}
+
+function cmp(dt: DataTable, ordered = false, ignoreListOrder = false): void {
   if (st.err) throw st.err
   const rawExp = dt.hashes()
   const keys = Object.keys(rawExp[0] || {})
+  // When `ignoreListOrder` is set (TCK clause "ignoring element order for
+  // lists"), the order of list elements is insignificant and must be
+  // normalized before comparison — e.g. keys({name,age,address}) may legally
+  // return the keys in any order, so ['name','age','address'] and
+  // ['address','name','age'] must be treated as equal.
+  const normalizeListMaybe = (s: string): string => ignoreListOrder ? _normalizeListCell(s) : s
   const expected = rawExp.map(r => {
     const norm: Record<string, string> = {}
-    for (const k of keys) norm[k] = normalizeCell(String(r[k]))
+    for (const k of keys) norm[k] = normalizeListMaybe(normalizeCell(String(r[k])))
     return norm
   })
-  const actual = normalizeActual(st.res, keys)
+  const actual = normalizeActual(st.res, keys).map(r => {
+    const norm: Record<string, string> = {}
+    for (const k of keys) norm[k] = normalizeListMaybe(r[k])
+    return norm
+  })
   assert.strictEqual(actual.length, expected.length,
     `row count: expected ${expected.length}, got ${actual.length}\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(actual)}`)
   if (!expected.length) return
@@ -1483,7 +1518,7 @@ Then('the result should be empty', function () {
 
 Then(/^the result should be, in any order:\s*$/, function (dt: DataTable) { cmp(dt) })
 Then(/^the result should be, in order:\s*$/, function (dt: DataTable) { cmp(dt, true) })
-Then(/^the result should be \(ignoring element order for lists\):\s*$/, function (dt: DataTable) { cmp(dt) })
+Then(/^the result should be \(ignoring element order for lists\):\s*$/, function (dt: DataTable) { cmp(dt, false, true) })
 
 Then(/^the result should have (\d+) rows?$/, function (c: string) {
   if (st.err) throw st.err; assert.strictEqual(st.res.length, parseInt(c, 10))
