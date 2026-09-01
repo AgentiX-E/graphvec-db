@@ -501,19 +501,42 @@ async function _executeMultiMatchCrossJoin(
         const paths = _walkMultiSteps(si, pat.steps, allNodes, undefined, plan.filters, undefined)
         for (const path of paths) {
           const m: Record<string, unknown> = {}
+          // Resolve the relationship edge for each hop, keyed by step index, so
+          // both the path object (node0, edge0, node1, ...) and the per-step
+          // edge variables (r1, r2, ...) can be bound from a single traversal.
+          const hopEdges: Array<{ relEdge: any } | null> = []
+          for (let pi = 0; pi < path.length - 1; pi++) {
+            const a = allNodes[path[pi]] as any
+            const edges = (a?.__edges || []) as Array<{ srcIdx: number; dstIdx: number; label: string; props?: any }>
+            const relEdge = edges.find(ee => ee.dstIdx === path[pi + 1] || ee.srcIdx === path[pi + 1])
+            hopEdges.push(relEdge ? { relEdge } : null)
+          }
           if (pathVar) {
             // Build __path array: node0, edge0, node1, ...
             const pathObjs: unknown[] = []
             for (let pi = 0; pi < path.length; pi++) {
               pathObjs.push(allNodes[path[pi]] || {})
               if (pi < path.length - 1) {
-                const a = allNodes[path[pi]] as any
-                const edges = (a?.__edges || []) as Array<{ srcIdx: number; dstIdx: number; label: string; props?: any }>
-                const relEdge = edges.find(ee => ee.dstIdx === path[pi + 1] || ee.srcIdx === path[pi + 1])
-                pathObjs.push(relEdge || { _label: '', label: '' })
+                pathObjs.push(hopEdges[pi]?.relEdge || { _label: '', label: '' })
               }
             }
             m[pathVar] = { __path: pathObjs }
+          }
+          // Bind each step's edge variable (r1, r2, ...) to a full relationship
+          // object so type(r1) / r1.weight resolve against the matched edge.
+          for (let pi = 0; pi < pat.steps.length && pi < hopEdges.length; pi++) {
+            const st = pat.steps[pi] as any
+            const ev = (st?.edgeVariable as string | undefined)
+            if (!ev || !hopEdges[pi]?.relEdge) continue
+            const re = hopEdges[pi]!.relEdge
+            const edgeObj: Record<string, unknown> = {
+              __edgeLabel: re.label,
+              __edgeLabelStr: re.label,
+              _type: re.label,
+              _label: re.label,
+            }
+            if (re.props) for (const [k, v] of Object.entries(re.props)) edgeObj[k] = v
+            m[ev] = edgeObj
           }
           matches.push(m)
         }
@@ -1893,30 +1916,72 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     }
                   }
                 }
-                // 绑定边变量（如 MATCH (n)-[r]->(x) 中的 r），供 WHERE type(r) 表达式使用
-                // 边变量：returnColumns 中不在 steps 的 source/targetAlias 中的短变量
+                // Bind edge variables (e.g. r in `MATCH (n)-[r]->(x)`), so
+                // WHERE/type(r) expressions can resolve the relationship. Each
+                // step carries an `edgeVariable`; resolve it against the edge
+                // between matchingPath[si] and matchingPath[si+1]. Fall back to
+                // the legacy heuristic (short non-node return column) for single
+                // anonymous steps without an explicit edgeVariable.
                 const stepVars = new Set(plan.steps.flatMap((s: any) => [s.source, s.targetAlias]).filter(Boolean))
-                const edgeVar = (plan.returnColumns || []).find((rc: string) => {
-                  return !stepVars.has(rc) && rc.length <= 2
-                })
-                if (edgeVar) {
-                  const srcNodeEdges = (allNodes[i] as any)?.__edges as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
-                  if (srcNodeEdges) {
-                    for (const ee of srcNodeEdges) {
-                      if (ee.dstIdx === targetIdx) {
-                        const edgeObj: Record<string, unknown> = {
-                          __edgeLabel: ee.label,
-                          __edgeLabelStr: ee.label,
-                          _type: ee.label,
-                          _label: ee.label,
-                        }
-                        if (ee.props) {
-                          for (const [pk, pv] of Object.entries(ee.props)) {
-                            edgeObj[pk] = pv
+                const edgeBound = new Set<string>()
+                let _matchPath: number[] | undefined = boundedPaths?.find((p: number[]) => p[p.length - 1] === targetIdx)
+                if (!_matchPath) {
+                  const retDefStepIdx = plan.steps?.findIndex((st: any) => st.targetAlias === (effectiveRetVar || lastTargetVar))
+                  _matchPath = boundedPaths?.find((p: number[]) =>
+                    retDefStepIdx != null && retDefStepIdx >= 0 && retDefStepIdx + 1 < p.length && p[retDefStepIdx + 1] === targetIdx
+                  )
+                }
+                if (_matchPath && _matchPath.length >= 2) {
+                  const matchingPathLocal = _matchPath
+                  for (let si = 0; si < plan.steps.length && si < matchingPathLocal.length - 1; si++) {
+                    const ev = (plan.steps[si] as any)?.edgeVariable as string | undefined
+                    if (!ev || edgeBound.has(ev)) continue
+                    const fromN = allNodes[matchingPathLocal[si]] as any
+                    const toIdx = matchingPathLocal[si + 1]
+                    const fromEdges = (fromN?.__edges || []) as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
+                    if (!fromEdges) continue
+                    const ee = fromEdges.find((e: any) => e.dstIdx === toIdx || e.srcIdx === toIdx)
+                    if (!ee) continue
+                    const edgeObj: Record<string, unknown> = {
+                      __edgeLabel: ee.label,
+                      __edgeLabelStr: ee.label,
+                      _type: ee.label,
+                      _label: ee.label,
+                    }
+                    if (ee.props) {
+                      for (const [pk, pv] of Object.entries(ee.props)) {
+                        edgeObj[pk] = pv
+                      }
+                    }
+                    geNode.__crossVarRows[ev] = edgeObj
+                    edgeBound.add(ev)
+                  }
+                }
+                // Legacy fallback: a short non-node return column (e.g. `r`)
+                // whose edge was not resolved above via step edgeVariable.
+                if (!edgeBound.size) {
+                  const edgeVar = (plan.returnColumns || []).find((rc: string) => {
+                    return !stepVars.has(rc) && rc.length <= 2
+                  })
+                  if (edgeVar) {
+                    const srcNodeEdges = (allNodes[i] as any)?.__edges as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
+                    if (srcNodeEdges) {
+                      for (const ee of srcNodeEdges) {
+                        if (ee.dstIdx === targetIdx) {
+                          const edgeObj: Record<string, unknown> = {
+                            __edgeLabel: ee.label,
+                            __edgeLabelStr: ee.label,
+                            _type: ee.label,
+                            _label: ee.label,
                           }
+                          if (ee.props) {
+                            for (const [pk, pv] of Object.entries(ee.props)) {
+                              edgeObj[pk] = pv
+                            }
+                          }
+                          geNode.__crossVarRows[edgeVar] = edgeObj
+                          break
                         }
-                        geNode.__crossVarRows[edgeVar] = edgeObj
-                        break
                       }
                     }
                   }
@@ -3063,6 +3128,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // 排除含运算符的表达式列（如 p1 = p2、a <> b）—— 比较/二元运算，不是边变量
       if (/[+*/<>=!]|(\s+(?:IN|AND|OR|XOR|IS\s+NULL|IS\s+NOT\s+NULL)\s+)/i.test(rc)) return false
       if (nodeAliases.has(rc)) return false
+      // Exclude expressionColumns aliases (e.g. a list comprehension
+      // `[x IN [r,0] | type(x)] AS list`, Pattern Comprehension, etc.) — they
+      // are expression columns evaluated by _formatResultRow, not edge
+      // variables, so they must never be stringified as an edge placeholder.
+      if ((plan.expressionColumns || []).some((ec: any) => {
+        const ecAlias = typeof ec === 'string' ? ec : (ec.alias || ec.expression)
+        return ecAlias === rc
+      })) return false
       // 排除聚合函数参数列（如 'count(r)' 中 r 是参数，不是边变量 RETURN 列）
       if (plan.aggregate) {
         const aggCol = (plan.aggregate as any).column || ''
@@ -4218,9 +4291,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // 解析 source 变量对应的 allNodes 索引
           const sourceVar = optSteps[0]?.source || ''
           const targetVar = optSteps[0]?.targetAlias || ''
-          let edgeVar = optSteps[0]?.edgeAlias || ''
+          let edgeVar = optSteps[0]?.edgeVariable || optSteps[0]?.edgeAlias || ''
           if (!edgeVar && query) {
-            const optMatchEdge = query.match(/OPTIONAL\s+MATCH\s*\([^)]+\)\s*-\s*\[(\w+)\]/)
+            // Tolerate edge labels in `(a)-[r:T]->()` by capturing only the
+            // variable name up to the optional `:` label segment.
+            const optMatchEdge = query.match(/OPTIONAL\s+MATCH\s*\([^)]+\)\s*-\s*\[(\w+)\s*(?::|\])/)
             if (optMatchEdge) edgeVar = optMatchEdge[1]
           }
           const optVarName = opt.variableName || ''
@@ -4360,7 +4435,29 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 if (bv.nodeIdx == null || bv.nodeIdx < 0) { row[bv.var] = null; continue }
                 row[bv.var] = _mkNodeProps(allNodes[bv.nodeIdx] as any)
               }
-              if (edgeVar) row[edgeVar] = null
+              if (edgeVar) {
+                // Bind the matched edge as a full relationship object so that
+                // type(r) / r.prop resolve correctly for the matched hop.
+                const ePathIdx = optSteps.findIndex((st: any) => st.edgeVariable === edgeVar || st.edgeAlias === edgeVar)
+                const hop = ePathIdx >= 0 ? ePathIdx : 0
+                const fromIdx = path[hop]
+                const toIdx = path[hop + 1]
+                const fromN = fromIdx != null ? allNodes[fromIdx] as any : undefined
+                const fromEdges = (fromN?.__edges || []) as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
+                const ee = fromEdges?.find((e: any) => (e.dstIdx === toIdx || e.srcIdx === toIdx))
+                if (ee) {
+                  const edgeObj: Record<string, unknown> = {
+                    __edgeLabel: ee.label,
+                    __edgeLabelStr: ee.label,
+                    _type: ee.label,
+                    _label: ee.label,
+                  }
+                  if (ee.props) for (const [pk, pv] of Object.entries(ee.props)) edgeObj[pk] = pv
+                  row[edgeVar] = edgeObj
+                } else {
+                  row[edgeVar] = null
+                }
+              }
             } else {
               // OPTIONAL path does not match: the source variable (already bound
               // by the preceding MATCH) must be preserved; only the optional
@@ -4404,13 +4501,22 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (st.edgeVariable) optMatchVarNames.add(st.edgeVariable)
         }
       }
-      if (optMatchVarNames.size && plan.expressionColumns?.length) {
+      if (optMatchVarNames.size && (plan.expressionColumns?.length || plan.returnAliasMap)) {
         const aliasToExpr: Record<string, string> = {}
         for (const ec of plan.expressionColumns) {
           const ecObj = ec as { alias?: string; expression?: any }
           const alias = (typeof ec === 'string' ? ec : ecObj.alias ?? ecObj.expression ?? String(ec))
           const expr = (typeof ec === 'object' && ecObj.expression) ? String(ecObj.expression) : alias
           aliasToExpr[alias] = expr
+        }
+        // Return-alias columns (e.g. `type(r)` in `RETURN type(r)`) live in
+        // returnAliasMap rather than expressionColumns; include them too so an
+        // OPTIONAL MATCH edge binding is reflected in the result.
+        if (plan.returnAliasMap && typeof plan.returnAliasMap === 'object') {
+          for (const [alias, expr] of Object.entries(plan.returnAliasMap as Record<string, unknown>)) {
+            if (typeof expr === 'string' && expr !== alias) aliasToExpr[alias] = expr
+            else if (typeof expr === 'string') aliasToExpr[alias] = expr
+          }
         }
         for (const row of result) {
           for (const alias of Object.keys(aliasToExpr)) {

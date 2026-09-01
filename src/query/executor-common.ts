@@ -69,8 +69,11 @@ function _deepStripInternal(obj: unknown): unknown {
       // Strip `_alias` and `__`-prefixed internal properties, keeping `_label`
       // (toNodeNotation needs it).  Exception: preserve `__path`/`__pathEdges`
       // (the internal path-object representation) which the serialization layer
-      // renders as TCK path notation <(:A)-[:T]->(:B)>.
-      if (k === '_alias' || (k.startsWith('__') && k !== '__path' && k !== '__pathEdges')) continue
+      // renders as TCK path notation <(:A)-[:T]->(:B)>, `__fullLabel` /
+      // `_fullLabel` (the full multi-label set, e.g. `A:B:C`), and the edge
+      // markers `__edgeLabel` / `__edgeLabelStr` so a relationship still renders
+      // as `[:T1]` instead of collapsing to a bare property bag.
+      if (k === '_alias' || (k.startsWith('__') && k !== '__path' && k !== '__pathEdges' && k !== '__fullLabel' && k !== '__edgeLabel' && k !== '__edgeLabelStr')) continue
       clean[k] = _deepStripInternal(v)
     }
     return clean

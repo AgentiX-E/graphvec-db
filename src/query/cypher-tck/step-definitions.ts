@@ -318,7 +318,7 @@ function toNodeNotation(val: unknown): string | undefined {
 
 /** Convert a value to TCK edge notation: [:Label {prop: 'val'}] */
 function _toEdgeNotation(val: Record<string, unknown>): string {
-  const label = val._type || ''
+  const label = (val.__edgeLabel || val._type || val._label || '') as string
   const props: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(val)) {
     if (k.startsWith('_')) continue
@@ -390,6 +390,7 @@ function normalizeActual(rows: any[], keys: string[]): Record<string, string>[] 
         }
       }
       const isNode = val && typeof val === 'object' && '_label' in val
+        && !('__edgeLabel' in (val as any)) && !('_type' in (val as any))
       norm[key] = isNode && toNodeNotation(val) !== undefined
         ? toNodeNotation(val)!
         : _stringifyVal(val)
@@ -446,14 +447,18 @@ function _stringifyVal(val: unknown): string {
     if ('__path' in (val as any) && '__pathEdges' in (val as any)) {
       return _toPathNotation(val as Record<string, unknown>)
     }
+    // Relationship object → [:Label {props}]. The `__edgeLabel` / `_type` markers
+    // are definitive relationship signs and must be checked BEFORE `_label` (a
+    // node marker); otherwise a relationship that carries both an `__edgeLabel`
+    // and a `_label` holding its type would render as a node `(:T1)` instead of
+    // the correct edge `[:T1]`.
+    if ('__edgeLabel' in (val as any) || '_type' in (val as any)) {
+      return _toEdgeNotation(val as any)
+    }
     // 节点对象 → toNodeNotation（避免输出 {_label: 'A', name: 'a'}）
     if ('_label' in (val as any)) {
       const nn = toNodeNotation(val)
       if (nn !== undefined) return nn
-    }
-    // 关系对象 → [:Label {props}]
-    if ('_type' in (val as any)) {
-      return _toEdgeNotation(val as any)
     }
     const entries = Object.entries(val as Record<string, unknown>)
       .map(([k, v]) => `${k}: ${_stringifyVal(v)}`)

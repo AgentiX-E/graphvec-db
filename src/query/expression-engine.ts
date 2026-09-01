@@ -3710,8 +3710,12 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
       const nodeRef = row?.[varName] as Record<string, unknown> | undefined
       if (nodeRef && typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
         const props = (nodeRef as any).props
-        if (props && props._label) return props._label === labelName
-        if (nodeRef._label) return nodeRef._label === labelName
+        const target = props && typeof props === 'object' ? props : nodeRef
+        const fullLabel = (target as any).__fullLabel || (target as any)._fullLabel
+        if (typeof fullLabel === 'string') {
+          return fullLabel.split(':').includes(labelName)
+        }
+        if (target._label) return target._label === labelName
       }
       if (row && typeof row === 'object' && '_label' in row) {
         const label = (row as any)._label
@@ -3740,8 +3744,18 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     const nodeRef = row?.[varName] as Record<string, unknown> | undefined
     if (nodeRef && typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
       const props = (nodeRef as any).props
-      if (props && props._label) return props._label === labelName
-      if (nodeRef._label) return nodeRef._label === labelName
+      const target = props && typeof props === 'object' ? props : nodeRef
+      // Relationship objects carry their type in `__edgeLabel`/`_type` (not
+      // `_label`), so a label test on a relationship (`r:T2`) must check those.
+      const edgeType = (target as any).__edgeLabel ?? (target as any)._type
+      if (typeof edgeType === 'string' && edgeType !== '') {
+        return edgeType === labelName
+      }
+      const fullLabel = (target as any).__fullLabel || (target as any)._fullLabel
+      if (typeof fullLabel === 'string') {
+        return fullLabel.split(':').includes(labelName)
+      }
+      if (target._label) return target._label === labelName
     }
     if (row && typeof row === 'object' && '_label' in row) {
       const label = (row as any)._label
@@ -3752,6 +3766,42 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
       return label === labelName
     }
     return null
+  }
+  // ── Label conjunction predicate: `a:A:B`, `a:A:B:C`, `a:B&C` ──
+  // Cypher supports two equivalent conjunction spellings for label tests:
+  //   * colon-chained labels   `a:A:B`   (≡ `a:A AND a:B`)
+  //   * ampersand-joined labels `a:B&C`  (≡ `a:B AND a:C`)
+  // The single-label predicate above only matches a lone `a:B`; a multi-label
+  // conjunction must verify every label against the node's full label set
+  // (order and repetition are irrelevant, so `a:C:A` and `a:A:C:A` both match).
+  const conjLabelPred = t.match(/^(\w+)\s*:\s*([A-Za-z_][\w]*(?:\s*[:&]\s*[A-Za-z_][\w]*)+)$/)
+  if (conjLabelPred) {
+    const varName = conjLabelPred[1]
+    // Split on both `:` and `&`; dedupe via Set preserves "any order / repeat" semantics.
+    const rawLabels = conjLabelPred[2].split(/[:&]/).map((x: string) => x.trim()).filter(Boolean)
+    const labelNames = [...new Set(rawLabels)]
+    const nodeRef = row?.[varName] as Record<string, unknown> | undefined
+    let fullLabel = ''
+    if (nodeRef && typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
+      const props = (nodeRef as any).props
+      const target = props && typeof props === 'object' ? props : nodeRef
+      // Relationships expose a single type via `__edgeLabel`/`_type`; a
+      // multi-label conjunction on a relationship can only be satisfied when
+      // the single label is the only conjunction term.
+      const edgeType = (target as any).__edgeLabel ?? (target as any)._type
+      if (typeof edgeType === 'string' && edgeType !== '') {
+        fullLabel = edgeType
+      } else {
+        fullLabel = String((target as any).__fullLabel || (target as any)._fullLabel || (target as any)._label || '')
+      }
+    } else if (row && typeof row === 'object') {
+      fullLabel = String((row as any).__edgeLabel ?? (row as any).__fullLabel ?? (row as any)._fullLabel ?? (row as any)._label ?? '')
+    }
+    const labelSet = fullLabel.split(':').filter(Boolean)
+    for (const ln of labelNames) {
+      if (!labelSet.includes(ln)) return false
+    }
+    return true
   }
   // 括号 + 后缀 IS NULL/IS NOT NULL： (expr) IS NULL → 先计算 expr，再判 null
   if (t.startsWith('(') && (t.endsWith(' IS NULL') || t.endsWith(' IS NOT NULL'))) {
