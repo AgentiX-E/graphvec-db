@@ -4171,6 +4171,48 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           result.push(...expanded)
           continue
         }
+        // ── Pure-edge OPTIONAL MATCH: `OPTIONAL MATCH ()-[r]->()` ──
+        // No source or target anchor, only a relationship variable. Enumerate
+        // every edge in the graph (honoring direction + edge label) and expand
+        // one row per matching relationship, binding `r` to its relationship
+        // object (props included). Empty graph → single row with r = null.
+        const _pureEdgeStep = optSteps.length === 1 ? optSteps[0] : null
+        const _pureEdgeVar = _pureEdgeStep
+          ? (_pureEdgeStep as any).edgeVariable || _pureEdgeStep.edgeAlias || ''
+          : ''
+        if (_pureEdgeStep && _pureEdgeVar && !_pureEdgeStep.source && !_pureEdgeStep.targetAlias) {
+          const seen = new Set<string>()
+          const relObjs: Array<Record<string, unknown>> = []
+          for (let i = 0; i < allNodes.length; i++) {
+            const es = (allNodes[i] as any).__edges as Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> }> | undefined
+            if (!es) continue
+            for (const e of es) {
+              const key = `${e.srcIdx}|${e.dstIdx}|${e.label || ''}`
+              if (seen.has(key)) continue
+              seen.add(key)
+              if (_pureEdgeStep.edgeLabel && e.label !== _pureEdgeStep.edgeLabel) continue
+              const relObj: Record<string, unknown> = {
+                __edgeLabel: e.label, _type: e.label, _label: e.label,
+                srcIdx: e.srcIdx, dstIdx: e.dstIdx,
+              }
+              if (e.props) for (const [k, v] of Object.entries(e.props)) relObj[k] = v
+              relObjs.push(relObj)
+            }
+          }
+          if (relObjs.length === 0) {
+            for (const row of result) row[_pureEdgeVar] = null
+          } else {
+            const expanded: Array<Record<string, unknown>> = []
+            for (const row of result) {
+              for (const relObj of relObjs) {
+                expanded.push({ ...row, [_pureEdgeVar]: relObj })
+              }
+            }
+            result.length = 0
+            result.push(...expanded)
+          }
+          continue
+        }
         for (let ri = 0; ri < result.length; ri++) {
           const row = result[ri]
           // 解析 source 变量对应的 allNodes 索引
@@ -4359,6 +4401,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         for (const st of om.steps || []) {
           if (st.targetAlias) optMatchVarNames.add(st.targetAlias)
           if (st.edgeAlias) optMatchVarNames.add(st.edgeAlias)
+          if (st.edgeVariable) optMatchVarNames.add(st.edgeVariable)
         }
       }
       if (optMatchVarNames.size && plan.expressionColumns?.length) {
