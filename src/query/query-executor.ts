@@ -4976,7 +4976,7 @@ export async function _executeQuery(
   // expression re-evaluation in `_executeViaGraphEngine`), so re-grouping the
   // raw `nodes` here would drop the OPTIONAL MATCH variables (e.g. `collect(x)`
   // where `x` is null-only) and overwrite the correct result.
-  if ((plan as any).groupBy?.length && (plan as any).aggregate && !plan.optionalMatchSteps?.length) {
+  if ((plan as any).groupBy?.length && (plan as any).aggregate && !plan.optionalMatchSteps?.length && (plan as any).hasMatch) {
     const groupByCols = (plan as any).groupBy as string[]
     const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string; alias?: string }
     const exprs = (plan as any).expressionColumns as Array<{expression:string;alias:string}> | undefined

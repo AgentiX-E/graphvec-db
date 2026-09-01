@@ -947,6 +947,62 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   if (plan.aggregate && _step4Eligible) {
     const agg = plan.aggregate as any
     const aggFn = (agg.function || agg.type || '').toLowerCase()
+    // ── GROUP BY aggregation: group by plan.groupBy, emitting the group key
+    //    column(s) plus the aggregate value per group ──
+    // For `... WITH expr AS v RETURN v, count(*)` the parser sets groupBy=v.
+    // Step 3 already projected the per-row `v`; here we must fold rows into
+    // groups keyed by the groupBy column(s) and compute the aggregate per
+    // group, emitting both the groupBy column and the aggregate column.
+    if ((plan as any).groupBy?.length) {
+      const groupByCols = (plan as any).groupBy as string[]
+      const aggColMatch = (agg.column || '').match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
+      const aggField = (agg.field !== undefined && agg.field !== '') ? agg.field : (aggColMatch ? aggColMatch[1] : (agg.field || '*'))
+      const isDistinct = /\bDISTINCT\b/i.test(agg.column || '')
+      // The aggregate's output key: prefer the full `count(x)` column text when
+      // the RETURN column is an unaliased aggregate (TCK expects `count(*)`).
+      const rcAgg = plan.returnColumns?.find((rc: string) => /\w+\s*\(/.test(String(rc)))
+      const aggKey = rcAgg !== undefined
+        ? String(rcAgg)
+        : (agg.alias && agg.alias !== agg.function
+          ? agg.alias
+          : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'count(*)'))
+      const groups = new Map<string, Record<string, unknown>[]>()
+      for (const row of rows) {
+        const keyObj: Record<string, unknown> = {}
+        for (const gb of groupByCols) keyObj[gb] = row[gb]
+        const keyStr = JSON.stringify(keyObj)
+        if (!groups.has(keyStr)) groups.set(keyStr, [])
+        groups.get(keyStr)!.push(row)
+      }
+      const out: QueryRow[] = []
+      for (const [keyStr, groupRows] of groups) {
+        const keyObj = JSON.parse(keyStr) as Record<string, unknown>
+        const row: Record<string, unknown> = { ...keyObj }
+        if (aggFn === 'count') {
+          if (aggField === '*') row[aggKey] = groupRows.length
+          else {
+            const nonNull = groupRows.map(r => r[aggField]).filter((v: unknown) => v !== null && v !== undefined)
+            row[aggKey] = isDistinct ? [...new Set(nonNull.map(v => JSON.stringify(v)))].length : nonNull.length
+          }
+        } else if (aggFn === 'sum') {
+          row[aggKey] = groupRows.reduce((acc, r) => acc + (Number(r[aggField]) || 0), 0)
+        } else if (aggFn === 'avg') {
+          const nums = groupRows.map(r => Number(r[aggField])).filter(v => !isNaN(v))
+          row[aggKey] = nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0
+        } else if (aggFn === 'min') {
+          row[aggKey] = Math.min(...groupRows.map(r => Number(r[aggField]) || 0))
+        } else if (aggFn === 'max') {
+          row[aggKey] = Math.max(...groupRows.map(r => Number(r[aggField]) || 0))
+        } else if (aggFn === 'collect') {
+          const vals = groupRows.map(r => r[aggField]).filter((v: unknown) => v !== null && v !== undefined)
+          row[aggKey] = isDistinct ? [...new Set(vals.map(v => JSON.stringify(v)))].map(s => JSON.parse(s)) : vals
+        } else {
+          row[aggKey] = groupRows.length
+        }
+        out.push(row)
+      }
+      return out
+    }
     // Output key must match plan.returnColumns.  For an *unaliased* aggregate
     // (e.g. `RETURN max(x)`) the parser strips `(x)` and sets agg.alias = `max`,
     // while returnColumns[0] keeps the full `max(x)` — the TCK expects the full
