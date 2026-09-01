@@ -973,6 +973,13 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
       // (ANTLR nests WHERE inside MatchClauseContext)
       case 'RETURN': {
         const ret = extractReturn(clause.ctx)
+        // Detect the top-level `RETURN DISTINCT` modifier (distinct from the
+        // per-aggregate `count(DISTINCT x)` form). The raw clause text is the
+        // reliable signal since ANTLR may not expose a dedicated DISTINCT node.
+        const retText = clause.ctx ? getTextRecursive(clause.ctx) : ''
+        if (/^\s*RETURN\s+DISTINCT\b/i.test(retText)) {
+          plan.distinct = true
+        }
         // 填充 returnAliasMap：returnColumn → 原始表达式（用于 DML 结果构造 & 表达式求值）
         plan.returnAliasMap = {}
         // 填充 expressionColumns：结构化列Info（用于表达式求值引擎）

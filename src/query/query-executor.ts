@@ -4590,8 +4590,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           result.push(...allPipelineRows)
         }
       } else {
-        // 无 UNWIND/WITH 管道，保留 result（OPTIONAL MATCH 已在行中设置变量）
-        // 不清空 result，确保后面的 WHERE 过滤看到正确数据
+        // An UNWIND pipeline is present (plan.unwind) but produced zero rows
+        // (e.g. UNWIND [] over an empty list). Cypher semantics require the
+        // original MATCH rows to be dropped entirely, not retained — otherwise
+        // `MATCH (n) UNWIND [] AS x RETURN x` would leak the matched node as `x`.
+        // When there is genuinely no UNWIND pipeline, this branch is not
+        // reached (the enclosing `if (plan.hasMatch && plan.unwind)` guards it).
+        result.length = 0
       }
       // ── UNWIND + WITH 管道后再求值 WHERE ──
       if (plan.whereBody && result.length) {
@@ -4952,6 +4957,23 @@ export async function _executeQuery(
       }
     }
     return [defaultRow] as QueryResult
+  }
+  // ── Top-level DISTINCT dedup (`RETURN DISTINCT ...`) ──
+  // Cypher `RETURN DISTINCT x` collapses duplicate result rows by the full row
+  // value. Applied after aggregation/grouping so the projection is finalized.
+  if (plan.distinct && Array.isArray(execQueryResult) && execQueryResult.length) {
+    const seen = new Set<string>()
+    const deduped: QueryRow[] = []
+    for (const row of execQueryResult) {
+      const colKeys = plan.returnColumns?.length
+        ? plan.returnColumns.filter(c => c !== '*')
+        : Object.keys(row).filter(k => !k.startsWith('__'))
+      const sig = JSON.stringify(colKeys.map(k => row[k]))
+      if (seen.has(sig)) continue
+      seen.add(sig)
+      deduped.push(row)
+    }
+    return deduped as QueryResult
   }
   return execQueryResult
 }

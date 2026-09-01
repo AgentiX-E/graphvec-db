@@ -229,6 +229,8 @@ export interface QueryPlan {
   whereBody?: string
   /** RETURN 列 */
   returnColumns: string[]
+  /** Top-level DISTINCT modifier (`RETURN DISTINCT ...`) — deduplicate result rows. */
+  distinct?: boolean
   /** returnColumn 到原始表达式的映射（用于 DML 结果构造：RETURN n.name AS p → {p: "n.name"}） */
   returnAliasMap?: Record<string, string>
   /** 计算列（字符串拼接、表达式等，运行时求值） */
