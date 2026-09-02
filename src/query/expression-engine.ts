@@ -1319,9 +1319,14 @@ function _evalListPredicate(
       if (nullCount > 0) return null
       return true
     case 'single':
-      // true if exactly one true; null if >1 true or (0 true and some null); false if 0 true and 0 null
+      // true if exactly one element satisfies the predicate and none are
+      // unknown.  Two or more true elements is definitively *false* (not null)
+      // — knowing there are at least two matches already disproves "exactly
+      // one", even if other elements are unknown.  Null is returned only when
+      // some element's predicate is unknown and no more than one element is
+      // known-true.
       if (trueCount === 1 && nullCount === 0) return true
-      if (trueCount > 1) return null
+      if (trueCount > 1) return false
       if (nullCount > 0) return null
       return false
     default:
