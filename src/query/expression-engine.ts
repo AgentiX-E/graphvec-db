@@ -1289,6 +1289,14 @@ function _evalListPredicate(
   for (const elem of list) {
     const injectedRow = { ...row, [varName]: elem }
     const cond = _evalBinary(whereClause, injectedRow)
+    // For `all`, a bare variable reference (`WHERE x`) that evaluates to null
+    // represents a null list element, which is *outside the domain of
+    // discourse* per Cypher quantifier semantics — it is skipped rather than
+    // counted as an unknown (null) result.  This mirrors the same skip logic in
+    // `_evalAtom`'s list-predicate path, keeping `all(x IN [true, null] WHERE
+    // x)` = true while `all(x IN [2, null] WHERE x = 2)` (a non-bare predicate)
+    // stays null.  any/none/single must still distinguish null elements.
+    if (predicateType === 'all' && (cond === null || cond === undefined) && whereClause.trim() === varName) continue
     if (cond === true) trueCount++
     else if (cond === null || cond === undefined) nullCount++
     else falseCount++

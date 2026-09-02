@@ -994,6 +994,8 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         } else if (aggFn === 'max') {
           row[aggKey] = Math.max(...groupRows.map(r => Number(r[aggField]) || 0))
         } else if (aggFn === 'collect') {
+          // collect filters null elements (consistent with the non-grouped
+          // collect branch and Cypher semantics).
           const vals = groupRows.map(r => r[aggField]).filter((v: unknown) => v !== null && v !== undefined)
           row[aggKey] = isDistinct ? [...new Set(vals.map(v => JSON.stringify(v)))].map(s => JSON.parse(s)) : vals
         } else {
@@ -1047,7 +1049,10 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
 
     switch (aggFn) {
       case 'collect':
-        // collect(expr): gather all values into a list (DISTINCT de-duplicates)
+        // collect(expr): gather all values into a list (DISTINCT de-duplicates).
+        // Null elements are filtered out: `collect()` over an unbound variable
+        // (e.g. OPTIONAL MATCH with no match) yields `[]`, and `collect(DISTINCT
+        // x)` excludes nulls (Cypher semantics — see Aggregation5/8).
         const collected = isDistinct
           ? [...new Set(rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined).map(v => JSON.stringify(v)))].map(s => JSON.parse(s))
           : rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined)
