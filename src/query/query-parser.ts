@@ -864,7 +864,7 @@ function _parseQueryImpl(query: string): QueryPlan {
   // 同时，双 UNWIND 场景下第二个 UNWIND 可能丢失。
   if (plan.unwind && plan.hasMatch && query) {
     try {
-      const unwindMatches = [...query.matchAll(/UNWIND\s+(.+?)\s+AS\s+(\w+)/gi)]
+      const unwindMatches = [...query.matchAll(/UNWIND\s+(.+?)\s+AS\s+(\w+)/gis)]
       for (const [umIdx, m] of unwindMatches.entries()) {
         if (umIdx === 0) {
           if (m[2] && m[2] !== plan.unwind.name) {

@@ -432,7 +432,13 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     // share the same source expression (e.g. two UNWIND range(...) AS
     // different aliases), `query.match(UV + expr)` returned the first
     // match every time, overwriting later aliases with the first one.
-    const allMatches = [...query.matchAll(/\bUNWIND\s+(.+?)\s+AS\s+(\w+)/gi)]
+    // `s` flag is essential: the first UNWIND's list literal often spans
+    // multiple lines in TCK fixtures (e.g. `UNWIND [{list: [2], ...},\n
+    // {list: [6], ...}] AS input`).  Without it, `.+?` stops at the first
+    // newline, the first UNWIND is never matched, and `allMatches[i]` shifts
+    // by one — silently rewriting `plan.unwinds[0].name` (the real alias) to
+    // the *second* UNWIND's alias, corrupting the whole pipeline.
+    const allMatches = [...query.matchAll(/\bUNWIND\s+(.+?)\s+AS\s+(\w+)/gis)]
     for (let ui = 0; ui < plan.unwinds.length; ui++) {
       const m = allMatches[ui]
       if (m?.[2] && m[2] !== plan.unwinds[ui].name) {
