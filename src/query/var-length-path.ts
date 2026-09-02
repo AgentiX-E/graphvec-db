@@ -181,7 +181,28 @@ function _applyWithProjection(rows: QueryRow[], plan: any): QueryResult {
     }
     return newRow
   })
-  if (!hasAgg) return postProcessResults(withRows, plan)
+
+  // Resolve RETURN expression aliases (e.g. `all(x IN nodes WHERE ...) AS
+  // result`) against each projected row.  This must run for BOTH the aggregate
+  // and non-aggregate WITH paths — otherwise a query like
+  //   MATCH p = (:L)-[*0..N]->(x) WITH tail(nodes(p)) AS nodes
+  //   RETURN nodes, all(x IN nodes WHERE x.name = 'a') AS result
+  // loses the `result` column (the non-aggregate branch returned early below).
+  const applyReturnAliases = (projected: QueryRow[]): QueryRow[] => {
+    if (!plan.returnAliasMap) return projected
+    return projected.map((row) => {
+      const resultRow: Record<string, unknown> = { ...row }
+      for (const [alias, expr] of Object.entries(plan.returnAliasMap)) {
+        if (!(alias in resultRow)) {
+          const val = evaluateExpr(expr as string, resultRow as Record<string, unknown>)
+          resultRow[alias] = val !== undefined ? val : null
+        }
+      }
+      return resultRow
+    })
+  }
+
+  if (!hasAgg) return postProcessResults(applyReturnAliases(withRows), plan)
 
   const nonAggCols: Array<{ col: any }> = []
   for (let ci = 0; ci < plan.with.columns.length; ci++) { if (!isAggCol[ci]) nonAggCols.push({ col: plan.with.columns[ci] }) }
@@ -203,14 +224,7 @@ function _applyWithProjection(rows: QueryRow[], plan: any): QueryResult {
     finalRows.push(aggRow)
   }
   if (plan.returnAliasMap) {
-    const mappedRows = finalRows.map((row) => {
-      const resultRow = { ...row }
-      for (const [alias, expr] of Object.entries(plan.returnAliasMap)) {
-        if (!(alias in resultRow)) { const val = evaluateExpr(expr as string, resultRow as any); resultRow[alias] = val !== undefined ? val : null }
-      }
-      return resultRow
-    })
-    return postProcessResults(mappedRows, plan)
+    return postProcessResults(applyReturnAliases(finalRows), plan)
   }
   return postProcessResults(finalRows, plan)
 }
