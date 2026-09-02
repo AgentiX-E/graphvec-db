@@ -1334,6 +1334,18 @@ function _evalListPredicate(
   }
 }
 
+// A value whose runtime type is a Cypher *composite* type (list, map, node,
+// relationship or path).  The to* conversion functions reject these with a
+// TypeError: InvalidArgumentValue — only scalars (and null) are convertible.
+function _isCompositeCypherValue(v: unknown): boolean {
+  return Array.isArray(v) || (typeof v === 'object' && v !== null)
+}
+
+// Raise the standard conversion error for an invalid argument type.
+function _throwInvalidArgumentValue(): never {
+  throw Object.assign(new Error('TypeError: InvalidArgumentValue'), { tckError: 'TypeError' })
+}
+
 const _builtinFunctions: Record<string, _BuiltinFn> = {
   // ── List predicates: ALL / ANY / NONE / SINGLE ──
   // Syntax: ALL(varName IN listExpr WHERE condition)
@@ -1416,10 +1428,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   right: ([a, l], r) => String(_evalBinary(a, r)).slice(-Number(_evalBinary(l, r))),
   replace: ([a, s, re], r) => String(_evalBinary(a, r)).split(String(_evalBinary(s, r))).join(String(_evalBinary(re, r))),
   size: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (Array.isArray(v)) return v.length; if (typeof v === 'string') return v.length; return 0 },
-  tostring: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; return String(v) },
-  tointeger: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; const n = parseInt(String(v), 10); return isNaN(n) ? null : n },
-  tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; const n = parseFloat(String(v)); return isNaN(n) ? null : n },
-  toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
+  tostring: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); return String(v) },
+  tointeger: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'boolean') _throwInvalidArgumentValue(); const n = parseInt(String(v), 10); return isNaN(n) ? null : n },
+  tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'boolean') _throwInvalidArgumentValue(); const n = parseFloat(String(v)); return isNaN(n) ? null : n },
+  toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'number') _throwInvalidArgumentValue(); if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
   labels: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
   type: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
