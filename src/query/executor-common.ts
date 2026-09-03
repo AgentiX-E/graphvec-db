@@ -73,7 +73,7 @@ function _deepStripInternal(obj: unknown): unknown {
       // `_fullLabel` (the full multi-label set, e.g. `A:B:C`), and the edge
       // markers `__edgeLabel` / `__edgeLabelStr` so a relationship still renders
       // as `[:T1]` instead of collapsing to a bare property bag.
-      if (k === '_alias' || (k.startsWith('__') && k !== '__path' && k !== '__pathEdges' && k !== '__fullLabel' && k !== '__edgeLabel' && k !== '__edgeLabelStr')) continue
+      if (k === '_alias' || (k.startsWith('__') && k !== '__path' && k !== '__pathEdges' && k !== '__fullLabel' && k !== '__edgeLabel' && k !== '__edgeLabelStr' && k !== '__float')) continue
       clean[k] = _deepStripInternal(v)
     }
     return clean
@@ -220,11 +220,19 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       // Only evaluate if row value is an edge-format placeholder ([:...])
       // or undefined. If already pre-computed (boolean, number, object), skip.
       const rowVal = row[rc]
-      const needsEval = rowVal === undefined || rowVal === null
-        || (typeof rowVal === 'string' && rowVal.startsWith('[:'))
-      if (needsEval) {
       const fnMatch = ecMap[rc].match(/^([a-zA-Z_]\w*)\s*\(/);
       const isFnCall = !!fnMatch && /size|length|head|nodes|labels|collect|count|sum|avg|min|max|coalesce|toLower|toUpper|type|exists|id|all|any|none|single|reduce|reverse|tail|left|right|split|replace|substring|trim|ltrim|rtrim|toString|toInteger|toFloat|toBoolean|keys|properties|startNode|endNode|range|abs|sqrt|ceil|floor|round|sign|rand|pi|sin|cos|tan|asin|acos|atan|degrees|radians|log|log10|exp|e|haversin|percentiledisc|percentilecont/i.test(fnMatch[1])
+      // An aliased function call such as `toInteger(n.name) AS name` collides
+      // with a same-named node property: `row['name']` holds the raw property
+      // value ('42', a string), not the function result (42, a number). When the
+      // alias shadows a property, the expression must be evaluated and override
+      // the stale property value. Detect this by checking whether the row value
+      // is a plain string that does NOT already equal the evaluated result —
+      // the safe discriminator is: a bare string value is a property shadow, so
+      // a function-call alias must always re-evaluate over it.
+      const needsEval = rowVal === undefined || rowVal === null
+        || (typeof rowVal === 'string' && (rowVal.startsWith('[:') || (isFnCall && ecMap[rc] !== rc)))
+      if (needsEval) {
       // Non-function computed expressions (binary comparisons like `p1 = p2`,
       // arithmetic like `a + b`) are also valid and must be evaluated.
       const isBinaryExpr = !isFnCall && (ecMap[rc] !== rc || /[+*/<>=!]/.test(ecMap[rc]))

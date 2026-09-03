@@ -402,6 +402,12 @@ function normalizeActual(rows: any[], keys: string[]): Record<string, string>[] 
 /** Format a value to its canonical Cypher string representation */
 function _stringifyVal(val: unknown): string {
   if (val === null || val === undefined) return 'null'
+  // Float marker produced by toFloat() on integral input (e.g. toFloat(3)).
+  // JS number cannot carry the Int/Float distinction, so the engine wraps
+  // integral Float results as { __float: n }; render them with a trailing .0.
+  if (typeof val === 'object' && !Array.isArray(val) && '__float' in (val as any)) {
+    return String((val as any).__float) + '.0'
+  }
   if (typeof val === 'string') {
     // 如果是边表示（[:T1] 格式），裸输出不含引号
     if (val.startsWith('[:"') || val.startsWith('[:')) return val
@@ -1081,19 +1087,13 @@ Given('having executed:', async function (query: string) {
           if (typeof raw === 'string' && _isExprValue(raw)) {
             try { raw = _evalBinary(raw, {}) } catch {}
           }
+          // BIGINT values are already `bigint` (set by the AST layer to preserve
+          // precision). STRING values — including numeric string literals such as
+          // '42' — remain strings. The previous "pure numeric string" heuristic
+          // force-converted `name: '42'` into the number 42, dropping the string
+          // semantics the TCK expects; it is no longer needed now that large
+          // integers are carried as `bigint` end-to-end.
           node[k] = raw
-          // 大整数精度保护：parseQuery 把超出 Number 安全范围的整数存储为 string，
-          // 但 TCK 期望 RETURN 时输出为数字。将纯数字字符串转回 number/bigint.
-          if (typeof node[k] === 'string' && /^-?\d+$/.test(node[k] as string)) {
-            try {
-              const asBig = BigInt(node[k] as string)
-              if (asBig > BigInt(Number.MAX_SAFE_INTEGER) || asBig < BigInt(Number.MIN_SAFE_INTEGER)) {
-                node[k] = asBig
-              } else {
-                node[k] = Number(node[k])
-              }
-            } catch {}
-          }
         } }
         st.nodes.push(node)
         seedGe(ge, node)

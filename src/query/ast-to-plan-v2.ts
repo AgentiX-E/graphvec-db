@@ -2392,10 +2392,13 @@ function extractMapLiteral(propsCtx: any): Record<string, unknown> | null {
         // 数组字面量解析
         value = parseListLiteral(value)
       } else if (/^-?\d+$/.test(value)) {
-        // 大整数保持字符串精度（超过 JS Number.MAX_SAFE_INTEGER）
+        // Integers outside the safe range are preserved as JS `bigint` rather
+        // than a decimal string, so downstream code can distinguish them from
+        // string-literal values (e.g. `'42'`) by `typeof` and avoid lossy
+        // coercion. Safe integers stay as regular numbers.
         const bigVal = BigInt(value)
         if (bigVal > BigInt(Number.MAX_SAFE_INTEGER) || bigVal < BigInt(Number.MIN_SAFE_INTEGER)) {
-          value = value  // 保持字符串以保留精度
+          value = bigVal
         } else {
           value = parseInt(value, 10)
         }

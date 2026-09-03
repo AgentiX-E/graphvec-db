@@ -1430,7 +1430,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   size: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (Array.isArray(v)) return v.length; if (typeof v === 'string') return v.length; return 0 },
   tostring: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); return String(v) },
   tointeger: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'boolean') _throwInvalidArgumentValue(); const n = parseInt(String(v), 10); return isNaN(n) ? null : n },
-  tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'boolean') _throwInvalidArgumentValue(); const n = parseFloat(String(v)); return isNaN(n) ? null : n },
+  // toFloat must return a Float. JS number cannot distinguish `3` (Int) from
+  // `3.0` (Float), so integral results are wrapped in a `__float` marker that
+  // the result serializer renders with a trailing `.0`. This preserves the
+  // Cypher Int/Float distinction for e.g. `toFloat(3)` → `3.0`.
+  tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'boolean') _throwInvalidArgumentValue(); const n = parseFloat(String(v)); if (isNaN(n)) return null; return Number.isInteger(n) ? { __float: n } : n },
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'number') _throwInvalidArgumentValue(); if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
   labels: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },

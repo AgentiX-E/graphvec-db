@@ -346,7 +346,7 @@ function _parseQueryImpl(query: string): QueryPlan {
         const matchClauses = rawQuery.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
         const isLabelInMatch = matchClauses.some((mc: string) => {
           // 在节点模式中查找 :scanLabel：如 (:Person), :Person), :Person {prop}
-          const labelPattern = new RegExp(':' + subPlan.scanLabel + '(?=[\)\s{]|$)')
+          const labelPattern = new RegExp(':' + subPlan.scanLabel + '(?=[\)\\s{]|$)')
           return labelPattern.test(mc)
         })
         // 如果 scanLabel 在 MATCH 子句中不是作为标签出现，则是变量名，清除
@@ -363,10 +363,27 @@ function _parseQueryImpl(query: string): QueryPlan {
       const matchClauses = rawQuery.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
       for (const oms of subPlan.optionalMatchSteps) {
         if (oms.scanLabel && /^[a-z][0-9]?$/.test(oms.scanLabel)) {
-          const labelPattern = new RegExp(':' + oms.scanLabel + '(?=[\)\s{]|$)')
+          const labelPattern = new RegExp(':' + oms.scanLabel + '(?=[\)\\s{]|$)')
           const isLabelInMatch = matchClauses.some((mc: string) => labelPattern.test(mc))
           if (!isLabelInMatch) {
             oms.scanLabel = null
+          }
+        }
+      }
+    }
+    // Fix multiMatch scanLabels too: a bare `MATCH (n)` variable is recorded as
+    // scanLabel='n' by extractMatch (label falls back to the variable name), but
+    // `n` is a variable, not a label. Clear it unless `:n` appears as a real
+    // label in a MATCH clause (same rule as optionalMatchSteps above).
+    if (subPlan.multiMatch?.length && query) {
+      const rawQuery = query
+      const matchClauses = rawQuery.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
+      for (const mm of subPlan.multiMatch) {
+        if (mm.scanLabel) {
+          const labelPattern = new RegExp(':' + mm.scanLabel + '(?=[\)\\s{]|$)')
+          const isLabelInMatch = matchClauses.some((mc: string) => labelPattern.test(mc))
+          if (!isLabelInMatch) {
+            mm.scanLabel = null
           }
         }
       }
@@ -594,7 +611,7 @@ function _parseQueryImpl(query: string): QueryPlan {
         } else if (typeof pv === 'boolean') {
           cn.props[pk] = { type: 'BOOLEAN', value: pv }
         } else if (typeof pv === 'bigint') {
-          cn.props[pk] = { type: 'NUMBER', value: Number(pv) }
+          cn.props[pk] = { type: 'BIGINT', value: pv }
         }
       }
     }
