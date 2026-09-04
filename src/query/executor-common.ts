@@ -540,8 +540,11 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     if (ecMap[rc] && ecMap[rc] !== rc) {
       expr = ecMap[rc]
     }
-    // 如果没有表达式映射（aliasMap 为空），但 rc 是简单变量名且存在于 varCtx 中，直接用 rc 作为表达式
-    if (expr === null && rc && /^[a-zA-Z_]\w*$/.test(rc) && (rc in varCtx || rc in row)) {
+    // If there is no expression mapping (empty aliasMap) but rc is a simple
+    // variable name present in `row`, use rc itself as the expression. Note:
+    // `varCtx` is not yet constructed here (it is declared below), so only
+    // `row` can be tested; `row` already flattens every in-scope variable.
+    if (expr === null && rc && /^[a-zA-Z_]\w*$/.test(rc) && rc in row) {
       expr = rc
     }
     if (expr !== null) {

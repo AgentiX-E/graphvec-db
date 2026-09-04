@@ -403,6 +403,50 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
 }
 
 /**
+ * Remove `exists { ... }` subquery blocks from a WHERE body, replacing each
+ * block with a single space so the surrounding pattern predicates keep their
+ * relative positions. Brace depth is tracked so nested subqueries (`exists {
+ * exists { ... } }`) are removed as a single unit.
+ */
+export function _stripExistsSubqueryBlocks(whereBody: string): string {
+  if (!/exists\s*\{/i.test(whereBody)) return whereBody
+  let out = ''
+  let i = 0
+  const n = whereBody.length
+  while (i < n) {
+    const ch = whereBody[i]
+    if (ch === 'e' || ch === 'E') {
+      const rest = whereBody.slice(i)
+      const m = rest.match(/^exists\s*\{/i)
+      if (m) {
+        let j = i + m[0].length - 1 // index of '{'
+        let depth = 1
+        let k = j + 1
+        let inStr = false
+        let strChar = ''
+        for (; k < n; k++) {
+          const c = whereBody[k]
+          if (inStr) {
+            if (c === '\\') { k++; continue }
+            if (c === strChar) inStr = false
+            continue
+          }
+          if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+          if (c === '{') depth++
+          else if (c === '}') { depth--; if (depth === 0) { k++; break } }
+        }
+        out += ' '
+        i = k
+        continue
+      }
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
+/**
  * Validate variables introduced inside a WHERE pattern predicate.
  *
  * openCypher requires every variable referenced in a pattern predicate to be
@@ -420,7 +464,13 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
 function _validatePatternPredicateVariables(query: string, definedVars: Set<string>): void {
   const whereMatch = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/is)
   if (!whereMatch) return
-  const whereBody = whereMatch[1].trim()
+  let whereBody = whereMatch[1].trim()
+
+  // Strip `exists { ... }` subquery blocks before validating. A variable
+  // introduced inside a subquery (e.g. `m` in `exists { (n)-->(m) WHERE ... }`)
+  // is scoped to the subquery and must not be reported as an unbound outer
+  // variable. Only the outer WHERE pattern predicates remain for validation.
+  whereBody = _stripExistsSubqueryBlocks(whereBody)
 
   // Walk the WHERE body extracting pattern predicates: sequences of the form
   //   (var[:Label]) <|- [-] [var:Type[*range]] ->|- (var[:Label])
@@ -474,6 +524,40 @@ function _validatePatternPredicateVariables(query: string, definedVars: Set<stri
 }
 
 /** 验证 RETURN 列中的函数是已知的（SyntaxError: UnknownFunction） */
+/**
+ * Validate that no `exists { ... }` subquery contains an update clause
+ * (SET/DELETE/MERGE/CREATE/REMOVE). openCypher forbids writes inside an
+ * existential subquery; such a query must raise a compile-time
+ * InvalidClauseComposition SyntaxError.
+ */
+export function _validateExistsSubqueryClauses(query: string): void {
+  if (!/exists\s*\{/i.test(query)) return
+  // Scan each `exists { ... }` block (brace-aware) and check for update clauses.
+  const n = query.length
+  for (let i = 0; i < n; i++) {
+    const rest = query.slice(i)
+    const m = rest.match(/^exists\s*\{/i)
+    if (!m) continue
+    const openIdx = i + m[0].length - 1
+    let depth = 1
+    let k = openIdx + 1
+    let inStr = false
+    let strChar = ''
+    for (; k < n; k++) {
+      const c = query[k]
+      if (inStr) { if (c === '\\') { k++; continue } if (c === strChar) inStr = false; continue }
+      if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+      if (c === '{') depth++
+      else if (c === '}') { depth--; if (depth === 0) { k++; break } }
+    }
+    const body = query.slice(openIdx + 1, k - 1)
+    if (/\b(SET|DELETE|MERGE|CREATE|REMOVE)\b/i.test(body)) {
+      throw Object.assign(new Error('SyntaxError: InvalidClauseComposition'), { tckError: 'InvalidClauseComposition' })
+    }
+    i = k - 1
+  }
+}
+
 export function _validateUnknownFunctions(query: string): void {
   // 提取 RETURN 子句
   const returnMatch = query.match(/RETURN\s+((?:(?!\s+(?:ORDER\s+BY|SKIP|LIMIT|WHERE|CREATE|MERGE|MATCH|WITH|CALL|UNWIND)).)+)/is)

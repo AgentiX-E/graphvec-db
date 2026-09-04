@@ -477,9 +477,14 @@ function _stringifyVal(val: unknown): string {
 /** Parse a single cell from official TCK notation to its canonical string form */
 function normalizeCell(s: string): string {
   if (!s) return ''
-  // Node notation: (:A {name: 'b'}) => normalize for comparison
+  // Node notation: (:A {name: 'b'}) => normalize for comparison.
+  // Some TCK feature files write `(:A {prop:1})` (no space after the colon)
+  // while others write `(:A {prop: 1})`; normalize the space after a property
+  // colon away inside a node/edge map so both spellings compare equal.
   const nodeMatch = s.match(/^\(([^)]*)\)$/)
-  if (nodeMatch) return s  // Keep as-is, we compare strings directly
+  if (nodeMatch) {
+    return s.replace(/:\s+/g, ':')   // `prop: 1` → `prop:1`
+  }
   return s
 }
 
@@ -525,7 +530,9 @@ function cmp(dt: DataTable, ordered = false, ignoreListOrder = false): void {
   })
   const actual = normalizeActual(st.res, keys).map(r => {
     const norm: Record<string, string> = {}
-    for (const k of keys) norm[k] = normalizeListMaybe(r[k])
+    // Apply the same node-notation space normalization used on the expected
+    // side, so `(:A {prop: 1})` (rendered) matches `(:A {prop:1})` (feature).
+    for (const k of keys) norm[k] = normalizeListMaybe(normalizeCell(r[k]))
     return norm
   })
   assert.strictEqual(actual.length, expected.length,
@@ -1213,7 +1220,7 @@ Given('having executed:', async function (query: string) {
         }
       }
       
-      // If any UNWIND，为每个 UNWIND 元素创建额外的节点
+      // If any UNWIND
       // 解析 UNWIND 后替换 createNodes 中的变量引用
       if (unwind && unwind.list) {
         // Resolve the UNWIND list to concrete values via the same authoritative
@@ -1349,14 +1356,24 @@ Given('having executed:', async function (query: string) {
             }
           }
             if (edgesForStNodes.length > 0) {
-            // 为每个涉及边的节点附加 __edges（自环只插一次）
+            // Attach __edges to each incident node (self-loop inserted once).
+            // The relationship is added on BOTH endpoints so undirected
+            // traversal (`--`) works. However, a prior edge-injection pass
+            // (the `aliasToTrueIdx` block above) may have already pushed the
+            // same directed edge onto the source node. Deduplicate by
+            // (srcIdx, dstIdx, label) so aggregation over `__edges` (e.g. an
+            // existential `count(*)`) does not double-count relationships.
             for (const ef of edgesForStNodes) {
-              if (!(st.nodes[ef.srcIdx] as any).__edges) (st.nodes[ef.srcIdx] as any).__edges = []
-              ;(st.nodes[ef.srcIdx] as any).__edges.push(ef)
-              if (ef.srcIdx !== ef.dstIdx) {
-                if (!(st.nodes[ef.dstIdx] as any).__edges) (st.nodes[ef.dstIdx] as any).__edges = []
-                ;(st.nodes[ef.dstIdx] as any).__edges.push(ef)
+              const pushDedup = (idx: number) => {
+                const node = st.nodes[idx] as any
+                if (!node.__edges) node.__edges = []
+                const key = `${ef.srcIdx}|${ef.dstIdx}|${ef.label || ''}`
+                if (!node.__edges.some((e: any) => `${e.srcIdx}|${e.dstIdx}|${e.label || ''}` === key)) {
+                  node.__edges.push({ ...ef })
+                }
               }
+              pushDedup(ef.srcIdx)
+              if (ef.srcIdx !== ef.dstIdx) pushDedup(ef.dstIdx)
             }
           }
         }

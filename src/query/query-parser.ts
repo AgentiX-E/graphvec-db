@@ -502,9 +502,9 @@ function _parseQueryImpl(query: string): QueryPlan {
       safeQuery = safeQuery.slice(0, start) + placeholder + safeQuery.slice(end)
     }
   }
-  const whereClause = safeQuery.match(/WHERE\s+(.+?)(?:\s+RETURN|\s+ORDER|\s+SKIP|\s+LIMIT|\s+WITH|\s+CREATE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|$)/is)
-  if (whereClause) {
-    let whereBody = whereClause[1]
+  const wholeWhereBody = _extractWhereBodyBraceAware(safeQuery)
+  if (wholeWhereBody) {
+    let whereBody = wholeWhereBody
     // 恢复占位符
     for (let pi = 0; pi < placeholders.length; pi++) {
       whereBody = whereBody.replace(`__LPRED${pi}__`, placeholders[pi].text)
@@ -620,7 +620,11 @@ function _parseQueryImpl(query: string): QueryPlan {
   // ── Fallback: 如果 parseQuery 后 returnColumns 为空但有 RETURN 子句 ──
   // ANTLR 可能无法解析某些函数调用（如 type(r) AS alias），用正则提取
   if (!plan.returnColumns?.length && !plan.aggregate) {
-    const returnClause = query.match(/RETURN\s+(.+?)(?:\s+(ORDER|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW)\s|$)/is)
+    // Locate the main RETURN (skip RETURN inside `exists { ... }` subqueries).
+    const mainRetIdx = _findMainReturnIndex(query)
+    const returnClause = mainRetIdx >= 0
+      ? query.slice(mainRetIdx).match(/^\s*(.+?)(?:\s+(ORDER|SKIP|LIMIT|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW)\s|$)/is)
+      : null
     if (returnClause) {       const expr = returnClause[1].trim()
       // RETURN * → 保持空列（留给 _formatResultRow 的特殊处理）
       if (expr === '*') {
@@ -913,8 +917,89 @@ function _parseQueryImpl(query: string): QueryPlan {
 
 /** 从 Cypher 查询中提取 WHERE 子句的文本体 */
 function extractWhereBody(query: string): string | null {
-  const match = query.match(/WHERE\s+(.+?)(?:\s+(?:WITH|RETURN|CREATE|MERGE|SET|DELETE|ORDER\s+BY|SKIP|LIMIT|UNWIND)\s|$)/is)
-  return match ? match[1].trim() : null
+  return _extractWhereBodyBraceAware(query)
+}
+
+/**
+ * Locate the index just after the main (outermost) `RETURN` keyword, skipping
+ * any `RETURN` that appears inside an `exists { ... }` subquery block.
+ *
+ *   MATCH (n) WHERE exists { MATCH (n)-->() RETURN true } RETURN n
+ *   ──────────────────────────────────────────────────┴─────── main RETURN here
+ */
+function _findMainReturnIndex(query: string): number {
+  let braceDepth = 0
+  let parenDepth = 0
+  let inStr = false
+  let strChar = ''
+  const n = query.length
+  for (let i = 0; i < n; i++) {
+    const c = query[i]
+    if (inStr) { if (c === '\\') { i++; continue } if (c === strChar) inStr = false; continue }
+    if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+    if (c === '{') { braceDepth++; continue }
+    if (c === '}') { if (braceDepth > 0) braceDepth--; continue }
+    if (c === '(') { parenDepth++; continue }
+    if (c === ')') { if (parenDepth > 0) parenDepth--; continue }
+    if (braceDepth === 0 && parenDepth === 0) {
+      const rest = query.slice(i)
+      if (/^RETURN\b/i.test(rest)) {
+        return i + 6 // index just past `RETURN`
+      }
+    }
+  }
+  return -1
+}
+
+/**
+ * Extract the WHERE body while honoring `exists { ... }` subquery blocks.
+ *
+ * A naive `WHERE ... RETURN` regex terminates the WHERE body at the first
+ * `RETURN`/`SET`/`WITH` keyword, but an existential subquery embeds those
+ * keywords inside its own braces:
+ *
+ *   MATCH (n) WHERE exists { MATCH (n)-->() RETURN true } RETURN n
+ *
+ * The inner `RETURN true` must NOT terminate the outer WHERE body. This scanner
+ * walks the query tracking brace depth (both `{}` for subqueries and `()` for
+ * nested grouping/pattern predicates); a clause-terminating keyword only ends
+ * the WHERE body when encountered at top-level (brace depth 0).
+ */
+function _extractWhereBodyBraceAware(query: string): string | null {
+  const qi = query.search(/WHERE\b/i)
+  if (qi < 0) return null
+  let i = qi + 5 // skip "WHERE"
+  let braceDepth = 0
+  let parenDepth = 0
+  let inStr = false
+  let strChar = ''
+  const n = query.length
+  const start = i
+  let end = n
+  for (; i < n; i++) {
+    const c = query[i]
+    if (inStr) {
+      if (c === '\\') { i++; continue }
+      if (c === strChar) inStr = false
+      continue
+    }
+    if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+    if (c === '{') { braceDepth++; continue }
+    if (c === '}') { if (braceDepth > 0) braceDepth--; continue }
+    if (c === '(') { parenDepth++; continue }
+    if (c === ')') { if (parenDepth > 0) parenDepth--; continue }
+    // Only a clause terminator reached at top level (outside any brace or
+    // parenthesis group) ends the WHERE body.
+    if (braceDepth === 0 && parenDepth === 0) {
+      const rest = query.slice(i)
+      if (/^(?:RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL|YIELD|UNION)\b/i.test(rest.trimStart())) {
+        end = i
+        break
+      }
+    }
+  }
+  const body = query.slice(start, end).trim()
+  return body || null
 }
 
 /**

@@ -23,7 +23,7 @@ import { GEPool } from './ge-pool'
 import { _formatResultRow, _deepStripInternal, _executeVarLenPath, parseCsvContent } from './executor-common'
 import { _executeWithUnwindPipeline } from './executor-unwind-pipeline'
 import { _buildDmlRows } from './executor-dml'
-import { _isPatternPredicate, _validateUndefinedVariables, _validateUnknownFunctions, extractEdgePropColumnsFromQuery, extractMatchVariables, extractVariablesFromClause, extractEdgesFromNodes } from './executor-validators'
+import { _isPatternPredicate, _validateUndefinedVariables, _validateUnknownFunctions, _stripExistsSubqueryBlocks, extractEdgePropColumnsFromQuery, extractMatchVariables, extractVariablesFromClause, extractEdgesFromNodes } from './executor-validators'
 import { _validatePlan } from './executor-validate-plan'
 import { _execNonGePaths } from './executor-non-ge'
 
@@ -38,6 +38,239 @@ import { _execNonGePaths } from './executor-non-ge'
  * it only asserts that the referenced relationship/path exists between the two
  * already-bound node variables.
  */
+/**
+ * Evaluate a multi-node chain pattern such as `(l)<-[:R]-(n)-[:R]->(m)` to a
+ * boolean, or `null` when the string is not a chain (so the caller falls back
+ * to the single-edge `_evalPatternPredicate`).
+ *
+ * A chain is a sequence of node patterns joined by relationship arrows where
+ * each node/relationship is written inline (no commas). The chain is decomposed
+ * into single-edge segments, each evaluated independently:
+ *   - a segment whose two endpoints are BOTH bound in `ctx` must be connected
+ *     by a matching edge (a concrete reachability check);
+ *   - a segment with an UNBOUND endpoint only needs an existential neighbor
+ *     (some node satisfying the far label/type).
+ *
+ * The whole chain is satisfiable only if every segment is satisfiable for some
+ * binding of the unbound variables. Variables bound by one segment are seeded
+ * into the shared context for the next segment, so chains like `(n)-->(m)-->(x)`
+ * bind `m` transitively.
+ */
+function _evalChainExists(
+  pat: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): boolean | null {
+  const t = pat.trim()
+
+  // Tokenize into alternating node patterns and relationship specs.
+  // Node pattern: `(var[:Label])`; relationship: `<-` | `-` | `->` with an
+  // optional `[:Type]` bracket in-between.
+  const nodes: Array<{ var: string | null; label: string | null }> = []
+  const rels: Array<{ left: string; right: string; type: string | null }> = []
+  const nodeRe = /\((\w*)(?::([\w]+))?\)/y
+  const relRe = /(<-|-)(\[[^\]]*\])?(->|-)/y
+  let i = 0
+  const tokens: Array<{ kind: 'node' | 'rel'; value: string }> = []
+  // Manual scan: alternate node, rel, node, rel, node, ...
+  const n = t.length
+  let pos = 0
+  const skipWs = () => { while (pos < n && /\s/.test(t[pos])) pos++ }
+  // Parse node
+  const parseNode = (): boolean => {
+    skipWs()
+    if (t[pos] !== '(') return false
+    const close = t.indexOf(')', pos)
+    if (close < 0) return false
+    const inner = t.slice(pos + 1, close).trim()
+    const nm = inner.match(/^(\w*)(?::([\w]+))?$/)
+    if (!nm) return false
+    nodes.push({ var: nm[1] || null, label: nm[2] || null })
+    pos = close + 1
+    return true
+  }
+  const parseRel = (): boolean => {
+    skipWs()
+    const left = t.slice(pos).match(/^(<-|-)/)
+    if (!left) return false
+    const leftArrow = left[1]
+    let p2 = pos + leftArrow.length
+    // optional [ :Type ]
+    skipWs()
+    let type: string | null = null
+    if (t[p2] === '[') {
+      const close = t.indexOf(']', p2)
+      if (close < 0) return false
+      const inner = t.slice(p2 + 1, close).trim()
+      if (inner.startsWith(':')) type = inner.slice(1) || null
+      p2 = close + 1
+    }
+    skipWs()
+    // right arrow: -> or - (could also be <- for the NEXT segment's left... wait)
+    const right = t.slice(p2).match(/^(->|-)/)
+    if (!right) return false
+    const rightArrow = right[1]
+    rels.push({ left: leftArrow, right: rightArrow, type })
+    pos = p2 + rightArrow.length
+    return true
+  }
+  if (!parseNode()) return null
+  // Alternate rel + node until exhausted.
+  while (pos < n) {
+    if (!parseRel()) return null
+    if (!parseNode()) return null
+  }
+  // Single-edge patterns (`(a)-->(b)`) are handled by `_evalPatternPredicate`;
+  // only a genuine chain (two or more relationships) is evaluated here.
+  if (rels.length < 2) return null
+
+  // Evaluate: build a working context seeded with outer bindings, then walk the
+  // chain segment by segment, adding newly-bound variables.
+  const env: Record<string, unknown> = { ...ctx }
+
+  // Resolve a variable to a node, or null if unbound / anonymous.
+  const nodeForVar = (v: string | null): Record<string, unknown> | null => {
+    if (!v) return null
+    const val = env[v]
+    if (!val || typeof val !== 'object') return null
+    return val as Record<string, unknown>
+  }
+  const labelMatchesNeighbor = (node: Record<string, unknown>, label: string | null): boolean => {
+    if (!label) return true
+    const lbl = (node as any)?._label || (node as any)?.props?._label || ''
+    const full = (node as any)?.__fullLabel || ''
+    return lbl === label || full.split(':').includes(label)
+  }
+  // Does `srcNode` have a matching edge (type + direction) to `tgtNode`/any?
+  const edgeTypeOk = (e: any, type: string | null) => {
+    if (!type) return true
+    return e.label === type || (e.label === null && !type)
+  }
+  // Enumerate neighbors of `idx` satisfying type + direction.
+  const neighbors = (srcIdx: number, direction: 'out' | 'in', type: string | null): number[] => {
+    const result: number[] = []
+    const edges: any[] = (allNodes[srcIdx] as any)?.__edges || []
+    const seen = new Set<number>()
+    for (const e of edges) {
+      if (!edgeTypeOk(e, type)) continue
+      let nbr = -1
+      if (direction === 'out' && e.srcIdx === srcIdx) nbr = e.dstIdx
+      else if (direction === 'in' && e.dstIdx === srcIdx) nbr = e.srcIdx
+      if (nbr < 0) continue
+      if (seen.has(nbr)) continue
+      seen.add(nbr)
+      result.push(nbr)
+    }
+    return result
+  }
+  const nodeIdx = (node: Record<string, unknown>): number => {
+    let idx = allNodes.indexOf(node as any)
+    if (idx >= 0) return idx
+    // The context may hold a GE-wrapped node (different object reference than
+    // allNodes). Fall back to identity fields.
+    const n2 = node as any
+    if (n2._id !== undefined) {
+      idx = allNodes.findIndex((x: any) => x?._id === n2._id)
+      if (idx >= 0) return idx
+    }
+    if (n2._alias !== undefined) {
+      idx = allNodes.findIndex((x: any) => x?._alias === n2._alias)
+      if (idx >= 0) return idx
+    }
+    return -1
+  }
+
+  // Segment 0 connects nodes[0] and nodes[1] via rels[0], etc.
+  // For each segment, decide satisfiability. Bound endpoints are concrete;
+  // unbound endpoints become existentially-quantified neighbors.
+  // We only need to know whether a satisfying assignment EXISTS, so process
+  // segments left-to-right, propagating any newly-bound variable.
+  const segCount = rels.length
+
+  // Determine, per node, whether it is bound (concrete) at the start.
+  const isBound = (idx: number): boolean => {
+    const v = nodes[idx].var
+    if (!v) return false  // anonymous = existential
+    return nodeForVar(v) !== null
+  }
+
+  // Try to satisfy the chain via a recursive search over still-unbound nodes.
+  // Bound nodes may appear at any position; search assignments for the unbound
+  // variables such that every segment's edge exists.
+  const unboundIdxs: number[] = []
+  for (let ni = 0; ni < nodes.length; ni++) if (!isBound(ni)) unboundIdxs.push(ni)
+
+  // Direction of segment connecting nodes[i] (left) and nodes[i+1] (right):
+  //   rels[i].left is the arrow on the LEFT side, rels[i].right on the RIGHT.
+  //   `(a)-[r]->(b)`: left='-', right='->'  => a → b (out)
+  //   `(a)<-[r]-(b)`: left='<-', right='-' => b → a (b out to a)
+  //   `(a)-[r]-(b)`:  left='-', right='-'  => undirected
+  const segDirection = (si: number): { outFromLeft: boolean; outFromRight: boolean } => {
+    const r = rels[si]
+    const outFromLeft = r.right === '->'      // left node is source
+    const outFromRight = r.left === '<-'      // right node is source
+    return { outFromLeft, outFromRight }
+  }
+
+  // Evaluate a candidate assignment of unbound variables to node indices.
+  const tryAssignment = (assign: Array<number | null>, ui: number): boolean => {
+    if (ui >= unboundIdxs.length) {
+      // All assigned — check every segment.
+      for (let si = 0; si < segCount; si++) {
+        const li = nodes[si], ri = nodes[si + 1]
+        const lIdx = li.var ? (isBound(si) ? nodeIdx(nodeForVar(li.var)!) : assign[unboundIdxs.indexOf(si)]) : -1
+        const rIdx = ri.var ? (isBound(si + 1) ? nodeIdx(nodeForVar(ri.var)!) : assign[unboundIdxs.indexOf(si + 1)]) : -1
+        const { outFromLeft, outFromRight } = segDirection(si)
+        const type = rels[si].type
+        // Resolve concrete/anon endpoints.
+        if (lIdx < 0 && rIdx < 0) return false
+        // Check an edge satisfying direction between the (possibly anonymous) endpoints.
+        const hasEdge = (from: number, to: number, out: boolean, out2: boolean): boolean => {
+          const edges: any[] = (allNodes[from] as any)?.__edges || []
+          for (const e of edges) {
+            if (!edgeTypeOk(e, type)) continue
+            if (e.srcIdx === from && e.dstIdx === to) return true
+            if (!out && !out2 && (e.srcIdx === to && e.dstIdx === from)) return true
+          }
+          return false
+        }
+        const leftOk = lIdx >= 0
+        const rightOk = rIdx >= 0
+        if (leftOk && rightOk) {
+          if (outFromLeft) { if (!hasEdge(lIdx, rIdx, true, outFromRight)) return false }
+          else if (outFromRight) { if (!hasEdge(rIdx, lIdx, true, false)) return false }
+          else { // undirected
+            const e1 = hasEdge(lIdx, rIdx, true, false) || hasEdge(rIdx, lIdx, true, false)
+            if (!e1) return false
+          }
+        } else if (leftOk) {
+          // left bound, right anon/unbound-existential: left must reach SOME node
+          const dir = outFromLeft ? 'out' : (outFromRight ? 'in' : 'out')
+          if (neighbors(lIdx, dir as 'out' | 'in', type).length === 0) return false
+        } else if (rightOk) {
+          const dir = outFromRight ? 'out' : (outFromLeft ? 'in' : 'out')
+          if (neighbors(rIdx, dir as 'out' | 'in', type).length === 0) return false
+        }
+      }
+      return true
+    }
+    // Assign unboundIdxs[ui] to each candidate node (and check labels).
+    const ni = unboundIdxs[ui]
+    const label = nodes[ni].label
+    for (let ci = 0; ci < allNodes.length; ci++) {
+      if (!labelMatchesNeighbor(allNodes[ci], label)) continue
+      const prev = assign[ui]
+      assign[ui] = ci
+      if (tryAssignment(assign, ui + 1)) return true
+      assign[ui] = prev
+    }
+    return false
+  }
+
+  const assign = new Array<number | null>(unboundIdxs.length).fill(null)
+  return tryAssignment(assign, 0)
+}
+
 function _evalPatternPredicate(
   pat: string,
   ctx: Record<string, unknown>,
@@ -238,6 +471,262 @@ function _evalPatternPredicate(
 }
 
 /**
+ * Evaluate a single `exists { ... }` subquery body to a boolean, honoring the
+ * outer variable context (`ctx`) and graph (`allNodes`).
+ *
+ * Supported subquery shapes:
+ *   - Simple pattern:            `(n)-->()`      — existence check
+ *   - Pattern + WHERE:           `(n)-->(m) WHERE n.prop = m.prop`
+ *   - Full form:                 `MATCH (n)-->() RETURN true`
+ *   - Aggregate form:            `MATCH (n)-->(m) WITH n, count(*) AS c WHERE c = 3 RETURN true`
+ *
+ * An update clause (SET/DELETE/MERGE/CREATE/REMOVE) inside the subquery is
+ * illegal per openCypher and is reported via a sentinel so the caller can raise
+ * InvalidClauseComposition.
+ *
+ * Returns one of: `true`, `false`, or the string `'InvalidClauseComposition'`.
+ */
+function _evalExistsSubquery(
+  body: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): boolean | 'InvalidClauseComposition' {
+  let b = body.trim()
+  // Strip a leading MATCH keyword (full existential subquery form).
+  b = b.replace(/^MATCH\s+/i, '').trim()
+  if (!b) return false
+
+  // Reject update clauses: any top-level SET/DELETE/MERGE/CREATE/REMOVE inside
+  // an existential subquery is a compile-time InvalidClauseComposition error.
+  if (/\b(SET|DELETE|MERGE|CREATE|REMOVE)\b/i.test(b)) {
+    return 'InvalidClauseComposition'
+  }
+
+  // Strip a trailing `RETURN ...` (the subquery form always tail-ends with it
+  // in a "full" subquery; a simple pattern has no RETURN).
+  const retIdx = _indexOfTopLevelKeyword(b, 'RETURN')
+  if (retIdx >= 0) b = b.slice(0, retIdx).trim()
+
+  // Aggregate subquery: `MATCH (n)-->(m) WITH n, count(*) AS c WHERE c = 3`.
+  // Evaluate by counting the pattern's matches then filtering via the WITH
+  // alias condition.
+  const withIdx = _indexOfTopLevelKeyword(b, 'WITH')
+  if (withIdx >= 0) {
+    return _evalExistsAggregate(b, ctx, allNodes)
+  }
+
+  if (!b) return true
+
+  // Remaining body is `pattern [WHERE cond]`. Split at a top-level WHERE.
+  let pattern = b
+  let cond: string | null = null
+  const whereIdx = _indexOfTopLevelKeyword(b, 'WHERE')
+  if (whereIdx >= 0) {
+    pattern = b.slice(0, whereIdx).trim()
+    cond = b.slice(whereIdx + 5).trim()
+  }
+
+  if (!cond) {
+    // Pure existence check — no binding enumeration required.
+    const v = _evalChainExists(pattern, ctx, allNodes)
+    if (v !== null) return v
+    const pv = _evalPatternPredicate(pattern, ctx, allNodes)
+    return pv === true
+  }
+
+  // Pattern + WHERE: enumerate every binding of the pattern's inner variables,
+  // then evaluate the condition against each binding.
+  return _evalExistsPatternWhere(pattern, cond, ctx, allNodes)
+}
+
+/** Index of a keyword occurring at brace/paren depth 0 (top level). */
+function _indexOfTopLevelKeyword(s: string, kw: string): number {
+  let brace = 0, paren = 0, inStr = false, strChar = ''
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (inStr) { if (c === '\\') { i++; continue } if (c === strChar) inStr = false; continue }
+    if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+    if (c === '{') { brace++; continue }
+    if (c === '}') { brace--; continue }
+    if (c === '(') { paren++; continue }
+    if (c === ')') { paren--; continue }
+    if (brace === 0 && paren === 0) {
+      const rest = s.slice(i)
+      if (rest.startsWith(kw) && !/\w/.test(s[i + kw.length] || '') && !/\w/.test(s[i - 1] || '')) {
+        return i
+      }
+    }
+  }
+  return -1
+}
+
+/**
+ * Evaluate an aggregate existential subquery `pattern WITH var, agg() AS c
+ * WHERE cond`. Only the single-source single-aggregation form used by the TCK
+ * is supported: count the pattern matches for the (already-bound outer) source
+ * variable, bind the aggregate alias, then evaluate the WHERE condition.
+ */
+function _evalExistsAggregate(
+  b: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): boolean {
+  const withIdx = _indexOfTopLevelKeyword(b, 'WITH')
+  const head = b.slice(0, withIdx).trim()      // pattern, e.g. (n)-->(m)
+  const tail = b.slice(withIdx + 4).trim()      // n, count(*) AS c WHERE c = 3
+  const whereIdx = _indexOfTopLevelKeyword(tail, 'WHERE')
+  const aggPart = (whereIdx >= 0 ? tail.slice(0, whereIdx) : tail).trim()
+  const cond = whereIdx >= 0 ? tail.slice(whereIdx + 5).trim() : null
+
+  // Parse `n, count(*) AS c` → alias `c` (and optional qualifying variable).
+  const aliasMatch = aggPart.match(/\b(?:count|collect|sum|avg|min|max|size)\s*\((.*?)\)\s+AS\s+(\w+)/i)
+  if (!aliasMatch) return false
+  const alias = aliasMatch[2]
+
+  // Enumerate the pattern's bindings and count them.
+  const bindings = _enumPatternBindings(head, ctx, allNodes)
+  const count = bindings.length
+
+  if (cond) {
+    const localCtx: Record<string, unknown> = { ...ctx, [alias]: count }
+    const v = _evaluateExpression(cond, localCtx)
+    return v === true
+  }
+  return count > 0
+}
+
+/**
+ * Evaluate `pattern WHERE cond` by enumerating every binding of the pattern's
+ * inner variables and testing `cond` against each. Returns true if any binding
+ * satisfies the condition.
+ */
+function _evalExistsPatternWhere(
+  pattern: string,
+  cond: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): boolean {
+  // A bare node pattern `MATCH (m) WHERE <cond>` enumerates every node as a
+  // candidate binding for `m`; there is no relationship to traverse.
+  const bareVar = pattern.trim().match(/^\((\w+)(?::[\w]+)?\)$/)
+  if (bareVar) {
+    const varName = bareVar[1]
+    for (const node of allNodes) {
+      const localCtx: Record<string, unknown> = { ...ctx, [varName]: node }
+      if (_evalExistsWhereCond(cond, localCtx, allNodes)) return true
+    }
+    return false
+  }
+  const bindings = _enumPatternBindings(pattern, ctx, allNodes)
+  for (const binding of bindings) {
+    const localCtx: Record<string, unknown> = { ...ctx, ...binding }
+    if (_evalExistsWhereCond(cond, localCtx, allNodes)) return true
+  }
+  return false
+}
+
+/**
+ * Evaluate a WHERE condition that may embed a nested `exists { ... }` subquery.
+ * Nested subqueries are resolved recursively against the extended context, then
+ * the remaining pure-boolean expression is evaluated.
+ */
+function _evalExistsWhereCond(
+  cond: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): boolean {
+  let expr = cond.trim()
+  // A bare pattern predicate — possibly a multi-node chain such as
+  // `(l)<-[:R]-(n)-[:R]->(m)` — is the whole condition.
+  const chainV = _evalChainExists(expr, ctx, allNodes)
+  if (chainV !== null) return chainV
+  if (/^\(.*\)$/.test(expr)) {
+    const pv = _evalPatternPredicate(expr, ctx, allNodes)
+    if (pv !== null) return pv
+  }
+  // Nested `exists { ... }` subqueries resolve recursively.
+  if (/exists\s*\{/i.test(expr)) {
+    const resolved = _resolveExistsSubqueries(expr, ctx, allNodes)
+    expr = resolved.expr
+    if (resolved.invalidClause) {
+      throw Object.assign(new Error('SyntaxError: InvalidClauseComposition'), { tckError: 'InvalidClauseComposition' })
+    }
+  }
+  const v = _evaluateExpression(expr, ctx)
+  return v === true
+}
+
+/**
+ * Enumerate the bindings of a simple directed pattern `(src)-[:L]->(tgt)` or
+ * undirected `--`, returning an array of context extensions (one per matched
+ * inner-node/relationship binding). Anonymous endpoints are not bound.
+ *
+ * This is the minimal enumerator needed by existential subqueries; richer
+ * multi-hop / var-length patterns fall back to the existence check elsewhere.
+ */
+function _enumPatternBindings(
+  pattern: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const m = pattern.trim().match(/^\((\w+)(?::[\w]+)?\)\s*(<-|-)\s*(\[[^\]]*\])?\s*(->|-)\s*\((\w*)(?::([\w]+))?\)$/)
+  if (!m) return []
+  const srcVar = m[1]
+  const edgeSpec = m[3] || ''
+  const rightArrow = m[4]
+  const tgtVar = m[5] || null
+  const tgtLabel = m[6] || null
+
+  const resolveNodeIdx = (v: unknown): number => {
+    if (!v || typeof v !== 'object') return -1
+    const node = v as any
+    let idx = allNodes.indexOf(node as any)
+    if (idx >= 0) return idx
+    if (node._alias !== undefined) idx = allNodes.findIndex((n: any) => n?._alias === node._alias)
+    return idx
+  }
+  const srcIdx = resolveNodeIdx(ctx[srcVar])
+  if (srcIdx < 0) return []
+
+  // Edge label (strip `[...]`, leading `:`, optional var-length suffix).
+  let edgeLabel: string | null = null
+  {
+    let inner = edgeSpec.replace(/^\[|\]$/g, '').trim()
+    if (inner.startsWith(':')) inner = inner.slice(1)
+    const vlm = inner.match(/^([\w|]*)\*(\d+)?(?:\.\.(\d+)?)?$/)
+    if (vlm) edgeLabel = vlm[1] || null
+    else edgeLabel = inner || null
+  }
+  const types = edgeLabel ? edgeLabel.split('|').filter(Boolean) : []
+  const labelMatches = (node: any, label: string | null): boolean => {
+    if (!label) return true
+    const lbl = node?._label || node?.props?._label || ''
+    const full = (node?.__fullLabel as string) || ''
+    return lbl === label || full.split(':').includes(label)
+  }
+
+  const direction: 'out' | 'in' | 'any' = rightArrow === '->' ? 'out' : (rightArrow === '-' ? 'any' : 'out')
+
+  const out: Array<Record<string, unknown>> = []
+  const edges: any[] = (allNodes[srcIdx] as any)?.__edges || []
+  for (const e of edges) {
+    if (types.length && !types.includes(e.label)) continue
+    let nbr = -1
+    if (direction === 'out' && e.srcIdx === srcIdx) nbr = e.dstIdx
+    else if (direction === 'in' && e.dstIdx === srcIdx) nbr = e.srcIdx
+    else if (direction === 'any') nbr = e.srcIdx === srcIdx ? e.dstIdx : e.srcIdx
+    if (nbr < 0) continue
+    const tgtNode = allNodes[nbr]
+    if (tgtNode === undefined) continue
+    if (tgtLabel && !labelMatches(tgtNode, tgtLabel)) continue
+    const extn: Record<string, unknown> = {}
+    if (tgtVar) extn[tgtVar] = tgtNode
+    out.push(extn)
+  }
+  return out
+}
+
+/**
  * Rewrite a WHERE boolean expression, replacing every pattern-predicate
  * sub-expression (e.g. `(a)-[:T]->(b:X)`) with its boolean literal
  * (`true`/`false`), so `_evaluateExpression` can evaluate the remaining
@@ -302,6 +791,54 @@ function _resolveWherePatternPredicates(
     i++
   }
   return out
+}
+
+/**
+ * Rewrite a WHERE body, replacing every `exists { ... }` subquery block with a
+ * boolean literal (`true`/`false`) evaluated against `ctx`/`allNodes`. This
+ * lets `_evaluateExpression` evaluate the remaining pure-boolean structure.
+ *
+ * Returns `{ expr, invalidClause }` where `invalidClause` is true when a
+ * subquery contained an illegal update clause (so the caller can throw).
+ */
+function _resolveExistsSubqueries(
+  expr: string,
+  ctx: Record<string, unknown>,
+  allNodes: Array<Record<string, unknown>>,
+): { expr: string; invalidClause: boolean } {
+  let invalidClause = false
+  if (!/exists\s*\{/i.test(expr)) return { expr, invalidClause }
+  let out = ''
+  let i = 0
+  const n = expr.length
+  while (i < n) {
+    const rest = expr.slice(i)
+    const m = rest.match(/^exists\s*\{/i)
+    if (m) {
+      // Locate the matching closing brace.
+      const openIdx = i + m[0].length - 1 // index of '{'
+      let depth = 1
+      let k = openIdx + 1
+      let inStr = false
+      let strChar = ''
+      for (; k < n; k++) {
+        const c = expr[k]
+        if (inStr) { if (c === '\\') { k++; continue } if (c === strChar) inStr = false; continue }
+        if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+        if (c === '{') depth++
+        else if (c === '}') { depth--; if (depth === 0) { k++; break } }
+      }
+      const body = expr.slice(openIdx + 1, k - 1)
+      const val = _evalExistsSubquery(body, ctx, allNodes)
+      if (val === 'InvalidClauseComposition') invalidClause = true
+      out += (val === true) ? 'true' : 'false'
+      i = k
+      continue
+    }
+    out += expr[i]
+    i++
+  }
+  return { expr: out, invalidClause }
 }
 
 /** Find the index of the closing paren that balances the '(' at `start`. */
@@ -2892,8 +3429,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       let matchVarKeys2 = Object.keys(varLabelMap2)
       if (!matchVarKeys2.length && query) {
         // 匹配所有 MATCH 中的节点变量： (n), (m), (a:Label), (b {prop})
+        // Strip `exists { ... }` subqueries first so an INNER `MATCH (n)-->(m)`
+        // inside a subquery is not misread as a second outer MATCH clause (which
+        // would inflate the row count via a cross-product against `m`).
         const allMatchVars: string[] = [];
-        const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|OPTIONAL|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis);
+        const queryForMatch = _stripExistsSubqueryBlocks(query);
+        const matchClauses = queryForMatch.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|OPTIONAL|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis);
         for (const mc of matchClauses) {
           const clause = mc[1];
           const vars = [...clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)].map(x => x[1]).filter(Boolean);
@@ -3108,7 +3649,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // clause of the original query and register them as node aliases so that
     // `RETURN b` formats the node (not an edge) correctly.
     if (!plan.steps?.length && query) {
-      const matchClauses = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
+      const queryForMatch = _stripExistsSubqueryBlocks(query)
+      const matchClauses = queryForMatch.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
       for (const mc of matchClauses) {
         const clause = mc[1]
         const vars = [...clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)].map(x => x[1]).filter(Boolean)
@@ -3868,6 +4410,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         let whereBodyExpr = whereExpr
         if (whereBodyExpr) {
           whereBodyExpr = whereBodyExpr.replace(/length\s*\(\s*(\w+)\s*\)/g, '$1.length')
+          // Resolve `exists { ... }` subqueries to boolean literals first.
+          const resolved = _resolveExistsSubqueries(whereBodyExpr, ctx, allNodes)
+          whereBodyExpr = resolved.expr
+          if (resolved.invalidClause) {
+            throw Object.assign(new Error('SyntaxError: InvalidClauseComposition'), { tckError: 'InvalidClauseComposition' })
+          }
           // Resolve pattern predicates (e.g. `(a)-[:T]->(b:X)`) to boolean
           // literals before expression evaluation. The expression engine cannot
           // parse relationship patterns; substituting true/false lets it evaluate

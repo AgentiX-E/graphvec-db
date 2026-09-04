@@ -5,7 +5,7 @@
  */
 
 import type { QueryPlan } from './query-types'
-import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, extractVariablesFromClause } from './executor-validators'
+import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, _validateExistsSubqueryClauses, extractVariablesFromClause } from './executor-validators'
 import { _validateLiterals, _splitTopLevel } from './expression-engine'
 
 export function _validatePlan(plan: QueryPlan, query?: string): void {
@@ -36,6 +36,12 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // A pattern predicate must contain a relationship; a bare node pattern such
   // as `WHERE (n)` is invalid.
   _validateWhereSelfPattern(query)
+
+  // ── SyntaxError: InvalidClauseComposition ──
+  // An existential subquery `EXISTS { ... }` may only contain read clauses
+  // (MATCH/WHERE/WITH/UNWIND). An update clause (SET/DELETE/MERGE/CREATE/REMOVE)
+  // inside it is a compile-time error.
+  _validateExistsSubqueryClauses(query)
 
   // ═══════════════════════════════════════════════════════════════
   // Literals SyntaxError (编译时字面量检查)
