@@ -4042,6 +4042,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // The expression engine doesn't have access to the graph structure,
     // so we pre-compute the values and inject them directly into row props.
     if (rawWithEdges.length && edgesPayload) {
+      // Pre-computed projection aliases are stored back into `props` below.
+      // For an edge-less MATCH the row's `props` object aliases the node
+      // variable in `__crossVarRows` (same reference), so writing `props[b]`
+      // would leave the node carrying a spurious `b` property. Snapshot the
+      // aliased node first (shallow copy) to break the shared reference.
+      for (const rawRow of rawWithEdges) {
+        if (rawRow.__crossVarRows && rawRow.props && typeof rawRow.props === 'object' && !Array.isArray(rawRow.props)) {
+          for (const vn of Object.keys(rawRow.__crossVarRows)) {
+            if ((rawRow.__crossVarRows as any)[vn] === rawRow.props) {
+              ;(rawRow.__crossVarRows as any)[vn] = { ...rawRow.props }
+            }
+          }
+        }
+      }
       const exprCols = plan.expressionColumns || []
       for (const ec of exprCols) {
         const expr = ec.expression || ''
@@ -4141,6 +4155,41 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 ;(rawWithEdges[ri] as any).props[alias] = val
               }
             } catch (_e: any) { /* fall through */ }
+          }
+        }
+      }
+    }
+
+    // Patch per-group `count(field)` for WITH clauses that mix a pattern
+    // comprehension with an aggregate (e.g. `WITH [p=(n)-->()|p] AS ps,
+    // count(b) AS c`).  GE cannot group by the comprehension column and drops
+    // the aggregate, so the grouped rows arrive here WITHOUT the count column;
+    // `_formatResultRow` would otherwise fall back to an edge-variable placeholder
+    // and emit a bogus `[:T]`.  Compute the per-group count from each row's
+    // cross-variable context (the `field` — e.g. `b` — is the group key, so each
+    // grouped row contributes exactly one non-null binding).
+    if (plan.aggregate && rawWithEdges?.length) {
+      const agg = plan.aggregate as any
+      const aggFn = (agg.function || agg.type || '').toLowerCase()
+      const _whComp = (plan.with?.columns || []).some((wc: any) => {
+        const e = wc?.expression
+        return e && ((typeof e === 'string' && e.includes('|')) || (e.type === 'LIST' && (e.items || []).some((it: any) => it?.type === 'STRING' && String(it.value).includes('|'))))
+      })
+      if (aggFn === 'count' && _whComp) {
+        const colMatch = (agg.column || '').match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
+        const field = colMatch ? colMatch[1].trim() : (agg.field || '*')
+        const aggAlias = (agg.alias && agg.alias !== agg.function) ? agg.alias : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || 'c')
+        for (let ri = 0; ri < rawWithEdges.length; ri++) {
+          const rw = rawWithEdges[ri] as any
+          const cvr = (rw.__crossVarRows && typeof rw.__crossVarRows === 'object') ? rw.__crossVarRows : {}
+          if (cvr[aggAlias] && typeof cvr[aggAlias] === 'object' && (cvr[aggAlias] as any).__edgeLabel) {
+            delete cvr[aggAlias]
+          }
+          const cnt = (field === '*' || field === '' || (cvr[field] !== undefined && cvr[field] !== null)) ? 1 : 0
+          if (rw.props && typeof rw.props === 'object') {
+            rw.props[aggAlias] = cnt
+          } else {
+            rw[aggAlias] = cnt
           }
         }
       }
