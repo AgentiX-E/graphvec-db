@@ -268,19 +268,27 @@ export async function _execNonGePaths(
             },
           }
           const procResult = proc.execute(ctx, args || []) as any[]
-          // 无结果返回时（void 函数如 doNothing），直接返回 MATCH 行
+          // Void procedure (e.g. doNothing) yields no rows and consumes none:
+          // re-run the plan without the CALL clause so the preceding MATCH rows
+          // flow through untouched.  Dynamic import avoids a module cycle with
+          // query-executor.ts (which imports this file for _execNonGePaths).
           if (procResult.length === 0) {
-            // 用 _executeQuery 正确处理 MATCH plan
             const matchPlan = { ...plan, callProcedure: undefined } as any
             delete matchPlan.callProcedure
+            const { _executeQuery } = await import('./query-executor')
             return _executeQuery(matchPlan, nodes, query)
           }
-          // 有结果时十字连接
+          // In-query CALL with a non-empty result set: cross-join the matched
+          // rows with the procedure rows.  Resolve the MATCH rows by re-running
+          // the plan without the CALL clause via a dynamic import (avoids cycle).
           let geRows
           if (nodes.length > 0 && !plan.hasMatch && !plan.scanLabel && (!plan.steps || plan.steps.length === 0)) {
             geRows = nodes
           } else {
-            geRows = await _executeQueryPlan(planCopy, nodes)
+            const planCopy = { ...plan, callProcedure: undefined } as any
+            delete planCopy.callProcedure
+            const { _executeQuery } = await import('./query-executor')
+            geRows = await _executeQuery(planCopy, nodes, query)
           }
           const joinedRows: any[] = []
           for (const geRow of geRows) {
