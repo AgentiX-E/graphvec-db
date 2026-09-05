@@ -4683,11 +4683,41 @@ export function _splitTopLevel(s: string, find: string): string[] {
  * 字面量编译时语法和语义验证（SyntaxError）
  * Literals: 整数溢出、非法格式、十六进制/八进制/浮点溢出、Unicode、列表/map 语法
  */
+/** Cut a RETURN projection off at the first top-level trailing clause keyword
+ * (ORDER BY, SKIP, LIMIT, UNION), so clause-level numeric/other literals are
+ * not mistaken for RETURN columns during literal validation.  Respects string
+ * literals and bracket nesting. */
+function _stripTrailingClauses(afterReturn: string): string {
+  let depth = 0, inStr = false, strChar = ''
+  let i = 0
+  while (i < afterReturn.length) {
+    const ch = afterReturn[i]
+    if (inStr && ch === '\\') { i += 2; continue }
+    if (inStr) { if (ch === strChar) inStr = false; i++; continue }
+    if (ch === "'" || ch === '"') { inStr = true; strChar = ch; i++; continue }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; i++; continue }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; i++; continue }
+    if (depth === 0) {
+      if (/\s/.test(ch)) {
+        const rest = afterReturn.slice(i)
+        const m = rest.match(/^\s+(ORDER\s+BY|SKIP|LIMIT|UNION)\b/i)
+        if (m) return afterReturn.slice(0, i)
+      }
+    }
+    i++
+  }
+  return afterReturn
+}
+
 export function _validateLiterals(query: string): void {
   // 提取 RETURN 后的裸表达式（去掉 AS alias）
   const retMatch = query.match(/RETURN\b([\s\S]*)/i)
   if (!retMatch) return
-  const afterReturn = retMatch[1].trim()
+  // Truncate trailing clauses (ORDER BY / SKIP / LIMIT / UNION) that follow the
+  // RETURN projection — their numeric literals (e.g. `LIMIT 0`) must not be
+  // validated as RETURN columns.  Truncation is bracket- and string-aware so a
+  // keyword inside a map/list/string is left untouched.
+  const afterReturn = _stripTrailingClauses(retMatch[1]).trim()
   const exprs = _splitTopLevel(afterReturn, ',').map(s => s.trim()).filter(Boolean)
   const literals = exprs.map(s => s.replace(/\s+AS\s+\w+$/i, '').trim())
 

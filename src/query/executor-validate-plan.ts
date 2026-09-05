@@ -50,13 +50,16 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   _validateLiterals(query)
 
   // ── SyntaxError: InvalidDelete ──
-  // DELETE 关系模式（需要 DETACH）
+  // Deleting a label/type expression (e.g. `DELETE n:Person`, `DELETE r:T`)
+  // is a compile-time error.  Deleting a plain variable (`DELETE n`, `DELETE r`)
+  // is always legal — relationships need no DETACH, and deleting a node that
+  // still has connections is a *runtime* DeleteConnectedNode, not InvalidDelete.
   if (plan.type === 'DELETE' && query) {
-    // DELETE 关系但未使用 DETACH
-    const hasRelationship = query.includes('[') && query.includes(']')
-    const isDetach = query.toUpperCase().includes('DETACH')
-    if (hasRelationship && !isDetach) {
-      // 删除关系需要 DETACH
+    // Match the DELETE clause operand directly: a `:` inside the target list
+    // denotes a label/type expression.  Extract only the clause text after
+    // DELETE/DETACH DELETE up to the next clause keyword.
+    const delClause = query.match(/\b(?:DETACH\s+)?DELETE\s+([\s\S]+?)(?=\s+(?:RETURN|WITH|ORDER\s+BY|SKIP|LIMIT|UNWIND|SET|REMOVE|CREATE|MERGE|MATCH)\b|$)/i)
+    if (delClause && /:/.test(delClause[1])) {
       throw Object.assign(new Error('SyntaxError: InvalidDelete'), { tckError: 'InvalidDelete' })
     }
   }
