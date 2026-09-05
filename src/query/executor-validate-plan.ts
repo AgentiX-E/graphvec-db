@@ -418,10 +418,25 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         throw Object.assign(new Error('SyntaxError: VariableTypeConflict'), { tckError: 'VariableTypeConflict' })
       }
     }
-    // WITH 值绑定变量被用作 MATCH 节点
-    const withBindings = [...query.matchAll(/WITH\s+([\s\S]+?)\s+AS\s+(\w+)/ig)].map(m => m[2])
-    for (const wv of withBindings) {
-      if (wv && (matchNodeVars.includes(wv) || edgeVars.includes(wv))) {
+    // WITH <value> AS <alias> conflicts only when the alias is reused as a
+    // node/edge variable in a LATER MATCH and <value> is a scalar/expression (not
+    // a variable forward of the same kind).  `WITH r1 AS r2 MATCH ()-[r2]-()` is a
+    // legal edge forward; `WITH 42 AS n MATCH (n)` conflicts; `MATCH (n) WITH
+    // n.name AS n RETURN n` is legal (the alias is shadowed, not re-matched).
+    const withBindingMatches = [...query.matchAll(/WITH\s+(.+?)\s+AS\s+(\w+)/ig)]
+    for (const wm of withBindingMatches) {
+      const wv = wm[2]
+      if (!wv) continue
+      const valueExpr = wm[1].split(',').pop()!.trim()
+      const isVarForward = /^[a-zA-Z_]\w*$/.test(valueExpr) &&
+        (matchNodeVars.includes(valueExpr) || edgeVars.includes(valueExpr) || pathAssignments.includes(valueExpr))
+      if (isVarForward) continue
+      // Only a conflict if this alias is re-bound as node/edge in a MATCH that
+      // appears AFTER this WITH clause.
+      const afterWith = query.slice((wm.index || 0) + wm[0].length)
+      const reuseAsNode = new RegExp(`MATCH\\s+[\\s\\S]*?\\(${wv}(?::|\\))`).test(afterWith)
+      const reuseAsEdge = new RegExp(`\\[${wv}\\s*(?::|\\])`).test(afterWith)
+      if (reuseAsNode || reuseAsEdge) {
         throw Object.assign(new Error('SyntaxError: VariableTypeConflict'), { tckError: 'VariableTypeConflict' })
       }
     }
