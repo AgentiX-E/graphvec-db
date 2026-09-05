@@ -169,37 +169,47 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   }
 
   // ── SyntaxError: AmbiguousAggregationExpression ──
-  // 当两个同名聚合在同一个 RETURN 中出现
-  if (plan.aggregate && plan.returnColumns?.length > 1) {
-    // 相同的聚合函数出现两次：RETURN count(*), count(*)
-    const rawAggs: string[] = []
-    if (query) {
-      const aggMatch = query.match(/\b(count|sum|avg|max|min|collect)\s*\([^)]*\)/ig)
-      if (aggMatch && aggMatch.length > 1) {
-        const normalized = aggMatch.map(a => a.replace(/\s+/g, ''))
-        if (new Set(normalized).size < normalized.length) {
-          throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
+  // A projection column that mixes an aggregate call with a non-aggregate
+  // (bare variable / property) reference is ambiguous: the implicit grouping
+  // is undefined (e.g. `RETURN me.age + count(you.age)`).  Two *separate*
+  // columns — one grouping key, one aggregate — are legal (`RETURN n.division,
+  // max(n.age)`), and ORDER BY may freely reference an already-projected
+  // aggregate (`ORDER BY max(n.age)`), so neither is a conflict.
+  if (query && plan.returnColumns?.length) {
+    const aggFn = /\b(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/i
+    for (const rc of plan.returnColumns) {
+      if (typeof rc !== 'string') continue
+      // Strip the string literals so their contents are not scanned as variables.
+      const col = rc.replace(/'[^']*'/g, "'' ").replace(/"[^"]*"/g, '" "')
+      if (!aggFn.test(col)) continue
+      // Remove the aggregate call(s) — including their balanced argument lists —
+      // so that variables INSIDE a call (e.g. `n.age` in `max(n.age)`) are not
+      // mistaken for non-aggregate references.  What remains is the mixing
+      // expression: a bare variable there indicates ambiguous grouping.
+      let withoutAggs = col
+      const callRe = /\b(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/gi
+      let cm: RegExpExecArray | null
+      let offset = 0
+      while ((cm = callRe.exec(col)) !== null) {
+        const start = cm.index + offset
+        let depth = 0, j = cm.index + cm[0].length - 1
+        for (; j < col.length; j++) {
+          if (col[j] === '(') depth++
+          else if (col[j] === ')') { depth--; if (depth === 0) break }
         }
+        const end = j + 1
+        withoutAggs = withoutAggs.slice(0, start) + withoutAggs.slice(end)
+        offset -= (end - start)
       }
-    }
-    // 两个不同聚合出现在同一 RETURN
-    if (plan.returnColumns.filter((rc: string) =>
-      /^(count|sum|avg|max|min|collect)\s*\(/i.test(rc)
-    ).length > 1) {
-      // count(*) 和 count(*) 相同不算，但 count(*) 和 sum(x) 算
-      const aggSet = new Set(
-        plan.returnColumns.filter((rc: string) =>
-          /^(count|sum|avg|max|min|collect)\s*\(/i.test(rc)
-        ).map((rc: string) => rc.replace(/\s+/g, ''))
-      )
-      // If any多个不同聚合函数
-      if (aggSet.size > 1) {
+      // A remaining bare variable / property outside any aggregate call marks
+      // the ambiguous mixed expression (e.g. `me.age + count(you.age)`).
+      const bareVar = /\b[a-zA-Z_]\w*\b/g
+      let bm: RegExpExecArray | null
+      while ((bm = bareVar.exec(withoutAggs)) !== null) {
+        const name = bm[0]
+        if (/^(?:true|false|null|DISTINCT|AS)$/i.test(name)) continue
         throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
       }
-    }
-    // 多 * 列
-    if (plan.returnColumns.filter((rc: string) => rc === '*').length > 1) {
-      throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
     }
   }
 
@@ -257,6 +267,18 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         if (exprText) projectedExprs.add(exprText)
       }
     }
+    // Also collect the RETURN projection raw expressions from the query text —
+    // `plan.returnColumns` holds only aliases, so the original aggregate text
+    // (e.g. `avg(person.age)` in `RETURN avg(person.age) AS avgAge`) must be
+    // recovered from the query.  A RETURN clause may legally feed an ORDER BY
+    // aggregate (`RETURN n.division, max(n.age) ORDER BY max(n.age)`).
+    const returnClause = query.match(/\bRETURN\s+([\s\S]+?)(?=\s+ORDER\s+BY\b|$)/i)
+    if (returnClause) {
+      for (const item of returnClause[1].split(',')) {
+        const exprText = item.replace(/\s+AS\s+\w+$/i, '').trim()
+        if (exprText) projectedExprs.add(exprText)
+      }
+    }
     for (const obm of orderByClauses) {
       const obExpr = obm[1].replace(/\s+(?:ASC|ASCENDING|DESC|DESCENDING)\b/gi, '')
       // Find each aggregate call, capturing the balanced argument list.
@@ -272,8 +294,12 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         }
         if (j >= obExpr.length) j = obExpr.length - 1
         const callText = obExpr.slice(funcStart, j + 1)
-        // A call is allowed only if the exact call text is already projected.
-        const allowed = [...projectedExprs].some(pe => pe.replace(/\s+/g, '') === callText.replace(/\s+/g, ''))
+        // A call is allowed only if the exact call text appears within a
+        // projected expression (RETURN/WITH).  A bare call (`avg(person.age)`)
+        // may be embedded in a larger ORDER BY expression (`$age + avg(...) - 1`),
+        // so substring matching (whitespace-insensitive) is used.
+        const normCall = callText.replace(/\s+/g, '')
+        const allowed = [...projectedExprs].some(pe => pe.replace(/\s+/g, '').includes(normCall))
         if (!allowed) {
           throw Object.assign(new Error('SyntaxError: InvalidAggregation'), { tckError: 'InvalidAggregation' })
         }
