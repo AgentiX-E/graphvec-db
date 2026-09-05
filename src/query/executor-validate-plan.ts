@@ -5,7 +5,8 @@
  */
 
 import type { QueryPlan } from './query-types'
-import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, _validateExistsSubqueryClauses, extractVariablesFromClause } from './executor-validators'
+import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, _validateExistsSubqueryClauses, extractVariablesFromClause, extractMatchVariables } from './executor-validators'
+import { globalRegistry as _procedureRegistry } from './procedure-registry'
 import { _validateLiterals, _splitTopLevel } from './expression-engine'
 
 export function _validatePlan(plan: QueryPlan, query?: string): void {
