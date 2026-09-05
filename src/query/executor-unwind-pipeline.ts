@@ -46,6 +46,14 @@ function _preProcessAggregateWith(
       if (eqIdx < 0) continue
       const expr = col.substring(0, eqIdx).trim()
       const alias = col.substring(eqIdx + 3).trim()
+      // Only pre-evaluate *aggregate* expressions here.  A non-aggregate
+      // projection such as `n.num AS num` (a property access, or a bare
+      // variable forward) must be evaluated per-row against a single node,
+      // not against the whole match array that `varCtx[stepSrc]` holds at this
+      // stage; doing so turns `n` into an array and throws "Property access on
+      // non-map type".  Those per-row projections are handled downstream by the
+      // unwind/aggregation steps.
+      if (!/^\s*(collect|count|sum|avg|max|min|stdev|stdevp|percentilecont|percentiledisc|percentileCont|percentileDisc)\s*\(/i.test(expr)) continue
       const val = _evaluateExpression(expr, varCtx)
       varCtx[alias] = val !== undefined ? _deepCopyForCapture(val) : null
       preAggAliases.add(alias)

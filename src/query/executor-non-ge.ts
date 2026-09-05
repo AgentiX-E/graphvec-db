@@ -407,11 +407,19 @@ export async function _execNonGePaths(
   // collapses it to count=1, so exclude the scalar-aggregate case.
   const _withScalarAggOnly = !!(plan.with?.columns?.length && plan.with.columns.every((wc: any) =>
     typeof wc?.expression === 'string' && /^\s*(count|sum|avg|max|min)\s*\(/i.test(wc.expression)))
+  // A scalar aggregate (sum/count/avg/max/min) — whether it lives in WITH or in
+  // RETURN — is folded by the graph engine (`_executeWithClause` /
+  // `_executeAggregation`).  Only `collect(...)` list projections (which GE
+  // cannot evaluate) and real UNWIND expansions must route through the unwind
+  // pipeline.  Routing `MATCH (n) WITH n, n.num AS num DELETE n RETURN sum(num)`
+  // here would evaluate `n.num` against the whole match array and throw
+  // "Property access on non-map type".
+  const _aggIsCollect = !!(plan.aggregate && (plan.aggregate as any).function === 'collect')
   if (!_hasSecondMatchAfterWith && (
       (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) ||
-      (plan.hasMatch && plan.aggregate && (plan.unwind || plan.with) && !(plan.steps?.length > 0) && !_withScalarAggOnly) ||
+      (plan.hasMatch && plan.aggregate && (plan.unwind || _aggIsCollect) && !(plan.steps?.length > 0) && !_withScalarAggOnly) ||
       (_startsWithWith && plan.hasMatch && plan.unwind && plan.with && !plan.aggregate) ||
-      (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && (plan.unwind || plan.with)))) {
+      (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && plan.unwind))) {
     const result = _executeWithUnwindPipeline(plan, nodes, query)
     // Apply ORDER BY / SKIP / LIMIT on the unwind/with pipeline output.
     // `_executeWithUnwindPipeline` only performs expansion + projection and
