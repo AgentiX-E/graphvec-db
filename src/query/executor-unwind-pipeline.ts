@@ -54,7 +54,19 @@ function _preProcessAggregateWith(
       // non-map type".  Those per-row projections are handled downstream by the
       // unwind/aggregation steps.
       if (!/^\s*(collect|count|sum|avg|max|min|stdev|stdevp|percentilecont|percentiledisc|percentileCont|percentileDisc)\s*\(/i.test(expr)) continue
-      const val = _evaluateExpression(expr, varCtx)
+      let val: unknown
+      // `collect(row)` over a MATCH variable that varCtx already holds as an
+      // array must FLATTEN — the variable is the full match result, so collect
+      // should return that array directly rather than wrapping it as a single
+      // element (`[[...]]`).  `_evaluateExpression`'s scalar collect() would
+      // wrap it, breaking `UNWIND rows AS node RETURN node.id`.
+      const collectM = expr.match(/^\s*collect\s*\(\s*([a-zA-Z_]\w*)\s*\)\s*$/i)
+      if (collectM) {
+        const inner = varCtx[collectM[1]]
+        val = Array.isArray(inner) ? inner : (inner == null ? [] : [inner])
+      } else {
+        val = _evaluateExpression(expr, varCtx)
+      }
       varCtx[alias] = val !== undefined ? _deepCopyForCapture(val) : null
       preAggAliases.add(alias)
     }
