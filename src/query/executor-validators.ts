@@ -817,8 +817,8 @@ function _extractOrderByVars(text: string): Set<string> {
  *    incoming scope + RETURN aliases.
  */
 export function _validateOrderByScope(query: string): void {
-  // Fast path: only queries with both WITH and ORDER BY need scope tracking.
-  if (!/\bWITH\b/i.test(query) || !/\bORDER\s+BY\b/i.test(query)) return
+  // Only queries with an ORDER BY need scope tracking (WITH or RETURN).
+  if (!/\bORDER\s+BY\b/i.test(query)) return
 
   const clauses = _splitQueryClauses(query)
   let scope = new Set<string>()
@@ -831,6 +831,8 @@ export function _validateOrderByScope(query: string): void {
 
     if (isWith || isReturn) {
       const kwRe = isWith ? /^WITH\s+(DISTINCT\s+)?/i : /^RETURN\s+(DISTINCT\s+)?/i
+      const kwM = clause.match(kwRe)
+      const isDistinct = kwM ? /\bDISTINCT\b/i.test(kwM[0]) : false
       const body = clause.replace(kwRe, '').split(/\bORDER\s+BY\b/i)[0]
       const items = body.split(',').map(t => t.trim()).filter(Boolean)
 
@@ -846,22 +848,28 @@ export function _validateOrderByScope(query: string): void {
           const expr = item.slice(0, asMatch.index).trim()
           for (const v of _extractOrderByVars(expr)) sourceVars.add(v)
         } else {
-          const bare = item.match(/^`?\w+`?/)
-          if (bare) {
-            const name = bare[0].replace(/`/g, '')
-            aliasVars.add(name)
-            sourceVars.add(name)
-          }
+          // Projection without `AS`: the result column name is the bare
+          // identifier (`n` for `RETURN n`), or the trailing property name
+          // (`name` for `RETURN a.name`).  The referenced variable(s) become
+          // sourceVars so a WITH can re-project them.
+          for (const v of _extractOrderByVars(item)) sourceVars.add(v)
+          const prop = item.match(/(?:^|\.)\s*`?([A-Za-z_]\w*)`?\s*$/)
+          const bare = prop ? prop[1] : item.match(/^`?\w+`?/)?.[0]
+          if (bare) aliasVars.add(bare.replace(/`/g, ''))
         }
       }
 
       const obMatch = clause.match(/\bORDER\s+BY\s+(.+?)(?:\s+(?:SKIP|LIMIT)\b|$)/is)
       if (obMatch) {
         // WITH: ORDER BY may use projection source vars + aliases only.
-        // RETURN: ORDER BY may use the incoming scope + RETURN aliases.
+        // RETURN: ORDER BY may use the incoming scope + RETURN aliases — unless
+        // DISTINCT, which restricts ORDER BY to the projection aliases (a
+        // variable not projected by RETURN DISTINCT is no longer in scope).
         const effectiveScope = isWith
           ? new Set([...sourceVars, ...aliasVars])
-          : new Set([...scope, ...aliasVars])
+          : isDistinct
+            ? new Set([...aliasVars])
+            : new Set([...scope, ...aliasVars])
         for (const v of _extractOrderByVars(obMatch[1])) {
           if (!effectiveScope.has(v)) {
             throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
