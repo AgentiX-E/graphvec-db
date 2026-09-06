@@ -230,7 +230,12 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       // is a plain string that does NOT already equal the evaluated result —
       // the safe discriminator is: a bare string value is a property shadow, so
       // a function-call alias must always re-evaluate over it.
-      const needsEval = rowVal === undefined || rowVal === null
+      // A literal expression (e.g. `RETURN 42 AS num`) must also always be
+      // evaluated: it never depends on the row, but its alias may collide with
+      // a node property (here `num`), in which case the raw property value would
+      // otherwise leak through as the result column.
+      const isLiteralExpr = /^[-+]?\d+(\.\d+)?$|^'(?:[^']|'')*'$|^"(?:[^"]|"")*"$|^(?:true|false|null)$/i.test(ecMap[rc] ?? '')
+      const needsEval = isLiteralExpr || rowVal === undefined || rowVal === null
         || (typeof rowVal === 'string' && (rowVal.startsWith('[:') || (isFnCall && ecMap[rc] !== rc)))
       if (needsEval) {
       // Non-function computed expressions (binary comparisons like `p1 = p2`,

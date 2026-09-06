@@ -5407,8 +5407,15 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
 
   // Quick path: no ORDER BY, no HAVING → skip slice + sort + filter overhead
   if (!p.orderBy?.length && !p.having?.length) {
-    if (p.skip !== undefined && p.skip > 0) return result.slice(p.skip)
-    if (p.limit !== undefined && p.limit >= 0) return result.slice(0, p.limit)
+    // SKIP and LIMIT must compose: `SKIP 2 LIMIT 2` over 5 rows yields rows [2,3].
+    // The previous two independent `if`s returned after the SKIP slice, so LIMIT
+    // was silently dropped whenever both clauses were present.
+    if (p.skip !== undefined || p.limit !== undefined) {
+      const start = p.skip !== undefined && p.skip > 0 ? p.skip : 0
+      return p.limit !== undefined && p.limit >= 0
+        ? result.slice(start, start + p.limit)
+        : result.slice(start)
+    }
     return result
   }
 
