@@ -4581,10 +4581,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // GE has already produced the correct single-row result; leave it as-is.
       } else {
       // The parser stores `alias` as the function name (e.g. "count") when the
-      // query has no explicit `AS` clause. In that case the result column must
-      // use the full column expression (e.g. "count(r)") to match the RETURN
-      // column, not the bare function name.
-      const _realAlias = agg.alias && agg.alias !== agg.function ? agg.alias : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c')
+      // query has no explicit `AS` clause, so `alias === function` is NOT a
+      // reliable signal that an explicit alias is absent (e.g. `sum(num) AS sum`
+      // also has `alias === function === "sum"`).  The authoritative result
+      // column name is the key of `plan.returnAliasMap` (or, failing that, a
+      // member of `plan.returnColumns`): for an explicit alias it is the bare
+      // alias, while for a bare call it is the full expression (e.g. `count(r)`).
+      const _explicitReturnKey = plan.returnAliasMap && typeof plan.returnAliasMap === 'object'
+        ? Object.keys(plan.returnAliasMap as Record<string, unknown>).find(k => k === agg.alias)
+        : undefined
+      const _realAlias = _explicitReturnKey
+        ?? (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c')
       const aggAlias = _realAlias
       const colMatch = (agg.column || '').match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
       const field = colMatch ? colMatch[1] : (agg.field || '*')
