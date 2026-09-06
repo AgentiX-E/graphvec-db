@@ -596,7 +596,12 @@ export async function _execNonGePaths(
   }
 
   // ── 变量长度路径：直接 BFS 并返回，不依赖 GE ──
-  const hasVarLenGE = plan.steps?.length === 1 && (plan.steps[0] as any)?.range
+  // `_executeVarLenPath` is a pure BFS matcher: it returns the raw expanded rows
+  // but neither folds a trailing aggregate (`RETURN count(*)`) nor applies DML
+  // side effects (`DETACH DELETE a, b`).  When a variable-length pattern is
+  // followed by DML or an aggregate, fall through to the main GE path, which
+  // owns the DELETE/SET/REMOVE side effects and the aggregate fold.
+  const hasVarLenGE = plan.steps?.length === 1 && (plan.steps[0] as any)?.range && !isDML && !plan.aggregate
   if (hasVarLenGE) {
     let varLenResult = _executeVarLenPath(plan, nodes)
     // ── 对 VLE 结果应用 expressionColumns 映射 ──

@@ -106,6 +106,21 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
   const result: QueryRow[] = []
   const srcNodes: Array<Record<string, unknown>> = [...(nodes || [])]
 
+  // Incoming-edge index keyed by destination node index. Edges are stored once
+  // on their srcIdx node's __edges, so an undirected (`any`) walk needs this
+  // reverse adjacency to discover neighbours reachable through an edge that
+  // points *into* the current node (otherwise `(a)-[*]-(b)` only finds the
+  // forward half of the graph and returns 3 pairs instead of 6 for a 3-chain).
+  const incomingEdges: Array<Array<{ dstIdx: number; srcIdx: number; label: string }>> =
+    new Array(srcNodes.length).fill(null).map(() => [])
+  for (let ni = 0; ni < srcNodes.length; ni++) {
+    const edges = (srcNodes[ni] as any)?.__edges as Array<{ dstIdx: number; srcIdx: number; label: string }> | undefined
+    if (!edges) continue
+    for (const e of edges) {
+      if (e.dstIdx >= 0 && e.dstIdx < srcNodes.length) incomingEdges[e.dstIdx].push(e)
+    }
+  }
+
   for (let si = 0; si < srcNodes.length; si++) {
     const sourceNode = srcNodes[si] as any
     if (plan.scanLabel && !_matchesLabel(sourceNode, plan.scanLabel)) continue
@@ -123,10 +138,15 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
       const nextFrontier: BfsEntry[] = []
       for (const entry of frontier) {
         const node = srcNodes[entry.nIdx] as any
-        const edgeArr: Array<{ dstIdx: number; srcIdx: number; label: string }> = node?.__edges || []
+        const dir = (step as any).direction || 'out'
+        // For an undirected walk, union the node's own outgoing edges with the
+        // incoming edges (reverse adjacency) so both directions are traversed.
+        const edgeArr: Array<{ dstIdx: number; srcIdx: number; label: string }> =
+          dir !== 'out' && dir !== 'in'
+            ? ((node?.__edges || []) as Array<{ dstIdx: number; srcIdx: number; label: string }>).concat(incomingEdges[entry.nIdx] || [])
+            : (node?.__edges || []) as Array<{ dstIdx: number; srcIdx: number; label: string }>
         for (const e of edgeArr) {
           let nIdx = -1
-          const dir = (step as any).direction || 'out'
           if (dir === 'out' && e.srcIdx === entry.nIdx) nIdx = e.dstIdx
           else if (dir === 'in' && e.dstIdx === entry.nIdx) nIdx = e.srcIdx
           else if (dir !== 'out' && dir !== 'in') {
