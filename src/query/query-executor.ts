@@ -3385,7 +3385,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 上面的 crossVarFilters 分支不执行，filteredWithLabels 仍为 records。
     // 此处用 filteredRecords 重新构建正确格式的结果行。
     // 支持多个 MATCH 变量（如 MATCH (n), (m) → 笛卡尔积）和单变量 MATCH。
-    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && (filteredRecords?.length || allNodes?.length)) {
+    // Skip the per-node rebuild when GE already folded this plan's aggregation
+    // into a single synthetic row (id === -1, props holds the aggregate value,
+    // no node `_label`).  The rebuild logic below expects per-node rows and
+    // would otherwise drop the folded aggregate (e.g. `MATCH (n) DELETE n
+    // RETURN sum(n.num)` → null instead of the correct sum).
+    const _geFoldedAggRow = !!plan.aggregate && filteredRecords?.length === 1 &&
+      !!filteredRecords[0]?.props && !('_label' in filteredRecords[0].props)
+    if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && !_geFoldedAggRow && (filteredRecords?.length || allNodes?.length)) {
       let hasMultiMatch = false
       const varLabelMap2: Record<string, string> = {}
       let inlineFilters: Array<{ source: string; property: string; operator: string; value: unknown; negated?: boolean }> = []
@@ -3756,7 +3763,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           return { ...r, props: row }
         })
       : edgePropFilteredRecords
-
 
     // ── 边属性列后置处理 ──
     // 对 `RETURN r.num` 这样的边属性访问，从 edgesPayload 查找边属性并设置到行记录
