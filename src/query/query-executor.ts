@@ -1907,7 +1907,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (s.source) allStepVars.add(s.source)
       if (s.targetAlias) allStepVars.add(s.targetAlias)
     }
-    if (plan.scanLabel) allStepVars.add(plan.scanLabel)
+    // `plan.scanLabel` is a *label* (e.g. `A`), not a variable.  Adding it to
+    // the variable set made a node filter like `WHERE n.name = ...` (whose
+    // `source` is the MATCH variable `n`) get mis-classified as an edge filter
+    // whenever `steps` is empty, because `n` was absent from `allStepVars`.
+    // For a bare label scan (`MATCH (n:A)`), recover the actual variable name
+    // from the query text instead.
+    if (plan.scanLabel && query && (plan.steps || []).length === 0) {
+      const _labelVar = (query.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*\w+\s*)?\)/i) || [])[1]
+      if (_labelVar) allStepVars.add(_labelVar)
+    }
     const nodeAliasList = [...allStepVars]
     const edgeFilters = plan.steps?.length ? (plan.filters || []).filter(f =>
       f.source && !nodeAliasList.includes(f.source)
@@ -3484,7 +3493,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             })
             // 应用 plan.filters 过滤（含内联属性过滤器）
             .filter(({ node }: { node: Record<string, unknown> }) => {
-              const allFilters = [...(plan.filters || []), ...inlineFilters]
+              // WHERE filters are already applied by the graph engine before
+              // DML side effects run.  Re-applying them here (after SET/DELETE
+              // mutated the node props) would wrongly drop rows — e.g.
+              // `MATCH (n:A) WHERE n.name='Andres' SET n.name='Michael'
+              // RETURN n` would see `name` already set to `Michael` and fail
+              // the `= 'Andres'` predicate.  Only apply GE-unhandled filters
+              // (inline `{prop:val}` predicates) in the DML path.
+              const _isDmlRebuild = plan.type === 'SET' || plan.type === 'DELETE' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY'
+              const allFilters = _isDmlRebuild ? [...inlineFilters] : [...(plan.filters || []), ...inlineFilters]
               return allFilters.every((f: any) => {
                 if (f.source && f.source !== varName) return true;
                 const actualVal = node[f.property as string];
@@ -4296,7 +4313,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const _withAggCols = (plan.with?.columns || []).filter(c =>
       typeof c?.expression === 'string' && /^\s*(count|sum|avg|max|min|collect)\s*\(/i.test(c.expression))
     const _isHaving = !!(plan.aggregate && plan.with?.columns?.length && plan.whereBody && _withAggCols.length)
-    if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind) && !_isHaving) {
+    // For DML plans (SET/DELETE/REMOVE), a WHERE predicate is already applied
+    // by the graph engine *before* the side effects run.  Re-evaluating the
+    // same predicate here against the mutated row would wrongly drop it (e.g.
+    // `MATCH (n) WHERE n.name='A' SET n.name='B' RETURN n` — the WHERE re-check
+    // sees `n.name='B'` and fails).  Only skip the re-filter when the WHERE body
+    // is a single simple property comparison (fully captured by `plan.filters`
+    // and thus already handled by GE); a complex boolean/function expression
+    // still needs QE-side evaluation.
+    const _isDmlPlan = plan.type === 'SET' || plan.type === 'DELETE' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY'
+    const _whereIsSimpleCompare = !!plan.whereBody && /^\s*\w+\.\w+\s*(?:=|<>|!=|<|>|<=|>=)\s*(?:'[^']*'|\d+(?:\.\d+)?)\s*$/i.test(plan.whereBody)
+    const _skipWhereRefilter = _isDmlPlan && _whereIsSimpleCompare && (plan.filters?.length ?? 0) >= 1
+    if (plan.whereBody && result.length && !(plan.hasMatch && plan.unwind) && !_isHaving && !_skipWhereRefilter) {
       // Fix GE Default labels on target nodes in __crossVarRows before WHERE eval.
       // GE sets _label='Default' on matched target nodes; restore from allNodes.
       const allN = nodes
