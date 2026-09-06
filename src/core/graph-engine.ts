@@ -3380,6 +3380,35 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     this._edgeCache.clear()
   }
 
+  /**
+   * Reset the engine to an empty graph, removing every node and edge from both
+   * the in-memory indexes and the backing storage.  This is used by the query
+   * executor's connection pool to guarantee isolation between independent query
+   * executions — the engine is a per-execution scratch container, so any node
+   * seeded by a prior run must not leak into the next one.
+   */
+  clearAllData(): void {
+    // Remove every node from storage (this also drops their edges).
+    for (const id of this._nodeIds) {
+      try { this.storage.deleteNode(id) } catch { /* best-effort */ }
+    }
+    // Drop edges that are not reachable through node deletion (defensive).
+    this.storage.clearEdgeCache?.()
+    // Reset node bookkeeping.
+    this._nodeIds.clear()
+    this._nodeCount = 0
+    // Reset label indexes.
+    this._labelIndex.clear()
+    this._labelStrIndex.clear()
+    // Reset degree maps.
+    this._inDegrees.clear()
+    this._outDegrees.clear()
+    // Reset caches.
+    this._nodeCache.clear()
+    this._edgeCache.clear()
+    this._neighborCache.clear()
+  }
+
   // ── Transaction API (Round 6: MVCC 增强) ──
 
   private _defaultTxnManager = new TransactionManager()
