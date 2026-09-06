@@ -2707,10 +2707,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (scanAlias) nodeAliases.add(scanAlias)
               const _sVars = new Set((plan.steps || []).flatMap((s: any) => [s.source, s.targetAlias]))
               const edgeVarNames = new Set<string>()
-              if (plan.returnColumns) {
-                for (const rc of plan.returnColumns) {
-                  if (!nodeAliases.has(rc)) edgeVarNames.add(rc)
-                }
+              // Extract true relationship variable names from the query text
+              // (`-[r:T]->` and `-[r]->`), not from returnColumns: a scalar alias
+              // such as `r.num AS num` contributes a returnColumn `num` that is
+              // *not* a relationship variable, and treating it as one would leak
+              // the whole edge object into `__crossVarRows.num`, breaking the
+              // downstream WHERE (`num % 2 = 0`) and RETURN projection.
+              if (query) {
+                for (const m of query.matchAll(/-\s*\[(\w+)\s*:/g)) edgeVarNames.add(m[1])
+                for (const m of query.matchAll(/-\s*\[(\w+)\s*\]/g)) edgeVarNames.add(m[1])
+                // Undirected / bare relationship variables: `-[r]-`
+                for (const m of query.matchAll(/-\s*\[(\w+)\s*[-<]/g)) edgeVarNames.add(m[1])
               }
               if (plan.filters) {
                 for (const f of plan.filters) {
