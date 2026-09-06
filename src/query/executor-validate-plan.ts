@@ -64,6 +64,39 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     }
   }
 
+  // ── SyntaxError: UndefinedVariable / InvalidArgumentType on DELETE operands ──
+  // DELETE must target bound variables (or property/index projections of one).
+  // keyed off the query text rather than plan.type because an expression operand
+  // such as `DELETE 1 + 1` is mis-parsed by ANTLR into MATCH_MODIFY (no symbolic
+  // name → empty deleteTargets).  Each operand must start with a variable name:
+  //   `DELETE x` (x not bound)          → UndefinedVariable
+  //   `DELETE 1 + 1` (no leading variable)→ InvalidArgumentType
+  if (query && /\b(?:DETACH\s+)?DELETE\b/i.test(query)) {
+    const delClause = query.match(/\b(?:DETACH\s+)?DELETE\s+([\s\S]+?)(?=\s+(?:RETURN|WITH|ORDER\s+BY|SKIP|LIMIT|UNWIND|SET|REMOVE|CREATE|MERGE|MATCH)\b|$)/i)
+    if (delClause) {
+      // Bound identifiers: every node/edge variable (MATCH *and* CREATE/MERGE,
+      // which `extractVariablesFromClause` covers), every `AS` alias, and path
+      // variables (`MATCH p = ...` / `OPTIONAL MATCH p = ...`).  `DELETE p` for
+      // a path variable and `MATCH () CREATE (n) DELETE n` are both legal.
+      const bound = new Set<string>(extractVariablesFromClause(query))
+      for (const wa of query.matchAll(/\bAS\s+(\w+)/gi)) bound.add(wa[1])
+      for (const pv of query.matchAll(/\b(?:OPTIONAL\s+)?MATCH\s+(\w+)\s*=/gi)) bound.add(pv[1])
+      for (const raw of delClause[1].split(',')) {
+        const t = raw.trim()
+        if (!t) continue
+        // A valid operand must begin with an identifier (possibly followed by
+        // property access / index expressions, e.g. `pathColls.key[0]`).
+        const lead = t.match(/^`?([a-zA-Z_]\w*)/)
+        if (!lead) {
+          throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+        }
+        if (!bound.has(lead[1])) {
+          throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+        }
+      }
+    }
+  }
+
   // ── SyntaxError: InvalidParameterUse ──
   if (plan.returnColumns?.some((rc: string) => rc?.startsWith('$'))) {
     throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
