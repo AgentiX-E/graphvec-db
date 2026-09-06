@@ -3037,43 +3037,109 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
       } else if (plan.type === 'SET' && plan.setClauses?.length) {
-        // SET：修改匹配节点的属性
+        // SET：修改匹配节点的属性/标签
         for (const r of records) {
           const nodeIdx = nodeGeIds.indexOf(r.id)
           if (nodeIdx < 0) continue
           const node = allNodes[nodeIdx]
+          // Build an evaluation context mapping each SET alias to this node, so
+          // expression values like `n.name + ' was here'` can be evaluated.
+          const setCtx: Record<string, unknown> = {}
           for (const sc of plan.setClauses) {
-            if (sc.alias && sc.alias !== plan.steps?.[0]?.source) continue
-            if (sc.property) {
-              const pv = sc.value
-              let value: unknown
-              if (typeof pv === 'object' && pv !== null && 'value' in pv) {
-                value = pv.value
-              } else if (typeof pv === 'string') {
-                // Parse structured literals: arrays, maps, numbers, booleans, null
-                const trimmed = pv.trim()
-                if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-                  try { value = JSON.parse(trimmed) } catch { value = pv }
-                } else if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-                  try { value = JSON.parse(trimmed) } catch { value = pv }
-                } else if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
-                  value = Number(trimmed)
-                } else if (/^(true|false)$/i.test(trimmed)) {
-                  value = trimmed.toLowerCase() === 'true'
-                } else if (trimmed === 'null') {
-                  value = null
-                } else {
-                  value = pv
+            if (sc.alias) setCtx[sc.alias] = node
+          }
+          for (const sc of plan.setClauses) {
+            const kind = sc.kind ?? 'PROP'
+            if (kind === 'LABEL') {
+              // Append labels to the node's existing `_label`, preserving order
+              // and avoiding duplicates.  `SET n:Foo:Bar` adds Foo and Bar.
+              // `Default` is the sentinel for "no label", so it is dropped here
+              // rather than kept as a real label (`SET n:Foo` on an unlabeled
+              // node yields `(:Foo)`, not `(:Default:Foo)`).
+              const cur = String(node._label ?? '').split(':').map(s => s.trim()).filter(s => s && s !== 'Default')
+              for (const lb of sc.labels || []) {
+                if (!cur.includes(lb)) cur.push(lb)
+              }
+              node._label = cur.join(':') || 'Default'
+              if (r.props && typeof r.props === 'object') {
+                ;(r.props as Record<string,unknown>)._label = node._label
+              }
+              continue
+            }
+            if (kind === 'MAP' || kind === 'MAP_APPEND') {
+              const props = sc.props || {}
+              if (kind === 'MAP') {
+                // Full replacement: drop every pre-existing property, then apply
+                // the map (skipping explicit nulls, which remove the property).
+                for (const k of Object.keys(node)) {
+                  if (k === '_label' || k === '_alias' || k === '__edges') continue
+                  delete node[k]
                 }
+                if (r.props && typeof r.props === 'object') {
+                  for (const k of Object.keys(r.props)) {
+                    if (k === '_label' || k === '_alias' || k === '__edges') continue
+                    delete (r.props as Record<string,unknown>)[k]
+                  }
+                }
+              }
+              for (const [k, v] of Object.entries(props)) {
+                if (v === null) {
+                  if (k in node) delete node[k]
+                  if (r.props && typeof r.props === 'object' && k in r.props) delete (r.props as Record<string,unknown>)[k]
+                  continue
+                }
+                node[k] = v
+                if (r.props && typeof r.props === 'object') (r.props as Record<string,unknown>)[k] = v
+              }
+              continue
+            }
+            // PROP (property assignment)
+            if (!sc.property) continue
+            const pv = sc.value
+            let value: unknown
+            if (sc.expression != null) {
+              // Evaluate the expression string against the bound node/variable
+              // context (e.g. `n.name + ' was here'`, `a.numbers + [4, 5]`,
+              // `[1, 2, 3]`, `null`).
+              try {
+                value = _evaluateExpression(sc.expression, setCtx)
+              } catch (_) {
+                value = pv
+              }
+            } else if (typeof pv === 'object' && pv !== null && 'value' in pv) {
+              value = pv.value
+            } else if (typeof pv === 'string') {
+              // Parse structured literals: arrays, maps, numbers, booleans, null
+              const trimmed = pv.trim()
+              if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                try { value = JSON.parse(trimmed) } catch { value = pv }
+              } else if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                try { value = JSON.parse(trimmed) } catch { value = pv }
+              } else if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+                value = Number(trimmed)
+              } else if (/^(true|false)$/i.test(trimmed)) {
+                value = trimmed.toLowerCase() === 'true'
+              } else if (trimmed === 'null') {
+                value = null
               } else {
                 value = pv
               }
-              node[sc.property] = value
-              // Sync to GE-returned record props so RETURN expression evaluation
-              // sees the newly-set properties (e.g., RETURN size(n.numbers) after SET n.numbers).
-              if (r.props && typeof r.props === 'object') {
-                (r.props as Record<string,unknown>)[sc.property] = value
+            } else {
+              value = pv
+            }
+            // `SET n.prop = null` removes the property rather than storing null.
+            if (value === null) {
+              if (sc.property in node) delete node[sc.property]
+              if (r.props && typeof r.props === 'object' && sc.property in r.props) {
+                delete (r.props as Record<string,unknown>)[sc.property]
               }
+              continue
+            }
+            node[sc.property] = value
+            // Sync to GE-returned record props so RETURN expression evaluation
+            // sees the newly-set properties (e.g., RETURN size(n.numbers) after SET n.numbers).
+            if (r.props && typeof r.props === 'object') {
+              (r.props as Record<string,unknown>)[sc.property] = value
             }
           }
           // 同步更新 GE 存储层节点属性（await 确保持久化）
@@ -3489,7 +3555,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (!targetLabel2) return true;
               const fullLabel = node.__fullLabel
               if (fullLabel && typeof fullLabel === 'string') return fullLabel.split(':').includes(targetLabel2)
-              return String(node._label) === targetLabel2;
+              // Node may carry multiple labels (`A:Foo`), so `MATCH (n:A)` must
+              // still match.  A strict `===` equality here would drop a node
+              // whose label was extended by a DML SET (`SET n:Foo` → `A:Foo`).
+              return String(node._label).split(':').includes(targetLabel2);
             })
             // 应用 plan.filters 过滤（含内联属性过滤器）
             .filter(({ node }: { node: Record<string, unknown> }) => {
@@ -3501,7 +3570,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // the `= 'Andres'` predicate.  Only apply GE-unhandled filters
               // (inline `{prop:val}` predicates) in the DML path.
               const _isDmlRebuild = plan.type === 'SET' || plan.type === 'DELETE' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY'
-              const allFilters = _isDmlRebuild ? [...inlineFilters] : [...(plan.filters || []), ...inlineFilters]
+              // For DML plans every WHERE/inline predicate is already applied in
+              // the graph-engine seed stage (skipNodeIndices / stepSourceFilters)
+              // *before* the side effects mutate the node.  Re-applying them here
+              // would compare the predicate against the post-mutation value and
+              // wrongly drop rows (e.g. `MATCH (n:X {name:'A'}) SET n={name:'B'}`
+              // — re-checking `name='A'` against the now-`B` value).  So DML plans
+              // apply no filters at all in this rebuild; non-DML plans still apply
+              // both WHERE filters and inline `{prop:val}` predicates.
+              const allFilters = _isDmlRebuild ? [] : [...(plan.filters || []), ...inlineFilters]
               return allFilters.every((f: any) => {
                 if (f.source && f.source !== varName) return true;
                 const actualVal = node[f.property as string];
@@ -5480,6 +5557,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 释放 GEPool 连接（非 database-specific 实例）
     if (dbName === DEFAULT_DATABASE && ge) {
       try {
+        // Reset the engine to an empty graph before returning it to the pool.
+        // The GE instance is a per-execution scratch container (seed → query →
+        // discard); without this reset the seeded nodes leak into the next
+        // pooled execution and inflate results (e.g. `MATCH (n) RETURN count(n)`
+        // counting stale nodes from an earlier run).
+        ;(ge as any).clearAllData?.()
         const pool = GEPool.getInstance()
         pool.releaseConnection(ge)
       } catch { /* 池尚未初始化或已销毁 */ }

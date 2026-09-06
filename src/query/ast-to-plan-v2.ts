@@ -110,7 +110,7 @@ export interface QueryPlan {
   createEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any'; props?: Record<string, unknown> | null }>
   deleteTargets?: string[]
   detachDelete?: boolean
-  setClauses?: Array<{ property: string; value: unknown }>
+  setClauses?: Array<{ property?: string; value?: unknown; alias?: string; expression?: string; kind?: 'PROP' | 'LABEL' | 'MAP' | 'MAP_APPEND'; labels?: string[]; props?: Record<string, unknown> }>
   removeClauses?: Array<{ type: 'REMOVE_PROP' | 'REMOVE_LABEL'; property?: string; ref?: string; label?: string }>
   mergeNodes?: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
   mergeEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any' }>
@@ -2031,6 +2031,42 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
 // SET / REMOVE 提取
 // ═══════════════════════════════════════════════════════════════
 
+/** Parse a textual property-map literal `{name:'A', name2:'B', num:5}` (or `{}`)
+ *  into a plain object.  Values may be quoted strings, numbers, booleans,
+ *  `null`, or nested lists.  Keys are unquoted identifiers or quoted strings. */
+function _parseMapLiteral(text: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  const body = text.trim()
+  if (!body.startsWith('{') || !body.endsWith('}')) return result
+  const inner = body.slice(1, -1).trim()
+  if (!inner) return result
+  const entries = splitByTopLevelComma(inner)
+  for (const entry of entries) {
+    const eq = entry.indexOf(':')
+    if (eq < 0) continue
+    let key = entry.slice(0, eq).trim()
+    let valText = entry.slice(eq + 1).trim()
+    if ((key.startsWith("'") && key.endsWith("'")) || (key.startsWith('"') && key.endsWith('"'))) {
+      key = key.slice(1, -1)
+    }
+    let val: unknown = valText
+    if ((valText.startsWith("'") && valText.endsWith("'")) || (valText.startsWith('"') && valText.endsWith('"'))) {
+      val = unescapeCypherString(valText.slice(1, -1))
+    } else if (valText === 'true') val = true
+    else if (valText === 'false') val = false
+    else if (valText === 'null') val = null
+    else if (/^-?\d+$/.test(valText)) {
+      const n = Number(valText)
+      val = Number.isSafeInteger(n) ? n : BigInt(valText)
+    } else if (/^-?\d+\.\d+$/.test(valText)) val = parseFloat(valText)
+    else if (valText.startsWith('[') && valText.endsWith(']')) {
+      val = parseListLiteral(valText)
+    }
+    result[key] = val
+  }
+  return result
+}
+
 function extractSetClauses(setCtx: any): QueryPlan['setClauses'] {
   const sets: QueryPlan['setClauses'] = []
   const text = getTextRecursive(setCtx)
@@ -2039,17 +2075,54 @@ function extractSetClauses(setCtx: any): QueryPlan['setClauses'] {
   // Split by comma at top level
   const items = splitByTopLevelComma(setText)
   for (const item of items) {
-    const eqMatch = item.match(/^(\w+)\.(\w+)\s*=\s*(.+)$/)
+    const trimmed = item.trim()
+
+    // Map assignment / append: `n = {name:'A', name2:'B'}` (replace) or
+    // `n += {name2:'C'}` (merge).  The optional operator distinguishes MAP vs
+    // MAP_APPEND; both carry the parsed property map in `props`.
+    const mapMatch = trimmed.match(/^\(?(\w+)\)?\s*(\+=|=)\s*(\{.*\})$/)
+    if (mapMatch) {
+      const alias = mapMatch[1]
+      const op = mapMatch[2]
+      const props = _parseMapLiteral(mapMatch[3])
+      sets.push({ kind: op === '+=' ? 'MAP_APPEND' : 'MAP', alias, props })
+      continue
+    }
+
+    // Label assignment: `n:Foo`, `n:Foo:Bar`, or `n :Foo` (whitespace before
+    // the colon is legal and ignored).
+    const labelMatch = trimmed.match(/^\(?(\w+)\)?\s*:\s*([\w\s:]+)$/)
+    if (labelMatch && !trimmed.includes('=')) {
+      const alias = labelMatch[1]
+      const labels = labelMatch[2].split(':').map(s => s.trim()).filter(Boolean)
+      if (labels.length) {
+        sets.push({ kind: 'LABEL', alias, labels })
+        continue
+      }
+    }
+
+    // Property assignment: `n.prop = <value>` or `(n).prop = <value>`.
+    // The selector may be parenthesized (`(n).name`), which the TCK uses to
+    // select a node/relationship via a simple parenthesized expression.
+    const eqMatch = trimmed.match(/^\(?(\w+)\)?\.(\w+)\s*(=|\+=)\s*(.+)$/)
     if (eqMatch) {
-      let val: unknown = eqMatch[3].trim()
-      // Try to parse literal values
+      const alias = eqMatch[1]
+      const propName = eqMatch[2]
+      let val: unknown = eqMatch[4].trim()
+      let expression: string | undefined
+      // Try to parse literal values; otherwise keep the raw text as an
+      // expression string so the SET execution block can evaluate it against
+      // the matched node (e.g. `n.name + ' was here'`, `a.numbers + [4,5]`).
       if ((val as string).startsWith("'") || (val as string).startsWith('"')) {
         val = (val as string).slice(1, -1)
       } else if (val === 'true') val = true
       else if (val === 'false') val = false
       else if (/^-?\d+$/.test(val as string)) val = parseInt(val as string, 10)
       else if (/^-?\d+\.\d+$/.test(val as string)) val = parseFloat(val as string)
-      sets.push({ property: eqMatch[2], value: val })
+      else {
+        expression = val as string
+      }
+      sets.push({ kind: 'PROP', property: propName, value: val, alias, expression })
     }
   }
   return sets
