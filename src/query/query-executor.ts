@@ -1286,34 +1286,82 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
     const cnToAllNodeMap = new Map<number, number>()  // createNode index → allNodes index
     const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
+    // Variable → node binding table.  A single node may be referenced by many
+    // variables (e.g. `MATCH (n) MATCH (m) WITH n AS a, m AS b`), so this is a
+    // Map rather than a single `_alias` per node.  Exposed on the allNodes array
+    // so `_buildDmlRows` can resolve RETURN projections against it.
+    const varToNodeMap = new Map<string, any>()
+    ;(allNodes as any).__varToNodeMap = varToNodeMap
 
-    // Bind MATCH variables to pre-existing (seed) nodes by `_alias` before the
-    // CREATE expansion loop resolves `edge.source`/`edge.target` references.
-    // Without this, `MATCH (x:End) CREATE (:Begin)-[:TYPE]->(x)` would not find
-    // `x` (the seed node still carries its synthetic `__n0` alias) and the
-    // fallback below would wrongly rebind the freshly-created node instead.
+    // ── Bind MATCH variables to seed nodes ─────────────────────────────
+    // `MATCH (n)` / `MATCH (n:Label)` bind a variable (with or without a label)
+    // to the matching pre-existing node(s).  This must run *before* the CREATE
+    // expansion loop resolves `edge.source`/`edge.target`, otherwise a bound
+    // variable (`MATCH (x:End) CREATE (:Begin)-[:TYPE]->(x)`) is mistaken for a
+    // fresh anonymous node.
     if (plan.hasMatch && query) {
       const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+OPTIONAL|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
       if (matchSection) {
-        const nodePatterns = [...matchSection[1].matchAll(/\((\w+)\s*:\s*(\w+)\)/g)]
+        const nodePatterns = [...matchSection[1].matchAll(/\((\w+)\s*(?::\s*(\w+))?\)/g)]
         for (const np of nodePatterns) {
           const varName = np[1]
           const varLabel = np[2]
-          // Only bind if no node already carries this alias (never overwrite an
-          // explicit alias) and the node is still a seed node (index < original
-          // node count, i.e. before any CREATE appended new nodes).
-          const existing = allNodes.find(n => (n as any)._alias === varName)
-          if (existing) continue
-          const seed = allNodes.find(n => {
-            const label = (n as any)._label
-            return String(label).split(':').includes(varLabel)
-          })
-          if (seed && (seed as any)._alias === undefined || (seed as any)._alias === null || (seed as any)._alias === '' || (seed as any)._alias?.startsWith('__n')) {
+          let seed: any = undefined
+          if (varLabel) {
+            seed = allNodes.find(n => String((n as any)._label).split(':').includes(varLabel))
+          }
+          if (!seed) {
+            // Unlabelled MATCH variable binds to a matching seed node.  For a
+            // single-seed graph (or repeated `MATCH (n) MATCH (m)` over the same
+            // node), every such variable aliases the same node.  When there are
+            // multiple seeds and multiple unlabelled variables, bind the i-th
+            // variable to the i-th seed (positional), capped at the seed count.
+            const priorUnlabelled = matchSection[1]
+              .slice(0, np.index)
+              .match(/\((\w+)\s*\)/g)?.length || 0
+            seed = allNodes[Math.min(priorUnlabelled, allNodes.length - 1)]
+          }
+          if (!seed) continue
+          const cur = (seed as any)._alias
+          if (cur === undefined || cur === null || cur === '' || cur.startsWith('__n')) {
             (seed as any)._alias = varName
           }
+          varToNodeMap.set(varName, seed)
         }
       }
     }
+
+    // ── Resolve WITH aliases through the binding table ─────────────────
+    // `WITH n AS a` binds the alias `a` to whatever node `n` currently denotes.
+    // Chained projections (`WITH a AS x` in a multi-WITH query) resolve through
+    // `plan.withChain` (every WITH clause) rather than just the final `plan.with`.
+    const allWithColumns = (plan.withChain || (plan.with ? [plan.with] : []))
+      .flatMap((wc: any) => wc?.columns || [])
+    const _resolveBinding = (name: string): any => {
+      if (varToNodeMap.has(name)) return varToNodeMap.get(name)
+      const wc = allWithColumns.find(c => c.alias === name)
+      if (wc && wc.expression) {
+        const exprVar = wc.expression.trim()
+        if (varToNodeMap.has(exprVar)) {
+          const node = varToNodeMap.get(exprVar)
+          varToNodeMap.set(name, node)
+          return node
+        }
+        // expression itself may be a prior alias (transitive chain)
+        return _resolveBinding(exprVar)
+      }
+      return undefined
+    }
+    for (const wc of allWithColumns) {
+      if (wc.alias) {
+        matchVars.add(wc.alias)
+        if (!varToNodeMap.has(wc.alias)) {
+          const node = _resolveBinding(wc.alias)
+          if (node) varToNodeMap.set(wc.alias, node)
+        }
+      }
+    }
+
 
     // Expose the full node array (with __edges) to the pattern-comprehension
     // evaluator, which resolves a row-scoped node's relationships via its
@@ -1363,7 +1411,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // 跳过仅引用已匹配节点的 createNode（无 label 无 props，且变量名已存在 MATCH 中）
         if (cn.alias && matchVars.has(cn.alias) && !cn.label && (!cn.props || !Object.keys(cn.props).length)) {
           // 不创建新节点，但保留 _alias 引用
-          // 在 allNodes 中找到对应节点（按 _alias 或按位置）
+          // 优先用绑定表解析（支持 `WITH n AS a, m AS b` 多别名指向同一节点）。
+          const boundNode = varToNodeMap.get(cn.alias)
+          if (boundNode) {
+            const existingIdx2 = allNodes.indexOf(boundNode)
+            if (existingIdx2 >= 0) {
+              cnToAllNodeMap.set(ci, existingIdx2)
+              continue
+            }
+          }
           const existingIdx = allNodes.findIndex(n => n._alias === cn.alias)
           if (existingIdx >= 0) {
             cnToAllNodeMap.set(ci, existingIdx)
@@ -1859,6 +1915,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
         if (srcIdx < 0 && edge.source) {
+          // 通过绑定表解析（优先，支持多别名指向同一节点）
+          const b = varToNodeMap.get(edge.source)
+          if (b && allNodes.includes(b)) srcIdx = allNodes.indexOf(b)
+        }
+        if (srcIdx < 0 && edge.source) {
           // 通过 alias 查找
           srcIdx = allNodes.findIndex(n => n._alias === edge.source)
         }
@@ -1875,6 +1936,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           } else {
             dstIdx = cnDstIdx
           }
+        }
+        if (dstIdx < 0 && edge.target) {
+          // 通过绑定表解析（优先，支持多别名指向同一节点）
+          const b = varToNodeMap.get(edge.target)
+          if (b && allNodes.includes(b)) dstIdx = allNodes.indexOf(b)
         }
         if (dstIdx < 0 && edge.target) {
           dstIdx = allNodes.findIndex(n => n._alias === edge.target)

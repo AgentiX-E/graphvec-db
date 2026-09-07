@@ -154,6 +154,16 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
     // 阶段 2: rc 匹配 createNodes 的 alias（RETURN n）
     const matchNode = insertNodes.find(cn => cn.alias === rc)
     if (matchNode) {
+      // A bound-variable reference (`WITH n AS a` then `CREATE (a) ... RETURN a`)
+      // has no label/props of its own; the alias points at a pre-existing node.
+      // Resolve through the binding table first (supports several aliases naming
+      // the same node), then through `_alias`, else fall back to a placeholder.
+      if (!matchNode.label && (!matchNode.props || !Object.keys(matchNode.props).length)) {
+        const v2n = (allNodes as any).__varToNodeMap as Map<string, any> | undefined
+        let boundNode = v2n?.get(rc)
+        if (!boundNode) boundNode = allNodes.find(n => (n as any)._alias === rc)
+        if (boundNode) { row[rc] = boundNode; continue }
+      }
       const clean: Record<string, unknown> = {}
       if (matchNode.props) {
         for (const [k, v] of Object.entries(matchNode.props)) clean[k] = v
