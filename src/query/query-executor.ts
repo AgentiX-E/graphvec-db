@@ -1807,16 +1807,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (!nNode.__edges) nNode.__edges = []
             }
             const edgeLabel = edge.label || ''
-            // Only push __edges entries for original seed nodes (index <
-            // originalNodeCount). GE's intermediate Default-labeled copies
-            // (index >= originalNodeCount) would inflate edgesPayload with
-            // spurious entries that don't correspond to real graph edges.
-            if (srcIdx < originalNodeCount) {
-              (allNodes[srcIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
-            }
-            if (dstIdx < originalNodeCount) {
-              (allNodes[dstIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
-            }
+            // Push the edge onto both endpoints' __edges.  Both seed nodes
+            // (index < originalNodeCount) and newly-created nodes (index >=
+            // originalNodeCount) are real graph nodes, so both must record the
+            // relationship — otherwise `CREATE ()-[:REL]->()` on an empty graph
+            // (originalNodeCount === 0) leaves both endpoints with empty
+            // `__edges` and a later `MATCH ()-[r:REL]->()` finds no relationship.
+            ;(allNodes[srcIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
+            ;(allNodes[dstIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
           }
         }
       }
@@ -3037,9 +3035,66 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
       } else if (plan.type === 'SET' && plan.setClauses?.length) {
-        // SET：修改匹配节点的属性/标签
+        // SET：修改匹配节点的属性/标签（或关系属性，当 alias 是 edgeVariable）
+        const edgeVarNames = new Set<string>()
+        for (const st of plan.steps || []) {
+          const ev = (st as any)?.edgeVariable as string | undefined
+          if (ev) edgeVarNames.add(ev)
+        }
         for (const r of records) {
           const nodeIdx = nodeGeIds.indexOf(r.id)
+          // Determine whether every SET target is a relationship variable.  When
+          // it is, the property/label applies to the edge object (stored under
+          // `__crossVarRows[alias]` / `props[alias]`), not to the matched node.
+          const targetsEdge = plan.setClauses!.length > 0 && plan.setClauses!.every(sc => sc.alias != null && edgeVarNames.has(sc.alias))
+          if (targetsEdge) {
+            // Resolve the edge objects for each relationship alias on this record.
+            const edgeObjs = new Map<string, Record<string, unknown>>()
+            for (const sc of plan.setClauses!) {
+              if (!sc.alias) continue
+              const cvr = (r as any).__crossVarRows as Record<string, unknown> | undefined
+              let eo = (cvr && typeof cvr[sc.alias] === 'object' && cvr[sc.alias] !== null) ? cvr[sc.alias] as Record<string, unknown> : undefined
+              if (!eo && r.props && typeof (r.props as any)[sc.alias] === 'object') {
+                eo = (r.props as any)[sc.alias] as Record<string, unknown>
+              }
+              if (eo) edgeObjs.set(sc.alias, eo)
+            }
+            if (edgeObjs.size === 0) continue
+            for (const sc of plan.setClauses!) {
+              if (!sc.alias) continue
+              const eo = edgeObjs.get(sc.alias)
+              if (!eo) continue
+              if (sc.kind === 'LABEL') {
+                // Set the relationship type (label).  Cypher supports `SET r:Foo`
+                // on a relationship; here we only ever have a single type.
+                const labels = (sc.labels || []).filter((lb: string) => lb && lb !== 'Default')
+                if (labels.length) {
+                  eo.__edgeLabel = labels[0]
+                  eo.__edgeLabelStr = labels[0]
+                  eo._type = labels[0]
+                  eo._label = labels[0]
+                }
+                continue
+              }
+              if (!sc.property) continue
+              let value: unknown
+              const evCtx: Record<string, unknown> = {}
+              if (sc.alias) evCtx[sc.alias] = eo
+              if (sc.expression != null) {
+                try { value = _evaluateExpression(sc.expression, evCtx) } catch (_) { value = sc.value }
+              } else if (typeof sc.value === 'object' && sc.value !== null && 'value' in sc.value) {
+                value = (sc.value as any).value
+              } else {
+                value = sc.value
+              }
+              if (value === null) {
+                if (sc.property in eo) delete eo[sc.property]
+              } else {
+                eo[sc.property] = value
+              }
+            }
+            continue
+          }
           if (nodeIdx < 0) continue
           const node = allNodes[nodeIdx]
           // Build an evaluation context mapping each SET alias to this node, so

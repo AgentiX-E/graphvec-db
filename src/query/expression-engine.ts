@@ -3691,7 +3691,7 @@ export function _evalMulDiv(s: string, row?: Record<string, unknown>): ExprValue
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
     if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, right); if (_isDurationStr(right) && typeof left === 'number') return _durationScale(right, left); return Number(left) * Number(right) }
-    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, 1 / right); const nl = Number(left), nr = Number(right); if (nr === 0) return null; return nl / nr }
+    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, 1 / right); const nl = Number(left), nr = Number(right); if (nr === 0) return null; const q = nl / nr; return Number.isInteger(q) ? { __float: q } : q }
     if (t[i] === '%' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; return Number(left) % Number(right) }
   }
   return _evalExp(t, row)
