@@ -880,6 +880,31 @@ function _isExprValue(s: string): boolean {
   return /^[a-z_]\w*\s*\(.*\)\s*$/i.test(s) || /^(?:[-+!]|[\w.]+)\s+/.test(s) || /\s+(?:AND|OR|XOR|IN|IS|=|<>|<=?|>=?|[+\-*/%])\s/.test(s)
 }
 
+/**
+ * Cypher property values may be any scalar, a list of scalars, or nested lists
+ * of scalars — but never a map (or a list containing a map).  Return true when
+ * a value violates that constraint so the caller can raise InvalidPropertyType.
+ */
+function _isInvalidPropertyValue(v: unknown): boolean {
+  if (v === null || v === undefined) return false
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      if (_isInvalidPropertyValue(item)) return true
+    }
+    return false
+  }
+  // A map/object (non-array, non-scalar) is not a valid property value.  Scalars
+  // (string/number/boolean/bigint) and Date/nested arrays are acceptable.
+  if (typeof v === 'object') {
+    const t = (v as any)?.type
+    if (t === 'STRING' || t === 'NUMBER' || t === 'INTEGER' || t === 'FLOAT' || t === 'BOOLEAN') return false
+    // A typed value wrapper (`{ type, value }`) is a scalar, not a map.
+    if (t != null && 'value' in (v as any)) return _isInvalidPropertyValue((v as any).value)
+    return true
+  }
+  return false
+}
+
 /** 判断查询是否涉及写操作（需要独占 GE 连接） */
 function isWriteOp(plan: QueryPlan): boolean {
   return plan.type === 'CREATE' || plan.type === 'MERGE' ||
@@ -1348,6 +1373,43 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
 
+    // ── CREATE ... SET ... chains ──
+    // Apply each SET clause to the freshly created node regardless of whether a
+    // RETURN is present.  `SET a.numbers = a.numbers + [4, 5]` evaluates the
+    // expression against the just-created node (bound by its _alias), so the
+    // side effect lands on the node before any constraint check or result build.
+    if (plan.type === 'CREATE' && plan.setClauses?.length) {
+      for (const sc of plan.setClauses) {
+        const alias = sc.alias
+        if (!alias) continue
+        const target = allNodes.find(n => (n as any)._alias === alias)
+        if (!target) continue
+        const setCtx: Record<string, unknown> = { [alias]: target }
+        if (sc.kind === 'LABEL') {
+          const cur = String(target._label ?? '').split(':').map(s => s.trim()).filter(s => s && s !== 'Default')
+          for (const lb of sc.labels || []) { if (!cur.includes(lb)) cur.push(lb) }
+          target._label = cur.join(':') || 'Default'
+          continue
+        }
+        if (!sc.property) continue
+        let value: unknown
+        if (sc.expression != null) {
+          try { value = _evaluateExpression(sc.expression, setCtx) } catch (_) { value = sc.value }
+        } else if (typeof sc.value === 'object' && sc.value !== null && 'value' in sc.value) {
+          value = (sc.value as any).value
+        } else {
+          value = sc.value
+        }
+        if (value === null) { if (sc.property in target) delete target[sc.property] }
+        else {
+          if (_isInvalidPropertyValue(value)) {
+            throw Object.assign(new TypeError('TypeError: InvalidPropertyType'), { tckError: 'InvalidPropertyType' })
+          }
+          target[sc.property] = value
+        }
+      }
+    }
+
     // ── 约束校验：检查 CREATE 的节点是否违反已注册的唯一约束 ──
     // 遍历已注册的约束，对全部 allNodes 做唯一性检查
     if (plan.createNodes?.length && (plan.type === 'CREATE' || plan.type === 'MERGE')) {
@@ -1813,8 +1875,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             // relationship — otherwise `CREATE ()-[:REL]->()` on an empty graph
             // (originalNodeCount === 0) leaves both endpoints with empty
             // `__edges` and a later `MATCH ()-[r:REL]->()` finds no relationship.
-            ;(allNodes[srcIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
-            ;(allNodes[dstIdx] as any).__edges.push({ dstIdx, srcIdx, label: edgeLabel })
+            // Preserve any relationship properties so a later `SET r.num` or
+            // `RETURN r.num` can read them (e.g. `CREATE ()-[:R {num: 1}]->()`).
+            const edgeRecord: Record<string, unknown> = { dstIdx, srcIdx, label: edgeLabel }
+            if (edge.props && typeof edge.props === 'object') edgeRecord.props = edge.props
+            ;(allNodes[srcIdx] as any).__edges.push(edgeRecord)
+            ;(allNodes[dstIdx] as any).__edges.push({ ...edgeRecord })
           }
         }
       }
@@ -2827,6 +2893,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (planForGe.optionalMatchSteps?.length && planForGe.aggregate != null) {
             delete planForGe.aggregate
           }
+          // DML (SET/DELETE/REMOVE) with an aggregate: the graph engine would
+          // fold `sum(n.num)` over the pre-mutation values into a single row
+          // (id === -1) BEFORE the SET/DELETE side effects run, so the QE
+          // mutation block would find no per-node rows to act on and the
+          // aggregate would reflect stale values (e.g. `MATCH (n:N) SET n.num =
+          // n.num + 1 RETURN sum(n.num)` → 15 instead of 20).  Drop the
+          // aggregate so GE returns the raw matched nodes, the mutation block
+          // applies the side effects, and QE's post-aggregation path folds the
+          // sum over the post-mutation values.
+          if ((plan.type === 'SET' || plan.type === 'DELETE' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY') && planForGe.aggregate != null) {
+            delete planForGe.aggregate
+          }
           // When the WITH clause mixes a pattern-comprehension (or arbitrary
           // expression) column with an aggregate (e.g. `WITH [p=(n)-->()|p] AS ps,
           // count(b) AS c`), GE cannot evaluate the comprehension column nor
@@ -3189,6 +3267,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 delete (r.props as Record<string,unknown>)[sc.property]
               }
               continue
+            }
+            // Reject map values (or lists containing maps) — InvalidPropertyType.
+            if (_isInvalidPropertyValue(value)) {
+              throw Object.assign(new TypeError('TypeError: InvalidPropertyType'), { tckError: 'InvalidPropertyType' })
             }
             node[sc.property] = value
             // Sync to GE-returned record props so RETURN expression evaluation
@@ -4838,8 +4920,29 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         aggRow[aggAlias] = collected
       } else {
         // sum/avg/min/max
+        // The aggregate field may carry a variable prefix (`n.num`, `r.num`).
+        // For node variables `_formatResultRow` flattens `n.num` to a top-level
+        // `num` column; for relationship variables the property lives on the
+        // edge object under `__crossVarRows[r]`, which `_formatResultRow` does
+        // not surface as a top-level key.  Resolve both forms against the raw
+        // row so relationship aggregates (`sum(r.num)`) fold correctly.
+        const aggFieldKey = field.includes('.') ? field.split('.').pop()! : field
         const values = result
-          .map(r => r[field])
+          .map((r, idx) => {
+            let v = r[aggFieldKey]
+            if ((v === undefined || v === null) && field.includes('.')) {
+              const varName = field.split('.')[0]
+              const rw = (rawWithEdges as any[])[idx] as any
+              const cvr = rw && typeof rw.__crossVarRows === 'object' ? rw.__crossVarRows : null
+              if (cvr && cvr[varName] && typeof cvr[varName] === 'object') {
+                v = (cvr[varName] as Record<string, unknown>)[aggFieldKey]
+              }
+              if ((v === undefined || v === null) && rw && rw[varName] && typeof rw[varName] === 'object') {
+                v = (rw[varName] as Record<string, unknown>)[aggFieldKey]
+              }
+            }
+            return v
+          })
           .filter((v: unknown) => v !== null && v !== undefined)
           .map(Number)
           .filter((v: number) => !isNaN(v))
@@ -5603,6 +5706,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // DML 持久化：将 _executeViaGraphEngine 中创建的节点写回外部 nodes 数组，
     // 确保后续查询（MATCH）能看到前面 CREATE/MERGE 的节点。
     if ((plan.type === 'CREATE' || plan.type === 'MERGE' || plan.type === 'MATCH_MODIFY' || plan.type === 'SET' || plan.type === 'DELETE') && nodes) {
+      // SET/REMOVE mutate existing nodes in-place; `allNodes` is a shallow clone
+      // (allNodes = nodes.map(n => ({...n}))), so mutating allNodes[i] does not
+      // reach nodes[i].  Copy the mutated properties of every original node back
+      // onto the caller's array so a subsequent query observes the side effects
+      // (e.g. `MATCH (n:N) SET n.num = n.num + 1` must persist `num`).
+      if (plan.type === 'SET' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY') {
+        for (let i = 0; i < originalNodeCount && i < allNodes.length && i < nodes.length; i++) {
+          const src = allNodes[i] as Record<string, unknown>
+          const dst = nodes[i] as Record<string, unknown>
+          for (const k of Object.keys(dst)) delete dst[k]
+          Object.assign(dst, src)
+        }
+      }
       for (let i = originalNodeCount; i < allNodes.length; i++) {
         nodes.push(allNodes[i])
       }
