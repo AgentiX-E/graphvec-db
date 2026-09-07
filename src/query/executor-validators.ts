@@ -896,3 +896,80 @@ export function _validateOrderByScope(query: string): void {
   }
 }
 
+/**
+ * Throw SyntaxError: UndefinedVariable when a SET clause assigns a value that
+ * references an unbound variable.  Cypher resolves a bare identifier on the
+ * right-hand side of `SET x.prop = <bare>` as a variable reference, so a name
+ * that is neither a MATCH/CREATE-bound variable, a literal, nor a keyword must
+ * fail at compile time (e.g. `MATCH (a) SET a.name = missing`).
+ */
+export function _validateSetOperands(query: string, plan?: any): void {
+  if (!query) return
+  // Extract each SET clause body up to the next clause keyword.
+  const setMatches = query.matchAll(/\bSET\s+([\s\S]+?)(?=\s+(?:RETURN|WITH|ORDER\s+BY|SKIP|LIMIT|UNWIND|SET|REMOVE|CREATE|MERGE|MATCH|DELETE)\b|$)/gi)
+  // Collect variables bound by MATCH/CREATE/MERGE/UNWIND/WITH so we know what
+  // is "defined".  Reuse the helpers already exported from this module.
+  const defined = new Set<string>(extractMatchVariables(query))
+  for (const v of [
+    ...([...query.matchAll(/\[(\w+)\s*(?::|])/g)].map(m => m[1]).filter(v => v && !/^\d/.test(v))),
+    ...([...query.matchAll(/(?:CREATE|MERGE)\s+(.*?)(?=\s+(?:SET|DELETE|MERGE|REMOVE|WITH|RETURN|UNWIND)\b|$)/gis)].flatMap(cm =>
+      [...cm[1].matchAll(/\((\w+)\s*(?::|\)|{)/g)].map(m => m[1]).filter(v => v && !/^\d/.test(v)))),
+    ...([...query.matchAll(/\b(?:UNWIND|WITH)\s+(.*?)(?=\s+(?:MATCH|RETURN|WHERE|CREATE|SET|DELETE|MERGE|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT)\b|$)/gis)].flatMap(wm =>
+      [...wm[1].matchAll(/\bAS\s+(\w+)\b/gi)].map(m => m[1]).filter(v => v && !/^\d/.test(v)))),
+  ]) {
+    defined.add(v)
+  }
+
+  for (const sm of setMatches) {
+    const body = sm[1].trim()
+    if (!body) continue
+    // Each assignment is separated by a top-level comma.  Split naively on
+    // commas that are not inside brackets/parens/braces.
+    const assignments = _splitTopLevel(body, ',')
+    for (const assign of assignments) {
+      const eqIdx = _findTopLevel(assign, '=')
+      if (eqIdx < 0) continue
+      const rhs = assign.slice(eqIdx + 1).trim()
+      // A bare identifier is a variable reference: `SET a.name = missing`.
+      // Skip non-identifiers (literals, list/map literals, function calls,
+      // property accesses, operators).
+      const bare = rhs.match(/^([a-zA-Z_]\w*)$/)
+      if (!bare) continue
+      const name = bare[1]
+      if (/^\d/.test(name)) continue
+      if (_TCK_KEYWORDS.has(name.toUpperCase())) continue
+      if (name.startsWith('$')) continue
+      if (defined.has(name)) continue
+      throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+    }
+  }
+}
+
+/** Split a string on a separator that occurs at brace/bracket/paren depth 0. */
+function _splitTopLevel(s: string, sep: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let cur = ''
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '(' || ch === '[' || ch === '{') depth++
+    else if (ch === ')' || ch === ']' || ch === '}') depth--
+    if (ch === sep && depth === 0) { out.push(cur); cur = ''; continue }
+    cur += ch
+  }
+  if (cur.trim()) out.push(cur)
+  return out
+}
+
+/** Find the index of a character at brace/bracket/paren depth 0. */
+function _findTopLevel(s: string, target: string): number {
+  let depth = 0
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '(' || ch === '[' || ch === '{') depth++
+    else if (ch === ')' || ch === ']' || ch === '}') depth--
+    else if (ch === target && depth === 0) return i
+  }
+  return -1
+}
+

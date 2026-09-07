@@ -5,7 +5,7 @@
  */
 
 import type { QueryPlan } from './query-types'
-import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, _validateExistsSubqueryClauses, extractVariablesFromClause, extractMatchVariables } from './executor-validators'
+import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, _validateExistsSubqueryClauses, _validateSetOperands, extractVariablesFromClause, extractMatchVariables } from './executor-validators'
 import { globalRegistry as _procedureRegistry } from './procedure-registry'
 import { _validateLiterals, _splitTopLevel } from './expression-engine'
 
@@ -27,6 +27,10 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // A WITH clause resets the variable scope, so ORDER BY may only reference
   // variables still in scope (or projection aliases of its own WITH).
   _validateOrderByScope(query)
+
+  // ── SyntaxError: UndefinedVariable (SET operand) ──
+  // `SET a.name = missing` references an unbound variable on the RHS.
+  _validateSetOperands(query, plan)
 
   // ── SyntaxError: UnexpectedSyntax ──
   // A bare pattern (e.g. `(n)-[]->()`) is not a value expression and may only
