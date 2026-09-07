@@ -5804,7 +5804,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // reach nodes[i].  Copy the mutated properties of every original node back
       // onto the caller's array so a subsequent query observes the side effects
       // (e.g. `MATCH (n:N) SET n.num = n.num + 1` must persist `num`).
-      if (plan.type === 'SET' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY') {
+      //
+      // CREATE with relationship edges also mutates existing nodes: a
+      // `MATCH (x),(y) CREATE (x)-[:R]->(y)` pushes the new edge onto x/y's
+      // `__edges` (in the allNodes clone).  Without copying those back, a later
+      // control query `MATCH (x)-[:R]->(y)` finds no relationship (Create2).
+      if (plan.type === 'SET' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY' ||
+          (plan.type === 'CREATE' && (plan.createEdges?.length || plan.createNodes?.some(cn => cn.alias != null && !plan.steps?.length)))) {
         for (let i = 0; i < originalNodeCount && i < allNodes.length && i < nodes.length; i++) {
           const src = allNodes[i] as Record<string, unknown>
           const dst = nodes[i] as Record<string, unknown>

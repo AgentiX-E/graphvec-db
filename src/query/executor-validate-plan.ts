@@ -350,11 +350,19 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // 仅当 createNode 有 label 或 props（即试图重新定义节点）时才视为 VariableAlreadyBound
   if (plan.hasMatch && plan.createNodes?.length) {
     const matchVars = extractMatchVariables(query)
+    const hasCreateEdges = !!(plan.createEdges && plan.createEdges.length)
     for (const cn of plan.createNodes) {
       if (cn.alias && matchVars.includes(cn.alias)) {
-        // 如果 createNode 有 label 或 props，说明是在定义新节点，则报错
-        // 如果 createNode 仅有 alias（label=null, props=null），说明只是引用已匹配节点，合法
-        if (cn.label || (cn.props && Object.keys(cn.props).length > 0)) {
+        // A MATCH-bound variable re-used in CREATE is a re-declaration of the
+        // node (SyntaxError: VariableAlreadyBound) whenever CREATE is *not* a
+        // relationship pattern.  `MATCH (a) CREATE (a)` and
+        // `MATCH (a) CREATE (a {name:'foo'})` both re-bind `a` to a new node.
+        //
+        // The one legal case is a relationship CREATE that merely *references*
+        // an already-bound node as an endpoint: `MATCH (a),(b) CREATE (a)-[:R]->(b)`
+        // (Create2).  In that case the CREATE clause carries edges, so the
+        // variable appears as a node endpoint reference, not a re-declaration.
+        if (!hasCreateEdges || cn.label || (cn.props && Object.keys(cn.props).length > 0)) {
           throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
         }
       }
@@ -673,8 +681,9 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
             throw Object.assign(new Error('SyntaxError: RequiresDirectedRelationship'), { tckError: 'RequiresDirectedRelationship' })
           }
         }
-        // 检测双向关系：<-[:R]->
-        if (/<-.*\[.*\]\s*->/.test(createClause)) {
+        // 检测双向关系：<-[:R]->（同一个关系同时向左向右，非法的单关系双向）
+        // 只匹配 `<-` 紧跟一个 `[...]` 紧跟 `->` 的单关系，不跨中间节点。
+        if (/<-\s*\[[^\]]*\]\s*->/.test(createClause)) {
           throw Object.assign(new Error('SyntaxError: RequiresDirectedRelationship'), { tckError: 'RequiresDirectedRelationship' })
         }
         // 检测多类型：CREATE ()-[:A|:B]->()

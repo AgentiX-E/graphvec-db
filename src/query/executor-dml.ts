@@ -27,6 +27,67 @@ import { _evaluateExpression } from './expression-engine'
 function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>): QueryRow[] {
   if (!plan.returnColumns?.length) return []
 
+  // ── UNWIND + CREATE multi-row expansion ──
+  // `UNWIND [...] AS x CREATE (n {num: x}) RETURN n.num` creates one node per
+  // unwound element.  Those nodes all carry the same `_alias` (the createNode
+  // alias), so the single-row projection below would collapse them to one row.
+  // Emit one row per freshly-created node instead, projecting RETURN columns
+  // against that node (and its properties) only.
+  const createdAlias = (plan.createNodes || [])[0]?.alias ?? null
+  const unwoundNodes = (createdAlias && plan.unwind && plan.createNodes?.length)
+    ? allNodes.filter(n => (n as any)._alias === createdAlias)
+    : []
+  if (unwoundNodes.length > 1) {
+    const rows: QueryRow[] = []
+    for (const nn of unwoundNodes) {
+      const row: QueryRow = {}
+      const nodeProps = (nn as any).props && typeof nn.props === 'object' ? nn.props : nn
+      for (const rc of plan.returnColumns) {
+        if (!rc) continue
+        // Property projection (`n.num AS num`) reads from the node's props.
+        let val: unknown = undefined
+        if (rc in nn) val = (nn as any)[rc]
+        else if (nodeProps && rc in nodeProps) val = nodeProps[rc]
+        else {
+          // Resolve via returnAliasMap expression `n.num` → property `num`.
+          const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+          const expr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
+          const propPart = expr.includes('.') ? expr.split('.').pop()! : expr
+          if (nodeProps && propPart in nodeProps) val = nodeProps[propPart]
+          else if (propPart in nn) val = (nn as any)[propPart]
+        }
+        row[rc] = val !== undefined && val !== null ? val : null
+      }
+      rows.push(row)
+    }
+    // Apply aggregate columns if any (sum/count/avg/min/max over created nodes).
+    if (plan.aggregate) {
+      const agg = plan.aggregate as any
+      const aggFn = agg.function || agg.fn || agg.type || ''
+      // `field` may be a dotted property reference (`sum(n.num)` → `n.num`).
+      const rawField = agg.field || agg.property || ''
+      const propField = rawField.includes('.') ? rawField.split('.').pop()! : rawField
+      const aggRow: QueryRow = {}
+      const alias = agg.alias || agg.column?.replace(/^.+?\(.+?\)(?:\s+AS\s+)?/i, '').trim() || propField || 'c'
+      if (aggFn === 'count') aggRow[alias] = unwoundNodes.length
+      else if (propField) {
+        const values = unwoundNodes
+          .map(n => (n as any)[propField] ?? (n as any).props?.[propField])
+          .filter((v: any) => v !== undefined && v !== null)
+          .map(Number)
+          .filter((v: any) => !isNaN(v))
+        if (aggFn === 'sum') aggRow[alias] = values.reduce((a: number, b: number) => a + b, 0)
+        else if (aggFn === 'avg') aggRow[alias] = values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0
+        else if (aggFn === 'max') aggRow[alias] = values.length ? Math.max(...values) : 0
+        else if (aggFn === 'min') aggRow[alias] = values.length ? Math.min(...values) : 0
+        else aggRow[alias] = 0
+      } else aggRow[alias] = 0
+      return [aggRow]
+    }
+    return rows
+  }
+
+
   // 聚合 DML：如 RETURN count(*)
   if (plan.aggregate) {
     const row: QueryRow = {}

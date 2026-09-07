@@ -415,8 +415,13 @@ export async function _execNonGePaths(
   // here would evaluate `n.num` against the whole match array and throw
   // "Property access on non-map type".
   const _aggIsCollect = !!(plan.aggregate && (plan.aggregate as any).function === 'collect')
+  // UNWIND + CREATE/MERGE must materialize nodes via the graph engine (the
+  // `_executeViaGraphEngine` createNodes expansion loop substitutes the unwind
+  // variable into each created node's properties).  Routing it here would only
+  // expand + project rows and leave `n.num` null, so exclude DML-node creators.
+  const _unwindCreatesNodes = (plan.type === 'CREATE' || plan.type === 'MERGE') && !!plan.unwind && !!plan.createNodes?.length
   if (!_hasSecondMatchAfterWith && (
-      (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch))) ||
+      (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch)) && !_unwindCreatesNodes) ||
       (plan.hasMatch && plan.aggregate && (plan.unwind || _aggIsCollect) && !(plan.steps?.length > 0) && !_withScalarAggOnly) ||
       (_startsWithWith && plan.hasMatch && plan.unwind && plan.with && !plan.aggregate) ||
       (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && plan.unwind))) {

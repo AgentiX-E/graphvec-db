@@ -1520,11 +1520,7 @@ When('executing query:', async function (query: string) {
 
 When('executing control query:', async function (query: string) {
   st.q = _stripCypherComments(query).trim()
-  if (st.pGe && st.q.includes('-')) {
-    _runOnPersistGe(st.q)
-  } else {
-    await run(st.q)
-  }
+  await run(st.q)
 })
 
 // ── Then ──
