@@ -1368,18 +1368,24 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // `_alias`.  Cleared in the `finally` block below.
     _setActivePatternNodes(allNodes)
 
+    // Clone createNodes + createEdges before the UNWIND expansion loop mutates
+    // them.  Declared outside the `if (plan.createNodes?.length)` guard so the
+    // CREATE relationship block below can reuse the expanded edges.
+    let effectiveCreateNodes = plan.createNodes
+    let effectiveCreateEdges = plan.createEdges
+
     if (plan.createNodes?.length) {
       // If the CREATE statement has an UNWIND prefix (e.g. "UNWIND [1,2,3] AS i
       // CREATE ({num: i})"), expand the template into one node per unwound element
       // so the DML pipeline correctly materializes all rows.
       const uwExpanded = (plan.unwind && (plan.unwind.list?.length || plan.unwind.var)) ? plan.unwind : null
-      // Clone createNodes before mutating in the expansion loop
-      let effectiveCreateNodes = plan.createNodes
       if (uwExpanded) {
         // Resolve list elements to their concrete values (string literals are
         // stored as quoted raw text, temporal/range expressions as bare text).
         const resolvedList = _resolveUnwindList(uwExpanded, {})
         const expandedCns: typeof effectiveCreateNodes = []
+        const expandedEdges: typeof effectiveCreateEdges = []
+        const numCn = plan.createNodes?.length || 1
         for (let uwi = 0; uwi < resolvedList.length; uwi++) {
           const elem = resolvedList[uwi] ?? uwExpanded.list[uwi]
           for (const cn of plan.createNodes) {
@@ -1403,8 +1409,32 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
             expandedCns.push(ecn)
           }
+          // Expand each edge template: remap its endpoint createNode indices to
+          // this iteration's slice and substitute unwound property values.
+          for (const edge of plan.createEdges || []) {
+            const ee = { ...edge }
+            ee.sourceIdx = uwi * numCn + (edge.sourceIdx ?? 0)
+            ee.targetIdx = uwi * numCn + (edge.targetIdx ?? 0)
+            if (edge.props) {
+              const newEProps: Record<string, any> = {}
+              for (const [k, v] of Object.entries(edge.props)) {
+                const raw = isTypedValue(v) ? v.value : v
+                if (typeof raw === 'string' && raw === uwExpanded.name) {
+                  newEProps[k] = elem
+                } else {
+                  newEProps[k] = v
+                }
+              }
+              ee.props = newEProps as any
+            }
+            // Preserve the relationship alias so RETURN r.* can be matched.
+            if (edge.source === uwExpanded.name) ee.source = edge.source + '_' + uwi
+            if (edge.target === uwExpanded.name) ee.target = edge.target + '_' + uwi
+            expandedEdges.push(ee)
+          }
         }
         effectiveCreateNodes = expandedCns
+        effectiveCreateEdges = expandedEdges
       }
       for (let ci = 0; ci < effectiveCreateNodes.length; ci++) {
         const cn = effectiveCreateNodes[ci]
@@ -1455,6 +1485,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         allNodes.push(props)
         cnToAllNodeMap.set(ci, allNodes.length - 1)
       }
+    }
+
+    // Expose the (UNWIND-expanded) relationship payloads to `_buildDmlRows` so a
+    // `RETURN r.num` projection can emit one row per freshly-created relationship
+    // (with its unwound property values) rather than a single `{num:'x'}` row.
+    if (effectiveCreateEdges?.length) {
+      ;(allNodes as any).__createEdges = effectiveCreateEdges
     }
 
     // ── CREATE ... SET ... chains ──
@@ -1896,8 +1933,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── CREATE 边（从 createEdges 创建 GE 关系 + __edges 内存记录） ──
-    if (plan.createEdges?.length && nodeGeIds.length >= 1) {
-      for (const edge of plan.createEdges) {
+    const createEdgesToUse = effectiveCreateEdges?.length ? effectiveCreateEdges : plan.createEdges
+    if (createEdgesToUse?.length && nodeGeIds.length >= 1) {
+      for (const edge of createEdgesToUse) {
         // 查找源/目标节点在 allNodes 中的实际索引
         // 先尝试从 cnToAllNodeMap 映射（createNode index → allNodes index）
         let srcIdx = -1;

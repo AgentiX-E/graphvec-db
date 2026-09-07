@@ -27,6 +27,63 @@ import { _evaluateExpression } from './expression-engine'
 function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>): QueryRow[] {
   if (!plan.returnColumns?.length) return []
 
+  // ── UNWIND + CREATE relationship multi-row expansion ──
+  // `UNWIND [...] AS x CREATE ()-[r:R {num:x}]->() RETURN r.num` creates one
+  // relationship per unwound element.  The expanded relationship payloads are
+  // attached by the graph engine as `__createEdges`; emit one row per edge,
+  // projecting `r.prop` (or an aggregate over it) from the edge properties.
+  const createEdges = (allNodes as any).__createEdges as Array<any> | undefined
+  if (createEdges && createEdges.length > 1 && plan.unwind) {
+    const projFromAlias = (rc: string): { varName: string; propPart: string | null } => {
+      const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+      const expr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
+      const dot = expr.indexOf('.')
+      return dot >= 0
+        ? { varName: expr.slice(0, dot).trim(), propPart: expr.slice(dot + 1).trim() }
+        : { varName: expr.trim(), propPart: null }
+    }
+    // Aggregate over the relationship properties (`RETURN sum(r.num)`).
+    if (plan.aggregate) {
+      const agg = plan.aggregate as any
+      const aggFn = agg.function || agg.fn || agg.type || ''
+      const rawField = agg.field || agg.property || ''
+      const propField = rawField.includes('.') ? rawField.split('.').pop()! : rawField
+      const alias = agg.alias || agg.column?.replace(/^.+?\(.+?\)(?:\s+AS\s+)?/i, '').trim() || propField || 'c'
+      const aggRow: QueryRow = {}
+      if (aggFn === 'count') {
+        aggRow[alias] = createEdges.length
+      } else if (propField) {
+        const values = createEdges
+          .map(e => e.props?.[propField])
+          .filter((v: any) => v !== undefined && v !== null)
+          .map(Number)
+          .filter((v: any) => !isNaN(v))
+        if (aggFn === 'sum') aggRow[alias] = values.reduce((a: number, b: number) => a + b, 0)
+        else if (aggFn === 'avg') aggRow[alias] = values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0
+        else if (aggFn === 'max') aggRow[alias] = values.length ? Math.max(...values) : 0
+        else if (aggFn === 'min') aggRow[alias] = values.length ? Math.min(...values) : 0
+        else aggRow[alias] = 0
+      } else {
+        aggRow[alias] = 0
+      }
+      return [aggRow]
+    }
+    const rows: QueryRow[] = []
+    for (const edge of createEdges) {
+      const row: QueryRow = {}
+      for (const rc of plan.returnColumns) {
+        if (!rc) continue
+        const { propPart } = projFromAlias(rc)
+        let val: unknown = undefined
+        if (propPart) val = edge.props?.[propPart]
+        else val = edge
+        row[rc] = val !== undefined && val !== null ? val : null
+      }
+      rows.push(row)
+    }
+    return rows
+  }
+
   // ── UNWIND + CREATE multi-row expansion ──
   // `UNWIND [...] AS x CREATE (n {num: x}) RETURN n.num` creates one node per
   // unwound element.  Those nodes all carry the same `_alias` (the createNode
