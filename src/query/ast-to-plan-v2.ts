@@ -2136,10 +2136,14 @@ function extractRemoveClauses(removeCtx: any): QueryPlan['removeClauses'] {
   const items = splitByTopLevelComma(removeText)
   for (const item of items) {
     const trimItem = item.trim()
-    // Detect label removal: n:Label
-    const labelMatch = trimItem.match(/^(\w+):(\w+)$/)
+    // Detect label removal: `n:Label` or multiple labels `n:L1:L3`
+    const labelMatch = trimItem.match(/^(\w+):([\w:]+)$/)
     if (labelMatch) {
-      removes.push({ type: 'REMOVE_LABEL', ref: labelMatch[1], label: labelMatch[2] })
+      const ref = labelMatch[1]
+      for (const label of labelMatch[2].split(':')) {
+        if (!label) continue
+        removes.push({ type: 'REMOVE_LABEL', ref, label })
+      }
     } else {
       // Property removal: n.prop
       const propMatch = trimItem.match(/^(\w+)\.(\w+)$/)

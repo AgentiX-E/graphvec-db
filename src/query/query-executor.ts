@@ -3103,10 +3103,27 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               continue
             }
             const node = allNodes[nodeIdx2]
+            const stepSource2 = plan.steps?.[0]?.source
             for (const rc of plan.removeClauses) {
+              if (rc.ref && stepSource2 != null && rc.ref !== stepSource2) continue
               if (rc.type === 'REMOVE_PROP' && rc.property) {
-                if (rc.ref && rc.ref !== plan.steps?.[0]?.source) continue
-                if (rc.property in node) delete node[rc.property]
+                if (rc.property in node) {
+                  delete node[rc.property]
+                  if (r.props && typeof r.props === 'object' && rc.property in (r.props as Record<string, unknown>)) {
+                    delete (r.props as Record<string, unknown>)[rc.property]
+                  }
+                }
+              } else if (rc.type === 'REMOVE_LABEL' && rc.label) {
+                const cur = String(node._label ?? '').split(':').map(s => s.trim()).filter(s => s && s !== 'Default')
+                const kept = cur.filter(l => l !== rc.label)
+                node._label = kept.join(':') || 'Default'
+                if (node._label === 'Default') delete (node as any).__fullLabel
+                else (node as any).__fullLabel = node._label
+                if (r.props && typeof r.props === 'object') {
+                  ;(r.props as Record<string, unknown>)._label = node._label
+                  if (node._label === 'Default') delete (r.props as Record<string, unknown>).__fullLabel
+                  else (r.props as Record<string, unknown>).__fullLabel = node._label
+                }
               }
             }
             if (ge) try { await _geUpsertNode(ge, 1, "", { props: node }) } catch (_) {}
@@ -3287,9 +3304,48 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
       } else if (plan.type === 'REMOVE' && plan.removeClauses?.length) {
-        // REMOVE：删除匹配节点的属性或标签
+        // REMOVE：删除匹配节点的属性或标签（或关系属性，当 ref 是 edgeVariable）
+        const stepSource = plan.steps?.[0]?.source
+        const edgeVarNames = new Set<string>()
+        const _collectEdgeVars = (steps: any[]) => {
+          for (const st of steps || []) {
+            const ev = (st as any)?.edgeVariable as string | undefined
+            if (ev) edgeVarNames.add(ev)
+          }
+        }
+        _collectEdgeVars(plan.steps)
+        // OPTIONAL MATCH keeps edge variables under optionalMatchSteps, not
+        // steps (`OPTIONAL MATCH (n)-[r]->() REMOVE r.num` — r is a relationship
+        // variable even though steps=[]).
+        for (const om of (plan as any).optionalMatchSteps || []) {
+          _collectEdgeVars(om.steps)
+        }
+        // A relationship REMOVE targets the edge object (stored under
+        // `__crossVarRows[ref]` / `props[ref]`), never the matched node — even
+        // though the record's `id` maps to a node index.
+        const targetsEdge = plan.removeClauses.length > 0 && plan.removeClauses.every(rc => rc.ref != null && edgeVarNames.has(rc.ref))
         for (const r of records) {
           const nodeIdx = nodeGeIds.indexOf(r.id)
+          if (targetsEdge) {
+            for (const rc of plan.removeClauses) {
+              const ref = rc.ref!
+              const cvr = (r as any).__crossVarRows as Record<string, unknown> | undefined
+              const eo = (cvr && typeof cvr[ref] === 'object' && cvr[ref] !== null)
+                ? cvr[ref] as Record<string, unknown>
+                : (r.props && typeof (r.props as any)[ref] === 'object' ? (r.props as any)[ref] as Record<string, unknown> : undefined)
+              if (!eo) continue
+              if (rc.type === 'REMOVE_PROP' && rc.property) {
+                if (rc.property in eo) delete eo[rc.property]
+              } else if (rc.type === 'REMOVE_LABEL' && rc.label) {
+                // Remove the relationship type by clearing its label markers.
+                delete eo.__edgeLabel
+                delete eo.__edgeLabelStr
+                delete eo._type
+                if (eo._label === rc.label) delete eo._label
+              }
+            }
+            continue
+          }
           if (nodeIdx < 0) {
             // Edge REMOVE: when plan has edge steps, the record holds edge info
             // in r.props[edgeVarName]. Delete properties from there.
@@ -3309,10 +3365,39 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           const node = allNodes[nodeIdx]
           for (const rc of plan.removeClauses) {
+            // Only require the ref to match the matched source variable when a
+            // step source is actually present (multi-step matches).  A bare
+            // `MATCH (n)` yields steps=[] and binds exactly one variable, so any
+            // ref in the REMOVE clause refers to it.
+            if (rc.ref && stepSource != null && rc.ref !== stepSource) continue
             if (rc.type === 'REMOVE_PROP' && rc.property) {
-              if (rc.ref && rc.ref !== plan.steps?.[0]?.source) continue
               if (rc.property in node) {
                 delete node[rc.property]
+                // Sync the removed property onto the GE-returned record so a
+                // subsequent RETURN expression (`n.num IS NOT NULL`) sees the
+                // updated value.
+                if (r.props && typeof r.props === 'object' && rc.property in (r.props as Record<string, unknown>)) {
+                  delete (r.props as Record<string, unknown>)[rc.property]
+                }
+              }
+            } else if (rc.type === 'REMOVE_LABEL' && rc.label) {
+              // Remove a single label from the node's `_label`, keeping the
+              // remaining labels in their original order.  `Default` is the
+              // sentinel for "no label" and is never removed as a real label.
+              const cur = String(node._label ?? '').split(':').map(s => s.trim()).filter(s => s && s !== 'Default')
+              const kept = cur.filter(l => l !== rc.label)
+              node._label = kept.join(':') || 'Default'
+              // Keep __fullLabel in sync: labels() reads it before _label, so a
+              // stale __fullLabel would resurrect the removed label.
+              if (node._label === 'Default') {
+                delete (node as any).__fullLabel
+              } else {
+                ;(node as any).__fullLabel = node._label
+              }
+              if (r.props && typeof r.props === 'object') {
+                ;(r.props as Record<string, unknown>)._label = node._label
+                if (node._label === 'Default') delete (r.props as Record<string, unknown>).__fullLabel
+                else (r.props as Record<string, unknown>).__fullLabel = node._label
               }
             }
           }
@@ -3690,6 +3775,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           varNodeMap2[varName] = sourceRecords
             .filter(({ node }: { node: Record<string, unknown> }) => {
               if (!targetLabel2) return true;
+              // A REMOVE_LABEL side effect deletes the very label that MATCH
+              // bound (`MATCH (n:N) REMOVE n:N RETURN n.num`).  The `:N`
+              // predicate is a *match-time* condition already applied by the
+              // graph engine before the side effect ran; re-checking it here
+              // against the post-removal label (`Default`) would wrongly drop
+              // every matched row.  Skip the label re-filter for such plans.
+              const _removesLabel = plan.type === 'REMOVE' && (plan.removeClauses || []).some(rc => rc.type === 'REMOVE_LABEL')
+              if (_removesLabel) return true;
               const fullLabel = node.__fullLabel
               if (fullLabel && typeof fullLabel === 'string') return fullLabel.split(':').includes(targetLabel2)
               // Node may carry multiple labels (`A:Foo`), so `MATCH (n:A)` must
