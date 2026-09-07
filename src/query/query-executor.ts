@@ -1287,6 +1287,34 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const cnToAllNodeMap = new Map<number, number>()  // createNode index → allNodes index
     const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
 
+    // Bind MATCH variables to pre-existing (seed) nodes by `_alias` before the
+    // CREATE expansion loop resolves `edge.source`/`edge.target` references.
+    // Without this, `MATCH (x:End) CREATE (:Begin)-[:TYPE]->(x)` would not find
+    // `x` (the seed node still carries its synthetic `__n0` alias) and the
+    // fallback below would wrongly rebind the freshly-created node instead.
+    if (plan.hasMatch && query) {
+      const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+OPTIONAL|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
+      if (matchSection) {
+        const nodePatterns = [...matchSection[1].matchAll(/\((\w+)\s*:\s*(\w+)\)/g)]
+        for (const np of nodePatterns) {
+          const varName = np[1]
+          const varLabel = np[2]
+          // Only bind if no node already carries this alias (never overwrite an
+          // explicit alias) and the node is still a seed node (index < original
+          // node count, i.e. before any CREATE appended new nodes).
+          const existing = allNodes.find(n => (n as any)._alias === varName)
+          if (existing) continue
+          const seed = allNodes.find(n => {
+            const label = (n as any)._label
+            return String(label).split(':').includes(varLabel)
+          })
+          if (seed && (seed as any)._alias === undefined || (seed as any)._alias === null || (seed as any)._alias === '' || (seed as any)._alias?.startsWith('__n')) {
+            (seed as any)._alias = varName
+          }
+        }
+      }
+    }
+
     // Expose the full node array (with __edges) to the pattern-comprehension
     // evaluator, which resolves a row-scoped node's relationships via its
     // `_alias`.  Cleared in the `finally` block below.
