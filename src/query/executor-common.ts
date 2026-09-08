@@ -95,6 +95,19 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       if (k === '_alias' || k.startsWith('__')) continue
       row[k] = r.props[k]
     }
+    // Multi-hop (__multiStep) rows stash the *correct* per-step variable bindings
+    // under `_allVars` (e.g. {a:A, b:B, c:C}).  It may live on `r.props` or
+    // `r.__targetProps`.  Promote those bindings to the top-level row so
+    // downstream `rc in row` lookups and varCtx construction resolve each RETURN
+    // variable to its true node instead of a stale/mis-attributed value.  Skip
+    // keys already set on `row` (explicit props win).
+    const allVars = (r.props as any)._allVars || (r.__targetProps as any)?._allVars
+    if (allVars && typeof allVars === 'object' && !Array.isArray(allVars)) {
+      for (const vn of Object.keys(allVars)) {
+        if (vn.startsWith('_')) continue
+        if (!(vn in row)) row[vn] = allVars[vn]
+      }
+    }
   }
   
   const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
