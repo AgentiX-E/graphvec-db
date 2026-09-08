@@ -120,7 +120,38 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // RETURN *：返回所有在作用域内的变量
     if (plan.type === 'QUERY' && !plan.aggregate && !ret?.some((rc: string) => /^\w+\(/.test(rc))) {
       const result: QueryRow = {}
-      // 从 r 收集所有变量（包括 __targetPropsMap 中的中间变量等）
+      // Prefer the full per-variable bindings stashed on `r.__crossVarRows`.
+      // These carry every step's node variable (e.g. a, b, c) plus each edge
+      // variable (e.g. r1, r2 as `{__edgeLabel:'R1', _type:'R1'}`).  Return the
+      // raw objects (nodes as `{_label:'A'}`, edges as `{__edgeLabel:'R1'}`) so
+      // the serialization layer (normalizeActual → toNodeNotation /
+      // _toEdgeNotation) formats them into `(:A)` / `[:R1]`.  Hand-stringifying
+      // them here would break the edge markers and lose variables entirely.
+      if (r.__crossVarRows && typeof r.__crossVarRows === 'object') {
+        for (const [vn, vval] of Object.entries(r.__crossVarRows)) {
+          if (vn.startsWith('_')) continue
+          const v = vval as Record<string, unknown>
+          if (v && typeof v === 'object') {
+            // Edge variable: keep the __edgeLabel/_type markers verbatim.
+            if ('__edgeLabel' in v || '_type' in v) {
+              result[vn] = v
+              continue
+            }
+            // Node variable: unwrap the `props` wrapper and keep _label so the
+            // serializer can emit `(:Label)`. Strip internal helper keys.
+            const clean: Record<string, unknown> = {}
+            const src = (v.props && typeof v.props === 'object') ? (v.props as Record<string, unknown>) : v
+            for (const [k, vv] of Object.entries(src)) {
+              if (k.startsWith('__') || k === 'props' || k === '_alias') continue
+              clean[k] = vv
+            }
+            result[vn] = clean
+          }
+        }
+        if (Object.keys(result).length) return result
+      }
+      // Fallback: legacy __targetPropsMap / source-node formatting (single-step
+      // patterns without __crossVarRows).
       if (r.__targetPropsMap) {
         for (const vn of Object.keys(r.__targetPropsMap)) {
           const nodeData = r.__targetPropsMap[vn]
@@ -128,27 +159,12 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             const label = (nodeData as any)._label
             result[vn] = label ? `(${label.startsWith(':') ? label : ':' + label})` : '()'
           } else if (nodeData && typeof nodeData === 'object' && '__edgeLabel' in nodeData) {
-            result[vn] = `<(${(nodeData as any).__edgeLabel || '??'})>`
+            result[vn] = nodeData
           }
         }
       }
-      // source 节点变量
-      const firstStepSource = plan.steps?.[0]?.source
-      if (firstStepSource && r.props && '_label' in (r.props || {})) {
-        const label = (r.props as any)._label
-        result[firstStepSource] = label ? `(${label.startsWith(':') ? label : ':' + label})` : '()'
-      }
-      // 如果以上都没填充但 row 有数据，尽量用 row
-      if (!Object.keys(result).length && r.props) {
-        const label = (r.props as any)._label
-        result['_k'] = label ? `(${label.startsWith(':') ? label : ':' + label})` : '()'
-      }
-      // 路径变量 p
-      if (plan.steps?.length) {
-        // TODO: 路径变量表示
-        result['p'] = '<path>'
-      }
       if (Object.keys(result).length) return result
+      return row
     }
     return row
   }

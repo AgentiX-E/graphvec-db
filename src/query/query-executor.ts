@@ -2073,6 +2073,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // ── WHERE type(r) = 'X' → 转为 edgeLabel 过滤（非参数化，全局匹配） ──
     // [CVE-H3]: 原实现只匹配第一个 type(r) = 'X'，AND/OR 复合条件中后续约束被忽略。
     // 现改用全局正则匹配所有 type(r) = 'X' 条件。
+    // `typeLabelInjected` records whether we were forced to inject a `type(r)=`
+    // label into a step that had no edgeLabel of its own.  Only in that case does
+    // the traversal below need to clear the injected label (so _walkMultiSteps
+    // does not over-filter to a single OR branch); a step whose edgeLabel comes
+    // from a real `-[r:R]->` pattern must keep it, otherwise multi-hop chains
+    // like `()-[r1:R1]->()<-[r2:R2]-()...` start walking from spurious nodes.
+    let typeLabelInjected = false
     if (query && !plan.steps?.some(s => s.edgeLabel)) {
       const typeRegex = /WHERE\s+type\s*\(\s*(\w+)\s*\)\s*=\s*['"]([^'"]+)['"]/g
       let typeMatch: RegExpExecArray | null
@@ -2081,6 +2088,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         for (const s of plan.steps || []) {
           if (!s.edgeLabel) {
             s.edgeLabel = typeLabel
+            typeLabelInjected = true
           }
         }
       }
@@ -2180,9 +2188,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             return !nodeAliasesScan.has(rc)
           }).length
           let multiStepRaw: any[] = []
-          // 保存并清除 edgeLabel 突变（L728-735 的 typeRegex 污染了 edgeLabel，只取第一个 OR branch）
+          // Only clear the first step's edgeLabel when a `type(r)=` label was
+          // injected into a label-less pattern above (the `typeLabelInjected`
+          // flag).  A genuinely-parsed `-[r:R]->` label must survive so multi-hop
+          // traversal respects direction + label from the true start node.
           const savedEdgeLabel = plan.steps?.[0]?.edgeLabel ?? null
-          if (plan.steps?.[0]) plan.steps[0].edgeLabel = null
+          if (plan.steps?.[0] && typeLabelInjected) plan.steps[0].edgeLabel = null
           const _ceComma = plan.steps?.length > 1 && plan.steps.some(
             (s: any, si: number) => {
               if (si === 0) return false
@@ -3114,7 +3125,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (rc.startsWith(firstStep.source + '.')) return true
       return false
     })
-    if (needSourceVar && sourceTargetMap.size > 0 && rawRecords?.length) {
+    if (needSourceVar && sourceTargetMap.size > 0 && rawRecords?.length && !(plan.steps && plan.steps.length > 1)) {
       const sourceVar = plan.steps![0].source
       const targetAlias = plan.steps![0].targetAlias
       // 对每个 GE 返回的 target 节点，找到它对应的 source 节点
