@@ -81,7 +81,7 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       }
       rows.push(row)
     }
-    return rows
+    return _applyEdgeWithFilters(rows, createEdges, plan)
   }
 
   // ── UNWIND + CREATE multi-row expansion ──
@@ -141,7 +141,7 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       } else aggRow[alias] = 0
       return [aggRow]
     }
-    return rows
+    return _applyWithFilters(rows, unwoundNodes, plan)
   }
 
 
@@ -318,6 +318,140 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
   }
 
   return Object.keys(row).length ? [row] : []
+}
+
+/**
+ * Apply `WITH ... WHERE <cond>` filters (carried on `plan.with.filters`) to the
+ * freshly-built DML rows.  Each row is paired with its backing node (the node
+ * that spawned it) so a filter expression such as `n.num % 2 = 0` can be
+ * evaluated against the node's properties.  FilterClauses with an `expression`
+ * (arithmetic/composite left-hand side) are evaluated via `_evaluateExpression`;
+ * plain `source.property` filters compare directly.
+ */
+function _applyWithFilters(
+  rows: QueryRow[],
+  backingNodes: Array<Record<string, unknown>>,
+  plan: QueryPlan,
+): QueryRow[] {
+  const filters = (plan.with?.filters || []) as Array<{
+    source?: string
+    property?: string
+    operator?: string
+    value?: unknown
+    expression?: string
+    negated?: boolean
+  }>
+  if (!filters.length) return rows
+
+  const matches = (row: QueryRow, node: Record<string, unknown>, f: typeof filters[number]): boolean => {
+    let lhs: unknown
+    if (f.expression) {
+      // Composite/arithmetic left-hand side: evaluate against the node, with the
+      // node's own properties (and itself) in scope.
+      const ctx: Record<string, unknown> = {}
+      const src = (node as any).props && typeof (node as any).props === 'object' ? (node as any).props : node
+      for (const [k, v] of Object.entries(src)) if (!k.startsWith('_')) ctx[k] = v
+      // Bind the node by its alias (and by every createNode alias pointing at it).
+      const alias = (node as any)._alias
+      if (alias) ctx[alias] = node
+      for (const cn of plan.createNodes || []) {
+        const cnAlias = (cn as any).alias
+        if (cnAlias && (node as any)._alias === cnAlias) ctx[cnAlias] = node
+      }
+      // Fall back: if the expression's root variable is not yet bound, bind every
+      // createNode alias to this node (single-node-per-row semantics).
+      const rootVar = f.expression.match(/^[a-zA-Z_]\w*/)?.[0]
+      if (rootVar && !(rootVar in ctx)) ctx[rootVar] = node
+      try {
+        lhs = _evaluateExpression(f.expression, ctx)
+      } catch {
+        return false
+      }
+    } else {
+      const src = (node as any).props && typeof (node as any).props === 'object' ? (node as any).props : node
+      lhs = (node as any)[f.property!] ?? (src as any)?.[f.property!]
+    }
+    const rhs = f.value
+    const op = f.operator || 'EQ'
+    let matched: boolean
+    switch (op) {
+      case 'EQ': matched = lhs === rhs; break
+      case 'NEQ': matched = lhs !== rhs; break
+      case 'GT': matched = (lhs as number) > (rhs as number); break
+      case 'GTE': matched = (lhs as number) >= (rhs as number); break
+      case 'LT': matched = (lhs as number) < (rhs as number); break
+      case 'LTE': matched = (lhs as number) <= (rhs as number); break
+      default: matched = false
+    }
+    return f.negated ? !matched : matched
+  }
+
+  const result: QueryRow[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const node = backingNodes[i] || {}
+    let keep = true
+    for (const f of filters) {
+      if (!matches(rows[i], node, f)) { keep = false; break }
+    }
+    if (keep) result.push(rows[i])
+  }
+  return result
+}
+
+/**
+ * Apply `WITH ... WHERE` filters to relationship rows.  Each row is paired with
+ * its backing relationship payload (an `__createEdges` entry: `{props, label}`),
+ * and the relationship variable is bound so `r.num % 2 = 0` evaluates correctly.
+ */
+function _applyEdgeWithFilters(
+  rows: QueryRow[],
+  edges: Array<{ props?: Record<string, unknown>; [k: string]: unknown }>,
+  plan: QueryPlan,
+): QueryRow[] {
+  const filters = (plan.with?.filters || []) as Array<{
+    expression?: string
+    operator?: string
+    value?: unknown
+    negated?: boolean
+  }>
+  if (!filters.length) return rows
+
+  const result: QueryRow[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const edge = edges[i] || {}
+    const edgeProps = edge.props || {}
+    let keep = true
+    for (const f of filters) {
+      if (!f.expression) continue
+      // Bind the relationship variable (the expression's root identifier) to the
+      // flat edge-property map, and also expose each property as a bare key.
+      const rootVar = f.expression.match(/^[a-zA-Z_]\w*/)?.[0]
+      const ctx: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(edgeProps)) ctx[k] = v
+      if (rootVar) ctx[rootVar] = edgeProps
+      let lhs: unknown
+      try {
+        lhs = _evaluateExpression(f.expression, ctx)
+      } catch {
+        keep = false
+        break
+      }
+      const op = f.operator || 'EQ'
+      let matched: boolean
+      switch (op) {
+        case 'EQ': matched = lhs === f.value; break
+        case 'NEQ': matched = lhs !== f.value; break
+        case 'GT': matched = (lhs as number) > (f.value as number); break
+        case 'GTE': matched = (lhs as number) >= (f.value as number); break
+        case 'LT': matched = (lhs as number) < (f.value as number); break
+        case 'LTE': matched = (lhs as number) <= (f.value as number); break
+        default: matched = false
+      }
+      if (f.negated ? matched : !matched) { keep = false; break }
+    }
+    if (keep) result.push(rows[i])
+  }
+  return result
 }
 
 export { _buildDmlRows }

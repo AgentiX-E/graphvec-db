@@ -139,6 +139,8 @@ export interface FilterClause {
   operator: 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'IN' | 'STARTS_WITH' | 'ENDS_WITH' | 'CONTAINS' | 'IS_NULL' | 'IS_NOT_NULL'
   value: unknown
   negated?: boolean
+  /** 复合表达式（算术/函数）左侧，如 `n.num % 2`。存在时 source/property 为空，执行层用 _evaluateExpression 求值。 */
+  expression?: string
 }
 
 export interface ForEachClause {
@@ -1755,6 +1757,31 @@ function parseSingleCondition(text: string): FilterClause | null {
     return { source: compMatch[1], property: compMatch[2], operator, value }
   }
 
+  // 算术/复合表达式比较：`n.num % 2 = 0`、`a.x + b.y > 10`、`n.count + 1 <= 5`。
+  // 左侧是带算术运算符的复合表达式（不止「变量.属性」），右侧是标量。
+  // 用 `expression`（左侧完整文本）+ operator + value 表示，执行层通过
+  // _evaluateExpression(expression, ctx) 求值后比较。
+  const arithMatch = t.match(/^(.+?)\s*(!?=|<>|[<>]=?)\s*(-?\d+(?:\.\d+)?|'(?:[^']|'')*'|"(?:[^"]|"")*"|true|false|null)$/i)
+  if (arithMatch && /[+\-*/%]/.test(arithMatch[1])) {
+    const opMap: Record<string, FilterClause['operator']> = {
+      '=': 'EQ', '!=': 'NEQ', '<>': 'NEQ', '>': 'GT', '>=': 'GTE', '<': 'LT', '<=': 'LTE',
+    }
+    const operator = opMap[arithMatch[2]] ?? 'EQ'
+    let value: unknown = arithMatch[3].trim()
+    if ((value as string).startsWith("'") || (value as string).startsWith('"')) {
+      value = unescapeCypherString((value as string).slice(1, -1))
+    } else if (/^-?\d+\.\d+$/.test(value as string)) {
+      value = parseFloat(value as string)
+    } else if (/^-?\d+$/.test(value as string)) {
+      value = parseInt(value as string, 10)
+    } else if (/^(true|false)$/i.test(value as string)) {
+      value = (value as string).toUpperCase() === 'TRUE'
+    } else if (/^null$/i.test(value as string)) {
+      value = null
+    }
+    return { source: '', property: '', operator, value, expression: arithMatch[1].trim() }
+  }
+
   return null
 }
 
@@ -2322,6 +2349,13 @@ function extractWith(withCtx: any): QueryPlan['with'] {
     if (!node || !node.children) return
     const name = node.constructor?.name ?? ''
 
+    if (name === 'WhereContext') {
+      // `WITH n WHERE <cond>` — extract the trailing filter(s) the same way a
+      // MATCH ... WHERE does, so `WITH ... WHERE n.num % 2 = 0` is honored.
+      const whereText = getTextRecursive(node)
+      filters.push(...parseWhereClause(whereText))
+      return
+    }
     if (name === 'ReturnItemContext') {
       // WITH uses same ReturnItem structure as RETURN
       const text = getTextRecursive(node)

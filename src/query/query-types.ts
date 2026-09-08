@@ -476,6 +476,8 @@ export interface FilterClause {
   value: unknown
   /** NOT 否定标记 */
   negated?: boolean
+  /** 复合表达式（算术/函数）左侧，如 `n.num % 2`。存在时 source/property 为空，执行层用 _evaluateExpression 求值。 */
+  expression?: string
 }
 
 // ── HAVING 子句（查询引擎内联聚合过滤） ─────────────────────
