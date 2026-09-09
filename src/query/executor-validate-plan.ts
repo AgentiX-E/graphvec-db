@@ -348,7 +348,14 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // 1. MATCH (n) CREATE (n:Person) — n 已在 MATCH 中绑定
   // Note: MATCH (x:X), (y:Y) CREATE (x)-[:R]->(y) 是合法的，x/y 在 createNodes 中
   // 仅当 createNode 有 label 或 props（即试图重新定义节点）时才视为 VariableAlreadyBound
-  if (plan.hasMatch && plan.createNodes?.length) {
+  //
+  // MERGE is exempt: `MATCH (a) MERGE (b) WITH * OPTIONAL MATCH (a)--(b)` is
+  // legal — MERGE binds `b` to an existing node or creates it, and the later
+  // OPTIONAL MATCH references the now-bound `b`.  MERGE populates both
+  // `createNodes` and `mergeNodes`, so without this guard the MERGE-created `b`
+  // is misclassified as a MATCH-bound re-declaration.  Only genuine CREATE is a
+  // re-binding violation.
+  if (plan.hasMatch && plan.createNodes?.length && plan.type === 'CREATE') {
     const matchVars = extractMatchVariables(query)
     const hasCreateEdges = !!(plan.createEdges && plan.createEdges.length)
     for (const cn of plan.createNodes) {
