@@ -1183,11 +1183,18 @@ function _walkMultiSteps(
       const range = (step as any).range
       const minHops = range.min ?? 1
       const maxHops = range.max ?? 10 // 默认最大 10 跳（防止无限）
-      const varLenSet = new Set<number>()
       // 检查边标签是否配置（仅对匹配边做遍历）
       const hasEdgeLabel = !!(step as any).edgeLabel
-      for (const sidx of _pathEndIndices(paths)) {
-        // BFS 从 sidx 出发，记录每层目标节点
+      const newPaths: number[][] = []
+      for (const p of paths) {
+        const sidx = p[p.length - 1]
+        // BFS from sidx, recording every reachable endpoint at depth>=minHops.
+        type VarLenEnd = { end: number; hopsAt: number }
+        const ends: VarLenEnd[] = []
+        // Zero-length match (`*0..`, `*0`): the start node itself is a valid
+        // endpoint, preserving the path prefix so a subsequent standard step can
+        // chain off it (e.g. `(a)-[:T*0]->()-[:U]->(c)`).
+        if (minHops === 0) ends.push({ end: sidx, hopsAt: 0 })
         let frontier = new Set<number>([sidx])
         const visited = new Set<number>([sidx])
         for (let depth = 1; depth <= maxHops; depth++) {
@@ -1199,24 +1206,18 @@ function _walkMultiSteps(
             for (const e of edges) {
               let neighborIdx = -1
               if (isAny) {
-                // isAny 分支：自环边也需匹配（neighborIdx === fidx 时自环）
                 neighborIdx = e.dstIdx === fidx ? e.srcIdx : (e.srcIdx === fidx ? e.dstIdx : -1)
-                if (neighborIdx === fidx && e.dstIdx === fidx && e.srcIdx === fidx) {
-                  // 自环：src === dst === fidx，neighborIdx 被设为 fidx，但后面 neighborIdx !== fidx 会过滤掉
-                  // 这里保持 fidx 作为 self-loop 标记
-                }
               } else if (step.direction === 'out' && e.srcIdx === fidx) {
                 neighborIdx = e.dstIdx
               } else if (step.direction === 'in' && e.dstIdx === fidx) {
                 neighborIdx = e.srcIdx
               }
-              if (neighborIdx >= 0 && neighborIdx < allNodes.length && !visited.has(neighborIdx) && (neighborIdx !== fidx || (step.direction === 'any' && e.dstIdx === fidx && e.srcIdx === fidx))) {
-                if (hasEdgeLabel && (e.label !== step.edgeLabel)) continue
+              if (neighborIdx >= 0 && neighborIdx < allNodes.length && !visited.has(neighborIdx) && neighborIdx !== fidx) {
+                if (hasEdgeLabel && (e.label !== step.edgeLabel)) { nextFrontier.add(neighborIdx); continue }
                 visited.add(neighborIdx)
                 if (depth >= minHops) {
                   if (_stepMatchConstraint(neighborIdx, step, allNodes)) {
-                    // 检查 __edges 一致性（TCK 场景）
-                    varLenSet.add(neighborIdx)
+                    ends.push({ end: neighborIdx, hopsAt: depth })
                   }
                 }
                 nextFrontier.add(neighborIdx)
@@ -1233,8 +1234,9 @@ function _walkMultiSteps(
                       const nIdx = e.dstIdx === fidx ? e.srcIdx : e.dstIdx
                       if (nIdx === j && !visited.has(j)) {
                         visited.add(j)
+                        if (hasEdgeLabel && (e.label !== step.edgeLabel)) { nextFrontier.add(j); continue }
                         if (depth >= minHops && _stepMatchConstraint(j, step, allNodes)) {
-                          varLenSet.add(j)
+                          ends.push({ end: j, hopsAt: depth })
                         }
                         nextFrontier.add(j)
                       }
@@ -1247,8 +1249,18 @@ function _walkMultiSteps(
           frontier = nextFrontier
           if (frontier.size === 0) break
         }
+        for (const e0 of ends) {
+          // Preserve the accumulated prefix and append the variable-length
+          // endpoint.  The zero-hop case (e0.end === sidx) keeps the prefix
+          // unchanged so the next step chains from the same node.
+          if (e0.hopsAt === 0) {
+            newPaths.push([...p])
+          } else {
+            newPaths.push([...p, e0.end])
+          }
+        }
       }
-      paths = [...varLenSet].map(idx => [startIdx, idx])
+      paths = newPaths.length > 0 ? newPaths : []
       continue
     }
     const nextSet = new Set<number>()

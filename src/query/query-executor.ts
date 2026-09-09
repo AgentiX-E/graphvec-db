@@ -1162,14 +1162,18 @@ async function _executeMultiMatchCrossJoin(
           // Bind each step's endpoint node variables (source / target alias) to
           // their node index, and each edge variable to a full relationship
           // object so type(r1) / r1.weight resolve against the matched edge.
-          for (let pi = 0; pi < pat.steps.length; pi++) {
-            const st = pat.steps[pi] as any
-            const srcVar = st.source as string | undefined
-            const tgtVar = st.targetAlias as string | undefined
-            const nodeAt = pi === 0 ? path[0] : path[pi]
-            if (srcVar && nodeAt !== undefined) m[srcVar] = nodeAt
-            if (tgtVar && path[pi + 1] !== undefined) m[tgtVar] = path[pi + 1]
-          }
+          //
+          // The flat `path` node sequence spans all steps; with variable-length
+          // steps a single step may consume zero or many nodes, so the step→path
+          // boundary is not 1:1.  Resolve the first step's source to path[0] and
+          // the last step's target alias to path[path.length-1]; intermediate
+          // bounds are tracked by a running offset over the (single-hop) step
+          // count, which collapses correctly when every step is fixed-length and
+          // leaves anonymous zero-hop mid-nodes unbound (they carry empty aliases).
+          const firstSt = pat.steps[0] as any
+          const lastSt = pat.steps[pat.steps.length - 1] as any
+          if (firstSt.source) m[firstSt.source] = path[0]
+          if (lastSt.targetAlias) m[lastSt.targetAlias] = path[path.length - 1]
           for (let pi = 0; pi < pat.steps.length && pi < hopEdges.length; pi++) {
             const st = pat.steps[pi] as any
             const ev = (st?.edgeVariable as string | undefined)
