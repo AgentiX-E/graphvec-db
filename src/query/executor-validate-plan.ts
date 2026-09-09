@@ -887,6 +887,44 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       }
     }
   }
+
+  // ── SyntaxError: InvalidRelationshipPattern ──
+  // Detect variable-length relationship patterns with malformed range syntax
+  // that ANTLR silently degrades (hence the @skipGrammarCheck scenarios):
+  //   1. `-[:LIKES..]->`  — missing `*` before the range bounds.
+  //   2. `-[:LIKES*-2]->` — negative bound (a negative hop count is invalid).
+  //   3. `-[:LIKES*0]->`  — zero when not part of an explicit `0..` range.
+  // A legal range always appears as `*`, `*min`, `*min..max`, or `*..max`
+  // immediately after the relationship type inside square brackets.
+  const bracketRelationships = query.match(/\[(?:[^\]]*?)\]/g) || []
+  for (const br of bracketRelationships) {
+    // Find the variable-length range token (`*`, `*1`, `*1..3`, `*..3`) after
+    // the relationship type (a colon-led identifier may precede it).
+    const relTypeMatch = br.match(/:\s*[A-Za-z_][A-Za-z0-9_]*/)
+    if (!relTypeMatch) continue
+    const afterType = br.slice(relTypeMatch.index! + relTypeMatch[0].length)
+    // Case 1: type immediately followed by `..` without an intervening `*`.
+    if (/^\s*\.\./.test(afterType)) {
+      throw Object.assign(new Error('SyntaxError: InvalidRelationshipPattern'), { tckError: 'InvalidRelationshipPattern' })
+    }
+    // Case 2 & 3: a `*` whose bound is negative (or an explicit `*0`).
+    const rangeMatch = afterType.match(/^\s*(\*)()\s*(-?\d+)?(?:\s*\.\.\s*(-?\d+)?)?/)
+    if (rangeMatch) {
+      const lo = rangeMatch[3]
+      const hi = rangeMatch[4]
+      if (lo !== undefined && parseInt(lo, 10) < 0) {
+        throw Object.assign(new Error('SyntaxError: InvalidRelationshipPattern'), { tckError: 'InvalidRelationshipPattern' })
+      }
+      if (hi !== undefined && parseInt(hi, 10) < 0) {
+        throw Object.assign(new Error('SyntaxError: InvalidRelationshipPattern'), { tckError: 'InvalidRelationshipPattern' })
+      }
+    }
+    // Negative bound may also appear as a bare `*-2` with no dots.
+    const negMatch = afterType.match(/^\s*\*\s*(-\d+)/)
+    if (negMatch) {
+      throw Object.assign(new Error('SyntaxError: InvalidRelationshipPattern'), { tckError: 'InvalidRelationshipPattern' })
+    }
+  }
 }
 
 /** Strip WHERE clauses from list predicates/comprehensions to avoid
