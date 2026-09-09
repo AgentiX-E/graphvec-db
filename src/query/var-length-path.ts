@@ -120,6 +120,11 @@ function _matchesLabel(node: Record<string, unknown>, label: string): boolean {
 export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown>>): QueryResult {
   const evaluateExpr = _evaluateExpression
   const postProcessResults = _postProcessResults
+  // A chain of two or more variable-length steps (`MATCH (a)-[:T*0..1]->(b)-[:U*0..1]->(c)`)
+  // is not expressible as a single-step BFS; delegate to the chain combinator.
+  if (plan.steps && plan.steps.length > 1 && plan.steps.every((s: any) => s.range)) {
+    return _executeVarLenChain(plan, nodes)
+  }
   const step = plan.steps[0]
   const range = (step as any).range
   const minHops = range.min ?? 1
@@ -223,6 +228,192 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
       frontier = nextFrontier
       if (frontier.length === 0) break
     }
+  }
+
+  if (plan.with?.columns?.length && result.length > 0) {
+    return _applyWithProjection(result, plan)
+  }
+  return postProcessResults(result, plan)
+}
+
+/** Result of expanding a single variable-length step from one start node:
+ *  `path` holds the traversed node indices (length 1 when the step matches
+ *  zero hops), `edges` holds the relationship objects along the walk. */
+interface StepMatch { path: number[]; edges: Array<Record<string, unknown>> }
+
+/**
+ * Expand one variable-length step (or fixed-length relationship) starting from
+ * a single node index.  Returns every endpoint reachable within [minHops,
+ * maxHops], including the zero-hop self match when minHops === 0.  Shared by the
+ * single-step `executeVarLenPath` and the multi-step chain combinator, so both
+ * paths honour label/edge-property/target-property predicates identically.
+ */
+function _collectStepMatches(
+  startIdx: number,
+  step: any,
+  srcNodes: Array<Record<string, unknown>>,
+  incomingEdges: Array<Array<{ dstIdx: number; srcIdx: number; label: string; props?: Record<string, unknown> | null }>>,
+  minHops: number,
+  maxHops: number,
+): StepMatch[] {
+  const dir = step.direction || 'out'
+  const edgeLabel = step.edgeLabel as string | null
+  const edgePropsPred = step.edgeProps as Record<string, unknown> | null
+  const tgtProps = step.targetProps as Record<string, unknown> | null
+  const tgtLabel = step.targetLabel as string | null
+  const matches: StepMatch[] = []
+
+  const pushMatch = (path: number[]): void => {
+    const targetNode = srcNodes[path[path.length - 1]] as any
+    if (tgtLabel && !_matchesLabel(targetNode, tgtLabel)) return
+    if (tgtProps && typeof tgtProps === 'object') {
+      for (const [pk, pv] of Object.entries(tgtProps)) {
+        if (targetNode[pk] !== pv) return
+      }
+    }
+    const edges = _buildPathEdges(path, srcNodes)
+    matches.push({ path, edges })
+    // always continue extending from the matched node for longer hops.
+  }
+
+  if (minHops === 0) {
+    pushMatch([startIdx])
+  }
+
+  let frontier: BfsEntry[] = [{ nIdx: startIdx, path: [startIdx] }]
+  for (let depth = 1; depth <= maxHops; depth++) {
+    const nextFrontier: BfsEntry[] = []
+    for (const entry of frontier) {
+      const node = srcNodes[entry.nIdx] as any
+      const edgeArr =
+        dir !== 'out' && dir !== 'in'
+          ? ((node?.__edges || []) as any[]).concat(incomingEdges[entry.nIdx] || [])
+          : (node?.__edges || []) as any[]
+      for (const e of edgeArr) {
+        let nIdx = -1
+        if (dir === 'out' && e.srcIdx === entry.nIdx) nIdx = e.dstIdx
+        else if (dir === 'in' && e.dstIdx === entry.nIdx) nIdx = e.srcIdx
+        else if (dir !== 'out' && dir !== 'in') {
+          if (e.srcIdx === entry.nIdx) nIdx = e.dstIdx
+          else if (e.dstIdx === entry.nIdx) nIdx = e.srcIdx
+        }
+        if (nIdx < 0 || nIdx >= srcNodes.length) continue
+        if (entry.path.includes(nIdx)) continue
+        if (edgeLabel && e.label !== edgeLabel) continue
+        if (edgePropsPred && typeof edgePropsPred === 'object') {
+          let mismatch = false
+          for (const [pk, pv] of Object.entries(edgePropsPred)) {
+            if (!e.props || e.props[pk] !== pv) { mismatch = true; break }
+          }
+          if (mismatch) continue
+        }
+        const newPath = [...entry.path, nIdx]
+        if (depth >= minHops) pushMatch(newPath)
+        nextFrontier.push({ nIdx, path: newPath })
+      }
+    }
+    frontier = nextFrontier
+    if (frontier.length === 0) break
+  }
+
+  return matches
+}
+
+/**
+ * Combinator for a chain of two or more variable-length steps.  Each step is
+ * expanded independently with `_collectStepMatches`, then the adjacent steps are
+ * joined on their shared node variable (step[i].targetAlias === step[i+1].source)
+ * so independent zero/one-hop choices Cartesian-product into the full row set.
+ * Handles the zero-length-in-the-middle case (`-[:T*0..1]->(b)-[:U*0..1]->(c)`).
+ */
+function _executeVarLenChain(plan: any, nodes: Array<Record<string, unknown>>): QueryResult {
+  const postProcessResults = _postProcessResults
+  const srcNodes: Array<Record<string, unknown>> = [...(nodes || [])]
+  const steps: any[] = plan.steps
+
+  // Reveerse adjacency for undirected (`any`) steps.
+  const incomingEdges: Array<Array<{ dstIdx: number; srcIdx: number; label: string; props?: Record<string, unknown> | null }>> =
+    new Array(srcNodes.length).fill(null).map(() => [])
+  for (let ni = 0; ni < srcNodes.length; ni++) {
+    const edges = (srcNodes[ni] as any)?.__edges as any[] | undefined
+    if (!edges) continue
+    for (const e of edges) {
+      if (e.dstIdx >= 0 && e.dstIdx < srcNodes.length) incomingEdges[e.dstIdx].push(e)
+    }
+  }
+
+  const firstStep = steps[0]
+  const firstRange = firstStep.range
+  const firstMin = firstRange.min ?? 1
+  const firstMax = Math.min(firstRange.max ?? 10, 50)
+
+  // Determine start node candidates (honouring scanLabel + sourceProps).
+  const startIdxs: number[] = []
+  for (let i = 0; i < srcNodes.length; i++) {
+    const n = srcNodes[i] as any
+    if (plan.scanLabel && !_matchesLabel(n, plan.scanLabel)) continue
+    const sp = firstStep.sourceProps
+    if (sp && typeof sp === 'object') {
+      let mismatch = false
+      for (const [pk, pv] of Object.entries(sp)) { if (n[pk] !== pv) { mismatch = true; break } }
+      if (mismatch) continue
+    }
+    startIdxs.push(i)
+  }
+
+  const nodeSnap = (idx: number): Record<string, unknown> => {
+    const n = srcNodes[idx] as any
+    const out: Record<string, unknown> = { _label: n._label || 'Default' }
+    for (const k of Object.keys(n)) { if (k !== '_label' && k !== '__edges' && k !== '_alias') out[k] = n[k] }
+    return out
+  }
+
+  const result: QueryRow[] = []
+  // rows is a list of partial binding maps keyed by variable name; each entry
+  // also carries a hidden __stepEnd index (the node index reached by this step).
+  let rows: Array<Record<string, unknown> & { __stepEnd: number }> = []
+
+  for (let si = 0; si < steps.length; si++) {
+    const step = steps[si]
+    const range = step.range
+    const minHops = range.min ?? 1
+    const maxHops = Math.min(range.max ?? 10, 50)
+    const nextRows: Array<Record<string, unknown> & { __stepEnd: number }> = []
+    if (si === 0) {
+      for (const startIdx of startIdxs) {
+        const ms = _collectStepMatches(startIdx, step, srcNodes, incomingEdges, minHops, maxHops)
+        for (const m of ms) {
+          const row: Record<string, unknown> & { __stepEnd: number } = { __stepEnd: m.path[m.path.length - 1] } as any
+          if (step.source) row[step.source] = nodeSnap(m.path[0])
+          if (step.targetAlias) row[step.targetAlias] = nodeSnap(m.path[m.path.length - 1])
+          if (step.edgeVariable) row[step.edgeVariable] = m.edges
+          nextRows.push(row)
+        }
+      }
+    } else {
+      for (const base of rows) {
+        const startIdx = base.__stepEnd
+        const ms = _collectStepMatches(startIdx, step, srcNodes, incomingEdges, minHops, maxHops)
+        for (const m of ms) {
+          const row: Record<string, unknown> & { __stepEnd: number } = { ...base, __stepEnd: m.path[m.path.length - 1] } as any
+          if (step.source) row[step.source] = nodeSnap(m.path[0])
+          if (step.targetAlias) row[step.targetAlias] = nodeSnap(m.path[m.path.length - 1])
+          if (step.edgeVariable) row[step.edgeVariable] = m.edges
+          nextRows.push(row)
+        }
+      }
+    }
+    rows = nextRows
+    if (rows.length === 0) break
+  }
+
+  for (const row of rows) {
+    const out: QueryRow = {}
+    for (const [k, v] of Object.entries(row)) {
+      if (k === '__stepEnd') continue
+      out[k] = v
+    }
+    result.push(out)
   }
 
   if (plan.with?.columns?.length && result.length > 0) {

@@ -606,7 +606,14 @@ export async function _execNonGePaths(
   // side effects (`DETACH DELETE a, b`).  When a variable-length pattern is
   // followed by DML or an aggregate, fall through to the main GE path, which
   // owns the DELETE/SET/REMOVE side effects and the aggregate fold.
-  const hasVarLenGE = plan.steps?.length === 1 && (plan.steps[0] as any)?.range && !isDML && !plan.aggregate
+  const hasVarLenGE =
+    (
+      (plan.steps?.length === 1 && (plan.steps[0] as any)?.range) ||
+      // A chain of two or more variable-length steps (each carrying a range,
+      // e.g. `(a)-[:T*0..1]->(b)-[:U*0..1]->(c)`) is handled by the BFS chain
+      // combinator in executeVarLenPath rather than the GE multi-step walk.
+      (plan.steps && plan.steps.length > 1 && plan.steps.every((s: any) => s.range))
+    ) && !isDML && !plan.aggregate
   if (hasVarLenGE) {
     let varLenResult = _executeVarLenPath(plan, nodes)
     // ── 对 VLE 结果应用 expressionColumns 映射 ──
