@@ -977,15 +977,26 @@ async function _executeMultiMatchCrossJoin(
 
   // Assemble all independent patterns: pattern[0] = primary MATCH
   // (plan.steps + plan.scanLabel), pattern[1..] = additional MATCH (multiMatch[i]).
-  const patterns: Array<{ scanLabel: string | null; steps: TraverseStep[] }> = [
-    { scanLabel: plan.scanLabel ?? null, steps: plan.steps || [] },
-    ...mm.map(p => ({ scanLabel: p.scanLabel ?? null, steps: p.steps || [] })),
+  // Each pattern also records its source node variable (e.g. `a`) so that
+  // patterns sharing a variable name (e.g. `MATCH (a:A) MATCH (a)-[:R]->(c)`)
+  // are joined on that bound node rather than Cartesian-producted.
+  const patterns: Array<{ scanLabel: string | null; steps: TraverseStep[]; variable?: string }> = [
+    { scanLabel: plan.scanLabel ?? null, steps: plan.steps || [], variable: (plan as any).matchVar },
+    ...mm.map(p => ({ scanLabel: p.scanLabel ?? null, steps: p.steps || [], variable: p.variable })),
   ]
   if (patterns.length < 2) return null
-  // Only cross-join when at least one pattern carries a relationship or path
-  // variable (otherwise the ordinary GE path already covers it).
+  // Only cross-join when at least one pattern carries a relationship/path
+  // variable, OR a later pattern reuses a previously-bound node variable as its
+  // source (a bound-node join the GE path does not handle for anonymous edges).
   const hasRelOrPathVar = patterns.some(p => p.steps.some((s: any) => s.edgeVariable || s.pathVariable))
-  if (!hasRelOrPathVar) return null
+  const boundVars = new Set<string>()
+  let hasBoundNodeJoin = false
+  for (const p of patterns) {
+    const src = p.variable || p.steps[0]?.source
+    if (src && boundVars.has(src)) { hasBoundNodeJoin = true; break }
+    if (src) boundVars.add(src)
+  }
+  if (!hasRelOrPathVar && !hasBoundNodeJoin) return null
 
   // Clone nodes and ensure __edges exists.
   const allNodes: Array<Record<string, unknown>> = (nodes || []).map(n => {
@@ -1024,7 +1035,10 @@ async function _executeMultiMatchCrossJoin(
 
   // For single-edge patterns enumerate matching relationships by direction;
   // for path/multi-step patterns use _walkMultiSteps. Each pattern emits a
-  // "match list" of variable-binding objects.
+  // "match list" of variable-binding objects.  Node variables are bound to
+  // their *node index* (a number) so the subsequent join can equate a shared
+  // variable bound by two patterns (`MATCH (a:A) MATCH (a)-[:R]->(c)`) on node
+  // identity rather than treating them as independent.
   const matchLists: Array<Array<Record<string, unknown>>> = []
   for (const pat of patterns) {
     const matches: Array<Record<string, unknown>> = []
@@ -1046,20 +1060,45 @@ async function _executeMultiMatchCrossJoin(
       startIdxs.push(i)
     }
 
-    if (pat.steps.length === 1 && !pathVar && !(step as any)?.range) {
-      // Single-step relationship pattern: enumerate matching edges directly.
+    if (pat.steps.length === 0) {
+      // Bare node pattern (`MATCH (a)` / `MATCH (a:A)`): bind the source
+      // variable to every matching node index (startIdxs already honours
+      // scanLabel).  This is what lets a later pattern join on `a`.
+      for (const si of startIdxs) {
+        const m: Record<string, unknown> = {}
+        if (pat.variable) m[pat.variable] = si
+        matches.push(m)
+      }
+    } else if (pat.steps.length === 1 && !pathVar && !(step as any)?.range) {
+      // Single-step relationship pattern: enumerate matching edges directly,
+      // binding the source/target node variables (by index) plus the edge var.
       const stepLabel = (step as any).edgeLabel as string | null | undefined
+      const srcVar = (step as any).source as string | undefined
+      const tgtVar = (step as any).targetAlias as string | undefined
       for (const rel of rels) {
         const s = rel.srcIdx as number, d = rel.dstIdx as number
         // Relationship type predicate: `-[r:Y]->` must only match edges whose
         // label equals Y (a bound `r` reusing the same variable still enforces
         // the type — `MATCH (a1)-[r:T]->() ... MATCH (a1)-[r:Y]->(b2)` yields no
-        // rows whatever r was previously bound to).
-        if (stepLabel && rel.label !== stepLabel) continue
+        // rows whatever r was previously bound to).  The enumerated rel object
+        // carries the relationship type under `_type`/`__edgeLabel`.
+        const relType = (rel._type as string) || (rel.__edgeLabel as string) || (rel.label as string) || ''
+        if (stepLabel && relType !== stepLabel) continue
         // direction semantics: out → rel.srcIdx must be a start node; in → rel.dstIdx.
         if (step.direction === 'out' && startIdxs.length !== allNodes.length && !startIdxs.includes(s)) continue
         if (step.direction === 'in' && startIdxs.length !== allNodes.length && !startIdxs.includes(d)) continue
         const m: Record<string, unknown> = {}
+        if (step.direction === 'out') {
+          if (srcVar) m[srcVar] = s
+          if (tgtVar) m[tgtVar] = d
+        } else if (step.direction === 'in') {
+          if (srcVar) m[srcVar] = d
+          if (tgtVar) m[tgtVar] = s
+        } else {
+          // any/undirected: source is the anchor side; target is the far side.
+          if (srcVar) m[srcVar] = startIdxs.includes(s) ? s : d
+          if (tgtVar) m[tgtVar] = startIdxs.includes(s) ? d : s
+        }
         if (edgeVar) m[edgeVar] = rel
         matches.push(m)
       }
@@ -1078,9 +1117,18 @@ async function _executeMultiMatchCrossJoin(
         const m: Record<string, unknown> = {}
         if (edgeVar && row[edgeVar] !== undefined) m[edgeVar] = row[edgeVar]
         // Preserve any bound source/target node variables (e.g. `a` from the
-        // preceding MATCH) emitted by the BFS walk.
+        // preceding MATCH) emitted by the BFS walk.  The BFS emits node
+        // *objects* keyed by variable name; map them back to their node index
+        // via a name lookup so the join can equate them with the primary match.
         for (const [k, v] of Object.entries(row)) {
-          if (k !== edgeVar && !k.startsWith('__')) m[k] = v
+          if (k === edgeVar || k.startsWith('__')) continue
+          if (v && typeof v === 'object' && (v as any)._label !== undefined) {
+            // Node object → find its index.
+            const idx = allNodes.findIndex(no => no === v || ((no as any)._label === (v as any)._label && (no as any).name === (v as any).name && (v as any).name !== undefined))
+            m[k] = idx >= 0 ? idx : v
+          } else {
+            m[k] = v
+          }
         }
         matches.push(m)
       }
@@ -1111,8 +1159,17 @@ async function _executeMultiMatchCrossJoin(
             }
             m[pathVar] = { __path: pathObjs }
           }
-          // Bind each step's edge variable (r1, r2, ...) to a full relationship
+          // Bind each step's endpoint node variables (source / target alias) to
+          // their node index, and each edge variable to a full relationship
           // object so type(r1) / r1.weight resolve against the matched edge.
+          for (let pi = 0; pi < pat.steps.length; pi++) {
+            const st = pat.steps[pi] as any
+            const srcVar = st.source as string | undefined
+            const tgtVar = st.targetAlias as string | undefined
+            const nodeAt = pi === 0 ? path[0] : path[pi]
+            if (srcVar && nodeAt !== undefined) m[srcVar] = nodeAt
+            if (tgtVar && path[pi + 1] !== undefined) m[tgtVar] = path[pi + 1]
+          }
           for (let pi = 0; pi < pat.steps.length && pi < hopEdges.length; pi++) {
             const st = pat.steps[pi] as any
             const ev = (st?.edgeVariable as string | undefined)
@@ -1134,18 +1191,41 @@ async function _executeMultiMatchCrossJoin(
     matchLists.push(matches)
   }
 
-  // Cartesian product cross-join.
+  // Sequential cross-join with bound-variable equality.  Node variables are
+  // stored as node indices (numbers), so when two patterns both bind the same
+  // variable (e.g. `a`), a row is only kept when the bindings agree.  Direct
+  // Cartesian product would silently multiply `MATCH (a:A) MATCH (a)-[:R]->(c)`
+  // into cross rows instead of joining on the shared `a`.
   let crossRows: Array<Record<string, unknown>> = [{}]
   for (const matches of matchLists) {
     const next: Array<Record<string, unknown>> = []
     for (const base of crossRows) {
       for (const m of matches) {
+        let compatible = true
+        for (const k of Object.keys(m)) {
+          if (k in base && typeof m[k] === 'number' && typeof base[k] === 'number' && base[k] !== m[k]) {
+            compatible = false
+            break
+          }
+        }
+        if (!compatible) continue
         next.push({ ...base, ...m })
       }
     }
     crossRows = next
   }
   if (!crossRows.length) return []
+
+  // Resolve node-index bindings back to concrete node objects for the WHERE /
+  // RETURN projection stages.
+  for (const row of crossRows) {
+    for (const k of Object.keys(row)) {
+      const v = row[k]
+      if (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < allNodes.length) {
+        row[k] = allNodes[v]
+      }
+    }
+  }
 
   // Evaluate WHERE (relationship identity / path equality).
   let filtered = crossRows

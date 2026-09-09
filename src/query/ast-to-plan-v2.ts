@@ -945,6 +945,11 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           if (!plan.scanLabel && plan.steps.length === 0) {
             plan.scanLabel = parsed.label ?? plan.scanLabel
             plan.steps = parsed.edges
+            // Preserve the first MATCH clause's source node variable (e.g. `a`
+            // in `MATCH (a:A) MATCH (a)-[:R]->(c)`) so the cross-join executor
+            // can join the two patterns on the shared bound variable rather than
+            // Cartesian-producting them.
+            if (parsed.variable) (plan as any).matchVar = parsed.variable
             // Preserve the first node's inline property predicate (e.g.
             // `MATCH (a {name:'A'})-[*]->(x)`) so the variable-length executor can
             // constrain the BFS start node to matching properties.
