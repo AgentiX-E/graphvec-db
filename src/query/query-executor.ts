@@ -1046,7 +1046,7 @@ async function _executeMultiMatchCrossJoin(
       startIdxs.push(i)
     }
 
-    if (pat.steps.length === 1 && !pathVar) {
+    if (pat.steps.length === 1 && !pathVar && !(step as any)?.range) {
       // Single-step relationship pattern: enumerate matching edges directly.
       for (const rel of rels) {
         const s = rel.srcIdx as number, d = rel.dstIdx as number
@@ -1055,6 +1055,27 @@ async function _executeMultiMatchCrossJoin(
         if (step.direction === 'in' && startIdxs.length !== allNodes.length && !startIdxs.includes(d)) continue
         const m: Record<string, unknown> = {}
         if (edgeVar) m[edgeVar] = rel
+        matches.push(m)
+      }
+    } else if (pat.steps.length === 1 && (step as any)?.range) {
+      // Variable-length single-step pattern (`MATCH (a)-[r*2]->()`): delegate to
+      // the BFS engine so `edgeVariable` binds to the full edge LIST (e.g.
+      // `[[:X], [:Y]]` for a 2-hop walk) rather than a single relationship.
+      const vlPlan: any = {
+        scanLabel: pat.scanLabel ?? null,
+        steps: pat.steps,
+        pathVar: null,
+        returnColumns: [edgeVar || ''],
+      }
+      const vlRows = _executeVarLenPath(vlPlan, allNodes as Array<Record<string, unknown>>)
+      for (const row of vlRows) {
+        const m: Record<string, unknown> = {}
+        if (edgeVar && row[edgeVar] !== undefined) m[edgeVar] = row[edgeVar]
+        // Preserve any bound source/target node variables (e.g. `a` from the
+        // preceding MATCH) emitted by the BFS walk.
+        for (const [k, v] of Object.entries(row)) {
+          if (k !== edgeVar && !k.startsWith('__')) m[k] = v
+        }
         matches.push(m)
       }
     } else {
