@@ -511,60 +511,74 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     }
 
     // ── 边变量 RETURN r ──
-    // rc 是边变量名（如 RETURN r），从 r.__edgeLabel 获取标签输出 [:LABEL] 格式
-    if (r.__edgeLabel && !rc.match(/^\w+\(/)) {
-      // 只在 rc 确实是 GE 记录的边变量时使用边标签（避免自环中节点被误输出为边格式）
-      let isEdgeVar = false
-      if (plan.returnColumns) {
-        const nodeAliases = new Set([
-          ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
-          ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias, s.pathVariable].filter(Boolean)),
-          // OPTIONAL MATCH 步骤中的变量也视为节点别名（不是边变量）
-          ...(plan.optionalMatchSteps || []).flatMap(om => {
-            const vars: string[] = []
-            if (om.variableName) vars.push(om.variableName)
-            for (const s of om.steps || []) {
-              if (s.source) vars.push(s.source)
-              if (s.targetAlias) vars.push(s.targetAlias)
-              if (s.pathVariable) vars.push(s.pathVariable)
-            }
-            return vars
-          }),
-        ])
-        // Include scanLabel source alias (MATCH (n:Label) without TraverseStep)
-        if (plan.scanLabel && plan.steps?.length === 0) {
-          const q = ((plan as any)._originalQuery as string) || ''
-          const scAlias = (q.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*\w+\s*)?\)/i) || [])[1]
-          if (scAlias) nodeAliases.add(scAlias)
-        }
-        isEdgeVar = !nodeAliases.has(rc)
-      } else {
-        isEdgeVar = typeof r[rc] === 'string' && r[rc].startsWith('[:')
-      }
-      if (isEdgeVar) {
-        // 检查 __crossVarRows 是否有边属性
-        const edgeInfo = r.__crossVarRows?.[rc]
-        if (edgeInfo && typeof edgeInfo === 'object') {
-          const props: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(edgeInfo)) {
-            if (!k.startsWith('_')) props[k] = v
+    // rc 是边变量名（如 RETURN r），输出 [:LABEL] / [:LABEL {prop: 'val'}]。
+    // 边标签可能来自两个位置：
+    //   1. 行顶层的 r.__edgeLabel（多步 cross-join / rawWithEdges 路径写入）；
+    //   2. r.__crossVarRows[rc] 的 __edgeLabel / _type 标记（单步 hasEdgeStep
+    //      的 multiStepRaw 路径，见 query-executor 的边变量绑定）。
+    {
+      const edgeInfo = r.__crossVarRows?.[rc]
+      const edgeLabel = (r.__edgeLabel as string)
+        || (edgeInfo && typeof edgeInfo === 'object'
+          ? ((edgeInfo.__edgeLabel as string) || (edgeInfo._type as string) || (edgeInfo.__edgeLabelStr as string))
+          : '')
+      if (edgeLabel && !rc.match(/^\w+\(/)) {
+        // 只在 rc 确实是 GE 记录的边变量时使用边标签（避免自环中节点被误输出为边格式）
+        let isEdgeVar = false
+        if (plan.returnColumns) {
+          const nodeAliases = new Set([
+            ...(plan.createNodes || []).map(n => n.alias).filter(Boolean),
+            ...(plan.steps || []).flatMap(s => [s.source, s.targetAlias, s.pathVariable].filter(Boolean)),
+            // OPTIONAL MATCH 步骤中的变量也视为节点别名（不是边变量）
+            ...(plan.optionalMatchSteps || []).flatMap(om => {
+              const vars: string[] = []
+              if (om.variableName) vars.push(om.variableName)
+              for (const s of om.steps || []) {
+                if (s.source) vars.push(s.source)
+                if (s.targetAlias) vars.push(s.targetAlias)
+                if (s.pathVariable) vars.push(s.pathVariable)
+              }
+              return vars
+            }),
+          ])
+          // Include scanLabel source alias (MATCH (n:Label) without TraverseStep)
+          if (plan.scanLabel && plan.steps?.length === 0) {
+            const q = ((plan as any)._originalQuery as string) || ''
+            const scAlias = (q.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*\w+\s*)?\)/i) || [])[1]
+            if (scAlias) nodeAliases.add(scAlias)
           }
-          const propKeys = Object.keys(props)
-          if (propKeys.length === 0) {
-            result[rc] = '[:' + r.__edgeLabel + ']'
-          } else {
-            const propStr = propKeys.map(k => {
-              const v = props[k]
-              if (typeof v === 'string') return `${k}: '${v}'`
-              if (typeof v === 'number') return `${k}: ${v}`
-              return `${k}: ${JSON.stringify(v)}`
-            }).join(', ')
-            result[rc] = `[:${r.__edgeLabel} {${propStr}}]`
-          }
+          isEdgeVar = !nodeAliases.has(rc)
         } else {
-          result[rc] = '[:' + r.__edgeLabel + ']'
+          isEdgeVar = typeof r[rc] === 'string' && r[rc].startsWith('[:')
         }
-        continue
+        if (isEdgeVar) {
+          if (edgeInfo && typeof edgeInfo === 'object') {
+            // Only surface *user* relationship properties.  Internal edge fields
+            // (srcIdx / dstIdx / label / props) are bookkeeping and must never
+            // leak into the `[:LABEL {prop: ...}]` rendering.
+            const props: Record<string, unknown> = {}
+            const _internalEdgeKeys = new Set(['srcIdx', 'dstIdx', 'label', 'props'])
+            for (const [k, v] of Object.entries(edgeInfo)) {
+              if (k.startsWith('_') || _internalEdgeKeys.has(k)) continue
+              props[k] = v
+            }
+            const propKeys = Object.keys(props)
+            if (propKeys.length === 0) {
+              result[rc] = '[:' + edgeLabel + ']'
+            } else {
+              const propStr = propKeys.map(k => {
+                const v = props[k]
+                if (typeof v === 'string') return `${k}: '${v}'`
+                if (typeof v === 'number') return `${k}: ${v}`
+                return `${k}: ${JSON.stringify(v)}`
+              }).join(', ')
+              result[rc] = `[:${edgeLabel} {${propStr}}]`
+            }
+          } else {
+            result[rc] = '[:' + edgeLabel + ']'
+          }
+          continue
+        }
       }
     }
 

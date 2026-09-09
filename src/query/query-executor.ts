@@ -3241,7 +3241,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const targetAlias = plan.steps![0].targetAlias
       // 对每个 GE 返回的 target 节点，找到它对应的 source 节点
       // 使用 Map<srcId, targetProps> 去重，确保同一 source→target 只保留一条
-      const dedupedRecords = new Map<string, { srcId: number; targetProps: Record<string, unknown> }>()
+      const dedupedRecords = new Map<string, { srcId: number; targetProps: Record<string, unknown>; crossVarRows?: Record<string, unknown> }>()
       for (const r of rawRecords) {
         const sourceIds = sourceTargetMap.get(r.id) || []
         if (!sourceIds.length) continue
@@ -3262,11 +3262,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         for (const srcId of sourceIds) {
           const key = `${srcId}:${r.id}`
           if (!dedupedRecords.has(key)) {
-            dedupedRecords.set(key, { srcId, targetProps })
+            // Preserve the per-variable bindings (including edge variables such
+            // as `r` in `MATCH (a)-[r]->(b) RETURN a, r, b`) so the downstream
+            // _formatResultRow can render `r` as `[:LOOP]`.  Rebuilding the row
+            // from props/targetProps alone drops these bindings.
+            dedupedRecords.set(key, { srcId, targetProps, crossVarRows: r.__crossVarRows as Record<string, unknown> | undefined })
           }
         }
       }
-      records = [...dedupedRecords.entries()].map(([key, { srcId, targetProps }]) => {
+      records = [...dedupedRecords.entries()].map(([key, { srcId, targetProps, crossVarRows }]) => {
         const srcIdx = nodeGeIds.indexOf(srcId)
         if (srcIdx < 0) return null as any
         const srcNode = allNodes[srcIdx]
@@ -3282,6 +3286,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           deleteNodeKey: () => {},
           __targetProps: targetProps,
           __targetAlias: plan.steps?.[0]?.targetAlias || undefined,
+          ...(crossVarRows ? { __crossVarRows: crossVarRows } : {}),
         }
       }).filter(Boolean)
     }

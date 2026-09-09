@@ -320,8 +320,11 @@ function toNodeNotation(val: unknown): string | undefined {
 function _toEdgeNotation(val: Record<string, unknown>): string {
   const label = (val.__edgeLabel || val._type || val._label || '') as string
   const props: Record<string, unknown> = {}
+  // Internal relationship bookkeeping fields (graph-engine edge identity) must
+  // never render as relationship properties; they are not user data.
+  const _internal = new Set(['srcIdx', 'dstIdx', 'label', 'props', '__edgeId'])
   for (const [k, v] of Object.entries(val)) {
-    if (k.startsWith('_')) continue
+    if (k.startsWith('_') || _internal.has(k)) continue
     props[k] = v
   }
   const propKeys = Object.keys(props)
