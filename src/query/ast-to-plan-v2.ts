@@ -1117,7 +1117,23 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         }
         const edges = extractCreateEdges(clause.ctx)
         if (edges.length) {
-          plan.createEdges = plan.createEdges?.length ? [...plan.createEdges, ...edges] : edges
+          // extractCreateEdges assigns sourceIdx/targetIdx from a *clause-local*
+          // nodeToIdx table (starting at 0 for this CREATE clause).  When a
+          // later CREATE clause reuses node variables created in an earlier one
+          // (e.g. `CREATE (a),(b),(c),(d) CREATE (a)-[:R]->(d)`), those local
+          // indices no longer line up with the accumulated global createNodes
+          // list.  Re-map each endpoint to the global index via its variable
+          // name so the DML layer connects the correct nodes.
+          const emitEdges = edges.map((e) => {
+            const gSrc = e.source ? plan.createNodes?.findIndex((n: any) => n.alias === e.source) : -1
+            const gDst = e.target ? plan.createNodes?.findIndex((n: any) => n.alias === e.target) : -1
+            return {
+              ...e,
+              sourceIdx: gSrc >= 0 ? gSrc : e.sourceIdx,
+              targetIdx: gDst >= 0 ? gDst : e.targetIdx,
+            }
+          })
+          plan.createEdges = plan.createEdges?.length ? [...plan.createEdges, ...emitEdges] : emitEdges
         }
         break
       }
