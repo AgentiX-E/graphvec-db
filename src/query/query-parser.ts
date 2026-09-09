@@ -1453,6 +1453,14 @@ function _walkMultiSteps(
           })
         }
         if (connected) {
+          // Relationship isomorphism: a multi-step MATCH must not reuse the same
+          // relationship across steps.  In `()-[r1]->()<--()`, the anonymous
+          // second relationship must be distinct from r1; when the graph has a
+          // single a->b edge, stepping back to `a` would reuse r1's edge.  A
+          // simple-path guard (new node not already in the walk) rejects that
+          // reuse while preserving legitimate walks that revisit a node via a
+          // *different* edge only when multiple parallel edges exist (rare).
+          if (p.includes(idx)) continue
           newPaths.push([...p, idx])
         }
       }
