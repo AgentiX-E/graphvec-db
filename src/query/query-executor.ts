@@ -1048,8 +1048,14 @@ async function _executeMultiMatchCrossJoin(
 
     if (pat.steps.length === 1 && !pathVar && !(step as any)?.range) {
       // Single-step relationship pattern: enumerate matching edges directly.
+      const stepLabel = (step as any).edgeLabel as string | null | undefined
       for (const rel of rels) {
         const s = rel.srcIdx as number, d = rel.dstIdx as number
+        // Relationship type predicate: `-[r:Y]->` must only match edges whose
+        // label equals Y (a bound `r` reusing the same variable still enforces
+        // the type — `MATCH (a1)-[r:T]->() ... MATCH (a1)-[r:Y]->(b2)` yields no
+        // rows whatever r was previously bound to).
+        if (stepLabel && rel.label !== stepLabel) continue
         // direction semantics: out → rel.srcIdx must be a start node; in → rel.dstIdx.
         if (step.direction === 'out' && startIdxs.length !== allNodes.length && !startIdxs.includes(s)) continue
         if (step.direction === 'in' && startIdxs.length !== allNodes.length && !startIdxs.includes(d)) continue
