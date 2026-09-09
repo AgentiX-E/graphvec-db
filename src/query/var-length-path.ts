@@ -48,12 +48,29 @@ function _buildPathEdges(newPath: number[], srcNodes: Array<Record<string, unkno
 
 function _buildRow(newPath: number[], srcNodes: Array<Record<string, unknown>>, step: any, plan: any, pathNodes: Array<Record<string, unknown>>): QueryRow {
   const evaluateExpr = _evaluateExpression
-  const pathVar = plan.pathVar || step.source || 'p'
   const pathEdges = _buildPathEdges(newPath, srcNodes)
-  const rowRes: QueryRow = { [pathVar]: { __path: pathNodes, __pathEdges: pathEdges } }
+  const rowRes: QueryRow = {}
+  // Only a pattern with an explicit path assignment (`MATCH p = (a)-[*]->(b)`)
+  // carries a path variable bound to the full {__path, __pathEdges} object.  A
+  // bare variable-length pattern (`MATCH (a)-[*]->(b)`) binds `a`/`b` to plain
+  // nodes and has no path variable — inventing one (e.g. naming it after the
+  // source var) would clobber the node binding and serialize it as a path.
+  if (plan.pathVar) {
+    rowRes[plan.pathVar] = { __path: pathNodes, __pathEdges: pathEdges }
+    if (step.source) rowRes[step.source] = pathNodes[0]
+  } else if (step.source) {
+    rowRes[step.source] = pathNodes[0]
+  }
   if (step.targetAlias) rowRes[step.targetAlias] = pathNodes[pathNodes.length - 1]
-  if (plan.pathVar && step.source) rowRes[step.source] = pathNodes[0]
-  const varNames = new Set([pathVar, step.targetAlias || ''].filter(Boolean))
+  // A variable-length relationship variable (`MATCH (a)-[r*1..2]->(b) RETURN r`)
+  // must resolve to the list of relationship objects along this path
+  // (e.g. `[[:T]]` or `[[:X], [:Y]]`).  Each entry is the `{_type:'T'}` edge
+  // object so the serializer emits `[:T]`.
+  if ((step as any).edgeVariable) {
+    rowRes[(step as any).edgeVariable] = pathEdges
+  }
+  const pathVar = plan.pathVar || ''
+  const varNames = new Set([pathVar, step.targetAlias, step.source || ''].filter(Boolean))
   for (const rc of plan.returnColumns || []) {
     if (!rc || varNames.has(rc) || rc in rowRes) continue
     if (rc.match(/^\w+\(/)) {
@@ -93,7 +110,11 @@ function _buildRow(newPath: number[], srcNodes: Array<Record<string, unknown>>, 
 function _matchesLabel(node: Record<string, unknown>, label: string): boolean {
   const fullLabel = (node as any).__fullLabel
   if (fullLabel && typeof fullLabel === 'string') return String(fullLabel).split(':').includes(label)
-  return (node as any)._label === label
+  const rawLabel = (node as any)._label
+  if (rawLabel && typeof rawLabel === 'string' && rawLabel.includes(':')) {
+    return String(rawLabel).split(':').includes(label)
+  }
+  return rawLabel === label
 }
 
 export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown>>): QueryResult {
@@ -124,13 +145,23 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
   for (let si = 0; si < srcNodes.length; si++) {
     const sourceNode = srcNodes[si] as any
     if (plan.scanLabel && !_matchesLabel(sourceNode, plan.scanLabel)) continue
+    // Start-node inline property predicate: `MATCH (a {name:'A'})-[*]->(x)`
+    // constrains the BFS source to nodes matching every key/value pair.
+    const srcProps = (step as any).sourceProps
+    if (srcProps && typeof srcProps === 'object') {
+      let srcMismatch = false
+      for (const [pk, pv] of Object.entries(srcProps as Record<string, unknown>)) {
+        if (sourceNode[pk] !== pv) { srcMismatch = true; break }
+      }
+      if (srcMismatch) continue
+    }
     if (minHops === 0) {
-      const pathVar = plan.pathVar || (step as any).source || 'p'
       const sn: Record<string, unknown> = { _label: sourceNode._label || 'Default' }
       for (const k of Object.keys(sourceNode)) { if (k !== '_label' && k !== '__edges' && k !== '_alias') sn[k] = sourceNode[k] }
-      const rowRes: QueryRow = { [pathVar]: { __path: [sn], __pathEdges: [] } }
+      const rowRes: QueryRow = {}
+      if (plan.pathVar) rowRes[plan.pathVar] = { __path: [sn], __pathEdges: [] }
+      if ((step as any).source) rowRes[(step as any).source] = sn
       if ((step as any).targetAlias) rowRes[(step as any).targetAlias] = sn
-      if (plan.pathVar && (step as any).source) rowRes[(step as any).source] = sn
       if (Object.keys(rowRes).length) result.push(rowRes)
     }
     let frontier: BfsEntry[] = [{ nIdx: si, path: [si] }]
@@ -159,6 +190,26 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
           if (depth < minHops) { nextFrontier.push({ nIdx, path: newPath }); continue }
           const targetNode = srcNodes[nIdx] as any
           if (step.edgeLabel && e.label !== step.edgeLabel) continue
+          // Edge inline property predicate: `MATCH ()-[:T {year:1988}*]->()`
+          // constrains traversal to relationships whose props match every pair.
+          const edgePropsPred = (step as any).edgeProps
+          if (edgePropsPred && typeof edgePropsPred === 'object') {
+            let edgeMismatch = false
+            for (const [pk, pv] of Object.entries(edgePropsPred as Record<string, unknown>)) {
+              if (!(e as any).props || (e as any).props[pk] !== pv) { edgeMismatch = true; break }
+            }
+            if (edgeMismatch) continue
+          }
+          // Target inline property predicate: `MATCH ()-[:T*]->(m {var:'end'})`
+          // constrains the BFS endpoint to nodes matching every key/value pair.
+          const tgtProps = (step as any).targetProps
+          if (tgtProps && typeof tgtProps === 'object') {
+            let tgtMismatch = false
+            for (const [pk, pv] of Object.entries(tgtProps as Record<string, unknown>)) {
+              if (targetNode[pk] !== pv) { tgtMismatch = true; break }
+            }
+            if (tgtMismatch) { nextFrontier.push({ nIdx, path: newPath }); continue }
+          }
           const pathNodes = newPath.map((idx) => {
             const n = srcNodes[idx] as any
             const out: Record<string, unknown> = { _label: n._label || 'Default' }

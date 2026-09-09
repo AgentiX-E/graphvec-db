@@ -195,6 +195,8 @@ interface ParsedEdgeStep {
   range?: { min: number; max: number | null }
   /** relationship variable from `MATCH ()-[a]->()` */
   edgeVariable?: string | null
+  /** inline property predicate on the source node, e.g. `MATCH (a {name:'A'})-[*]->(x)` */
+  sourceProps?: Record<string, unknown> | null
 }
 
 interface ParsedReturn {
@@ -943,6 +945,12 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           if (!plan.scanLabel && plan.steps.length === 0) {
             plan.scanLabel = parsed.label ?? plan.scanLabel
             plan.steps = parsed.edges
+            // Preserve the first node's inline property predicate (e.g.
+            // `MATCH (a {name:'A'})-[*]->(x)`) so the variable-length executor can
+            // constrain the BFS start node to matching properties.
+            if (parsed.properties && plan.steps.length) {
+              ;(plan.steps[0] as any).sourceProps = parsed.properties
+            }
           } else {
             // Second/further independent MATCH clause → stage as an independent
             // pattern for the executor to cross-join (relationship identity
