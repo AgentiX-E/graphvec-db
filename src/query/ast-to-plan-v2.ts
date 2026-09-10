@@ -182,6 +182,23 @@ interface ParsedMatch {
   label: string | null
   edges: ParsedEdgeStep[]
   properties: Record<string, unknown> | null
+  /**
+   * Comma-separated pattern parts, each an ordered chain of edge steps.  A
+   * single chained pattern like `(a)-->(x)-->(b)` yields one part
+   * `[[a→x, x→b]]`; comma-separated parts like `(a)-->(x),(b)-->(x)` yield
+   * `[[a→x],[b→x]]`.  This preserves the boundary the flat `edges` array loses,
+   * so the executor can treat each part as an independent join pattern instead
+   * of chaining them into a single walk.
+   */
+  parts: ParsedEdgeStep[][]
+  /**
+   * Additional disjoint bound node patterns from a comma-separated MATCH such
+   * as `MATCH (a {name:'A'}), (c {name:'C'}) MATCH (a)-->(b)`.  Each entry is a
+   * bare node (no relationship) that must be bound alongside the primary
+   * variable so later patterns can join on it (e.g. `c` above).  Without this,
+   * the trailing comma-separated bindings are silently dropped.
+   */
+  extraNodes: Array<{ variable: string; label: string | null; properties: Record<string, unknown> | null }>
 }
 
 interface ParsedEdgeStep {
@@ -956,16 +973,57 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
             if (parsed.properties && plan.steps.length) {
               ;(plan.steps[0] as any).sourceProps = parsed.properties
             }
+            // When the first MATCH is a bare node with an inline property
+            // predicate but no label (e.g. `MATCH (a {name:'A'}), (c {name:'C'})
+            // ...`), there is no traverse step to carry sourceProps, so keep it on
+            // the plan for the cross-join bare-node binding.
+            if (parsed.properties && !plan.steps.length) {
+              ;(plan as any).matchSourceProps = parsed.properties
+            }
+            // Stage disjoint comma-separated bound nodes (e.g. `c` in
+            // `MATCH (a {name:'A'}),(c {name:'C'}) MATCH (a)-->(b)`) as
+            // additional bare-node patterns so the cross-join binds them.
+            if (parsed.extraNodes?.length) {
+              if (!plan.multiMatch) plan.multiMatch = []
+              for (const en of parsed.extraNodes) {
+                plan.multiMatch.push({
+                  scanLabel: en.label ?? null,
+                  steps: [],
+                  variable: en.variable,
+                  sourceProps: en.properties ?? undefined,
+                })
+              }
+            }
           } else {
             // Second/further independent MATCH clause → stage as an independent
             // pattern for the executor to cross-join (relationship identity
             // `a = b`, path equality `p1 = p2`).
             if (!plan.multiMatch) plan.multiMatch = []
-            plan.multiMatch.push({
-              scanLabel: parsed.label ?? null,
-              steps: parsed.edges,
-              variable: parsed.variable || undefined,
-            })
+            // A comma-separated MATCH clause (`MATCH (a)-->(x),(b)-->(x)`)
+            // decomposes into multiple independent patterns, one per comma part.
+            // Chain the edges within each part but treat each part as a distinct
+            // pattern so `x` joins on identity rather than being walked as one
+            // continuous path.
+            const parts = parsed.parts?.length ? parsed.parts : [parsed.edges]
+            for (const part of parts) {
+              if (!part.length) continue
+              plan.multiMatch.push({
+                scanLabel: parsed.label ?? null,
+                steps: part,
+                variable: part[0].source || parsed.variable || undefined,
+              })
+            }
+            // Also stage disjoint comma-separated bound nodes from later clauses.
+            if (parsed.extraNodes?.length) {
+              for (const en of parsed.extraNodes) {
+                plan.multiMatch.push({
+                  scanLabel: en.label ?? null,
+                  steps: [],
+                  variable: en.variable,
+                  sourceProps: en.properties ?? undefined,
+                })
+              }
+            }
           }
         }
         break
@@ -1604,27 +1662,60 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
     }
   }
 
+  const parts: ParsedEdgeStep[][] = []
   if (patternElements.length) {
     for (const pe of patternElements) {
       const peNodes = findAllChildren(pe, 'NodePatternContext')
       const peChains = findAllChildren(pe, 'PatternElementChainContext')
       // Source of chain ci is the node pattern at index ci within this element.
       let currentSource = peNodes.length ? (findSymbolicName(findChild(peNodes[0], 'VariableContext')) ?? '') : ''
+      const partEdges: ParsedEdgeStep[] = []
       for (let ci = 0; ci < peChains.length; ci++) {
         const edge = buildEdge(peChains[ci], currentSource)
-        if (edge) edges.push(edge)
+        if (edge) {
+          edges.push(edge)
+          partEdges.push(edge)
+        }
         // Advance to the target variable for the next chain in this element.
         currentSource = edge?.targetAlias ?? ''
       }
+      if (partEdges.length) parts.push(partEdges)
     }
   } else {
     // Fallback for grammars without PatternElementContext: process flat chains.
     let currentSource = variable ?? ''
+    const partEdges: ParsedEdgeStep[] = []
     for (const chain of findAllChildren(matchCtx, 'PatternElementChainContext')) {
       const edge = buildEdge(chain, currentSource)
-      if (edge) edges.push(edge)
+      if (edge) {
+        edges.push(edge)
+        partEdges.push(edge)
+      }
       currentSource = edge?.targetAlias ?? ''
     }
+    if (partEdges.length) parts.push(partEdges)
+  }
+
+  // Identify disjoint comma-separated bound nodes: every node pattern whose
+  // variable is neither the primary variable nor any edge endpoint.  In
+  // `MATCH (a {name:'A'}), (c {name:'C'}) MATCH (a)-->(b)`, `c` is such a node.
+  const connectedVars = new Set<string>()
+  if (variable) connectedVars.add(variable)
+  for (const e of edges) {
+    if (e.source) connectedVars.add(e.source)
+    if (e.targetAlias) connectedVars.add(e.targetAlias)
+  }
+  const extraNodes: ParsedMatch['extraNodes'] = []
+  for (const np of nodePatterns) {
+    const nv = findSymbolicName(findChild(np, 'VariableContext'))
+    if (!nv || connectedVars.has(nv)) continue
+    const nl = findChild(np, 'NodeLabelContext')
+    const nPropsNode = findChild(np, 'PropertiesContext')
+    extraNodes.push({
+      variable: nv,
+      label: nl ? extractLabel(nl) : null,
+      properties: nPropsNode ? extractMapLiteral(nPropsNode) : null,
+    })
   }
 
   return {
@@ -1632,6 +1723,8 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
     label,
     edges,
     properties,
+    parts,
+    extraNodes,
   }
 }
 

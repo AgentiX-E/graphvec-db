@@ -981,22 +981,16 @@ async function _executeMultiMatchCrossJoin(
   // patterns sharing a variable name (e.g. `MATCH (a:A) MATCH (a)-[:R]->(c)`)
   // are joined on that bound node rather than Cartesian-producted.
   const patterns: Array<{ scanLabel: string | null; steps: TraverseStep[]; variable?: string }> = [
-    { scanLabel: plan.scanLabel ?? null, steps: plan.steps || [], variable: (plan as any).matchVar },
-    ...mm.map(p => ({ scanLabel: p.scanLabel ?? null, steps: p.steps || [], variable: p.variable })),
+    { scanLabel: plan.scanLabel ?? null, steps: plan.steps || [], variable: (plan as any).matchVar, sourceProps: (plan as any).matchSourceProps },
+    ...mm.map(p => ({ scanLabel: p.scanLabel ?? null, steps: p.steps || [], variable: p.variable, sourceProps: (p as any).sourceProps })),
   ]
   if (patterns.length < 2) return null
-  // Only cross-join when at least one pattern carries a relationship/path
-  // variable, OR a later pattern reuses a previously-bound node variable as its
-  // source (a bound-node join the GE path does not handle for anonymous edges).
-  const hasRelOrPathVar = patterns.some(p => p.steps.some((s: any) => s.edgeVariable || s.pathVariable))
-  const boundVars = new Set<string>()
-  let hasBoundNodeJoin = false
-  for (const p of patterns) {
-    const src = p.variable || p.steps[0]?.source
-    if (src && boundVars.has(src)) { hasBoundNodeJoin = true; break }
-    if (src) boundVars.add(src)
-  }
-  if (!hasRelOrPathVar && !hasBoundNodeJoin) return null
+  // Any two-or-more independent MATCH patterns must be cross-joined: either on
+  // a shared bound node variable (`MATCH (a:A) MATCH (a)-[:R]->(c)`), on
+  // relationship/path variable materialisation (`MATCH (a)-[r]->(b) MATCH ...`),
+  // or as a pure Cartesian product of disjoint edge patterns
+  // (`MATCH (a)-->(b) MATCH (c)-->(d)`).  The GE path cannot represent any of
+  // these, so falling through to it yields wrong/empty rows.
 
   // Clone nodes and ensure __edges exists.
   const allNodes: Array<Record<string, unknown>> = (nodes || []).map(n => {
@@ -1046,6 +1040,23 @@ async function _executeMultiMatchCrossJoin(
     const edgeVar = (step as any)?.edgeVariable as string | undefined
     const pathVar = (step as any)?.pathVariable as string | undefined
 
+    // Inline property predicate from a bare bound node (e.g. `c` in
+    // `MATCH (a {name:'A'}),(c {name:'C'})` is stored as sourceProps on the
+    // staged pattern).  Filter candidate start nodes to those matching every
+    // such property.
+    const sourceProps = ((pat as any).sourceProps || (step as any)?.sourceProps) as Record<string, unknown> | undefined
+    const matchesProps = (i: number): boolean => {
+      if (!sourceProps || !Object.keys(sourceProps).length) return true
+      const node = allNodes[i] as any
+      // Node user properties may live either nested under `node.props` or spread
+      // at the top level of the node record; accept both normalisations.
+      const nodeProps = { ...(node?.props || {}), ...node }
+      for (const [k, v] of Object.entries(sourceProps)) {
+        if (nodeProps[k] !== v) return false
+      }
+      return true
+    }
+
     // Candidate start nodes, honoring scanLabel.
     const startIdxs: number[] = []
     for (let i = 0; i < allNodes.length; i++) {
@@ -1057,6 +1068,7 @@ async function _executeMultiMatchCrossJoin(
           : nl === pat.scanLabel
         if (!labelMatches) continue
       }
+      if (!matchesProps(i)) continue
       startIdxs.push(i)
     }
 
@@ -1174,19 +1186,36 @@ async function _executeMultiMatchCrossJoin(
           const lastSt = pat.steps[pat.steps.length - 1] as any
           if (firstSt.source) m[firstSt.source] = path[0]
           if (lastSt.targetAlias) m[lastSt.targetAlias] = path[path.length - 1]
-          for (let pi = 0; pi < pat.steps.length && pi < hopEdges.length; pi++) {
+          // Bind each step's endpoint node variables.  Every step advances the
+          // walk by at least one hop (a zero-hop variable-length step still
+          // re-anchors at the same node, consuming zero path positions), so the
+          // node reached after step i is path[i + 1] for fixed-length steps.
+          // For variable-length steps the hop count is data-dependent; we bind
+          // the target alias only when the step is fixed-length (no `.range`),
+          // where step i's target is exactly path[i+1].
+          for (let pi = 0; pi < pat.steps.length; pi++) {
             const st = pat.steps[pi] as any
+            // Edge variable binding (path edge pi spans path[pi] → path[pi+1]).
             const ev = (st?.edgeVariable as string | undefined)
-            if (!ev || !hopEdges[pi]?.relEdge) continue
-            const re = hopEdges[pi]!.relEdge
-            const edgeObj: Record<string, unknown> = {
-              __edgeLabel: re.label,
-              __edgeLabelStr: re.label,
-              _type: re.label,
-              _label: re.label,
+            if (ev && hopEdges[pi]?.relEdge) {
+              const re = hopEdges[pi]!.relEdge
+              const edgeObj: Record<string, unknown> = {
+                __edgeLabel: re.label,
+                __edgeLabelStr: re.label,
+                _type: re.label,
+                _label: re.label,
+              }
+              if (re.props) for (const [k, v] of Object.entries(re.props)) edgeObj[k] = v
+              m[ev] = edgeObj
             }
-            if (re.props) for (const [k, v] of Object.entries(re.props)) edgeObj[k] = v
-            m[ev] = edgeObj
+            // Intermediate node variable binding for fixed-length steps: the
+            // node reached after step pi is path[pi + 1].  This binds `x` in a
+            // chain like `(a)-->(x)<-->(b)` (firstSt.source=a→path[0],
+            // step0.target=x→path[1], lastSt.target=b→path[last]).
+            if (st.targetAlias && !st.range) {
+              const ni = pi + 1
+              if (ni < path.length) m[st.targetAlias] = path[ni]
+            }
           }
           matches.push(m)
         }
