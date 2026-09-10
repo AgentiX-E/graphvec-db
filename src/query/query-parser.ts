@@ -1472,25 +1472,33 @@ function _walkMultiSteps(
           // simple-path guard (new node not already in the walk) rejects that
           // reuse while preserving legitimate walks that revisit a node via a
           // *different* edge only when multiple parallel edges exist (rare).
-          if (p.includes(idx)) continue
+          //
+          // Exception: a genuine self-loop edge (`(l)-[LOOP]->(l)`, srcIdx ===
+          // dstIdx) is a distinct relationship and must be allowed in undirected
+          // traversals (e.g. `MATCH (x)-[r1]-(y)-[r2]-(z)` where z === y via the
+          // LOOP edge).  Here idx === last and last already appears in `p`, so
+          // the simple-path guard would otherwise drop the match.  However a
+          // self-loop edge may only be consumed once: if the step immediately
+          // before `last` also equals `last`, we have already self-looped into
+          // this node and reusing the same LOOP edge would violate relationship
+          // isomorphism (`r1 === r2`), so reject.
+          const lastNodeForLoop = allNodes[last] as any
+          const isGenuineSelfLoop =
+            idx === last &&
+            p[p.length - 2] !== last &&
+            !!lastNodeForLoop?.__edges?.some((e: any) => e.srcIdx === last && e.dstIdx === last)
+          if (p.includes(idx) && !isGenuineSelfLoop) continue
           newPaths.push([...p, idx])
         }
       }
     }
     paths = newPaths.length > 0 ? newPaths : [...nextSet].map(idx => [startIdx, idx])
-    // 无向边中排除自环回路：路径最后两位相等（通过自环回到自身）时跳过
-    // `MATCH ()--()` 单步自环匹配合法（paths[0].length===1 不触发）
-    // `(:A)-->()--()` 第二步无向边通过自环回到中间节点产生重复
-    if (step.direction === 'any' && paths.length > 0 && paths[0].length >= 2) {
-      const filtered: number[][] = []
-      for (const p of paths) {
-        const idx = p[p.length - 1]
-        const prev = p[p.length - 2]
-        if (idx === prev) continue
-        filtered.push(p)
-      }
-      if (filtered.length > 0) paths = filtered
-    }
+    // NOTE: the previous "undirected self-loop circuit" rejection (idx === prev)
+    // was removed.  A path whose final two positions are equal only ever arises
+    // from a genuine self-loop edge (`(l)-[LOOP]->(l)`, srcIdx === dstIdx), which
+    // is a legitimate distinct relationship and must match in undirected multi-
+    // step patterns like `MATCH (x)-[r1]-(y)-[r2]-(z)` (z === y).  The simple-
+    // path guard above already prevents reusing a non-self edge.
     if (paths.length === 0) break
   }
   return paths

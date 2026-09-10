@@ -1096,6 +1096,11 @@ async function _executeMultiMatchCrossJoin(
         // carries the relationship type under `_type`/`__edgeLabel`.
         const relType = (rel._type as string) || (rel.__edgeLabel as string) || (rel.label as string) || ''
         if (stepLabel && relType !== stepLabel) continue
+        // Self-loop pattern (`(b)-->(b)`): the same variable names both ends, so
+        // it can only match a relationship whose source and target are the same
+        // node.  Without this a `b-->b` degenerate case would bind `b` to every
+        // edge's target and return spurious rows.
+        if (srcVar && tgtVar && srcVar === tgtVar && s !== d) continue
         // direction semantics: out → rel.srcIdx must be a start node; in → rel.dstIdx.
         if (step.direction === 'out' && startIdxs.length !== allNodes.length && !startIdxs.includes(s)) continue
         if (step.direction === 'in' && startIdxs.length !== allNodes.length && !startIdxs.includes(d)) continue
@@ -2833,7 +2838,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     const toIdx = matchingPathLocal[si + 1]
                     const fromEdges = (fromN?.__edges || []) as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
                     if (!fromEdges) continue
-                    const ee = fromEdges.find((e: any) => e.dstIdx === toIdx || e.srcIdx === toIdx)
+                    // Resolve the exact edge traversed from matchingPath[si] to
+                    // matchingPath[si+1].  A bare `dstIdx === toIdx || srcIdx ===
+                    // toIdx` predicate is ambiguous: for a self-loop target it
+                    // matches the first edge that merely touches `toIdx` (e.g. an
+                    // inbound T1 edge) instead of the genuine LOOP self-loop, and
+                    // for multi-edges it picks an arbitrary parallel edge.  Apply
+                    // the same direction-aware neighbour resolution the walk uses
+                    // so the matched relationship is unambiguous.
+                    const fromIdx = matchingPathLocal[si]
+                    const ee = fromEdges.find((e: any) => {
+                      const neighborIdx = e.dstIdx === fromIdx ? e.srcIdx : (e.srcIdx === fromIdx ? e.dstIdx : -1)
+                      return neighborIdx === toIdx
+                    })
                     if (!ee) continue
                     const edgeObj: Record<string, unknown> = {
                       __edgeLabel: ee.label,
@@ -3089,9 +3106,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 if (connected.length) {
                   const edgeInfo = { ...connected[0].props, _label: connected[0].label || '', __edgeLabel: connected[0].label || '' }
                   if (!r.__crossVarRows) r.__crossVarRows = {}
-                  // 注入到已知的边变量名（来自 returnColumns / filters）
+                  // Inject the relationship into edge variable names only when
+                  // they were NOT already bound by the step walk (line ~2868).
+                  // The walk resolves each `edgeVariable` to the exact edge
+                  // traversed; unconditionally overwriting here with the first
+                  // edge touching the node would corrupt multi-step
+                  // undirected/self-loop matches (r1 and r2 forced to the same
+                  // `connected[0]` label).
                   for (const evn of edgeVarNames) {
-                    r.__crossVarRows[evn] = edgeInfo
+                    const cvr = r.__crossVarRows[evn]
+                    const alreadyBound = cvr && (cvr.__edgeLabel || cvr._type || cvr._label)
+                    if (!alreadyBound) r.__crossVarRows[evn] = edgeInfo
                   }
                   // 无条件注入到 'r'（最常用的边变量名），供 whereBody type(r) 等场景
                   if (!r.__crossVarRows['r']) r.__crossVarRows['r'] = edgeInfo
@@ -4300,9 +4325,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // `[x IN [r,0] | type(x)] AS list`, Pattern Comprehension, etc.) — they
       // are expression columns evaluated by _formatResultRow, not edge
       // variables, so they must never be stringified as an edge placeholder.
+      // A trivial identity entry `{expression:"r1", alias:"r1"}` is NOT a
+      // computed expression — it is a plain variable renamed to itself (ANTLR
+      // registers every RETURN item this way), and must still be treated as an
+      // edge variable when it names a relationship.  Only genuinely computed
+      // expressions (`expression !== alias`, e.g. a list comprehension
+      // `[... ] AS list`) are excluded here.
       if ((plan.expressionColumns || []).some((ec: any) => {
+        const ecExpr = typeof ec === 'string' ? ec : (ec.expression ?? ec.alias)
         const ecAlias = typeof ec === 'string' ? ec : (ec.alias || ec.expression)
-        return ecAlias === rc
+        return ecAlias === rc && ecExpr !== rc
       })) return false
       // 排除聚合函数参数列（如 'count(r)' 中 r 是参数，不是边变量 RETURN 列）
       if (plan.aggregate) {
@@ -4338,8 +4370,26 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             const evc = edgeVarCols[eci]
             let edgeLabel = ''
             let edgeProps: Record<string, unknown> | null = null
-            // 多步路径：按边变量索引对应步骤索引
-            if (eci < actualStepEdges.length) {
+            // Per-record authoritative edge binding.  `stepEdgesCache` is keyed
+            // by the target node index, which collides when several source nodes
+            // walk to the same target (e.g. `MATCH (x)-[r1]-(y)-[r2]-(z)` where
+            // both `x=A` and `x=B` end at `z=Looper`); the global cache is then
+            // overwritten and both records would render the last source's edge
+            // labels.  The per-record `__crossVarRows[evc]` (populated during the
+            // step walk, line ~2868) carries the correct relationship for this
+            // specific row, so prefer it whenever present.
+            const perRecordEdge = (r.__crossVarRows?.[evc] as any)?.__edgeLabel as string | undefined
+            if (perRecordEdge) {
+              edgeLabel = perRecordEdge
+              const peProps = (r.__crossVarRows?.[evc] as any)
+              if (peProps && typeof peProps === 'object') {
+                const cleaned: Record<string, unknown> = {}
+                for (const [k, v] of Object.entries(peProps)) {
+                  if (!k.startsWith('__') && k !== '_label' && k !== '_type') cleaned[k] = v
+                }
+                if (Object.keys(cleaned).length) edgeProps = cleaned
+              }
+            } else if (eci < actualStepEdges.length) {
               edgeLabel = actualStepEdges[eci]
             } else if (r.__edgeLabel) {
               edgeLabel = r.__edgeLabel
