@@ -961,7 +961,12 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           }
           if (!plan.scanLabel && plan.steps.length === 0) {
             plan.scanLabel = parsed.label ?? plan.scanLabel
-            plan.steps = parsed.edges
+            // A comma-separated MATCH clause (`MATCH (a)-->(b),(b)-->(b)`) splits
+            // into independent parts: the first part drives plan.steps, the
+            // remaining parts become independent cross-join patterns so they are
+            // not walked as a single chained path.
+            const parts = parsed.parts?.length ? parsed.parts : [parsed.edges]
+            plan.steps = parts[0] || parsed.edges
             // Preserve the first MATCH clause's source node variable (e.g. `a`
             // in `MATCH (a:A) MATCH (a)-[:R]->(c)`) so the cross-join executor
             // can join the two patterns on the shared bound variable rather than
@@ -979,6 +984,18 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
             // the plan for the cross-join bare-node binding.
             if (parsed.properties && !plan.steps.length) {
               ;(plan as any).matchSourceProps = parsed.properties
+            }
+            // Stage the remaining comma-separated parts (beyond the first) as
+            // independent patterns.
+            for (let pi = 1; pi < parts.length; pi++) {
+              const part = parts[pi]
+              if (!part.length) continue
+              if (!plan.multiMatch) plan.multiMatch = []
+              plan.multiMatch.push({
+                scanLabel: parsed.label ?? null,
+                steps: part,
+                variable: part[0].source || undefined,
+              })
             }
             // Stage disjoint comma-separated bound nodes (e.g. `c` in
             // `MATCH (a {name:'A'}),(c {name:'C'}) MATCH (a)-->(b)`) as

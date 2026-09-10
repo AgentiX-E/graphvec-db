@@ -1063,9 +1063,15 @@ async function _executeMultiMatchCrossJoin(
       if (pat.scanLabel) {
         const nl = nodeLabel(i)
         const fl = (allNodes[i] as any).__fullLabel
-        const labelMatches = fl && typeof fl === 'string'
-          ? fl.split(':').includes(pat.scanLabel)
-          : nl === pat.scanLabel
+        // A node may carry multiple labels either as `__fullLabel` ("A:B") or —
+        // when seeded via CREATE — as a combined `_label` ("A:B").  Both forms
+        // must match a single-label predicate (`MATCH (n:B)`), so test against
+        // the union of labels from the full label set falling back to splitting
+        // `_label` on ':'.
+        const labelSet: string[] = fl && typeof fl === 'string'
+          ? fl.split(':').filter(Boolean)
+          : String(nl).split(':').filter(Boolean)
+        const labelMatches = labelSet.includes(pat.scanLabel as string)
         if (!labelMatches) continue
       }
       if (!matchesProps(i)) continue
@@ -5514,6 +5520,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // 对主查询的每一行结果，尝试匹配 optionalMatchSteps 中的每个 OPTIONAL MATCH 模式。
     // 成功 → 将匹配到的节点/边合并到 row；失败 → 填充 null。
     // 使用 allNodes（本地节点数据，含 __edges）进行遍历，不依赖 GE Pool 实例。
+    // When OPTIONAL MATCH is the very first clause there are no rows yet, but
+    // Cypher still yields a single row (with a null binding when no node
+    // matches) so a later `WITH a MATCH (a)-->()` correctly propagates null.
+    if (plan.optionalMatchSteps?.length && !result.length) {
+      result.push({})
+    }
     if (plan.optionalMatchSteps?.length && result.length) {
       for (const opt of plan.optionalMatchSteps) {
         const optSteps = opt.steps || []
@@ -5523,7 +5535,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // folds over every f), rather than binding only the first match.  When
         // there is no match the variable becomes null on the existing row.
         const _singleNodeOptional =
-          optSteps.length === 0 && !opt.variableName.startsWith('__') && (opt.scanLabel != null)
+          optSteps.length === 0 && !opt.variableName.startsWith('__')
         if (_singleNodeOptional) {
           const _mkProps = (n: any): Record<string, unknown> => {
             const p: Record<string, unknown> = {}
@@ -5540,6 +5552,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const expanded: Array<Record<string, unknown>> = []
           for (const row of result) {
             if (matches.length === 0) {
+              // When the OPTIONAL MATCH binds a variable that is also the
+              // source of a later traversal step (`OPTIONAL MATCH (a:X) WITH a
+              // MATCH (a)-->(b)`), a null binding cannot traverse any
+              // relationship, so the whole row is dropped — matching Cypher's
+              // "matching from null nodes returns no results" semantics.
+              const isLaterTraversalSource = (plan.steps || []).some((s: any) => s.source === opt.variableName)
+              if (isLaterTraversalSource) continue
               const r2: Record<string, unknown> = { ...row }
               r2[opt.variableName] = null
               expanded.push(r2)
