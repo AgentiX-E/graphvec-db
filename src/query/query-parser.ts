@@ -1189,28 +1189,21 @@ export function _walkMultiStepsWithEdges(
   planFilters?: Array<{source?: string; property: string; value: any}>,
   stepSourceFilters?: Array<{source?: string; property: string; value: any}>
 ): Array<{ ns: number[]; es: Array<{ srcIdx: number; dstIdx: number; label: string }> }> {
-  // Build a global edge registry keyed by the *undirected* (srcIdx, dstIdx,
-  // label) triple.  The TCK seed attaches each relationship to BOTH endpoints
-  // (see step-definitions `pushDedup`), so the same logical relationship appears
-  // as two distinct objects on the source and target nodes; keying by the
-  // normalized triple merges them into a single id, which is exactly the
-  // relationship-identity semantics required to reject a reused relationship
-  // without rejecting a revisited node.
+  // Build a global edge registry keyed by *object identity* (WeakMap).  Each
+  // relationship object in any node's `__edges` array gets a stable unique id.
+  // Parallel relationships are distinct objects and thus receive distinct ids
+  // (required for trail semantics over `-[:R*3..3]-` on a star graph).  The
+  // outgoing/incoming enumeration dedupe (below) handles the two physical
+  // copies a single relationship may have on both endpoints.
   type _EdgeRef = { srcIdx: number; dstIdx: number; label: string }
-  const edgeIdByTriple = new Map<string, number>()
+  const edgeIdByObj = new WeakMap<object, number>()
   const edgeRefById = new Map<number, _EdgeRef>()
   let _eid = 0
-  const _tripleOf = (e: any): string => {
-    const a = Math.min(e.srcIdx, e.dstIdx)
-    const b = Math.max(e.srcIdx, e.dstIdx)
-    return `${a}|${b}|${e.label || ''}`
-  }
   const _edgeIdOf = (e: any): number => {
-    const t = _tripleOf(e)
-    let id = edgeIdByTriple.get(t)
+    let id = edgeIdByObj.get(e)
     if (id === undefined) {
       id = _eid++
-      edgeIdByTriple.set(t, id)
+      edgeIdByObj.set(e, id)
       edgeRefById.set(id, { srcIdx: e.srcIdx, dstIdx: e.dstIdx, label: e.label || '' })
     }
     return id
@@ -1258,15 +1251,13 @@ export function _walkMultiStepsWithEdges(
             const curNode = allNodes[cur] as any
             const isAny = step.direction === 'any'
             const candidates: Array<{ nIdx: number; eId: number }> = []
-            const seenEid = new Set<number>()
+            const outgoingTriples = new Set<string>()
             for (const e of (curNode?.__edges || [])) {
               const neighborIdx = _edgeNeighbor(e, cur, step.direction)
               if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
               if (hasEdgeLabel && e.label !== step.edgeLabel) continue
-              const eId = _edgeIdOf(e)
-              if (seenEid.has(eId)) continue
-              seenEid.add(eId)
-              candidates.push({ nIdx: neighborIdx, eId })
+              outgoingTriples.add(`${e.srcIdx}|${e.dstIdx}|${e.label || ''}`)
+              candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
             }
             if (isAny) {
               for (let j = 0; j < allNodes.length; j++) {
@@ -1277,10 +1268,8 @@ export function _walkMultiStepsWithEdges(
                   const neighborIdx = _edgeNeighbor(e, cur, 'any')
                   if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
                   if (hasEdgeLabel && e.label !== step.edgeLabel) continue
-                  const eId = _edgeIdOf(e)
-                  if (seenEid.has(eId)) continue
-                  seenEid.add(eId)
-                  candidates.push({ nIdx: neighborIdx, eId })
+                  if (outgoingTriples.has(`${e.srcIdx}|${e.dstIdx}|${e.label || ''}`)) continue
+                  candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
                 }
               }
             }
@@ -1373,16 +1362,24 @@ export function _walkMultiStepsWithEdges(
       const lastNode = allNodes[last] as any
       const isAny = step.direction === 'any'
       const candidates: Array<{ nIdx: number; eId: number }> = []
-      // Outgoing edges stored on `last`.
+      // Outgoing relationships: `last` is the source (e.srcIdx === last).  A
+      // triple may appear multiple times here — those are parallel relationships
+      // and each is a distinct candidate.
+      const outgoingTriples = new Set<string>()
       for (const e of (lastNode?.__edges || [])) {
         const neighborIdx = _edgeNeighbor(e, last, step.direction)
         if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
         if (step.edgeLabel && !step.edgeLabel.split('|').includes(e.label)) continue
         if (!_stepMatchConstraint(neighborIdx, step, allNodes)) continue
+        outgoingTriples.add(`${e.srcIdx}|${e.dstIdx}|${e.label || ''}`)
         candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
       }
-      // Incoming edges (`in` / `any` directions): edges stored on other nodes
-      // pointing at `last`.
+      // Incoming relationships (`in` / `any`): stored on other nodes, pointing
+      // at `last`.  A relationship whose target is `last` may also be stored on
+      // its source node (both endpoints); when its triple was already collected
+      // in the outgoing pass it is the SAME relationship, so skip it to avoid a
+      // duplicate candidate.  Parallel edges only ever live on their source
+      // node, so this never wrongly merges them.
       if (step.direction === 'in' || isAny) {
         for (let j = 0; j < allNodes.length; j++) {
           if (j === last) continue
@@ -1393,14 +1390,14 @@ export function _walkMultiStepsWithEdges(
             if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
             if (step.edgeLabel && !step.edgeLabel.split('|').includes(e.label)) continue
             if (!_stepMatchConstraint(neighborIdx, step, allNodes)) continue
+            if (outgoingTriples.has(`${e.srcIdx}|${e.dstIdx}|${e.label || ''}`)) continue
             candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
           }
         }
       }
       // Deduplicate identical relationships that the outgoing and incoming
-      // enumeration passes both discover (the TCK stores each relationship on
-      // both endpoints).  Key by the relationship id so a single logical edge
-      // yields exactly one candidate.
+      // enumeration both produce (belt-and-suspenders; the triple check above
+      // already handles the two-endpoint case).
       const deduped: Array<{ nIdx: number; eId: number }> = []
       const seenEid = new Set<number>()
       for (const c of candidates) {
