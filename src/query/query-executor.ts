@@ -13,7 +13,7 @@ import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
 import { globalRegistry as _procedureRegistry } from './procedure-registry'
 import { _evalBinary, _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver, _computeAggregate, _lastTopLevelComma } from './expression-engine'
-import { _walkMultiSteps, _pathEndIndices, _stepMatchConstraint, _resolveUnwindList, _extractWithClausesAfterUnwind, _applyYieldAliases, resolveVariableNodeIdx, _findWhereOutsideBrackets, _fastDedup, _fastIntersect, _fastSubtract } from './query-parser'
+import { _walkMultiSteps, _walkMultiStepsWithEdges, _pathEndIndices, _stepMatchConstraint, _resolveUnwindList, _extractWithClausesAfterUnwind, _applyYieldAliases, resolveVariableNodeIdx, _findWhereOutsideBrackets, _fastDedup, _fastIntersect, _fastSubtract } from './query-parser'
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
 import type { QueryPlan, FilterClause, TraverseStep, AggregateClause, SetClause, InternalNode } from './query-types'
 import { parseQuery } from './query-parser'
@@ -1172,15 +1172,34 @@ async function _executeMultiMatchCrossJoin(
             hopEdges.push(relEdge ? { relEdge } : null)
           }
           if (pathVar) {
-            // Build __path array: node0, edge0, node1, ...
-            const pathObjs: unknown[] = []
+            // Build the path object as the serializer expects: `__path` holds
+            // the ordered NODE sequence only, and `__pathEdges` holds the ordered
+            // EDGE sequence.  Each edge is normalized to the relationship
+            // contract (`__edgeLabel`/`_type`/`_label`) and tagged with `_dir`
+            // ('out' when the hop walks the edge in its natural source→target
+            // direction, 'in' when it walks against it).  Interleaving nodes and
+            // edges into a single `__path` array was the historical bug: the
+            // renderer then saw no `__pathEdges` and emitted the raw object
+            // rather than TCK path notation `<(:A)-[:T]->(:B)>`.
+            const pathNodes: unknown[] = []
+            const pathEdges: unknown[] = []
             for (let pi = 0; pi < path.length; pi++) {
-              pathObjs.push(allNodes[path[pi]] || {})
+              pathNodes.push(allNodes[path[pi]] || {})
               if (pi < path.length - 1) {
-                pathObjs.push(hopEdges[pi]?.relEdge || { _label: '', label: '' })
+                const re = hopEdges[pi]?.relEdge as any
+                const dir = re && re.srcIdx === path[pi] ? 'out' : 'in'
+                const edgeObj: Record<string, unknown> = {
+                  __edgeLabel: re?.label ?? '',
+                  __edgeLabelStr: re?.label ?? '',
+                  _type: re?.label ?? '',
+                  _label: re?.label ?? '',
+                  _dir: dir,
+                }
+                if (re?.props) for (const [k, v] of Object.entries(re.props)) edgeObj[k] = v
+                pathEdges.push(edgeObj)
               }
             }
-            m[pathVar] = { __path: pathObjs }
+            m[pathVar] = { __path: pathNodes, __pathEdges: pathEdges }
           }
           // Bind each step's endpoint node variables (source / target alias) to
           // their node index, and each edge variable to a full relationship
@@ -4575,7 +4594,119 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // objects containing __path arrays so list comprehensions like
     // [x IN collect(p) | head(nodes(x))] can resolve correctly.
     const pathVars = new Set((plan.steps || []).map(s => s.pathVariable).filter(Boolean))
+    // Normalize a raw seed edge into the relationship object the serializer
+    // `_toPathNotation` expects (`__edgeLabel`/`_type`/`_label`) plus a `_dir`
+    // marker.  `_dir` is 'out' when the hop walks the edge in its natural
+    // source→target direction and 'in' when it walks against it.  Directed
+    // steps (`-->`/`<--`) inherit the step direction; undirected (`--`) hops use
+    // the actual edge orientation from `srcIdx`/`dstIdx`.
+    const _mkEdgeObj = (ep: { srcIdx: number; dstIdx: number; label: string; props?: any }, dir: string): Record<string, unknown> => {
+      const eo: Record<string, unknown> = {
+        __edgeLabel: ep.label ?? '',
+        __edgeLabelStr: ep.label ?? '',
+        _type: ep.label ?? '',
+        _label: ep.label ?? '',
+        _dir: dir,
+      }
+      if (ep.props) for (const [k, v] of Object.entries(ep.props)) eo[k] = v
+      return eo
+    }
+    // Direct the edge for a single directed/undirected hop between `path[i]`
+    // (source node) and `path[i+1]` (target node), where `ep` is the raw edge
+    // and `stepDir` is the traversal step's direction ('out'|'in'|'any').
+    const _edgeDir = (ep: { srcIdx: number; dstIdx: number }, stepDir: string, srcNodeIdx: number): string => {
+      if (stepDir === 'out') return 'out'
+      if (stepDir === 'in') return 'in'
+      // Undirected: 'out' if the edge's source is the path's current source.
+      return ep.srcIdx === srcNodeIdx ? 'out' : 'in'
+    }
+    const _stepDir = (plan.steps?.[0] as any)?.direction ?? 'out'
+    // Resolve a (possibly stripped) node object back to its index in `allNodes`
+    // by `_alias` first, then by label+name.  Used to orient edges within a
+    // reconstructed named path.
+    const _aliasIndexOf = (node: Record<string, unknown>, nodes: Array<Record<string, unknown>>): number => {
+      if (!node || typeof node !== 'object') return -1
+      const a = (node as any)._alias
+      if (a) {
+        const byAlias = nodes.findIndex(n => (n as any)._alias === a)
+        if (byAlias >= 0) return byAlias
+      }
+      const lbl = (node as any)._label?.replace(/^:/, '')
+      const nm = (node as any).name
+      return nodes.findIndex(n =>
+        ((n as any)._label === lbl || (n as any)._label === `:${lbl}`) &&
+        (nm === undefined || (n as any).name === nm)
+      )
+    }
     if (pathVars.size) {
+      // ── Multi-step / variable-length named path reconstruction ──
+      // A named path spanning more than one relationship (`MATCH p =
+      // (a)-->(b)-->(c)`) or a variable-length hop (`MATCH p = (a)-[:T*2]-(b)`)
+      // cannot be reconstructed from GE's per-edge flattened rows: GE emits one
+      // row per relationship, each carrying only its two endpoints, which loses
+      // the interior nodes and the full edge sequence.  Re-traverse from the
+      // path's anchor source(s) via `_walkMultiSteps` and rebuild a single
+      // complete `{ __path, __pathEdges }` object per matched path.
+      // Every named path (single-hop, multi-hop, or variable-length) is
+      // reconstructed uniformly from `_walkMultiSteps`, which returns complete
+      // node-index sequences per matched path.  This is the single source of
+      // truth for path objects and avoids the per-edge flattening that corrupts
+      // interior nodes and edge sequences.
+      const _multiStepPathVar = Array.from(pathVars).find(pv => (plan.steps || []).some((s: any) => s.pathVariable === pv) || (plan as any).pathVar === pv)
+      let _fullPathReconDone = false
+      if (_multiStepPathVar && plan.steps?.length) {
+        // Anchor step = the step carrying the path variable.
+        const pvSteps = (plan.steps || []).filter((s: any) => s.pathVariable === _multiStepPathVar)
+        // Re-derive candidate start nodes (scanLabel + first-step source
+        // property filters), matching the traversal used elsewhere.
+        const _candStarts: number[] = []
+        for (let i = 0; i < allNodes.length; i++) {
+          if (plan.scanLabel) {
+            const nl = String((allNodes[i] as any)?._label || '')
+            const fl = (allNodes[i] as any)?.__fullLabel
+            const lblSet: string[] = (fl && typeof fl === 'string') ? fl.split(':').filter(Boolean) : nl.split(':').filter(Boolean)
+            if (!lblSet.includes(plan.scanLabel as string)) continue
+          }
+          const firstSourceProps = (plan.steps[0] as any)?.sourceProps
+          if (firstSourceProps && typeof firstSourceProps === 'object') {
+            let ok = true
+            for (const [pk, pval] of Object.entries(firstSourceProps)) {
+              if ((allNodes[i] as any)?.[pk] !== pval) { ok = false; break }
+            }
+            if (!ok) continue
+          }
+          _candStarts.push(i)
+        }
+        const fullPaths: Array<{ ns: number[]; es: Array<{ srcIdx: number; dstIdx: number; label: string }> }> = []
+        for (const si of _candStarts) {
+          const ps = _walkMultiStepsWithEdges(si, plan.steps, allNodes, undefined, plan.filters, undefined)
+          for (const p of ps) fullPaths.push(p)
+        }
+        if (fullPaths.length) {
+          const rebuilt: any[] = []
+          const template = rawWithEdges.length ? rawWithEdges[0] : {}
+          for (const fp of fullPaths) {
+            const row = JSON.parse(JSON.stringify(template))
+            const pathNodes: any[] = fp.ns.map(idx => allNodes[idx] || {})
+            const pathEdges: Record<string, unknown>[] = []
+            for (let pi = 0; pi < fp.ns.length - 1; pi++) {
+              const aIdx = fp.ns[pi]
+              const eRef = fp.es[pi]
+              // Direction: the edge is 'out' when its source is the current node
+              // (i.e. this hop leaves `aIdx`) and 'in' otherwise.
+              const dir = eRef.srcIdx === aIdx ? 'out' : 'in'
+              pathEdges.push(_mkEdgeObj({ srcIdx: eRef.srcIdx, dstIdx: eRef.dstIdx, label: eRef.label, props: null }, dir))
+            }
+            if (!row.props) row.props = {}
+            row.props[_multiStepPathVar!] = { __path: pathNodes, __pathEdges: pathEdges }
+            rebuilt.push(row)
+          }
+          rawWithEdges.length = 0
+          rawWithEdges.push(...rebuilt)
+          _fullPathReconDone = true
+        }
+      }
+
       // Build alias→label lookup from allNodes to recover true labels.
       // GE path traversal may set _label='Default' on source nodes; we
       // restore the correct label via allNodes.
@@ -4591,7 +4722,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // When GE returns a single row for a path variable query with multiple
       // edges (MATCH p = (n)-->()), expand rawWithEdges to one row per edge
       // so that collect(p) can aggregate across all path objects.
-      if (rawWithEdges.length === 1 && edgesPayload?.length > 1) {
+      if (!_fullPathReconDone && rawWithEdges.length === 1 && edgesPayload?.length > 1) {
         const original = rawWithEdges[0]
         rawWithEdges.length = 0
         for (const ep of edgesPayload) {
@@ -4613,7 +4744,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           rawWithEdges.push(row)
         }
-      } else {
+      } else if (!_fullPathReconDone) {
         // Single-row path variable: build path object from the bound source node
         // and the target node.  The source binding lives in `__crossVarRows[source]`
         // (populated by the multi-step walk); `r.props`/`__targetProps` carry the
@@ -4648,7 +4779,27 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             }
             if (Object.keys(srcNode).length) {
-              ;(r as any).props[pv] = { __path: [srcNode, Object.keys(tgtNode).length ? tgtNode : srcNode] }
+              const pathNodes: Record<string, unknown>[] = [srcNode, Object.keys(tgtNode).length ? tgtNode : srcNode]
+              const pathEdges: Record<string, unknown>[] = []
+              // Match the raw edge to this row's source/target so the rendered
+              // path carries the correct relationship and direction.  A
+              // self-loop (src === tgt) yields an empty edge list for a
+              // zero-length hop.
+              if (Object.keys(tgtNode).length) {
+                for (const ep of edgesPayload) {
+                  const srcIdx = _aliasIndexOf(srcNode, allNodes)
+                  const hopDir = _edgeDir(ep, _stepDir, srcIdx >= 0 ? srcIdx : -1)
+                  if (hopDir === 'out' && ep.srcIdx === srcIdx && ep.dstIdx === _aliasIndexOf(tgtNode, allNodes)) {
+                    pathEdges.push(_mkEdgeObj(ep, 'out'))
+                    break
+                  }
+                  if (hopDir === 'in' && ep.dstIdx === srcIdx && ep.srcIdx === _aliasIndexOf(tgtNode, allNodes)) {
+                    pathEdges.push(_mkEdgeObj(ep, 'in'))
+                    break
+                  }
+                }
+              }
+              ;(r as any).props[pv] = { __path: pathNodes, __pathEdges: pathEdges }
             }
           }
         }
@@ -4872,6 +5023,29 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           } else {
             rw[aggAlias] = cnt
           }
+        }
+      }
+    }
+
+    // Zero-length named path (`MATCH p = (a) RETURN p`): a path variable with no
+    // traverse steps wraps its bound node in a `{ __path: [node], __pathEdges: [] }`
+    // object so the serializer renders `<()>` / `<(:A)>` rather than the bare node
+    // notation.  `plan.pathVar` is top-level (empty `plan.steps`), so the normal
+    // step-level path reconstruction above never runs.
+    if ((plan as any).pathVar && !(plan.steps || []).length) {
+      const pv = (plan as any).pathVar as string
+      const mv = (plan as any).matchVar as string | undefined
+      for (const r of rawWithEdges) {
+        // The bare-node MATCH binds the node to `matchVar` (its value lives in
+        // `__crossVarRows[mv]`, or `props` carries the node fields directly when
+        // `mv` is absent).  Wrap that node in a zero-length path object.
+        let nodeVal: unknown =
+          (mv && (r as any)?.__crossVarRows?.[mv]) ||
+          (r as any)?.props?.[pv] ||
+          (r as any)?.[pv] ||
+          (r as any)?.props
+        if (nodeVal && typeof nodeVal === 'object' && !('__path' in (nodeVal as any))) {
+          ;(r as any).props = { ...((r as any).props || {}), [pv]: { __path: [nodeVal], __pathEdges: [] } }
         }
       }
     }

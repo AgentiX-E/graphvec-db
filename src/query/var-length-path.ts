@@ -370,20 +370,23 @@ function _executeVarLenChain(plan: any, nodes: Array<Record<string, unknown>>): 
 
   const result: QueryRow[] = []
   // rows is a list of partial binding maps keyed by variable name; each entry
-  // also carries a hidden __stepEnd index (the node index reached by this step).
-  let rows: Array<Record<string, unknown> & { __stepEnd: number }> = []
+  // also carries a hidden __stepEnd index (the node index reached by this step)
+  // and, when a path variable is present, the accumulated __fullPath node-index
+  // sequence and __fullEdges edge-object sequence spanning every step so far.
+  let rows: Array<Record<string, unknown> & { __stepEnd: number; __fullPath: number[]; __fullEdges: Array<Record<string, unknown>> }> = []
 
   for (let si = 0; si < steps.length; si++) {
     const step = steps[si]
     const range = step.range
     const minHops = range.min ?? 1
     const maxHops = Math.min(range.max ?? 10, 50)
-    const nextRows: Array<Record<string, unknown> & { __stepEnd: number }> = []
+    const nextRows: Array<Record<string, unknown> & { __stepEnd: number; __fullPath: number[]; __fullEdges: Array<Record<string, unknown>> }> = []
     if (si === 0) {
       for (const startIdx of startIdxs) {
         const ms = _collectStepMatches(startIdx, step, srcNodes, incomingEdges, minHops, maxHops)
         for (const m of ms) {
-          const row: Record<string, unknown> & { __stepEnd: number } = { __stepEnd: m.path[m.path.length - 1] } as any
+          const row: Record<string, unknown> & { __stepEnd: number; __fullPath: number[]; __fullEdges: Array<Record<string, unknown>> } =
+            { __stepEnd: m.path[m.path.length - 1], __fullPath: [...m.path], __fullEdges: [...m.edges] } as any
           if (step.source) row[step.source] = nodeSnap(m.path[0])
           if (step.targetAlias) row[step.targetAlias] = nodeSnap(m.path[m.path.length - 1])
           if (step.edgeVariable) row[step.edgeVariable] = m.edges
@@ -395,7 +398,13 @@ function _executeVarLenChain(plan: any, nodes: Array<Record<string, unknown>>): 
         const startIdx = base.__stepEnd
         const ms = _collectStepMatches(startIdx, step, srcNodes, incomingEdges, minHops, maxHops)
         for (const m of ms) {
-          const row: Record<string, unknown> & { __stepEnd: number } = { ...base, __stepEnd: m.path[m.path.length - 1] } as any
+          // Concatenate the current step's path onto the accumulated path,
+          // dropping this step's starting node (it equals base.__stepEnd,
+          // already the last node of the accumulated path).
+          const fullPath = [...base.__fullPath, ...m.path.slice(1)]
+          const fullEdges = [...base.__fullEdges, ...m.edges]
+          const row: Record<string, unknown> & { __stepEnd: number; __fullPath: number[]; __fullEdges: Array<Record<string, unknown>> } =
+            { ...base, __stepEnd: m.path[m.path.length - 1], __fullPath: fullPath, __fullEdges: fullEdges } as any
           if (step.source) row[step.source] = nodeSnap(m.path[0])
           if (step.targetAlias) row[step.targetAlias] = nodeSnap(m.path[m.path.length - 1])
           if (step.edgeVariable) row[step.edgeVariable] = m.edges
@@ -410,8 +419,15 @@ function _executeVarLenChain(plan: any, nodes: Array<Record<string, unknown>>): 
   for (const row of rows) {
     const out: QueryRow = {}
     for (const [k, v] of Object.entries(row)) {
-      if (k === '__stepEnd') continue
+      if (k === '__stepEnd' || k === '__fullPath' || k === '__fullEdges') continue
       out[k] = v
+    }
+    // Bind the named path variable to the full accumulated path across all
+    // steps.  The chain combinator otherwise drops `p` (only the single-step
+    // `_buildRow` handles `plan.pathVar`), which leaves `RETURN p` null.
+    if (plan.pathVar) {
+      const pathNodes = row.__fullPath.map((idx: number) => nodeSnap(idx))
+      out[plan.pathVar] = { __path: pathNodes, __pathEdges: row.__fullEdges }
     }
     result.push(out)
   }

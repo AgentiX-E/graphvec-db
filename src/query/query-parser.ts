@@ -1175,89 +1175,136 @@ function _walkMultiSteps(
   planFilters?: Array<{source?: string; property: string; value: any}>,
   stepSourceFilters?: Array<{source?: string; property: string; value: any}>
 ): number[][] {
-  let paths: number[][] = [[startIdx]]
+  return _walkMultiStepsWithEdges(startIdx, steps, allNodes, skipNodeIndices, planFilters, stepSourceFilters).map(p => p.ns)
+}
+
+// Edge-aware variant of `_walkMultiSteps`.  Returns, for each matched path, the
+// node-index sequence *and* the sequence of consumed relationship ids.  The
+// edge sequence is required to render named paths that revisit a node via a
+// *different* relationship (e.g. `MATCH p=(n)<-->(k)<-->(n)` on a→b / b→a),
+// where two distinct paths share the same node sequence but differ in edges.
+export function _walkMultiStepsWithEdges(
+  startIdx: number, steps: TraverseStep[], allNodes: Record<string, unknown>[],
+  skipNodeIndices?: Set<number>,
+  planFilters?: Array<{source?: string; property: string; value: any}>,
+  stepSourceFilters?: Array<{source?: string; property: string; value: any}>
+): Array<{ ns: number[]; es: Array<{ srcIdx: number; dstIdx: number; label: string }> }> {
+  // Build a global edge registry keyed by the *undirected* (srcIdx, dstIdx,
+  // label) triple.  The TCK seed attaches each relationship to BOTH endpoints
+  // (see step-definitions `pushDedup`), so the same logical relationship appears
+  // as two distinct objects on the source and target nodes; keying by the
+  // normalized triple merges them into a single id, which is exactly the
+  // relationship-identity semantics required to reject a reused relationship
+  // without rejecting a revisited node.
+  type _EdgeRef = { srcIdx: number; dstIdx: number; label: string }
+  const edgeIdByTriple = new Map<string, number>()
+  const edgeRefById = new Map<number, _EdgeRef>()
+  let _eid = 0
+  const _tripleOf = (e: any): string => {
+    const a = Math.min(e.srcIdx, e.dstIdx)
+    const b = Math.max(e.srcIdx, e.dstIdx)
+    return `${a}|${b}|${e.label || ''}`
+  }
+  const _edgeIdOf = (e: any): number => {
+    const t = _tripleOf(e)
+    let id = edgeIdByTriple.get(t)
+    if (id === undefined) {
+      id = _eid++
+      edgeIdByTriple.set(t, id)
+      edgeRefById.set(id, { srcIdx: e.srcIdx, dstIdx: e.dstIdx, label: e.label || '' })
+    }
+    return id
+  }
+
+  // Internal path shape carries both the node sequence and the ids of the
+  // relationships consumed so far, so the edge-reuse guard below can reject a
+  // repeated relationship without rejecting a repeated node.
+  type _WalkPath = { ns: number[]; es: number[] }
+  let paths: _WalkPath[] = [{ ns: [startIdx], es: [] }]
+
+  // A node reference is reachable through an edge in the given direction.
+  const _edgeNeighbor = (e: any, from: number, dir: string): number => {
+    if (dir === 'any') {
+      return e.dstIdx === from ? e.srcIdx : (e.srcIdx === from ? e.dstIdx : -1)
+    }
+    if (dir === 'out') return e.srcIdx === from ? e.dstIdx : -1
+    if (dir === 'in') return e.dstIdx === from ? e.srcIdx : -1
+    return -1
+  }
+
   for (let si = 0; si < steps.length; si++) {
     const step = steps[si]
     // ── 变量长度路径：step.range 存在时做 BFS 多跳 ──
     if ((step as any).range) {
       const range = (step as any).range
       const minHops = range.min ?? 1
-      const maxHops = range.max ?? 10 // 默认最大 10 跳（防止无限）
-      // 检查边标签是否配置（仅对匹配边做遍历）
+      const maxHops = range.max ?? 10
       const hasEdgeLabel = !!(step as any).edgeLabel
-      const newPaths: number[][] = []
+      const newPaths: _WalkPath[] = []
       for (const p of paths) {
-        const sidx = p[p.length - 1]
-        // BFS from sidx, recording every reachable endpoint at depth>=minHops.
-        type VarLenEnd = { end: number; hopsAt: number }
-        const ends: VarLenEnd[] = []
-        // Zero-length match (`*0..`, `*0`): the start node itself is a valid
-        // endpoint, preserving the path prefix so a subsequent standard step can
-        // chain off it (e.g. `(a)-[:T*0]->()-[:U]->(c)`).
-        if (minHops === 0) ends.push({ end: sidx, hopsAt: 0 })
-        let frontier = new Set<number>([sidx])
-        const visited = new Set<number>([sidx])
+        const sidx = p.ns[p.ns.length - 1]
+        // BFS over edges starting at sidx.  Each frontier entry carries the full
+        // node/edge sequence so the variable-length hop preserves interior nodes
+        // and the consumed relationship ids (for later relationship-isomorphism
+        // rejection).  A zero-length hop keeps the prefix unchanged.
+        type _Front = { ns: number[]; es: number[] }
+        let fronts: _Front[] = [{ ns: [...p.ns], es: [...p.es] }]
+        const reached: _Front[] = []
+        if (minHops === 0) reached.push({ ns: [...p.ns], es: [...p.es] })
         for (let depth = 1; depth <= maxHops; depth++) {
-          const nextFrontier = new Set<number>()
-          for (const fidx of frontier) {
-            const node = allNodes[fidx] as any
-            const edges: Array<{ dstIdx: number; srcIdx: number; label: string; props?: any }> = node?.__edges || []
+          const next: _Front[] = []
+          for (const f of fronts) {
+            const cur = f.ns[f.ns.length - 1]
+            const curNode = allNodes[cur] as any
             const isAny = step.direction === 'any'
-            for (const e of edges) {
-              let neighborIdx = -1
-              if (isAny) {
-                neighborIdx = e.dstIdx === fidx ? e.srcIdx : (e.srcIdx === fidx ? e.dstIdx : -1)
-              } else if (step.direction === 'out' && e.srcIdx === fidx) {
-                neighborIdx = e.dstIdx
-              } else if (step.direction === 'in' && e.dstIdx === fidx) {
-                neighborIdx = e.srcIdx
-              }
-              if (neighborIdx >= 0 && neighborIdx < allNodes.length && !visited.has(neighborIdx) && neighborIdx !== fidx) {
-                if (hasEdgeLabel && (e.label !== step.edgeLabel)) { nextFrontier.add(neighborIdx); continue }
-                visited.add(neighborIdx)
-                if (depth >= minHops) {
-                  if (_stepMatchConstraint(neighborIdx, step, allNodes)) {
-                    ends.push({ end: neighborIdx, hopsAt: depth })
-                  }
-                }
-                nextFrontier.add(neighborIdx)
-              }
+            const candidates: Array<{ nIdx: number; eId: number }> = []
+            const seenEid = new Set<number>()
+            for (const e of (curNode?.__edges || [])) {
+              const neighborIdx = _edgeNeighbor(e, cur, step.direction)
+              if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
+              if (hasEdgeLabel && e.label !== step.edgeLabel) continue
+              const eId = _edgeIdOf(e)
+              if (seenEid.has(eId)) continue
+              seenEid.add(eId)
+              candidates.push({ nIdx: neighborIdx, eId })
             }
-            // 无向边兜底：所有其他节点的 __edges 中指向 fidx 的边
             if (isAny) {
               for (let j = 0; j < allNodes.length; j++) {
-                if (j === fidx || visited.has(j)) continue
+                if (j === cur) continue
                 const other = allNodes[j] as any
-                if (other.__edges) {
-                  for (const e of other.__edges) {
-                    if ((e.dstIdx === fidx || e.srcIdx === fidx) && !visited.has(j)) {
-                      const nIdx = e.dstIdx === fidx ? e.srcIdx : e.dstIdx
-                      if (nIdx === j && !visited.has(j)) {
-                        visited.add(j)
-                        if (hasEdgeLabel && (e.label !== step.edgeLabel)) { nextFrontier.add(j); continue }
-                        if (depth >= minHops && _stepMatchConstraint(j, step, allNodes)) {
-                          ends.push({ end: j, hopsAt: depth })
-                        }
-                        nextFrontier.add(j)
-                      }
-                    }
-                  }
+                if (!other?.__edges) continue
+                for (const e of other.__edges) {
+                  const neighborIdx = _edgeNeighbor(e, cur, 'any')
+                  if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
+                  if (hasEdgeLabel && e.label !== step.edgeLabel) continue
+                  const eId = _edgeIdOf(e)
+                  if (seenEid.has(eId)) continue
+                  seenEid.add(eId)
+                  candidates.push({ nIdx: neighborIdx, eId })
                 }
               }
             }
+            for (const c of candidates) {
+              if (f.es.includes(c.eId)) continue
+              next.push({ ns: [...f.ns, c.nIdx], es: [...f.es, c.eId] })
+            }
           }
-          frontier = nextFrontier
-          if (frontier.size === 0) break
+          fronts = next
+          if (fronts.length === 0) break
+          if (depth >= minHops) {
+            for (const f of fronts) {
+              // The variable-length endpoint must satisfy the step's target
+              // label/property constraints (e.g. `(a)-[:T*2]->(:End)`).
+              if (_stepMatchConstraint(f.ns[f.ns.length - 1], step, allNodes)) {
+                reached.push(f)
+              }
+            }
+          }
         }
-        for (const e0 of ends) {
-          // Preserve the accumulated prefix and append the variable-length
-          // endpoint.  The zero-hop case (e0.end === sidx) keeps the prefix
-          // unchanged so the next step chains from the same node.
-          if (e0.hopsAt === 0) {
-            newPaths.push([...p])
-          } else {
-            newPaths.push([...p, e0.end])
-          }
+        // Preserve the accumulated prefix and append each reached path.  The
+        // zero-hop entry (reached[0]) keeps the prefix node sequence untouched.
+        for (const f of reached) {
+          newPaths.push({ ns: f.ns, es: f.es })
         }
       }
       paths = newPaths.length > 0 ? newPaths : []
@@ -1282,9 +1329,8 @@ function _walkMultiSteps(
       }
     }
     // 在边遍历前应用 source filter：从 currentSet 中移除不满足 source 约束的节点
-    // WHERE a.id = 1 — 在 seed 节点（step 0）和路径回溯（step 3+）中检查
     if (combinedSourceFilters.length > 0) {
-      const curEnds = _pathEndIndices(paths)
+      const curEnds = new Set<number>(paths.map(p => p.ns[p.ns.length - 1]))
       for (const idx of [...curEnds]) {
         const fn = allNodes[idx]
         if (!fn) continue
@@ -1297,211 +1343,87 @@ function _walkMultiSteps(
           const actualStr = String(fn[rf.property])
           const filterStr = String(rf.value)
           if (actualStr !== filterStr) {
-            // 大整数精度补偿：ANTLR 把超出 Number 安全范围的整数字面量截断，
-            // 尝试用 BigInt 精确比较
             if (/^\d+$/.test(actualStr) && /^-?\d+$/.test(filterStr)) {
               try {
                 const actualBig = BigInt(actualStr)
                 const filterBig = BigInt(filterStr)
-                if (actualBig !== filterBig) {
-                  passes = false
-                  break
-                }
+                if (actualBig !== filterBig) { passes = false; break }
               } catch {
-                passes = false
-                break
+                passes = false; break
               }
             } else {
-              passes = false
-              break
+              passes = false; break
             }
           }
         }
-        if (!passes) curEnds.delete(idx)
+        if (!passes) {
+          paths = paths.filter(p => p.ns[p.ns.length - 1] !== idx)
+        }
       }
+      if (paths.length === 0) break
     }
-    // 边遍历
-    const curEnds = _pathEndIndices(paths)
-    for (const idx of curEnds) {
-      const node = allNodes[idx]
-      if (!node) continue
-      const edges: Array<{ dstIdx: number; srcIdx: number; label: string; props?: any }> = (node as any).__edges || []
+
+    // Edge enumeration: for each current path front, gather every legal outgoing
+    // edge (respecting direction, label, and target constraint), then extend the
+    // path with that edge's id + neighbor node, rejecting only a *reused
+    // relationship* (not a revisited node).
+    const newPaths: _WalkPath[] = []
+    for (const p of paths) {
+      const last = p.ns[p.ns.length - 1]
+      const lastNode = allNodes[last] as any
       const isAny = step.direction === 'any'
-      // 当前节点的出边
-      for (const e of edges) {
-        let neighborIdx = -1
-        if (isAny) {
-          neighborIdx = e.dstIdx === idx ? e.srcIdx : (e.srcIdx === idx ? e.dstIdx : -1)
-        } else if (step.direction === 'out' && e.srcIdx === idx) {
-          neighborIdx = e.dstIdx
-        } else if (step.direction === 'in' && e.dstIdx === idx) {
-          neighborIdx = e.srcIdx
-        }
-        if (neighborIdx >= 0 && neighborIdx < allNodes.length) {
-          // 自环检查：如果是自环边（neighborIdx === idx），走 isAny 或无方向约束时允许
-          const isSelfLoop = (neighborIdx === idx) && (e.dstIdx === idx && e.srcIdx === idx)
-          // 边标签检查：如果 step 指定了 edgeLabel，边必须匹配（方向已经匹配）
-          // 支持多类型 | 分隔（如 :KNOWS|HATES）
-          if (step.edgeLabel) {
-            const targetLabels = step.edgeLabel.split('|')
-            if (!targetLabels.includes(e.label)) continue
-          }
-          if (_stepMatchConstraint(neighborIdx, step, allNodes)) {
-            nextSet.add(neighborIdx)
+      const candidates: Array<{ nIdx: number; eId: number }> = []
+      // Outgoing edges stored on `last`.
+      for (const e of (lastNode?.__edges || [])) {
+        const neighborIdx = _edgeNeighbor(e, last, step.direction)
+        if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
+        if (step.edgeLabel && !step.edgeLabel.split('|').includes(e.label)) continue
+        if (!_stepMatchConstraint(neighborIdx, step, allNodes)) continue
+        candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
+      }
+      // Incoming edges (`in` / `any` directions): edges stored on other nodes
+      // pointing at `last`.
+      if (step.direction === 'in' || isAny) {
+        for (let j = 0; j < allNodes.length; j++) {
+          if (j === last) continue
+          const other = allNodes[j] as any
+          if (!other?.__edges) continue
+          for (const e of other.__edges) {
+            const neighborIdx = _edgeNeighbor(e, last, step.direction)
+            if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
+            if (step.edgeLabel && !step.edgeLabel.split('|').includes(e.label)) continue
+            if (!_stepMatchConstraint(neighborIdx, step, allNodes)) continue
+            candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
           }
         }
       }
-      // [FIX-MW2]: direction='in' 反向边遍历——遍历其他节点的 __edges 寻找指向当前 idx 的边
-      if (step.direction === 'in') {
-        for (let j = 0; j < allNodes.length; j++) {
-          if (j === idx) continue
-          const other = allNodes[j] as any
-          if (other.__edges) {
-            for (const e of other.__edges) {
-              if (e.dstIdx === idx) {
-                // 边标签检查
-                if (step.edgeLabel) {
-                  const targetLabels = step.edgeLabel.split('|')
-                  if (!targetLabels.includes(e.label)) continue
-                }
-                const neighborIdx = e.srcIdx
-                if (!nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
-                  nextSet.add(neighborIdx)
-                }
-              }
-            }
-          }
-        }
+      // Deduplicate identical relationships that the outgoing and incoming
+      // enumeration passes both discover (the TCK stores each relationship on
+      // both endpoints).  Key by the relationship id so a single logical edge
+      // yields exactly one candidate.
+      const deduped: Array<{ nIdx: number; eId: number }> = []
+      const seenEid = new Set<number>()
+      for (const c of candidates) {
+        if (seenEid.has(c.eId)) continue
+        seenEid.add(c.eId)
+        deduped.push(c)
       }
-      // direction='in' 时：从其他节点的 __edges 中寻找指向当前 idx 的边
-      if (step.direction === 'in') {
-        for (let j = 0; j < allNodes.length; j++) {
-          if (j === idx) continue
-          const other = allNodes[j] as any
-          if (other.__edges) {
-            for (const e of other.__edges) {
-              if (e.dstIdx === idx) {
-                const neighborIdx = e.srcIdx
-                if (!nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
-                  nextSet.add(neighborIdx)
-                }
-              }
-            }
-          }
-        }
-      }
-      // 无向边：其他节点到当前节点的反向边
-      if (isAny) {
-        for (let j = 0; j < allNodes.length; j++) {
-          if (j === idx) continue
-          const other = allNodes[j] as any
-          if (other.__edges) {
-            for (const e of other.__edges) {
-              if ((e.dstIdx === idx || e.srcIdx === idx)) {
-                const neighborIdx = e.dstIdx === idx ? e.srcIdx : e.dstIdx
-                if (!nextSet.has(neighborIdx) && _stepMatchConstraint(neighborIdx, step, allNodes)) {
-                  nextSet.add(neighborIdx)
-                }
-              }
-            }
-          }
-        }
+      for (const c of deduped) {
+        // Relationship isomorphism: a step must not reuse a relationship already
+        // traversed by this walk.  Revisiting a node via a *distinct* edge is
+        // allowed (e.g. `MATCH p=(n)<-->(k)<-->(n)` on a→b / b→a).
+        if (p.es.includes(c.eId)) continue
+        newPaths.push({ ns: [...p.ns, c.nIdx], es: [...p.es, c.eId] })
       }
     }
-    // 当前 step 的 target filter（约束 step.targetAlias 变量）
-    // 只预过滤 EQ/NEQ/IS_NULL/IS_NOT_NULL（GT/GTE/LT/LTE 等由 GE filter 补偿或后处理）
-    const simpleOps = new Set(['EQ', 'NEQ', 'IS_NULL', 'IS_NOT_NULL'])
-    const targetFilters = planFilters?.length ? planFilters.filter(f => f.source === step.targetAlias && simpleOps.has(f.operator)) : []
-    if (targetFilters.length > 0) {
-        for (const fidx of [...nextSet]) {
-          const fn = allNodes[fidx]
-          if (!fn) { nextSet.delete(fidx); continue }
-          let passes = true
-          for (const rf of targetFilters) {
-            if (rf.operator === 'IS_NULL') {
-              if (fn[rf.property] != null) { passes = false; break }
-            } else if (rf.operator === 'IS_NOT_NULL') {
-              if (fn[rf.property] == null) { passes = false; break }
-            } else {
-              if (fn[rf.property] === undefined || String(fn[rf.property]) !== String(rf.value)) {
-                passes = false
-                break
-              }
-            }
-          }
-          if (!passes) nextSet.delete(fidx)
-        }
-      }
-    // 应用被 WHERE 过滤跳过的节点抑制（仅在单步时使用，多步会Error地过滤路径中间节点）
-    if (skipNodeIndices && skipNodeIndices.size > 0 && steps.length <= 1) {
-      for (const sidx of skipNodeIndices) {
-        nextSet.delete(sidx)
-      }
-    }
-    // 扩展路径：每个 nextSet 索引追加到每条路径末尾
-    const newPaths: number[][] = []
-    for (const idx of nextSet) {
-      for (const p of paths) {
-        // 检查路径末端节点是否通过边连接到 idx
-        const last = p[p.length - 1]
-        const lastNode = allNodes[last] as any
-        let connected = lastNode?.__edges?.some((e: any) => {
-          const neighborIdx = e.dstIdx === last ? e.srcIdx : (e.srcIdx === last ? e.dstIdx : -1)
-          return neighborIdx === idx
-        })
-        // [FIX-MW2]: direction='in' 时，边存储在 neighbor 节点（idx）而非 last 节点
-        if (!connected && step.direction === 'in') {
-          const neighborNode = allNodes[idx] as any
-          connected = neighborNode?.__edges?.some((e: any) => {
-            return e.dstIdx === last
-          })
-        }
-        // [FIX-WALK-CONNECTED]: direction='any' 时也检查反向边（CREATE 单向边 + MATCH 无向边）
-        if (!connected && steps.length > 0 && steps[si] && steps[si].direction === 'any') {
-          const idxNode = allNodes[idx] as any
-          connected = idxNode?.__edges?.some((e: any) => {
-            const neighborIdx = e.dstIdx === idx ? e.srcIdx : (e.srcIdx === idx ? e.dstIdx : -1)
-            return neighborIdx === last
-          })
-        }
-        if (connected) {
-          // Relationship isomorphism: a multi-step MATCH must not reuse the same
-          // relationship across steps.  In `()-[r1]->()<--()`, the anonymous
-          // second relationship must be distinct from r1; when the graph has a
-          // single a->b edge, stepping back to `a` would reuse r1's edge.  A
-          // simple-path guard (new node not already in the walk) rejects that
-          // reuse while preserving legitimate walks that revisit a node via a
-          // *different* edge only when multiple parallel edges exist (rare).
-          //
-          // Exception: a genuine self-loop edge (`(l)-[LOOP]->(l)`, srcIdx ===
-          // dstIdx) is a distinct relationship and must be allowed in undirected
-          // traversals (e.g. `MATCH (x)-[r1]-(y)-[r2]-(z)` where z === y via the
-          // LOOP edge).  Here idx === last and last already appears in `p`, so
-          // the simple-path guard would otherwise drop the match.  However a
-          // self-loop edge may only be consumed once: if the step immediately
-          // before `last` also equals `last`, we have already self-looped into
-          // this node and reusing the same LOOP edge would violate relationship
-          // isomorphism (`r1 === r2`), so reject.
-          const lastNodeForLoop = allNodes[last] as any
-          const isGenuineSelfLoop =
-            idx === last &&
-            p[p.length - 2] !== last &&
-            !!lastNodeForLoop?.__edges?.some((e: any) => e.srcIdx === last && e.dstIdx === last)
-          if (p.includes(idx) && !isGenuineSelfLoop) continue
-          newPaths.push([...p, idx])
-        }
-      }
-    }
-    paths = newPaths.length > 0 ? newPaths : [...nextSet].map(idx => [startIdx, idx])
-    // NOTE: the previous "undirected self-loop circuit" rejection (idx === prev)
-    // was removed.  A path whose final two positions are equal only ever arises
-    // from a genuine self-loop edge (`(l)-[LOOP]->(l)`, srcIdx === dstIdx), which
-    // is a legitimate distinct relationship and must match in undirected multi-
-    // step patterns like `MATCH (x)-[r1]-(y)-[r2]-(z)` (z === y).  The simple-
-    // path guard above already prevents reusing a non-self edge.
+    paths = newPaths
     if (paths.length === 0) break
   }
-  return paths
+
+  // Resolve consumed relationship ids back to their (srcIdx, dstIdx, label)
+  // descriptors so callers can rebuild edge objects with the correct label and
+  // direction.
+  return paths.map(p => ({ ns: p.ns, es: p.es.map(id => edgeRefById.get(id) ?? { srcIdx: 0, dstIdx: 0, label: '' }) }))
 }
 
 function _pathEndIndices(paths: number[][]): Set<number> {
