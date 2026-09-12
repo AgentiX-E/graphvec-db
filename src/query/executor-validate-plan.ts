@@ -509,6 +509,14 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       const isVarForward = /^[a-zA-Z_]\w*$/.test(valueExpr) &&
         (matchNodeVars.includes(valueExpr) || edgeVars.includes(valueExpr) || pathAssignments.includes(valueExpr))
       if (isVarForward) continue
+      // A node-/edge-typed expression (e.g. `coalesce(b, c)` where b and c are
+      // node variables) still yields a node, so reusing its alias as a node in a
+      // later MATCH is legal — only scalar/expression values conflict.
+      const exprVars = [...valueExpr.matchAll(/[a-zA-Z_]\w*/g)].map(m => m[0])
+        .filter(v => v.toLowerCase() !== 'coalesce' && !['null', 'true', 'false'].includes(v))
+      const allExprVarsAreEntities = exprVars.length > 0 &&
+        exprVars.every(v => matchNodeVars.includes(v) || edgeVars.includes(v) || pathAssignments.includes(v))
+      if (allExprVarsAreEntities) continue
       // Only a conflict if this alias is re-bound as node/edge in a MATCH that
       // appears AFTER this WITH clause.
       const afterWith = query.slice((wm.index || 0) + wm[0].length)
