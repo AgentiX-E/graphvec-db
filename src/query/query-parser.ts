@@ -1189,16 +1189,64 @@ export function _walkMultiStepsWithEdges(
   planFilters?: Array<{source?: string; property: string; value: any}>,
   stepSourceFilters?: Array<{source?: string; property: string; value: any}>
 ): Array<{ ns: number[]; es: Array<{ srcIdx: number; dstIdx: number; label: string }> }> {
-  // Build a global edge registry keyed by *object identity* (WeakMap).  Each
-  // relationship object in any node's `__edges` array gets a stable unique id.
-  // Parallel relationships are distinct objects and thus receive distinct ids
-  // (required for trail semantics over `-[:R*3..3]-` on a star graph).  The
-  // outgoing/incoming enumeration dedupe (below) handles the two physical
-  // copies a single relationship may have on both endpoints.
+  // Build a global edge registry.  A relationship's identity is its *source
+  // ownership* plus its occurrence number among the parallel relationships the
+  // same source node emits toward the same (dstIdx, label).  This is what trail
+  // semantics needs:
+  //
+  //   * The two physical copies of one relationship (a single-statement CREATE
+  //     attaches it to BOTH endpoints) share the same (srcIdx, dstIdx, label,
+  //     occurrence), so they collapse into one id — the relation is never
+  //     re-traversed via its second copy.
+  //   * Two genuinely parallel relationships between the same pair are distinct
+  //     entries in the source node's `__edges` and get different occurrences,
+  //     hence different ids — an undirected `-[:R*3..3]-` walk may traverse both
+  //     in turn (e.g. `mid -> other -> mid`) without reusing a relationship.
+  //
+  // Pre-scan assigns ids deterministically (source-owned entries in array order
+  // are occurrence 0,1,2,…).  A target-node copy (srcIdx !== its node index) is
+  // resolved to the source node's occurrence-0 id, which is correct because the
+  // two-endpoint path de-duplicates parallel edges (see `pushDedup` in the TCK
+  // step definitions) whereas the source-only path never emits target copies.
   type _EdgeRef = { srcIdx: number; dstIdx: number; label: string }
   const edgeIdByObj = new WeakMap<object, number>()
   const edgeRefById = new Map<number, _EdgeRef>()
   let _eid = 0
+  // "srcIdx|dstIdx|label|occurrence" → id
+  const idByOwnedKey = new Map<string, number>()
+  const _ownedKey = (srcIdx: number, dstIdx: number, label: string, occ: number) =>
+    `${srcIdx}|${dstIdx}|${label}|${occ}`
+  for (let ni = 0; ni < allNodes.length; ni++) {
+    const es = (allNodes[ni] as any)?.__edges
+    if (!Array.isArray(es)) continue
+    const occByTarget = new Map<string, number>()
+    for (const e of es) {
+      if (e.srcIdx !== ni) continue // only number source-owned occurrences
+      const t = `${e.dstIdx}|${e.label || ''}`
+      const occ = occByTarget.get(t) ?? 0
+      occByTarget.set(t, occ + 1)
+      const key = _ownedKey(e.srcIdx, e.dstIdx, e.label || '', occ)
+      if (!idByOwnedKey.has(key)) {
+        const id = _eid++
+        idByOwnedKey.set(key, id)
+        edgeRefById.set(id, { srcIdx: e.srcIdx, dstIdx: e.dstIdx, label: e.label || '' })
+      }
+      edgeIdByObj.set(e, idByOwnedKey.get(key)!)
+    }
+  }
+  // Resolve target-node copies (same triple, srcIdx !== node index) to the
+  // source node's occurrence-0 id.
+  for (let ni = 0; ni < allNodes.length; ni++) {
+    const es = (allNodes[ni] as any)?.__edges
+    if (!Array.isArray(es)) continue
+    for (const e of es) {
+      if (e.srcIdx === ni) continue // already owned
+      const key0 = _ownedKey(e.srcIdx, e.dstIdx, e.label || '', 0)
+      if (idByOwnedKey.has(key0) && !edgeIdByObj.has(e)) {
+        edgeIdByObj.set(e, idByOwnedKey.get(key0)!)
+      }
+    }
+  }
   const _edgeIdOf = (e: any): number => {
     let id = edgeIdByObj.get(e)
     if (id === undefined) {
