@@ -1300,6 +1300,125 @@ async function _executeMultiMatchCrossJoin(
     }
   }
 
+  // ── OPTIONAL MATCH expansion ──
+  // A query combining multiple MATCH patterns with an OPTIONAL MATCH
+  // (`MATCH (a:A),(b:C) OPTIONAL MATCH (x)-->(b)`) reaches this cross-join
+  // executor, which owns the Cartesian product but must also apply the optional
+  // pattern so that free optional variables resolve per bound row (binding the
+  // match or null-ing it).  Node variables in `filtered` are concrete node
+  // objects carrying `_alias`, so the optional walk resolves bound anchors and
+  // enumerates unbound sources over every node.
+  if ((plan as any).optionalMatchSteps?.length && filtered.length) {
+    const optStepsList = (plan as any).optionalMatchSteps as Array<{
+      variableName: string; scanLabel: string | null; steps: TraverseStep[]
+    }>
+    const _nodeIdxOf = (obj: unknown): number => {
+      if (obj == null || typeof obj !== 'object') return -1
+      const o = obj as any
+      if (typeof o.__idx === 'number') return o.__idx
+      if (o._alias) {
+        const ai = allNodes.findIndex((n: any) => n?._alias === o._alias)
+        if (ai >= 0) return ai
+      }
+      const lbl = o._label || ''
+      const keys = Object.keys(o).filter(k => !k.startsWith('_') && k !== 'id' && k !== '__edges')
+      for (let i = 0; i < allNodes.length; i++) {
+        const c = allNodes[i] as any
+        if (String(c?._label ?? '') !== lbl) continue
+        if (keys.every(pk => c?.[pk] === o[pk])) return i
+      }
+      if (lbl) return allNodes.findIndex((n: any) => (n as any)?._label === lbl)
+      return -1
+    }
+    const _mkProps = (n: any): Record<string, unknown> => {
+      const p: Record<string, unknown> = {}
+      if (n) for (const k of Object.keys(n)) { if (k !== '__edges' && !k.startsWith('_')) p[k] = n[k] }
+      if (n?._label) p._label = n._label
+      return p
+    }
+    // Variables bound by the primary MATCH stages (matchVar + multiMatch vars).
+    const boundVars = new Set<string>()
+    if ((plan as any).matchVar) boundVars.add((plan as any).matchVar)
+    for (const mm0 of (plan as any).multiMatch || []) if (mm0?.variable) boundVars.add(mm0.variable)
+    for (const st of plan.steps || []) {
+      if ((st as any).source) boundVars.add((st as any).source)
+      if ((st as any).targetAlias) boundVars.add((st as any).targetAlias)
+    }
+    let expanded = filtered
+    for (const opt of optStepsList) {
+      const next: Array<Record<string, unknown>> = []
+      for (const row of expanded) {
+        const srcVar = opt.steps[0]?.source || ''
+        const tgtVar = opt.steps[0]?.targetAlias || ''
+        const unboundSource = srcVar !== '' && !boundVars.has(srcVar) && srcVar !== tgtVar
+        let matchedAny = false
+        if (unboundSource && opt.steps.length) {
+          // Enumerate every node as the free source, constraining the walk's
+          // endpoint to any bound target variable.
+          let boundTargetIdx = -1
+          if (tgtVar && boundVars.has(tgtVar)) boundTargetIdx = _nodeIdxOf(row[tgtVar])
+          for (let cand = 0; cand < allNodes.length; cand++) {
+            const paths = _walkMultiSteps(cand, opt.steps, allNodes)
+            for (const path of paths) {
+              const end = path[path.length - 1]
+              if (boundTargetIdx >= 0 && end !== boundTargetIdx) continue
+              if (opt.scanLabel && String((allNodes[cand] as any)?._label || '') !== opt.scanLabel) continue
+              const r2: Record<string, unknown> = { ...row, [srcVar]: _mkProps(allNodes[cand] as any) }
+              opt.steps.forEach((st: any, si: number) => {
+                if (st.targetAlias) {
+                  const ni = (st as any).range ? path[path.length - 1] : path[si + 1]
+                  r2[st.targetAlias] = ni != null && ni >= 0 ? _mkProps(allNodes[ni] as any) : null
+                }
+              })
+              next.push(r2)
+              matchedAny = true
+            }
+          }
+        } else {
+          // Source is bound: resolve its node index and walk from it.
+          const sidx = srcVar ? _nodeIdxOf(row[srcVar]) : -1
+          let boundTargetIdx = -1
+          if (tgtVar && boundVars.has(tgtVar)) boundTargetIdx = _nodeIdxOf(row[tgtVar])
+          if (sidx >= 0) {
+            const paths = _walkMultiSteps(sidx, opt.steps, allNodes)
+            if (paths.length) {
+              for (const path of paths) {
+                const end = path[path.length - 1]
+                if (boundTargetIdx >= 0 && end !== boundTargetIdx) continue
+                const r2: Record<string, unknown> = { ...row }
+                opt.steps.forEach((st: any, si: number) => {
+                  if (st.targetAlias) {
+                    // For a variable-length step the alias binds the *endpoint*
+                    // of the whole walk (last path node), not the first hop.
+                    const ni = (st as any).range ? end : path[si + 1]
+                    r2[st.targetAlias] = ni != null && ni >= 0 ? _mkProps(allNodes[ni] as any) : null
+                  }
+                })
+                next.push(r2)
+                matchedAny = true
+              }
+            }
+          }
+        }
+        if (!matchedAny) {
+          // No optional match: bind the optional variables to null, preserving
+          // bound source/target columns.
+          const r2: Record<string, unknown> = { ...row }
+          if (srcVar && !boundVars.has(srcVar)) r2[srcVar] = null
+          if (tgtVar && !boundVars.has(tgtVar)) r2[tgtVar] = null
+          next.push(r2)
+        }
+      }
+      if (next.length) expanded = next
+      else {
+        const r2: Record<string, unknown> = { ...filtered[0] }
+        if (opt.variableName && !boundVars.has(opt.variableName)) r2[opt.variableName] = null
+        expanded = [r2]
+      }
+    }
+    filtered = expanded
+  }
+
   // Build result rows.
   const agg = plan.aggregate as any
   // Aggregate alias resolution (consistent with the primary GE aggregation path):

@@ -1278,8 +1278,12 @@ export function _walkMultiStepsWithEdges(
     // ── 变量长度路径：step.range 存在时做 BFS 多跳 ──
     if ((step as any).range) {
       const range = (step as any).range
-      const minHops = range.min ?? 1
-      const maxHops = range.max ?? 10
+      // `range.min` defaults to 1 (a bare `*`).  An unbounded upper bound is
+      // `null`; since trails never revisit an edge, the longest simple trail has
+      // at most `allNodes.length - 1` edges, so that is a sound finite bound
+      // when no explicit maximum was given.
+      const minHops = Number.isFinite(range.min) ? range.min : 1
+      const maxHops = Number.isFinite(range.max) ? range.max : allNodes.length
       const hasEdgeLabel = !!(step as any).edgeLabel
       const newPaths: _WalkPath[] = []
       for (const p of paths) {

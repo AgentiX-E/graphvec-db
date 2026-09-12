@@ -1638,16 +1638,29 @@ function extractMatch(matchCtx: any): ParsedMatch | null {
       }
 
       // VARLEN range
+      // A variable-length pattern `()-[r*]-( )` may carry one of
+      //   *        → any number of hops (1..∞), min defaults to 1
+      //   *n       → exactly n hops
+      //   *m..n    → at least m, at most n hops
+      //   *m..     → at least m hops (unbounded)
+      //   *..n     → at most n hops (min 1)
+      // An unbounded upper bound is represented as `max: null`; callers must
+      // treat `null` as infinity rather than substituting a finite default.
       if (findChild(relDetail, 'RangeLiteralContext')) {
         const rctx = findChild(relDetail, 'RangeLiteralContext')
         const rangeText = rctx!.getText ? rctx!.getText() : ''
         const cleanRange = rangeText.startsWith('*') ? rangeText.slice(1) : rangeText
         const parts = cleanRange.split('..')
-        if (parts.length === 2) {
-          rangeInfo = { min: parseInt(parts[0], 10), max: parseInt(parts[1], 10) }
+        if (cleanRange === '') {
+          // `*` → 1..∞
+          rangeInfo = { min: 1, max: null }
+        } else if (parts.length === 2) {
+          const lo = parts[0] === '' ? 1 : parseInt(parts[0], 10)
+          const hi = parts[1] === '' ? null : parseInt(parts[1], 10)
+          rangeInfo = { min: Number.isFinite(lo) ? lo : 1, max: hi === null ? null : (Number.isFinite(hi) ? hi : null) }
         } else {
           const val = parseInt(parts[0], 10)
-          rangeInfo = { min: val, max: val }
+          rangeInfo = { min: Number.isFinite(val) ? val : 1, max: Number.isFinite(val) ? val : 1 }
         }
       }
 
