@@ -6027,6 +6027,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             if (n._label) p._label = n._label
             return p
           }
+          // A cell is "already bound" only when it carries a meaningful value,
+          // not the graph engine's `Default` placeholder it pre-fills for as-yet
+          // unmatched variables.  A `WITH r ...` projects `r` as a real value
+          // (e.g. the string `"[:T]"`), so a bound relationship reused as `[r]`
+          // in a subsequent OPTIONAL MATCH must keep its value when the optional
+          // hop has no match — but the engine's own `Default` slots still have to
+          // be nulled out.
+          const _isBound = (v: unknown): boolean => {
+            if (v === undefined || v === null) return false
+            if (typeof v === 'object') {
+              const o = v as Record<string, unknown>
+              if (o._label === 'Default' && Object.keys(o).every(k => k === '_label' || k === 'props')) return false
+            }
+            return true
+          }
           if (srcNodeIdx >= 0 && optSteps.length) {
             const walkPaths = _walkMultiSteps(srcNodeIdx, optSteps, allNodes)
             // Collect every variable bound along the OPTIONAL MATCH chain: the
@@ -6115,7 +6130,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
               if (filteredPaths.length === 0) {
                 for (const bv of optBoundVars) row[bv.var] = null
-                if (edgeVar) row[edgeVar] = null
+                if (edgeVar && !_isBound(row[edgeVar])) row[edgeVar] = null
               } else if (filteredPaths.length === 1) {
                 // Single trail: bind it onto the current row in place.
                 const bound = bindPath(filteredPaths[0], row)
@@ -6128,10 +6143,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             } else {
               // OPTIONAL path does not match: the source variable (already bound
-              // by the preceding MATCH) must be preserved; only the optional
-              // target/edge variables become null.
+              // by the preceding MATCH) must be preserved; the optional target
+              // variables become null.  A bound relationship reused as `[r]`
+              // (projected by a preceding WITH) keeps its value when the optional
+              // hop fails, but the graph engine's own placeholder must still null.
               for (const bv of optBoundVars) row[bv.var] = null
-              if (edgeVar) row[edgeVar] = null
+              if (edgeVar && !_isBound(row[edgeVar])) row[edgeVar] = null
             }
           } else if (optVarName && !sourceVar && !targetVar && !edgeVar) {
             // Single-node pattern: OPTIONAL MATCH (n) / (n:Label).  Without a
