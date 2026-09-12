@@ -992,7 +992,7 @@ function _extractWhereBodyBraceAware(query: string): string | null {
     // parenthesis group) ends the WHERE body.
     if (braceDepth === 0 && parenDepth === 0) {
       const rest = query.slice(i)
-      if (/^(?:RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL|YIELD|UNION)\b/i.test(rest.trimStart())) {
+      if (/^(?:RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL|YIELD|UNION|MATCH|OPTIONAL\s+MATCH)\b/i.test(rest.trimStart())) {
         end = i
         break
       }

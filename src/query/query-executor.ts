@@ -5387,6 +5387,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
       if (whereExpr) {
         const filteredResult: QueryRow[] = []
+        // Track the raw engine records that survive the WHERE filter so that
+        // downstream stages (OPTIONAL MATCH in particular) resolve each surviving
+        // row's source node from the matching raw entry rather than a now-misaligned
+        // index.  Without this, filtering a row shifts every later rawWithEdges[i]
+        // off by one and OPTIONAL MATCH binds the wrong node.
+        const filteredRawWithEdges: Array<Record<string, unknown>> = []
       for (let ri = 0; ri < result.length; ri++) {
         const row = result[ri]
                 // 构建变量级映射
@@ -5528,10 +5534,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         }
         if (evalVal === true) {
           filteredResult.push(row)
+          if (rawWithEdges?.[ri]) filteredRawWithEdges.push(rawWithEdges[ri] as Record<string, unknown>)
         }
       }
       result.length = 0
-      result.push(...filteredResult);
+      result.push(...filteredResult)
+      if (rawWithEdges && filteredRawWithEdges.length > 0) {
+        rawWithEdges.length = 0
+        rawWithEdges.push(...filteredRawWithEdges)
+      }
       }
     }
 
@@ -6027,59 +6038,93 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (st.source && st.source !== sourceVar) {
                 if (!optBoundVars.some(b => b.var === st.source)) optBoundVars.push({ var: st.source, nodeIdx: null })
               }
-              if (st.targetAlias && !optBoundVars.some(b => b.var === st.targetAlias)) {
+              // A self-loop pattern `(a)-[r]->(a)` has targetAlias === source,
+              // so `a` is already bound by the leading MATCH; it must not be
+              // treated as an optional variable (which would null the source on
+              // a non-match).
+              if (st.targetAlias && st.targetAlias !== sourceVar && !optBoundVars.some(b => b.var === st.targetAlias)) {
                 optBoundVars.push({ var: st.targetAlias, nodeIdx: null })
               }
             }
             if (walkPaths?.length) {
-              // walkPaths[k] = [srcIdx, hop1, hop2, ...]. The i-th step's target
-              // node index sits at path position i+1. Map each step's targetAlias
-              // to the corresponding node (intermediate hops included).
-              const path = walkPaths[0]
-              optSteps.forEach((st, si) => {
-                if (st.targetAlias) {
-                  const nodeAt = path[si + 1]
-                  const rec = optBoundVars.find(b => b.var === st.targetAlias)
-                  if (rec) rec.nodeIdx = nodeAt != null && nodeAt >= 0 ? nodeAt : null
+              // Filter out trails that fail to actually return to an
+              // already-bound target node.  A self-loop pattern
+              // `(a)-[r]-(a)` has targetVar === sourceVar, so the trail's
+              // endpoint must be the source node itself (index srcNodeIdx);
+              // otherwise the undirected walk also reaches the source's other
+              // neighbours, which is not a loop.
+              let filteredPaths = walkPaths
+              if (targetVar === sourceVar) {
+                filteredPaths = walkPaths.filter((p: number[]) => p[p.length - 1] === srcNodeIdx)
+              } else if (targetVar && targetVar in row) {
+                const tv = row[targetVar]
+                let ti = -1
+                if (tv && typeof tv === 'object') {
+                  ti = allNodes.indexOf(tv as any)
+                  if (ti < 0 && (tv as any)?._alias) ti = allNodes.findIndex((n: any) => n?._alias === (tv as any)._alias)
                 }
-              })
-              // Back-fill any step whose source is itself an optional var (e.g.
-              // `y` in `(y)-[:E2]->(z)`), using the previous hop's node.
-              optSteps.forEach((st, si) => {
-                if (st.source && st.source !== sourceVar && si > 0) {
-                  const rec = optBoundVars.find(b => b.var === st.source)
-                  if (rec && rec.nodeIdx == null) {
-                    const nodeAt = path[si]
-                    rec.nodeIdx = nodeAt != null && nodeAt >= 0 ? nodeAt : null
-                  }
-                }
-              })
-              for (const bv of optBoundVars) {
-                if (bv.nodeIdx == null || bv.nodeIdx < 0) { row[bv.var] = null; continue }
-                row[bv.var] = _mkNodeProps(allNodes[bv.nodeIdx] as any)
+                if (ti >= 0) filteredPaths = walkPaths.filter((p: number[]) => p[p.length - 1] === ti)
               }
-              if (edgeVar) {
-                // Bind the matched edge as a full relationship object so that
-                // type(r) / r.prop resolve correctly for the matched hop.
-                const ePathIdx = optSteps.findIndex((st: any) => st.edgeVariable === edgeVar || st.edgeAlias === edgeVar)
-                const hop = ePathIdx >= 0 ? ePathIdx : 0
-                const fromIdx = path[hop]
-                const toIdx = path[hop + 1]
-                const fromN = fromIdx != null ? allNodes[fromIdx] as any : undefined
-                const fromEdges = (fromN?.__edges || []) as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
-                const ee = fromEdges?.find((e: any) => (e.dstIdx === toIdx || e.srcIdx === toIdx))
-                if (ee) {
-                  const edgeObj: Record<string, unknown> = {
-                    __edgeLabel: ee.label,
-                    __edgeLabelStr: ee.label,
-                    _type: ee.label,
-                    _label: ee.label,
+              // A variable-length OPTIONAL MATCH may match several distinct
+              // trails from the same bound source (e.g. `(a)-[*]->(b)` reaches
+              // every node reachable within the range), so each trail expands
+              // into its own result row rather than only the first.  For a
+              // variable-length step the target alias binds the trail's final
+              // node (path[path.length - 1]), while fixed-length steps bind
+              // path[si + 1].
+              const bindPath = (path: number[], base: Record<string, unknown>): Record<string, unknown> => {
+                const out: Record<string, unknown> = { ...base }
+                optSteps.forEach((st, si) => {
+                  if (st.targetAlias) {
+                    const nodeAt = (st as any).range ? path[path.length - 1] : path[si + 1]
+                    out[st.targetAlias] = nodeAt != null && nodeAt >= 0 ? _mkNodeProps(allNodes[nodeAt] as any) : null
                   }
-                  if (ee.props) for (const [pk, pv] of Object.entries(ee.props)) edgeObj[pk] = pv
-                  row[edgeVar] = edgeObj
-                } else {
-                  row[edgeVar] = null
+                })
+                // Back-fill any step whose source is itself an optional var
+                // (e.g. `y` in `(y)-[:E2]->(z)`), using the previous hop's node.
+                optSteps.forEach((st, si) => {
+                  if (st.source && st.source !== sourceVar && si > 0 && out[st.source] === undefined) {
+                    const nodeAt = path[si]
+                    out[st.source] = nodeAt != null && nodeAt >= 0 ? _mkNodeProps(allNodes[nodeAt] as any) : null
+                  }
+                })
+                if (edgeVar) {
+                  // Bind the matched edge as a full relationship object so that
+                  // type(r) / r.prop resolve correctly for the matched hop.
+                  const ePathIdx = optSteps.findIndex((st: any) => st.edgeVariable === edgeVar || st.edgeAlias === edgeVar)
+                  const hop = ePathIdx >= 0 ? ePathIdx : 0
+                  const fromIdx = path[hop]
+                  const toIdx = path[hop + 1]
+                  const fromN = fromIdx != null ? allNodes[fromIdx] as any : undefined
+                  const fromEdges = (fromN?.__edges || []) as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
+                  const ee = fromEdges?.find((e: any) => (e.dstIdx === toIdx || e.srcIdx === toIdx))
+                  if (ee) {
+                    const edgeObj: Record<string, unknown> = {
+                      __edgeLabel: ee.label,
+                      __edgeLabelStr: ee.label,
+                      _type: ee.label,
+                      _label: ee.label,
+                    }
+                    if (ee.props) for (const [pk, pv] of Object.entries(ee.props)) edgeObj[pk] = pv
+                    out[edgeVar] = edgeObj
+                  } else {
+                    out[edgeVar] = null
+                  }
                 }
+                return out
+              }
+              if (filteredPaths.length === 0) {
+                for (const bv of optBoundVars) row[bv.var] = null
+                if (edgeVar) row[edgeVar] = null
+              } else if (filteredPaths.length === 1) {
+                // Single trail: bind it onto the current row in place.
+                const bound = bindPath(filteredPaths[0], row)
+                for (const k of Object.keys(bound)) row[k] = bound[k]
+              } else {
+                // Multiple trails: expand the current row into one row per trail.
+                const expanded = filteredPaths.map((p) => bindPath(p, row))
+                result.splice(ri, 1, ...expanded)
+                ri += expanded.length - 1
               }
             } else {
               // OPTIONAL path does not match: the source variable (already bound
