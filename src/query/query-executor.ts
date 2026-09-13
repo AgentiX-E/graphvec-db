@@ -1465,6 +1465,17 @@ async function _executeMultiMatchCrossJoin(
         if (opt.variableName && !boundVars.has(opt.variableName)) r2[opt.variableName] = null
         expanded = [r2]
       }
+      // A later OPTIONAL MATCH may reference variables bound by THIS one
+      // (e.g. `OPTIONAL MATCH (a)-->(x) OPTIONAL MATCH (x)-[r]->(b)`): `x` is
+      // produced by the first optional and consumed as the source of the
+      // second.  Register every variable this optional binds so the next
+      // optional treats them as bound sources rather than re-enumerating them
+      // as free nodes (which is the source of the spurious single/b rows).
+      for (const st of opt.steps) {
+        if ((st as any).source) boundVars.add((st as any).source)
+        if ((st as any).targetAlias) boundVars.add((st as any).targetAlias)
+        if ((st as any).edgeVariable) boundVars.add((st as any).edgeVariable)
+      }
     }
     filtered = expanded
   }
@@ -6233,6 +6244,26 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 if (tv && typeof tv === 'object') {
                   ti = allNodes.indexOf(tv as any)
                   if (ti < 0 && (tv as any)?._alias) ti = allNodes.findIndex((n: any) => n?._alias === (tv as any)._alias)
+                }
+                if (ti >= 0) filteredPaths = walkPaths.filter((p: number[]) => p[p.length - 1] === ti)
+              } else if (targetVar && _matchBoundVars.has(targetVar) && rawEntry) {
+                // The bound target (e.g. `team` in `MATCH (p)-[:PLAYS_FOR]->(team)
+                // OPTIONAL MATCH (p)-[s:SUPPORTS]->(team)`) may already have been
+                // projected away by _formatResultRow (RETURN only lists
+                // `s IS NULL`), so the projected `row` no longer carries it.  The
+                // target variable must still constrain the OPTIONAL walk to that
+                // exact pre-bound node (the one reached by PLAYS_FOR), otherwise
+                // a SUPPORTS edge to a *different* Team is matched and `s` is
+                // wrongfully bound instead of null.  Recover it from the raw
+                // engine row's cross-variable bindings.
+                const rawTgt = rawEntry.__crossVarRows?.[targetVar]
+                  ?? rawEntry.__targetProps?.[targetVar]
+                  ?? (rawEntry.__targetProps && rawEntry.__targetProps._label ? rawEntry.__targetProps : undefined)
+                  ?? rawEntry[targetVar]
+                let ti = -1
+                if (rawTgt && typeof rawTgt === 'object') {
+                  ti = allNodes.indexOf(rawTgt as any)
+                  if (ti < 0 && (rawTgt as any)?._alias) ti = allNodes.findIndex((n: any) => n?._alias === (rawTgt as any)._alias)
                 }
                 if (ti >= 0) filteredPaths = walkPaths.filter((p: number[]) => p[p.length - 1] === ti)
               }
