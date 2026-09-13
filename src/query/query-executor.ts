@@ -1344,12 +1344,50 @@ async function _executeMultiMatchCrossJoin(
       if ((st as any).source) boundVars.add((st as any).source)
       if ((st as any).targetAlias) boundVars.add((st as any).targetAlias)
     }
+    // Reconstruct a named path object `{ __path, __pathEdges }` for an OPTIONAL
+    // MATCH path variable, mirroring the shape produced for a leading MATCH
+    // (`MATCH p = (a)-->(b)`).  `path` is a node-index sequence.
+    const _buildOptPathObject = (path: number[], nodes: Array<Record<string, unknown>>): Record<string, unknown> => {
+      const pathNodes: Array<Record<string, unknown>> = []
+      const pathEdges: Array<Record<string, unknown>> = []
+      for (let pi = 0; pi < path.length; pi++) {
+        const ni = path[pi]
+        const n = ni != null && ni >= 0 ? nodes[ni] as any : undefined
+        const np: Record<string, unknown> = {}
+        if (n) {
+          for (const k of Object.keys(n)) {
+            if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) np[k] = n[k]
+          }
+          if (n._label) np._label = n._label
+        }
+        pathNodes.push(np)
+      }
+      for (let pi = 0; pi < path.length - 1; pi++) {
+        const aIdx = path[pi]
+        const bIdx = path[pi + 1]
+        const aN = aIdx != null ? nodes[aIdx] as any : undefined
+        const ee = (aN?.__edges || []).find((e: any) => (e.dstIdx === bIdx || e.srcIdx === bIdx))
+        if (ee) {
+          const eo: Record<string, unknown> = {
+            __edgeLabel: ee.label ?? '',
+            __edgeLabelStr: ee.label ?? '',
+            _type: ee.label ?? '',
+            _label: ee.label ?? '',
+            _dir: ee.srcIdx === aIdx ? 'out' : 'in',
+          }
+          if (ee.props) for (const [pk, pv] of Object.entries(ee.props)) eo[pk] = pv
+          pathEdges.push(eo)
+        }
+      }
+      return { __path: pathNodes, __pathEdges: pathEdges }
+    }
     let expanded = filtered
     for (const opt of optStepsList) {
       const next: Array<Record<string, unknown>> = []
       for (const row of expanded) {
         const srcVar = opt.steps[0]?.source || ''
         const tgtVar = opt.steps[0]?.targetAlias || ''
+        const pathVar = (opt.steps[0] as any)?.pathVariable || ''
         const unboundSource = srcVar !== '' && !boundVars.has(srcVar) && srcVar !== tgtVar
         let matchedAny = false
         if (unboundSource && opt.steps.length) {
@@ -1370,6 +1408,7 @@ async function _executeMultiMatchCrossJoin(
                   r2[st.targetAlias] = ni != null && ni >= 0 ? _mkProps(allNodes[ni] as any) : null
                 }
               })
+              if (pathVar) r2[pathVar] = _buildOptPathObject(path, allNodes)
               next.push(r2)
               matchedAny = true
             }
@@ -1403,6 +1442,7 @@ async function _executeMultiMatchCrossJoin(
                     r2[st.targetAlias] = ni != null && ni >= 0 ? _mkProps(allNodes[ni] as any) : null
                   }
                 })
+                if (pathVar) r2[pathVar] = _buildOptPathObject(path, allNodes)
                 next.push(r2)
                 matchedAny = true
               }
@@ -1415,6 +1455,7 @@ async function _executeMultiMatchCrossJoin(
           const r2: Record<string, unknown> = { ...row }
           if (srcVar && !boundVars.has(srcVar)) r2[srcVar] = null
           if (tgtVar && !boundVars.has(tgtVar)) r2[tgtVar] = null
+          if (pathVar) r2[pathVar] = null
           next.push(r2)
         }
       }
@@ -6010,6 +6051,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // 解析 source 变量对应的 allNodes 索引
           const sourceVar = optSteps[0]?.source || ''
           const targetVar = optSteps[0]?.targetAlias || ''
+          const pathVar = (optSteps[0] as any)?.pathVariable || ''
           let edgeVar = optSteps[0]?.edgeVariable || optSteps[0]?.edgeAlias || ''
           if (!edgeVar && query) {
             // Tolerate edge labels in `(a)-[r:T]->()` by capturing only the
@@ -6247,11 +6289,51 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     out[edgeVar] = null
                   }
                 }
+                if (pathVar && path.length >= 2) {
+                  // Reconstruct the named path object `{ __path, __pathEdges }`
+                  // for an OPTIONAL MATCH path variable (`p = (a)-[:X]->(b)`).
+                  // The path is the sequence of nodes traversed by this trail and
+                  // the oriented relationship objects along each hop, matching the
+                  // `__path`/`__pathEdges` shape produced for a leading MATCH path.
+                  const pathNodes: Array<Record<string, unknown>> = []
+                  const pathEdges: Array<Record<string, unknown>> = []
+                  for (let pi = 0; pi < path.length; pi++) {
+                    const ni = path[pi]
+                    const n = ni != null && ni >= 0 ? allNodes[ni] as any : undefined
+                    const np: Record<string, unknown> = {}
+                    if (n) {
+                      for (const k of Object.keys(n)) {
+                        if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) np[k] = n[k]
+                      }
+                      if (n._label) np._label = n._label
+                    }
+                    pathNodes.push(np)
+                  }
+                  for (let pi = 0; pi < path.length - 1; pi++) {
+                    const aIdx = path[pi]
+                    const bIdx = path[pi + 1]
+                    const aN = aIdx != null ? allNodes[aIdx] as any : undefined
+                    const ee2 = (aN?.__edges || []).find((e: any) => (e.dstIdx === bIdx || e.srcIdx === bIdx))
+                    if (ee2) {
+                      const eo: Record<string, unknown> = {
+                        __edgeLabel: ee2.label ?? '',
+                        __edgeLabelStr: ee2.label ?? '',
+                        _type: ee2.label ?? '',
+                        _label: ee2.label ?? '',
+                        _dir: ee2.srcIdx === aIdx ? 'out' : 'in',
+                      }
+                      if (ee2.props) for (const [pk, pv] of Object.entries(ee2.props)) eo[pk] = pv
+                      pathEdges.push(eo)
+                    }
+                  }
+                  out[pathVar] = { __path: pathNodes, __pathEdges: pathEdges }
+                }
                 return out
               }
               if (filteredPaths.length === 0) {
                 for (const bv of optBoundVars) row[bv.var] = null
                 if (edgeVar && !_isBound(row[edgeVar])) row[edgeVar] = null
+                if (pathVar) row[pathVar] = null
               } else if (filteredPaths.length === 1) {
                 // Single trail: bind it onto the current row in place.
                 const bound = bindPath(filteredPaths[0], row)
@@ -6270,6 +6352,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // hop fails, but the graph engine's own placeholder must still null.
               for (const bv of optBoundVars) row[bv.var] = null
               if (edgeVar && !_isBound(row[edgeVar])) row[edgeVar] = null
+              if (pathVar) row[pathVar] = null
             }
           } else if (optVarName && !sourceVar && !targetVar && !edgeVar) {
             // Single-node pattern: OPTIONAL MATCH (n) / (n:Label).  Without a
