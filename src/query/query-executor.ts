@@ -5951,6 +5951,27 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           continue
         }
+        // Variables bound by the leading MATCH (not by this OPTIONAL MATCH):
+        // used to tell a genuinely-bound node from the edge-projection slot the
+        // graph-engine path leaves on an OPTIONAL-only variable.
+        const _matchBoundVars = new Set<string>()
+        if ((plan as any).matchVar) _matchBoundVars.add((plan as any).matchVar)
+        for (const st of (plan.steps || [])) {
+          if (st.source) _matchBoundVars.add(st.source)
+          if (st.targetAlias) _matchBoundVars.add(st.targetAlias)
+          if ((st as any).edgeVariable) _matchBoundVars.add((st as any).edgeVariable)
+        }
+        // A cell is "already bound" when it carries a meaningful value, not the
+        // graph engine's `Default` placeholder it pre-fills for as-yet unmatched
+        // variables.
+        const _isBound = (v: unknown): boolean => {
+          if (v === undefined || v === null) return false
+          if (typeof v === 'object') {
+            const o = v as Record<string, unknown>
+            if (o._label === 'Default' && Object.keys(o).every(k => k === '_label' || k === 'props')) return false
+          }
+          return true
+        }
         for (let ri = 0; ri < result.length; ri++) {
           const row = result[ri]
           // 解析 source 变量对应的 allNodes 索引
@@ -6048,6 +6069,50 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             }
           }
+          // ── Reused bound relationship w/ unbound endpoints ──
+          // `WITH r ... OPTIONAL MATCH (a2)-[r]->(b2)` reuses a bound edge `r`
+          // (projected by the leading MATCH) as the relationship of the optional
+          // pattern.  Neither `a2` nor `b2` is bound by MATCH, so both endpoints
+          // must be derived FROM the bound edge, not from the graph-engine's
+          // edge-projection slot (which leaks the target node into `a2`/`b2`).
+          if (edgeVar && !_matchBoundVars.has(sourceVar) && !_matchBoundVars.has(targetVar) && _isBound(row[edgeVar])) {
+            const edgeVal = row[edgeVar]
+            let edgeLabel = ''
+            if (typeof edgeVal === 'string') {
+              edgeLabel = (edgeVal.match(/^\[:([^\]{}]*)/) || [])[1] || ''
+            } else if (edgeVal && typeof edgeVal === 'object') {
+              edgeLabel = (edgeVal as any).__edgeLabel || (edgeVal as any)._type || (edgeVal as any).__edgeLabelStr || ''
+            }
+            if (!edgeLabel && rawEntry?.__crossVarRows?.[edgeVar]) {
+              const ev = rawEntry.__crossVarRows[edgeVar] as any
+              edgeLabel = ev?.__edgeLabel || ev?._type || ev?.__edgeLabelStr || ''
+            }
+            if (edgeLabel) {
+              // Locate the unique edge carrying this label among allNodes and
+              // derive its source/target node indices (guaranteed single-hop here).
+              let foundSrc = -1; let foundDst = -1
+              outer: for (let ni = 0; ni < allNodes.length; ni++) {
+                const nedges = (allNodes[ni] as any).__edges as Array<{srcIdx:number; dstIdx:number; label:string}> | undefined
+                if (!nedges) continue
+                for (const e of nedges) {
+                  if (e.label === edgeLabel) {
+                    // Stay direction-agnostic: the unique labelled edge fixes both
+                    // endpoints; source/dst are the pair of indices it connects.
+                    const s = e.srcIdx; const d = e.dstIdx
+                    if (s === ni) { foundSrc = s; foundDst = d }
+                    else if (d === ni) { foundSrc = d; foundDst = s }
+                    break outer
+                  }
+                }
+              }
+              if (foundSrc >= 0) srcNodeIdx = foundSrc
+              if (foundDst >= 0) {
+                // Bind the target endpoint directly so bindPath's targetAlias
+                // slot resolves to it rather than the leaked node.
+                ;(row as any)[targetVar] = foundDst
+              }
+            }
+          }
           // 构造 nodeProps 帮助函数
           const _mkNodeProps = (n: any): Record<string, unknown> => {
             const p: Record<string, unknown> = {}
@@ -6057,21 +6122,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
             if (n._label) p._label = n._label
             return p
-          }
-          // A cell is "already bound" only when it carries a meaningful value,
-          // not the graph engine's `Default` placeholder it pre-fills for as-yet
-          // unmatched variables.  A `WITH r ...` projects `r` as a real value
-          // (e.g. the string `"[:T]"`), so a bound relationship reused as `[r]`
-          // in a subsequent OPTIONAL MATCH must keep its value when the optional
-          // hop has no match — but the engine's own `Default` slots still have to
-          // be nulled out.
-          const _isBound = (v: unknown): boolean => {
-            if (v === undefined || v === null) return false
-            if (typeof v === 'object') {
-              const o = v as Record<string, unknown>
-              if (o._label === 'Default' && Object.keys(o).every(k => k === '_label' || k === 'props')) return false
-            }
-            return true
           }
           if (srcNodeIdx >= 0 && optSteps.length) {
             const walkPaths = _walkMultiSteps(srcNodeIdx, optSteps, allNodes)
@@ -6126,6 +6176,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     out[st.targetAlias] = nodeAt != null && nodeAt >= 0 ? _mkNodeProps(allNodes[nodeAt] as any) : null
                   }
                 })
+                // Bind the OPTIONAL source itself when it is not bound by the
+                // leading MATCH (e.g. `a2` in `WITH r ... OPTIONAL MATCH
+                // (a2)-[r]->(b2)`): it derives from the trail's first node, not
+                // from the stale edge-projection slot left on the row.
+                if (sourceVar && !_matchBoundVars.has(sourceVar)) {
+                  out[sourceVar] = path[0] != null && path[0] >= 0 ? _mkNodeProps(allNodes[path[0]] as any) : null
+                }
                 // Back-fill any step whose source is itself an optional var
                 // (e.g. `y` in `(y)-[:E2]->(z)`), using the previous hop's node.
                 optSteps.forEach((st, si) => {
