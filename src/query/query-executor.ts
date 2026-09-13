@@ -1378,7 +1378,16 @@ async function _executeMultiMatchCrossJoin(
           // Source is bound: resolve its node index and walk from it.
           const sidx = srcVar ? _nodeIdxOf(row[srcVar]) : -1
           let boundTargetIdx = -1
-          if (tgtVar && boundVars.has(tgtVar)) boundTargetIdx = _nodeIdxOf(row[tgtVar])
+          // The endpoint constraint must target the chain's FINAL node — the
+          // last step's targetAlias — not the first hop's.  In a two-hop chain
+          // `(a)-->(b)-->(c)` with `c` pre-bound by MATCH, the first step's
+          // targetAlias is the intermediate `b` (unbound), while `c` is the real
+          // end that the walk must reach.
+          const lastTgt = opt.steps.length
+            ? opt.steps[opt.steps.length - 1]?.targetAlias
+            : ''
+          if (lastTgt && boundVars.has(lastTgt)) boundTargetIdx = _nodeIdxOf(row[lastTgt])
+          else if (tgtVar && boundVars.has(tgtVar)) boundTargetIdx = _nodeIdxOf(row[tgtVar])
           if (sidx >= 0) {
             const paths = _walkMultiSteps(sidx, opt.steps, allNodes)
             if (paths.length) {
