@@ -623,8 +623,10 @@ export function extractMatchVariables(query: string): string[] {
     for (const v of nodeVars) {
       if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
     }
-    // 从 <-[r]- 或 -[r]-> 或 [r:T] 中提取边变量
-    const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
+    // 从 <-[r]- 或 -[r]-> 或 [r:T] 或 [r {props}] 中提取边变量
+    // A relationship may carry an inline property map (`[r {name:'r1'}]`), so a
+    // `{` may follow the variable name just like `:` (label) or `]` (bare).
+    const edgeVars = clause.matchAll(/\[(\w+)\s*(?::|\]|\)|\{)/g)
     for (const v of edgeVars) {
       if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
     }
@@ -639,7 +641,7 @@ export function extractVariablesFromQuery(query: string): string[] {
   for (const v of allNodes) {
     if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
   }
-  const allEdges = query.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
+  const allEdges = query.matchAll(/\[(\w+)\s*(?::|\]|\)|\{)/g)
   for (const v of allEdges) {
     if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
   }
@@ -653,7 +655,7 @@ export function extractVariablesFromClause(clause: string): string[] {
   for (const v of nodes) {
     if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
   }
-  const edges = clause.matchAll(/\[(\w+)\s*(?::|\]|\))/g)
+  const edges = clause.matchAll(/\[(\w+)\s*(?::|\]|\)|\{)/g)
   for (const v of edges) {
     if (v[1] && !/^[\d]/.test(v[1])) vars.push(v[1])
   }
