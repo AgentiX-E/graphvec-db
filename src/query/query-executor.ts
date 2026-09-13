@@ -4410,17 +4410,31 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const edgePropSteps = (plan.steps || []).filter(s => s.edgeProps && Object.keys(s.edgeProps).length > 0)
     const edgePropFilteredRecords = (edgePropSteps.length && edgesPayload.length)
       ? (filteredWithLabels || []).filter((r: any) => {
-          // 找到结果节点在 allNodes 中的索引
-          const nodeIdx = nodeGeIds.indexOf(r.id)
-          if (nodeIdx < 0) return false
           return edgePropSteps.every(s => {
             if (!s.edgeProps) return true
-            // 找到连接到此节点的边（src → dst 或 dst → src）
+            // When the graph engine has already materialised the relationship
+            // variable (dir='any' / edgeVariable), inspect that exact edge's
+            // properties.  Filtering by "does the *source node* have ANY edge
+            // matching the predicate" is wrong: for an undirected hop a node may
+            // have several edges, and that heuristic keeps the row even when the
+            // actual matched edge (`__crossVarRows.<edgeVar>`) violates the
+            // inline property map (e.g. `-[r {name:'r1'}]-` crossing the r2 edge).
+            const boundEdge = s.edgeVariable ? (r.__crossVarRows?.[s.edgeVariable] as any) : undefined
+            if (boundEdge && typeof boundEdge === 'object') {
+              for (const [k, v] of Object.entries(s.edgeProps)) {
+                const actual = boundEdge[k] ?? boundEdge.props?.[k]
+                if (String(actual) !== String(v)) return false
+              }
+              return true
+            }
+            // Fallback (no materialised edge var): find a connecting edge whose
+            // properties satisfy the predicate.
+            const nodeIdx = nodeGeIds.indexOf(r.id)
+            if (nodeIdx < 0) return false
             const matchingEdges = edgesPayload.filter(e =>
               (e.dstIdx === nodeIdx || e.srcIdx === nodeIdx)
             )
             if (!matchingEdges.length) return false
-            // 验证边属性是否匹配 edgeProps
             for (const me of matchingEdges) {
               if (me.label && s.edgeLabel && me.label !== s.edgeLabel) continue
               if (!me.props && Object.keys(s.edgeProps).length > 0) continue
@@ -4732,17 +4746,23 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
             try {
               const evaluated = _evalBinary(wcExpr, rc)
-              if (evaluated !== undefined && evaluated !== null) {
+              // A null result is a legitimate projection value (e.g.
+              // `WITH coalesce(b, c) AS x` where both b and c are null yields
+              // x = null), not "no value".  Skipping it left the alias
+              // undefined, which the formatter then mis-stringified as an edge
+              // `[:]`.  Only a thrown evaluation (unknown variable) keeps the
+              // graph engine's prior value.
+              if (evaluated === undefined) {
+                // absent variable: leave the GE value untouched
+              } else if (typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)) {
                 // 清理节点对象中的内部属性（__edges、props 等），避免输出为 props: (...)
-                if (typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)) {
-                  const cleanVal: Record<string, unknown> = {}
-                  for (const [ek, ev] of Object.entries(evaluated as Record<string, unknown>)) {
-                    if (ek !== '__edges' && ek !== 'props' && !ek.startsWith('__')) cleanVal[ek] = ev
-                  }
-                  rawRow.props[alias] = cleanVal
-                } else {
-                  rawRow.props[alias] = evaluated
+                const cleanVal: Record<string, unknown> = {}
+                for (const [ek, ev] of Object.entries(evaluated as Record<string, unknown>)) {
+                  if (ek !== '__edges' && ek !== 'props' && !ek.startsWith('__')) cleanVal[ek] = ev
                 }
+                rawRow.props[alias] = cleanVal
+              } else {
+                rawRow.props[alias] = evaluated
               }
             } catch {
               // Fallback: keep GE's value
