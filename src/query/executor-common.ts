@@ -705,7 +705,15 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           }
         } else if (!labelPredMatch) {
           const varName = expr.includes('.') ? expr.split('.')[0] : expr
-          if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx)) {
+          // An OPTIONAL MATCH relationship variable that has no data yet must
+          // not be fallback-mapped onto the leading MATCH node: it belongs to
+          // the OPTIONAL expansion (which binds it or nulls it later), so a
+          // blank fill here would make the subsequent OPTIONAL handler believe
+          // it is already bound and skip the null (leaking the MATCH node).
+          const _isOptionalEdgeVar = (plan.optionalMatchSteps || []).some((om: any) =>
+            (om.steps || []).some((s: any) => s.edgeVariable === varName || s.edgeAlias === varName)
+          )
+          if (varName && /^[a-zA-Z_]\w*$/.test(varName) && !(varName in varCtx) && !_isOptionalEdgeVar) {
             varCtx[varName] = { ...row }
           }
           // Extract function argument variables for type(), labels(), properties(), keys(), id()

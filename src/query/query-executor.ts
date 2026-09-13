@@ -4484,6 +4484,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
     if (scanSourceAlias) nodeAliases.add(scanSourceAlias)
+    // OPTIONAL MATCH relationship variables must be resolved by the OPTIONAL
+    // expansion downstream, never by the edgeVarCols projection here (which only
+    // understands the leading MATCH).  Projecting them here would stringify an
+    // unmatched optional edge as `[:]` (or `[:LABEL]`) and leak it into RETURN
+    // even though OPTIONAL MATCH should bind null when it has no match.
+    const _optionalEdgeVars = new Set<string>()
+    for (const om of (plan.optionalMatchSteps || [])) {
+      for (const s of (om.steps || [])) {
+        if (s.edgeVariable) _optionalEdgeVars.add(s.edgeVariable)
+        if (s.edgeAlias) _optionalEdgeVars.add(s.edgeAlias)
+      }
+    }
     // edgeVarCols：识别边变量 RETURN 列（如 RETURN r），排除 RETURN i.var 等属性列
     // 属性列已被 dispatchWherePath 拆为简短名称（如 i.var→var），此时 nodeAliases 不含 var。
     // 用原始 query 做最终判断：如果 query 中是 var.xxx 格式的列，不当作边变量。
@@ -4496,6 +4508,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // 排除含运算符的表达式列（如 p1 = p2、a <> b）—— 比较/二元运算，不是边变量
       if (/[+*/<>=!]|(\s+(?:IN|AND|OR|XOR|IS\s+NULL|IS\s+NOT\s+NULL)\s+)/i.test(rc)) return false
       if (nodeAliases.has(rc)) return false
+      if (_optionalEdgeVars.has(rc)) return false
       // Exclude expressionColumns aliases (e.g. a list comprehension
       // `[x IN [r,0] | type(x)] AS list`, Pattern Comprehension, etc.) — they
       // are expression columns evaluated by _formatResultRow, not edge
