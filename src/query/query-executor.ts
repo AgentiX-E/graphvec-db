@@ -3388,6 +3388,28 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
     let records = rawRecords
 
+    // ── Inline source-node property predicate (MATCH (a {name:'A'})) ──
+    // A bare node pattern with inline properties but no label/traverse step stores
+    // its predicate as plan.matchSourceProps (ast-to-plan-v2 line ~983).  The
+    // graph engine's `_executeQueryPlan` scans ALL nodes for such a pattern and
+    // never sees the property predicate, so filter the scanned records here to
+    // those whose source node satisfies every property before the records are
+    // projected into result rows.
+    const _matchSourceProps = (plan as any).matchSourceProps as Record<string, unknown> | undefined
+    if (_matchSourceProps && Object.keys(_matchSourceProps).length && rawRecords?.length) {
+      rawRecords = rawRecords.filter((r: any) => {
+        // User properties live under `r.props`; the record's own top-level
+        // fields (`name` = internal GeNode name "n0", `id`, `type`, `degree`,
+        // `createdAt`) must NOT shadow them, so read the property off props only.
+        const nodeProps = (r?.props && typeof r.props === 'object') ? r.props : r
+        for (const [k, v] of Object.entries(_matchSourceProps)) {
+          if (nodeProps[k] !== v) return false
+        }
+        return true
+      })
+      records = rawRecords
+    }
+
     // ── GE filter 补偿 ──
     // GE 的 _matchFilter 对 GT/LT/GTE/LTE 仅支持 number 类型比较，
     // 不处理字符串比较。IS_NULL/IS_NOT_NULL 同样未处理（fallthrough 到 true）。
