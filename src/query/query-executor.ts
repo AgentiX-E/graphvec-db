@@ -1480,6 +1480,64 @@ async function _executeMultiMatchCrossJoin(
     filtered = expanded
   }
 
+  // ── WITH-driven MULTI-MATCH constraint ──
+  // A MATCH whose source variable is (re)defined by a preceding WITH projection
+  // (`WITH coalesce(b, c) AS x MATCH (x)-->(d)`) must resolve `x` from the WITH
+  // expression, not treat it as an independent free variable.  The cross-join
+  // above enumerates `x` over every node (producing spurious rows), so here we
+  // re-derive `x` per row from the WITH expression and drop any row where the
+  // projection yields null/undefined — `MATCH (null)-->(d)` matches nothing.
+  // When the projection yields a concrete node, we additionally require the
+  // cross-joined `x` binding to agree with it (by label + distinguishing
+  // properties), so a non-null projection still constrains the downstream walk.
+  const _withCols = (plan.with?.columns || []) as Array<{ expression: unknown; alias?: string }>
+  if (_withCols.length) {
+    const _withExprByAlias = new Map<string, unknown>()
+    for (const wc of _withCols) {
+      const al = wc.alias || ''
+      if (al) _withExprByAlias.set(al, wc.expression)
+    }
+    // Sources of any multi-match pattern that are re-bound by WITH.
+    const drivenSources = new Set<string>()
+    for (const m of mm) {
+      const src = m.steps?.[0]?.source as string | undefined
+      if (src && _withExprByAlias.has(src)) drivenSources.add(src)
+    }
+    if (drivenSources.size) {
+      const constrained: Array<Record<string, unknown>> = []
+      for (const row of filtered) {
+        let keep = true
+        for (const src of drivenSources) {
+          const projVal = _evaluateExpression(_withExprByAlias.get(src) as any, { ...row })
+          if (projVal === null || projVal === undefined) {
+            // Projection is null → MATCH (null)-->(…) has no binding.
+            keep = false
+            break
+          }
+          // Projection is a concrete node: the cross-joined binding of `src`
+          // must describe the same node (equal label and non-internal props).
+          const bound = row[src]
+          if (bound && typeof bound === 'object' && projVal && typeof projVal === 'object') {
+            const bl = String((bound as any)._label || '')
+            const pl = String((projVal as any)._label || '')
+            if (bl !== pl) { keep = false; break }
+            const keys = Object.keys(projVal).filter(k => !k.startsWith('_') && k !== 'id' && k !== '__edges')
+            for (const pk of keys) {
+              if ((bound as any)[pk] !== (projVal as any)[pk]) { keep = false; break }
+            }
+            if (!keep) break
+          }
+          // Overwrite the source binding with the WITH projection value so the
+          // downstream RETURN/expression stage reads the projected node (not the
+          // cross-joined one).
+          row[src] = projVal
+        }
+        if (keep) constrained.push(row)
+      }
+      filtered = constrained
+    }
+  }
+
   // Build result rows.
   const agg = plan.aggregate as any
   // Aggregate alias resolution (consistent with the primary GE aggregation path):
