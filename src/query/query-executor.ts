@@ -6215,7 +6215,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             return p
           }
           if (srcNodeIdx >= 0 && optSteps.length) {
-            const walkPaths = _walkMultiSteps(srcNodeIdx, optSteps, allNodes)
+            let walkPaths = _walkMultiSteps(srcNodeIdx, optSteps, allNodes)
             // Collect every variable bound along the OPTIONAL MATCH chain: the
             // targetAlias of each step (intermediate hops included), plus the
             // source of any step whose source !== the MATCH bound source (e.g.
@@ -6234,6 +6234,45 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
             }
             if (walkPaths?.length) {
+              // Enforce relationship uniqueness: an OPTIONAL relationship
+              // variable must not bind the same physical relationship already
+              // bound by the leading MATCH.  e.g. `MATCH (a)-[r {name:'r1'}]-(b)
+              // OPTIONAL MATCH (b)-[r2]-(c)` — when the walk from b reuses the
+              // r1 edge, r2 is duplicate and must yield null (c = null), not a
+              // spurious match.  Compare the leading edge's label + props
+              // against the edge actually crossed by each single-hop trail.
+              const mainEdgeVar = (plan.steps || []).find((s: any) => s.edgeVariable)?.edgeVariable
+              // Leading MATCH edge identity sources: the inline property map
+              // (`-[r {name:'r1'}]->`) is always available on the step, even
+              // when the edge walk serialises the bound relationship variable
+              // and drops its props from __crossVarRows.
+              const mainEdgeProps = (plan.steps || []).find((s: any) => s.edgeProps)?.edgeProps
+              const mainEdgeLabel = (plan.steps || []).find((s: any) => s.edgeLabel)?.edgeLabel
+              if ((mainEdgeProps && Object.keys(mainEdgeProps).length) || mainEdgeLabel) {
+                walkPaths = walkPaths.filter((p: number[]) => {
+                  if (p.length < 2) return true
+                  const fromIdx = p[0]
+                  const toIdx = p[1]
+                  const fromEdges = (allNodes[fromIdx] as any)?.__edges || []
+                  const crossed = fromEdges.find((e: any) => e.dstIdx === toIdx || e.srcIdx === toIdx)
+                  if (!crossed) return true
+                  if (mainEdgeLabel && String(crossed.label ?? '') !== String(mainEdgeLabel)) return true
+                  // If the crossed edge satisfies the leading step's inline
+                  // property map, it IS the relationship already bound by the
+                  // leading MATCH, so this OPTIONAL hop must not reuse it.
+                  if (mainEdgeProps) {
+                    const cp = crossed.props ?? {}
+                    let sameEdge = true
+                    for (const k of Object.keys(mainEdgeProps)) {
+                      if (String((cp as any)[k]) !== String((mainEdgeProps as any)[k])) { sameEdge = false; break }
+                    }
+                    if (sameEdge) {
+                      return false
+                    }
+                  }
+                  return true
+                })
+              }
               // Filter out trails that fail to actually return to an
               // already-bound target node.  A self-loop pattern
               // `(a)-[r]-(a)` has targetVar === sourceVar, so the trail's
