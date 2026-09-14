@@ -4241,7 +4241,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const varLabelMap2: Record<string, string> = {}
       let inlineFilters: Array<{ source: string; property: string; operator: string; value: unknown; negated?: boolean }> = []
       if (query) {
-        const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+OPTIONAL|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
+        // Match the primary MATCH clause only.  A leading `OPTIONAL MATCH`
+        // must not be mistaken for the primary MATCH: `OPTIONAL MATCH
+        // (a:NotThere) MATCH (b:B)` would otherwise bind `a` as a required
+        // variable and, since NotThere matches nothing, drop the (b:B) row too.
+        const matchSection = query.match(/(?<!OPTIONAL\s)MATCH\s+(.*?)(?:\s+WHERE|\s+OPTIONAL|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
         hasMultiMatch = !!(matchSection && matchSection[1].includes(','))
         if (matchSection) {
           const clause = matchSection[1]
