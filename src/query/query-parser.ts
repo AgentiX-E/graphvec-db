@@ -1273,6 +1273,20 @@ export function _walkMultiStepsWithEdges(
     return -1
   }
 
+  // An edge satisfies an inline property map (e.g. `-[r {name:'r1'}]->`) when
+  // every declared property matches the edge's own props.  edges without the
+  // property (or with a differing value) are rejected here so the walk never
+  // over-enumerates neighbours — previously edgeProps was only applied AFTER the
+  // full walk, which left spurious undirected rows.
+  const _edgePropsMatch = (e: any, eps: Record<string, unknown> | undefined | null): boolean => {
+    if (!eps || Object.keys(eps).length === 0) return true
+    const ep = e?.props || {}
+    for (const [k, v] of Object.entries(eps)) {
+      if (String(ep[k]) !== String(v)) return false
+    }
+    return true
+  }
+
   for (let si = 0; si < steps.length; si++) {
     const step = steps[si]
     // ── 变量长度路径：step.range 存在时做 BFS 多跳 ──
@@ -1308,6 +1322,7 @@ export function _walkMultiStepsWithEdges(
               const neighborIdx = _edgeNeighbor(e, cur, step.direction)
               if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
               if (hasEdgeLabel && e.label !== step.edgeLabel) continue
+              if (!_edgePropsMatch(e, (step as any).edgeProps)) continue
               outgoingTriples.add(`${e.srcIdx}|${e.dstIdx}|${e.label || ''}`)
               candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
             }
@@ -1320,6 +1335,7 @@ export function _walkMultiStepsWithEdges(
                   const neighborIdx = _edgeNeighbor(e, cur, 'any')
                   if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
                   if (hasEdgeLabel && e.label !== step.edgeLabel) continue
+                  if (!_edgePropsMatch(e, (step as any).edgeProps)) continue
                   if (outgoingTriples.has(`${e.srcIdx}|${e.dstIdx}|${e.label || ''}`)) continue
                   candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
                 }
@@ -1422,6 +1438,7 @@ export function _walkMultiStepsWithEdges(
         const neighborIdx = _edgeNeighbor(e, last, step.direction)
         if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
         if (step.edgeLabel && !step.edgeLabel.split('|').includes(e.label)) continue
+        if (!_edgePropsMatch(e, (step as any).edgeProps)) continue
         if (!_stepMatchConstraint(neighborIdx, step, allNodes)) continue
         outgoingTriples.add(`${e.srcIdx}|${e.dstIdx}|${e.label || ''}`)
         candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })
@@ -1441,6 +1458,7 @@ export function _walkMultiStepsWithEdges(
             const neighborIdx = _edgeNeighbor(e, last, step.direction)
             if (neighborIdx < 0 || neighborIdx >= allNodes.length) continue
             if (step.edgeLabel && !step.edgeLabel.split('|').includes(e.label)) continue
+            if (!_edgePropsMatch(e, (step as any).edgeProps)) continue
             if (!_stepMatchConstraint(neighborIdx, step, allNodes)) continue
             if (outgoingTriples.has(`${e.srcIdx}|${e.dstIdx}|${e.label || ''}`)) continue
             candidates.push({ nIdx: neighborIdx, eId: _edgeIdOf(e) })

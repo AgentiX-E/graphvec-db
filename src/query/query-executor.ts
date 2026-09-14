@@ -3517,7 +3517,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (rc.startsWith(firstStep.source + '.')) return true
       return false
     })
-    if (needSourceVar && sourceTargetMap.size > 0 && rawRecords?.length && !(plan.steps && plan.steps.length > 1)) {
+    if (needSourceVar && sourceTargetMap.size > 0 && rawRecords?.length && !(plan.steps && plan.steps.length > 1) && !useEdgeWalk) {
       const sourceVar = plan.steps![0].source
       const targetAlias = plan.steps![0].targetAlias
       // 对每个 GE 返回的 target 节点，找到它对应的 source 节点
@@ -4690,6 +4690,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           return { ...r, props: row }
         })
       : edgePropFilteredRecords
+
 
     // ── 边属性列后置处理 ──
     // 对 `RETURN r.num` 这样的边属性访问，从 edgesPayload 查找边属性并设置到行记录
