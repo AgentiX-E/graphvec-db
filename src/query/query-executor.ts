@@ -1595,6 +1595,17 @@ async function _executeMultiMatchCrossJoin(
           case 'LTE': return Number(actual) <= Number(fv)
           case 'IS_NULL': return false
           case 'IS_NOT_NULL': return true
+          case 'IN': {
+            // The value may be an already-parsed array or a raw `['B', 'C']`
+            // string; normalise to a list and test membership (string compare).
+            let items: unknown[] = []
+            if (Array.isArray(fv)) items = fv
+            else if (typeof fv === 'string') {
+              const inner = fv.replace(/^\[|\]$/g, '')
+              items = inner.split(',').map((s: string) => s.trim().replace(/^['"]|['"]$/g, ''))
+            }
+            return items.some((it) => String(it) === String(actual))
+          }
           default: return String(actual) === String(fv)
         }
       })
