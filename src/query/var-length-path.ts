@@ -167,6 +167,12 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
       if (plan.pathVar) rowRes[plan.pathVar] = { __path: [sn], __pathEdges: [] }
       if ((step as any).source) rowRes[(step as any).source] = sn
       if ((step as any).targetAlias) rowRes[(step as any).targetAlias] = sn
+      // A zero-hop match still binds the variable-length relationship variable
+      // to an empty relationship list (`MATCH ()-[r*0..1]-() RETURN last(r)` must
+      // yield `null` for the zero-length self-match, not drop the row).  This is
+      // what makes `last(r)` → `last([])` → `null` work for anonymous patterns
+      // whose source/target aliases are both empty.
+      if ((step as any).edgeVariable) rowRes[(step as any).edgeVariable] = []
       if (Object.keys(rowRes).length) result.push(rowRes)
     }
     let frontier: BfsEntry[] = [{ nIdx: si, path: [si] }]
@@ -205,6 +211,12 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
             }
             if (edgeMismatch) continue
           }
+          // Target node label predicate: `MATCH ()-[:T*1..2]->(m:End)` must only
+          // accept endpoints whose label matches.  The single-step BFS path
+          // previously skipped this check (only `_collectStepMatches` enforced
+          // it), so a label never present in the graph still yielded rows.
+          const tgtLabel = (step as any).targetLabel
+          if (tgtLabel && !_matchesLabel(targetNode, tgtLabel)) { nextFrontier.push({ nIdx, path: newPath }); continue }
           // Target inline property predicate: `MATCH ()-[:T*]->(m {var:'end'})`
           // constrains the BFS endpoint to nodes matching every key/value pair.
           const tgtProps = (step as any).targetProps

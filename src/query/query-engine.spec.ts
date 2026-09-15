@@ -903,7 +903,7 @@ describe('变量长度路径查询', () => {
 
   it('[a] -[:NEXT*1..3]-> [b] — 返回 1~3 跳可达节点', async () => {
     const nodes = buildChain(5) // 0→1→2→3→4
-    const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b) RETURN b.name')
     const result = await _executeQuery(plan, nodes) as any[]
     const names = result.map((r: any) => r['name']).sort()
     // 从 a=node-0 出发，1跳=b1, 2跳=b2, 3跳=b3
@@ -912,7 +912,7 @@ describe('变量长度路径查询', () => {
 
   it('[a] -[:NEXT*2..4]-> [b] — 最小 2 跳', async () => {
     const nodes = buildChain(6)
-    const plan = parseQuery('MATCH (a:Node)-[:NEXT*2..4]->(b:Node) RETURN b.name')
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*2..4]->(b) RETURN b.name')
     const result = await _executeQuery(plan, nodes) as any[]
     const names = result.map((r: any) => r['name']).sort()
     expect(names).toEqual(['node-2', 'node-3', 'node-4'])
@@ -920,7 +920,7 @@ describe('变量长度路径查询', () => {
 
   it('[a] -[:NEXT*3]-> [b] — 精确 3 跳', async () => {
     const nodes = buildChain(6)
-    const plan = parseQuery('MATCH (a:Node)-[:NEXT*3]->(b:Node) RETURN b.name')
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*3]->(b) RETURN b.name')
     const result = await _executeQuery(plan, nodes) as any[]
     const names = result.map((r: any) => r['name']).sort()
     expect(names).toEqual(['node-3'])
@@ -928,14 +928,14 @@ describe('变量长度路径查询', () => {
 
   it('无匹配路径时返回空', async () => {
     const nodes = buildChain(3) // 只有 0→1→2
-    const plan = parseQuery('MATCH (a:Node)-[:NEXT*5..10]->(b:Node) RETURN b.name')
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*5..10]->(b) RETURN b.name')
     const result = await _executeQuery(plan, nodes) as any[]
     expect(result).toHaveLength(0)
   })
 
   it('单步变量长度—Debug检查 range 是否传入', async () => {
     const nodes = buildChain(5)
-    const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b:Node) RETURN b.name')
+    const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..3]->(b) RETURN b.name')
     expect(plan.scanLabel).toBe('Node')
     expect(plan.steps).toHaveLength(1)
     expect((plan.steps[0] as any).range).toBeDefined()
