@@ -1568,6 +1568,9 @@ async function _executeMultiMatchCrossJoin(
   if ((plan.filters || []).length) {
     filtered = filtered.filter((row) => {
       return (plan.filters || []).every((f: any) => {
+        // Label predicates are handled by labelFilterItems / the post-OPTIONAL
+        // label filter, not as a constant property compare.
+        if (f.property === '__label') return true
         const owner = row[f.source]
         const ownerProps = (owner && typeof owner === 'object') ? (owner as any) : {}
         const actual = ownerProps[f.property]
@@ -2057,6 +2060,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const firstStep = plan.steps?.[0]
       // 排除跨变量引用 filter（seed 阶段无法做跨变量比较）
       if (crossVarFilters.includes(f)) return false
+      // 排除标签谓词（`WHERE a:A`）—— 它走 labelFilterItems / label 成员检查，
+      // 不是常量 source 属性比较。
+      if (f.property === '__label') return false
       // 排除 ANTLR 链式比较解析失败的 filter（值中包含比较运算符）
       if (_isBrokenChainValue(f.value)) return false
       const result = firstStep && f.source === firstStep.source && firstStep.source
@@ -6583,6 +6589,109 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             if (edgeVar) row[edgeVar] = null
             if (optVarName) row[optVarName] = null
           }
+        }
+      }
+    }
+
+    // Post-OPTIONAL WHERE predicates.  A `WHERE` attached to an OPTIONAL MATCH
+    // (`OPTIONAL MATCH (n)-[r]-(m) WHERE m:NonExistent`) filters the *optional*
+    // bindings: rows whose OPTIONAL variables fail the predicate are dropped,
+    // and if ALL rows are dropped the primary (pre-OPTIONAL) row survives with
+    // the OPTIONAL trail nulled.  This mirrors Cypher's "optional match then
+    // filter" semantics, distinct from a WHERE on the primary MATCH.
+    if (plan.optionalMatchSteps?.length && result.length) {
+      // Variables already bound by the primary MATCH must NOT be treated as
+      // OPTIONAL-bound (and must never be nulled); only the OPTIONAL pattern's
+      // newly-introduced variables (target aliases, edge variables, and the
+      // pattern's own starting variable when it is not a primary variable).
+      const primaryVars = new Set<string>()
+      if ((plan as any).matchVar) primaryVars.add((plan as any).matchVar)
+      for (const st of plan.steps || []) {
+        if ((st as any).source) primaryVars.add((st as any).source)
+        if ((st as any).targetAlias) primaryVars.add((st as any).targetAlias)
+      }
+      for (const mm0 of (plan as any).multiMatch || []) if (mm0?.variable) primaryVars.add(mm0.variable)
+      const optVars = new Set<string>()
+      for (const om of plan.optionalMatchSteps) {
+        if (om.variableName && !primaryVars.has(om.variableName)) optVars.add(om.variableName)
+        for (const st of om.steps || []) {
+          if (st.source && !primaryVars.has(st.source)) optVars.add(st.source)
+          if (st.targetAlias) optVars.add(st.targetAlias)
+          if (st.edgeVariable) optVars.add(st.edgeVariable)
+        }
+      }
+      const optLabelFilters = (plan.labelFilterItems || []).filter((lfi: any) => optVars.has(lfi.variable))
+      // Property predicates may live either on the top-level `plan.filters`
+      // (`MATCH … WHERE x.num = 42`) or on the per-OPTIONAL `opt.filters`
+      // (`OPTIONAL MATCH … WHERE m.num = 42`); gather both.  A label predicate
+      // carried as an `expression` (`WHERE c:C`) has empty source/property.
+      const optPropFilters = (plan.filters || []).filter((f: any) => optVars.has(f.source))
+      const optExprFilters: any[] = []
+      for (const om of plan.optionalMatchSteps) {
+        for (const f of (om.filters || [])) {
+          const ff = f as any
+          if (ff.expression) {
+            // Label predicate `var:Label` — the var must be OPTIONAL-bound.
+            const varName = (ff.expression as string).split(':')[0]
+            if (optVars.has(varName)) optExprFilters.push(ff)
+          } else if (optVars.has(ff.source)) {
+            optPropFilters.push(ff)
+          }
+        }
+      }
+      if (optLabelFilters.length || optPropFilters.length || optExprFilters.length) {
+        const predicateHolds = (row: Record<string, unknown>): boolean => {
+          for (const lfi of optLabelFilters as any[]) {
+            const v = row[lfi.variable]
+            if (v == null) continue
+            const label = String((v as any)._label || '')
+            const included = label.split(':').includes(lfi.label)
+            if (lfi.exclude ? included : !included) return false
+          }
+          for (const f of optPropFilters as any[]) {
+            const v = row[f.source]
+            if (v == null) continue
+            const actual = (v as any)[f.property]
+            let fv = f.value
+            if (typeof fv === 'string' && /^\w+\.\w+$/.test(fv) && !/^['"]/.test(fv) && !/^\d/.test(fv)) {
+              const [rv, rp] = fv.split('.')
+              fv = (row[rv] as any)?.[rp]
+            }
+            const ok = (() => {
+              switch (f.operator) {
+                case 'EQ': return actual === fv
+                case 'NEQ': return actual !== fv
+                case 'GT': return Number(actual) > Number(fv)
+                case 'GTE': return Number(actual) >= Number(fv)
+                case 'LT': return Number(actual) < Number(fv)
+                case 'LTE': return Number(actual) <= Number(fv)
+                default: return String(actual) === String(fv)
+              }
+            })()
+            if (!ok) return false
+          }
+          for (const f of optExprFilters) {
+            const varName = (f.expression as string).split(':')[0]
+            const v = row[varName]
+            if (v == null) continue
+            const val = _evaluateExpression(f.expression, { ...row })
+            if (val !== true) return false
+          }
+          return true
+        }
+        const surviving = result.filter(predicateHolds)
+        if (surviving.length === 0) {
+          // Every OPTIONAL binding failed the predicate → keep one primary row
+          // with the OPTIONAL trail nulled (the retained main match).
+          const primaryKeys = new Set(Object.keys(result[0]).filter(k => !optVars.has(k)))
+          const nulled: Record<string, unknown> = {}
+          for (const k of primaryKeys) nulled[k] = result[0][k]
+          for (const vn of optVars) nulled[vn] = null
+          result.length = 0
+          result.push(nulled)
+        } else {
+          result.length = 0
+          result.push(...surviving)
         }
       }
     }

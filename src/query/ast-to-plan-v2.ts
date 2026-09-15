@@ -1328,7 +1328,12 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
     if (clause.type === 'MATCH' || clause.type === 'OPTIONAL_MATCH') {
       const whereFilters = extractWhereFromMatch(clause.ctx)
       if (clause.type === 'MATCH') {
-        plan.filters.push(...whereFilters)
+        // Label predicates (`WHERE a:A`) carry a source-less marker filter and
+        // are handled by `labelFilterItems` (query-parser); keeping the marker in
+        // `plan.filters` would let a generic filter stage treat it as a property
+        // predicate.  Non-label filters still land in `plan.filters`.
+        const propFilters = whereFilters.filter((f: any) => !(f.source === '' && f.property === '' && f.expression))
+        plan.filters.push(...propFilters)
       } else if (clause.type === 'OPTIONAL_MATCH' && plan.optionalMatchSteps) {
         const lastOptional = plan.optionalMatchSteps[plan.optionalMatchSteps.length - 1]
         lastOptional.filters.push(...whereFilters)
@@ -1877,6 +1882,26 @@ function parseSingleCondition(text: string): FilterClause | null {
       property: strMatch[2],
       operator: strMatch[3].toUpperCase().replace(' ', '_') as FilterClause['operator'],
       value: val,
+    }
+  }
+
+  // Label predicate `var:Label` / `var:!Label` (e.g. `WHERE a:A`).  Encoded as
+  // a source-less filter whose only payload is the `expression` text (`a:A`),
+  // plus the raw predicate in `value`.  Because `source`/`property` are empty it
+  // can never be mistaken for a constant property filter during the walk; label
+  // semantics are applied separately (labelFilterItems for the primary MATCH,
+  // and the post-OPTIONAL label filter for OPTIONAL MATCH).
+  const labelPredMatch = t.match(/^(\w+)\s*:\s*(!?\w+)$/)
+  if (labelPredMatch) {
+    const varName = labelPredMatch[1]
+    const label = labelPredMatch[2].replace(/^!/, '')
+    return {
+      source: '',
+      property: '',
+      operator: 'EQ' as const,
+      value: label,
+      expression: `${varName}:${labelPredMatch[2]}`,
+      negated: labelPredMatch[2].startsWith('!'),
     }
   }
 
