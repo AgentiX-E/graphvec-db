@@ -1263,6 +1263,29 @@ export function _walkMultiStepsWithEdges(
   type _WalkPath = { ns: number[]; es: number[] }
   let paths: _WalkPath[] = [{ ns: [startIdx], es: [] }]
 
+  // Node-variable uniqueness.  Within a single MATCH pattern, distinct variable
+  // names must bind distinct nodes (openCypher enforces node isomorphism), while
+  // a variable that re-appears later (the `a` in `(a)-->(b)-->(a)` closing the
+  // chain, or `n` in `(n)<-->(k)<-->(n)`) must bind the SAME node it first
+  // bound.  `varFirstPos` records, for each source/target variable, the path
+  // position at which it first appears; `varNameAtPos` gives the inverse so a
+  // step can determine whether its target alias reuses an already-bound name.
+  const varFirstPos = new Map<string, number>()
+  const varNameAtPos = new Map<number, string>()
+  if (steps.length) {
+    const src0 = (steps[0] as any).source as string | undefined
+    if (src0) { varFirstPos.set(src0, 0); varNameAtPos.set(0, src0) }
+  }
+  for (let si = 0; si < steps.length; si++) {
+    const st = steps[si] as any
+    if (st.targetAlias) {
+      // Record every occurrence (closure reuses the same name at a later pos),
+      // but keep `varFirstPos` pointing at the first binding only.
+      varNameAtPos.set(si + 1, st.targetAlias)
+      if (!varFirstPos.has(st.targetAlias)) varFirstPos.set(st.targetAlias, si + 1)
+    }
+  }
+
   // A node reference is reachable through an edge in the given direction.
   const _edgeNeighbor = (e: any, from: number, dir: string): number => {
     if (dir === 'any') {
@@ -1372,10 +1395,23 @@ export function _walkMultiStepsWithEdges(
     // 排除 ANTLR 链式比较解析失败的值（包含比较运算符的字符串值）
     const _isBrokenFilterValue = (v: any): boolean =>
       typeof v === 'string' && /[<>=]/.test(v)
+    // A cross-variable reference (`n.animal = x.animal`) has a `value` that names
+    // another variable's property; it cannot be applied as a constant source
+    // predicate during the walk (it must be resolved after both nodes bind).
+    const _isVarRefValue = (v: any): boolean =>
+      typeof v === 'string' && /^\w+\.\w+$/.test(v) && !/^['"]/.test(v) && !/^\d/.test(v)
     const combinedSourceFilters: Array<{source?: string; property: string; value: any}> = []
     if (planFilters?.length) {
       for (const f of planFilters) {
         if (_isBrokenFilterValue(f.value)) continue
+        if (_isVarRefValue(f.value)) continue
+        if (f.source === step.source) combinedSourceFilters.push(f)
+      }
+    }
+    if (stepSourceFilters?.length) {
+      for (const f of stepSourceFilters) {
+        if (_isBrokenFilterValue(f.value)) continue
+        if (_isVarRefValue(f.value)) continue
         if (f.source === step.source) combinedSourceFilters.push(f)
       }
     }
@@ -1480,6 +1516,24 @@ export function _walkMultiStepsWithEdges(
         // traversed by this walk.  Revisiting a node via a *distinct* edge is
         // allowed (e.g. `MATCH p=(n)<-->(k)<-->(n)` on a→b / b→a).
         if (p.es.includes(c.eId)) continue
+        // Node-variable uniqueness: a re-appearing variable must bind the node
+        // it first bound (chain closure), and a fresh variable must bind a node
+        // distinct from every already-named variable's node.
+        const ta = varNameAtPos.get(si + 1)
+        if (ta !== undefined) {
+          const firstPos = varFirstPos.get(ta)!
+          if (firstPos < si + 1) {
+            // Closure: must return to the node first bound to `ta`.
+            if (p.ns[firstPos] !== c.nIdx) continue
+          } else {
+            // Fresh variable: reject a node already bound to a prior named var.
+            let collides = false
+            for (let pos = 0; pos < p.ns.length; pos++) {
+              if (varNameAtPos.has(pos) && p.ns[pos] === c.nIdx) { collides = true; break }
+            }
+            if (collides) continue
+          }
+        }
         newPaths.push({ ns: [...p.ns, c.nIdx], es: [...p.es, c.eId] })
       }
     }

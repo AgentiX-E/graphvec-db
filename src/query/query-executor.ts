@@ -1118,9 +1118,30 @@ async function _executeMultiMatchCrossJoin(
           if (srcVar) m[srcVar] = d
           if (tgtVar) m[tgtVar] = s
         } else {
-          // any/undirected: source is the anchor side; target is the far side.
-          if (srcVar) m[srcVar] = startIdxs.includes(s) ? s : d
-          if (tgtVar) m[tgtVar] = startIdxs.includes(s) ? d : s
+          // any/undirected: the source variable may anchor on either endpoint.
+          // Emit a binding for each endpoint that is a legal anchor, so a
+          // `(b)--(d)` diagonal joining a primary match can bind both `b=s,d=g`
+          // and `b=g,d=s` (the reverse orientation over the same undirected
+          // edge).  When the anchor set is the full node set (scanLabel == null)
+          // both orientations are emitted; a self-loop (s === d) collapses to a
+          // single binding to avoid a duplicate.
+          const canAnchorS = startIdxs.length === allNodes.length || startIdxs.includes(s)
+          const canAnchorD = startIdxs.length === allNodes.length || startIdxs.includes(d)
+          if (canAnchorS) {
+            const m1: Record<string, unknown> = { ...m }
+            if (srcVar) m1[srcVar] = s
+            if (tgtVar) m1[tgtVar] = d
+            if (edgeVar) m1[edgeVar] = rel
+            matches.push(m1)
+          }
+          if (canAnchorD && s !== d) {
+            const m2: Record<string, unknown> = { ...m }
+            if (srcVar) m2[srcVar] = d
+            if (tgtVar) m2[tgtVar] = s
+            if (edgeVar) m2[edgeVar] = rel
+            matches.push(m2)
+          }
+          continue
         }
         if (edgeVar) m[edgeVar] = rel
         matches.push(m)
@@ -1536,6 +1557,48 @@ async function _executeMultiMatchCrossJoin(
       }
       filtered = constrained
     }
+  }
+
+  // ── WHERE predicate filtering ──
+  // The cross-join path above applies `whereBody` but not the structured
+  // `plan.filters` (property predicates like `MATCH … WHERE a.id = 1`).  Apply
+  // them here against the bound node objects (which carry `_label` and user
+  // properties).  Each filter names the variable owning the property; a missing
+  // property evaluates to null and never satisfies a non-NEQ predicate.
+  if ((plan.filters || []).length) {
+    filtered = filtered.filter((row) => {
+      return (plan.filters || []).every((f: any) => {
+        const owner = row[f.source]
+        const ownerProps = (owner && typeof owner === 'object') ? (owner as any) : {}
+        const actual = ownerProps[f.property]
+        // A variable reference value (`a.id = b.id`) resolves the RHS against
+        // the bound row rather than comparing against a literal string.
+        let fv = f.value
+        if (typeof fv === 'string' && /^\w+\.\w+$/.test(fv) && !/^['"]/.test(fv) && !/^\d/.test(fv)) {
+          const [refVar, refProp] = fv.split('.')
+          const refOwner = row[refVar]
+          const refProps = (refOwner && typeof refOwner === 'object') ? (refOwner as any) : {}
+          fv = refProps[refProp]
+        }
+        if (actual === undefined) {
+          // Property absent → null.  Only an IS_NULL / explicit null check passes.
+          if (f.operator === 'IS_NULL') return true
+          if (f.operator === 'NEQ') return fv !== null && fv !== undefined
+          return false
+        }
+        switch (f.operator) {
+          case 'EQ': return actual === fv
+          case 'NEQ': return actual !== fv
+          case 'GT': return Number(actual) > Number(fv)
+          case 'GTE': return Number(actual) >= Number(fv)
+          case 'LT': return Number(actual) < Number(fv)
+          case 'LTE': return Number(actual) <= Number(fv)
+          case 'IS_NULL': return false
+          case 'IS_NOT_NULL': return true
+          default: return String(actual) === String(fv)
+        }
+      })
+    })
   }
 
   // Build result rows.
