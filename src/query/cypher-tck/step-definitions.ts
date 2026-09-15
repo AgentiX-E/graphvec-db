@@ -1142,6 +1142,43 @@ Given('having executed:', async function (query: string) {
     // 注入持久 GE
     const ge = persistGe()
 
+    // DELETE relationship + CREATE reverse edges: `MATCH (a:A)-[r]->(b) DELETE
+    // r CREATE (b)-[:LIKES]->(a)`.  Reverse the matched relationships: drop the
+    // `r` edges from the source node's `__edges` and mint the mirrored `b→a`
+    // edges from `createEdges`.
+    if (plan.type === 'DELETE' && (plan as any).deleteEdges?.length && (plan as any).createEdges?.length) {
+      const delEdgeVars = (plan as any).deleteEdges as string[]
+      const step0 = (plan as any).steps?.[0]
+      const srcVar = step0?.source as string | undefined
+      const edgeVar = step0?.edgeVariable as string | undefined
+      if (srcVar && edgeVar && delEdgeVars.includes(edgeVar)) {
+        const scanLabel = (plan as any).scanLabel as string | null | undefined
+        const srcNodes = scanLabel ? st.nodes.filter((n: any) => n && n._label === scanLabel) : st.nodes
+        for (const sn of srcNodes) {
+          const sidx = st.nodes.indexOf(sn)
+          if (!sn.__edges) continue
+          // Collect outgoing edges to delete, then remove them.
+          const removed: Array<any> = []
+          const kept: Array<any> = []
+          for (const e of sn.__edges) {
+            if (e.srcIdx === sidx) removed.push(e); else kept.push(e)
+          }
+          sn.__edges = kept
+          // Mint the reverse edges b→a for each removed edge.
+          const ces = (plan as any).createEdges as Array<any>
+          for (const re of removed) {
+            const dstNode = st.nodes[re.dstIdx]
+            if (!dstNode) continue
+            if (!dstNode.__edges) dstNode.__edges = []
+            for (const ce of ces) {
+              dstNode.__edges.push({ srcIdx: re.dstIdx, dstIdx: sidx, label: ce.label || 'KNOWS', props: ce.props || null })
+            }
+          }
+        }
+        st.err = null
+        return
+      }
+    }
     // If any createNodes（CREATE/MERGE 的节点定义），直接注入 st.nodes 和 GE
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan as any).createNodes?.length) {
       const cns = (plan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
