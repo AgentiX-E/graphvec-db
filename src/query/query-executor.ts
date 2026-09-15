@@ -2689,16 +2689,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             if (skipNodeIndices.has(i)) {
               continue
             }
-            // 根据 scanLabel 过滤起始节点（支持多标签 __fullLabel）
+            // 根据 scanLabel 过滤起始节点（支持多标签 __fullLabel / `_label`）
             if (plan.scanLabel) {
               const node = allNodes[i]
               const nodeLabel = String(node?.['_label'] || '')
               const fullLabel = node?.__fullLabel
-              if (fullLabel && typeof fullLabel === 'string') {
-                if (!fullLabel.split(':').includes(plan.scanLabel)) continue
-              } else if (nodeLabel !== plan.scanLabel) {
-                continue
-              }
+              const labelStr = (fullLabel && typeof fullLabel === 'string') ? fullLabel : nodeLabel
+              // A node may carry several labels (`A:B:C`); the scan label names
+              // one of them, so match membership rather than whole-string equality.
+              if (!labelStr.split(':').includes(plan.scanLabel)) continue
             }
             let skipNode = false
             for (const sf of stepSourceFilters) {
@@ -4105,7 +4104,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // labelExpr 兜底（多标签 AND 匹配时 GE stepping 无法处理多标签）。
     const filteredRecords = plan.labelExpr?.items?.length
       ? (records || []).filter((r: any) => {
-          const nodeLabel = r?.props?.__fullLabel ?? r?.props?._label ?? ''
+          // labelExpr constrains the *matched* (source) node — the variable the
+          // `:A:B:...` label list is attached to in `MATCH (n:A:B:...)`.  With
+          // edge-walk records the source node lives in `__crossVarRows[matchVar]`
+          // (or `__crossVarRows[source]`), not in `r.props` (which is the target).
+          const srcVar = (plan as any).matchVar || plan.steps?.[0]?.source
+          const cvr = r?.__crossVarRows
+          const srcNode = (srcVar && cvr && cvr[srcVar]) ? cvr[srcVar] : null
+          const nodeLabel = srcNode
+            ? (srcNode.__fullLabel ?? srcNode._label ?? '')
+            : (r?.props?.__fullLabel ?? r?.props?._label ?? '')
           const nodeLabels = String(nodeLabel).split(':')
           return plan.labelExpr!.items.every(item =>
             !item.exclude && nodeLabels.includes(item.name)

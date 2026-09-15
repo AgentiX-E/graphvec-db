@@ -1263,6 +1263,24 @@ export function _walkMultiStepsWithEdges(
   type _WalkPath = { ns: number[]; es: number[] }
   let paths: _WalkPath[] = [{ ns: [startIdx], es: [] }]
 
+  // Chain closure.  A variable that re-appears later in the same pattern (the
+  // `a` in `(a)-[:A]->()-[:B]->(a)`, or `n` in `(n)<-->(k)<-->(n)`) must bind
+  // the SAME node it first bound.  `varFirstPos` maps a variable name to the
+  // path position of its first occurrence; a step whose target alias has an
+  // earlier occurrence is a closure step and must land on that earlier node.
+  // This intentionally does NOT forbid distinct variables from binding the same
+  // node — openCypher enforces relationship (not node) isomorphism, so a
+  // self-loop `(l)-[:LOOP]->(l)` legitimately binds two variables to one node.
+  const varFirstPos = new Map<string, number>()
+  if (steps.length) {
+    const src0 = (steps[0] as any).source as string | undefined
+    if (src0) varFirstPos.set(src0, 0)
+  }
+  for (let si = 0; si < steps.length; si++) {
+    const ta = (steps[si] as any).targetAlias as string | undefined
+    if (ta && !varFirstPos.has(ta)) varFirstPos.set(ta, si + 1)
+  }
+
   // A node reference is reachable through an edge in the given direction.
   const _edgeNeighbor = (e: any, from: number, dir: string): number => {
     if (dir === 'any') {
@@ -1493,6 +1511,14 @@ export function _walkMultiStepsWithEdges(
         // traversed by this walk.  Revisiting a node via a *distinct* edge is
         // allowed (e.g. `MATCH p=(n)<-->(k)<-->(n)` on a→b / b→a).
         if (p.es.includes(c.eId)) continue
+        // Chain closure: if this step's target alias first appeared at an
+        // earlier path position (a re-used variable name), the landing node must
+        // equal the node bound at that earlier position.
+        const ta = (step as any).targetAlias as string | undefined
+        if (ta && varFirstPos.has(ta)) {
+          const firstPos = varFirstPos.get(ta)!
+          if (firstPos <= p.ns.length - 1 && p.ns[firstPos] !== c.nIdx) continue
+        }
         newPaths.push({ ns: [...p.ns, c.nIdx], es: [...p.es, c.eId] })
       }
     }
@@ -1521,11 +1547,13 @@ function _stepMatchConstraint(nodeIdx: number, step: TraverseStep, allNodes: Rec
   // 检查 targetLabel 匹配（如果节点有多标签 __fullLabel，检查是否包含 targetLabel）
   if (step.targetLabel) {
     const fullLabel = (node as any).__fullLabel
-    if (fullLabel && typeof fullLabel === 'string') {
-      if (!fullLabel.split(':').includes(step.targetLabel)) return false
-    } else if (node._label && node._label !== step.targetLabel) {
-      return false
-    }
+    const labelStr = (typeof fullLabel === 'string' && fullLabel)
+      ? fullLabel
+      : (typeof node._label === 'string' ? node._label : '')
+    // A node may carry multiple labels (`A:B:C`) while the step names one of
+    // them (`targetLabel: 'C'`); match when the label is present among the
+    // colon-separated set rather than requiring exact whole-string equality.
+    if (!labelStr.split(':').includes(step.targetLabel)) return false
   }
   // 内联属性约束
   if (step.targetProps) {
