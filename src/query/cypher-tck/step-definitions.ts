@@ -229,6 +229,10 @@ async function run(q: string): Promise<void> {
     const result = await _executeQuery(plan, st.nodes, resolvedQ)
     st.err = null
     st.res = result as any[]
+    if (resolvedQ.includes('REL*2..2')) {
+      require('fs').writeFileSync('/tmp/m93.json', JSON.stringify(st.nodes.map((n:any)=>({l:n._label,name:n.name,e:n.__edges})), null, 0))
+      require('fs').appendFileSync('/tmp/m93.json', '\nRES=' + (Array.isArray(result)?result.length:'?'))
+    }
   } catch (e: any) {
     st.err = e; st.res = []
   }
@@ -487,6 +491,12 @@ function normalizeCell(s: string): string {
   const nodeMatch = s.match(/^\(([^)]*)\)$/)
   if (nodeMatch) {
     return s.replace(/:\s+/g, ':')   // `prop: 1` → `prop:1`
+  }
+  // Relationship map inside a list: `[[:REL {num: 1}], ...]`.  The relationship
+  // object `[:REL {num: 1}]` carries the same `{key: value}` map as a node, so
+  // normalise the property-colon spacing there as well (`num: 1` → `num:1`).
+  if (s.startsWith('[[') && s.endsWith(']]')) {
+    return s.replace(/:\s+/g, ':')
   }
   return s
 }

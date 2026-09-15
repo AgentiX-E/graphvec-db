@@ -22,6 +22,22 @@ function _ensureDeps(): void {
 
 interface BfsEntry { nIdx: number; path: number[] }
 
+/** Dedupe an edge list by (srcIdx, dstIdx).  Edges may be present twice — once
+ *  from a node's own `__edges` and once from the reverse-adjacency index — when
+ *  the seed attaches each relationship to both endpoints.  Collapsing them keeps
+ *  an undirected walk from traversing the same hop more than once. */
+function _dedupEdges(edges: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }>): Array<{ dstIdx: number; srcIdx: number; label: string }> {
+  const seen = new Set<string>()
+  const out: Array<{ dstIdx: number; srcIdx: number; label: string }> = []
+  for (const e of edges) {
+    const key = `${e.srcIdx}|${e.dstIdx}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(e)
+  }
+  return out
+}
+
 function _edgeToRelObj(e: { srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }): Record<string, unknown> {
   const edgeNode: Record<string, unknown> = { _type: e.label || '' }
   if (e.props) { for (const [k, v] of Object.entries(e.props)) { if (k !== '_type') edgeNode[k] = v } }
@@ -132,17 +148,19 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
   const result: QueryRow[] = []
   const srcNodes: Array<Record<string, unknown>> = [...(nodes || [])]
 
-  // Incoming-edge index keyed by destination node index. Edges are stored once
-  // on their srcIdx node's __edges, so an undirected (`any`) walk needs this
-  // reverse adjacency to discover neighbours reachable through an edge that
-  // points *into* the current node (otherwise `(a)-[*]-(b)` only finds the
-  // forward half of the graph and returns 3 pairs instead of 6 for a 3-chain).
+  // Incoming-edge index keyed by destination node index.  Edges are stored on
+  // BOTH endpoint nodes' `__edges` (the TCK step-definitions attach each
+  // relationship to its source AND destination so undirected `--` traversal
+  // works).  Collect each edge only from its `srcIdx` node — every relationship
+  // still appears exactly once there — otherwise the reverse adjacency lists
+  // the same edge twice and an undirected walk multiplies the row count.
   const incomingEdges: Array<Array<{ dstIdx: number; srcIdx: number; label: string }>> =
     new Array(srcNodes.length).fill(null).map(() => [])
   for (let ni = 0; ni < srcNodes.length; ni++) {
     const edges = (srcNodes[ni] as any)?.__edges as Array<{ dstIdx: number; srcIdx: number; label: string }> | undefined
     if (!edges) continue
     for (const e of edges) {
+      if (e.srcIdx !== ni) continue
       if (e.dstIdx >= 0 && e.dstIdx < srcNodes.length) incomingEdges[e.dstIdx].push(e)
     }
   }
@@ -181,11 +199,14 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
       for (const entry of frontier) {
         const node = srcNodes[entry.nIdx] as any
         const dir = (step as any).direction || 'out'
-        // For an undirected walk, union the node's own outgoing edges with the
-        // incoming edges (reverse adjacency) so both directions are traversed.
+        // For an undirected walk, union the node's own edges with the incoming
+        // edges (reverse adjacency) so both directions are traversed.  Edges may
+        // be stored on both endpoints (the TCK seed attaches each relationship to
+        // its source AND destination), so dedupe by (srcIdx, dstIdx): the reverse
+        // index would otherwise re-list an edge already present in `__edges`.
         const edgeArr: Array<{ dstIdx: number; srcIdx: number; label: string }> =
           dir !== 'out' && dir !== 'in'
-            ? ((node?.__edges || []) as Array<{ dstIdx: number; srcIdx: number; label: string }>).concat(incomingEdges[entry.nIdx] || [])
+            ? _dedupEdges(((node?.__edges || []) as Array<{ dstIdx: number; srcIdx: number; label: string }>).concat(incomingEdges[entry.nIdx] || []))
             : (node?.__edges || []) as Array<{ dstIdx: number; srcIdx: number; label: string }>
         for (const e of edgeArr) {
           let nIdx = -1
@@ -343,13 +364,17 @@ function _executeVarLenChain(plan: any, nodes: Array<Record<string, unknown>>): 
   const srcNodes: Array<Record<string, unknown>> = [...(nodes || [])]
   const steps: any[] = plan.steps
 
-  // Reveerse adjacency for undirected (`any`) steps.
+  // Reverse adjacency for undirected (`any`) steps.  Edges are stored on both
+  // endpoint nodes, so collect each edge only from its `srcIdx` node to avoid
+  // double-listing a relationship in the reverse index (which would multiply
+  // an undirected walk's row count).
   const incomingEdges: Array<Array<{ dstIdx: number; srcIdx: number; label: string; props?: Record<string, unknown> | null }>> =
     new Array(srcNodes.length).fill(null).map(() => [])
   for (let ni = 0; ni < srcNodes.length; ni++) {
     const edges = (srcNodes[ni] as any)?.__edges as any[] | undefined
     if (!edges) continue
     for (const e of edges) {
+      if (e.srcIdx !== ni) continue
       if (e.dstIdx >= 0 && e.dstIdx < srcNodes.length) incomingEdges[e.dstIdx].push(e)
     }
   }
