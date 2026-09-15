@@ -1144,10 +1144,12 @@ Given('having executed:', async function (query: string) {
 
     // DELETE relationship + CREATE reverse edges: `MATCH (a:A)-[r]->(b) DELETE
     // r CREATE (b)-[:LIKES]->(a)`.  Reverse the matched relationships: drop the
-    // `r` edges from the source node's `__edges` and mint the mirrored `b→a`
-    // edges from `createEdges`.
-    if (plan.type === 'DELETE' && (plan as any).deleteEdges?.length && (plan as any).createEdges?.length) {
-      const delEdgeVars = (plan as any).deleteEdges as string[]
+    // matched `r` edges from the source node's `__edges` and mint the mirrored
+    // `b→a` edges from `createEdges`.  `parseQuery` folds this read-then-write
+    // into a single `CREATE` plan whose relationship deletions live in
+    // `deleteTargets` (not a standalone DELETE plan).
+    if ((plan as any).deleteTargets?.length && (plan as any).createEdges?.length) {
+      const delEdgeVars = (plan as any).deleteTargets as string[]
       const step0 = (plan as any).steps?.[0]
       const srcVar = step0?.source as string | undefined
       const edgeVar = step0?.edgeVariable as string | undefined
