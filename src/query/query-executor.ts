@@ -1311,12 +1311,17 @@ async function _executeMultiMatchCrossJoin(
     }
   }
 
-  // Evaluate WHERE (relationship identity / path equality).
+  // Evaluate WHERE (relationship identity / path equality / pattern predicates).
   let filtered = crossRows
   if (plan.whereBody) {
     filtered = []
     for (const row of crossRows) {
-      const val = _evaluateExpression(plan.whereBody, { ...row })
+      // Resolve pattern predicates (`(a)-[:T]->(b:X)`) to boolean literals before
+      // expression evaluation — the expression engine cannot parse relationship
+      // patterns, so `_resolveWherePatternPredicates` substitutes true/false and
+      // lets it evaluate the surrounding AND/OR/NOT structure.
+      let whereExpr = _resolveWherePatternPredicates(plan.whereBody, { ...row }, allNodes)
+      const val = _evaluateExpression(whereExpr, { ...row })
       if (val === true) filtered.push(row)
     }
   }
