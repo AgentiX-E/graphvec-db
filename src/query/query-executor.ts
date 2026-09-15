@@ -1262,8 +1262,12 @@ async function _executeMultiMatchCrossJoin(
             // Intermediate node variable binding for fixed-length steps: the
             // node reached after step pi is path[pi + 1].  This binds `x` in a
             // chain like `(a)-->(x)<-->(b)` (firstSt.source=a→path[0],
-            // step0.target=x→path[1], lastSt.target=b→path[last]).
-            if (st.targetAlias && !st.range) {
+            // step0.target=x→path[1], lastSt.target=b→path[last]).  The FINAL
+            // step is already bound above to `path[path.length - 1]` (which is
+            // correct even after a variable-length step, whose hop count shifts
+            // every subsequent `pi + 1` offset), so it must not be re-bound here
+            // with a naive `pi + 1` that lands on an interior node.
+            if (st.targetAlias && !st.range && pi < pat.steps.length - 1) {
               const ni = pi + 1
               if (ni < path.length) m[st.targetAlias] = path[ni]
             }

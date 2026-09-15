@@ -868,9 +868,26 @@ Given('having executed:', async function (query: string) {
   // Otherwise `CREATE` would be treated as a complete (empty) statement and the
   // node/edge pattern dropped.
   const _isBareClauseKeyword = (s: string): boolean => /^(CREATE|MERGE|MATCH|DELETE|DETACH\s+DELETE|SET|REMOVE|RETURN|WITH|UNWIND|OPTIONAL\s+MATCH)$/i.test(s.trim())
+  // A `MATCH (x:X) … CREATE …` block is a single DML statement (read-then-write),
+  // not several independent statements.  When the whole block is one such DML
+  // statement, bypass line splitting so it reaches the MATCH…CREATE seed path
+  // intact (the splitter above would otherwise detach the leading `MATCH (x:X)`).
+  const _isDmlReadWrite = /\bMATCH\s*\([^)]*\)[\s\S]*\b(CREATE|MERGE|DELETE|DETACH\s+DELETE|SET|REMOVE)\b/i.test(q)
   for (const line of rawLines) {
+    // A pending statement that ended with a comma is mid-list: the comma
+    // declares a continuation, so the next line (a sibling node/edge pattern
+    // like `(e2:E ...)` or `(d)-[:LIKES]->(e2)`) extends the SAME statement
+    // regardless of whether it ends with a comma or starts a new clause.
+    const pendingEndsWithComma = pending ? pending.trimEnd().endsWith(',') : false
+    // A MATCH clause followed by a write clause (`CREATE`/`MERGE`/`DELETE`/
+    // `SET`/`REMOVE`) is a single DML statement (`MATCH (d:D) CREATE …`), not
+    // two independent statements — keep them combined.
+    const pendingIsMatchTail = pending ? /^MATCH\b|\nMATCH\b/i.test(pending) : false
+    const lineIsWrite = /^(CREATE|MERGE|DELETE|SET|REMOVE|DETACH\s+DELETE)\b/i.test(line.trim())
     if (pending) {
       pending += '\n' + line
+      if (pendingEndsWithComma) continue
+      if (pendingIsMatchTail && lineIsWrite) continue
       if (!line.endsWith(',') && !_isBareClauseKeyword(line)) { lines.push(pending); pending = '' }
     } else {
       if (line.endsWith(',') || _isBareClauseKeyword(line)) { pending = line }
@@ -878,6 +895,12 @@ Given('having executed:', async function (query: string) {
     }
   }
   if (pending) lines.push(pending)
+  if (_isDmlReadWrite) {
+    // The block is one MATCH→write DML statement; keep it whole so the leading
+    // `MATCH (x:X)` and its `CREATE` reach the MATCH…CREATE seed path together.
+    lines.length = 0
+    lines.push(q)
+  }
   // Merge UNWIND + CREATE/UNWIND+MATCH lines so they execute as a single
   // pipeline rather than as isolated statements. The DML engine needs the
   // unwound variable to be in scope when processing the CREATE template.
@@ -919,6 +942,56 @@ Given('having executed:', async function (query: string) {
           const cns = (subPlan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
           const createEdges = (subPlan as any).createEdges as Array<{ source: string; target: string; sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
           const uw = (subPlan as any).unwind as { list?: unknown[]; var?: string; name?: string } | undefined
+          // MATCH … CREATE materialisation: `MATCH (d:D) CREATE (e1:E {name:
+          // d.name + '0'}), (e2:E {name: d.name + '1'}) CREATE (d)-[:LIKES]->(e1)
+          // …` must mint the created nodes (and edges) once PER matched `d`, with
+          // property expressions evaluated against that `d` (ctx { d }).  The
+          // parser also exposes the MATCH node as a trailing createNode with a
+          // null label — it is a reference, not a node to mint.
+          const matchVar = (subPlan as any).matchVar as string | undefined
+          const scanLabel = (subPlan as any).scanLabel as string | null | undefined
+          if (matchVar && scanLabel && !uw) {
+            const matched = st.nodes.filter((n: any) => n && n._label === scanLabel)
+            if (matched.length) {
+              const specNodes = cns.filter((cn) => cn.alias !== matchVar || cn.label != null)
+              const specEdges = (createEdges || []).map((ce: any) => ({
+                ...ce,
+                source: ce.source, target: ce.target,
+              }))
+              const newNodeIdxByAlias = new Map<string, number>()
+              for (const d of matched) {
+                const dIdx = st.nodes.indexOf(d)
+                const localAliasToGlobal: Record<string, number> = {}
+                for (const cn of specNodes) {
+                  let props: Record<string, unknown> = {}
+                  if (cn.props) {
+                    for (const [k, v] of Object.entries(cn.props)) {
+                      let raw = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type) ? (v as any).value : v
+                      if (typeof raw === 'string' && _isExprValue(raw)) {
+                        const ev = _evalBinary(raw, { [matchVar]: d })
+                        if (ev !== null && ev !== undefined) raw = ev
+                      }
+                      props[k] = raw
+                    }
+                  }
+                  const node: Record<string, unknown> = { _label: cn.label || 'Default', ...props }
+                  st.nodes.push(node)
+                  const gIdx = st.nodes.length - 1
+                  localAliasToGlobal[cn.alias] = gIdx
+                  newNodeIdxByAlias.set(cn.alias, gIdx)
+                  try { seedGe(persistGe(), node) } catch {}
+                }
+                for (const ce of specEdges) {
+                  const srcIdx = ce.source === matchVar ? dIdx : localAliasToGlobal[ce.source]
+                  const dstIdx = ce.target === matchVar ? dIdx : localAliasToGlobal[ce.target]
+                  if (srcIdx == null || dstIdx == null) continue
+                  if (!st.nodes[srcIdx].__edges) st.nodes[srcIdx].__edges = []
+                  st.nodes[srcIdx].__edges.push({ srcIdx, dstIdx, label: ce.label || 'KNOWS', props: ce.props || null })
+                }
+              }
+              continue
+            }
+          }
           // Row-aligned edge expansion: when the CREATE references a node
           // variable already bound to multiple nodes by an earlier UNWIND
           // (e.g. `UNWIND range(0,i) AS j CREATE (s)-[:REL]->()`), the node
@@ -1072,6 +1145,51 @@ Given('having executed:', async function (query: string) {
     // If any createNodes（CREATE/MERGE 的节点定义），直接注入 st.nodes 和 GE
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan as any).createNodes?.length) {
       const cns = (plan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
+      // MATCH … CREATE materialisation: `MATCH (d:D) CREATE (e1:E {name: d.name
+      // + '0'}), (e2:E {name: d.name + '1'}) CREATE (d)-[:LIKES]->(e1) …` must
+      // mint the created nodes/edges once PER matched `d`, evaluating property
+      // expressions against that `d`.  The parser exposes the MATCH node as a
+      // trailing createNode with a null label — a reference, not a node to mint.
+      const matchVar2 = (plan as any).matchVar as string | undefined
+      const scanLabel2 = (plan as any).scanLabel as string | null | undefined
+      if (matchVar2 && scanLabel2 && !(plan as any).unwind) {
+        const matched = st.nodes.filter((n: any) => n && n._label === scanLabel2)
+        const createEdges2 = (plan as any).createEdges as Array<any> | undefined
+        if (matched.length) {
+          const specNodes = cns.filter((cn) => cn.alias !== matchVar2 || cn.label != null)
+          const specEdges = (createEdges2 || []).map((ce: any) => ({ ...ce }))
+          for (const d of matched) {
+            const dIdx = st.nodes.indexOf(d)
+            const localAliasToGlobal: Record<string, number> = {}
+            for (const cn of specNodes) {
+              let props: Record<string, unknown> = {}
+              if (cn.props) {
+                for (const [k, v] of Object.entries(cn.props)) {
+                  let raw = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type) ? (v as any).value : v
+                  if (typeof raw === 'string' && _isExprValue(raw)) {
+                    const ev = _evalBinary(raw, { [matchVar2]: d })
+                    if (ev !== null && ev !== undefined) raw = ev
+                  }
+                  props[k] = raw
+                }
+              }
+              const node: Record<string, unknown> = { _label: cn.label || 'Default', ...props }
+              st.nodes.push(node)
+              localAliasToGlobal[cn.alias] = st.nodes.length - 1
+              try { seedGe(persistGe(), node) } catch {}
+            }
+            for (const ce of specEdges) {
+              const srcIdx = ce.source === matchVar2 ? dIdx : localAliasToGlobal[ce.source]
+              const dstIdx = ce.target === matchVar2 ? dIdx : localAliasToGlobal[ce.target]
+              if (srcIdx == null || dstIdx == null) continue
+              if (!st.nodes[srcIdx].__edges) st.nodes[srcIdx].__edges = []
+              st.nodes[srcIdx].__edges.push({ srcIdx, dstIdx, label: ce.label || 'KNOWS', props: ce.props || null })
+            }
+          }
+          st.err = null
+          return
+        }
+      }
       const createdNodes: Array<Record<string, unknown>> = []
       const unwind = (plan as any).unwind as { list: unknown[]; name: string } | undefined
       // 有 UNWIND 时，原始 createNodes 只是模板，由 UNWIND block 处理

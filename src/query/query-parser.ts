@@ -1271,14 +1271,23 @@ export function _walkMultiStepsWithEdges(
   // This intentionally does NOT forbid distinct variables from binding the same
   // node — openCypher enforces relationship (not node) isomorphism, so a
   // self-loop `(l)-[:LOOP]->(l)` legitimately binds two variables to one node.
+  // `varFirstPos` maps a variable name to the path position (node offset) of
+  // its first occurrence.  Positions are only meaningful when every step is
+  // fixed-length (one hop): a variable-length step (`*`) advances by a data-
+  // dependent number of nodes, so a `si + 1` offset would mislabel later
+  // variables as closures.  When any step carries a `range`, chain closure is
+  // disabled — the rare `(a)-[*..]->(a)` closure is handled independently.
+  const hasAnyRange = steps.some((s: any) => (s as any).range != null)
   const varFirstPos = new Map<string, number>()
-  if (steps.length) {
-    const src0 = (steps[0] as any).source as string | undefined
-    if (src0) varFirstPos.set(src0, 0)
-  }
-  for (let si = 0; si < steps.length; si++) {
-    const ta = (steps[si] as any).targetAlias as string | undefined
-    if (ta && !varFirstPos.has(ta)) varFirstPos.set(ta, si + 1)
+  if (!hasAnyRange) {
+    if (steps.length) {
+      const src0 = (steps[0] as any).source as string | undefined
+      if (src0) varFirstPos.set(src0, 0)
+    }
+    for (let si = 0; si < steps.length; si++) {
+      const ta = (steps[si] as any).targetAlias as string | undefined
+      if (ta && !varFirstPos.has(ta)) varFirstPos.set(ta, si + 1)
+    }
   }
 
   // A node reference is reachable through an edge in the given direction.
