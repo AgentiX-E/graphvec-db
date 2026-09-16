@@ -1322,6 +1322,40 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
     }
   }
 
+  // ── Relationship-list variable-length normalisation ──
+  // `MATCH ... WITH [r1, r2] AS rs ... MATCH (first)-[rs*]->(second)` binds `rs`
+  // to a LIST of relationships collected earlier in the query; `rs*` then means
+  // "walk a path whose relationship sequence is exactly `rs`" — i.e. a fixed
+  // hop count equal to the list length, NOT an unbounded `*` (1..∞) walk.  The
+  // unbounded reading lets a 1-hop prefix match spuriously (the TCK
+  // `Match9 [6]` case returns an extra `(:B)` row), so pin the variable-length
+  // range to `{min: len, max: len}` when the edge variable is a WITH list alias.
+  const withListLengths = new Map<string, number>()
+  for (const w of plan.withChain || []) {
+    for (const col of (w as any).columns || []) {
+      const expr = col?.expression
+      if (!expr || typeof expr !== 'string') continue
+      const trimmed = expr.trim()
+      // WITH [...] AS rs binds `rs` to a list literal; record its element count
+      // so a later `-[rs*]->` can pin the variable-length range to that count.
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        const inner = trimmed.slice(1, -1).trim()
+        withListLengths.set(col.alias, inner ? inner.split(',').length : 0)
+      }
+    }
+  }
+  if (withListLengths.size) {
+    for (const mm of plan.multiMatch || []) {
+      for (const st of mm.steps || []) {
+        const ev = (st as any).edgeVariable as string | undefined
+        const len = ev ? withListLengths.get(ev) : undefined
+        if (ev && len !== undefined && (st as any).range) {
+          ;(st as any).range = { min: len, max: len }
+        }
+      }
+    }
+  }
+
   // Incorporate WHERE into filters if present
   // WHERE is a sub-clause of MATCH in ANTLR, so collect from MatchClause
   for (const clause of clauses) {
