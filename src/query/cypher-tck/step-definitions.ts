@@ -442,14 +442,19 @@ function _stringifyVal(val: unknown): string {
       if (typeof v === 'object' && v !== null && '__path' in (v as any) && '__pathEdges' in (v as any)) {
         return _toPathNotation(v as any)
       }
+      // 数组元素是关系对象时 → [:Label {props}].  The `__edgeLabel` / `_type`
+      // markers are definitive relationship signs and must be checked BEFORE
+      // `_label` (a node marker); a relationship that carries both (an
+      // `__edgeLabel` and a `_label` holding its type, as produced by the
+      // OPTIONAL MATCH path builder) would otherwise render as `(:X {...})`
+      // instead of the correct `[:X]`.
+      if (typeof v === 'object' && v !== null && ('__edgeLabel' in (v as any) || '_type' in (v as any))) {
+        return _toEdgeNotation(v as any)
+      }
       // 数组元素是节点对象时 → 使用 toNodeNotation
       if (typeof v === 'object' && v !== null && '_label' in (v as any)) {
         const nn = toNodeNotation(v)
         if (nn !== undefined) return nn
-      }
-      // 数组元素是关系对象时 → [:Label {props}]
-      if (typeof v === 'object' && v !== null && '_type' in (v as any)) {
-        return _toEdgeNotation(v as any)
       }
       if (Array.isArray(v) || (typeof v === 'object' && v !== null)) return _stringifyVal(v)
       return String(v)

@@ -1418,6 +1418,7 @@ async function _executeMultiMatchCrossJoin(
         const srcVar = opt.steps[0]?.source || ''
         const tgtVar = opt.steps[0]?.targetAlias || ''
         const pathVar = (opt.steps[0] as any)?.pathVariable || ''
+        const edgeVar = (opt.steps[0] as any)?.edgeVariable || ''
         const unboundSource = srcVar !== '' && !boundVars.has(srcVar) && srcVar !== tgtVar
         let matchedAny = false
         if (unboundSource && opt.steps.length) {
@@ -1438,7 +1439,13 @@ async function _executeMultiMatchCrossJoin(
                   r2[st.targetAlias] = ni != null && ni >= 0 ? _mkProps(allNodes[ni] as any) : null
                 }
               })
-              if (pathVar) r2[pathVar] = _buildOptPathObject(path, allNodes)
+              if (pathVar || edgeVar) {
+                const po = _buildOptPathObject(path, allNodes)
+                if (pathVar) r2[pathVar] = po
+                // A variable-length step's `edgeVariable` (`r` in `-[r*]->`) binds
+                // to the LIST of relationships along the walked path.
+                if (edgeVar) r2[edgeVar] = (po as any).__pathEdges ?? []
+              }
               next.push(r2)
               matchedAny = true
             }
@@ -1472,7 +1479,13 @@ async function _executeMultiMatchCrossJoin(
                     r2[st.targetAlias] = ni != null && ni >= 0 ? _mkProps(allNodes[ni] as any) : null
                   }
                 })
-                if (pathVar) r2[pathVar] = _buildOptPathObject(path, allNodes)
+                if (pathVar || edgeVar) {
+                  const po = _buildOptPathObject(path, allNodes)
+                  if (pathVar) r2[pathVar] = po
+                  // See the unbound-source branch: `edgeVariable` binds to the
+                  // relationship list of the variable-length walk.
+                  if (edgeVar) r2[edgeVar] = (po as any).__pathEdges ?? []
+                }
                 next.push(r2)
                 matchedAny = true
               }
@@ -1486,6 +1499,7 @@ async function _executeMultiMatchCrossJoin(
           if (srcVar && !boundVars.has(srcVar)) r2[srcVar] = null
           if (tgtVar && !boundVars.has(tgtVar)) r2[tgtVar] = null
           if (pathVar) r2[pathVar] = null
+          if (edgeVar && !boundVars.has(edgeVar)) r2[edgeVar] = null
           next.push(r2)
         }
       }
