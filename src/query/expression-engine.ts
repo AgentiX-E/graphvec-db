@@ -4638,8 +4638,11 @@ export function _isBalanced(s: string): boolean {
 }
 
 export function _findTopLevelOp(s: string, op: string): number {
-  let depth = 0
+  let depth = 0, inStr = false, strChar = ''
   for (let i = 0; i < s.length; i++) {
+    if (inStr && s[i] === '\\') { i++; continue }
+    if (inStr) { if (s[i] === strChar) inStr = false; continue }
+    if (s[i] === "'" || s[i] === '"') { inStr = true; strChar = s[i]; continue }
     if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth++
     if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth--
     if (depth === 0 && s.slice(i, i + op.length) === op) {
