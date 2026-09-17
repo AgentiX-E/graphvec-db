@@ -1039,8 +1039,14 @@ async function _executeMultiMatchCrossJoin(
       const key = `${e.srcIdx}|${e.dstIdx}|${e.label || ''}`
       if (relSeen.has(key)) continue
       relSeen.add(key)
+      // Canonical direction-insensitive identity: `(a)-[r]-(b)` and
+      // `(b)-[r]-(a)` denote the SAME relationship, so a bound `r` reused
+      // across two MATCH patterns must equate on `min|max|label`, not the
+      // traversal order.  `__edgeId` keeps the directed key (for uniqueness),
+      // while `__relId` is the undirected canonical used for join equality.
       const relObj: Record<string, unknown> = {
         __edgeId: key,
+        __relId: `${Math.min(e.srcIdx, e.dstIdx)}|${Math.max(e.srcIdx, e.dstIdx)}|${e.label || ''}`,
         __edgeLabel: e.label,
         __edgeLabelStr: e.label,
         _type: e.label,
@@ -1155,16 +1161,13 @@ async function _executeMultiMatchCrossJoin(
           // single binding to avoid a duplicate.
           const canAnchorS = startIdxs.length === allNodes.length || startIdxs.includes(s)
           const canAnchorD = startIdxs.length === allNodes.length || startIdxs.includes(d)
-          // Anonymous undirected edge (`()-[r:EDGE]-()`): neither endpoint is
-          // bound to a named variable, so there is no orientation to enumerate
-          // — emit ONE binding per relationship, otherwise the same `r` is
-          // listed twice (once per endpoint anchor) and downstream cross-joins
-          // multiply the row count.
-          if (!srcVar && !tgtVar) {
-            if (edgeVar) m[edgeVar] = rel
-            matches.push(m)
-            continue
-          }
+          // Anonymous undirected edge (`()-[r:EDGE]-()`): the two anonymous
+          // `()` are DISTINCT node variables, so a relationship matched
+          // undirected has two endpoint assignments (s,d) and (d,s) — emit a
+          // binding per assignment.  Downstream, a bound `r` reused across a
+          // second `MATCH p=...-[r]-...` joins on `__relId` (identity), and the
+          // two directional rows each expand the path, which is exactly the
+          // `count(p)` semantics (Match4 [7] expects 32 = 2× per-edge paths).
           if (canAnchorS) {
             const m1: Record<string, unknown> = { ...m }
             if (srcVar) m1[srcVar] = s
@@ -1300,33 +1303,55 @@ async function _executeMultiMatchCrossJoin(
           // re-anchors at the same node, consuming zero path positions), so the
           // node reached after step i is path[i + 1] for fixed-length steps.
           // For variable-length steps the hop count is data-dependent; we bind
-          // the target alias only when the step is fixed-length (no `.range`),
-          // where step i's target is exactly path[i+1].
+          // the target alias only when the step is fixed-length (no `.range`).
+          // `walk.hopCounts` (forwarded by `_walkMultiStepsWithEdges`) records
+          // how many hops each step consumed; the hop offset of step `pi` is the
+          // running sum of `hopCounts[0..pi-1]`.  A fixed-length edge-variable
+          // step binds the single edge at that offset, which is exactly its hop
+          // — NOT `hopEdges[pi]`, which is only correct when every preceding
+          // step consumed exactly one hop (false for `[*0..1]`-prefixed chains).
+          const hopCounts: number[] = (walk as any).hopCounts?.length === pat.steps.length
+            ? (walk as any).hopCounts
+            : pat.steps.map(() => 1)
+          // Running offset of each step's first hop.
+          const stepOffsets: number[] = []
+          let acc = 0
+          for (let pi = 0; pi < pat.steps.length; pi++) {
+            stepOffsets[pi] = acc
+            acc += hopCounts[pi] ?? 1
+          }
           for (let pi = 0; pi < pat.steps.length; pi++) {
             const st = pat.steps[pi] as any
-            // Edge variable binding (path edge pi spans path[pi] → path[pi+1]).
+            // Edge variable binding: a fixed-length step's edge is the hop at
+            // its computed offset (a variable-length step has no single edge).
             const ev = (st?.edgeVariable as string | undefined)
-            if (ev && hopEdges[pi]?.relEdge) {
-              const re = hopEdges[pi]!.relEdge
+            const hopIdx = stepOffsets[pi]
+            if (ev && !st.range && hopEdges[hopIdx]?.relEdge) {
+              const re = hopEdges[hopIdx]!.relEdge
               const edgeObj: Record<string, unknown> = {
                 __edgeLabel: re.label,
                 __edgeLabelStr: re.label,
                 _type: re.label,
                 _label: re.label,
               }
+              // Preserve direction-insensitive relationship identity so a bound
+              // `r` reused across patterns can join on `__relId` (the same edge
+              // traversed in reverse order is still the same relationship).
+              if (typeof re.srcIdx === 'number' && typeof re.dstIdx === 'number') {
+                edgeObj.__relId = `${Math.min(re.srcIdx, re.dstIdx)}|${Math.max(re.srcIdx, re.dstIdx)}|${re.label || ''}`
+                edgeObj.srcIdx = re.srcIdx
+                edgeObj.dstIdx = re.dstIdx
+              }
               if (re.props) for (const [k, v] of Object.entries(re.props)) edgeObj[k] = v
               m[ev] = edgeObj
             }
             // Intermediate node variable binding for fixed-length steps: the
-            // node reached after step pi is path[pi + 1].  This binds `x` in a
-            // chain like `(a)-->(x)<-->(b)` (firstSt.source=a→path[0],
-            // step0.target=x→path[1], lastSt.target=b→path[last]).  The FINAL
-            // step is already bound above to `path[path.length - 1]` (which is
-            // correct even after a variable-length step, whose hop count shifts
-            // every subsequent `pi + 1` offset), so it must not be re-bound here
-            // with a naive `pi + 1` that lands on an interior node.
+            // node reached after step pi is path[stepOffsets[pi] + 1] (offset by
+            // the hops all preceding steps consumed).  This binds `x` in a chain
+            // like `(a)-->(x)<-->(b)`.  The FINAL step's target is already bound
+            // above to `path[path.length - 1]`, so skip it here.
             if (st.targetAlias && !st.range && pi < pat.steps.length - 1) {
-              const ni = pi + 1
+              const ni = stepOffsets[pi] + 1
               if (ni < path.length) m[st.targetAlias] = path[ni]
             }
           }
@@ -1341,7 +1366,13 @@ async function _executeMultiMatchCrossJoin(
   // stored as node indices (numbers), so when two patterns both bind the same
   // variable (e.g. `a`), a row is only kept when the bindings agree.  Direct
   // Cartesian product would silently multiply `MATCH (a:A) MATCH (a)-[:R]->(c)`
-  // into cross rows instead of joining on the shared `a`.
+  // into cross rows instead of joining on the shared `a`.  A shared
+  // relationship variable (`MATCH ()-[r:EDGE]-() MATCH ...-[r]-...`) is bound
+  // to a relationship OBJECT on both sides, so it equates on the canonical
+  // direction-insensitive `__relId` rather than falling into a Cartesian
+  // product (which would multiply the row count by the number of relationships).
+  const _relIdOf = (v: unknown): string | undefined =>
+    (v && typeof v === 'object' && '__relId' in (v as any)) ? String((v as any).__relId) : undefined
   let crossRows: Array<Record<string, unknown>> = [{}]
   for (const matches of matchLists) {
     const next: Array<Record<string, unknown>> = []
@@ -1349,9 +1380,15 @@ async function _executeMultiMatchCrossJoin(
       for (const m of matches) {
         let compatible = true
         for (const k of Object.keys(m)) {
-          if (k in base && typeof m[k] === 'number' && typeof base[k] === 'number' && base[k] !== m[k]) {
-            compatible = false
-            break
+          if (!(k in base)) continue
+          const mv = m[k], bv = base[k]
+          if (typeof mv === 'number' && typeof bv === 'number') {
+            if (mv !== bv) { compatible = false; break }
+          } else {
+            const mr = _relIdOf(mv), br = _relIdOf(bv)
+            if (mr !== undefined || br !== undefined) {
+              if (mr !== br) { compatible = false; break }
+            }
           }
         }
         if (!compatible) continue

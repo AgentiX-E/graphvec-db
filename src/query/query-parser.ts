@@ -394,8 +394,13 @@ function _parseQueryImpl(query: string): QueryPlan {
 
   // ── Extract path variables from MATCH p = (n)-->() patterns ──
   // ANTLR does not recognise path variable assignment; inject into plan.steps
+  // The path variable belongs to the FIRST MATCH clause only (plan.steps maps
+  // to that clause), so anchor to the query start — a later `MATCH p = ...`
+  // (e.g. `MATCH ()-[r:EDGE]-() MATCH p = (n)-[*0..1]-...`) must NOT attach its
+  // path variable to the leading anonymous step, otherwise `p` leaks onto the
+  // wrong step and the executor mis-routes that pattern into the path branch.
   if (plan.steps?.length && query) {
-    const pvMatch = query.match(/MATCH\s+(\w+)\s*=\s*\(\s*(\w+)/i)
+    const pvMatch = query.match(/^\s*MATCH\s+(\w+)\s*=\s*\(\s*(\w+)/i)
     if (pvMatch && pvMatch[1] !== pvMatch[2]) {
       plan.steps[0].pathVariable = pvMatch[1]
     }
@@ -1257,11 +1262,14 @@ export function _walkMultiStepsWithEdges(
     return id
   }
 
-  // Internal path shape carries both the node sequence and the ids of the
-  // relationships consumed so far, so the edge-reuse guard below can reject a
-  // repeated relationship without rejecting a repeated node.
-  type _WalkPath = { ns: number[]; es: number[] }
-  let paths: _WalkPath[] = [{ ns: [startIdx], es: [] }]
+  // Internal path shape carries the node sequence, the ids of the relationships
+  // consumed so far (for the edge-reuse guard), and — for callers that bind
+  // per-step edge variables over a mixed fixed/variable-length chain — the
+  // number of hops each step consumed (`hopCounts[i]`).  A variable-length step
+  // may consume 0..N hops, so its hop count is data-dependent and this array is
+  // what lets a caller locate the exact hop(s) belonging to a later step.
+  type _WalkPath = { ns: number[]; es: number[]; hopCounts: number[] }
+  let paths: _WalkPath[] = [{ ns: [startIdx], es: [], hopCounts: [] }]
 
   // Chain closure.  A variable that re-appears later in the same pattern (the
   // `a` in `(a)-[:A]->()-[:B]->(a)`, or `n` in `(n)<-->(k)<-->(n)`) must bind
@@ -1387,8 +1395,10 @@ export function _walkMultiStepsWithEdges(
         }
         // Preserve the accumulated prefix and append each reached path.  The
         // zero-hop entry (reached[0]) keeps the prefix node sequence untouched.
+        // Record the hop count this variable-length step consumed (es grew by
+        // `f.es.length - p.es.length`), so callers can locate later steps' hops.
         for (const f of reached) {
-          newPaths.push({ ns: f.ns, es: f.es })
+          newPaths.push({ ns: f.ns, es: f.es, hopCounts: [...p.hopCounts, f.es.length - p.es.length] })
         }
       }
       paths = newPaths.length > 0 ? newPaths : []
@@ -1528,7 +1538,7 @@ export function _walkMultiStepsWithEdges(
           const firstPos = varFirstPos.get(ta)!
           if (firstPos <= p.ns.length - 1 && p.ns[firstPos] !== c.nIdx) continue
         }
-        newPaths.push({ ns: [...p.ns, c.nIdx], es: [...p.es, c.eId] })
+        newPaths.push({ ns: [...p.ns, c.nIdx], es: [...p.es, c.eId], hopCounts: [...p.hopCounts, 1] })
       }
     }
     paths = newPaths
@@ -1537,8 +1547,8 @@ export function _walkMultiStepsWithEdges(
 
   // Resolve consumed relationship ids back to their (srcIdx, dstIdx, label)
   // descriptors so callers can rebuild edge objects with the correct label and
-  // direction.
-  return paths.map(p => ({ ns: p.ns, es: p.es.map(id => edgeRefById.get(id) ?? { srcIdx: 0, dstIdx: 0, label: '' }) }))
+  // direction.  `hopCounts` (per-step hop counts) is forwarded unchanged.
+  return paths.map(p => ({ ns: p.ns, es: p.es.map(id => edgeRefById.get(id) ?? { srcIdx: 0, dstIdx: 0, label: '' }), hopCounts: p.hopCounts }))
 }
 
 function _pathEndIndices(paths: number[][]): Set<number> {
