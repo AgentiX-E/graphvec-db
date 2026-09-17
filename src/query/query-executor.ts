@@ -875,6 +875,74 @@ function hasProps(v: unknown): v is { props: Record<string, unknown> } {
   return !!v && typeof v === 'object' && 'props' in v
 }
 
+/**
+ * Find an existing node that a MERGE node pattern matches against.
+ *
+ * openCypher MERGE semantics: a node pattern matches an existing node when the
+ * labels intersect (a null `label` in the pattern matches any node) AND every
+ * pattern property is present on the node with an equal value (a null `props`
+ * matches any node).  When a match exists the node is reused (not created) and
+ * the ON MATCH branch fires; otherwise a fresh node is created and ON CREATE
+ * fires.  Returns the index of the first matching node in `allNodes`, or -1.
+ */
+function _findMergeNodeMatch(
+  node: { alias?: string; label?: string | null; props?: Record<string, unknown> | null },
+  allNodes: Array<Record<string, unknown>>,
+): number {
+  for (let i = 0; i < allNodes.length; i++) {
+    const cand = allNodes[i] as any
+    // Label match: pattern label (if any) must appear in the candidate's labels.
+    if (node.label) {
+      const candLabels = String(cand._label ?? cand.__fullLabel ?? '')
+        .split(':').map((s: string) => s.trim()).filter(Boolean)
+      if (!candLabels.includes(node.label)) continue
+    }
+    // Property match: every pattern property must exist with an equal value.
+    if (node.props && Object.keys(node.props).length > 0) {
+      let allMatch = true
+      for (const [k, pv] of Object.entries(node.props)) {
+        const want = unwrapTyped(pv)
+        // Candidate property may be at top level or nested under `props`.
+        let have = cand[k]
+        if (have === undefined && cand.props && typeof cand.props === 'object') {
+          have = cand.props[k]
+        }
+        have = unwrapTyped(have)
+        // Compare with Cypher equality: primitive deep-equal, not JS reference.
+        if (!_cypherValueEquals(have, want)) { allMatch = false; break }
+      }
+      if (!allMatch) continue
+    }
+    return i
+  }
+  return -1
+}
+
+/**
+ * Cypher value equality for property matching (used by MERGE node matching).
+ * Numbers compare by value (so `42` matches `42`), booleans and strings by
+ * value, and lists deeply.  `null`/`undefined` on the candidate side never
+ * matches a concrete pattern value.
+ */
+function _cypherValueEquals(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a == null || b == null) return false
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+      if (!_cypherValueEquals(a[i], b[i])) return false
+    }
+    return true
+  }
+  if (typeof a === 'number' && typeof b === 'number') return a === b
+  if (typeof a === 'bigint' && typeof b === 'bigint') return a === b
+  // cross numeric type: bigint vs number
+  if ((typeof a === 'bigint' && typeof b === 'number') || (typeof a === 'number' && typeof b === 'bigint')) {
+    return BigInt(a as any) === BigInt(b as any)
+  }
+  return String(a) === String(b)
+}
+
 /** 判断字符串是否为表达式值（函数调用或运算符表达式） */
 function _isExprValue(s: string): boolean {
   return /^[a-z_]\w*\s*\(.*\)\s*$/i.test(s) || /^(?:[-+!]|[\w.]+)\s+/.test(s) || /\s+(?:AND|OR|XOR|IN|IS|=|<>|<=?|>=?|[+\-*/%])\s/.test(s)
@@ -2104,6 +2172,28 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
       for (let ci = 0; ci < effectiveCreateNodes.length; ci++) {
         const cn = effectiveCreateNodes[ci]
+        // ── MERGE match-or-create ──
+        // A MERGE node (tagged `_isMerge`) must first look for an existing node
+        // with a matching label + properties.  When found, the node is reused
+        // (bound to its alias, no new node created) and the ON MATCH branch
+        // fires; otherwise a fresh node is created and ON CREATE fires.
+        if ((cn as any)._isMerge) {
+          const merged = _findMergeNodeMatch(cn as any, allNodes)
+          if (merged >= 0) {
+            // Reuse the existing node: bind the alias and record matched=true.
+            const existingNode = allNodes[merged] as any
+            if (cn.alias) {
+              varToNodeMap.set(cn.alias, existingNode)
+              existingNode._alias = cn.alias
+            }
+            cnToAllNodeMap.set(ci, merged)
+            ;(cn as any)._matched = true
+            ;(cn as any)._matchedIdx = merged
+            continue
+          }
+          // No match → fall through to creation below (ON CREATE branch).
+          ;(cn as any)._matched = false
+        }
         // 跳过仅引用已匹配节点的 createNode（无 label 无 props，且变量名已存在 MATCH 中）
         if (cn.alias && matchVars.has(cn.alias) && !cn.label && (!cn.props || !Object.keys(cn.props).length)) {
           // 不创建新节点，但保留 _alias 引用
@@ -2150,6 +2240,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         if (cn.alias) props['_alias'] = cn.alias
         allNodes.push(props)
         cnToAllNodeMap.set(ci, allNodes.length - 1)
+        // Record the freshly-created node index for ON CREATE SET routing.
+        if ((cn as any)._isMerge) (cn as any)._matchedIdx = allNodes.length - 1
       }
     }
 
@@ -2708,34 +2800,53 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
 
     // ── DML + RETURN：从 createNodes 构造结果行（GE 对 DML 返回空） ──
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && plan.returnColumns?.length) {
-      const created = _buildDmlRows(plan, allNodes)
-
       // ── MERGE ON CREATE / ON MATCH SET ──
+      // Apply ON CREATE/ON MATCH side effects to the nodes *before* building the
+      // result rows, so `MERGE ... ON CREATE SET a.num = 42 RETURN a.num` returns
+      // the post-SET value (42) rather than the pre-SET value.  Each merge node
+      // carries a `_matched` flag from the match-or-create step: matched=true fires
+      // ON MATCH against the reused node, matched=false fires ON CREATE against the
+      // freshly created node.
       if (plan.type === 'MERGE' && (plan.mergeOnCreate?.length || plan.mergeOnMatch?.length)) {
-        const originalCount = nodes.length
-        const newlyCreated = allNodes.slice(originalCount)
-        if (newlyCreated.length > 0) {
-          // 将 MATCH 变量注入 rc（支持 v.date 等属性访问表达式）
-          // 新创建节点 → ON CREATE SET
-          for (const nn of newlyCreated) {
-            for (const oc of plan.mergeOnCreate || []) {
-              nn[oc.property] = typeof oc.value === 'object' && oc.value !== null && 'value' in oc
-                ? (oc.value as any).value
-                : oc.value
+        const _applyMergeSet = (target: any, set: any): void => {
+          if (set.kind === 'LABEL') {
+            // Append the label to the node's `_label` (colon-joined, deduped).
+            const cur = String(target?._label ?? '').split(':').map((s: string) => s.trim()).filter(Boolean)
+            if (set.label && !cur.includes(set.label)) {
+              cur.push(set.label)
+              target._label = cur.join(':')
+              target.__fullLabel = cur.join(':')
             }
+            return
           }
-        } else if (plan.mergeOnMatch?.length) {
-          // 匹配已有 → ON MATCH SET
-          for (const targetNode of allNodes) {
-            for (const om of plan.mergeOnMatch) {
-              targetNode[om.property] = typeof om.value === 'object' && om.value !== null && 'value' in om
-                ? (om.value as any).value
-                : om.value
-            }
+          // PROP assignment (kind may be undefined for legacy {property,value}).
+          const propName = set.property
+          if (!propName) return
+          let val: unknown = set.value
+          // An expression RHS (a variable reference or computed value) is
+          // evaluated against the bound variables (the MERGE node + its alias).
+          if (set.expression) {
+            const ctx: Record<string, unknown> = {}
+            for (const [k, v] of (varToNodeMap as Map<string, any>).entries()) ctx[k] = (v as any).props ?? v
+            if (target) ctx[set.alias || ''] = target
+            try { val = _evalBinary(set.expression, ctx) } catch { val = set.expression }
+          } else if (val && typeof val === 'object' && 'value' in val) {
+            val = (val as any).value
+          }
+          target[propName] = val
+        }
+        for (const cn of effectiveCreateNodes) {
+          const mn = cn as any
+          if (!mn._isMerge) continue
+          const target = mn._matchedIdx != null ? allNodes[mn._matchedIdx] : null
+          const setList = mn._matched ? plan.mergeOnMatch : plan.mergeOnCreate
+          if (target && setList) {
+            for (const s of setList) _applyMergeSet(target, s)
           }
         }
       }
 
+      const created = _buildDmlRows(plan, allNodes)
       return _postProcessResults(created, plan)
     }
 

@@ -114,8 +114,8 @@ export interface QueryPlan {
   removeClauses?: Array<{ type: 'REMOVE_PROP' | 'REMOVE_LABEL'; property?: string; ref?: string; label?: string }>
   mergeNodes?: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
   mergeEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any' }>
-  mergeOnCreate?: Array<{ property: string; value: unknown }>
-  mergeOnMatch?: Array<{ property: string; value: unknown }>
+  mergeOnCreate?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }>
+  mergeOnMatch?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }>
   periodicCommit?: { batchSize?: number }
   constraint?: { label: string; property: string }
   [key: string]: any
@@ -1446,28 +1446,59 @@ function parseHavingClause(text: string): HavingClause[] {
 /**
  * Parse SET clauses from text like "n.created_at = timestamp(), n.foo = bar"
  */
-function parseSetClausesFromText(text: string): Array<{ property: string; value: unknown }> {
-  const results: Array<{ property: string; value: unknown }> = []
+function parseSetClausesFromText(text: string): Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }> {
+  const results: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }> = []
   const items = splitByTopLevelComma(text)
-  
+
   for (const item of items) {
-    const eqMatch = item.match(/^(\w+)\.(\w+)\s*=\s*(.+)$/)
+    const trimmed = item.trim()
+
+    // Label assignment: `SET a:Foo`, `SET a:Foo:Bar` (whitespace before the
+    // colon is legal).  MERGE ... ON CREATE SET a:Foo appends `Foo` to the
+    // node's labels.
+    const labelMatch = trimmed.match(/^\(?(\w+)\)?\s*:\s*([\w\s:]+)$/)
+    if (labelMatch && !trimmed.includes('=')) {
+      const alias = labelMatch[1]
+      const labels = labelMatch[2].split(':').map(s => s.trim()).filter(Boolean)
+      for (const label of labels) {
+        results.push({ kind: 'LABEL', alias, label })
+      }
+      continue
+    }
+
+    // Property assignment: `SET a.num = 42`, `SET a.name = m.name`, or
+    // `SET a.x = <expression>`.  A literal RHS is parsed to its JS value; any
+    // other RHS (a variable reference or expression) is kept as `expression`
+    // text so the ON CREATE/ON MATCH execution block can evaluate it against
+    // the bound variables.
+    const eqMatch = trimmed.match(/^\(?(\w+)\)?\.(\w+)\s*(=|\+=)\s*(.+)$/)
     if (eqMatch) {
-      const valueText = eqMatch[3].trim()
-      let value: unknown = valueText
-      // Try to parse literal values
-      if ((valueText.startsWith("'") && valueText.endsWith("'")) || 
+      const alias = eqMatch[1]
+      const property = eqMatch[2]
+      const valueText = eqMatch[4].trim()
+      let value: unknown
+      let expression: string | undefined
+      if ((valueText.startsWith("'") && valueText.endsWith("'")) ||
           (valueText.startsWith('"') && valueText.endsWith('"'))) {
         value = valueText.slice(1, -1)
-      } else if (valueText === 'true') value = true
-      else if (valueText === 'false') value = false
-      else if (/^-?\d+$/.test(valueText)) value = parseInt(valueText, 10)
-      else if (/^-?\d+\.\d+$/.test(valueText)) value = parseFloat(valueText)
-      
-      results.push({ property: eqMatch[2], value })
+      } else if (valueText === 'true') { value = true }
+      else if (valueText === 'false') { value = false }
+      else if (valueText === 'null') { value = null }
+      else if (/^-?\d+$/.test(valueText)) { value = parseInt(valueText, 10) }
+      else if (/^-?\d+\.\d+$/.test(valueText)) { value = parseFloat(valueText) }
+      else if (valueText.startsWith('{') && valueText.endsWith('}')) {
+        value = _parseMapLiteral(valueText)
+      } else if (valueText.startsWith('[') && valueText.endsWith(']')) {
+        value = parseListLiteral(valueText)
+      } else {
+        // Variable reference / expression: keep as text for later evaluation.
+        expression = valueText
+      }
+
+      results.push({ kind: 'PROP', property, value, alias, expression })
     }
   }
-  
+
   return results
 }
 

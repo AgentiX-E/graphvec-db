@@ -152,7 +152,13 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
     const alias = agg.alias || agg.column?.replace(/^.+?\(.+?\)(?:\s+AS\s+)?/i, '').trim() || agg.field || 'c'
     // 支持 count/sum/avg/min/max——从 allNodes 提取属性值做聚合
     const propField = agg.field || agg.property || ''
-    if (agg.fn === 'count') {
+    // The aggregate clause stores its function name in `function` (parsed by
+    // `ast-to-plan-v2.ts` as `AggregateClause.function`), not `fn`.  Reading the
+    // non-existent `fn` made EVERY aggregate fall through to the `default` branch
+    // and emit `0`, so `MERGE (n) RETURN count(n)` returned 0 instead of 1.
+    const aggFn = agg.function || agg.fn || agg.type || ''
+    if (aggFn === 'count') {
+      // `count(n)` / `count(*)` over freshly-created (or merged) rows.
       row[alias] = allNodes.length
     } else if (propField) {
       const values = allNodes
@@ -160,7 +166,7 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
         .filter((v: any) => v !== undefined && v !== null)
         .map(Number)
         .filter((v: any) => !isNaN(v))
-      switch (agg.fn) {
+      switch (aggFn) {
         case 'sum':
           row[alias] = values.reduce((a: number, b: number) => a + b, 0)
           break
@@ -196,8 +202,46 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
 
   const row: QueryRow = {}
 
+  // ── Alias-scoped projection resolution ──
+  // `RETURN a.num` projects a property of the MERGE/CREATE variable `a`, NOT an
+  // arbitrary node's property.  When the query is DML-backed (MERGE/CREATE), the
+  // seed nodes still sit at the FRONT of `allNodes`, so a naive first-match scan
+  // (`for ... if (rc in node) break`) would read the seed's `num` (42) instead of
+  // the freshly-created node's `num` (43).  Resolve the alias-declaring variable
+  // first and prefer that node whenever `rc` maps to a `var.prop` expression.
+  const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+  const v2n = (allNodes as any).__varToNodeMap as Map<string, any> | undefined
+  const _targetNodeFor = (rc: string): Record<string, unknown> | undefined => {
+    if (!aliasMap) return undefined
+    const expr = aliasMap[rc]
+    if (!expr || !expr.includes('.')) return undefined
+    const varName = expr.split('.')[0].trim()
+    // Prefer the live binding table (MERGE match-or-create binds the alias to
+    // either the reused or the freshly-created node).
+    if (v2n?.has(varName)) return v2n.get(varName)
+    // Fall back to `_alias` tagging on the freshly created node (which sits at
+    // the tail of allNodes; scan backwards so it wins over a same-named seed).
+    for (let i = allNodes.length - 1; i >= 0; i--) {
+      if ((allNodes[i] as any)._alias === varName) return allNodes[i]
+    }
+    return undefined
+  }
+
   for (const rc of plan.returnColumns) {
     if (!rc) continue
+
+    // Alias-scoped projection: resolve against the variable's node first.
+    const targetNode = _targetNodeFor(rc)
+    if (targetNode) {
+      const tProps = (targetNode as any).props && typeof (targetNode as any).props === 'object'
+        ? (targetNode as any).props
+        : targetNode
+      const propName = (aliasMap![rc] || '').split('.').pop()!
+      let tVal: unknown = (targetNode as any)[propName]
+      if (tVal === undefined && tProps && typeof tProps === 'object') tVal = tProps[propName]
+      tVal = (tVal && typeof tVal === 'object' && 'value' in tVal) ? (tVal as any).value : tVal
+      if (tVal !== undefined) { row[rc] = tVal; continue }
+    }
 
     // 阶段 1: rc 作为属性名，直接匹配 node 顶层（allNodes 的 props 已展开到顶层）
     let val: unknown = undefined
@@ -230,7 +274,6 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
     }
 
     // 阶段 3: rc 是属性别名（RETURN n.name AS p）— 用 returnAliasMap 反向解析
-    const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
     if (aliasMap && rc in aliasMap) {
       const expr = aliasMap[rc]  // 原始表达式如 "n.name"
       // Dynamic property access (n['nam' + 'e']) and parameterized lookup
@@ -248,6 +291,14 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
         // Bind each created node by alias too (n -> its props).
         for (const cn of insertNodes) {
           if (cn.alias) {
+            // Prefer the LIVE node (with any ON CREATE/ON MATCH SET side effects,
+            // e.g. an appended label) over the raw template, so `labels(a)`
+            // reflects the post-set `_label` (`TheLabel:Foo`).
+            const live = allNodes.find((n: any) => (n as any)._alias === cn.alias)
+            if (live) {
+              varCtx[cn.alias] = live
+              continue
+            }
             const clean: Record<string, unknown> = {}
             if (cn.props) for (const [k, v] of Object.entries(cn.props)) {
               clean[k] = (v && (v as any).value !== undefined) ? (v as any).value : v
@@ -300,10 +351,20 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
         const varCtx: Record<string, unknown> = {}
         for (const cn of insertNodes) {
           if (cn.alias) {
-            const clean: Record<string, unknown> = {}
-            if (cn.props) Object.assign(clean, cn.props)
-            if (cn.label) clean['_label'] = cn.label
-            varCtx[cn.alias] = clean
+            // Prefer the LIVE node from allNodes (which carries any ON CREATE /
+            // ON MATCH SET side effects, e.g. an appended label or a SET property)
+            // over the raw createNode template.  `labels(a)` must reflect the
+            // post-SET `_label` (`TheLabel:Foo`), not the template's `TheLabel`.
+            let live = allNodes.find((n: any) => n._alias === cn.alias)
+            if (!live) live = (allNodes as any).__varToNodeMap?.get(cn.alias)
+            if (live) {
+              varCtx[cn.alias] = live
+            } else {
+              const clean: Record<string, unknown> = {}
+              if (cn.props) Object.assign(clean, cn.props)
+              if (cn.label) clean['_label'] = cn.label
+              varCtx[cn.alias] = clean
+            }
           }
         }
         try {

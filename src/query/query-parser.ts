@@ -435,9 +435,15 @@ function _parseQueryImpl(query: string): QueryPlan {
   }
 
   // ── MERGE: mergeNodes → createNodes（CREATE 路径复用） ──
+  // Each mergeNode is tagged `_isMerge` (by reference) so the executor can
+  // distinguish "match-or-create" nodes from plain CREATE nodes in a mixed
+  // `CREATE ... MERGE ...` query.  MERGE must first look for an existing
+  // matching node (reuse + ON MATCH) before falling back to creation (ON CREATE);
+  // plain CREATE always materializes a new node.
   if (plan.type === 'MERGE' && plan.mergeNodes?.length) {
     if (!plan.createNodes) plan.createNodes = []
     for (const mn of plan.mergeNodes) {
+      ;(mn as any)._isMerge = true
       plan.createNodes.push(mn)
     }
   }
