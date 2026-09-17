@@ -972,7 +972,35 @@ async function _executeMultiMatchCrossJoin(
   nodes: Array<Record<string, unknown>>,
   query?: string,
 ): Promise<QueryRow[] | null> {
-  const mm = (plan as any).multiMatch as Array<{ scanLabel: string | null; steps: TraverseStep[]; variable?: string }> | undefined
+  let mm = (plan as any).multiMatch as Array<{ scanLabel: string | null; steps: TraverseStep[]; variable?: string }> | undefined
+  // A bare-node `MERGE (b)` (no label, no properties, no edges) followed by an
+  // OPTIONAL MATCH and an aggregate — e.g. Match8's
+  // `MATCH (a) MERGE (b) WITH * OPTIONAL MATCH (a)--(b) RETURN count(*)` — is a
+  // *row-counting* query, not an update: the MERGE matches every existing node
+  // (creating nothing when any node exists) exactly like a bare `MATCH (b)`.
+  // `parseQuery` routes such a plan down the DML fast path (`type = 'MERGE'`),
+  // which drops the MATCH bindings and collapses `count(*)` to 0.  Stage each
+  // bare merge node as an additional MATCH pattern so the cross-join below
+  // binds `b` over every node, the optional match expands, and the aggregate
+  // fold yields the correct row count.  (MERGE-with-label/props/edges still
+  // keeps full update semantics and never reaches this transformation.)
+  if ((plan as any).type === 'MERGE' && !mm?.length &&
+      (plan as any).optionalMatchSteps?.length && (plan as any).aggregate) {
+    const mNodes = ((plan as any).mergeNodes || []) as Array<{ alias?: string; label?: string | null; props?: Record<string, unknown> | null }>
+    const mEdges = ((plan as any).mergeEdges || []) as Array<any>
+    const isBare = (n: any): boolean => !n?.label && (n?.props == null || Object.keys(n.props).length === 0)
+    if (!mEdges.length && mNodes.every(isBare) && nodes.length > 0) {
+      mm = mNodes.map(n => ({ scanLabel: null, steps: [], variable: n.alias || undefined }))
+      // The bare MERGE is purely a row-counting match here (it creates nothing
+      // when nodes already exist), so downgrade the plan type to QUERY and
+      // materialise `multiMatch` on the plan itself so the OPTIONAL MATCH
+      // expansion below sees `b` (and every bare merge alias) as a bound
+      // variable — otherwise `(a)--(b)` treats `b` as a free source and
+      // over-enumerates rows (8 instead of 6).
+      ;(plan as any).type = 'QUERY'
+      ;(plan as any).multiMatch = mm
+    }
+  }
   if (!mm?.length) return null
 
   // Assemble all independent patterns: pattern[0] = primary MATCH
@@ -1127,6 +1155,16 @@ async function _executeMultiMatchCrossJoin(
           // single binding to avoid a duplicate.
           const canAnchorS = startIdxs.length === allNodes.length || startIdxs.includes(s)
           const canAnchorD = startIdxs.length === allNodes.length || startIdxs.includes(d)
+          // Anonymous undirected edge (`()-[r:EDGE]-()`): neither endpoint is
+          // bound to a named variable, so there is no orientation to enumerate
+          // — emit ONE binding per relationship, otherwise the same `r` is
+          // listed twice (once per endpoint anchor) and downstream cross-joins
+          // multiply the row count.
+          if (!srcVar && !tgtVar) {
+            if (edgeVar) m[edgeVar] = rel
+            matches.push(m)
+            continue
+          }
           if (canAnchorS) {
             const m1: Record<string, unknown> = { ...m }
             if (srcVar) m1[srcVar] = s
@@ -1177,19 +1215,39 @@ async function _executeMultiMatchCrossJoin(
         matches.push(m)
       }
     } else {
-      // Path or multi-step pattern: walk via _walkMultiSteps and build path objects.
+      // Path or multi-step pattern: walk via the edge-aware traversal and build
+      // path objects.  `_walkMultiStepsWithEdges` returns, for each matched
+      // trail, the node-index sequence AND the exact relationship consumed per
+      // hop (source-owned edges de-duplicated across the two endpoint copies
+      // that a single-statement CREATE attaches to both ends).  Binding each
+      // hop's edge variable from this precise sequence — rather than re-looking
+      // up an edge by an undirected `srcIdx/dstIdx === next` test — is what
+      // keeps `r1` in `()-[r1]->()<--()` bound to the correct outgoing edge when
+      // a node carries both incoming and outgoing relationships.
       for (const si of startIdxs) {
-        const paths = _walkMultiSteps(si, pat.steps, allNodes, undefined, plan.filters, undefined)
-        for (const path of paths) {
+        const walks = _walkMultiStepsWithEdges(si, pat.steps, allNodes, undefined, plan.filters, undefined)
+        for (const walk of walks) {
+          const path = walk.ns
           const m: Record<string, unknown> = {}
-          // Resolve the relationship edge for each hop, keyed by step index, so
-          // both the path object (node0, edge0, node1, ...) and the per-step
-          // edge variables (r1, r2, ...) can be bound from a single traversal.
+          // Resolve the relationship edge for each hop from the traversal's own
+          // edge sequence (`walk.es[pi]`), keyed by hop index.  Each entry is a
+          // `{ srcIdx, dstIdx, label }` reference; further re-materialise the
+          // optional `props` from the source node's `__edges` so that edge
+          // variables expose `r1.times` etc.  This replaces the previous
+          // undirected re-lookup that mis-bound edges when a node has both
+          // incoming and outgoing relationships stored on it.
           const hopEdges: Array<{ relEdge: any } | null> = []
           for (let pi = 0; pi < path.length - 1; pi++) {
-            const a = allNodes[path[pi]] as any
-            const edges = (a?.__edges || []) as Array<{ srcIdx: number; dstIdx: number; label: string; props?: any }>
-            const relEdge = edges.find(ee => ee.dstIdx === path[pi + 1] || ee.srcIdx === path[pi + 1])
+            const ref = walk.es[pi]
+            let relEdge: any = ref || null
+            // Recover the full edge record (with props) from the source node's
+            // outgoing edge list, matching src/dst/label to stay faithful to the
+            // direction the walk actually traversed.
+            if (ref) {
+              const a = allNodes[ref.srcIdx] as any
+              const edges = (a?.__edges || []) as Array<{ srcIdx: number; dstIdx: number; label: string; props?: any }>
+              relEdge = edges.find(ee => ee.srcIdx === ref.srcIdx && ee.dstIdx === ref.dstIdx && (ee.label || '') === (ref.label || '')) || ref
+            }
             hopEdges.push(relEdge ? { relEdge } : null)
           }
           if (pathVar) {
@@ -1648,7 +1706,70 @@ async function _executeMultiMatchCrossJoin(
     : ((agg?.column || '').replace(/^.+?\s+AS\s+/i, '').trim() || agg?.field || agg?.column || 'c')
   let out: QueryRow[]
   if (plan.aggregate) {
-    out = [{ [alias]: filtered.length }]
+    // Apply the aggregate function (`sum`, `avg`, `min`, `max`, `count`,
+    // `collect`) over the cross-joined rows.  Previously this branch returned
+    // `filtered.length` for ANY aggregate, so `RETURN sum(r1.times)` over a
+    // `MATCH ()-[r1]->()<--()` expansion collapsed to the row count instead of
+    // summing the relationship property.  Resolve the aggregate field against
+    // each bound row: a dotted field (`r1.times`) reads the property of the
+    // bound relationship object, a bare (`*` / node var / relationship var) is
+    // handled per function below.
+    const aggFn = (agg?.function || agg?.type || 'count').toLowerCase()
+    const field: string = agg?.field ?? '*'
+    const varName = field.includes('.') ? field.split('.')[0] : field
+    const propName = field.includes('.') ? field.split('.').pop()! : null
+    const rowValue = (row: Record<string, unknown>): unknown => {
+      if (field === '*' || field === '' || field === null) return row
+      const owner = row[varName]
+      if (propName && owner && typeof owner === 'object') return (owner as any)[propName]
+      if (field === 'count' || field === '*') return row
+      return owner
+    }
+    const values = filtered.map(rowValue)
+    let aggVal: unknown
+    switch (aggFn) {
+      case 'count': {
+        if (field === '*' || field === '' || field === null) aggVal = filtered.length
+        else aggVal = values.filter(v => v !== null && v !== undefined).length
+        break
+      }
+      case 'sum': {
+        const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+        aggVal = nums.reduce((a: number, b: number) => a + b, 0)
+        break
+      }
+      case 'avg': {
+        const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+        aggVal = nums.length ? nums.reduce((a: number, b: number) => a + b, 0) / nums.length : 0
+        break
+      }
+      case 'min': {
+        const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+        aggVal = nums.length ? Math.min(...nums) : 0
+        break
+      }
+      case 'max': {
+        const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+        aggVal = nums.length ? Math.max(...nums) : 0
+        break
+      }
+      case 'collect': {
+        const seen = new Set<unknown>()
+        aggVal = values.filter(v => {
+          if (v === null || v === undefined) return false
+          if (agg?.distinct) {
+            const key = typeof v === 'object' ? JSON.stringify(v) : String(v)
+            if (seen.has(key)) return false
+            seen.add(key)
+          }
+          return true
+        })
+        break
+      }
+      default:
+        aggVal = filtered.length
+    }
+    out = [{ [alias]: aggVal }]
   } else {
     // Expression columns (e.g. `p1 = p2`).
     out = filtered.map(row => {
@@ -6519,7 +6640,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   const toIdx = path[hop + 1]
                   const fromN = fromIdx != null ? allNodes[fromIdx] as any : undefined
                   const fromEdges = (fromN?.__edges || []) as Array<{srcIdx:number; dstIdx:number; label:string; props?:Record<string,unknown>}> | undefined
-                  const ee = fromEdges?.find((e: any) => (e.dstIdx === toIdx || e.srcIdx === toIdx))
+                  // Prefer the edge that exactly connects fromIdx → toIdx in the
+                  // matching orientation.  For a self-loop (fromIdx === toIdx) the
+                  // loose `dstIdx === toIdx || srcIdx === toIdx` test would grab an
+                  // unrelated inbound neighbour edge before the loop edge, so insist
+                  // on srcIdx === fromIdx && dstIdx === toIdx when the endpoints
+                  // coincide; otherwise fall back to an undirected endpoint match.
+                  let ee = fromIdx === toIdx
+                    ? fromEdges?.find((e: any) => (e.srcIdx === fromIdx && e.dstIdx === toIdx))
+                    : fromEdges?.find((e: any) => (e.dstIdx === toIdx || e.srcIdx === toIdx))
+                  if (!ee && fromIdx !== toIdx) ee = fromEdges?.find((e: any) => (e.srcIdx === toIdx && e.dstIdx === fromIdx))
                   if (ee) {
                     const edgeObj: Record<string, unknown> = {
                       __edgeLabel: ee.label,
@@ -6557,7 +6687,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     const aIdx = path[pi]
                     const bIdx = path[pi + 1]
                     const aN = aIdx != null ? allNodes[aIdx] as any : undefined
-                    const ee2 = (aN?.__edges || []).find((e: any) => (e.dstIdx === bIdx || e.srcIdx === bIdx))
+                    const ee2 = aIdx === bIdx
+                      ? (aN?.__edges || []).find((e: any) => (e.srcIdx === aIdx && e.dstIdx === bIdx))
+                      : (aN?.__edges || []).find((e: any) => (e.dstIdx === bIdx || e.srcIdx === bIdx))
                     if (ee2) {
                       const eo: Record<string, unknown> = {
                         __edgeLabel: ee2.label ?? '',
