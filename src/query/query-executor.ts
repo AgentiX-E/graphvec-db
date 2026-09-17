@@ -1897,7 +1897,32 @@ async function _executeMultiMatchCrossJoin(
         }
       }
       if (matching.length) {
+        // ON MATCH SET applies to the matched relationships: property
+        // assignment, whole-entity copy (`SET r = a`), or map append
+        // (`SET r += {...}`) mutate the matched edge's props in place — the
+        // edge object is shared with the caller's node array, so no explicit
+        // write-back is needed.
+        const onMatch = (plan as any).mergeOnMatch as Array<{ kind?: string; property?: string; value?: unknown; alias?: string; fromAlias?: string; map?: Record<string, unknown> }> | undefined
         for (const ex of matching) {
+          if (onMatch && ev) {
+            let mp = (ex.props ?? {}) as Record<string, unknown>
+            for (const om of onMatch) {
+              if (om.alias !== ev) continue
+              if (om.kind === 'PROP' && om.property) {
+                mp[om.property] = (om.value as any)?.value ?? om.value
+              } else if (om.kind === 'COPY' && om.fromAlias) {
+                const src = row[om.fromAlias] as Record<string, unknown> | undefined
+                if (src && typeof src === 'object') {
+                  for (const [k, v] of Object.entries(src)) {
+                    if (!k.startsWith('_') && k !== '__edges' && k !== 'id') mp[k] = v
+                  }
+                }
+              } else if (om.kind === 'MAP_APPEND' && om.map) {
+                Object.assign(mp, om.map)
+              }
+            }
+            if (Object.keys(mp).length) ex.props = mp
+          }
           const r2: Record<string, unknown> = { ...row }
           if (ev) r2[ev] = _mkEdgeObj(ex.srcIdx, ex.dstIdx, ex.label, ex.props ?? null)
           mergedRows.push(r2)
@@ -1909,12 +1934,25 @@ async function _executeMultiMatchCrossJoin(
         // the freshly-created relationship carries both (`MERGE (a)-[r:T {x}]->(b)
         // ON CREATE SET r.y = v` produces an edge with x AND y).
         const edgeProps: Record<string, unknown> = { ...(me.props || {}) }
-        const onCreate = (plan as any).mergeOnCreate as Array<{ kind?: string; property?: string; value?: unknown; alias?: string }> | undefined
+        const onCreate = (plan as any).mergeOnCreate as Array<{ kind?: string; property?: string; value?: unknown; alias?: string; fromAlias?: string; map?: Record<string, unknown> }> | undefined
         if (onCreate && ev) {
           for (const oc of onCreate) {
-            if (oc.kind === 'PROP' && oc.alias === ev && oc.property) {
+            if (oc.alias !== ev) continue
+            if (oc.kind === 'PROP' && oc.property) {
               const raw = (oc.value as any)?.value ?? oc.value
               edgeProps[oc.property] = raw
+            } else if (oc.kind === 'COPY' && oc.fromAlias) {
+              // `SET r = a` copies every user property of the source node onto
+              // the freshly-created relationship.
+              const src = row[oc.fromAlias] as Record<string, unknown> | undefined
+              if (src && typeof src === 'object') {
+                for (const [k, v] of Object.entries(src)) {
+                  if (!k.startsWith('_') && k !== '__edges' && k !== 'id') edgeProps[k] = v
+                }
+              }
+            } else if (oc.kind === 'MAP_APPEND' && oc.map) {
+              // `SET r += { ... }` adds/overwrites the given map entries.
+              Object.assign(edgeProps, oc.map)
             }
           }
         }

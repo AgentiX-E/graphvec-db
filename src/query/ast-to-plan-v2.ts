@@ -114,8 +114,8 @@ export interface QueryPlan {
   removeClauses?: Array<{ type: 'REMOVE_PROP' | 'REMOVE_LABEL'; property?: string; ref?: string; label?: string }>
   mergeNodes?: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
   mergeEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any'; variable?: string | null; props?: Record<string, unknown> | null }>
-  mergeOnCreate?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }>
-  mergeOnMatch?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }>
+  mergeOnCreate?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL' | 'COPY' | 'MAP_APPEND'; label?: string; alias?: string; expression?: string; fromAlias?: string; map?: Record<string, unknown> }>
+  mergeOnMatch?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL' | 'COPY' | 'MAP_APPEND'; label?: string; alias?: string; expression?: string; fromAlias?: string; map?: Record<string, unknown> }>
   periodicCommit?: { batchSize?: number }
   constraint?: { label: string; property: string }
   [key: string]: any
@@ -1446,8 +1446,8 @@ function parseHavingClause(text: string): HavingClause[] {
 /**
  * Parse SET clauses from text like "n.created_at = timestamp(), n.foo = bar"
  */
-function parseSetClausesFromText(text: string): Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }> {
-  const results: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }> = []
+function parseSetClausesFromText(text: string): Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL' | 'COPY' | 'MAP_APPEND'; label?: string; alias?: string; expression?: string; fromAlias?: string; map?: Record<string, unknown> }> {
+  const results: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL' | 'COPY' | 'MAP_APPEND'; label?: string; alias?: string; expression?: string; fromAlias?: string; map?: Record<string, unknown> }> = []
   const items = splitByTopLevelComma(text)
 
   for (const item of items) {
@@ -1463,6 +1463,22 @@ function parseSetClausesFromText(text: string): Array<{ property?: string; value
       for (const label of labels) {
         results.push({ kind: 'LABEL', alias, label })
       }
+      continue
+    }
+
+    // Whole-entity copy: `SET r = a` (copy a node's properties onto a
+    // relationship) — a bare variable RHS with no `.prop` LHS.
+    const copyMatch = trimmed.match(/^\(?(\w+)\)?\s*=\s*(\w+)$/)
+    if (copyMatch) {
+      results.push({ kind: 'COPY' as any, alias: copyMatch[1], fromAlias: copyMatch[2] })
+      continue
+    }
+
+    // Map append onto a relationship: `SET r += {name: 'bar'}` (add/overwrite
+    // the given map entries on the relationship).
+    const mapAppendMatch = trimmed.match(/^\(?(\w+)\)?\s*\+=\s*(\{.*\})$/)
+    if (mapAppendMatch) {
+      results.push({ kind: 'MAP_APPEND' as any, alias: mapAppendMatch[1], map: _parseMapLiteral(mapAppendMatch[2]) })
       continue
     }
 
