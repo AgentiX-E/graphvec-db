@@ -1905,14 +1905,38 @@ async function _executeMultiMatchCrossJoin(
       } else {
         // Create the edge: record it on both endpoints' __edges (the same
         // sync-to-memory convention used by the CREATE relationship path).
+        // Merge the pattern-inline props with any ON CREATE SET properties so
+        // the freshly-created relationship carries both (`MERGE (a)-[r:T {x}]->(b)
+        // ON CREATE SET r.y = v` produces an edge with x AND y).
+        const edgeProps: Record<string, unknown> = { ...(me.props || {}) }
+        const onCreate = (plan as any).mergeOnCreate as Array<{ kind?: string; property?: string; value?: unknown; alias?: string }> | undefined
+        if (onCreate && ev) {
+          for (const oc of onCreate) {
+            if (oc.kind === 'PROP' && oc.alias === ev && oc.property) {
+              const raw = (oc.value as any)?.value ?? oc.value
+              edgeProps[oc.property] = raw
+            }
+          }
+        }
         const edgeRecord: any = { srcIdx: edgeSrc, dstIdx: edgeDst, label }
-        if (me.props && Object.keys(me.props).length) edgeRecord.props = me.props
+        if (Object.keys(edgeProps).length) edgeRecord.props = edgeProps
         ;(allNodes[edgeSrc] as any).__edges = (allNodes[edgeSrc] as any).__edges || []
         ;(allNodes[edgeDst] as any).__edges = (allNodes[edgeDst] as any).__edges || []
         ;(allNodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
         ;(allNodes[edgeDst] as any).__edges.push({ ...edgeRecord })
+        // Persist the created edge back to the caller's node array (`nodes`),
+        // which is `st.nodes` for the TCK harness.  The clone above isolated the
+        // cross-join's `allNodes` `__edges` arrays, so without this write-back a
+        // subsequent control query (`MATCH ()-[r:TYPE]->()`) cannot observe the
+        // relationships that MERGE just created.
+        if (nodes && nodes[edgeSrc] && nodes[edgeDst]) {
+          ;(nodes[edgeSrc] as any).__edges = (nodes[edgeSrc] as any).__edges || []
+          ;(nodes[edgeDst] as any).__edges = (nodes[edgeDst] as any).__edges || []
+          ;(nodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
+          ;(nodes[edgeDst] as any).__edges.push({ ...edgeRecord })
+        }
         const r2: Record<string, unknown> = { ...row }
-        if (ev) r2[ev] = _mkEdgeObj(edgeSrc, edgeDst, label, me.props ?? null)
+        if (ev) r2[ev] = _mkEdgeObj(edgeSrc, edgeDst, label, Object.keys(edgeProps).length ? edgeProps : null)
         mergedRows.push(r2)
       }
     }
