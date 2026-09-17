@@ -144,7 +144,10 @@ export function executeVarLenPath(plan: any, nodes: Array<Record<string, unknown
   const step = plan.steps[0]
   const range = (step as any).range
   const minHops = range.min ?? 1
-  const maxHops = Math.min(range.max ?? 10, 50)
+  // An unbounded `*` (range.max === null) must traverse every reachable node,
+  // not a hard-coded 10 hops — a 21-link chain would otherwise be truncated.
+  // Cap at 50 only as a safety guard (never a semantic bound).
+  const maxHops = Math.min(range.max ?? 50, 50)
   const result: QueryRow[] = []
   const srcNodes: Array<Record<string, unknown>> = [...(nodes || [])]
 
@@ -382,7 +385,8 @@ function _executeVarLenChain(plan: any, nodes: Array<Record<string, unknown>>): 
   const firstStep = steps[0]
   const firstRange = firstStep.range
   const firstMin = firstRange.min ?? 1
-  const firstMax = Math.min(firstRange.max ?? 10, 50)
+  // Unbounded `*` traverses every reachable node (cap 50 as a safety guard).
+  const firstMax = Math.min(firstRange.max ?? 50, 50)
 
   // Determine start node candidates (honouring scanLabel + sourceProps).
   const startIdxs: number[] = []
@@ -416,7 +420,7 @@ function _executeVarLenChain(plan: any, nodes: Array<Record<string, unknown>>): 
     const step = steps[si]
     const range = step.range
     const minHops = range.min ?? 1
-    const maxHops = Math.min(range.max ?? 10, 50)
+    const maxHops = Math.min(range.max ?? 50, 50)
     const nextRows: Array<Record<string, unknown> & { __stepEnd: number; __fullPath: number[]; __fullEdges: Array<Record<string, unknown>> }> = []
     if (si === 0) {
       for (const startIdx of startIdxs) {

@@ -11,7 +11,7 @@ import fs from 'fs'
 import crypto from 'crypto'
 import { parseQuery, _executeQuery, _validatePlan, _clearGeInstances } from '../query-engine'
 import { _evalBinary, _isExprValue } from '../expression-engine'
-import { _resolveUnwindList } from '../query-parser'
+import { _resolveUnwindList, _splitWithColumns } from '../query-parser'
 import { GraphEngine } from '../../core/graph-engine'
 import { globalRegistry as _globalProcedureRegistry, type CypherProcedure } from '../procedure-registry'
 import { extractEdgesFromNodes } from '../executor-validators'
@@ -173,6 +173,109 @@ function nodesFromGe(ge: any): any[] {
   } catch { return [] }
 }
 
+// Evaluate a WITH clause inside a multi-statement seed, updating the row-aligned
+// variable environment (`varEnv`) so later statements can reference the projected
+// variables.  Two forms are distinguished:
+//
+//   1. Aggregating WITH — `WITH a, b, [a] + collect(n) + [b] AS nodeList`.
+//      `collect(x)` folds the whole `x` column (stored as a length-N array) into
+//      a single list; the surrounding list concatenation then builds the projected
+//      value.  Any column may be a plain projection (single value) or an aggregate
+//      (list).  The result is ONE row: each projected column becomes a 1-element
+//      entry in varEnv.
+//
+//   2. Row-expanding WITH — `WITH nodeList[i] AS n1, nodeList[i+1] AS n2`,
+//      immediately following a `UNWIND ... AS i`.  Each index expression
+//      `list[idxVar]` projects, per UNWIND row, `list[ idxVar[k] ]`, producing one
+//      result per row.  An index expression references a scalar index variable in
+//      varEnv (e.g. `i`) and a list variable (e.g. `nodeList`).
+//
+// After a WITH the Cypher scope is re-established: only the projected columns
+// survive; every other variable is dropped.
+function _applySeedWith(body: string, varEnv: Map<string, unknown[]>): void {
+  const columns = _splitWithColumns(body)
+  const projected = new Map<string, unknown[]>()
+  // Detect the row length driver: the longest array among referenced scalar
+  // variables, defaulting to a single row when there is no expanding driver
+  // (a plain projection or an aggregation).
+  const rowLen = Math.max(1, ...(Array.from(varEnv.values()).map(v => Array.isArray(v) ? v.length : 1)))
+  // Resolve a variable reference to a single (current-row) value.  For an array
+  // column, the "current row" is ambiguous outside an explicit index variable; we
+  // resolve to the first element for scalar projection, and rely on collect()
+  // handling for full-column aggregation.
+  const resolveVar = (name: string): unknown => {
+    const v = varEnv.get(name)
+    if (v === undefined) return undefined
+    if (Array.isArray(v)) return v.length === 1 ? v[0] : v
+    return v
+  }
+  // Aggregate a full column into a list (the `collect(x)` semantic).
+  const collectColumn = (name: string): unknown => {
+    const v = varEnv.get(name)
+    if (v === undefined) return []
+    if (Array.isArray(v)) return v.slice()
+    return [v]
+  }
+  for (const rawCol of columns) {
+    // Split `expr [AS alias]` on the top-level ` AS `.
+    const asMatch = rawCol.match(/^(.*?)\s+AS\s+([A-Za-z_]\w*)\s*$/i)
+    const expr = (asMatch ? asMatch[1] : rawCol).trim()
+    const alias = asMatch ? asMatch[2] : (expr.match(/^[A-Za-z_]\w*$/) ? expr : expr)
+    // Build an evaluation context whose variable references resolve to scalar
+    // values, but whose `collect(...)` aggregate is specialised by pre-substituting
+    // collect(x) → a placeholder variable that carries the full column (as a real
+    // object reference, NOT via JSON, so node identity is preserved).
+    const ctx: Record<string, unknown> = {}
+    for (const [k, v] of varEnv) ctx[k] = Array.isArray(v) ? (v.length === 1 ? v[0] : v) : v
+    // Expand any `collect(<var>)` call to the full-column list before evaluation,
+    // so `[a] + collect(n) + [b]` concatenates correctly.  Use a unique
+    // placeholder name bound in ctx (preserving object identity) instead of
+    // JSON.stringify, which would serialise/deserialise node objects and break
+    // `st.nodes.indexOf(node)` reference equality later.
+    let evalExpr = expr
+    let collectIdx = 0
+    evalExpr = evalExpr.replace(/\bcollect\s*\(\s*([A-Za-z_]\w*)\s*\)/gi, (_m, vn) => {
+      const ph = `__collect_${collectIdx++}`
+      ctx[ph] = collectColumn(vn)
+      return ph
+    })
+    // Evaluate an index projection `list[<expr>]` per row when `<expr>`
+    // references a multi-row UNWIND column (e.g. `nodeList[i]` or
+    // `nodeList[i+1]` under `UNWIND range(0, size(nodeList)-2) AS i`).  Each
+    // row's index is evaluated against that row's value of the index variable,
+    // yielding one projected element per row.
+    const idxMatch = evalExpr.match(/^([A-Za-z_]\w*)\[\s*([^\]]+)\s*\]$/)
+    if (idxMatch) {
+      const listName = idxMatch[1]
+      const idxExpr = idxMatch[2].trim()
+      // The list variable holds a single row whose value IS the list (e.g.
+      // `nodeList` → `[ [22 nodes] ]`), so unwrap the single-element column to
+      // obtain the indexable list.
+      let listVal = varEnv.get(listName)
+      if (Array.isArray(listVal) && listVal.length === 1 && Array.isArray(listVal[0])) listVal = listVal[0] as unknown[]
+      const idxVar = (idxExpr.match(/[A-Za-z_]\w*/) || [])[0]
+      const idxVals = idxVar ? varEnv.get(idxVar) : undefined
+      if (Array.isArray(listVal) && Array.isArray(idxVals)) {
+        projected.set(alias, idxVals.map((iv: unknown) => {
+          let ii = iv as number
+          if (idxExpr !== idxVar) {
+            try { ii = Number(_evalBinary(idxExpr, { [idxVar]: iv })) } catch { ii = Number(iv) }
+          }
+          return (listVal as unknown[])[ii]
+        }))
+        continue
+      }
+    }
+    // Otherwise evaluate once (projection / aggregation → a single row).
+    let val: unknown
+    try { val = _evalBinary(evalExpr, ctx) } catch { val = undefined }
+    projected.set(alias, [val])
+  }
+  // Replace the environment with the WITH projection (Cypher scope reset).
+  varEnv.clear()
+  for (const [k, v] of projected) varEnv.set(k, v)
+}
+
 async function run(q: string): Promise<void> {
   try {
     // 参数注入：替换 $param → 实际值
@@ -229,10 +332,6 @@ async function run(q: string): Promise<void> {
     const result = await _executeQuery(plan, st.nodes, resolvedQ)
     st.err = null
     st.res = result as any[]
-    if (resolvedQ.includes('REL*2..2')) {
-      require('fs').writeFileSync('/tmp/m93.json', JSON.stringify(st.nodes.map((n:any)=>({l:n._label,name:n.name,e:n.__edges})), null, 0))
-      require('fs').appendFileSync('/tmp/m93.json', '\nRES=' + (Array.isArray(result)?result.length:'?'))
-    }
   } catch (e: any) {
     st.err = e; st.res = []
   }
@@ -957,6 +1056,30 @@ Given('having executed:', async function (query: string) {
           const cns = (subPlan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
           const createEdges = (subPlan as any).createEdges as Array<{ source: string; target: string; sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
           const uw = (subPlan as any).unwind as { list?: unknown[]; var?: string; name?: string } | undefined
+          // CREATE referencing only previously-bound variables, minting no new
+          // nodes: `CREATE (n1)-[:T]->(n2)` where `n1`/`n2` were projected by an
+          // earlier `WITH nodeList[i] AS n1, nodeList[i+1] AS n2`.  The parser
+          // still emits `createNodes` entries for `n1`/`n2`, but they are
+          // references to already-materialised nodes, not templates to mint.
+          // Resolve each endpoint from varEnv (row-aligned) and mint one edge per
+          // row; otherwise `n1`/`n2` would be wrongly created as fresh nodes.
+          const _refsBound = cns.length > 0 && cns.every(cn => cn.alias && !cn.label && !cn.props && varEnv.has(cn.alias))
+          if (_refsBound && createEdges?.length) {
+            for (const ce of createEdges) {
+              const srcVals = (ce.source ? varEnv.get(ce.source) : undefined) || []
+              const tgtVals = (ce.target ? varEnv.get(ce.target) : undefined) || []
+              const rows = Math.max(srcVals.length, tgtVals.length)
+              for (let k = 0; k < rows; k++) {
+                const s = srcVals[k]; const t = tgtVals[k]
+                const srcIdx = st.nodes.indexOf(s as any)
+                const dstIdx = st.nodes.indexOf(t as any)
+                if (srcIdx < 0 || dstIdx < 0) continue
+                if (!st.nodes[srcIdx].__edges) st.nodes[srcIdx].__edges = []
+                st.nodes[srcIdx].__edges.push({ srcIdx, dstIdx, label: ce.label || 'T', props: ce.props || null })
+              }
+            }
+            continue
+          }
           // MATCH … CREATE materialisation: `MATCH (d:D) CREATE (e1:E {name:
           // d.name + '0'}), (e2:E {name: d.name + '1'}) CREATE (d)-[:LIKES]->(e1)
           // …` must mint the created nodes (and edges) once PER matched `d`, with
@@ -1050,12 +1173,29 @@ Given('having executed:', async function (query: string) {
             const out: typeof cns = []
             for (let ui = 0; ui < resolved.length; ui++) {
               for (const cn of cns) {
-                const ecn = { ...cn }
+                const ecn: any = { ...cn }
                 // Each unwound iteration mints an independent node bound to the
                 // CREATE variable; give it a unique alias (`s_0`, `s_1`, ...) so
                 // the alias-dedup below does not collapse the expansion back to a
                 // single node, while downstream statements can still resolve `s`.
                 if (cn.alias) ecn.alias = cn.alias + '_' + ui
+                // Resolve the UNWIND variable reference inside this node's
+                // property expressions against the current element.  `CREATE (n
+                // {var: i})` under `UNWIND range(1, 20) AS i` must mint nodes with
+                // `var = 1`, `var = 2`, … — not twenty copies of `var = "i"`.  The
+                // value is carried on the per-iteration node so the later prop
+                // materialisation (which only sees the flattened template list)
+                // does not lose the bound element.
+                if (cn.props) {
+                  const boundProps: Record<string, unknown> = { ...(cn.props as Record<string, unknown>) }
+                  for (const [k, v] of Object.entries(cn.props)) {
+                    const raw0 = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type) ? (v as any).value : v
+                    if (typeof raw0 === 'string' && raw0.trim() === uw.name) {
+                      boundProps[k] = { type: 'STRING', value: resolved[ui], _resolved: true }
+                    }
+                  }
+                  ecn.props = boundProps
+                }
                 out.push(ecn)
               }
             }
@@ -1106,13 +1246,24 @@ Given('having executed:', async function (query: string) {
             cnsNodeIdx.push(st.nodes.length - 1)
             try { seedGe(persistGe(), node) } catch {}
           }
-          // Bind the CREATE node variable to its created node objects so a later
-          // statement (`CREATE (s)-[:REL]->()`) can enumerate the expanded nodes.
-          // The base alias (e.g. `s` from `s_0`, `s_1`, ...) maps to the ordered
-          // list of created nodes, index-aligned with the UNWIND variable above.
-          if (expandedCns[0]?.alias && expandedCns.length > 1) {
-            const baseAlias = String(expandedCns[0].alias).replace(/_\d+$/, '')
-            varEnv.set(baseAlias, createdNodes.slice())
+          // Bind CREATE node variables to their created node objects so later
+          // statements can reference them.  Two cases:
+          //   * UNWIND-expanded template (`CREATE (n {var:i})` → n_0..n_19):
+          //     group the flattened alias list by base name (`n`) into a single
+          //     ordered list — the row-aligned column for `n`.
+          //   * A single CREATE naming several nodes (`CREATE (a..), (b..)`):
+          //     map EACH alias to its own node (a→[nodeA], b→[nodeB]); the old
+          //     code mapped the first alias to the whole `createdNodes` list,
+          //     wrongly binding `a` to both a and b.
+          const aliasToNodes = new Map<string, unknown[]>()
+          expandedCns.forEach((ecn: any, ci: number) => {
+            if (!ecn.alias) return
+            const base = String(ecn.alias).replace(/_\d+$/, '')
+            if (!aliasToNodes.has(base)) aliasToNodes.set(base, [])
+            if (ci < createdNodes.length) aliasToNodes.get(base)!.push(createdNodes[ci])
+          })
+          for (const [base, nodes] of aliasToNodes) {
+            varEnv.set(base, nodes)
           }
           // 注入边（createEdges）——使用 alias 查找替代 sourceIdx/targetIdx
           if (createEdges?.length) {
@@ -1142,7 +1293,36 @@ Given('having executed:', async function (query: string) {
             }
           }
         } else {
-          // 非 CREATE 语句，用 run() 执行
+          // WITH / UNWIND clauses in a multi-statement seed must update the
+          // row-aligned variable environment so that later CREATE statements can
+          // reference the projected / unwound variables (e.g.
+          // `WITH a, b, [a] + collect(n) + [b] AS nodeList` then
+          // `UNWIND range(0, size(nodeList) - 2) AS i` then
+          // `WITH nodeList[i] AS n1, nodeList[i+1] AS n2` then
+          // `CREATE (n1)-[:T]->(n2)`).  A bare `WITH *` keeps every bound column.
+          const tr = line.trim()
+          if (/^WITH\b/i.test(tr)) {
+            const body = tr.replace(/^WITH\b/i, '').trim()
+            if (body === '*' || body === '*,') continue // no-op projection
+            _applySeedWith(body, varEnv)
+            continue
+          }
+          const uwPlan: any = parseQuery(line)
+          if (uwPlan?.unwind && (uwPlan.unwind.list?.length || uwPlan.unwind.var)) {
+            // Resolve the unwound list against the current variable environment
+            // (so `range(0, size(nodeList) - 2)` can read `nodeList`).
+            const uw = uwPlan.unwind
+            const ctx: Record<string, unknown> = {}
+            for (const [k, v] of varEnv) ctx[k] = Array.isArray(v) ? (v.length === 1 ? v[0] : v) : v
+            const resolved = (uw.list && uw.list.length) ? uw.list.map((x: unknown) => {
+              if (typeof x !== 'string') return x
+              const ev = _evalBinary(x, {})
+              return ev === undefined ? x : ev
+            }) : _resolveUnwindList({ list: uw.list || [], var: uw.var, name: uw.name || '' } as any, ctx)
+            if (uw.name) varEnv.set(uw.name, resolved)
+            continue
+          }
+          // 非 CREATE / WITH / UNWIND 语句，用 run() 执行
           await run(line)
         }
       } catch { /* 忽略单语句Error，继续下一个 */ }
