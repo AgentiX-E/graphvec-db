@@ -1091,15 +1091,38 @@ Given('having executed:', async function (query: string) {
           if (matchVar && scanLabel && !uw) {
             const matched = st.nodes.filter((n: any) => n && n._label === scanLabel)
             if (matched.length) {
-              const specNodes = cns.filter((cn) => cn.alias !== matchVar || cn.label != null)
+              // Multi-MATCH variables (`MATCH (a:A), (b:B) CREATE (a)-[:T]->(b)`)
+              // reference existing nodes, not templates to mint.  Collect the
+              // extra MATCH variables (e.g. `b`) and their scan labels so their
+              // CREATE endpoints reuse the matched node instead of minting a
+              // duplicate.  `specNodes` then holds only true new-node templates.
+              const multi = (subPlan as any).multiMatch as Array<{ scanLabel?: string | null; variable?: string }> | undefined
+              const multiVarLabels = new Map<string, string>()
+              for (const mm of multi || []) {
+                if (mm.variable && mm.scanLabel) multiVarLabels.set(mm.variable, mm.scanLabel)
+              }
+              const specNodes = cns.filter((cn) => {
+                if (cn.alias === matchVar) return cn.label != null
+                if (multiVarLabels.has(cn.alias)) return false  // reuse matched node
+                return true
+              })
               const specEdges = (createEdges || []).map((ce: any) => ({
                 ...ce,
                 source: ce.source, target: ce.target,
               }))
               const newNodeIdxByAlias = new Map<string, number>()
+              // Resolve each multi-MATCH variable to the (single) matched node.
+              const multiNodeIdx = new Map<string, number>()
+              for (const [mv, ml] of multiVarLabels) {
+                const cand = st.nodes.find((n: any) => n && n._label === ml)
+                if (cand !== undefined) multiNodeIdx.set(mv, st.nodes.indexOf(cand))
+              }
               for (const d of matched) {
                 const dIdx = st.nodes.indexOf(d)
                 const localAliasToGlobal: Record<string, number> = {}
+                for (const [mv, mi] of multiNodeIdx) {
+                  if (mi >= 0) localAliasToGlobal[mv] = mi
+                }
                 for (const cn of specNodes) {
                   let props: Record<string, unknown> = {}
                   if (cn.props) {
@@ -1390,11 +1413,33 @@ Given('having executed:', async function (query: string) {
         const matched = st.nodes.filter((n: any) => n && n._label === scanLabel2)
         const createEdges2 = (plan as any).createEdges as Array<any> | undefined
         if (matched.length) {
-          const specNodes = cns.filter((cn) => cn.alias !== matchVar2 || cn.label != null)
+          // Multi-MATCH variables (`MATCH (a:A), (b:B) CREATE (a)-[:T]->(b)`)
+          // reference existing nodes, not templates to mint.  Resolve each extra
+          // MATCH variable to its (single) matched node so the CREATE endpoint
+          // reuses it instead of minting a duplicate (which would shift the edge
+          // destination index and break a later MERGE match).
+          const multi2 = (plan as any).multiMatch as Array<{ scanLabel?: string | null; variable?: string }> | undefined
+          const multiVarLabels2 = new Map<string, string>()
+          for (const mm of multi2 || []) {
+            if (mm.variable && mm.scanLabel) multiVarLabels2.set(mm.variable, mm.scanLabel)
+          }
+          const multiNodeIdx2 = new Map<string, number>()
+          for (const [mv, ml] of multiVarLabels2) {
+            const cand = st.nodes.find((n: any) => n && n._label === ml)
+            if (cand !== undefined) multiNodeIdx2.set(mv, st.nodes.indexOf(cand))
+          }
+          const specNodes = cns.filter((cn) => {
+            if (cn.alias === matchVar2) return cn.label != null
+            if (multiVarLabels2.has(cn.alias)) return false  // reuse matched node
+            return true
+          })
           const specEdges = (createEdges2 || []).map((ce: any) => ({ ...ce }))
           for (const d of matched) {
             const dIdx = st.nodes.indexOf(d)
             const localAliasToGlobal: Record<string, number> = {}
+            for (const [mv, mi] of multiNodeIdx2) {
+              if (mi >= 0) localAliasToGlobal[mv] = mi
+            }
             for (const cn of specNodes) {
               let props: Record<string, unknown> = {}
               if (cn.props) {
