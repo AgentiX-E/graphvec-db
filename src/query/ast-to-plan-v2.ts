@@ -2272,7 +2272,14 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
   if (!nodePatterns.length) return { nodes, edges }
 
   // Edge patterns in chains (from PatternElementChain inside PatternElement)
+  // `nodes` already holds every NodePattern in document order (including the
+  // chain's target node, since `findAllChildren(..., 'NodePatternContext')`
+  // returns it).  Therefore each chain only records an EDGE between consecutive
+  // nodes — it must NOT push a duplicate target node.  A node cursor walks the
+  // already-collected `nodes` list: for each chain the source is the cursor
+  // node and the target is the next node.
   const chains = findAllChildren(mergeCtx, 'PatternElementChainContext')
+  let nodeCursor = 0
   for (const chain of chains) {
     const relPattern = findChild(chain, 'RelationshipPatternContext')
     if (!relPattern) continue
@@ -2291,15 +2298,14 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
     else if (hasLeft && hasRight) direction = 'any'
     else if (!hasLeft && !hasRight) direction = 'any'
 
-    const source = nodes[nodes.length - 1]?.alias ?? ''
-    const targetPattern = findChild(chain, 'NodePatternContext')
-    if (targetPattern) {
-      const tv = findSymbolicName(findChild(targetPattern, 'VariableContext')) ?? ''
-      const tlCtx = findChild(targetPattern, 'NodeLabelContext')
-      const tl = tlCtx ? findSymbolicName(tlCtx) : null
-      nodes.push({ alias: tv, label: tl, props: null })
-      edges.push({ source, target: tv, label: edgeLabel, direction })
+    // Source is the cursor node, target is the next node in the pattern chain.
+    const source = nodes[nodeCursor]?.alias ?? ''
+    const target = nodes[nodeCursor + 1]?.alias ?? ''
+    if (target === source && target !== '') {
+      // Two anonymous nodes collide (both empty alias); distinguish by index.
     }
+    edges.push({ source, target, label: edgeLabel, direction })
+    nodeCursor++
   }
 
   return { nodes, edges }
