@@ -563,7 +563,13 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     // MATCH (a)-[r]->()-[r]->(a) — 同一关系变量出现在同一条 MATCH 子句中
     // 跨 WITH 的 MATCH 复用边变量不应抛异常，而是返回空结果
     if (query?.includes('MATCH') && !query?.includes('WITH')) {
-      const edgeVars = [...query.matchAll(/\[(\w+)\]/g)].map(m => m[1])
+      // Only relationship variables inside MATCH clauses count as a uniqueness
+      // violation (`MATCH (a)-[r]->()-[r]->(a)`).  A MERGE relationship variable
+      // (`MERGE (a)-[r]->(b)` where `r` was already MATCH-bound) is a *binding*
+      // violation (VariableAlreadyBound), not a uniqueness violation, so strip
+      // every MERGE clause before scanning for duplicate relationship variables.
+      const matchOnly = query.replace(/\bMERGE\s+[^;]*?(?=\s+(?:RETURN|WITH|CREATE|MATCH|SET|DELETE|REMOVE|UNWIND|ON\s+)\b|$)/gi, '')
+      const edgeVars = [...matchOnly.matchAll(/\[(\w+)\]/g)].map(m => m[1])
       const dupEdgeVars = edgeVars.filter((v, i, a) => a.indexOf(v) !== i)
       if (dupEdgeVars.length) {
         throw Object.assign(new Error('SyntaxError: RelationshipUniquenessViolation'), { tckError: 'RelationshipUniquenessViolation' })
@@ -676,6 +682,17 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         }
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // MERGE 编译期校验
+  // ═══════════════════════════════════════════════════════════════
+  // MERGE shares CREATE's structural relationship preconditions (a steady type,
+  // no variable-length, directional) but additionally enforces variable binding
+  // (a MERGE variable must not already be bound by a preceding MATCH/CREATE) and
+  // restricts ON CREATE / ON MATCH SET operands to in-scope variables.
+  if (query?.toUpperCase().includes('MERGE')) {
+    _validateMergeClauses(query, plan)
   }
 
   // ── CREATE SyntaxError: NoSingleRelationshipType（CREATE 关系无类型） ──
@@ -976,3 +993,116 @@ function _stripListPredicates(query: string): string {
   return result
 }
 
+
+/** MERGE 编译期校验。
+ * MERGE 继承了 CREATE 对关系结构的前置约束（单一类型、非变长、有方向），
+ * 但额外强制变量绑定约束（MERGE 变量不得已被前置 MATCH/CREATE 绑定）、
+ * ON CREATE / ON MATCH SET 的操作数必须是作用域内变量。
+ */
+function _validateMergeClauses(query: string, plan: QueryPlan): void {
+  // 逐条提取 MERGE 子句：MERGE <pattern> 直到下一个子句关键字。
+  const mergeClauses = [...query.matchAll(/\bMERGE\s+([\s\S]*?)(?=\s+(?:ON\s+(?:CREATE|MATCH)|CREATE|MATCH|SET|DELETE|REMOVE|WITH|RETURN|UNWIND|MERGE)\b|$)/gi)]
+  const preMatchCtx = query.slice(0, Math.max(0, query.toLowerCase().indexOf('merge')))
+
+  // ── 1. 变量重复绑定（VariableAlreadyBound） ──
+  // MERGE 变量不得已被前置 MATCH 绑定为节点/关系，或已被前置 CREATE 绑定，
+  // 或被 MERGE 用新 label 重新定义。
+
+  // (a) `MATCH (a) MERGE (a)` — MERGE 重新声明已绑定的节点（无 label/props 即
+  //     为「重新绑定同一变量」，违反 VariableAlreadyBound）。
+  //     仅当 MERGE 子句是一个**裸节点**（不含关系箭头）时才适用：`MERGE (a)`
+  //     声明新变量 `a`；`MERGE (a)-->(b)` 中的 `(a)` 是关系端点引用（引用前置
+  //     CREATE/MATCH 已绑定的节点），不属于重新绑定。
+  for (const mc of mergeClauses) {
+    const clause = mc[1]
+    if (/(?:-->|<--|->|<-)/.test(clause)) continue  // 关系 MERGE，跳过
+    const nodeDecls = [...clause.matchAll(/\(\s*(\w+)\s*(?::|\))/g)]
+    for (const nd of nodeDecls) {
+      const v = nd[1]
+      // 前置作用域中该变量是否已作为节点/关系绑定？
+      const preNode = new RegExp(`\\(\\s*${v}\\s*(?::|\\))`).test(preMatchCtx)
+      const preRel = new RegExp(`\\[\\s*${v}\\s*(?::|\\])`).test(preMatchCtx)
+      if ((preNode || preRel) && v && !/\$/.test(v)) {
+        throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+      }
+    }
+  }
+
+  // (b) 关系变量已绑定：`MATCH (a)-[r]->(b) MERGE (a)-[r]->(b)`。
+  const mergeRelDecls = [...query.matchAll(/\bMERGE\s+\([^)]*\)\s*-\s*\[\s*(\w+)\s*(?::|\])/g)]
+  for (const rd of mergeRelDecls) {
+    const v = rd[1]
+    const preRel = new RegExp(`\\[\\s*${v}\\s*(?::|\\])`).test(preMatchCtx)
+    const preNode = new RegExp(`\\(\\s*${v}\\s*(?::|\\))`).test(preMatchCtx)
+    if ((preRel || preNode) && v) {
+      throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+    }
+  }
+
+  // (c) `CREATE (a:Foo) MERGE (a)-[r:KNOWS]->(a:Bar)` — a 已被 CREATE 绑定，
+  //     MERGE 中 `a:Bar` 又给 a 强加新 label（重新定义）。
+  //     提取 MERGE 模式中带 label 的节点变量，检查是否已被前置 CREATE/MATCH 绑定。
+  const mergeLabeledNodes = [...query.matchAll(/\bMERGE\s+[^;]*?\(\s*(\w+)\s*:\s*(\w+)/g)]
+  for (const mn of mergeLabeledNodes) {
+    const v = mn[1]
+    // 前置作用域中是否已绑定该变量（节点或关系）？
+    const preNode = new RegExp(`\\(\\s*${v}\\s*(?::|\\))`).test(preMatchCtx)
+    const preCreate = new RegExp(`\\bCREATE\\s+[^;]*?\\(\\s*${v}\\s*(?::|\\))`).test(preMatchCtx)
+    if ((preNode || preCreate) && v) {
+      throw Object.assign(new Error('SyntaxError: VariableAlreadyBound'), { tckError: 'VariableAlreadyBound' })
+    }
+  }
+
+  // ── 4. 关系结构校验（NoSingleRelationshipType / CreatingVarLength） ──
+  for (const mc of mergeClauses) {
+    const clause = mc[1]
+    const hasRelationship = /-->|<--|->|<-/.test(clause)
+    if (!hasRelationship && !/\[/.test(clause)) continue
+
+    // 无类型关系：(`->`/`-->`) 但没有 `[:Type]`。
+    // `MERGE (a)-->(b)` 和 `MERGE (a)-[r]->(b)` 均无关系类型。
+    if (/-->|<--|->|<-/.test(clause) && !/\[[^\]]*:[^\]]*\]/.test(clause)) {
+      throw Object.assign(new Error('SyntaxError: NoSingleRelationshipType'), { tckError: 'NoSingleRelationshipType' })
+    }
+    // 多类型：`MERGE (a)-[:A|:B]->(b)`。
+    if (/\[[^\]]*:[^\]]*\|[^\]]*\]/.test(clause)) {
+      throw Object.assign(new Error('SyntaxError: NoSingleRelationshipType'), { tckError: 'NoSingleRelationshipType' })
+    }
+    // 变长关系：`MERGE (a)-[:FOO*2]->(b)`。
+    if (/\[[^\]]*\*[^\]]*\]/.test(clause)) {
+      throw Object.assign(new Error('SyntaxError: CreatingVarLength'), { tckError: 'CreatingVarLength' })
+    }
+  }
+
+  // ── 5. 关系 predicate 参数（InvalidParameterUse） ──
+  // `MERGE (a)-[r:FOO $param]->(b)` — 关系谓词含 `$param`。
+  for (const mc of mergeClauses) {
+    if (/\[[^\]]*\$\w+/.test(mc[1])) {
+      throw Object.assign(new Error('SyntaxError: InvalidParameterUse'), { tckError: 'InvalidParameterUse' })
+    }
+  }
+
+  // ── 6. ON CREATE / ON MATCH SET 未定义变量（UndefinedVariable） ──
+  // `MERGE (n) ON CREATE SET x.num = 1` — SET 左值 `x` 不在作用域内。
+  // 逐条提取 ON CREATE/ON MATCH 的 SET 体，按顶层逗号切分赋值项，对每个项
+  // 提取左值变量（`x.prop` / `x:Foo` / `x` 的前导标识符），再判断其是否已由
+  // 前置 MATCH/CREATE 或当前 MERGE 绑定。
+  const onSetBlocks = [...query.matchAll(/\bON\s+(?:CREATE|MATCH)\s+SET\s+([^;]*?)(?=\s+(?:ON\s+(?:CREATE|MATCH)|RETURN|WITH|MERGE|CREATE|MATCH|DELETE|SET|REMOVE)\b|$)/gi)]
+  for (const ob of onSetBlocks) {
+    const body = ob[1]
+    const assignments = _splitTopLevel(body, ',')
+    for (const assign of assignments) {
+      // 左值变量是赋值项的前导标识符（在 `.`、`:`、`=`、`+=` 之前）。
+      const lvMatch = assign.trim().match(/^(\w+)\s*(?:\.|:|=|\+=)/)
+      if (!lvMatch) continue
+      const lv = lvMatch[1]
+      // MERGE 绑定变量（节点 `(n)` 或关系 `[r]`）+ 前置作用域绑定都合法。
+      const isMergeBoundNode = new RegExp(`\\(\\s*${lv}\\s*(?::|\\))`).test(query)
+      const isMergeBoundRel = new RegExp(`\\[\\s*${lv}\\s*(?::|\\])`).test(query)
+      const preBound = new RegExp(`\\(\\s*${lv}\\s*(?::|\\))`).test(preMatchCtx) || new RegExp(`\\[\\s*${lv}\\s*(?::|\\])`).test(preMatchCtx) || new RegExp(`\\bAS\\s+${lv}\\b`).test(query)
+      if (lv && !preBound && !isMergeBoundNode && !isMergeBoundRel) {
+        throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
+      }
+    }
+  }
+}
