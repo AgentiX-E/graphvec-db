@@ -113,7 +113,7 @@ export interface QueryPlan {
   setClauses?: Array<{ property?: string; value?: unknown; alias?: string; expression?: string; kind?: 'PROP' | 'LABEL' | 'MAP' | 'MAP_APPEND'; labels?: string[]; props?: Record<string, unknown> }>
   removeClauses?: Array<{ type: 'REMOVE_PROP' | 'REMOVE_LABEL'; property?: string; ref?: string; label?: string }>
   mergeNodes?: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
-  mergeEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any' }>
+  mergeEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any'; variable?: string | null; props?: Record<string, unknown> | null }>
   mergeOnCreate?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }>
   mergeOnMatch?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL'; label?: string; alias?: string; expression?: string }>
   periodicCommit?: { batchSize?: number }
@@ -2286,10 +2286,19 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
 
     const relDetail = findChild(relPattern, 'RelationshipDetailContext')
     let edgeLabel: string | null = null
+    let edgeProps: Record<string, unknown> | null = null
     if (relDetail) {
       const firstType = findChild(relDetail, 'RelTypeNameContext')
       edgeLabel = firstType ? findSymbolicName(firstType) : null
+      // Relationship properties (`MERGE (a)-[r:TYPE {name:'r2'}]->(b)`).  The
+      // properties live on the RelationshipDetail, not the RelationshipPattern.
+      edgeProps = extractMapLiteral(findChild(relDetail, 'PropertiesContext')) ?? null
     }
+    // Relationship variable (`r` in `-[r:TYPE]->`).  Captured so the executor
+    // can bind the reused/created relationship back to the edge variable for
+    // `RETURN count(r)` / `RETURN r` projections.
+    const relVarCtx = findChild(relPattern, 'VariableContext')
+    const edgeVariable = relVarCtx ? findSymbolicName(relVarCtx) : null
 
     const hasLeft = findChild(relPattern, 'LeftArrowHeadContext')
     const hasRight = findChild(relPattern, 'RightArrowHeadContext')
@@ -2304,7 +2313,7 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
     if (target === source && target !== '') {
       // Two anonymous nodes collide (both empty alias); distinguish by index.
     }
-    edges.push({ source, target, label: edgeLabel, direction })
+    edges.push({ source, target, label: edgeLabel, direction, variable: edgeVariable, props: edgeProps })
     nodeCursor++
   }
 

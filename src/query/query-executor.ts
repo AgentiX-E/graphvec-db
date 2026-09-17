@@ -1801,6 +1801,124 @@ async function _executeMultiMatchCrossJoin(
     })
   }
 
+  // ── MERGE relationship execution ──
+  // `MATCH (a:A), (b:B) MERGE (a)-[r:TYPE]->(b) RETURN count(r)` reaches this
+  // cross-join executor (the MERGE clause adds no steps, but the second MATCH
+  // pattern stages a `multiMatch` entry so we cross-join {a, b} pairs).  The
+  // relationship itself is never materialised by the cross-join, so `r` stays
+  // undefined and `count(r)` collapses to 0.  For each cross-joined row, resolve
+  // the MERGE relationship's two endpoint variables to node indices, then either
+  // reuse an existing edge (same label + direction) or create a new one — binding
+  // the edge variable `r` so downstream count/r projections see the relationship.
+  const mEdges = ((plan as any).mergeEdges || []) as Array<{
+    source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any'
+    variable?: string | null; props?: Record<string, unknown> | null
+  }>
+  if (mEdges.length && filtered.length) {
+    const _idxOf = (obj: unknown): number => {
+      if (obj == null || typeof obj !== 'object') return -1
+      // Rows bind node variables to the concrete node objects referenced by
+      // `allNodes` (the index→object resolution above), so identity lookup works.
+      let i = allNodes.indexOf(obj as any)
+      if (i >= 0) return i
+      // Fall back: match by label + top-level identity properties.
+      const lbl = String((obj as any)?._label || '')
+      const keys = Object.keys(obj as any).filter(k => !k.startsWith('_') && k !== 'id' && k !== '__edges')
+      for (let j = 0; j < allNodes.length; j++) {
+        const c = allNodes[j] as any
+        if (String(c?._label ?? '') !== lbl) continue
+        if (keys.every(k => c?.[k] === (obj as any)[k])) return j
+      }
+      return -1
+    }
+    // A reused/created edge record, normalised to the relationship contract the
+    // serializer / `type(r)` lookups expect (`__edgeLabel` / `_type` / `_label`).
+    const _mkEdgeObj = (srcIdx: number, dstIdx: number, label: string, props: Record<string, unknown> | null): Record<string, unknown> => {
+      const eo: Record<string, unknown> = {
+        __edgeId: `${srcIdx}|${dstIdx}|${label || ''}`,
+        __relId: `${Math.min(srcIdx, dstIdx)}|${Math.max(srcIdx, dstIdx)}|${label || ''}`,
+        __edgeLabel: label,
+        __edgeLabelStr: label,
+        _type: label,
+        _label: label,
+        srcIdx,
+        dstIdx,
+      }
+      if (props) for (const [k, v] of Object.entries(props)) eo[k] = v
+      return eo
+    }
+    // MERGE relationship semantics: the pattern either reuses matching edges or
+    // creates a single new one.  Without a property predicate every existing edge
+    // of the same label+direction between the two endpoints is a distinct match
+    // (`MERGE (a)-[r:TYPE]->(b)` over two TYPE edges yields count(r)=2), while a
+    // property predicate narrows the match to edges carrying those values and
+    // otherwise creates one.  Each merge edge therefore expands its input row into
+    // one output row per matched/created edge so `count(r)` reflects the result.
+    let mergedRows: Array<Record<string, unknown>> = []
+    for (const row of filtered) {
+      // Resolve the first merge edge's endpoints; a chain of multiple merge edges
+      // would need a fan-out, but the current executor handles one relationship
+      // per MERGE (multi-edge chains fall back to the GE DML path).
+      const me = mEdges[0]
+      const ev = me.variable || ''
+      const label = me.label || ''
+      const srcObj = row[me.source]
+      const tgtObj = row[me.target]
+      if (srcObj == null || tgtObj == null) { mergedRows.push(row); continue }
+      const srcIdx = _idxOf(srcObj)
+      const tgtIdx = _idxOf(tgtObj)
+      if (srcIdx < 0 || tgtIdx < 0) { mergedRows.push(row); continue }
+      // Directed edge endowment.  `mergeEdges.source`/`target` hold PATTERN order
+      // (source = first node in `(a)-[r]->(b)`, target = second); `in` flips the
+      // storage direction to target→source.
+      const edgeSrc = me.direction === 'in' ? tgtIdx : srcIdx
+      const edgeDst = me.direction === 'in' ? srcIdx : tgtIdx
+      // Enumerate every existing edge matching label + direction (+props when the
+      // MERGE pattern supplies a property predicate).
+      const wantsProps = me.props && Object.keys(me.props).length
+      const _propsMatch = (p?: Record<string, unknown>): boolean => {
+        if (!wantsProps) return true
+        const pp = p || {}
+        return Object.entries(me.props!).every(([k, v]) => (k in pp) && pp[k] === v)
+      }
+      const directed = (allNodes[edgeSrc] as any)?.__edges || []
+      const matching: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> }> = []
+      for (const e of directed) {
+        if (e.srcIdx === edgeSrc && e.dstIdx === edgeDst && ((e.label || '') === label) && _propsMatch(e.props)) {
+          matching.push(e)
+        }
+      }
+      if (me.direction === 'any' && !matching.length) {
+        const rev = (allNodes[edgeDst] as any)?.__edges || []
+        for (const e of rev) {
+          if (e.srcIdx === edgeDst && e.dstIdx === edgeSrc && ((e.label || '') === label) && _propsMatch(e.props)) {
+            matching.push(e)
+          }
+        }
+      }
+      if (matching.length) {
+        for (const ex of matching) {
+          const r2: Record<string, unknown> = { ...row }
+          if (ev) r2[ev] = _mkEdgeObj(ex.srcIdx, ex.dstIdx, ex.label, ex.props ?? null)
+          mergedRows.push(r2)
+        }
+      } else {
+        // Create the edge: record it on both endpoints' __edges (the same
+        // sync-to-memory convention used by the CREATE relationship path).
+        const edgeRecord: any = { srcIdx: edgeSrc, dstIdx: edgeDst, label }
+        if (me.props && Object.keys(me.props).length) edgeRecord.props = me.props
+        ;(allNodes[edgeSrc] as any).__edges = (allNodes[edgeSrc] as any).__edges || []
+        ;(allNodes[edgeDst] as any).__edges = (allNodes[edgeDst] as any).__edges || []
+        ;(allNodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
+        ;(allNodes[edgeDst] as any).__edges.push({ ...edgeRecord })
+        const r2: Record<string, unknown> = { ...row }
+        if (ev) r2[ev] = _mkEdgeObj(edgeSrc, edgeDst, label, me.props ?? null)
+        mergedRows.push(r2)
+      }
+    }
+    filtered = mergedRows
+  }
+
   // Build result rows.
   const agg = plan.aggregate as any
   // Aggregate alias resolution (consistent with the primary GE aggregation path):
