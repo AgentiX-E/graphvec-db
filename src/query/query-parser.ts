@@ -1839,9 +1839,38 @@ function _rowsEqual(a: QueryRow, b: QueryRow): boolean {
   const ka = Object.keys(a); const kb = Object.keys(b)
   if (ka.length !== kb.length) return false
   for (const k of ka) {
-    if (a[k] !== b[k]) return false
+    // Value equality on a stable serialisation so two structurally-identical
+    // nodes/relationships compare equal regardless of object identity (UNION
+    // de-duplication is by Cypher value, not reference).
+    if (_stableStringify(a[k]) !== _stableStringify(b[k])) return false
   }
   return true
+}
+
+/** Produce a stable, collision-free string identity for an arbitrary value. */
+function _stableStringify(v: unknown): string {
+  if (v === null) return 'null'
+  if (typeof v === 'bigint') return 'i' + String(v)
+  if (typeof v === 'number') return 'n' + String(v)
+  if (typeof v === 'boolean') return 'b' + String(v)
+  if (typeof v === 'string') return 's' + v
+  if (Array.isArray(v)) return '[' + v.map(_stableStringify).join(',') + ']'
+  if (typeof v === 'object') {
+    // Sort keys for a canonical ordering and skip volatile engine-internal
+    // fields (`_alias`, `__edges`, caches) that do not contribute to Cypher
+    // value equality.  A node is identified by its label(s) and user properties;
+    // a relationship by its type and (direction-insensitive) endpoints.
+    const obj = v as Record<string, unknown>
+    const parts: string[] = []
+    if (typeof obj.__relId === 'string') return 'rel:' + obj.__relId
+    if (typeof obj.__edgeId === 'string') return 'edge:' + obj.__edgeId
+    for (const k of Object.keys(obj).sort()) {
+      if (k === '_alias' || k === '__edges' || k.startsWith('_all') || k.startsWith('__')) continue
+      parts.push(k + '=' + _stableStringify(obj[k]))
+    }
+    return '{' + parts.join(';') + '}'
+  }
+  return String(v)
 }
 
 function _makeUniqueKey(row: QueryRow): string {
@@ -1850,7 +1879,7 @@ function _makeUniqueKey(row: QueryRow): string {
   let s = ''
   for (const k of keys) {
     const v = row[k]
-    s += k + ':' + (typeof v) + (v === null ? 'null' : typeof v === 'bigint' ? String(v) : v === undefined ? 'undef' : String(v))
+    s += k + ':' + _stableStringify(v)
   }
   return s
 }

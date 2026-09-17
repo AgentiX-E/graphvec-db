@@ -5,7 +5,7 @@
  */
 
 import type { QueryPlan } from './query-types'
-import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, _validateExistsSubqueryClauses, _validateSetOperands, extractVariablesFromClause, extractMatchVariables } from './executor-validators'
+import { _validateUndefinedVariables, _validateUnknownFunctions, _validateOrderByScope, _validatePatternPosition, _validateWhereSelfPattern, _validateExistsSubqueryClauses, _validateSetOperands, _validateUnionComposition, extractVariablesFromClause, extractMatchVariables } from './executor-validators'
 import { globalRegistry as _procedureRegistry } from './procedure-registry'
 import { _validateLiterals, _splitTopLevel } from './expression-engine'
 
@@ -31,6 +31,12 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // ── SyntaxError: UndefinedVariable (SET operand) ──
   // `SET a.name = missing` references an unbound variable on the RHS.
   _validateSetOperands(query, plan)
+
+  // ── SyntaxError: DifferentColumnsInUnion / InvalidClauseComposition ──
+  // A set operator (UNION/UNION ALL/INTERSECT/SUBTRACT) requires identical
+  // column names on both sides and a uniform operator (all plain UNION or all
+  // UNION ALL — mixing the two is forbidden).
+  _validateUnionComposition(plan, query)
 
   // ── SyntaxError: UnexpectedSyntax ──
   // A bare pattern (e.g. `(n)-[]->()`) is not a value expression and may only

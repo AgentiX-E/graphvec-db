@@ -907,6 +907,68 @@ export function _validateOrderByScope(query: string): void {
  * that is neither a MATCH/CREATE-bound variable, a literal, nor a keyword must
  * fail at compile time (e.g. `MATCH (a) SET a.name = missing`).
  */
+/**
+ * Validate UNION / UNION ALL / INTERSECT / SUBTRACT query composition.
+ *
+ * Two compile-time rules are enforced (both are SyntaxError in openCypher):
+ *
+ * 1. InvalidClauseComposition — mixing UNION ALL with a plain UNION in the SAME
+ *    query.  set operators are uniform: either every operator is `UNION ALL` or
+ *    every operator is a plain `UNION`; a mix such as
+ *    `RETURN 1 UNION RETURN 2 UNION ALL RETURN 3` is invalid.
+ *
+ * 2. DifferentColumnsInUnion — the sub-queries on either side of a set operator
+ *    must project the same number of columns with the same names.  `RETURN 1 AS
+ *    a UNION RETURN 2 AS b` is invalid.
+ */
+export function _validateUnionComposition(plan: any, query: string): void {
+  if (!query) return
+  const qUpper = query.toUpperCase()
+
+  // Only a query that actually contains a set operator needs checks.
+  const hasUnion = /\bUNION\b|\bINTERSECT\b|\bSUBTRACT\b/i.test(qUpper)
+  if (!hasUnion) return
+
+  // ── Rule 2: DifferentColumnsInUnion ──
+  // Compare the union plan's left columns (plan) against its right plan's
+  // columns (plan.rightPlan).  Column equality is by NAME (and count), not by
+  // expression.  When the parser folds the left side into `plan`, its
+  // `returnColumns` holds the left projection and `rightPlan.returnColumns`
+  // the right one.
+  let leftCols: string[] = plan?.unionType && plan?.rightPlan?.returnColumns
+    ? (plan.returnColumns || [])
+    : []
+  let rightCols: string[] = plan?.unionType && plan?.rightPlan?.returnColumns
+    ? (plan.rightPlan.returnColumns || [])
+    : []
+  if (leftCols.length || rightCols.length) {
+    if (leftCols.length !== rightCols.length ||
+        leftCols.some((c: string, i: number) => c !== rightCols[i])) {
+      throw Object.assign(new Error('SyntaxError: DifferentColumnsInUnion'), { tckError: 'DifferentColumnsInUnion' })
+    }
+  }
+
+  // ── Rule 1: InvalidClauseComposition (mixing UNION and UNION ALL) ──
+  // Count plain `UNION` occurrences and `UNION ALL` occurrences.  A plain UNION
+  // is `UNION` not immediately followed by `ALL`.  Mixing the two forms is
+  // invalid.
+  const plainUnion = new Set<number>()
+  const allUnion = new Set<number>()
+  const opRe = /\bUNION\b/g
+  let m: RegExpExecArray | null
+  while ((m = opRe.exec(qUpper)) !== null) {
+    const after = qUpper.slice(m.index + m[0].length)
+    if (/^\s+ALL\b/.test(after)) {
+      allUnion.add(m.index)
+    } else {
+      plainUnion.add(m.index)
+    }
+  }
+  if (plainUnion.size > 0 && allUnion.size > 0) {
+    throw Object.assign(new Error('SyntaxError: InvalidClauseComposition'), { tckError: 'InvalidClauseComposition' })
+  }
+}
+
 export function _validateSetOperands(query: string, plan?: any): void {
   if (!query) return
   // Extract each SET clause body up to the next clause keyword.

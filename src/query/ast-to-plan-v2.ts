@@ -254,12 +254,13 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
   // Only process plans with expressionColumns (RETURN or WITH)
   if (!plan.expressionColumns?.length) return
 
-  // If plan has a UNION, recursively fix both sides
-  if (plan.type === 'QUERY' && plan.leftPlan && plan.rightPlan) {
-    postProcessReturnColumns(plan.leftPlan, query)
-    postProcessReturnColumns(plan.rightPlan, query)
-    return
-  }
+  // A UNION plan (left side merged into `plan`, right side in `plan.rightPlan`)
+  // is ALREADY post-processed: `parseUnion` recursed through the full
+  // `parseCypherToPlan` on both sides, so each side's RETURN expressions were
+  // rebuilt against its own sub-query text.  Running this pass again against the
+  // WHOLE union text would rewrite the left side's expression to
+  // "… UNION <right>" (the `RETURN\s+(…)$` regex does not stop at UNION).
+  if (plan.unionType && plan.rightPlan) return
 
   // Find the RETURN clause region in the query
   // Use [\s\S] to match across newlines (multi-line queries)
@@ -911,9 +912,12 @@ function collectClauses(ctx: any): ParsedClause[] {
   // No separate case needed here
 
     if (name === 'RegularQueryContext') {
-      // Check for UNION
+      // Check for UNION.  A set operator may be separated from the surrounding
+      // sub-queries by a newline (multi-line TCK queries use `RETURN 1\nUNION\n
+      // RETURN 2`), not just a space, so match the keyword on word boundaries
+      // rather than requiring literal spaces around it.
       const text = node.getText().toUpperCase()
-      if (text.includes(' UNION ')) {
+      if (/\bUNION\b|\bINTERSECT\b|\bSUBTRACT\b/.test(text)) {
         result.push({ type: 'UNION_QUERY', ctx: node })
         return
       }
@@ -1515,11 +1519,16 @@ function parseUnion(unionCtx: any): QueryPlan {
   else if (op.startsWith('INTERSECT')) plan.unionType = 'intersect'
   else if (op.startsWith('SUBTRACT')) plan.unionType = 'subtract'
 
-  // Recurse on both sides
-  plan.rightPlan = buildQueryPlan(rightQuery)
+  // Recurse on both sides.  Each side must go through the FULL
+  // `parseCypherToPlan` pipeline (including return-column post-processing) so
+  // that its RETURN expressions are rebuilt against ITS OWN sub-query text.
+  // Calling `buildQueryPlan` directly here leaves the sides un-post-processed,
+  // and the outer `postProcessReturnColumns` then runs against the WHOLE union
+  // text, polluting the left side's expression with "… UNION <right>".
+  plan.rightPlan = parseCypherToPlan(rightQuery)
 
   // Copy left plan fields into current plan
-  const leftPlan = buildQueryPlan(leftQuery)
+  const leftPlan = parseCypherToPlan(leftQuery)
   Object.assign(plan, leftPlan, { unionType: plan.unionType, rightPlan: plan.rightPlan })
 
   return plan
