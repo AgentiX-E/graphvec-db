@@ -27,6 +27,44 @@ import { _evaluateExpression } from './expression-engine'
 function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>): QueryRow[] {
   if (!plan.returnColumns?.length) return []
 
+  // ── MATCH-driven fan-out ──
+  // `MATCH (person:Person) MERGE/CREATE ... RETURN person.bornIn` binds `person`
+  // to N nodes; the DML row builder otherwise collapses the projection to a
+  // single row (the first matched node).  When every RETURN column references
+  // the primary MATCH variable and it matched more than one node, emit one row
+  // per matched node instead.  (Relationship MERGE already fan-outs through the
+  // cross-join path; only the node-only DML path needs this expansion.)
+  const _matchVar = (plan as any).matchVar as string | undefined
+  const _scanLabel = (plan as any).scanLabel as string | null | undefined
+  const _mergeEdges = (plan as any).mergeEdges as Array<any> | undefined
+  if ((plan as any).hasMatch && _matchVar && _scanLabel && !(plan as any).multiMatch?.length && !_mergeEdges?.length) {
+    const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+    const _refsMatchVar = (rc: string): boolean => {
+      const expr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
+      return expr === _matchVar || expr.startsWith(_matchVar + '.')
+    }
+    if (plan.returnColumns.every(_refsMatchVar)) {
+      const matched = allNodes.filter(n => {
+        const lbl = String((n as any)._label ?? '')
+        return lbl === _scanLabel || lbl.split(':').includes(_scanLabel as string)
+      })
+      if (matched.length > 1) {
+        return matched.map(m => {
+          const row: QueryRow = {}
+          for (const rc of plan.returnColumns) {
+            if (!rc) continue
+            const expr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
+            const propPart = expr.includes('.') ? (expr.split('.').pop()!) : null
+            let v: unknown = propPart ? (m as any)[propPart] : m
+            if (v === undefined) v = null
+            row[rc] = v
+          }
+          return row
+        })
+      }
+    }
+  }
+
   // ── UNWIND + CREATE relationship multi-row expansion ──
   // `UNWIND [...] AS x CREATE ()-[r:R {num:x}]->() RETURN r.num` creates one
   // relationship per unwound element.  The expanded relationship payloads are
