@@ -997,14 +997,29 @@ Given('having executed:', async function (query: string) {
     // `SET`/`REMOVE`) is a single DML statement (`MATCH (d:D) CREATE …`), not
     // two independent statements — keep them combined.
     const pendingIsMatchTail = pending ? /^MATCH\b|\nMATCH\b/i.test(pending) : false
+    // A `MERGE p = (...)` / `MERGE (a)-[r:T]->(b)` clause followed by a `RETURN`
+    // clause is a single MERGE…RETURN statement (e.g. `MERGE p = (a)-[:R]->(b)
+    // RETURN p`), not two independent ones — the `RETURN` is the statement's own
+    // projection.  Keep them combined so the path/relationship binding done by
+    // the MERGE executor is visible to the RETURN projection.
+    const pendingIsMergeTail = pending ? /^(MERGE|CREATE)\b/i.test(pending) && !/\bRETURN\b/i.test(pending) : false
     const lineIsWrite = /^(CREATE|MERGE|DELETE|SET|REMOVE|DETACH\s+DELETE)\b/i.test(line.trim())
+    const lineIsReturn = /^RETURN\b/i.test(line.trim())
     if (pending) {
       pending += '\n' + line
       if (pendingEndsWithComma) continue
       if (pendingIsMatchTail && lineIsWrite) continue
+      if (pendingIsMergeTail && lineIsReturn) continue
       if (!line.endsWith(',') && !_isBareClauseKeyword(line)) { lines.push(pending); pending = '' }
     } else {
-      if (line.endsWith(',') || _isBareClauseKeyword(line)) { pending = line }
+      // A MERGE path assignment (`MERGE p = (a)-[:R]->(b)`) is often followed by
+      // a `RETURN p` projection on the next line.  Neither is a bare keyword, so
+      // both would otherwise be pushed as independent statements and the path
+      // variable `p` (which only lives for the duration of its own statement)
+      // would be unresolvable by the `RETURN`.  Treat the path-assignment form as
+      // a pending clause so the trailing `RETURN` merges into the same statement.
+      const _isMergePathAssign = /^MERGE\s+\w+\s*=\s*\(/i.test(line.trim())
+      if (line.endsWith(',') || _isBareClauseKeyword(line) || _isMergePathAssign) { pending = line }
       else { lines.push(line) }
     }
   }
@@ -1053,6 +1068,16 @@ Given('having executed:', async function (query: string) {
         if (!subPlan || !subPlan.type) continue
         // 如果是 CREATE/MERGE，直接处理（注入 GE 和 st.nodes）
         if ((subPlan.type === 'CREATE' || subPlan.type === 'MERGE') && (subPlan as any).createNodes?.length) {
+          // A relationship MERGE (`MERGE p = (a)-[:R]->(b)` / `MERGE (a)-[r:R]->(b)`)
+          // carries `mergeEdges` (and possibly a `pathVar`), which the manual
+          // CREATE/MERGE minting below does NOT handle — it only materialises
+          // `createEdges`.  Delegate such statements to the full query engine
+          // (`run`) so the relationship MERGE executor (match-or-create edge +
+          // path/relationship binding) does its work against `st.nodes`.
+          if ((subPlan as any).mergeEdges?.length || (subPlan as any).pathVar) {
+            await run(line)
+            continue
+          }
           const cns = (subPlan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
           const createEdges = (subPlan as any).createEdges as Array<{ source: string; target: string; sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
           const uw = (subPlan as any).unwind as { list?: unknown[]; var?: string; name?: string } | undefined
