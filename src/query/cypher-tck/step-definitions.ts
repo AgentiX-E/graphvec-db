@@ -1939,6 +1939,37 @@ function parseTckValue(val: string | null): unknown {
 
 When('executing query:', async function (query: string) {
   st.q = _stripCypherComments(query).trim()
+  // A multi-MERGE block (`MERGE (a) MERGE (b) MERGE p=(…) RETURN p`) is a
+  // sequence of independent statements whose side effects accumulate; `run()`
+  // parses the whole block as ONE statement (ANTLR keeps only the last MERGE),
+  // dropping the earlier merged nodes.  Split only when multiple MERGE clauses
+  // appear WITHOUT a WITH pipe — a WITH chains the MERGEs into a single query,
+  // whereas bare newline-separated MERGEs are independent statements.
+  const hasWith = /\bWITH\b/i.test(st.q)
+  const rawLines = st.q.split('\n').map((s: string) => s.trim()).filter(Boolean)
+  const mergeCount = rawLines.filter((l: string) => /^MERGE\b/i.test(l)).length
+  if (mergeCount > 1 && !hasWith) {
+    const lines: string[] = []
+    let pending = ''
+    for (const line of rawLines) {
+      const _isMergePathAssign = /^MERGE\s+\w+\s*=\s*\(/i.test(line)
+      const _isReturn = /^RETURN\b/i.test(line)
+      if (pending) {
+        if (_isReturn) { lines.push(pending + '\n' + line); pending = '' }
+        else {
+          lines.push(pending); pending = ''
+          if (_isMergePathAssign) pending = line
+          else lines.push(line)
+        }
+      } else {
+        if (_isMergePathAssign) pending = line
+        else lines.push(line)
+      }
+    }
+    if (pending) lines.push(pending)
+    for (const line of lines) await run(line)
+    return
+  }
   // Having executed 已经把节点注入 st.nodes，直接用 run()
   await run(st.q)
 })
