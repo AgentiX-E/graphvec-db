@@ -318,7 +318,15 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       // (n[$idx]) carry no `.` separator, so a naive prop-name split cannot
       // resolve them. Route those (and any non-`n.prop` expression) through the
       // expression engine with the created node's props in scope.
-      if (!expr.includes('.')) {
+      // Relationship path functions (`startNode(r).id`, `endNode(r).prop`,
+      // `type(r)`) also carry a `.` in their *argument identity* but must NOT be
+      // reduced to a naive `.prop` split — the leading `startNode(r)`/`endNode(r)`
+      // is a function call whose result node is then property-accessed.  Detect
+      // those (and any other function-call expression) so the expression engine
+      // resolves the whole thing, with the bound relationship variables (`r`)
+      // injected from `__relVarMap`.
+      const _relFnExpr = /^(startnode|endnode|nodes|relationships)\s*\(/i.test(expr)
+      if (!expr.includes('.') || _relFnExpr) {
         const varCtx: Record<string, unknown> = {}
         for (const node of allNodes) {
           const p = (node['props'] as Record<string, unknown>) || node
@@ -345,6 +353,10 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
             varCtx[cn.alias] = clean
           }
         }
+        // Bind relationship variables created by relationship MERGE (`r`), so
+        // `startNode(r)` / `endNode(r)` / `type(r)` resolve their edge object.
+        const relVarMap = (allNodes as any).__relVarMap as Map<string, unknown> | undefined
+        if (relVarMap) for (const [rv, ro] of relVarMap.entries()) varCtx[rv] = ro
         // Parameters ($idx) are resolved by the expression engine; inject them
         // from plan.parameters if present.
         const params = (plan as any).parameters || {}

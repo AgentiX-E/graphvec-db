@@ -2358,7 +2358,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // (bound to its alias, no new node created) and the ON MATCH branch
         // fires; otherwise a fresh node is created and ON CREATE fires.
         if ((cn as any)._isMerge) {
-          const merged = _findMergeNodeMatch(cn as any, allNodes)
+          // A bare MERGE node (`MERGE (a)-[r:T]-(b)` with no label/props) whose
+          // alias already tags an existing seed node must reuse that node by
+          // variable identity — not the first label+props match, which would bind
+          // *both* `a` and `b` to the same leading node and produce a self-loop.
+          let merged = -1
+          if (!cn.label && (!cn.props || !Object.keys(cn.props).length) && cn.alias) {
+            merged = allNodes.findIndex(n => (n as any)._alias === cn.alias)
+          }
+          if (merged < 0) merged = _findMergeNodeMatch(cn as any, allNodes)
           if (merged >= 0) {
             // Reuse the existing node: bind the alias and record matched=true.
             const existingNode = allNodes[merged] as any
@@ -3024,6 +3032,105 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             for (const s of setList) _applyMergeSet(target, s)
           }
         }
+      }
+
+      // ── Relationship MERGE (no-MATCH path) ──
+      // A bare relationship MERGE (`MERGE (a)-[r:TYPE]-(b)`) has no MATCH clause,
+      // so it never reaches the cross-join executor's relationship endowmer (which
+      // requires a `multiMatch` entry).  Its endpoints were already bound by the
+      // node match-or-create step above (into `varToNodeMap`); materialise the
+      // relationship here: reuse an existing edge of the same label (+ direction)
+      // between the two endpoints, or create a fresh one, then bind `r` so a
+      // downstream `RETURN r` / `startNode(r)` / `endNode(r)` can observe it.
+      if ((plan as any).mergeEdges?.length) {
+        const _mkRelObj = (srcIdx: number, dstIdx: number, label: string, props: Record<string, unknown> | null): Record<string, unknown> => {
+          const eo: Record<string, unknown> = {
+            __edgeId: `${srcIdx}|${dstIdx}|${label || ''}`,
+            __relId: `${Math.min(srcIdx, dstIdx)}|${Math.max(srcIdx, dstIdx)}|${label || ''}`,
+            __edgeLabel: label,
+            __edgeLabelStr: label,
+            _type: label,
+            _label: label,
+            srcIdx,
+            dstIdx,
+            // Endpoint node references for `startNode(r)` / `endNode(r)`.
+            _startNode: allNodes[srcIdx],
+            _endNode: allNodes[dstIdx],
+          }
+          if (props) for (const [k, v] of Object.entries(props)) eo[k] = v
+          return eo
+        }
+        const _resolveIdx = (aliasName: string): number => {
+          const b = varToNodeMap.get(aliasName)
+          if (b && allNodes.includes(b)) return allNodes.indexOf(b)
+          const byAlias = allNodes.findIndex(n => (n as any)._alias === aliasName)
+          if (byAlias >= 0) return byAlias
+          return -1
+        }
+        const relVarMap = new Map<string, Record<string, unknown>>()
+        for (const me of (plan as any).mergeEdges) {
+          const ev = me.variable || ''
+          const label = me.label || ''
+          const srcIdx = _resolveIdx(me.source)
+          const tgtIdx = _resolveIdx(me.target)
+          if (srcIdx < 0 || tgtIdx < 0) continue
+          // Storage direction: `in` flips the storage endpoints to target→source.
+          const edgeSrc = me.direction === 'in' ? tgtIdx : srcIdx
+          const edgeDst = me.direction === 'in' ? srcIdx : tgtIdx
+          // Enumerate existing edges of the same label between the endpoints.
+          const wantsProps = me.props && Object.keys(me.props).length
+          const _propsMatch = (p?: Record<string, unknown>): boolean => {
+            if (!wantsProps) return true
+            for (const [k, pv] of Object.entries(me.props!)) {
+              const want = (pv as any)?.value ?? pv
+              if (p == null || !_cypherValueEquals(p[k], want)) return false
+            }
+            return true
+          }
+          const srcEdges = ((allNodes[edgeSrc] as any)?.__edges || []) as Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> }>
+          const matching = srcEdges.filter(e =>
+            (e.label || '') === label && e.dstIdx === edgeDst && _propsMatch(e.props)
+          )
+          if (matching.length) {
+            const ex = matching[0]
+            // ON MATCH SET mutates the matched edge's props in place (shared ref).
+            if (ev) relVarMap.set(ev, _mkRelObj(ex.srcIdx, ex.dstIdx, ex.label, ex.props ?? null))
+            continue
+          }
+          // Create the edge (merge pattern-inline props + ON CREATE SET).
+          const edgeProps: Record<string, unknown> = { ...(me.props || {}) }
+          const onCreate = (plan as any).mergeOnCreate as Array<{ kind?: string; property?: string; value?: unknown; alias?: string; fromAlias?: string; map?: Record<string, unknown> }> | undefined
+          if (onCreate && ev) {
+            for (const oc of onCreate) {
+              if (oc.alias !== ev) continue
+              if (oc.kind === 'PROP' && oc.property) edgeProps[oc.property] = (oc.value as any)?.value ?? oc.value
+              else if (oc.kind === 'COPY' && oc.fromAlias) {
+                const src = varToNodeMap.get(oc.fromAlias)
+                if (src && typeof src === 'object') {
+                  for (const [k, v] of Object.entries(src)) {
+                    if (!k.startsWith('_') && k !== '__edges' && k !== 'id') edgeProps[k] = v
+                  }
+                }
+              } else if (oc.kind === 'MAP_APPEND' && oc.map) Object.assign(edgeProps, oc.map)
+            }
+          }
+          const edgeRecord: any = { srcIdx: edgeSrc, dstIdx: edgeDst, label }
+          if (Object.keys(edgeProps).length) edgeRecord.props = edgeProps
+          ;(allNodes[edgeSrc] as any).__edges = (allNodes[edgeSrc] as any).__edges || []
+          ;(allNodes[edgeDst] as any).__edges = (allNodes[edgeDst] as any).__edges || []
+          ;(allNodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
+          ;(allNodes[edgeDst] as any).__edges.push({ ...edgeRecord })
+          if (nodes && nodes[edgeSrc] && nodes[edgeDst]) {
+            ;(nodes[edgeSrc] as any).__edges = (nodes[edgeSrc] as any).__edges || []
+            ;(nodes[edgeDst] as any).__edges = (nodes[edgeDst] as any).__edges || []
+            ;(nodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
+            ;(nodes[edgeDst] as any).__edges.push({ ...edgeRecord })
+          }
+          if (ev) relVarMap.set(ev, _mkRelObj(edgeSrc, edgeDst, label, Object.keys(edgeProps).length ? edgeProps : null))
+        }
+        // Expose the bound relationship variables so `_buildDmlRows` (and the
+        // `startNode(r)` / `endNode(r)` expression evaluation) can resolve them.
+        if (relVarMap.size) (allNodes as any).__relVarMap = relVarMap
       }
 
       const created = _buildDmlRows(plan, allNodes)
