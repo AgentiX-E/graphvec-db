@@ -2987,7 +2987,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
 
     // ── DML + RETURN：从 createNodes 构造结果行（GE 对 DML 返回空） ──
-    if ((plan.type === 'CREATE' || plan.type === 'MERGE') && plan.returnColumns?.length) {
+    if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan.returnColumns?.length || (plan as any).mergeEdges?.length)) {
       // ── MERGE ON CREATE / ON MATCH SET ──
       // Apply ON CREATE/ON MATCH side effects to the nodes *before* building the
       // result rows, so `MERGE ... ON CREATE SET a.num = 42 RETURN a.num` returns
@@ -3128,9 +3128,61 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           if (ev) relVarMap.set(ev, _mkRelObj(edgeSrc, edgeDst, label, Object.keys(edgeProps).length ? edgeProps : null))
         }
+        // Bind a MERGE path variable (`MERGE p = (a)-[:R]->(b) RETURN p`) to a
+        // `{ __path, __pathEdges }` object so the result serializer renders it in
+        // TCK path notation `<({num:1})-[:R]->({num:2})>` (the same convention the
+        // MATCH/var-length paths use).  The relationship is often anonymous
+        // (`[:R]`, no edge variable), in which case `relVarMap` has no entry; a
+        // path still needs its edge, so reconstruct one from the pattern endpoints.
+        const pathVarName = (plan as any).pathVar as string | undefined
+        if (pathVarName && (plan as any).mergeEdges?.length) {
+          const first = (plan as any).mergeEdges[0]
+          const srcNode = varToNodeMap.get(first.source)
+          const tgtNode = varToNodeMap.get(first.target)
+          const rv = first.variable || ''
+          const label = first.label || ''
+          const srcIdx = _resolveIdx(first.source)
+          const tgtIdx = _resolveIdx(first.target)
+          // Reconstruct the relationship object for the path (endpoints aligned
+          // with the path's traversal order, i.e. pattern order source→target).
+          let edgeObj = rv ? relVarMap.get(rv) : undefined
+          if (!edgeObj && srcIdx >= 0 && tgtIdx >= 0) {
+            edgeObj = {
+              __edgeId: `${srcIdx}|${tgtIdx}|${label}`,
+              __relId: `${Math.min(srcIdx, tgtIdx)}|${Math.max(srcIdx, tgtIdx)}|${label}`,
+              __edgeLabel: label,
+              __edgeLabelStr: label,
+              _type: label,
+              _label: label,
+              srcIdx,
+              dstIdx: tgtIdx,
+              _startNode: allNodes[srcIdx],
+              _endNode: allNodes[tgtIdx],
+            }
+          }
+          if (edgeObj && srcNode && tgtNode) {
+            relVarMap.set(pathVarName, { __path: [srcNode, tgtNode], __pathEdges: [edgeObj] })
+          }
+        }
         // Expose the bound relationship variables so `_buildDmlRows` (and the
         // `startNode(r)` / `endNode(r)` expression evaluation) can resolve them.
         if (relVarMap.size) (allNodes as any).__relVarMap = relVarMap
+      }
+
+      // ── Single-node MERGE path (`MERGE p = (a {num:1}) RETURN p`) ──
+      // A path can bind a single node with no relationship, rendering
+      // `<({num:1})>`.  `mergeEdges` is empty here, so the relationship path
+      // binding above never fires; bind `p` to a one-node path object directly.
+      const _pathVarName = (plan as any).pathVar as string | undefined
+      if (_pathVarName && !(plan as any).mergeEdges?.length && (plan as any).mergeNodes?.length) {
+        const soleAlias = (plan as any).mergeNodes[0]?.alias
+        const soleIdx = soleAlias != null ? varToNodeMap.get(soleAlias) : undefined
+        const soleNode = soleIdx != null && allNodes.includes(soleIdx) ? soleIdx : (soleAlias != null ? allNodes.find(n => (n as any)._alias === soleAlias) : undefined)
+        if (soleNode) {
+          const relVarMap2 = (allNodes as any).__relVarMap || new Map<string, unknown>()
+          relVarMap2.set(_pathVarName, { __path: [soleNode], __pathEdges: [] })
+          ;(allNodes as any).__relVarMap = relVarMap2
+        }
       }
 
       const created = _buildDmlRows(plan, allNodes)

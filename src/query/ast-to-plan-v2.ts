@@ -438,11 +438,12 @@ function buildQueryPlan(query: string): QueryPlan {
   let trimmed = query.trim()
   const upperQ = trimmed.toUpperCase()
 
-  // ── 路径分配预处理: MATCH p = (a)-[*]->(b) → pathVar: 'p' ──
+  // ── 路径分配预处理: MATCH/MERGE p = (a)-[*]->(b) → pathVar: 'p' ──
   // ANTLR 不认识 `p = (` 语法，需在 ANTLR 解析前从文本剥离路径变量前缀。
   // 存储到返回值后，从 trimmed 中移除 `\w+ = ` 前缀以便 ANTLR 正常解析模式。
+  // MERGE 也可绑定路径 (`MERGE p = (a)-[:R]->(b) RETURN p`), 与 MATCH 同构。
   let pathVar: string | undefined
-  const pathMatch = trimmed.match(/^(MATCH\s+)(\w+)\s*=\s*\(/i)
+  const pathMatch = trimmed.match(/^(MATCH|MERGE\s+)(\w+)\s*=\s*\(/i)
   if (pathMatch) {
     pathVar = pathMatch[2]
     // Strip only the `p = ` path-assignment token, keeping the leading
