@@ -12,6 +12,7 @@ const BUILTIN_FN_NAMES = new Set([
   'length', 'toboolean', 'tointeger', 'tofloat', 'tostring',
   'keys', 'labels', 'nodes', 'relationships', 'type',
   'id', 'properties', 'head', 'last', 'range', 'reverse', 'tail',
+  'startnode', 'endnode',
   'trim', 'ltrim', 'rtrim', 'upper', 'lower', 'substring', 'replace',
   'left', 'right', 'contains', 'startswith', 'endswith', 'size',
   'reverse', 'toupper', 'tolower',
@@ -148,6 +149,8 @@ const _TCK_KEYWORDS: Set<string> = new Set([
   'ABS','SQRT','CEIL','FLOOR','ROUND','SIGN','RAND',
   // 其他内置函数
   'TOUPPER','TOLOWER','ISNAN','SPLIT','TYPE','PROPERTIES','ID','ELEMENTID',
+  // 路径函数（`startNode(r)`/`endNode(r)` 引用路径或关系变量）
+  'STARTNODE','ENDNODE',
   // 时态函数
   'DATE','TIME','DATETIME','LOCALDATETIME','LOCALTIME','DURATION',
   'FROMEPOCH','FROMEPOCHMILLIS',
@@ -250,8 +253,9 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
   for (const am of allAsMatches) {
     withVars.push(am[1])
   }
-  // 方式3：从 MATCH p = (n)-[r]->() 提取路径变量
-  const pathVars = query.matchAll(/\bMATCH\s+(\w+)\s*=/gi)
+  // 方式3：从 MATCH/MERGE p = (n)-[r]->() 提取路径变量（MERGE 也可绑定路径，
+  // 如 `MERGE p = (a)-[:R]->(b) RETURN p`，其 `p` 与 MATCH 路径变量同义）
+  const pathVars = query.matchAll(/\b(?:MATCH|MERGE)\s+(\w+)\s*=/gi)
   for (const pv of pathVars) {
     withVars.push(pv[1])
   }
