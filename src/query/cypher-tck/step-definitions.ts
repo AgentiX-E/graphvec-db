@@ -1939,42 +1939,6 @@ function parseTckValue(val: string | null): unknown {
 
 When('executing query:', async function (query: string) {
   st.q = _stripCypherComments(query).trim()
-  // A multi-statement block (`MERGE (a) MERGE (b) MERGE p=(…) RETURN p`) is a
-  // sequence of independent statements whose side effects accumulate, while the
-  // final statement owns the result projection.  `run()` parses the whole block
-  // as ONE statement (ANTLR keeps only the last MERGE), dropping the earlier
-  // merged nodes.  Split such blocks (reusing the same MERGE…RETURN merge rule
-  // as `Given`) and execute every statement in order, letting the final one's
-  // result survive as `st.res`.
-  const rawLines = st.q.split('\n').map((s: string) => s.trim()).filter(Boolean)
-  const stmtStarts = rawLines.filter((l: string) => /^(MERGE|CREATE|DELETE|SET|REMOVE|MATCH|WITH|UNWIND|RETURN)\b/i.test(l)).length
-  if (stmtStarts > 1 && /^(MERGE|CREATE)\b/i.test(rawLines[0])) {
-    const lines: string[] = []
-    let pending = ''
-    for (const line of rawLines) {
-      const _isMergePathAssign = /^MERGE\s+\w+\s*=\s*\(/i.test(line)
-      const _isReturn = /^RETURN\b/i.test(line)
-      if (pending) {
-        // A pending MERGE path assignment followed by a RETURN merges into one
-        // statement (the RETURN is the MERGE's own projection).
-        if (_isReturn) {
-          lines.push(pending + '\n' + line)
-          pending = ''
-        } else {
-          lines.push(pending)
-          pending = ''
-          if (_isMergePathAssign) pending = line
-          else lines.push(line)
-        }
-      } else {
-        if (_isMergePathAssign) pending = line
-        else lines.push(line)
-      }
-    }
-    if (pending) lines.push(pending)
-    for (const line of lines) await run(line)
-    return
-  }
   // Having executed 已经把节点注入 st.nodes，直接用 run()
   await run(st.q)
 })
