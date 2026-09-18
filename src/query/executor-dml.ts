@@ -369,6 +369,23 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       // resolves the whole thing, with the bound relationship variables (`r`)
       // injected from `__relVarMap`.
       const _relFnExpr = /^(startnode|endnode|nodes|relationships)\s*\(/i.test(expr)
+      // Relationship variable property access (`RETURN t2.name` after
+      // `MERGE ...-[t2:T {name: ... }]->...`).  The variable `t2` binds an edge
+      // object in `__relVarMap`, not a node, so the property must be read from
+      // that edge object rather than scanned from `allNodes`.
+      if (expr.includes('.')) {
+        const relVarMapHere = (allNodes as any).__relVarMap as Map<string, Record<string, unknown>> | undefined
+        const relVarName = expr.split('.')[0].trim()
+        if (relVarMapHere?.has(relVarName)) {
+          const edgeObj = relVarMapHere.get(relVarName)!
+          const rprop = expr.split('.').slice(1).join('.').trim()
+          let rval: unknown = (edgeObj as any)[rprop]
+          if (rval === undefined && edgeObj.props && typeof edgeObj.props === 'object') {
+            rval = (edgeObj.props as any)[rprop]
+          }
+          if (rval !== undefined) { row[rc] = rval; continue }
+        }
+      }
       if (!expr.includes('.') || _relFnExpr) {
         const varCtx: Record<string, unknown> = {}
         for (const node of allNodes) {
@@ -469,6 +486,23 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       continue
     }
     row[rc] = null
+  }
+
+  // ── Relationship-MERGE DELETE fan-out ──
+  // `MATCH (a)-[t:T]->(b) DELETE t MERGE (a)-[t2:T {name:'rel3'}]->(b)
+  //  RETURN t2.name` matched N T edges, deleted them, then merged a single fresh
+  // edge.  It must still return one row per originally-matched edge (N rows, all
+  // projecting the same merged `t2.name`).  Relationship MERGE has no scanLabel,
+  // so the node fan-out above is bypassed; expand the single projected row to the
+  // preserved pre-delete cardinality here.
+  const _relFanOutCount = (allNodes as any).__matchFanOutCount as number | undefined
+  if (_relFanOutCount && _relFanOutCount > 1 && (_mergeEdges?.length && !(plan as any).multiMatch?.length) && !plan.aggregate) {
+    const base = Object.keys(row).length ? [row] : []
+    if (base.length) {
+      const expanded: QueryRow[] = []
+      for (let fi = 0; fi < _relFanOutCount; fi++) expanded.push({ ...base[0] })
+      return expanded
+    }
   }
 
   return Object.keys(row).length ? [row] : []

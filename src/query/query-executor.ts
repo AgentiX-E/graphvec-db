@@ -2265,11 +2265,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const edgeVarStep = (plan.steps || []).find((s: any) => s.edgeVariable === dv)
           const delLabel = edgeVarStep?.edgeLabel
           if (!delLabel) continue
+          // Count distinct edges (dedup by srcIdx|dstIdx|label) so the pre-delete
+          // match cardinality can be preserved for downstream fan-out.
+          const seen = new Set<string>()
           for (const n of allNodes) {
             const edges = (n as any).__edges
             if (!Array.isArray(edges)) continue
+            for (const e of edges) {
+              if (e?.label === delLabel) {
+                const pn = e.props && typeof e.props === 'object' ? JSON.stringify(e.props) : ''
+                seen.add(`${e.srcIdx}|${e.dstIdx}|${e.label}|${pn}`)
+              }
+            }
             ;(n as any).__edges = edges.filter((e: any) => e?.label !== delLabel)
           }
+          if (seen.size > 1) (allNodes as any).__matchFanOutCount = seen.size
         } else if (plan.scanLabel) {
           // Node deletion: remove every node whose label includes the MATCH label.
           const delLabel = plan.scanLabel
