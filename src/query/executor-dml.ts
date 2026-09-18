@@ -86,7 +86,9 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       const aggFn = agg.function || agg.fn || agg.type || ''
       const rawField = agg.field || agg.property || ''
       const propField = rawField.includes('.') ? rawField.split('.').pop()! : rawField
-      const alias = agg.alias || agg.column?.replace(/^.+?\(.+?\)(?:\s+AS\s+)?/i, '').trim() || propField || 'c'
+      const alias = (agg.alias && agg.alias !== agg.function)
+        ? agg.alias
+        : (agg.column || propField || 'c')
       const aggRow: QueryRow = {}
       if (aggFn === 'count') {
         aggRow[alias] = createEdges.length
@@ -163,7 +165,12 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       const rawField = agg.field || agg.property || ''
       const propField = rawField.includes('.') ? rawField.split('.').pop()! : rawField
       const aggRow: QueryRow = {}
-      const alias = agg.alias || agg.column?.replace(/^.+?\(.+?\)(?:\s+AS\s+)?/i, '').trim() || propField || 'c'
+      // `count(*)`/`count(a)` carry the function name as a synthetic `alias`, so
+      // fall back to the full `column` (`count(*)`) unless the user supplied an
+      // explicit `AS` alias.
+      const alias = (agg.alias && agg.alias !== agg.function)
+        ? agg.alias
+        : (agg.column || propField || 'c')
       if (aggFn === 'count') aggRow[alias] = unwoundNodes.length
       else if (propField) {
         const values = unwoundNodes
@@ -187,7 +194,12 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
   if (plan.aggregate) {
     const row: QueryRow = {}
     const agg = plan.aggregate as any
-    const alias = agg.alias || agg.column?.replace(/^.+?\(.+?\)(?:\s+AS\s+)?/i, '').trim() || agg.field || 'c'
+    // `count(*)`/`count(a)` carry the function name as a synthetic `alias`, so
+    // fall back to the full `column` (`count(*)`) unless the user supplied an
+    // explicit `AS` alias.
+    const alias = (agg.alias && agg.alias !== agg.function)
+      ? agg.alias
+      : (agg.column || agg.field || 'c')
     // 支持 count/sum/avg/min/max——从 allNodes 提取属性值做聚合
     const propField = agg.field || agg.property || ''
     // The aggregate clause stores its function name in `function` (parsed by
@@ -196,8 +208,10 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
     // and emit `0`, so `MERGE (n) RETURN count(n)` returned 0 instead of 1.
     const aggFn = agg.function || agg.fn || agg.type || ''
     if (aggFn === 'count') {
-      // `count(n)` / `count(*)` over freshly-created (or merged) rows.
-      row[alias] = allNodes.length
+      // `count(*)` / `count(a)` count the RESULT rows, not the raw node count.
+      // A bare DML (CREATE/MERGE without MATCH) emits exactly ONE row, so the
+      // count is 1; the node count (`allNodes.length`) is meaningless here.
+      row[alias] = 1
     } else if (propField) {
       const values = allNodes
         .map(n => n[propField] ?? (n as any).props?.[propField])
