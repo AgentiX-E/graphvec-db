@@ -436,10 +436,10 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
           if (fnResult !== undefined) { row[rc] = fnResult; continue }
         } catch (e: any) {} // function call may fail for invalid args
       }
-      row[rc] = ''
+      row[rc] = null
       continue
     }
-    row[rc] = ''
+    row[rc] = null
   }
 
   return Object.keys(row).length ? [row] : []
