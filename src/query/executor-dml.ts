@@ -37,31 +37,60 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
   const _matchVar = (plan as any).matchVar as string | undefined
   const _scanLabel = (plan as any).scanLabel as string | null | undefined
   const _mergeEdges = (plan as any).mergeEdges as Array<any> | undefined
-  if ((plan as any).hasMatch && _matchVar && _scanLabel && !(plan as any).multiMatch?.length && !_mergeEdges?.length) {
+  if ((plan as any).hasMatch && _matchVar && _scanLabel && !(plan as any).multiMatch?.length && !_mergeEdges?.length && !plan.aggregate) {
     const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
-    const _refsMatchVar = (rc: string): boolean => {
+    const v2n = (allNodes as any).__varToNodeMap as Map<string, any> | undefined
+    // Resolve a RETURN column against a variable-scoped node.  Columns that
+    // reference the primary MATCH variable vary per matched node; columns that
+    // reference a DML (MERGE/CREATE) alias resolve to the single reused/created
+    // node (idempotent across rows).  This mirrors the alias-scoped projection
+    // used further below for single-row DML results.
+    const _resolveColumn = (rc: string, m: Record<string, unknown>): unknown => {
       const expr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
-      return expr === _matchVar || expr.startsWith(_matchVar + '.')
-    }
-    if (plan.returnColumns.every(_refsMatchVar)) {
-      const matched = allNodes.filter(n => {
-        const lbl = String((n as any)._label ?? '')
-        return lbl === _scanLabel || lbl.split(':').includes(_scanLabel as string)
-      })
-      if (matched.length > 1) {
-        return matched.map(m => {
-          const row: QueryRow = {}
-          for (const rc of plan.returnColumns) {
-            if (!rc) continue
-            const expr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
-            const propPart = expr.includes('.') ? (expr.split('.').pop()!) : null
-            let v: unknown = propPart ? (m as any)[propPart] : m
-            if (v === undefined) v = null
-            row[rc] = v
-          }
-          return row
-        })
+      const varName = expr.includes('.') ? expr.split('.')[0].trim() : expr.trim()
+      const propPart = expr.includes('.') ? expr.split('.').pop()! : null
+      if (varName === _matchVar) {
+        // Reference to the MATCH variable: project from this matched node.
+        return propPart ? (m as any)[propPart] ?? null : m
       }
+      // Reference to a non-MATCH variable (MERGE/CREATE alias): resolve via the
+      // binding table, then the `_alias` tag, then a top-level property scan.
+      let target: Record<string, unknown> | undefined
+      if (v2n?.has(varName)) target = v2n.get(varName)
+      if (!target) {
+        for (let i = allNodes.length - 1; i >= 0; i--) {
+          if ((allNodes[i] as any)._alias === varName) { target = allNodes[i]; break }
+        }
+      }
+      if (!target && propPart) {
+        for (const n of allNodes) { if (propPart in n) { target = n; break } }
+      }
+      if (!target) return null
+      let v: unknown = propPart ? (target as any)[propPart] : target
+      if (v === undefined) v = null
+      return v
+    }
+    const matched = allNodes.filter(n => {
+      const lbl = String((n as any)._label ?? '')
+      return lbl === _scanLabel || lbl.split(':').includes(_scanLabel as string)
+    })
+    // When a DELETE sub-clause removed every matched node, the match cardinality
+    // survives via `__matchFanOutCount` (set by the DELETE sub-clause handler).
+    // Rows still fan-out to that original cardinality; projection then resolves
+    // against the surviving/re-created DML nodes rather than the deleted ones.
+    const fanOutCount = matched.length > 1 ? matched.length : ((allNodes as any).__matchFanOutCount ?? 0)
+    if (fanOutCount > 1) {
+      const rows: QueryRow[] = []
+      for (let fi = 0; fi < fanOutCount; fi++) {
+        const m = matched[fi] ?? matched[0] ?? ({} as Record<string, unknown>)
+        const row: QueryRow = {}
+        for (const rc of plan.returnColumns) {
+          if (!rc) continue
+          row[rc] = _resolveColumn(rc, m)
+        }
+        rows.push(row)
+      }
+      return rows
     }
   }
 

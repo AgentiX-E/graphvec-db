@@ -2245,6 +2245,52 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
 
+    // ── DELETE sub-clause (MATCH ... DELETE ... MERGE/SET) ─────────────
+    // A MERGE/SET query may carry a DELETE sub-clause (`MATCH (a:A) DELETE a
+    // MERGE (a2:A)`).  ast-to-plan-v2 leaves `deleteTargets` on the merged
+    // plan (the DELETE clause overrides `plan.type`, which the later MERGE
+    // clause re-writes to 'MERGE'), but the DML side-effect block further down
+    // only fires for `type === 'DELETE'`.  Re-apply the deletion here, BEFORE the
+    // MERGE match-or-create step, so the MERGE sees the post-delete graph and
+    // creates (rather than reuses) the node — which is exactly what
+    // "do not match on deleted nodes/relationships" requires.
+    //   * Node deletion: `DELETE a` removes every node bearing the MATCH label.
+    //   * Relationship deletion: `DELETE t` removes every edge of the MATCH type.
+    if ((plan as any).deleteTargets?.length && (plan.type === 'MERGE' || plan.type === 'SET' || plan.type === 'REMOVE')) {
+      const delTargets: string[] = (plan as any).deleteTargets
+      const stepEdgeVars = new Set((plan.steps || []).map((s: any) => s.edgeVariable).filter(Boolean))
+      for (const dv of delTargets) {
+        if (stepEdgeVars.has(dv)) {
+          // Relationship deletion: drop every edge matching the MATCH edge label.
+          const edgeVarStep = (plan.steps || []).find((s: any) => s.edgeVariable === dv)
+          const delLabel = edgeVarStep?.edgeLabel
+          if (!delLabel) continue
+          for (const n of allNodes) {
+            const edges = (n as any).__edges
+            if (!Array.isArray(edges)) continue
+            ;(n as any).__edges = edges.filter((e: any) => e?.label !== delLabel)
+          }
+        } else if (plan.scanLabel) {
+          // Node deletion: remove every node whose label includes the MATCH label.
+          const delLabel = plan.scanLabel
+          const kept: typeof allNodes = []
+          let delCount = 0
+          for (const n of allNodes) {
+            const lbl = String((n as any)._label ?? '')
+            if (lbl === delLabel || lbl.split(':').includes(delLabel)) { delCount++; continue }
+            kept.push(n)
+          }
+          allNodes.length = 0
+          allNodes.push(...kept)
+          // Preserve the pre-delete MATCH cardinality so `_buildDmlRows` can
+          // still fan-out one row per original match even though the matched
+          // nodes are gone from the graph (`MATCH (a:A) DELETE a MERGE (a2:A)
+          // RETURN a2.num` must yield TWO rows, one per matched A node).
+          if (delCount > 1) (allNodes as any).__matchFanOutCount = delCount
+        }
+      }
+    }
+
     // ── Resolve WITH aliases through the binding table ─────────────────
     // `WITH n AS a` binds the alias `a` to whatever node `n` currently denotes.
     // Chained projections (`WITH a AS x` in a multi-WITH query) resolve through
