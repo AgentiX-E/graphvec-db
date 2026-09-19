@@ -27,6 +27,34 @@ import { _evaluateExpression } from './expression-engine'
 function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>): QueryRow[] {
   if (!plan.returnColumns?.length) return []
 
+  // ── Relationship-MERGE multi-pair fan-out ──
+  // `MATCH (a {id:2})--(b {id:1}) MERGE (a)-[r:KNOWS]-(b) RETURN r` materialises
+  // one edge per matched node pair.  The graph engine exposes those edges in
+  // `__relVarList` (in pair order).  When `RETURN r` projects the relationship
+  // variable itself (not a property), emit one row per edge, binding `r` to each.
+  const _relVarList = (allNodes as any).__relVarList as Array<Record<string, unknown>> | undefined
+  if (_relVarList && _relVarList.length > 1) {
+    const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+    const relVar = (plan as any).mergeEdges?.[0]?.variable
+    const rows: QueryRow[] = []
+    for (const eo of _relVarList) {
+      const row: QueryRow = {}
+      for (const rc of plan.returnColumns) {
+        if (!rc) continue
+        const expr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
+        if (relVar && expr === relVar) {
+          row[rc] = eo
+        } else {
+          // Non-relationship-column rows: fall through to the normal projection
+          // below (rare in a multi-pair relationship MERGE).
+          row[rc] = undefined
+        }
+      }
+      rows.push(row)
+    }
+    if (rows.every(r => Object.values(r).some(v => v !== undefined && v !== null))) return rows
+  }
+
   // ── MATCH-driven fan-out ──
   // `MATCH (person:Person) MERGE/CREATE ... RETURN person.bornIn` binds `person`
   // to N nodes; the DML row builder otherwise collapses the projection to a

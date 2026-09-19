@@ -3124,11 +3124,47 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           return -1
         }
         const relVarMap = new Map<string, Record<string, unknown>>()
+        // ── Enumerate MATCH-driven endpoint pairs for relationship MERGE ──
+        // `MATCH (a {id:2})--(b {id:1}) MERGE (a)-[r:KNOWS]-(b) RETURN r` matches
+        // TWO (id2, id1) node pairs, but `_resolveIdx` only resolves the first
+        // pair (via `varToNodeMap`).  When the MERGE endpoints coincide with a
+        // MATCH step whose source/target carry property predicates, enumerate
+        // every matching pair with `_walkMultiSteps` and materialise (or reuse) an
+        // edge per pair, binding the relationship variable to each distinct edge.
+        // `__relVarList` carries the ordered edge objects so `_buildDmlRows` can
+        // fan out one result row per matched pair.
+        let endpointPairs: Array<{ src: number; tgt: number }> = []
+        const relList: Record<string, unknown>[] = []
+        const matchStep = (plan.steps || []).length === 1 ? (plan.steps![0] as any) : undefined
+        const _hasEndpointPredicates =
+          matchStep && ((matchStep.sourceProps && Object.keys(matchStep.sourceProps).length) ||
+            (matchStep.targetProps && Object.keys(matchStep.targetProps).length))
+        if (_hasEndpointPredicates && plan.hasMatch && (plan as any).mergeEdges?.length === 1) {
+          const me0 = (plan as any).mergeEdges[0]
+          const allIdx = allNodes.length
+          const walkedPairs: Array<{ src: number; tgt: number }> = []
+          for (let si = 0; si < allIdx; si++) {
+            const srcPropsOk = matchStep.sourceProps ? Object.entries(matchStep.sourceProps).every(([k, v]) => (allNodes[si] as any)[k] === ((v as any)?.value ?? v)) : true
+            if (!srcPropsOk) continue
+            const paths = _walkMultiSteps(si, [matchStep], allNodes as any, new Set(), [], [])
+            for (const p of paths) {
+              const ti = p[p.length - 1]
+              const tgtPropsOk = matchStep.targetProps ? Object.entries(matchStep.targetProps).every(([k, v]) => (allNodes[ti] as any)[k] === ((v as any)?.value ?? v)) : true
+              if (tgtPropsOk) walkedPairs.push({ src: si, tgt: ti })
+            }
+          }
+          if (walkedPairs.length > 1) endpointPairs = walkedPairs
+        }
         for (const me of (plan as any).mergeEdges) {
           const ev = me.variable || ''
           const label = me.label || ''
-          const srcIdx = _resolveIdx(me.source)
-          const tgtIdx = _resolveIdx(me.target)
+          // A single endpoint pair may fan out to multiple MATCH pairs (see above).
+          const pairsForEdge = endpointPairs.length
+            ? endpointPairs.map(p => ({ src: p.src, tgt: p.tgt }))
+            : [{ src: _resolveIdx(me.source), tgt: _resolveIdx(me.target) }]
+          for (const ep of pairsForEdge) {
+          const srcIdx = ep.src
+          const tgtIdx = ep.tgt
           if (srcIdx < 0 || tgtIdx < 0) continue
           // Storage direction: `in` flips the storage endpoints to target→source.
           const edgeSrc = me.direction === 'in' ? tgtIdx : srcIdx
@@ -3143,14 +3179,32 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
             return true
           }
-          const srcEdges = ((allNodes[edgeSrc] as any)?.__edges || []) as Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> }>
+          // `direction === 'any'` (`MERGE (a)-[r:R]-(b)`) matches an edge in EITHER
+          // direction between the endpoints.  Edges may be stored on either
+          // endpoint (the graph-engine persists a relationship on its source node),
+          // so for an undirected merge we must scan the union of both endpoints'
+          // edge lists to find a reverse-stored edge (e.g. the `c->d` edge when the
+          // merge pair is `(d,c)`).
+          const _edgeConnects = (e: { srcIdx: number; dstIdx: number }): boolean => {
+            if (me.direction === 'any') return (e.srcIdx === edgeSrc && e.dstIdx === edgeDst) || (e.srcIdx === edgeDst && e.dstIdx === edgeSrc)
+            return e.dstIdx === edgeDst
+          }
+          const _edgeList = (idx: number): Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> }> =>
+            ((allNodes[idx] as any)?.__edges || [])
+          const srcEdges = me.direction === 'any'
+            ? [..._edgeList(edgeSrc), ..._edgeList(edgeDst)]
+            : _edgeList(edgeSrc)
           const matching = srcEdges.filter(e =>
-            (e.label || '') === label && e.dstIdx === edgeDst && _propsMatch(e.props)
+            (e.label || '') === label && _edgeConnects(e) && _propsMatch(e.props)
           )
           if (matching.length) {
             const ex = matching[0]
             // ON MATCH SET mutates the matched edge's props in place (shared ref).
-            if (ev) relVarMap.set(ev, _mkRelObj(ex.srcIdx, ex.dstIdx, ex.label, ex.props ?? null))
+            if (ev) {
+              const eo = _mkRelObj(ex.srcIdx, ex.dstIdx, ex.label, ex.props ?? null)
+              relVarMap.set(ev, eo)
+              relList.push(eo)
+            }
             continue
           }
           // Create the edge (merge pattern-inline props + ON CREATE SET).
@@ -3182,8 +3236,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             ;(nodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
             ;(nodes[edgeDst] as any).__edges.push({ ...edgeRecord })
           }
-          if (ev) relVarMap.set(ev, _mkRelObj(edgeSrc, edgeDst, label, Object.keys(edgeProps).length ? edgeProps : null))
+          if (ev) {
+            const eo = _mkRelObj(edgeSrc, edgeDst, label, Object.keys(edgeProps).length ? edgeProps : null)
+            relVarMap.set(ev, eo)
+            relList.push(eo)
+          }
+          }
         }
+        if (relList.length > 1) (allNodes as any).__relVarList = relList
         // Bind a MERGE path variable (`MERGE p = (a)-[:R]->(b) RETURN p`) to a
         // `{ __path, __pathEdges }` object so the result serializer renders it in
         // TCK path notation `<({num:1})-[:R]->({num:2})>` (the same convention the
