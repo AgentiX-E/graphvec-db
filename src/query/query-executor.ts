@@ -2344,6 +2344,33 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     let effectiveCreateNodes = plan.createNodes
     let effectiveCreateEdges = plan.createEdges
 
+    // ── WITH/UNWIND scalar bindings for MERGE property expressions ──
+    // `UNWIND [42] AS props ... WITH DISTINCT props AS p MERGE (a:A {num: p})`
+    // must evaluate the MERGE property value `p` to its scalar (42) before
+    // match-or-create, otherwise `p` is materialised as the literal string "p"
+    // and the MERGE fails to match the existing `{num: 42}` node.  Resolve the
+    // UNWIND element(s) and the final WITH projection chain into a flat alias →
+    // value table used to substitute a bare variable reference in MERGE props.
+    const _scalarBindings = new Map<string, unknown>()
+    if (plan.unwind?.name) {
+      const _uw = _resolveUnwindList(plan.unwind as any, {})
+      if (_uw.length) _scalarBindings.set(plan.unwind.name, _uw[0])
+    }
+    if (_scalarBindings.size) {
+      for (const wc of allWithColumns) {
+        if (wc.expression && _scalarBindings.has(wc.expression.trim())) {
+          _scalarBindings.set(wc.alias, _scalarBindings.get(wc.expression.trim()))
+        }
+      }
+    }
+    const _resolveMergePropVal = (v: unknown): unknown => {
+      const raw = isTypedValue(v) ? v.value : v
+      if (typeof raw === 'string' && _scalarBindings.has(raw.trim())) {
+        return _scalarBindings.get(raw.trim())
+      }
+      return v
+    }
+
     if (plan.createNodes?.length) {
       // If the CREATE statement has an UNWIND prefix (e.g. "UNWIND [1,2,3] AS i
       // CREATE ({num: i})"), expand the template into one node per unwound element
@@ -2408,6 +2435,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
       for (let ci = 0; ci < effectiveCreateNodes.length; ci++) {
         const cn = effectiveCreateNodes[ci]
+        // Resolve WITH/UNWIND variable references in MERGE/CREATE node props to
+        // their scalar values BEFORE match-or-create (`MERGE (a:A {num: p})` must
+        // match on `num: 42`, not the literal string "p").  Mutates the typed
+        // value in place so the downstream `_findMergeNodeMatch` and creation
+        // materialisation both see the resolved value.
+        if (cn.props) {
+          for (const k of Object.keys(cn.props)) {
+            const resolvedV = _resolveMergePropVal(cn.props[k])
+            if (resolvedV !== cn.props[k]) {
+              cn.props[k] = resolvedV
+            }
+          }
+        }
         // ── MERGE match-or-create ──
         // A MERGE node (tagged `_isMerge`) must first look for an existing node
         // with a matching label + properties.  When found, the node is reused
