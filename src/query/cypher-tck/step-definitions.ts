@@ -1039,13 +1039,35 @@ Given('having executed:', async function (query: string) {
     while (i < lines.length) {
       const cur = lines[i]
       const next = lines[i + 1]
-      // UNWIND ... AS <var> followed by CREATE/MERGE/MATCH
-      const isUnwind = /^\s*(UNWIND\s+|OPTIONAL\s+MATCH\s+)/i.test(cur)
-      const isCreate = next && /^\s*(CREATE\s+|MERGE\s+|MATCH\s+|SET\s+|DELETE\s+|REMOVE\s+)/i.test(next)
-      if (isUnwind && isCreate && !cur.includes('CREATE') && !cur.includes('MERGE') 
-          && !next.includes('UNWIND')) {
-        merged.push(cur + ' ' + next)
-        i += 2
+      // UNWIND ... AS <var> followed by CREATE/MERGE/MATCH — possibly chained
+      // through further UNWIND clauses (`UNWIND x UNWIND y CREATE`).  Greedily
+      // consume a run of UNWIND clauses and the first following CREATE/MERGE/
+      // MATCH so the whole pipeline executes as one statement.
+      const isUnwind = /^\s*UNWIND\s+/i.test(cur)
+      if (isUnwind && !cur.includes('CREATE') && !cur.includes('MERGE') && !cur.includes('MATCH') && !/\bSET\b|\bDELETE\b|\bREMOVE\b/i.test(cur)) {
+        let j = i
+        const parts: string[] = []
+        let sawCreate = false
+        while (j < lines.length) {
+          const lj = lines[j]
+          const isUw = /^\s*UNWIND\s+/i.test(lj)
+          const isCr = /^\s*(CREATE\s+|MERGE\s+|MATCH\s+|SET\s+|DELETE\s+|REMOVE\s+)/i.test(lj)
+          if (parts.length === 0) {
+            // First clause must be UNWIND.
+            if (!isUw) break
+            parts.push(lj); j++; continue
+          }
+          if (isUw && !sawCreate) { parts.push(lj); j++; continue }
+          if (isCr && !sawCreate) { parts.push(lj); sawCreate = true; j++; continue }
+          break
+        }
+        if (parts.length > 1) {
+          merged.push(parts.join(' '))
+          i = j
+        } else {
+          merged.push(cur)
+          i += 1
+        }
       } else {
         merged.push(cur)
         i += 1
@@ -1081,6 +1103,11 @@ Given('having executed:', async function (query: string) {
           const cns = (subPlan as any).createNodes as Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
           const createEdges = (subPlan as any).createEdges as Array<{ source: string; target: string; sourceIdx: number; targetIdx: number; label: string; props?: Record<string, unknown> | null; direction?: string }> | undefined
           const uw = (subPlan as any).unwind as { list?: unknown[]; var?: string; name?: string } | undefined
+          // Multiple UNWIND clauses nest (`UNWIND [0,1,2] AS x UNWIND [0,1,2] AS y
+          // CREATE ({x,y})` → 9 nodes).  Collect every UNWIND in order.
+          const _uwAll = ((subPlan as any).unwinds?.length
+            ? (subPlan as any).unwinds
+            : (uw ? [uw] : [])) as Array<{ list?: unknown[]; var?: string; name?: string }>
           // CREATE referencing only previously-bound variables, minting no new
           // nodes: `CREATE (n1)-[:T]->(n2)` where `n1`/`n2` were projected by an
           // earlier `WITH nodeList[i] AS n1, nodeList[i+1] AS n2`.  The parser
@@ -1215,31 +1242,34 @@ Given('having executed:', async function (query: string) {
           // literal list or an expression (`range(...)`) via _resolveUnwindList.
           let expandedCns = cns
           let resolvedList: unknown[] | null = null
-          if (uw && (uw.list?.length || uw.var)) {
-            resolvedList = (uw.list && uw.list.length) ? uw.list : _resolveUnwindList({ list: uw.list || [], var: uw.var, name: uw.name || '' } as any, {})
-            const resolved = resolvedList
+          if (_uwAll.length) {
+            // Nest every UNWIND into a Cartesian product of row bindings.
+            const resolvedLists = _uwAll.map(u => (u.list && u.list.length) ? u.list : _resolveUnwindList({ list: u.list || [], var: u.var, name: u.name || '' } as any, {}))
+            resolvedList = resolvedLists[0]
+            const total = resolvedLists.reduce((a, l) => a * Math.max(l.length, 1), 1)
             const out: typeof cns = []
-            for (let ui = 0; ui < resolved.length; ui++) {
+            for (let comboIdx = 0; comboIdx < total; comboIdx++) {
+              let rem = comboIdx
+              const comboVals: unknown[] = []
+              for (let li = 0; li < _uwAll.length; li++) {
+                const len = Math.max(resolvedLists[li].length, 1)
+                const idx = rem % len
+                rem = Math.floor(rem / len)
+                comboVals.push(resolvedLists[li][idx])
+              }
+              const binding = new Map<string, unknown>()
+              _uwAll.forEach((u, li) => { if (u.name) binding.set(u.name, comboVals[li]) })
               for (const cn of cns) {
                 const ecn: any = { ...cn }
-                // Each unwound iteration mints an independent node bound to the
-                // CREATE variable; give it a unique alias (`s_0`, `s_1`, ...) so
-                // the alias-dedup below does not collapse the expansion back to a
-                // single node, while downstream statements can still resolve `s`.
-                if (cn.alias) ecn.alias = cn.alias + '_' + ui
-                // Resolve the UNWIND variable reference inside this node's
-                // property expressions against the current element.  `CREATE (n
-                // {var: i})` under `UNWIND range(1, 20) AS i` must mint nodes with
-                // `var = 1`, `var = 2`, … — not twenty copies of `var = "i"`.  The
-                // value is carried on the per-iteration node so the later prop
-                // materialisation (which only sees the flattened template list)
-                // does not lose the bound element.
+                // Unique alias per combination so alias-dedup does not collapse
+                // the nested expansion back to a single node.
+                if (cn.alias) ecn.alias = cn.alias + '_' + comboIdx
                 if (cn.props) {
                   const boundProps: Record<string, unknown> = { ...(cn.props as Record<string, unknown>) }
                   for (const [k, v] of Object.entries(cn.props)) {
                     const raw0 = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type) ? (v as any).value : v
-                    if (typeof raw0 === 'string' && raw0.trim() === uw.name) {
-                      boundProps[k] = { type: 'STRING', value: resolved[ui], _resolved: true }
+                    if (typeof raw0 === 'string' && binding.has(raw0.trim())) {
+                      boundProps[k] = { type: 'STRING', value: binding.get(raw0.trim()), _resolved: true }
                     }
                   }
                   ecn.props = boundProps
@@ -1248,10 +1278,8 @@ Given('having executed:', async function (query: string) {
               }
             }
             expandedCns = out
-            // Bind the UNWIND variable to its resolved list so a later statement
-            // like `UNWIND range(0, i) ...` can read `i` (already a concrete list
-            // of values).  Only store resolved numeric/atomic lists.
-            if (uw.name) varEnv.set(uw.name, resolved.slice())
+            // Bind each UNWIND variable to its resolved list for later statements.
+            _uwAll.forEach((u) => { if (u.name) varEnv.set(u.name, resolvedLists[_uwAll.indexOf(u)].slice()) })
           }
           const createdNodes: Record<string, unknown>[] = []
           // Map each createNode template index → global st.nodes index, so edge
@@ -1646,26 +1674,43 @@ Given('having executed:', async function (query: string) {
       }
       
       // If any UNWIND
-      // 解析 UNWIND 后替换 createNodes 中的变量引用
-      if (unwind && unwind.list) {
-        // Resolve the UNWIND list to concrete values via the same authoritative
-        // helper the executor uses (`_resolveUnwindList`), so string literals
-        // stored as quoted raw text (`'a'`) are restored to `a` — including the
-        // empty string and whitespace — and temporal/range expressions evaluate.
-        const listVals: unknown[] = _resolveUnwindList(unwind, {})
-        // 确保 createNodes 模板存在
+      // Resolve every UNWIND clause and materialise the createNode template once
+      // per nested combination, substituting each unwound variable reference.
+      // `UNWIND [0,1,2] AS x UNWIND [0,1,2] AS y CREATE ({x:x, y:y})` must mint
+      // the 3×3 Cartesian product (9 nodes), not a single template.
+      const _uwAllSingle = ((plan as any).unwinds?.length
+        ? (plan as any).unwinds
+        : (unwind && unwind.list ? [unwind] : [])) as Array<{ list?: unknown[]; var?: string; name?: string }>
+      if (_uwAllSingle.length) {
+        // Resolve each UNWIND list to concrete values via the authoritative helper
+        // (`_resolveUnwindList`), so quoted string literals (`'a'`) restore to `a`
+        // and temporal/range expressions evaluate.
+        const resolvedLists = _uwAllSingle.map(u => (u.list && u.list.length)
+          ? u.list
+          : _resolveUnwindList({ list: u.list || [], var: u.var, name: u.name || '' } as any, {}))
         const cnTemplate = cns.length > 0 ? cns[0] : null
         if (cnTemplate) {
-          for (const elem of listVals) {
+          const total = resolvedLists.reduce((a, l) => a * Math.max(l.length, 1), 1)
+          for (let comboIdx = 0; comboIdx < total; comboIdx++) {
+            let rem = comboIdx
+            const comboVals: unknown[] = []
+            for (let li = 0; li < _uwAllSingle.length; li++) {
+              const len = Math.max(resolvedLists[li].length, 1)
+              const idx = rem % len
+              rem = Math.floor(rem / len)
+              comboVals.push(resolvedLists[li][idx] ?? (_uwAllSingle[li].list?.[idx]))
+            }
+            const binding = new Map<string, unknown>()
+            _uwAllSingle.forEach((u, li) => { if (u.name) binding.set(u.name, comboVals[li]) })
             const uwNode: Record<string, unknown> = { _label: cnTemplate.label || 'Default' }
             if (cnTemplate.props) {
               for (const [k, v] of Object.entries(cnTemplate.props)) {
                 let rawVal = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type)
                   ? (v as any).value
                   : v
-                // 如果值是 UNWIND 变量引用，替换为实际值
-                if (typeof rawVal === 'string' && rawVal === unwind.name) {
-                  rawVal = elem
+                // Replace any unwound variable reference with its bound value.
+                if (typeof rawVal === 'string' && binding.has(rawVal)) {
+                  rawVal = binding.get(rawVal)
                 }
                 uwNode[k] = rawVal
               }

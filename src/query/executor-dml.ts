@@ -55,6 +55,39 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
     if (rows.every(r => Object.values(r).some(v => v !== undefined && v !== null))) return rows
   }
 
+  // ── MATCH-row driven MERGE fan-out ──
+  // `MATCH (foo) WITH foo.x AS x, foo.y AS y MERGE ... RETURN x, y` must yield one
+  // row per matched `foo` (nine), projecting the WITH aliases (x, y) bound to that
+  // row's seed values.  The MERGE-node expansion step recorded those per-row alias
+  // bindings in `__matchRows`.
+  const _matchRows = (allNodes as any).__matchRows as Array<Record<string, unknown>> | undefined
+  if (_matchRows && _matchRows.length > 1) {
+    const aliasMap = plan.returnAliasMap as Record<string, string> | undefined
+    const rows: QueryRow[] = []
+    for (const mr of _matchRows) {
+      const row: QueryRow = {}
+      let allResolved = true
+      for (const rc of plan.returnColumns) {
+        if (!rc) continue
+        const expr = aliasMap && rc in aliasMap ? aliasMap[rc] : rc
+        // `RETURN x, y` projects the WITH aliases directly (no dot), so `expr`
+        // is `x`/`y` and resolves to the row's bound alias value.
+        if (expr in mr) {
+          row[rc] = mr[expr]
+        } else if (expr.includes('.')) {
+          const varName = expr.split('.')[0].trim()
+          const propName = expr.split('.').slice(1).join('.')
+          const target = mr[varName]
+          row[rc] = target && typeof target === 'object' ? (target as any)[propName] ?? null : null
+        } else {
+          allResolved = false
+        }
+      }
+      if (allResolved) rows.push(row)
+    }
+    if (rows.length) return rows
+  }
+
   // ── MATCH-driven fan-out ──
   // `MATCH (person:Person) MERGE/CREATE ... RETURN person.bornIn` binds `person`
   // to N nodes; the DML row builder otherwise collapses the projection to a

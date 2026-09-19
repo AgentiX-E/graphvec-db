@@ -2375,64 +2375,153 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // If the CREATE statement has an UNWIND prefix (e.g. "UNWIND [1,2,3] AS i
       // CREATE ({num: i})"), expand the template into one node per unwound element
       // so the DML pipeline correctly materializes all rows.
-      const uwExpanded = (plan.unwind && (plan.unwind.list?.length || plan.unwind.var)) ? plan.unwind : null
-      if (uwExpanded) {
-        // Resolve list elements to their concrete values (string literals are
-        // stored as quoted raw text, temporal/range expressions as bare text).
-        const resolvedList = _resolveUnwindList(uwExpanded, {})
+      // Multiple UNWIND clauses nest into a Cartesian product
+      // (`UNWIND [0,1,2] AS x UNWIND [0,1,2] AS y CREATE ({x,y})` → 9 nodes).
+      // `plan.unwinds` collects every UNWIND in order; resolve each list and walk
+      // the nested combinations, substituting every unwound variable reference.
+      const _uwList = (plan.unwinds?.length ? plan.unwinds : (plan.unwind ? [plan.unwind] : [])) as Array<{ list: unknown[]; name: string; var?: string }>
+      const uwExpanded = _uwList.length ? _uwList[0] : null
+      if (uwExpanded && _uwList.length) {
+        const resolvedLists = _uwList.map(u => _resolveUnwindList(u as any, {}))
         const expandedCns: typeof effectiveCreateNodes = []
         const expandedEdges: typeof effectiveCreateEdges = []
         const numCn = plan.createNodes?.length || 1
-        for (let uwi = 0; uwi < resolvedList.length; uwi++) {
-          const elem = resolvedList[uwi] ?? uwExpanded.list[uwi]
+        // Build the nested combination iterator: index vector over each list.
+        const total = resolvedLists.reduce((acc, l) => acc * Math.max(l.length, 1), 1)
+        for (let comboIdx = 0; comboIdx < total; comboIdx++) {
+          // Decode comboIdx into one index per unwind list (Cartesian product).
+          let rem = comboIdx
+          const comboVals: unknown[] = []
+          for (let li = 0; li < _uwList.length; li++) {
+            const len = Math.max(resolvedLists[li].length, 1)
+            const idx = rem % len
+            rem = Math.floor(rem / len)
+            comboVals.push(resolvedLists[li][idx] ?? _uwList[li].list?.[idx])
+          }
+          const binding = new Map<string, unknown>()
+          _uwList.forEach((u, li) => binding.set(u.name, comboVals[li]))
+          // Substitute every unwound variable in props, alias, and edge endpoints.
+          const _subst = (v: any): any => {
+            const raw = isTypedValue(v) ? v.value : v
+            if (typeof raw !== 'string') return v
+            for (const [name, val] of binding) {
+              if (raw === name) return val
+            }
+            return v
+          }
           for (const cn of plan.createNodes) {
             const ecn = { ...cn }
             if (cn.props) {
-              // Substitute unwound variable references in property values
               const newProps: Record<string, any> = {}
-              for (const [k, v] of Object.entries(cn.props)) {
-                const raw = isTypedValue(v) ? v.value : v
-                if (typeof raw === 'string' && raw === uwExpanded.name) {
-                  newProps[k] = elem // raw element, no type wrapper needed
-                } else {
-                  newProps[k] = v
-                }
-              }
+              for (const [k, v] of Object.entries(cn.props)) newProps[k] = _subst(v)
               ecn.props = newProps as any
             }
-            if (cn.alias === uwExpanded.name) {
-              // The alias is the unwind variable name; use a per-index suffix
-              ecn.alias = cn.alias + '_' + uwi
+            if (cn.alias && binding.has(cn.alias)) {
+              ecn.alias = cn.alias + '_' + comboIdx
             }
             expandedCns.push(ecn)
           }
-          // Expand each edge template: remap its endpoint createNode indices to
-          // this iteration's slice and substitute unwound property values.
           for (const edge of plan.createEdges || []) {
             const ee = { ...edge }
-            ee.sourceIdx = uwi * numCn + (edge.sourceIdx ?? 0)
-            ee.targetIdx = uwi * numCn + (edge.targetIdx ?? 0)
+            const baseSrc = edge.sourceIdx ?? 0
+            ee.sourceIdx = comboIdx * numCn + baseSrc
+            ee.targetIdx = comboIdx * numCn + (edge.targetIdx ?? 0)
             if (edge.props) {
               const newEProps: Record<string, any> = {}
-              for (const [k, v] of Object.entries(edge.props)) {
-                const raw = isTypedValue(v) ? v.value : v
-                if (typeof raw === 'string' && raw === uwExpanded.name) {
-                  newEProps[k] = elem
-                } else {
-                  newEProps[k] = v
-                }
-              }
+              for (const [k, v] of Object.entries(edge.props)) newEProps[k] = _subst(v)
               ee.props = newEProps as any
             }
-            // Preserve the relationship alias so RETURN r.* can be matched.
-            if (edge.source === uwExpanded.name) ee.source = edge.source + '_' + uwi
-            if (edge.target === uwExpanded.name) ee.target = edge.target + '_' + uwi
+            if (edge.source && binding.has(edge.source)) ee.source = edge.source + '_' + comboIdx
+            if (edge.target && binding.has(edge.target)) ee.target = edge.target + '_' + comboIdx
             expandedEdges.push(ee)
           }
         }
         effectiveCreateNodes = expandedCns
         effectiveCreateEdges = expandedEdges
       }
+
+      // ── MATCH-row driven MERGE node expansion ──
+      // `MATCH (foo) WITH foo.x AS x, foo.y AS y MERGE (:N {x:x, y:y+1}) ...`
+      // must run the MERGE per matched row (`foo` matches every seed node), not
+      // once against the first bound node.  When there is a single unlabelled
+      // MATCH variable and the MERGE/CREATE node props reference the WITH-projected
+      // aliases (x, y), expand the templates into one concrete node per matched
+      // row, evaluating each property expression (`x`, `y`, `y + 1`, `x + 1`)
+      // against that row's bound values.  The existing match-or-create loop then
+      // reuses/creates each node idempotently (dedup by label+props).
+      if (plan.hasMatch && (plan as any).matchVar && !plan.scanLabel && effectiveCreateNodes?.length) {
+        const mVar = (plan as any).matchVar
+        const withCols = allWithColumns
+        // Only expand when at least one MERGE/CREATE node property references a
+        // WITH alias (i.e. the node carries per-row values).
+        const propRefsWithAlias = effectiveCreateNodes.some((cn: any) =>
+          cn.props && Object.values(cn.props).some((pv: any) => {
+            const raw = isTypedValue(pv) ? pv.value : pv
+            return typeof raw === 'string' && withCols.some(wc => wc.alias && raw.includes(wc.alias))
+          })
+        )
+        if (propRefsWithAlias) {
+          // Build a per-row binding context: { x: <n.x>, y: <n.y>, foo: <n> }.
+          const aliasOf = (name: string): any => withCols.find(wc => wc.alias === name)
+          const expanded: typeof effectiveCreateNodes = []
+          const _matchRows: Array<Record<string, unknown>> = []
+          for (const seed of allNodes) {
+            const boundRow: Record<string, unknown> = {}
+            for (const wc of withCols) {
+              if (!wc.alias) continue
+              const rhs = wc.expression // e.g. `foo.x`
+              const rhsProp = rhs.includes('.') ? rhs.split('.').pop() : null
+              boundRow[wc.alias] = rhsProp ? (seed as any)[rhsProp] : (seed as any)
+            }
+            _matchRows.push(boundRow)
+            for (const cn of effectiveCreateNodes as any[]) {
+              const ecn: any = { ...cn }
+              if (cn.props) {
+                const np: Record<string, any> = {}
+                for (const [k, pv] of Object.entries(cn.props)) {
+                  const raw = isTypedValue(pv) ? pv.value : pv
+                  if (typeof raw === 'string') {
+                    let val: unknown = raw
+                    // Resolve WITH alias references to the seed's bound value.
+                    for (const wc of withCols) {
+                      if (!wc.alias) continue
+                      // replace `x` (word-boundary) with the seed property value
+                      const rhs = wc.expression // e.g. `foo.x`
+                      const rhsProp = rhs.includes('.') ? rhs.split('.').pop() : null
+                      const bound = rhsProp ? (seed as any)[rhsProp] : (seed as any)
+                      const re = new RegExp(`\\b${wc.alias}\\b`, 'g')
+                      if (re.test(raw)) {
+                        const subbed = raw.replace(re, String(bound))
+                        val = subbed
+                      }
+                    }
+                    // Evaluate arithmetic (`y + 1`) or bare value.
+                    if (typeof val === 'string' && /^[\d\s+\-*/]+$/.test(val.trim()) && /[+\-*/]/.test(val)) {
+                      try { val = _evalBinary(val.trim(), {}) } catch { /* keep literal */ }
+                    } else if (typeof val === 'string' && /^-?\d+$/.test(val.trim())) {
+                      val = Number(val.trim())
+                    } else if (typeof val === 'string' && val !== raw) {
+                      // alias substituted: leave numeric-looking strings as-is; else it became a plain value
+                      if (/^-?\d+$/.test(val.trim())) val = Number(val.trim())
+                    }
+                    np[k] = val
+                  } else {
+                    np[k] = pv
+                  }
+                }
+                ecn.props = np
+              }
+              expanded.push(ecn)
+            }
+          }
+          // Keep the anchor variable bound to the first matched seed as before.
+          if (expanded.length) {
+            effectiveCreateNodes = expanded
+            ;(allNodes as any).__matchRows = _matchRows
+          }
+        }
+      }
+
       for (let ci = 0; ci < effectiveCreateNodes.length; ci++) {
         const cn = effectiveCreateNodes[ci]
         // Resolve WITH/UNWIND variable references in MERGE/CREATE node props to

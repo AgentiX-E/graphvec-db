@@ -1232,8 +1232,19 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
       case 'MERGE': {
         plan.type = 'MERGE'
         const m = extractMerge(clause.ctx)
-        plan.mergeNodes = m.nodes
-        plan.mergeEdges = m.edges
+        // Accumulate multiple MERGE clauses into a single plan.  A query such as
+        // `MERGE (:N {x:x, y:y+1}) MERGE (:N {x:x, y:y}) MERGE (:N {x:x+1, y:y})`
+        // lists three independent MERGE nodes that must ALL be materialised (one
+        // node each), not overwrite each other.  `mergeNodes`/`mergeEdges` start
+        // undefined and are appended to.
+        if (plan.mergeNodes) {
+          plan.mergeNodes = plan.mergeNodes.concat(m.nodes)
+        } else {
+          plan.mergeNodes = m.nodes
+        }
+        if (m.edges?.length) {
+          plan.mergeEdges = plan.mergeEdges ? plan.mergeEdges.concat(m.edges) : m.edges
+        }
         // Extract ON CREATE / ON MATCH sets from text
         const mergeText = getTextRecursive(clause.ctx)
         const onCreateMatch = mergeText.match(/ON\s+CREATE\s+SET\s+(.+?)(?:\s+ON\s+MATCH|$)/i)
@@ -2148,7 +2159,11 @@ function extractCreateNodes(createCtx: any): Array<{ alias: string; label: strin
   const varToIdx = new Map<string, number>()
 
   for (const np of nodePatterns) {
-    const variable = findSymbolicName(findChild(np, 'VariableContext')) ?? ''
+    // The pattern variable is a DIRECT child of NodePattern; `findChild` is
+    // depth-first and would wrongly surface a property-value variable
+    // (`CREATE ({x: x, y: y})` → alias "x").  Restrict to direct children.
+    const directVar = (np?.children ?? []).find((c: any) => (c.constructor?.name ?? '') === 'VariableContext')
+    const variable = directVar ? findSymbolicName(directVar) ?? '' : ''
     const labelCtx = findChild(np, 'NodeLabelContext')
     const label = labelCtx ? extractLabel(labelCtx) : null
     const propsNode = findChild(np, 'PropertiesContext')
@@ -2281,7 +2296,13 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
   // No intermediate PatternContext in ANTLR. Just find NodePattern directly.
   const nodePatterns = findAllChildren(mergeCtx, 'NodePatternContext')
   for (const np of nodePatterns) {
-    const variable = findSymbolicName(findChild(np, 'VariableContext')) ?? ''
+    // The pattern variable is a DIRECT child of NodePattern.  `findChild` is a
+    // depth-first traversal, so it would wrongly surface a variable inside the
+    // property map (`MERGE (:N {x: foo.x})` → alias "foo") — but `foo` there is a
+    // property value, not the node variable.  Restrict the search to direct
+    // children of the node pattern to leave such anonymous nodes alias-less.
+    const directVar = (np?.children ?? []).find((c: any) => (c.constructor?.name ?? '') === 'VariableContext')
+    let variable = directVar ? findSymbolicName(directVar) ?? '' : ''
     const labelCtx = findChild(np, 'NodeLabelContext')
     const label = labelCtx ? extractLabel(labelCtx) : null
     nodes.push({ alias: variable, label, props: extractMapLiteral(findChild(np, 'PropertiesContext')) ?? null })
