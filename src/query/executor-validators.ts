@@ -935,15 +935,24 @@ export function _validateUnionComposition(plan: any, query: string): void {
 
   // ── Rule 2: DifferentColumnsInUnion ──
   // Compare the union plan's left columns (plan) against its right plan's
-  // columns (plan.rightPlan).  Column equality is by NAME (and count), not by
-  // expression.  When the parser folds the left side into `plan`, its
-  // `returnColumns` holds the left projection and `rightPlan.returnColumns`
-  // the right one.
-  let leftCols: string[] = plan?.unionType && plan?.rightPlan?.returnColumns
-    ? (plan.returnColumns || [])
+  // columns (plan.rightPlan).  Column equality is by RESULT NAME (and count),
+  // not by the underlying expression.  The parser strips the source-variable
+  // prefix from the LEFT projection (`n.name` → `name`) but keeps it on the
+  // RIGHT one (`m.name`), so comparing raw `returnColumns` would falsely flag
+  // `n.name UNION m.name` as DifferentColumnsInUnion.  Resolve the result column
+  // names through `returnAliasMap` keys (which both sides populate with the
+  // projected name) and only fall back to `returnColumns` when no alias map is
+  // present.
+  const _resultColumnNames = (p: any): string[] => {
+    const cols = p?.returnColumns || []
+    const aliasKeys = p?.returnAliasMap ? Object.keys(p.returnAliasMap) : []
+    return aliasKeys.length ? aliasKeys : cols
+  }
+  let leftCols: string[] = plan?.unionType && plan?.rightPlan
+    ? _resultColumnNames(plan)
     : []
-  let rightCols: string[] = plan?.unionType && plan?.rightPlan?.returnColumns
-    ? (plan.rightPlan.returnColumns || [])
+  let rightCols: string[] = plan?.unionType && plan?.rightPlan
+    ? _resultColumnNames(plan.rightPlan)
     : []
   if (leftCols.length || rightCols.length) {
     if (leftCols.length !== rightCols.length ||
