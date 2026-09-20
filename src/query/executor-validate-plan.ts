@@ -256,6 +256,42 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     }
   }
 
+  // ── SyntaxError: NestedAggregation ──
+  // An aggregate function may not wrap another aggregate call — their value is
+  // only defined after the row set is grouped, so nesting them (`count(count(*))`,
+  // `sum(avg(n.x))`) has no well-defined semantics and is a compile-time error.
+  // Detect any aggregate call whose balanced argument list itself contains an
+  // aggregate call.
+  if (query) {
+    const aggName = '(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)'
+    const aggCallRe = new RegExp(`\\b${aggName}\\s*\\(`, 'gi')
+    let outer: RegExpExecArray | null
+    // Re-scan from a fresh copy each outer call so nested args are re-inspected.
+    while ((outer = aggCallRe.exec(query)) !== null) {
+      // Locate the balanced closing parenthesis for this call.
+      let depth = 0
+      let j = outer.index + outer[0].length - 1
+      let close = -1
+      for (; j < query.length; j++) {
+        if (query[j] === '(') depth++
+        else if (query[j] === ')') { depth--; if (depth === 0) { close = j; break } }
+      }
+      if (close < 0) break
+      const inner = query.slice(outer.index + outer[0].length, close)
+      if (new RegExp(`\\b${aggName}\\s*\\(`, 'i').test(inner)) {
+        throw Object.assign(new Error('SyntaxError: NestedAggregation'), { tckError: 'NestedAggregation' })
+      }
+    }
+  }
+
+  // ── SyntaxError: NonConstantExpression ──
+  // An aggregate argument must be a deterministic expression over the grouped
+  // rows.  `rand()` is non-deterministic (evaluated per row), so `count(rand())`
+  // or `sum(rand())` is a compile-time error.
+  if (query && /\b(?:count|sum|avg|max|min|collect)\s*\(\s*rand\s*\(/i.test(query)) {
+    throw Object.assign(new Error('SyntaxError: NonConstantExpression'), { tckError: 'NonConstantExpression' })
+  }
+
   // ── SyntaxError: NegativeIntegerArgument ──
   // SKIP 负数
   const skipMatch = query.match(/\bSKIP\s+(-?\d+)\b/i)
