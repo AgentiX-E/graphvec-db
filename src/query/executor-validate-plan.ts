@@ -343,14 +343,28 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   if (orderByClauses.length) {
     // Collect projected expression texts from every WITH clause (strip `AS alias`).
     const projectedExprs = new Set<string>()
+    // Collect projected aliases (the `alias` in `expr AS alias`) — an ORDER BY
+    // expression that mixes an aggregate with a bare reference is only
+    // unambiguous when the bare reference is one of these aliases.
+    const projectedAliases = new Set<string>()
+    // Collect NAMED grouping keys: the expression text of every `expr AS alias`
+    // projection (the alias is required).  A property access such as `me.age`
+    // may legally appear alongside an aggregate in ORDER BY when `me.age` is a
+    // named grouping key (`WITH me.age AS age`), but not when it is an unnamed
+    // projection (`WITH me.age + you.age`).
+    const namedGroupKeys = new Set<string>()
     const withClauses = [...query.matchAll(/\bWITH\s+(.+?)(?=\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)]
     for (const wm of withClauses) {
-      const body = wm[1].replace(/\s+AS\s+\w+\s*(?=,|$)/gi, '') // strip trailing aliases
+      const body = wm[1] // keep aliases for alias collection below
       const items = body.split(',').map(s => s.trim()).filter(Boolean)
       for (const it of items) {
-        // strip a remaining `AS alias`
+        const aliasMatch = it.match(/\s+AS\s+(\w+)\s*$/i)
+        if (aliasMatch) projectedAliases.add(aliasMatch[1])
         const exprText = it.replace(/\s+AS\s+\w+$/i, '').trim()
-        if (exprText) projectedExprs.add(exprText)
+        if (exprText) {
+          projectedExprs.add(exprText)
+          if (aliasMatch) namedGroupKeys.add(exprText.replace(/\s+/g, ''))
+        }
       }
     }
     // Also collect the RETURN projection raw expressions from the query text —
@@ -361,6 +375,8 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     const returnClause = query.match(/\bRETURN\s+([\s\S]+?)(?=\s+ORDER\s+BY\b|$)/i)
     if (returnClause) {
       for (const item of returnClause[1].split(',')) {
+        const aliasMatch = item.match(/\s+AS\s+(\w+)\s*$/i)
+        if (aliasMatch) projectedAliases.add(aliasMatch[1])
         const exprText = item.replace(/\s+AS\s+\w+$/i, '').trim()
         if (exprText) projectedExprs.add(exprText)
       }
@@ -388,6 +404,57 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         const allowed = [...projectedExprs].some(pe => pe.replace(/\s+/g, '').includes(normCall))
         if (!allowed) {
           throw Object.assign(new Error('SyntaxError: InvalidAggregation'), { tckError: 'InvalidAggregation' })
+        }
+      }
+      // ── AmbiguousAggregationExpression (ORDER BY mix) ──
+      // When the ORDER BY item contains an aggregate call, any non-aggregate
+      // reference it also contains must be either a named grouping key (an
+      // `expr AS alias` projection, e.g. `me.age` in `WITH me.age AS age`) or a
+      // projected alias.  An unnamed projection (`WITH me.age + you.age`) mixed
+      // with an aggregate (`ORDER BY me.age + you.age + count(*)`) is ambiguous.
+      // Strip string literals and every aggregate call (including its balanced
+      // argument list); then strip named grouping keys (longest first) and
+      // projected aliases.  Any bare identifier that remains is an
+      // un-named/non-projected reference → AmbiguousAggregationExpression.
+      if (/^\s*(.*)\b(count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/i.test(obExpr)) {
+        const stripped = obExpr
+          .replace(/'[^']*'/g, "'' ").replace(/"[^"]*"/g, '" ')
+        let withoutAggs = stripped
+        const callRe = /\b(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/gi
+        let cm2: RegExpExecArray | null
+        let off = 0
+        while ((cm2 = callRe.exec(stripped)) !== null) {
+          const start = cm2.index + off
+          let depth = 0, j2 = cm2.index + cm2[0].length - 1
+          for (; j2 < stripped.length; j2++) {
+            if (stripped[j2] === '(') depth++
+            else if (stripped[j2] === ')') { depth--; if (depth === 0) break }
+          }
+          const end = j2 + 1
+          withoutAggs = withoutAggs.slice(0, start) + withoutAggs.slice(end)
+          off -= (end - start)
+        }
+        // Strip named grouping keys (longest first to avoid `me` matching before
+        // `me.age`) and projected aliases from the residue.
+        const groupKeys = [...namedGroupKeys].sort((a, b) => b.length - a.length)
+        for (const gk of groupKeys) {
+          withoutAggs = withoutAggs.split(gk).join(' ')
+        }
+        // Remove projected aliases as whole-word identifiers.
+        for (const al of projectedAliases) {
+          withoutAggs = withoutAggs.replace(new RegExp('\\b' + al + '\\b', 'g'), ' ')
+        }
+        // Remove remaining arithmetic/operator/syntax tokens.
+        const bareVar = /\b[a-zA-Z_]\w*\b/g
+        let bm2: RegExpExecArray | null
+        while ((bm2 = bareVar.exec(withoutAggs)) !== null) {
+          const name = bm2[0]
+          if (/^(?:true|false|null|DISTINCT|AS|ASC|ASCENDING|DESC|DESCENDING)$/i.test(name)) continue
+          // A function name (identifier immediately followed by `(`) is a nested
+          // non-aggregate function, e.g. `size(collect(a))` — skip it.
+          const after = withoutAggs.slice(bm2.index + name.length)
+          if (/^[^()]*\(/.test(after)) continue
+          throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
         }
       }
     }
