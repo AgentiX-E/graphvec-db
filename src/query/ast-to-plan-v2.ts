@@ -443,7 +443,7 @@ function buildQueryPlan(query: string): QueryPlan {
   // 存储到返回值后，从 trimmed 中移除 `\w+ = ` 前缀以便 ANTLR 正常解析模式。
   // MERGE 也可绑定路径 (`MERGE p = (a)-[:R]->(b) RETURN p`), 与 MATCH 同构。
   let pathVar: string | undefined
-  const pathMatch = trimmed.match(/^(MATCH|MERGE\s+)(\w+)\s*=\s*\(/i)
+  const pathMatch = trimmed.match(/^(MATCH|MERGE)\s+(\w+)\s*=\s*\(/i)
   if (pathMatch) {
     pathVar = pathMatch[2]
     // Strip only the `p = ` path-assignment token, keeping the leading
