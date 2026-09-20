@@ -119,6 +119,23 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   if (!ret?.length) {
     // RETURN *：返回所有在作用域内的变量
     if (plan.type === 'QUERY' && !plan.aggregate && !ret?.some((rc: string) => /^\w+\(/.test(rc))) {
+      // A WITH projection narrows the scope: after `WITH a.name AS name`, the
+      // MATCH variable `a` is no longer in scope and `RETURN *` must emit the
+      // projected columns (`name`), not the raw MATCH variable.  `row` was built
+      // from `r.props` above and already carries the projected aliases.
+      const withCols = (plan.with?.columns || []).filter((c: any) => {
+        const e = typeof c === 'object' ? c.expression : c
+        return e !== '*' && !/^\s*(count|sum|avg|max|min|collect)\s*\(/i.test(String(e))
+      })
+      if (withCols.length) {
+        const result: QueryRow = {}
+        for (const wc of withCols) {
+          const alias = wc.alias || null
+          if (!alias) continue
+          if (alias in row) result[alias] = row[alias]
+        }
+        if (Object.keys(result).length) return result
+      }
       const result: QueryRow = {}
       // Prefer the full per-variable bindings stashed on `r.__crossVarRows`.
       // These carry every step's node variable (e.g. a, b, c) plus each edge
