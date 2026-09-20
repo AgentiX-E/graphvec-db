@@ -8148,7 +8148,17 @@ export async function _executeQuery(
       // 直接对 filteredNodes 按 groupBy 分组聚合
       const groups = new Map<string, Record<string, unknown>[]>()
       for (const node of filteredNodes) {
-        const rowCtx: Record<string, unknown> = { n: node }
+        // Expose the node's flat properties directly on the eval context so a
+        // bare grouping-key alias (`WITH a.name AS name` → groupBy `name`)
+        // resolves to `node.name`.  Without this the key evaluates to null and
+        // every row collapses into a single global group (count(*) returns the
+        // total row count instead of per-group counts).  `n` still points at the
+        // whole node for property/pattern expressions that need it.
+        const rowCtx: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+          if (!k.startsWith('_')) rowCtx[k] = v
+        }
+        rowCtx.n = node
         const keyVals: Record<string, unknown> = {}
         for (const gb of groupByCols) {
           // 找到 gb 对应的 expression
@@ -8165,7 +8175,13 @@ export async function _executeQuery(
         const row: Record<string, unknown> = {}
         for (const gb of groupByCols) {
           const ec = exprs.find(e => e.alias === gb || e.expression === gb || e.expression.endsWith('.' + gb))
-          row[ec?.alias || gb] = ec ? _evalBinary(ec.expression, { n: groupRows[0] }) : (groupRows[0] as any)[gb as string]
+          const firstNode = groupRows[0] as Record<string, unknown>
+          const firstCtx: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(firstNode)) {
+            if (!k.startsWith('_')) firstCtx[k] = v
+          }
+          firstCtx.n = firstNode
+          row[ec?.alias || gb] = ec ? _evalBinary(ec.expression, firstCtx) : firstNode[gb as string]
         }
         // Strip the `var.` prefix from the aggregate field (`n.num` → `num`)
         // so it addresses the flat node property, matching how groupBy keys are
