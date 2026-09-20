@@ -921,6 +921,32 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     }
   }
 
+  // Apply the FINAL WITH clause's ORDER BY here, before its SKIP/LIMIT.  The
+  // middle-WITH sort loop above only sorts intermediate WITHs (it deliberately
+  // excludes the last one as `slice(0, -1)`), so the terminal `WITH x ORDER BY
+  // x LIMIT n` would otherwise truncate the un-sorted UNWIND expansion and pick
+  // the wrong rows (e.g. `UNWIND [true,false] AS b WITH b ORDER BY b LIMIT 1`
+  // returned `true` instead of `false`).  Sort by `plan.with.orderBy`, then let
+  // the SKIP/LIMIT slice below operate on the ordered rows.
+  if (plan.with?.orderBy?.length && rows.length > 1) {
+    const orderBy = plan.with.orderBy
+    const indices = Array.from({ length: rows.length }, (_, i) => i)
+    indices.sort((a, b) => {
+      const ra = rows[a]
+      const rb = rows[b]
+      for (const o of orderBy) {
+        const expr = (o.expression as string) || o.property || ''
+        const dir = (o.direction || '').trim().toUpperCase()
+        const va = _evaluateExpression(expr, { ...varCtx, ...ra })
+        const vb = _evaluateExpression(expr, { ...varCtx, ...rb })
+        let cmp = _compareOrderByValue(va, vb)
+        if (cmp !== 0) return dir === 'DESC' ? -cmp : cmp
+      }
+      return 0
+    })
+    rows = indices.map(i => rows[i])
+  }
+
   // Apply a WITH-clause SKIP/LIMIT *before* Step 4 aggregation.  A WITH clause
   // carrying `LIMIT n` (e.g. `UNWIND range(...) AS i WITH i LIMIT 3000 RETURN
   // sum(i)`) must truncate the expanded rows *before* the aggregate reduces
