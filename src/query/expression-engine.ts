@@ -3524,7 +3524,11 @@ function _isDateStr(v: unknown): v is string {
 }
 /** 检测字符串是否描述时间（HH:mm:ss[.sss] 或 HH:mm:ss[.sss]+HH:mm 等） */
 function _isTimeStr(v: unknown): v is string {
-  return typeof v === 'string' && /^\d{2}:\d{2}:\d{2}/.test(v)
+  // A `time` literal may omit seconds (`10:35-08:00`) or include them
+  // (`12:31:14.645876123+01:00`); both carry an offset-free or offset-bearing
+  // HH:MM[:SS[.fraction]] prefix.  Accept HH:MM so `time + duration` routes to
+  // `_timeAddDuration` instead of string concatenation.
+  return typeof v === 'string' && /^\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?/.test(v)
 }
 /** 检测字符串是否描述 datetime（YYYY-MM-DDTHH:mm:ss...） */
 function _isDateTimeStr(v: unknown): v is string {
@@ -3552,10 +3556,11 @@ function _durationNegate(d: string): string {
 /** localtime + duration */
 function _timeAddDuration(timeStr: string, durStr: string): string {
   const p = _parseDuration(durStr)
-  const parts = timeStr.match(/^(\d{1,2}):(\d{1,2}):(\d{1,2}(?:\.\d+)?)/)
+  // Seconds are optional (`10:35-08:00`); default to 0 when absent.
+  const parts = timeStr.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/)
   if (!parts) return timeStr
   let h = parseInt(parts[1], 10), m = parseInt(parts[2], 10)
-  const secVal = parseFloat(parts[3])
+  const secVal = parts[3] != null ? parseFloat(parts[3]) : 0
   let s = Math.floor(secVal), ns = Math.round((secVal - s) * 1e9)
   h += p.h; m += p.min; s += p.s; ns += p.ns
   // 归一化
