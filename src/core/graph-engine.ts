@@ -40,6 +40,7 @@ import { FullTextIndex, SearchOptions, SearchResult } from '../search/fulltext'
 import { RLSContext, RowLevelSecurity } from '../security/rls'
 import { QueryPlanner, QuerySpec, buildIRFromSpec, optimizeIR } from '../api/query-planner'
 import { OptimizerBridge } from '../query/planner-bridge'
+import { _compareOrderByValue } from '../query/expression-engine'
 import { Logger } from '../ops/logger'
 import * as path from 'path'
 import { Transaction, TransactionManager } from './transaction'
@@ -3644,7 +3645,12 @@ function propSort(
     if (va === undefined && vb === undefined) return 0
     if (va === undefined) return 1
     if (vb === undefined) return -1
-    const cmp = va < vb ? -1 : va > vb ? 1 : 0
+    // Delegate to the shared Cypher total-order comparator so heterogeneous
+    // values (maps, nodes, relationships, lists, paths, strings, booleans,
+    // numbers, NaN, null) sort by the openCypher type order instead of JS
+    // `va < vb` (which yields `false` for every object pair and therefore
+    // never reorders composite values).
+    const cmp = _compareOrderByValue(va, vb)
     return direction === 'DESC' ? -cmp : cmp
   })
 }

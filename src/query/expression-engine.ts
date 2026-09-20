@@ -5301,11 +5301,31 @@ function _orderByTypeRank(v: unknown): number {
   if (v === null || v === undefined) return 100
   const t = typeof v
   switch (t) {
-    case 'boolean': return 0
-    case 'number':
-    case 'bigint': return 2
-    case 'string': return 1
-    default: return 50 // objects, maps, lists — handled elsewhere, keep distinct
+    case 'boolean': return 6
+    case 'number': {
+      // NaN sorts after every ordinary number but before null, per openCypher
+      // (WithOrderBy [22] DESC expects the tail `…, false, 'text'` to precede
+      // `null, NaN, 1.5` … actually NaN is its own rank just above numbers).
+      return Number.isNaN(v as number) ? 8 : 7
+    }
+    case 'bigint': return 7
+    case 'string': return 5
+    case 'object': {
+      // Lists sort before paths (openCypher: Map < Node < Relationship < List
+      // < Path < String < Boolean < Number).  Distinguish the composite value
+      // families by their runtime shape markers (set by the graph engine):
+      //   - relationship: `__edgeLabel` / `__edgeLabelStr` / `_type`
+      //   - path:         `__path` array or `__pathEdges`
+      //   - node:         `_label` / `__fullLabel`
+      //   - map:          a plain object with none of the above.
+      if (Array.isArray(v)) return 3
+      const o = v as Record<string, unknown>
+      if (o.__edgeLabel != null || o.__edgeLabelStr != null || o._type != null) return 2
+      if (o.__path != null || o.__pathEdges != null) return 4
+      if (o._label != null || o.__fullLabel != null) return 1
+      return 0 // map
+    }
+    default: return 50 // fallback for unexpected types
   }
 }
 
