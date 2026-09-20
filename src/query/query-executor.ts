@@ -7772,6 +7772,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           for (const [varName, varVal] of Object.entries(rawEntry.__crossVarRows as Record<string, unknown>)) {
             matchVarCtx[varName] = varVal
           }
+          // Cross-variable rows bind node/relationship variables but not the
+          // MATCH path variable (e.g. `p` in `MATCH p = (n:N)-[r:REL]->()`);
+          // the path object `{ __path, __pathEdges }` is materialized on
+          // `rawEntry.props[pathVar]` instead.  Forward it so an UNWIND list
+          // referencing the path (`UNWIND [n, r, p] AS x`) resolves `p` to the
+          // full path object rather than null (which breaks ORDER BY type rank).
+          for (const st of (plan.steps || [])) {
+            const pv = (st as any)?.pathVariable as string | undefined
+            if (pv && !(pv in matchVarCtx) && rawEntry?.props && typeof rawEntry.props === 'object' && (rawEntry.props as any)[pv] != null) {
+              matchVarCtx[pv] = (rawEntry.props as any)[pv]
+            }
+          }
+          if ((plan as any).pathVar && !((plan as any).pathVar in matchVarCtx) && rawEntry?.props && typeof rawEntry.props === 'object' && (rawEntry.props as any)[(plan as any).pathVar] != null) {
+            matchVarCtx[(plan as any).pathVar] = (rawEntry.props as any)[(plan as any).pathVar]
+          }
         }
         // 补充关系变量：从 query 提取 [r] 或 [r:Label] 语法
         if (query) {
