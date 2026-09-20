@@ -2836,7 +2836,7 @@ function _evalAndCache(t: string, row: Record<string, unknown> | undefined, key:
   if (t.length <= 100 && !/[({]/.test(t) && !/CASE\b/i.test(t) && !/EXISTS\b/i.test(t)) {
     const stripped = t.replace(/['"\`][^'"\`]*['"\`]/g, '').replace(/\d+(?:\.\d+)?/g, '')
     const hasVar = (stripped.match(/[a-zA-Z_]\w*/g) || []).some(v => {
-      const kw = ['true','false','null','undefined','NaN','Infinity','length','name','constructor','prototype','type','id','toLower','toUpper','trim','replace','substring','left','right','size','reverse','toString','keys','head','last','tail','floor','ceil','round','abs','rand','sqrt','sign','sin','cos','tan','log','exp','e','pi']
+      const kw = ['true','false','null','undefined','NaN','Infinity','length','constructor','prototype','type','id','toLower','toUpper','trim','replace','substring','left','right','size','reverse','toString','keys','head','last','tail','floor','ceil','round','abs','rand','sqrt','sign','sin','cos','tan','log','exp','e','pi']
       return !kw.includes(v.toLowerCase())
     })
     if (!hasVar) _exprCache.set(key, result)
@@ -5470,8 +5470,14 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
         const isComposite = expr && !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(expr.trim())
         let va: unknown, vb: unknown
         if (isComposite) {
-          va = _evaluateExpression(expr, a as Record<string, unknown>)
-          vb = _evaluateExpression(expr, b as Record<string, unknown>)
+          // `field` (from `_orderByField`) already strips the leading MATCH
+          // variable prefix (`a.name + 'C'` -> `name + 'C'`). After a WITH
+          // projection the MATCH variable is out of scope and only its alias
+          // (e.g. `name`) is bound on the row, so evaluating the raw `expr`
+          // (`a.name + 'C'`) yields null. Evaluate the field-stripped form so
+          // `a.name` resolves to the projected `name` column.
+          va = _evaluateExpression(field, a as Record<string, unknown>)
+          vb = _evaluateExpression(field, b as Record<string, unknown>)
         } else {
           va = a[field] ?? null
           vb = b[field] ?? null
