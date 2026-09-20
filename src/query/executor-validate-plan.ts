@@ -246,11 +246,18 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       }
       // A remaining bare variable / property outside any aggregate call marks
       // the ambiguous mixed expression (e.g. `me.age + count(you.age)`).
+      // A function NAME (an identifier immediately followed by `(`) is a nested
+      // non-aggregate function wrapping the aggregate — `size(collect(a))` is
+      // legal — so skip it instead of misclassifying it as a group key.
       const bareVar = /\b[a-zA-Z_]\w*\b/g
       let bm: RegExpExecArray | null
       while ((bm = bareVar.exec(withoutAggs)) !== null) {
         const name = bm[0]
         if (/^(?:true|false|null|DISTINCT|AS)$/i.test(name)) continue
+        // Is this identifier a function call (followed by optional whitespace
+        // then `(`)?  If so it is a function name, not a variable reference.
+        const after = withoutAggs.slice(bm.index + name.length)
+        if (/^[^()]*\(/.test(after)) continue
         throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
       }
     }
