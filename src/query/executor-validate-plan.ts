@@ -263,6 +263,79 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     }
   }
 
+  // ── AmbiguousAggregationExpression (WITH mix) ──
+  // A WITH projection that mixes an aggregate with a non-aggregate reference is
+  // ambiguous unless the reference is a NAMED grouping key: a single property/
+  // variable access that is projected via `expr AS alias` in the same WITH
+  // (`WITH me.age AS age, me.age + count(you.age)` — legal).  An unnamed property
+  // (`WITH me.age + count(you.age)` — illegal) or a composite expression used as
+  // the key (`WITH me.age + you.age AS grp, me.age + you.age + count(*)` — illegal)
+  // is rejected.  With6 [7] (legal) vs [8][9] (illegal).
+  const withCols = (plan.with?.columns || []) as Array<{ expression: unknown; alias?: string | null }>
+  if (query && withCols.length) {
+    // Named key: the expression text of every `expr AS alias` projection where
+    // the expression is a SINGLE property/variable access (e.g. `me.age`), so it
+    // may legally be reused as a grouping key alongside an aggregate.
+    const namedKeys = new Set<string>()
+    // Projected aliases across ALL WITH segments (withChain) — a bare identifier
+    // (no `.`) that names a previously projected alias (`WITH age AS age ...
+    // WITH age, age + count(...)`) is a legal grouping reference, not an
+    // ambiguous property access.
+    const allProjectedAliases = new Set<string>()
+    const allWithSegs = ((plan as any).withChain?.length ? (plan as any).withChain : [plan.with]) as Array<{ columns: Array<{ expression: unknown; alias?: string | null }> }>
+    for (const seg of allWithSegs) {
+      for (const col of seg.columns || []) {
+        const expr = typeof col.expression === 'string' ? col.expression : (col.expression as any)?.expression || ''
+        const t = expr.trim()
+        if (col.alias) {
+          allProjectedAliases.add(col.alias)
+          // Single property/variable access (no arithmetic/composite).
+          if (/^[a-zA-Z_]\w*(\.[a-zA-Z_]\w*)?$/.test(t)) namedKeys.add(t)
+        }
+      }
+    }
+    const aggFn = /\b(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/i
+    for (const col of withCols) {
+      const expr = typeof col.expression === 'string' ? col.expression : (col.expression as any)?.expression || ''
+      const strippedLit = expr.replace(/'[^']*'/g, "'' ").replace(/"[^"]*"/g, '" ')
+      if (!aggFn.test(strippedLit)) continue
+      // Remove aggregate calls (balanced args) so variables inside a call are not
+      // mistaken for grouping keys.
+      let withoutAggs = strippedLit
+      const callRe = /\b(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/gi
+      let cm: RegExpExecArray | null
+      let offset = 0
+      while ((cm = callRe.exec(strippedLit)) !== null) {
+        const start = cm.index + offset
+        let depth = 0, j = cm.index + cm[0].length - 1
+        for (; j < strippedLit.length; j++) {
+          if (strippedLit[j] === '(') depth++
+          else if (strippedLit[j] === ')') { depth--; if (depth === 0) break }
+        }
+        const end = j + 1
+        withoutAggs = withoutAggs.slice(0, start) + withoutAggs.slice(end)
+        offset -= (end - start)
+      }
+      // Any remaining property/variable access that is NOT a named key marks an
+      // ambiguous mix.  A function name (identifier followed by `(`) is skipped.
+      const bareVar = /\b[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?\b/g
+      let bm: RegExpExecArray | null
+      while ((bm = bareVar.exec(withoutAggs)) !== null) {
+        const name = bm[0]
+        if (/^(?:true|false|null|DISTINCT|AS)$/i.test(name)) continue
+        if (bm.index > 0 && withoutAggs[bm.index - 1] === '$') continue
+        // Skip a previously-stripped balanced aggregate artifact (identifier not
+        // a whole token due to the offset splice) — only exact named keys pass.
+        if (namedKeys.has(name)) continue
+        // A bare alias projected by any WITH segment is a legal grouping reference.
+        if (allProjectedAliases.has(name)) continue
+        const after = withoutAggs.slice(bm.index + name.length)
+        if (/^[^()]*\(/.test(after)) continue
+        throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
+      }
+    }
+  }
+
   // ── SyntaxError: NestedAggregation ──
   // An aggregate function may not wrap another aggregate call — their value is
   // only defined after the row set is grouped, so nesting them (`count(count(*))`,
