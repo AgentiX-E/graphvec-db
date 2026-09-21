@@ -829,7 +829,13 @@ function _parseQueryImpl(query: string): QueryPlan {
           if (_parseAggregate(cExpr)) continue
           // Skip list comprehensions (not a scalar grouping key).
           if (cExpr.startsWith('[') && cExpr.includes('IN') && cExpr.includes('|')) continue
-          const key = cExpr.includes('.') ? cExpr.split('.').pop()! : cExpr
+          // Prefer the column alias (e.g. `a.num2 % 3 AS mod` → `mod`) so the
+          // executor's group-by lookup can match the projected alias.  A bare
+          // expression key (`num2 % 3`) otherwise fails to resolve against the
+          // alias-only expressionColumns and collapses every row into one group.
+          const key = (c.alias && typeof c.alias === 'string' && c.alias.length)
+            ? c.alias
+            : (cExpr.includes('.') ? cExpr.split('.').pop()! : cExpr)
           if (key && !implicitKeys.includes(key)) implicitKeys.push(key)
         }
         if (implicitKeys.length) plan.groupBy = implicitKeys

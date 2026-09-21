@@ -8120,6 +8120,13 @@ export async function _executeQuery(
     const groupByCols = (plan as any).groupBy as string[]
     const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string; alias?: string }
     const exprs = (plan as any).expressionColumns as Array<{expression:string;alias:string}> | undefined
+    // Map a WITH projection alias back to its source expression (e.g. `mod` →
+    // `a.num2 % 3`) so an expression-derived grouping key can be evaluated
+    // against the raw node properties.
+    const withAliasExpr = new Map<string, string>()
+    for (const wc of ((plan as any).with?.columns || []) as Array<{expression: unknown; alias?: string}>) {
+      if (wc.alias && typeof wc.expression === 'string') withAliasExpr.set(wc.alias, wc.expression)
+    }
     
     if (exprs) {
       // 如果 plan.filters 有值，先过滤 nodes（WHERE 过滤应在 GROUP BY 之前执行）
@@ -8159,11 +8166,31 @@ export async function _executeQuery(
           if (!k.startsWith('_')) rowCtx[k] = v
         }
         rowCtx.n = node
+        // Bind the primary MATCH variable (and step source var) to the node so a
+        // source expression like `a.num2 % 3` resolves its `a.` prefix.
+        if ((plan as any).matchVar) rowCtx[(plan as any).matchVar] = node
+        const firstStepSrc = (plan as any).steps?.[0]?.source
+        if (firstStepSrc && !(firstStepSrc in rowCtx)) rowCtx[firstStepSrc] = node
         const keyVals: Record<string, unknown> = {}
         for (const gb of groupByCols) {
-          // 找到 gb 对应的 expression
+          // Resolve the grouping key: a WITH alias maps to its source expression
+          // (`mod` → `a.num2 % 3`); otherwise look up the expression column or
+          // evaluate the (possibly expression-shaped) key directly.
+          const srcExpr = withAliasExpr.get(gb)
+          if (srcExpr) {
+            keyVals[gb] = _evalBinary(srcExpr, rowCtx)
+            continue
+          }
           const ec = exprs.find(e => e.alias === gb || e.expression === gb || e.expression.endsWith('.' + gb))
-          keyVals[gb] = ec ? _evalBinary(ec.expression, rowCtx) : node[gb as string]
+          if (ec) {
+            keyVals[gb] = _evalBinary(ec.expression, rowCtx)
+          } else if (/[^\w.]/.test(gb)) {
+            // `gb` is an expression (e.g. `num2 % 3`) rather than a bare prop
+            // name: evaluate it against the flat-property context.
+            keyVals[gb] = _evalBinary(gb, rowCtx)
+          } else {
+            keyVals[gb] = node[gb as string]
+          }
         }
         const keyStr = JSON.stringify(keyVals)
         if (!groups.has(keyStr)) groups.set(keyStr, [])
@@ -8174,41 +8201,69 @@ export async function _executeQuery(
       for (const [, groupRows] of groups) {
         const row: Record<string, unknown> = {}
         for (const gb of groupByCols) {
-          const ec = exprs.find(e => e.alias === gb || e.expression === gb || e.expression.endsWith('.' + gb))
           const firstNode = groupRows[0] as Record<string, unknown>
           const firstCtx: Record<string, unknown> = {}
           for (const [k, v] of Object.entries(firstNode)) {
             if (!k.startsWith('_')) firstCtx[k] = v
           }
           firstCtx.n = firstNode
+          if ((plan as any).matchVar) firstCtx[(plan as any).matchVar] = firstNode
+          const fss = (plan as any).steps?.[0]?.source
+          if (fss && !(fss in firstCtx)) firstCtx[fss] = firstNode
+          const srcExpr = withAliasExpr.get(gb)
+          if (srcExpr) {
+            // Grouping key is a WITH alias: emit under the alias and evaluate the
+            // source expression against the first node of the group.
+            row[gb] = _evalBinary(srcExpr, firstCtx)
+            continue
+          }
+          const ec = exprs.find(e => e.alias === gb || e.expression === gb || e.expression.endsWith('.' + gb))
           row[ec?.alias || gb] = ec ? _evalBinary(ec.expression, firstCtx) : firstNode[gb as string]
         }
         // Strip the `var.` prefix from the aggregate field (`n.num` → `num`)
         // so it addresses the flat node property, matching how groupBy keys are
         // resolved above (`n.name` → `name`).
-        const aggField = agg.field === '*' || agg.field == null
-          ? null
-          : agg.field.includes('.') ? agg.field.split('.').pop()! : agg.field
+        // The aggregate's value expression: `*` → node count, a bare property
+        // (`a.num`) → flat property, an arithmetic expression (`a.num + a.num2`)
+        // → evaluated per node via the expression engine.
+        const rawField = agg.field ?? ''
+        const aggIsExpr = rawField !== '*' && rawField !== '' && /[+\-*/%]/.test(rawField)
         // Resolution key for the aggregated value: surface the full column
         // expression (e.g. `count(n.num)`) when there is no explicit `AS` alias.
         // The parser stores `alias` as the bare function name ("count") in that
-        // case, so we must not use it directly — that would produce a `count`
-        // key the RETURN column (`count(n.num)`) never defines.  Mirror the
-        // non-grouped aggregate path's `_realAlias` precedence exactly.
-        const aggKey = (agg.alias && agg.alias !== agg.function)
+        // case, so use the explicit alias when it differs from the function name,
+        // otherwise fall back to the column expression.
+        const aggKey = (agg.alias)
           ? agg.alias
-          : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c')
+          : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || rawField || agg.column || 'c')
+        // Evaluate the aggregate value for a single node within the group.
+        const _aggVal = (n: Record<string, unknown>): number => {
+          if (aggIsExpr) {
+            const ctx: Record<string, unknown> = {}
+            for (const [k, v] of Object.entries(n)) if (!k.startsWith('_')) ctx[k] = v
+            if ((plan as any).matchVar) ctx[(plan as any).matchVar] = n
+            ctx.n = n
+            const v = _evalBinary(rawField, ctx)
+            return Number(v) || 0
+          }
+          const propName = rawField.includes('.') ? rawField.split('.').pop()! : rawField
+          return Number((n as any)[propName]) || 0
+        }
         if (agg.function === 'count') {
-          row[aggKey] = aggField === null ? groupRows.length : groupRows.filter(n => (n as any)[aggField!] != null).length
+          row[aggKey] = rawField === '*' || rawField === '' ? groupRows.length
+            : groupRows.filter(n => {
+                const pn = rawField.includes('.') ? rawField.split('.').pop()! : rawField
+                return (n as any)[pn] != null
+              }).length
         } else if (agg.function === 'sum') {
-          row[aggKey] = groupRows.reduce((acc, n) => acc + (Number((n as any)[aggField!]) || 0), 0)
+          row[aggKey] = groupRows.reduce((acc, n) => acc + _aggVal(n), 0)
         } else if (agg.function === 'avg') {
-          const sum = groupRows.reduce((acc, n) => acc + (Number((n as any)[aggField!]) || 0), 0)
+          const sum = groupRows.reduce((acc, n) => acc + _aggVal(n), 0)
           row[aggKey] = sum / groupRows.length
         } else if (agg.function === 'min') {
-          row[aggKey] = Math.min(...groupRows.map(n => Number((n as any)[aggField!]) || 0))
+          row[aggKey] = Math.min(...groupRows.map(n => _aggVal(n)))
         } else if (agg.function === 'max') {
-          row[aggKey] = Math.max(...groupRows.map(n => Number((n as any)[aggField!]) || 0))
+          row[aggKey] = Math.max(...groupRows.map(n => _aggVal(n)))
         } else {
           row[aggKey] = groupRows.length
         }

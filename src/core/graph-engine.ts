@@ -2475,14 +2475,15 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }
 
   /** 对节点数组计算属性平均值 */
-  private _aggregateAvg(nodes: NodeRecord[], field: string): number {
+  private _aggregateAvg(nodes: NodeRecord[], field: string): number | null {
     let sum = 0
     let count = 0
     for (const n of nodes) {
       const val = n.props?.[field]
       if (typeof val === 'number') { sum += val; count++ }
     }
-    return count > 0 ? sum / count : 0
+    // openCypher: avg over an empty set is null (not 0).
+    return count > 0 ? sum / count : null
   }
 
   /** 对节点数组计算属性最大值 */

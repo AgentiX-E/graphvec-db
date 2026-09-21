@@ -449,6 +449,8 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         let bm2: RegExpExecArray | null
         while ((bm2 = bareVar.exec(withoutAggs)) !== null) {
           const name = bm2[0]
+          // A parameter (`$age`) is a literal, not a variable reference — skip it.
+          if (bm2.index > 0 && withoutAggs[bm2.index - 1] === '$') continue
           if (/^(?:true|false|null|DISTINCT|AS|ASC|ASCENDING|DESC|DESCENDING)$/i.test(name)) continue
           // A function name (identifier immediately followed by `(`) is a nested
           // non-aggregate function, e.g. `size(collect(a))` — skip it.

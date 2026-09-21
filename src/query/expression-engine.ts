@@ -5455,6 +5455,17 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
     const indices = Array.from({ length: result.length }, (_, i) => i)
     const orderBy = p.orderBy
 
+    // Map an aggregate projection expression (`sum(a.num + a.num2)`) back to its
+    // alias (`sum`).  ORDER BY on the aggregate column spells out the full
+    // aggregate call, which is not a row column; resolve it to the alias so the
+    // sort reads the already-computed aggregate value.
+    const aggExprToAlias = new Map<string, string>()
+    for (const wc of ((p as any).with?.columns || []) as Array<{expression: unknown; alias?: string}>) {
+      if (wc.alias && typeof wc.expression === 'string' && /^\s*\w+\s*\(/.test(wc.expression)) {
+        aggExprToAlias.set(wc.expression.replace(/\s+/g, ''), wc.alias)
+      }
+    }
+
     const comparator = (ai: number, bi: number): number => {
       const a = result[ai]
       const b = result[bi]
@@ -5469,7 +5480,13 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
         const expr = (o.expression as string) || ''
         const isComposite = expr && !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(expr.trim())
         let va: unknown, vb: unknown
-        if (isComposite) {
+        // ORDER BY on an aggregate projection (`sum(a.num + a.num2)`) sorts by
+        // the alias column, not by re-invoking the aggregate.
+        const aggAlias = aggExprToAlias.get(expr.replace(/\s+/g, '')) || aggExprToAlias.get(field.replace(/\s+/g, ''))
+        if (aggAlias) {
+          va = a[aggAlias] ?? null
+          vb = b[aggAlias] ?? null
+        } else if (isComposite) {
           // `field` (from `_orderByField`) already strips the leading MATCH
           // variable prefix (`a.name + 'C'` -> `name + 'C'`). After a WITH
           // projection the MATCH variable is out of scope and only its alias

@@ -368,7 +368,7 @@ describe('GraphEngine', () => {
       expect(results[0].props.cnt).toBeGreaterThanOrEqual(7)
     })
 
-    test('aggregate on empty result set — sum = 0, avg = 0, count = 0', () => {
+    test('aggregate on empty result set — sum = 0, avg = null, count = 0', () => {
       const countRes = engine.query('MATCH (n) WHERE n.age > 200 RETURN count(n)')
       expect(countRes.length).toBe(1)
       expect(countRes[0].props.count).toBe(0)
@@ -377,9 +377,10 @@ describe('GraphEngine', () => {
       expect(sumRes.length).toBe(1)
       expect(sumRes[0].props.sum).toBe(0)
 
+      // openCypher: avg over an empty set is null (not 0).
       const avgRes = engine.query('MATCH (n) WHERE n.age > 200 RETURN avg(n.age)')
       expect(avgRes.length).toBe(1)
-      expect(avgRes[0].props.avg).toBe(0)
+      expect(avgRes[0].props.avg).toBe(null)
     })
   })
 
@@ -1816,10 +1817,11 @@ describe('OpenCypher Phase 2: Aggregate Functions', () => {
     expect(results[0].props?.sum).toBe(0)
   })
 
-  test('TC-AGG-12: AVG on empty result returns 0', () => {
+  test('TC-AGG-12: AVG on empty result returns null', () => {
     const results = engine.query('MATCH (n) WHERE n.age > 200 RETURN avg(n.age)') as any[]
     expect(results.length).toBe(1)
-    expect(results[0].props?.avg).toBe(0)
+    // openCypher: avg over an empty set is null (not 0).
+    expect(results[0].props?.avg).toBe(null)
   })
 
   test('TC-AGG-13: GROUP BY with COUNT(*)', () => {
