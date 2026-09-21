@@ -2025,51 +2025,88 @@ async function _executeMultiMatchCrossJoin(
       if (field === 'count' || field === '*') return row
       return owner
     }
-    const values = filtered.map(rowValue)
-    let aggVal: unknown
-    switch (aggFn) {
-      case 'count': {
-        if (field === '*' || field === '' || field === null) aggVal = filtered.length
-        else aggVal = values.filter(v => v !== null && v !== undefined).length
-        break
+    // Fold an aggregate over a single group of rows, returning its scalar value.
+    const _foldGroup = (groupRows: Array<Record<string, unknown>>): unknown => {
+      const values = groupRows.map(rowValue)
+      switch (aggFn) {
+        case 'count': {
+          if (field === '*' || field === '' || field === null) return groupRows.length
+          return values.filter(v => v !== null && v !== undefined).length
+        }
+        case 'sum': {
+          const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+          return nums.reduce((a: number, b: number) => a + b, 0)
+        }
+        case 'avg': {
+          const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+          return nums.length ? nums.reduce((a: number, b: number) => a + b, 0) / nums.length : 0
+        }
+        case 'min': {
+          const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+          return nums.length ? Math.min(...nums) : 0
+        }
+        case 'max': {
+          const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+          return nums.length ? Math.max(...nums) : 0
+        }
+        case 'collect': {
+          const seen = new Set<unknown>()
+          return values.filter(v => {
+            if (v === null || v === undefined) return false
+            if (agg?.distinct) {
+              const key = typeof v === 'object' ? JSON.stringify(v) : String(v)
+              if (seen.has(key)) return false
+              seen.add(key)
+            }
+            return true
+          })
+        }
+        default:
+          return groupRows.length
       }
-      case 'sum': {
-        const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
-        aggVal = nums.reduce((a: number, b: number) => a + b, 0)
-        break
-      }
-      case 'avg': {
-        const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
-        aggVal = nums.length ? nums.reduce((a: number, b: number) => a + b, 0) / nums.length : 0
-        break
-      }
-      case 'min': {
-        const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
-        aggVal = nums.length ? Math.min(...nums) : 0
-        break
-      }
-      case 'max': {
-        const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
-        aggVal = nums.length ? Math.max(...nums) : 0
-        break
-      }
-      case 'collect': {
-        const seen = new Set<unknown>()
-        aggVal = values.filter(v => {
-          if (v === null || v === undefined) return false
-          if (agg?.distinct) {
-            const key = typeof v === 'object' ? JSON.stringify(v) : String(v)
-            if (seen.has(key)) return false
-            seen.add(key)
-          }
-          return true
-        })
-        break
-      }
-      default:
-        aggVal = filtered.length
     }
-    out = [{ [alias]: aggVal }]
+    const groupByCols = (plan as any).groupBy as string[] | undefined
+    if (groupByCols?.length) {
+      // Implicit GROUP BY: `WITH a, r, b, count(*)` groups by the non-aggregate
+      // columns before folding the aggregate per group.  A bound node/relationship
+      // object is keyed by its canonical identity so grouping stays correct across
+      // rows; scalar keys group by their literal value.  A grouping key may name
+      // a WITH alias (`WITH r1 AS r2, count(*)`) whose value lives under the
+      // pre-projection variable (`r1`) in the cross-joined row — resolve it back
+      // to its source column before reading the row.
+      const _withAliasToExpr = new Map<string, string>()
+      for (const wc of ((plan as any).with?.columns || []) as Array<{ expression: unknown; alias?: string | null }>) {
+        if (wc.alias && typeof wc.expression === 'string') _withAliasToExpr.set(wc.alias, wc.expression)
+      }
+      const _keyVar = (gb: string): string => _withAliasToExpr.get(gb) || gb
+      const _keyOf = (v: unknown): string => {
+        if (v == null) return '__NULL__'
+        if (typeof v === 'object') {
+          const o = v as any
+          if (typeof o.__relId === 'string') return 'rel:' + o.__relId
+          if (typeof o.__edgeId === 'string') return 'rel:' + o.__edgeId
+          if (o._alias) return 'node:' + o._alias
+          return 'obj:' + JSON.stringify(Object.keys(o).filter(k => !k.startsWith('_') && k !== '__edges').sort().map(k => k + '=' + (o[k] == null ? '' : String(o[k]))).join('&'))
+        }
+        return 'scalar:' + String(v)
+      }
+      const groups = new Map<string, Array<Record<string, unknown>>>()
+      for (const row of filtered) {
+        const key = groupByCols.map(gb => _keyOf(row[_keyVar(gb)])).join('||')
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key)!.push(row)
+      }
+      out = []
+      for (const [, grp] of groups) {
+        const first = grp[0]
+        const r: QueryRow = {}
+        for (const gb of groupByCols) r[gb] = first[_keyVar(gb)]
+        r[alias] = _foldGroup(grp)
+        out.push(r)
+      }
+    } else {
+      out = [{ [alias]: _foldGroup(filtered) }]
+    }
   } else {
     // Expression columns (e.g. `p1 = p2`).
     out = filtered.map(row => {
@@ -8131,7 +8168,12 @@ export async function _executeQuery(
   // expression re-evaluation in `_executeViaGraphEngine`), so re-grouping the
   // raw `nodes` here would drop the OPTIONAL MATCH variables (e.g. `collect(x)`
   // where `x` is null-only) and overwrite the correct result.
-  if ((plan as any).groupBy?.length && (plan as any).aggregate && !plan.optionalMatchSteps?.length && (plan as any).hasMatch) {
+  // Same reasoning for a multi-MATCH (`multiMatch`) query: `_executeMultiMatchCrossJoin`
+  // already grouped the bound rows by the object-variable grouping key (a/r/b)
+  // and folded `count(*)` per group, so re-grouping the raw `nodes` here would
+  // collapse those per-group rows back into a single global count and drop the
+  // node/relationship bindings.
+  if ((plan as any).groupBy?.length && (plan as any).aggregate && !plan.optionalMatchSteps?.length && (plan as any).hasMatch && !(plan as any).multiMatch?.length) {
     const groupByCols = (plan as any).groupBy as string[]
     const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string; alias?: string }
     const exprs = (plan as any).expressionColumns as Array<{expression:string;alias:string}> | undefined
