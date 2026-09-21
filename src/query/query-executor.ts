@@ -1456,6 +1456,17 @@ async function _executeMultiMatchCrossJoin(
   // product (which would multiply the row count by the number of relationships).
   const _relIdOf = (v: unknown): string | undefined =>
     (v && typeof v === 'object' && '__relId' in (v as any)) ? String((v as any).__relId) : undefined
+  // WITH aliases map `WITH r1 AS r2` → r2 names the same binding as r1.  A later
+  // MATCH that reuses the alias as its edge/source variable (`MATCH ()-[r2]->()`)
+  // therefore joins against the ORIGINAL binding (r1), not a fresh r2.  Without
+  // this normalisation the alias is absent from earlier cross-join rows and the
+  // pattern fans out over every relationship (spuriously multiplying rows).
+  const _withAliasToBase = new Map<string, string>()
+  for (const wc of ((plan as any).with?.columns || []) as Array<{ expression: unknown; alias?: string | null }>) {
+    if (wc.alias && typeof wc.expression === 'string' && !/\(/.test(wc.expression)) {
+      _withAliasToBase.set(wc.alias, wc.expression)
+    }
+  }
   let crossRows: Array<Record<string, unknown>> = [{}]
   for (const matches of matchLists) {
     const next: Array<Record<string, unknown>> = []
@@ -1463,8 +1474,9 @@ async function _executeMultiMatchCrossJoin(
       for (const m of matches) {
         let compatible = true
         for (const k of Object.keys(m)) {
-          if (!(k in base)) continue
-          const mv = m[k], bv = base[k]
+          const baseKey = _withAliasToBase.has(k) && !(k in base) ? _withAliasToBase.get(k)! : k
+          if (!(baseKey in base)) continue
+          const mv = m[k], bv = base[baseKey]
           if (typeof mv === 'number' && typeof bv === 'number') {
             if (mv !== bv) { compatible = false; break }
           } else {
@@ -2097,11 +2109,22 @@ async function _executeMultiMatchCrossJoin(
         groups.get(key)!.push(row)
       }
       out = []
+      // RETURN projection columns (`RETURN r2 AS rel` → expressionColumns
+      // [{expression:'r2', alias:'rel'}]) must be applied over each grouped row,
+      // mirroring the non-aggregate branch below.  Without this the grouped result
+      // carries only the grouping key + aggregate alias and the downstream
+      // comparison sees `rel` as null.
+      const returnExprCols = ((plan as any).expressionColumns || []) as Array<{ expression: unknown; alias?: string | null }>
       for (const [, grp] of groups) {
         const first = grp[0]
         const r: QueryRow = {}
         for (const gb of groupByCols) r[gb] = first[_keyVar(gb)]
         r[alias] = _foldGroup(grp)
+        for (const ec of returnExprCols) {
+          if (ec.alias && ec.alias !== alias) {
+            r[ec.alias] = _evaluateExpression(ec.expression as any, { ...r })
+          }
+        }
         out.push(r)
       }
     } else {
