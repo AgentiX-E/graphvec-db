@@ -1195,6 +1195,17 @@ async function _executeMultiMatchCrossJoin(
       const stepLabel = (step as any).edgeLabel as string | null | undefined
       const srcVar = (step as any).source as string | undefined
       const tgtVar = (step as any).targetAlias as string | undefined
+      const tgtLabel = (step as any).targetLabel as string | null | undefined
+      // Target-node label predicate `(a)-[r]->(b:X)`: the target endpoint must
+      // carry the declared label.  This cross-join executor previously ignored
+      // the label (only edgeLabel/direction were honoured), so a labelled
+      // target like `b:X` over-matched non-X endpoints.
+      const _nodeLabelMatch = (i: number): boolean => {
+        if (!tgtLabel) return true
+        const node = allNodes[i] as any
+        const full = (typeof node?.__fullLabel === 'string' && node.__fullLabel) ? node.__fullLabel : String(node?._label ?? '')
+        return full.split(':').filter(Boolean).includes(tgtLabel)
+      }
       for (const rel of rels) {
         const s = rel.srcIdx as number, d = rel.dstIdx as number
         // Relationship type predicate: `-[r:Y]->` must only match edges whose
@@ -1209,6 +1220,10 @@ async function _executeMultiMatchCrossJoin(
         // node.  Without this a `b-->b` degenerate case would bind `b` to every
         // edge's target and return spurious rows.
         if (srcVar && tgtVar && srcVar === tgtVar && s !== d) continue
+        // Target-label predicate: enforce per direction before emitting a row.
+        if (step.direction === 'out' && !_nodeLabelMatch(d)) continue
+        if (step.direction === 'in' && !_nodeLabelMatch(s)) continue
+        if (step.direction === 'any' && tgtLabel && !_nodeLabelMatch(s) && !_nodeLabelMatch(d)) continue
         // direction semantics: out → rel.srcIdx must be a start node; in → rel.dstIdx.
         if (step.direction === 'out' && startIdxs.length !== allNodes.length && !startIdxs.includes(s)) continue
         if (step.direction === 'in' && startIdxs.length !== allNodes.length && !startIdxs.includes(d)) continue
