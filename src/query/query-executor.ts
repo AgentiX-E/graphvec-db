@@ -6155,7 +6155,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // against the full collect result.
     const hasPathVarAgg = rawWithEdges.length > 1 && pathVars.size && (
       plan.expressionColumns?.some(ec => /\[.*IN.*collect\b/.test(ec.expression || '')) ||
-      !!(plan.with?.columns?.length)
+      (plan.with?.columns || []).some((c: any) => /collect\s*\(/.test(String(c?.expression ?? '')))
     )
     if (hasPathVarAgg) {
       const collectedBeforeAgg = rawWithEdges.length
