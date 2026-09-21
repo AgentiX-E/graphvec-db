@@ -1608,21 +1608,13 @@ Given('having executed:', async function (query: string) {
           if (ce.target && aliasToTrueIdx.has(ce.target)) {
             dstIdx = aliasToTrueIdx.get(ce.target)!
           } else if (noAlias && ce.targetIdx !== undefined && ce.targetIdx >= 0 && ce.targetIdx < createdNodes.length) {
+            // Anonymous endpoints (`()`) carry no alias; `targetIdx` is the exact
+            // position in `createdNodes`, so use it directly.  The fallback
+            // reference-resolution walk below must NOT run here: it treats a bare
+            // `(:Default)` endpoint as a "reference node" and backtracks to the
+            // nearest labelled sibling, shifting the destination index (e.g.
+            // `CREATE ()-[:T2]->()` would bind its target to a prior `:X` node).
             dstIdx = ce.targetIdx
-            let cursor = ce.targetIdx
-            const visited = new Set<number>()
-            while (cursor >= 0 && cursor < createdNodes.length && !visited.has(cursor)) {
-              visited.add(cursor)
-              const refNode = createdNodes[cursor] as any
-              const isReal = refNode._label && refNode._label !== 'Default' || refNode.props
-              if (isReal) { dstIdx = cursor; break }
-              if (refNode._alias && aliasToTrueIdx.has(refNode._alias)) {
-                cursor = aliasToTrueIdx.get(refNode._alias)!
-              } else {
-                cursor--
-              }
-            }
-            if (dstIdx < 0) dstIdx = ce.targetIdx
           }
           // 降级：使用 sourceIdx/targetIdx 直指（可能错位但比没有好）
           if (srcIdx < 0) srcIdx = ce.sourceIdx ?? 0
