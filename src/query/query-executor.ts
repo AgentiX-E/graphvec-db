@@ -1277,7 +1277,7 @@ async function _executeMultiMatchCrossJoin(
       const vlPlan: any = {
         scanLabel: pat.scanLabel ?? null,
         steps: pat.steps,
-        pathVar: null,
+        pathVar: pathVar || null,
         returnColumns: [edgeVar || ''],
       }
       const vlRows = _executeVarLenPath(vlPlan, allNodes as Array<Record<string, unknown>>)
@@ -8202,7 +8202,7 @@ export async function _executeQuery(
   // and folded `count(*)` per group, so re-grouping the raw `nodes` here would
   // collapse those per-group rows back into a single global count and drop the
   // node/relationship bindings.
-  if ((plan as any).groupBy?.length && (plan as any).aggregate && !plan.optionalMatchSteps?.length && (plan as any).hasMatch && !(plan as any).multiMatch?.length) {
+  if ((plan as any).groupBy?.length && (plan as any).aggregate && !plan.optionalMatchSteps?.length && (plan as any).hasMatch && !(plan as any).multiMatch?.length && !(plan.steps || []).some((s: any) => s?.range || s?.pathVariable)) {
     const groupByCols = (plan as any).groupBy as string[]
     const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string; alias?: string }
     const exprs = (plan as any).expressionColumns as Array<{expression:string;alias:string}> | undefined
