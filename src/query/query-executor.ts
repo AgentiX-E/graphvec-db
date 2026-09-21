@@ -8372,24 +8372,33 @@ export async function _executeQuery(
   // `collect([...])` shape (collect immediately followed by `[`).
   const _hasTrueAggregate = (() => {
     if (plan.aggregate) return true
+    const _exprHasAgg = (expr: unknown): boolean => {
+      const s = typeof expr === 'string' ? expr : (expr as any)?.expression || ''
+      return /\b(collect|count|sum|avg|min|max)\s*\(/i.test(s) && !/\bcollect\s*\(\s*\[/i.test(s)
+    }
     let hasAgg = false
     for (const col of (plan.expressionColumns || [])) {
-      const expr = typeof col.expression === 'string' ? col.expression : (col.expression as any)?.expression || ''
-      if (/\b(collect|count|sum|avg|min|max)\s*\(/i.test(expr) && !/\bcollect\s*\(\s*\[/i.test(expr)) {
-        hasAgg = true
-        break
-      }
+      if (_exprHasAgg(col.expression)) { hasAgg = true; break }
     }
     if (hasAgg) return true
-    // Also scan the leading WITH for a non-literal aggregate when there is no
-    // RETURN aggregation at all (kept for backward safety; literal collect([...]) excluded).
-    return false
+    // A single leading WITH that folds an aggregate inside a composite expression
+    // (`WITH $age + avg(person.age) - 1000 AS agg`) is still an aggregation, and
+    // an empty node MATCH must yield one null row (With6 [5]) — but only when the
+    // aggregation sits on a plain node scan (no relationship steps).  Relationship
+    // matches (`MATCH (me)--(you)`) and multi-segment WITH chains project before
+    // aggregating, so an empty match stays empty (With6 [6][7]).
+    if ((!(plan as any).withChain || ((plan as any).withChain.length || 0) <= 1) && !(plan.steps?.length)) {
+      for (const col of ((plan as any).with?.columns || [])) {
+        if (_exprHasAgg(col.expression)) { hasAgg = true; break }
+      }
+    }
+    return hasAgg
   })()
   if (execQueryResult.length === 0 && _hasTrueAggregate && query && /\b(collect|count|sum|avg|min|max)\s*\(/i.test(query) && !/^\s*(?:WITH|UNWIND)\b/is.test(query)) {
     const defaultRow: QueryRow = {}
-    for (const col of (plan.expressionColumns || [])) {
+    const _fillDefault = (col: { expression: unknown; alias?: string | null }) => {
       const alias = col.alias || ''
-      if (!alias) continue
+      if (!alias) return
       const expr = typeof col.expression === 'string' ? col.expression : (col.expression as any)?.expression || ''
       // Determine default: size(collect(...)) -> 0, count(...) -> 0, others -> null
       if (/^(?:size|count)\s*\(/.test(expr.trim())) {
@@ -8397,6 +8406,13 @@ export async function _executeQuery(
       } else {
         defaultRow[alias] = null
       }
+    }
+    for (const col of (plan.expressionColumns || [])) _fillDefault(col)
+    // `RETURN *` after a WITH leaves expressionColumns empty; surface the WITH
+    // projection aliases so an empty aggregation still yields one row keyed by
+    // the projected alias (e.g. `WITH $age + avg(...) AS agg RETURN *` → {agg:null}).
+    if (!Object.keys(defaultRow).length) {
+      for (const col of ((plan as any).with?.columns || [])) _fillDefault(col)
     }
     return [defaultRow] as QueryResult
   }
