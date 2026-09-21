@@ -2382,18 +2382,24 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // `plan.withChain` (every WITH clause) rather than just the final `plan.with`.
     const allWithColumns = (plan.withChain || (plan.with ? [plan.with] : []))
       .flatMap((wc: any) => wc?.columns || [])
-    const _resolveBinding = (name: string): any => {
+    const _resolveBinding = (name: string, _seen = new Set<string>()): any => {
       if (varToNodeMap.has(name)) return varToNodeMap.get(name)
+      if (_seen.has(name)) return undefined
+      _seen.add(name)
       const wc = allWithColumns.find(c => c.alias === name)
       if (wc && wc.expression) {
         const exprVar = wc.expression.trim()
+        // A self-referential projection (`p AS p`) names the same binding; guard
+        // against the infinite chain p -> p -> p by stopping when the expression
+        // equals the alias we are already resolving.
+        if (exprVar === name) return undefined
         if (varToNodeMap.has(exprVar)) {
           const node = varToNodeMap.get(exprVar)
           varToNodeMap.set(name, node)
           return node
         }
         // expression itself may be a prior alias (transitive chain)
-        return _resolveBinding(exprVar)
+        return _resolveBinding(exprVar, _seen)
       }
       return undefined
     }

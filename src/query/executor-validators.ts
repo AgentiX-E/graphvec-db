@@ -622,6 +622,11 @@ export function extractMatchVariables(query: string): string[] {
   const matches = query.matchAll(/MATCH\s+(.*?)(?:\s+(?:WHERE|WITH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|INVOKE|CALL)\s|$)/gis)
   for (const m of matches) {
     const clause = m[1]
+    // Path-variable assignment: `MATCH p = (a)-[r*]->(b)` binds `p` as a path.
+    // It precedes the pattern with ` <ident> = ` and is NOT itself enclosed in
+    // parentheses/brackets, so the node/edge scanners below miss it.
+    const pathVar = clause.match(/^\s*(\w+)\s*=/)
+    if (pathVar && !/^[\d]/.test(pathVar[1])) vars.push(pathVar[1])
     // 从 (n:Label), (n) 或 (n {prop: val}) 中提取变量名
     const nodeVars = clause.matchAll(/\((\w+)\s*(?::|\)|{)/g)
     for (const v of nodeVars) {
