@@ -4304,7 +4304,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // 每个 source 节点可能产生多行（不同目标节点）。
           // 去重：只保留每个 source 节点一行
           const lastStepTargetAlias = plan.steps?.[plan.steps.length - 1]?.targetAlias
-          if (lastStepTargetAlias === '' && plan.steps?.length) {
+          if (lastStepTargetAlias === '' && plan.steps?.length && !hasMultiStep) {
             const seenSourceVals = new Set<string>()
             multiStepRaw = multiStepRaw.filter((r: any) => {
               const cvr = r.__crossVarRows
@@ -4560,7 +4560,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       rawRecords = _geExecQueryPlan(ge, scanPlan) as any[]
     }
     let records = rawRecords
-
     // ── Inline source-node property predicate (MATCH (a {name:'A'})) ──
     // A bare node pattern with inline properties but no label/traverse step stores
     // its predicate as plan.matchSourceProps (ast-to-plan-v2 line ~983).  The
