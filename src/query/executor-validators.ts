@@ -879,7 +879,7 @@ export function _validateOrderByScope(query: string): void {
         // DISTINCT, which restricts ORDER BY to the projection aliases (a
         // variable not projected by RETURN DISTINCT is no longer in scope).
         const effectiveScope = isWith
-          ? new Set([...sourceVars, ...aliasVars])
+          ? new Set([...scope, ...sourceVars, ...aliasVars])
           : isDistinct
             ? new Set([...aliasVars])
             : new Set([...scope, ...aliasVars])

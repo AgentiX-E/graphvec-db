@@ -6142,6 +6142,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           for (const wc of withClause.columns || []) {
             const alias = typeof wc === 'object' ? wc.alias : null
+            if (process.env.DIAG_W) console.error('[DIAG_W] before proj, baseRc.m =', JSON.stringify(baseRc['m']), 'alias:', alias, 'expr:', typeof wc.expression === 'string' ? wc.expression : JSON.stringify(wc.expression))
             if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
             const wcExpr = typeof wc.expression === 'string' ? wc.expression :
               (wc.expression?.type === 'LIST'
