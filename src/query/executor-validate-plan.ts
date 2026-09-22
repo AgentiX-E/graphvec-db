@@ -336,6 +336,60 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     }
   }
 
+  // ── SyntaxError: ColumnNameConflict ──
+  // A WITH (or RETURN) projection may not forward two columns under the same
+  // alias in one clause — `WITH 1 AS a, 2 AS a` names `a` twice and the second
+  // binding is ambiguous.  Only consider explicit `expr AS alias` aliases (a
+  // bare column carries no explicit alias).
+  if (query) {
+    const segs = ((plan as any).withChain?.length ? (plan as any).withChain : (plan.with ? [plan.with] : [])) as Array<{ columns: Array<{ expression: unknown; alias?: string | null }> }>
+    for (const seg of segs) {
+      const seen = new Set<string>()
+      for (const col of seg.columns || []) {
+        const al = col.alias
+        if (!al) continue
+        if (seen.has(al)) {
+          throw Object.assign(new Error('SyntaxError: ColumnNameConflict'), { tckError: 'ColumnNameConflict' })
+        }
+        seen.add(al)
+      }
+    }
+    // RETURN-only duplicates (projection without a WITH).
+    if (!(plan as any).with) {
+      const seen = new Set<string>()
+      for (const rc of plan.returnColumns || []) {
+        // Only `expr AS alias` style RETURN columns carry an explicit alias.
+        const m = (typeof rc === 'string' ? rc : '').match(/\bAS\s+([A-Za-z_]\w*)\s*$/i)
+        if (m) {
+          const al = m[1]
+          if (seen.has(al)) {
+            throw Object.assign(new Error('SyntaxError: ColumnNameConflict'), { tckError: 'ColumnNameConflict' })
+          }
+          seen.add(al)
+        }
+      }
+    }
+  }
+
+  // ── SyntaxError: NoExpressionAlias ──
+  // Every non-trivial expression in a WITH projection must be aliased via
+  // `expr AS alias`; a bare expression or an expression without an alias
+  // (`WITH a, count(*)`) is a compile-time error.  A bare variable (`WITH a`)
+  // is legal — only an *expression* (an aggregate call, or anything beyond a
+  // single variable/property) requires an alias.
+  if (query && (plan.with?.columns || []).length) {
+    for (const col of plan.with.columns as Array<{ expression: unknown; alias?: string | null }>) {
+      const expr = typeof col.expression === 'string' ? col.expression.trim() : ''
+      if (!expr) continue
+      if (col.alias) continue
+      // A bare variable / property access is a legal unaliased column.
+      if (/^[A-Za-z_]\w*(\.[A-Za-z_]\w*)?$/.test(expr) || /^\$\w+$/.test(expr)) continue
+      // Anything else (aggregate call, arithmetic, map/list literal, etc.) needs
+      // an explicit alias.
+      throw Object.assign(new Error('SyntaxError: NoExpressionAlias'), { tckError: 'NoExpressionAlias' })
+    }
+  }
+
   // ── SyntaxError: NestedAggregation ──
   // An aggregate function may not wrap another aggregate call — their value is
   // only defined after the row set is grouped, so nesting them (`count(count(*))`,

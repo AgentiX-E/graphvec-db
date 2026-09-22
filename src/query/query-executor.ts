@@ -1505,6 +1505,31 @@ async function _executeMultiMatchCrossJoin(
     }
   }
 
+  // Apply WITH projections (`WITH a.num AS property`) onto each cross-joined row
+  // so a later WHERE / RETURN can reference the alias.  Without this a
+  // projection key like `property` is absent from the row and `WHERE property =
+  // b.num` evaluates to NULL, dropping every row.  Evaluate the expression
+  // against the row's resolved bindings; a bare variable reference (`WITH r AS
+  // x`) simply re-binds the existing value.
+  const _withProjCols = ((plan as any).with?.columns || []) as Array<{ expression: unknown; alias?: string | null }>
+  if (_withProjCols.length && crossRows.length) {
+    for (const row of crossRows) {
+      for (const wc of _withProjCols) {
+        const alias = wc.alias
+        if (!alias) continue
+        const expr = typeof wc.expression === 'string' ? wc.expression : null
+        if (!expr || /^\s*(count|sum|avg|max|min|collect)\s*\(/i.test(expr)) continue
+        let val: unknown
+        try {
+          val = _evaluateExpression(expr, { ...row })
+        } catch {
+          val = undefined
+        }
+        if (val !== undefined) row[alias] = val
+      }
+    }
+  }
+
   // Evaluate WHERE (relationship identity / path equality / pattern predicates).
   let filtered = crossRows
   if (plan.whereBody) {

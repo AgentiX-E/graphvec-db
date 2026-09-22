@@ -1035,6 +1035,18 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
                 variable: part[0].source || parsed.variable || undefined,
               })
             }
+            // A bare-node MATCH (`MATCH (b:End)` after a WITH) carries no edges
+            // but still names a variable the RETURN/WHERE refers to.  Stage it as
+            // a bare-node cross-join pattern (empty steps, label-derived scan)
+            // so the executor binds `b` to the End node instead of leaking the
+            // previous MATCH's binding.
+            if (!parsed.edges?.length && (parsed.variable || parsed.label)) {
+              plan.multiMatch.push({
+                scanLabel: parsed.label ?? null,
+                steps: [],
+                variable: parsed.variable || undefined,
+              })
+            }
             // Also stage disjoint comma-separated bound nodes from later clauses.
             if (parsed.extraNodes?.length) {
               for (const en of parsed.extraNodes) {
