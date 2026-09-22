@@ -4716,7 +4716,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               (expr.type === 'LIST' && (expr.items || []).some((it: any) => it?.type === 'STRING' && String(it.value).includes('|')))
             )
           })
-          if (_withHasComprehensionCol && planForGe.aggregate != null) {
+          // A WITH column that is an arbitrary expression GE cannot project (a
+          // map literal `{name: n.list}`, a list literal, an arbitrary function
+          // call, etc.) must also drop the aggregate: GE would otherwise fold
+          // `count(*)` over the raw nodes while silently dropping the projected
+          // map column, so QE's DISTINCT / projection would run against an
+          // already-collapsed row.
+          const _withHasMapOrListCol = (planForGe.with?.columns || []).some((c: any) => {
+            const expr = typeof c?.expression === 'string' ? c.expression : ''
+            if (!expr) return false
+            const t = expr.trim()
+            return /^\{/.test(t) || /^\[/.test(t) || /[({]\s*[A-Za-z_]\w*\s*[:.]/.test(t) || /^[A-Za-z_]+\s*\(/.test(t)
+          })
+          if ((_withHasComprehensionCol || _withHasMapOrListCol) && planForGe.aggregate != null) {
             delete planForGe.aggregate
           }
           // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
@@ -6152,6 +6164,35 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
           }
         }
+      }
+
+      // ── WITH DISTINCT deduplication ──
+      // A WITH segment carrying the DISTINCT modifier (`WITH DISTINCT a.name AS
+      // name`) deduplicates the projected row set on its projected columns.
+      // Apply it after the per-row projection above (which already materialised
+      // the projection aliases into each row's props).
+      for (const wcSeg of withChainToApply || []) {
+        if (!(wcSeg as any)?.distinct) continue
+        const projAliases = ((wcSeg as any)?.columns || [])
+          .map((c: any) => c?.alias)
+          .filter((a: any) => a)
+        if (!projAliases.length) continue
+        // Dedup on the projection aliases only (plus any implicit bare columns
+        // carried by the segment, e.g. `WITH DISTINCT a.name AS name` keys on
+        // `name`).  Normalise object/array values to a stable key.
+        const _distinctKey = (raw: Record<string, unknown>): string =>
+          projAliases.map((a: string) => {
+            const v = (raw.props as any)?.[a] ?? (raw as any)[a]
+            if (v && typeof v === 'object') return JSON.stringify(v)
+            return String(v ?? '__NULL__')
+          }).join('||')
+        const seen = new Set<string>()
+        rawWithEdges = rawWithEdges.filter((raw: Record<string, unknown>) => {
+          const key = _distinctKey(raw)
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
       }
     }
 

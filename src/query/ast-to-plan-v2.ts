@@ -1330,6 +1330,13 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
       }
       case 'WITH': {
         const w = extractWith(clause.ctx)
+        // Detect the `WITH DISTINCT` modifier (distinct from the per-aggregate
+        // `count(DISTINCT x)` form).  ANTLR may not expose a dedicated DISTINCT
+        // node for WITH, so fall back to the raw clause text.
+        const withText = clause.ctx ? getTextRecursive(clause.ctx) : ''
+        if (/^\s*WITH\s+DISTINCT\b/i.test(withText)) {
+          ;(w as any).distinct = true
+        }
         plan.with = w
         if (!plan.withChain) plan.withChain = []
         plan.withChain.push(w)
