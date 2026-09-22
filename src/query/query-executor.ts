@@ -2170,6 +2170,179 @@ async function _executeMultiMatchCrossJoin(
   return out
 }
 
+/**
+ * Fold an intermediate WITH aggregate segment over the current row set.
+ *
+ * A WITH segment such as `WITH otherPerson, count(*) AS foaf` groups the rows
+ * currently in scope by its non-aggregate columns and computes the aggregate per
+ * group.  The per-row WITH pipeline above only projects flat expressions, so
+ * this cross-row fold must run BEFORE any later WHERE / WITH segment reads the
+ * aggregate alias (e.g. `WHERE foaf > 1`).
+ *
+ * Each input row is the raw GE/multi-step record shape `{ id, props,
+ * __crossVarRows, ... }`; the grouping keys and aggregate inputs are resolved by
+ * flattening the row's bound variables (props + __crossVarRows) into a plain
+ * object, reusing the same resolution the per-row pipeline performs.
+ */
+function _groupAggregateWithRows(
+  rows: Array<Record<string, unknown>>,
+  wcSeg: { columns?: Array<{ expression?: unknown; alias?: string | null }> },
+  allNodes: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const cols = wcSeg.columns || []
+  // Split the segment columns into group-by keys (non-aggregate) and aggregates.
+  const groupByCols: string[] = []
+  const aggCols: Array<{ fn: string; field: string; prop: string; distinct?: boolean; alias?: string | null }> = []
+  const groupByAlias: Record<string, string> = {} // alias → underlying column name
+  for (const wc of cols) {
+    const expr = typeof wc.expression === 'string' ? wc.expression : ''
+    if (!expr) continue
+    const parsed = _parseAggregate(expr)
+    if (parsed) {
+      aggCols.push({ fn: parsed.fn, field: parsed.field, prop: parsed.prop, distinct: parsed.distinct, alias: wc.alias || parsed.alias })
+    } else {
+      // Non-aggregate column: group-by key.  `otherPerson` and `otherPerson AS
+      // x` both group by the underlying variable `otherPerson`.
+      const bare = expr.includes('.') ? expr.split('.').pop()! : expr.trim()
+      const name = (bare.match(/^[A-Za-z_]\w*/) || [bare])[0]
+      groupByCols.push(name)
+      if (wc.alias) groupByAlias[wc.alias] = name
+    }
+  }
+  if (!aggCols.length) return rows
+
+  // Flatten each raw row into a plain object of `variable -> value`, merging
+  // props then __crossVarRows (the latter carries the per-row node bindings of a
+  // multi-step walk, e.g. `otherPerson`).
+  const flatten = (raw: Record<string, unknown>): Record<string, unknown> => {
+    const flat: Record<string, unknown> = {}
+    const p = raw.props as Record<string, unknown> | undefined
+    if (p && typeof p === 'object') {
+      for (const [k, v] of Object.entries(p)) {
+        if (!k.startsWith('_')) flat[k] = v
+      }
+    }
+    const cvr = raw.__crossVarRows as Record<string, unknown> | undefined
+    if (cvr && typeof cvr === 'object') {
+      for (const [k, v] of Object.entries(cvr)) if (!(k in flat)) flat[k] = v
+    }
+    // A bare variable may also live directly on the row (edge variable `r`).
+    for (const [k, v] of Object.entries(raw)) {
+      if (k === 'id' || k === 'props' || k.startsWith('__')) continue
+      if (!(k in flat)) flat[k] = v
+    }
+    return flat
+  }
+
+  const flatRows = rows.map(r => flatten(r))
+  // Group-by values may be node objects; build a stable string key via _id/_alias.
+  const keyOfPlain = (flat: Record<string, unknown>): string =>
+    groupByCols.map(gc => {
+      const v = flat[gc]
+      if (v && typeof v === 'object') {
+        const o = v as any
+        return `${o.__relId ?? o._id ?? o._alias ?? JSON.stringify(v)}`
+      }
+      return String(v ?? '__NULL__')
+    }).join('||')
+
+  // Group rows, preserving first-seen order.
+  const groups = new Map<string, { key: string; rows: Record<string, unknown>[] }>()
+  const order: string[] = []
+  for (const fr of flatRows) {
+    const k = keyOfPlain(fr)
+    if (!groups.has(k)) { groups.set(k, { key: k, rows: [] }); order.push(k) }
+    groups.get(k)!.rows.push(fr)
+  }
+
+  const result: Array<Record<string, unknown>> = []
+  for (const k of order) {
+    const { rows: gRows } = groups.get(k)!
+    const out: Record<string, unknown> = {}
+    // Rebind group-by columns (use the first row's actual value).
+    for (const gc of groupByCols) out[gc] = gRows[0][gc]
+    for (const alias of Object.keys(groupByAlias)) out[alias] = out[groupByAlias[alias]]
+    // Compute each aggregate over the group.
+    for (const ac of aggCols) {
+      let values: unknown[]
+      if (ac.prop === '*') {
+        values = gRows.map(() => true)
+      } else {
+        values = gRows.map(r => r[ac.prop]).filter(v => v !== undefined && v !== null)
+        if (ac.distinct) values = [...new Set(values)]
+      }
+      const key = ac.alias || ac.fn.toLowerCase()
+      out[key] = _computeAggregate(ac.fn, values, (ac as any).pctArg)
+    }
+    // Re-shape into the raw record form the downstream pipeline expects: expose
+    // the projection keys both at the top level and in props/__crossVarRows so
+    // later WHERE / WITH segments can resolve them.
+    const rec: Record<string, unknown> = {
+      props: { ...out },
+      __crossVarRows: { ...out },
+    }
+    for (const [ok, ov] of Object.entries(out)) rec[ok] = ov
+    result.push(rec)
+  }
+  return result
+}
+
+/**
+ * Compute the keep mask for structured per-segment WHERE filters (from a WITH
+ * segment) over a row set.
+ *
+ * A WITH segment like `WITH otherPerson WHERE otherPerson.name <> 'NotOther'`
+ * carries `filters: [{ source, property, operator, value }]`; these must run on
+ * the surviving (already grouped/projected) rows BEFORE a later aggregate (e.g.
+ * `RETURN count(*)`) collapses them.  The returned boolean mask lets the caller
+ * apply the same filtering to both the raw rows and the formatted result rows.
+ */
+function _withFilterKeepMask(
+  rows: Array<Record<string, unknown>>,
+  filters: Array<{ source?: string; property?: string; operator?: string; value?: unknown }>,
+): boolean[] {
+  return rows.map((raw) => {
+    const flat: Record<string, unknown> = {}
+    const p = raw.props as Record<string, unknown> | undefined
+    if (p && typeof p === 'object') for (const [k, v] of Object.entries(p)) if (!k.startsWith('_')) flat[k] = v
+    const cvr = raw.__crossVarRows as Record<string, unknown> | undefined
+    if (cvr && typeof cvr === 'object') for (const [k, v] of Object.entries(cvr)) if (!(k in flat)) flat[k] = v
+    for (const [k, v] of Object.entries(raw)) {
+      if (k === 'id' || k === 'props' || k.startsWith('__')) continue
+      if (!(k in flat)) flat[k] = v
+    }
+    return filters.every((f) => {
+      if (f.property === '__label') return true
+      const owner = flat[f.source as string] as any
+      const ownerProps = (owner && typeof owner === 'object') ? owner : {}
+      const actual = ownerProps[f.property as string]
+      let fv = f.value
+      if (typeof fv === 'string' && /^\w+\.\w+$/.test(fv) && !/^['"]/.test(fv) && !/^\d/.test(fv)) {
+        const [refVar, refProp] = fv.split('.')
+        const refOwner = flat[refVar] as any
+        const refProps = (refOwner && typeof refOwner === 'object') ? refOwner : {}
+        fv = refProps[refProp]
+      }
+      if (actual === undefined) {
+        if (f.operator === 'IS_NULL') return true
+        if (f.operator === 'NEQ') return fv !== null && fv !== undefined
+        return false
+      }
+      switch (f.operator) {
+        case 'EQ': return actual === fv
+        case 'NEQ': return actual !== fv
+        case 'GT': return Number(actual) > Number(fv)
+        case 'GTE': return Number(actual) >= Number(fv)
+        case 'LT': return Number(actual) < Number(fv)
+        case 'LTE': return Number(actual) <= Number(fv)
+        case 'IS_NULL': return false
+        case 'IS_NOT_NULL': return true
+        default: return String(actual) === String(fv)
+      }
+    })
+  })
+}
+
 /** GraphEngine 原生执行入口 */
 export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Record<string, unknown>>, query?: string): Promise<QueryResult> {
   // Expose the full node array (with __edges) to the pattern-comprehension
@@ -5851,6 +6024,28 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const withChainToApply =
       (plan.withChain && plan.withChain.length > 1 ? plan.withChain : (plan.with ? [plan.with] : []))
     if (withChainToApply.length) {
+      // ── Intermediate aggregation inside a WITH chain ──
+      // A WITH segment that carries an aggregate (e.g. `WITH otherPerson,
+      // count(*) AS foaf`) must fold the current row set into one row per group
+      // key (the non-aggregate columns) BEFORE any later WHERE / WITH segment
+      // consumes its projection.  The per-row pipeline below only projects flat
+      // expressions and intentionally skips aggregate columns, so an ungrouped
+      // aggregate would leave `foaf` undefined and downstream `WHERE foaf > 1`
+      // would drop every row.  Fold each aggregate-carrying segment, in order,
+      // into the row set as it is processed.
+      let _wcRows = rawWithEdges
+      const _withChainToProcess: any[] = []
+      for (const wcSeg of withChainToApply) {
+        if ((wcSeg as any)?.aggregate) {
+          _wcRows = _groupAggregateWithRows(_wcRows, wcSeg as any, allNodes)
+          // The fold already materialised the aggregate aliases; drop the
+          // segment from the per-row projection pass below (its columns would
+          // otherwise be re-evaluated against the already-grouped rows).
+          continue
+        }
+        _withChainToProcess.push(wcSeg)
+      }
+      rawWithEdges = _wcRows
       for (const rawRow of rawWithEdges) {
         // Snapshot node variables that alias rawRow.props before writing WITH
         // projection aliases back into props.  For a single-node MATCH the row
@@ -5867,7 +6062,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
           }
         }
-        for (const withClause of withChainToApply) {
+        for (const withClause of _withChainToProcess) {
           // WITH projections are simultaneous: every column in a single WITH
           // clause is evaluated against the clause's INPUT row, not against the
           // values already projected by earlier columns.  For `WITH a AS b,
@@ -6812,6 +7007,23 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         (expr.type === 'LIST' && (expr.items || []).some((it: any) => it?.type === 'STRING' && String(it.value).includes('|')))
       )
     })
+    // ── Per-segment WITH WHERE filters ──
+    // A non-aggregate WITH segment may carry its own WHERE (structured filters),
+    // e.g. `WITH otherPerson WHERE otherPerson.name <> 'NotOther'`.  These run
+    // on the grouped/projected row set before any later aggregate consumes it.
+    for (const wcSeg of withChainToApply || []) {
+      if ((wcSeg as any)?.aggregate) continue
+      const segFilters = ((wcSeg as any)?.filters || []).filter((f: any) => f?.property !== '__label')
+      if (segFilters.length && rawWithEdges?.length) {
+        // Determine which raw rows satisfy the segment WHERE, then apply the
+        // same index mask to both `rawWithEdges` and the formatted `result` so
+        // a later aggregate over either sees a consistent row set.
+        const keepMask = _withFilterKeepMask(rawWithEdges, segFilters)
+        rawWithEdges = rawWithEdges.filter((_: any, ri: number) => keepMask[ri])
+        if (Array.isArray(result)) result = result.filter((_: any, ri: number) => keepMask[ri])
+      }
+    }
+
     if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length && !_withHasComprehensionCol) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
