@@ -1731,11 +1731,29 @@ async function _executeMultiMatchCrossJoin(
       const al = wc.alias || ''
       if (al) _withExprByAlias.set(al, wc.expression)
     }
+    // Variables the PRIMARY MATCH already binds.  A WITH projection whose alias
+    // collides with one of these is a pure RENAME over an existing binding (the
+    // sequential cross-join above already equated the re-used variable), NOT a
+    // fresh projection that must constrain a free source.  `MATCH (a:A) ...
+    // WITH b AS a MATCH (a)-[r]->(b)` re-binds `a` to the SAME value the primary
+    // match produced (the rename chain collapses to identity), so treating `a`
+    // as a WITH-driven free source would wrongly reject the row (bound node A
+    // vs projected node B).  Only alias whose name is NOT already a primary
+    // binding needs the projection-constraint below.
+    const primaryBound = new Set<string>()
+    for (const st of plan.steps || []) {
+      if ((st as any).source) primaryBound.add((st as any).source)
+      if ((st as any).targetAlias) primaryBound.add((st as any).targetAlias)
+      if ((st as any).edgeVariable) primaryBound.add((st as any).edgeVariable)
+      if ((st as any).pathVariable) primaryBound.add((st as any).pathVariable)
+    }
+    if ((plan as any).matchVar) primaryBound.add((plan as any).matchVar)
     // Sources of any multi-match pattern that are re-bound by WITH.
     const drivenSources = new Set<string>()
     for (const m of mm) {
       const src = m.steps?.[0]?.source as string | undefined
-      if (src && _withExprByAlias.has(src)) drivenSources.add(src)
+      // Skip pure renames over already-bound primary-match variables.
+      if (src && _withExprByAlias.has(src) && !primaryBound.has(src)) drivenSources.add(src)
     }
     if (drivenSources.size) {
       const constrained: Array<Record<string, unknown>> = []
@@ -5851,6 +5869,46 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
         }
         for (const withClause of withChainToApply) {
+          // WITH projections are simultaneous: every column in a single WITH
+          // clause is evaluated against the clause's INPUT row, not against the
+          // values already projected by earlier columns.  For `WITH a AS b,
+          // b AS tmp` the `b` inside `b AS tmp` refers to the original `b` (the
+          // B node), not the freshly-renamed `b` (= a).  Build a single input
+          // snapshot (baseRc) once per WITH clause so all of its columns read
+          // identical inputs; writing a projection back into `rawRow.props`
+          // must not leak into the evaluation of the next column.
+          // Do NOT exclude a key merely because it equals an alias: in a
+          // shadowing pipeline (`WITH x AS y ... WITH y % 3 AS y`) the alias
+          // reuses a prior projection whose OLD value must remain visible to
+          // the right-hand side (`y % 3` reads the old `y`).  Excluding it here
+          // left the variable undefined → NaN.
+          const baseRc: Record<string, unknown> = {}
+          if (rawRow.props) {
+            for (const [k, v] of Object.entries(rawRow.props)) {
+              if (!k.startsWith('_')) baseRc[k] = v
+            }
+          }
+          if (rawRow.__crossVarRows) {
+            for (const [k, v] of Object.entries(rawRow.__crossVarRows)) {
+              if (!(k in baseRc)) baseRc[k] = v
+            }
+          }
+          // Restore outgoing-edge context on node variables: GE result rows
+          // carry `_label`/`_alias` but drop `__edges`, which pattern
+          // comprehensions like `[(n)-->() | 1]` need to compute degrees.
+          // Look the node up in allNodes by `_alias` and attach its `__edges`
+          // so downstream expression evaluation sees them.
+          for (const k of Object.keys(baseRc)) {
+            const rcv = baseRc[k] as any
+            if (rcv && typeof rcv === 'object' && !Array.isArray(rcv) && rcv.__edges === undefined) {
+              const byAlias = rcv._alias
+                ? (allNodes as any[]).find((a: any) => a._alias === rcv._alias)
+                : undefined
+              if (byAlias && Array.isArray(byAlias.__edges)) {
+                rcv.__edges = byAlias.__edges
+              }
+            }
+          }
           for (const wc of withClause.columns || []) {
             const alias = typeof wc === 'object' ? wc.alias : null
             if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
@@ -5866,38 +5924,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             // no longer carries the raw node properties) and overwrite the correct
             // value with 0.
             if (typeof wcExpr === 'string' && /^\s*(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(/i.test(wcExpr)) continue
-            // Build varCtx from rawRow.  Do NOT exclude a key merely because it
-            // equals the alias: in a shadowing pipeline (`WITH x AS y ... WITH
-            // y % 3 AS y`) the alias reuses a prior projection whose OLD value
-            // must remain visible to the right-hand side (`y % 3` reads the old
-            // `y`).  Excluding it here left the variable undefined → NaN.
-            const rc: Record<string, unknown> = {}
-            if (rawRow.props) {
-              for (const [k, v] of Object.entries(rawRow.props)) {
-                if (!k.startsWith('_')) rc[k] = v
-              }
-            }
-            if (rawRow.__crossVarRows) {
-              for (const [k, v] of Object.entries(rawRow.__crossVarRows)) {
-                if (!(k in rc)) rc[k] = v
-              }
-            }
-            // Restore outgoing-edge context on node variables: GE result rows
-            // carry `_label`/`_alias` but drop `__edges`, which pattern
-            // comprehensions like `[(n)-->() | 1]` need to compute degrees.
-            // Look the node up in allNodes by `_alias` and attach its `__edges`
-            // so downstream expression evaluation sees them.
-            for (const k of Object.keys(rc)) {
-              const rcv = rc[k] as any
-              if (rcv && typeof rcv === 'object' && !Array.isArray(rcv) && rcv.__edges === undefined) {
-                const byAlias = rcv._alias
-                  ? (allNodes as any[]).find((a: any) => a._alias === rcv._alias)
-                  : undefined
-                if (byAlias && Array.isArray(byAlias.__edges)) {
-                  rcv.__edges = byAlias.__edges
-                }
-              }
-            }
+            // Evaluate against a shallow copy of the input snapshot so per-column
+            // `_firstVar` injection does not mutate the shared snapshot.
+            const rc: Record<string, unknown> = { ...baseRc }
             // 将 MATCH 变量注入 rc（支持 v.date 等属性访问表达式）
             const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
             const _firstVar = _exprVars?.[0]
