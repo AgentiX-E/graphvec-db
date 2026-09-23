@@ -3727,6 +3727,63 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         }
       }
 
+      // ── WITH-chain projection over DML/CREATE rows ──
+      // `CREATE (m {id:0}) WITH {first: m.id} AS m WITH {second: m.first} AS m
+      // RETURN m.second` folds a WITH projection into a map literal that REUSES
+      // the freshly-created variable name.  The MATCH-backed multi-WITH pipeline
+      // never runs for a MATCH-less CREATE, so fold each WITH segment here
+      // (sequentially, so a later segment reads the earlier projection) and hand
+      // the final bindings to `_buildDmlRows` via `__withVarMap`, letting
+      // `RETURN m.second` read the map's `second` instead of a missing node prop.
+      const _withChain = ((plan as any).withChain?.length ? (plan as any).withChain : (plan.with ? [plan.with] : [])) as Array<{ columns: Array<{ expression: unknown; alias?: string | null }> }>
+      if (_withChain.length) {
+        const withCtx: Record<string, unknown> = {}
+        for (const [k, v] of varToNodeMap.entries()) {
+          withCtx[k] = (v && typeof v === 'object' && !Array.isArray(v)) ? v : v
+        }
+        // Bind each created alias to its materialised props (typed createNode
+        // props are `{ prop: {type,value} }`; unwrap to top-level values so
+        // `WITH {first: m.id} AS m` reads `m.id` from the created node).
+        for (const cn of effectiveCreateNodes as any[]) {
+          const alias = cn?.alias
+          if (!alias) continue
+          if (alias in withCtx) continue
+          const clean: Record<string, unknown> = {}
+          if (cn?.props) {
+            for (const [pk, pv] of Object.entries(cn.props as Record<string, unknown>)) {
+              const typed = pv as any
+              clean[pk] = (typed && typeof typed === 'object' && 'value' in typed) ? typed.value : typed
+            }
+          }
+          withCtx[alias] = clean
+        }
+        const withVarMap = new Map<string, unknown>()
+        for (const seg of _withChain) {
+          for (const col of seg.columns || []) {
+            const alias = col.alias
+            const expr = typeof col.expression === 'string' ? col.expression : ''
+            if (!alias || !expr) continue
+            if (/^\s*(count|sum|avg|max|min|collect)\s*\(/i.test(expr)) continue
+            let val: unknown
+            try { val = _evaluateExpression(expr, withCtx) } catch { val = undefined }
+            if (val === undefined) continue
+            // Strip internal keys from a map/object projection so the result is a
+            // clean literal `{first: 0}` rather than a node-shaped object.
+            let cleanVal: unknown = val
+            if (val && typeof val === 'object' && !Array.isArray(val) && (val as any).__edges === undefined) {
+              const c: Record<string, unknown> = {}
+              for (const [ek, ev] of Object.entries(val as Record<string, unknown>)) {
+                if (!ek.startsWith('__') && ek !== '_label' && ek !== '_alias') c[ek] = ev
+              }
+              cleanVal = c
+            }
+            withCtx[alias] = cleanVal
+            withVarMap.set(alias, cleanVal)
+          }
+        }
+        if (withVarMap.size) (allNodes as any).__withVarMap = withVarMap
+      }
+
       const created = _buildDmlRows(plan, allNodes)
       return _postProcessResults(created, plan)
     }

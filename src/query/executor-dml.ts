@@ -446,6 +446,25 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
           }
           if (rval !== undefined) { row[rc] = rval; continue }
         }
+        // A WITH projection re-bound a created variable to a map/literal
+        // (`CREATE (m) WITH {first: m.id} AS m ... RETURN m.first`).  The leading
+        // variable is a map in `__withVarMap`, not a node/edge, so resolve the
+        // whole expression through the engine with that map in scope rather than
+        // scanning `allNodes` for the trailing property.
+        const withVarMapHere = (allNodes as any).__withVarMap as Map<string, unknown> | undefined
+        if (withVarMapHere?.has(relVarName)) {
+          const varCtx: Record<string, unknown> = {}
+          for (const [k, v] of withVarMapHere.entries()) varCtx[k] = v
+          // Also bind the node-backed variables so mixed expressions resolve.
+          for (const node of allNodes) {
+            const p = (node['props'] as Record<string, unknown>) || node
+            for (const [k, v] of Object.entries(p)) {
+              if (!k.startsWith('_') && !(k in varCtx)) varCtx[k] = v as unknown
+            }
+          }
+          const rval = _evaluateExpression(expr, varCtx)
+          if (rval !== undefined && rval !== null) { row[rc] = rval; continue }
+        }
       }
       if (!expr.includes('.') || _relFnExpr) {
         const varCtx: Record<string, unknown> = {}

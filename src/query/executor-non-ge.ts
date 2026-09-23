@@ -420,8 +420,15 @@ export async function _execNonGePaths(
   // variable into each created node's properties).  Routing it here would only
   // expand + project rows and leave `n.num` null, so exclude DML-node creators.
   const _unwindCreatesNodes = (plan.type === 'CREATE' || plan.type === 'MERGE') && !!plan.unwind && !!plan.createNodes?.length
+  // A MATCH-less CREATE/MERGE followed by a WITH projection (e.g.
+  // `CREATE (m) WITH {first: m.id} AS m ... RETURN m.second`) must materialise
+  // the node via the graph-engine DML branch (so `_buildDmlRows` can resolve the
+  // RETURN against the created node and the folded WITH projection), NOT the
+  // pure WITH/UNWIND pipeline (which has no node to project from).  Only `UNWIND
+  // + CREATE` (excluded above) is genuinely unwind-driven.
+  const _dmlWithNoUnwind = (plan.type === 'CREATE' || plan.type === 'MERGE') && !!plan.createNodes?.length && !plan.unwind
   if (!_hasSecondMatchAfterWith && (
-      (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch)) && !_unwindCreatesNodes) ||
+      (!plan.hasMatch && (plan.unwind || (plan.with && !plan.hasMatch)) && !_unwindCreatesNodes && !_dmlWithNoUnwind) ||
       (plan.hasMatch && plan.aggregate && (plan.unwind || _aggIsCollect) && !(plan.steps?.length > 0) && !_withScalarAggOnly) ||
       (_startsWithWith && plan.hasMatch && plan.unwind && plan.with && !plan.aggregate) ||
       (plan.hasMatch && (plan.type === 'SET' || plan.type === 'DELETE') && plan.unwind))) {
