@@ -1513,10 +1513,24 @@ async function _executeMultiMatchCrossJoin(
   // x`) simply re-binds the existing value.
   const _withProjCols = ((plan as any).with?.columns || []) as Array<{ expression: unknown; alias?: string | null }>
   if (_withProjCols.length && crossRows.length) {
+    // Variables the primary MATCH already binds.  A WITH whose alias collides
+    // with one of these is a pure RENAME over an existing binding (e.g.
+    // `MATCH (a:A)-[r]->(b:B) WITH b AS a MATCH (a)-[r]->(b)`), NOT a fresh
+    // projection.  Blindly re-evaluating `WITH b AS a` here would overwrite the
+    // cross-join's correctly-joined `a` with `b`'s value, corrupting the rename
+    // chain.  Only project aliases that are NOT already primary bindings.
+    const _projPrimaryBound = new Set<string>()
+    for (const st of plan.steps || []) {
+      for (const fld of ['source', 'targetAlias', 'edgeVariable', 'pathVariable'] as const) {
+        const v = (st as any)[fld]
+        if (v) _projPrimaryBound.add(v)
+      }
+    }
     for (const row of crossRows) {
       for (const wc of _withProjCols) {
         const alias = wc.alias
         if (!alias) continue
+        if (_projPrimaryBound.has(alias)) continue
         const expr = typeof wc.expression === 'string' ? wc.expression : null
         if (!expr || /^\s*(count|sum|avg|max|min|collect)\s*\(/i.test(expr)) continue
         let val: unknown
