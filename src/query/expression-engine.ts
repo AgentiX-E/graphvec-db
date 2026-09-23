@@ -4108,7 +4108,24 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     const prop = propRaw.replace(/^`|`$/g, '')
     // Cypher: null.prop → null; nonMap.prop (非 map) → TypeError
     if (obj == null) return null
-    if (obj && typeof obj === 'object' && !Array.isArray(obj)) return (obj as Record<string, unknown>)[prop] ?? null
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      // A chained property path `a.b.c` must resolve left-to-right: the first
+      // segment (`name`) is read from `obj`, then the remainder (`name2`) is
+      // resolved against that value, recursively.  A single-step `.name` is the
+      // common case and short-circuits to a direct property read.
+      const innerDot = prop.indexOf('.')
+      if (innerDot > 0) {
+        const firstSeg = prop.slice(0, innerDot)
+        const restSeg = prop.slice(innerDot + 1)
+        const firstVal = (obj as Record<string, unknown>)[firstSeg] ?? null
+        if (firstVal == null) return null
+        if (firstVal && typeof firstVal === 'object' && !Array.isArray(firstVal)) {
+          return (firstVal as Record<string, unknown>)[restSeg] ?? null
+        }
+        return null
+      }
+      return (obj as Record<string, unknown>)[prop] ?? null
+    }
     // 持续时间 ISO 字符串属性访问：dur.days / dur.hours 等
     if (typeof obj === 'string' && /^P/i.test(obj)) return _extractDurationProp(obj, prop)
     // 日期/时间字符串属性访问：date.year, time.hour, datetime.hour 等

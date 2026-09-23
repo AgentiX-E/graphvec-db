@@ -420,18 +420,23 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       }
     }
 
-    // 补充提取：`WITH <函数调用> AS var`（如 WITH collect([0, 0.0]) AS numbers）。
-    // 上述列表字面量扫描只覆盖 `WITH [...] AS var` 裸列表，无法识别函数包裹的列表
-    // （collect(...)、range(...) 等）。此类表达式需物化到 varCtx，供 `UNWIND numbers AS arr`
-    // 解析。仅处理以 WITH 开头的查询——以 MATCH 开头的聚合投影由 GE 负责。
+    // 补充提取：`WITH <表达式> AS var`（如 WITH collect([0, 0.0]) AS numbers 或
+    // WITH {name: {name2: 'baz'}} AS nestedMap）。上述列表字面量扫描只覆盖
+    // `WITH [...] AS var` 裸列表，无法识别函数包裹的列表（collect(...)、range(...)
+    // 等）或 map 字面量。此类表达式需物化到 varCtx，供后续 `UNWIND ... AS arr` 或
+    // `RETURN nestedMap.name.name2` 解析。仅处理以 WITH 开头的查询——以 MATCH 开头
+    // 的聚合投影由 GE 负责。
     {
       const withExprMatch = query.match(/^WITH\s+(\S.*?)\s+AS\s+(\w+)\b/is)
       if (withExprMatch) {
         const expr = withExprMatch[1].trim()
         const alias = withExprMatch[2]
-        if (!(alias in varCtx) && /[a-zA-Z_]\w*\s*\(/.test(expr)) {
-          const val = _evaluateExpression(expr, varCtx)
-          if (val != null || Array.isArray(val)) varCtx[alias] = val
+        if (!(alias in varCtx)) {
+          // 跳过已由上方列表字面量扫描处理的裸列表（`WITH [...] AS v`）。
+          if (!/^\s*\[/.test(expr)) {
+            const val = _evaluateExpression(expr, varCtx)
+            if (val != null || Array.isArray(val)) varCtx[alias] = val
+          }
         }
       }
     }

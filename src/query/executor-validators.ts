@@ -289,6 +289,14 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
     }
     // 从 propRefs 收集所有属性名（即 .后面的词），它们不是变量
     const propNames = new Set(propRefs.map(m => m[2]))
+    // A chained property path such as `nestedMap.name.name2` yields only the
+    // first `.name` segment in `propRefs` (the regex `\b\w` cannot re-anchor on
+    // the interior `.name2`), so the trailing `name2` is wrongly treated as a
+    // bare variable.  Collect EVERY identifier that follows a `.` (the full
+    // property chain) as a property name, leaving only the leading variable.
+    for (const m of beforeAsClean.matchAll(/\.\s*([a-zA-Z_]\w*)/g)) {
+      propNames.add(m[1])
+    }
     // 也提取裸变量名（如 RETURN foo 中的 foo）
     // 移除 list predicate 模式 ALL(x IN ... WHERE cond)、ANY(...)、NONE(...)、SINGLE(...)
     // 使用平衡括号匹配
