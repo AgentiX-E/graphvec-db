@@ -72,6 +72,34 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     if (delClause && /:/.test(delClause[1])) {
       throw Object.assign(new Error('SyntaxError: InvalidDelete'), { tckError: 'InvalidDelete' })
     }
+    // ── EntityNotFound: DeletedEntityAccess ──
+    // Accessing a property or label of a deleted entity in a following RETURN
+    // (`DELETE n RETURN n.num`, `DELETE n RETURN labels(n)`, `DELETE r RETURN
+    // r.num`) is a runtime error — the entity no longer exists to read from.
+    // Only a *property/label* access is forbidden; projecting the bare bound
+    // variable (`RETURN n`) is legal (it reflects the deletion side effect).
+    const deletedVars = new Set<string>()
+    if (delClause) {
+      for (const m of delClause[1].matchAll(/\b([a-zA-Z_]\w*)\b/g)) {
+        const name = m[1]
+        if (!/^(?:DETACH|DELETE)$/i.test(name)) deletedVars.add(name)
+      }
+    }
+    if (deletedVars.size) {
+      const returnClause = query.match(/\bRETURN\s+([\s\S]+?)(?=\s+(?:ORDER\s+BY|SKIP|LIMIT|UNWIND|SET|REMOVE|CREATE|MERGE|MATCH|WITH)\b|$)/i)
+      if (returnClause) {
+        const returnTxt = returnClause[1]
+        for (const dv of deletedVars) {
+          // `n.prop` — property access on the deleted variable.
+          const propRe = new RegExp(`\\b${dv}\\.\\s*[a-zA-Z_]\\w*`)
+          // `labels(n)` / `keys(n)` / `properties(n)` — metadata access.
+          const fnRe = new RegExp(`\\b(?:labels|keys|properties|type)\\s*\\(\\s*${dv}\\b`, 'i')
+          if (propRe.test(returnTxt) || fnRe.test(returnTxt)) {
+            throw Object.assign(new Error('EntityNotFound: DeletedEntityAccess'), { tckError: 'DeletedEntityAccess' })
+          }
+        }
+      }
+    }
   }
 
   // ── SyntaxError: UndefinedVariable / InvalidArgumentType on DELETE operands ──
