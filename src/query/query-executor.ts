@@ -8841,6 +8841,17 @@ export async function _executeQuery(
     return hasAgg
   })()
   if (execQueryResult.length === 0 && _hasTrueAggregate && query && /\b(collect|count|sum|avg|min|max)\s*\(/i.test(query) && !/^\s*(?:WITH|UNWIND)\b/is.test(query)) {
+    // When the projection carries a NON-aggregate grouping key (`me.age` in
+    // `RETURN me.age, me.age + count(you.age)`), an empty match must yield NO
+    // rows — there is no group to emit a default row for (Return6 [18][19]).
+    // Only a pure aggregate over an empty input (`RETURN count(*)`) emits the
+    // single default row.  Detect the implicit key by a projected column whose
+    // expression is not an aggregate call.
+    const _hasImplicitKey = (plan.expressionColumns || []).some((c: any) => {
+      const ex = typeof c.expression === 'string' ? c.expression : (c.expression as any)?.expression || ''
+      return ex && !/\b(?:collect|count|sum|avg|min|max)\s*\(/i.test(ex)
+    })
+    if (!_hasImplicitKey) {
     const defaultRow: QueryRow = {}
     const _fillDefault = (col: { expression: unknown; alias?: string | null }) => {
       const alias = col.alias || ''
@@ -8861,6 +8872,7 @@ export async function _executeQuery(
       for (const col of ((plan as any).with?.columns || [])) _fillDefault(col)
     }
     return [defaultRow] as QueryResult
+    }
   }
   // ── Top-level DISTINCT dedup (`RETURN DISTINCT ...`) ──
   // Cypher `RETURN DISTINCT x` collapses duplicate result rows by the full row
