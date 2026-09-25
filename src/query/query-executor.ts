@@ -8858,7 +8858,7 @@ export async function _executeQuery(
       if (!alias) return
       const expr = typeof col.expression === 'string' ? col.expression : (col.expression as any)?.expression || ''
       // Determine default: size(collect(...)) -> 0, count(...) -> 0, others -> null
-      if (/^(?:size|count)\s*\(/.test(expr.trim())) {
+      if (/^(?:size|count)\s*\(/i.test(expr.trim())) {
         defaultRow[alias] = 0
       } else {
         defaultRow[alias] = null
