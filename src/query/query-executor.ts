@@ -7312,6 +7312,24 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           default: aggRow[aggAlias] = 0
         }
       }
+      // Apply an OUTER expression wrapping the aggregate call (`count(a) > 0`,
+      // `count(a) + 3`, `size(collect(a))`).  The inner aggregate value is
+      // already stored under `aggAlias`; substitute the aggregate call in the
+      // column text with that value and re-evaluate so the outer arithmetic /
+      // comparison / function is applied on top of the folded result.
+      const _colTxt2 = (agg.column || '').trim()
+      const _pureCall2 = new RegExp(`^${aggFn}\\s*\\(\\s*(?:DISTINCT\\s+)?.*?\\s*\\)(?:\\s+AS\\s+\\w+)?$`, 'i')
+      if (_colTxt2 && !_pureCall2.test(_colTxt2)) {
+        let _sub2 = _colTxt2.replace(/\s+AS\s+\w+$/i, '')
+        const _val = aggRow[aggAlias]
+        _sub2 = _sub2.replace(new RegExp(`${aggFn}\\s*\\([^)]*\\)`, 'gi'), () => JSON.stringify(_val))
+        try {
+          aggRow[aggAlias] = _evalBinary(_sub2, {})
+        } catch {
+          // leave the raw aggregate value when the outer expression references
+          // variables outside expression-engine scope
+        }
+      }
       result.length = 0
       result.push(aggRow)
       }
@@ -8752,6 +8770,28 @@ export async function _executeQuery(
           row[aggKey] = Math.max(...groupRows.map(n => _aggVal(n)))
         } else {
           row[aggKey] = groupRows.length
+        }
+        // When the aggregate call is wrapped in an OUTER expression
+        // (`count(a) > 0`, `count(a) + 3`, `size(collect(a))`), the raw value
+        // computed above is only the inner aggregate result.  Re-evaluate the
+        // full column expression with the aggregate call substituted by its
+        // computed value so the outer arithmetic/comparison is applied.
+        const _colTxt = agg.column || ''
+        const _pureCall = new RegExp(`^${agg.function}\\s*\\(\\s*(?:DISTINCT\\s+)?${rawField.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\)(?:\\s+AS\\s+\\w+)?$`, 'i')
+        if (_colTxt && !_pureCall.test(_colTxt.trim())) {
+          let _sub = _colTxt
+          // Substitute every occurrence of the aggregate call with its value.
+          const _callRe = new RegExp(`${agg.function}\\s*\\([^)]*\\)`, 'gi')
+          _sub = _sub.replace(_callRe, () => JSON.stringify(row[aggKey]))
+          // Drop any trailing `AS alias` (the projection key is already aggKey).
+          _sub = _sub.replace(/\s+AS\s+\w+$/i, '')
+          try {
+            row[aggKey] = _evalBinary(_sub, {})
+          } catch {
+            // leave the raw aggregate value if the outer expression cannot be
+            // evaluated (e.g. it references variables the expression engine
+            // does not have in scope).
+          }
         }
         result.push(row)
       }

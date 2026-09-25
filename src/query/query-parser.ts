@@ -686,9 +686,15 @@ function _parseQueryImpl(query: string): QueryPlan {
   if (plan.aggregate) {
     const agg = plan.aggregate as any
     if (agg.field === undefined && agg.column) {
-      // 从 column 提取 field："sum(n.age) AS totalAge" → "n.age"；"count(*)" → "*"；"count(DISTINCT r)" → "r"
+      // Extract `field` (the aggregate's value expression) from `column`:
+      // "sum(n.age) AS totalAge" → "n.age"; "count(*)" → "*"; "count(DISTINCT r)"
+      // → "r".  When the aggregate call is wrapped in an outer expression
+      // (`count(a) > 0`, `count(a) + 3`), the whole column is NOT a pure call,
+      // so extract the argument with a non-anchored match and leave the outer
+      // tail (`> 0`) to be applied by the expression-evaluation path.
       const colMatch = agg.column.match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
-      agg.field = colMatch ? colMatch[1] : (agg.column || '*')
+      const argMatch = agg.column.match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)/)
+      agg.field = colMatch ? colMatch[1] : (argMatch ? argMatch[1] : (agg.column || '*'))
     }
     // GE 兼容：把 column 中的函数名也设为 alias（GE 用 alias 做 props key）
     // count(*) → alias = 'count'，sum(n.age) → alias = 'sum'
