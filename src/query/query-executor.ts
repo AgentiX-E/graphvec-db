@@ -6769,6 +6769,67 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
 
+    // ── GROUP BY aggregation over EDGE-TRAVERSED rows ──
+    // When a query traverses edges (`useEdgeWalk`) and groups by a step
+    // node variable (`MATCH (a:L)-[rel]->(b) RETURN a, count(*)`), the
+    // graph-engine path returns one row per matched (source,target) pair with
+    // the source binding preserved in `__crossVarRows`.  The downstream
+    // `_executeQuery` GROUP-BY post-processing instead groups the raw seed
+    // `nodes` (one row per node), which would split the source node into one
+    // group per seed node and return a wrong `count(*)`.  Fold the aggregate
+    // here, over the matched rows, keyed by the step variable's node identity,
+    // so `count(*)` is the number of matched pairs per source node.
+    if ((plan as any).groupBy?.length && plan.aggregate && rawWithEdges?.length && (plan.steps?.length || 0) > 0) {
+      const _gbAgg = plan.aggregate as any
+      const _gbCols = (plan as any).groupBy as string[]
+      // Only fold when EVERY grouping key names a step node variable (source or
+      // target alias).  A bare property grouping key (`n.num`) is handled by the
+      // downstream `_executeQuery` path against flat seed properties.
+      const _stepVars = new Set<string>()
+      for (const s of (plan.steps || [])) {
+        if (s.source) _stepVars.add(s.source)
+        if (s.targetAlias) _stepVars.add(s.targetAlias)
+      }
+      const _allNodeKeys = _gbCols.every(gb => _stepVars.has(gb))
+      if (_allNodeKeys && (_gbAgg.function === 'count' || _gbAgg.function === 'collect')) {
+        const _aggAlias = (_gbAgg.alias && _gbAgg.alias !== _gbAgg.function)
+          ? _gbAgg.alias
+          : (_gbAgg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || (_gbAgg.field && _gbAgg.field !== '*' ? _gbAgg.field : _gbAgg.column) || 'count(*)')
+        const _groups = new Map<string, Record<string, unknown>[]>()
+        for (const rw of rawWithEdges) {
+          const cvr = (rw.__crossVarRows && typeof rw.__crossVarRows === 'object') ? rw.__crossVarRows : {}
+          const keyParts: string[] = []
+          for (const gb of _gbCols) {
+            const nodeVal = cvr[gb]
+            const id = (nodeVal && typeof nodeVal === 'object') ? ((nodeVal as any).id ?? (nodeVal as any)._label ?? 'null') : (nodeVal ?? 'null')
+            keyParts.push(`${gb}:${String(id)}`)
+          }
+          const key = keyParts.join('||')
+          if (!_groups.has(key)) _groups.set(key, [])
+          _groups.get(key)!.push(rw)
+        }
+        const _folded: any[] = []
+        for (const [, rows] of _groups) {
+          const first = rows[0]
+          const _foldedRow: any = { ...first, props: { ...(first.props || {}) } }
+          if (_gbAgg.function === 'count') {
+            _foldedRow.props[_aggAlias] = rows.length
+          } else {
+            // collect: gather the matched target nodes under the aggregate alias.
+            const collected: unknown[] = []
+            for (const r of rows) {
+              const cvr = r.__crossVarRows || {}
+              collected.push(cvr[_gbCols[_gbCols.length - 1]] ?? cvr)
+            }
+            _foldedRow.props[_aggAlias] = collected
+          }
+          _folded.push(_foldedRow)
+        }
+        rawWithEdges.length = 0
+        rawWithEdges.push(..._folded)
+      }
+    }
+
     const rawResult: QueryRow[] = rawWithEdges.map((r: any) => {
       const fr = _formatResultRow(r, plan)
       return fr
@@ -8614,6 +8675,22 @@ export async function _executeQuery(
   // collapse those per-group rows back into a single global count and drop the
   // node/relationship bindings.
   if ((plan as any).groupBy?.length && (plan as any).aggregate && !plan.optionalMatchSteps?.length && (plan as any).hasMatch && !(plan as any).multiMatch?.length && !(plan.steps || []).some((s: any) => s?.range || s?.pathVariable)) {
+    // Skip this seed-node grouping when the query traverses edges and groups
+    // by a step node variable: `_executeViaGraphEngine` has already folded the
+    // aggregate over the matched (source,target) rows (keyed by the source
+    // node identity).  Re-grouping the raw seed `nodes` here would split the
+    // source node into one group per seed node and corrupt `count(*)`.
+    const _stepVars2 = new Set<string>()
+    for (const s of ((plan as any).steps || []) as any[]) {
+      if (s?.source) _stepVars2.add(s.source)
+      if (s?.targetAlias) _stepVars2.add(s.targetAlias)
+    }
+    const _gbNodeKey = ((plan as any).groupBy as string[]).length > 0 &&
+      ((plan as any).groupBy as string[]).every((gb: string) => _stepVars2.has(gb)) &&
+      ((plan as any).steps?.length || 0) > 0
+    if (_gbNodeKey) {
+      return _postProcessResults(execQueryResult as any, plan as any)
+    }
     const groupByCols = (plan as any).groupBy as string[]
     const agg = (plan as any).aggregate as { function: string; column: string; type: string; field: string; alias?: string }
     const exprs = (plan as any).expressionColumns as Array<{expression:string;alias:string}> | undefined
