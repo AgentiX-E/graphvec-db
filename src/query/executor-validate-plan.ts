@@ -220,6 +220,30 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // aggregate (`ORDER BY max(n.age)`), so neither is a conflict.
   if (query && plan.returnColumns?.length) {
     const aggFn = /\b(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/i
+    // Named grouping keys projected by OTHER return columns.  A single property/
+    // variable access (e.g. `age`, `me.age`) explicitly returned as its own
+    // column is a legal implicit grouping key, so an aggregate column may
+    // reference it (`RETURN age, age + count(you.age)` — legal).  Composite
+    // expressions (`me.age + you.age`) are NOT named keys (Return6 [21]).
+    const returnNamedKeys = new Set<string>()
+    for (const rc of plan.returnColumns) {
+      if (typeof rc !== 'string') continue
+      const t = rc.replace(/'[^']*'/g, "'' ").replace(/"/g, '" "').trim()
+      if (!aggFn.test(t) && /^[a-zA-Z_]\w*(\.[a-zA-Z_]\w*)?$/.test(t)) returnNamedKeys.add(t)
+    }
+    // Also harvest the full `var.prop` forms from expressionColumns (which
+    // preserve the variable prefix — e.g. `me.age`) so that a property access
+    // used in an aggregate expression resolves against its returned alias.
+    for (const ec of (plan.expressionColumns || [])) {
+      const expr = typeof ec === 'string' ? ec : (ec as any).expression
+      const alias = typeof ec === 'string' ? undefined : (ec as any).alias
+      if (typeof expr === 'string' && !aggFn.test(expr) && /^[a-zA-Z_]\w*(\.[a-zA-Z_]\w*)?$/.test(expr.trim())) returnNamedKeys.add(expr.trim())
+    }
+    for (const rc of plan.returnColumns) {
+      if (typeof rc !== 'string') continue
+      const t = rc.replace(/'[^']*'/g, "'' ").replace(/"/g, '" "').trim()
+      if (!aggFn.test(t) && /^[a-zA-Z_]\w*(\.[a-zA-Z_]\w*)?$/.test(t)) returnNamedKeys.add(t)
+    }
     for (const rc of plan.returnColumns) {
       if (typeof rc !== 'string') continue
       // Strip the string literals so their contents are not scanned as variables.
@@ -249,7 +273,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       // A function NAME (an identifier immediately followed by `(`) is a nested
       // non-aggregate function wrapping the aggregate — `size(collect(a))` is
       // legal — so skip it instead of misclassifying it as a group key.
-      const bareVar = /\b[a-zA-Z_]\w*\b/g
+      const bareVar = /\b[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?\b/g
       let bm: RegExpExecArray | null
       while ((bm = bareVar.exec(withoutAggs)) !== null) {
         const name = bm[0]
@@ -258,6 +282,8 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         // then `(`)?  If so it is a function name, not a variable reference.
         const after = withoutAggs.slice(bm.index + name.length)
         if (/^[^()]*\(/.test(after)) continue
+        // A named grouping key projected by another return column is legal.
+        if (returnNamedKeys.has(name)) continue
         throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
       }
     }
