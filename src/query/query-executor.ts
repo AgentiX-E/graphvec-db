@@ -8729,11 +8729,18 @@ export async function _executeQuery(
           return Number((n as any)[propName]) || 0
         }
         if (agg.function === 'count') {
-          row[aggKey] = rawField === '*' || rawField === '' ? groupRows.length
-            : groupRows.filter(n => {
-                const pn = rawField.includes('.') ? rawField.split('.').pop()! : rawField
-                return (n as any)[pn] != null
-              }).length
+          // `count(*)` counts all rows in the group; `count(n.prop)` counts rows
+          // where the property is non-null.  A bare variable (`count(n)`, where
+          // `n` is a node/relationship alias, not a property) counts every row in
+          // the group — each `n` is bound to its matching node, so none are null.
+          if (rawField === '*' || rawField === '') {
+            row[aggKey] = groupRows.length
+          } else if (rawField.includes('.')) {
+            const pn = rawField.split('.').pop()!
+            row[aggKey] = groupRows.filter(n => (n as any)[pn] != null).length
+          } else {
+            row[aggKey] = groupRows.length
+          }
         } else if (agg.function === 'sum') {
           row[aggKey] = groupRows.reduce((acc, n) => acc + _aggVal(n), 0)
         } else if (agg.function === 'avg') {
