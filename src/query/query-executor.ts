@@ -8712,7 +8712,7 @@ export async function _executeQuery(
         // The parser stores `alias` as the bare function name ("count") in that
         // case, so use the explicit alias when it differs from the function name,
         // otherwise fall back to the column expression.
-        const aggKey = (agg.alias)
+        const aggKey = (agg.alias && agg.alias !== agg.function)
           ? agg.alias
           : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || rawField || agg.column || 'c')
         // Evaluate the aggregate value for a single node within the group.
