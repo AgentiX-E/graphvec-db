@@ -433,6 +433,16 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
 
     // 检查 rc 是否是节点变量名（RETURN n / RETURN m）
     // GE 返回的 r 本身可能包含节点数据
+    // A property access (`RETURN a.name` → rc `name`, expr `a.name`) whose
+    // property is MISSING must yield `null` — it must NOT fall through to
+    // `r['name']`, which is the GraphEngine's internal node-name field (often
+    // the empty string) and not a user property (Return2 [3]).
+    const _exprForRc = (ecMap && ecMap[rc]) as string | undefined
+    const _isPropAccess = !!_exprForRc && _exprForRc.includes('.') && /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(_exprForRc.trim())
+    if (_isPropAccess && r.props && typeof r.props === 'object' && !(_exprForRc!.split('.')[1] in r.props)) {
+      result[rc] = null
+      continue
+    }
     if (r[rc] !== undefined) {
       // 如果是边变量（值是字符串 "[:T1]" 格式），直接输出
       if (typeof r[rc] === 'string' && r[rc].startsWith('[:')) {
