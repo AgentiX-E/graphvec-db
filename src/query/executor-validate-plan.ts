@@ -93,7 +93,9 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
           // `n.prop` — property access on the deleted variable.
           const propRe = new RegExp(`\\b${dv}\\.\\s*[a-zA-Z_]\\w*`)
           // `labels(n)` / `keys(n)` / `properties(n)` — metadata access.
-          const fnRe = new RegExp(`\\b(?:labels|keys|properties|type)\\s*\\(\\s*${dv}\\b`, 'i')
+          // `type(r)` is intentionally EXCLUDED: a relationship's type remains
+          // readable after deletion (Return2 [14]).
+          const fnRe = new RegExp(`\\b(?:labels|keys|properties)\\s*\\(\\s*${dv}\\b`, 'i')
           if (propRe.test(returnTxt) || fnRe.test(returnTxt)) {
             throw Object.assign(new Error('EntityNotFound: DeletedEntityAccess'), { tckError: 'DeletedEntityAccess' })
           }
