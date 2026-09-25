@@ -1841,6 +1841,13 @@ async function _executeMultiMatchCrossJoin(
         // Label predicates are handled by labelFilterItems / the post-OPTIONAL
         // label filter, not as a constant property compare.
         if (f.property === '__label') return true
+        // A filter whose value is a BARE variable reference (`WHERE b.id =
+        // property`, where `property` is a WITH projection, not a `var.prop`
+        // path) was already evaluated by `plan.whereBody` above.  Treating the
+        // raw alias string as a literal here would compare `b.id === "property"`
+        // and wrongly drop every row.  Only `var.prop` references are resolved
+        // below; bare aliases are left to whereBody.
+        if (typeof f.value === 'string' && /^[A-Za-z_]\w*$/.test(f.value) && row[f.value] !== undefined) return true
         const owner = row[f.source]
         const ownerProps = (owner && typeof owner === 'object') ? (owner as any) : {}
         const actual = ownerProps[f.property]
@@ -2200,6 +2207,14 @@ async function _executeMultiMatchCrossJoin(
       if (!Object.keys(r).length && plan.returnColumns?.length) {
         for (const rc of plan.returnColumns) {
           if (rc in row) r[rc] = row[rc]
+        }
+      }
+      // `RETURN *` (returnColumns empty) projects every bound variable.  The
+      // cross-joined row carries the node bindings on its top level (plus a few
+      // `__`-prefixed bookkeeping keys), so surface every non-internal key.
+      if (!Object.keys(r).length && !plan.returnColumns?.length) {
+        for (const k of Object.keys(row)) {
+          if (!k.startsWith('__') && !k.startsWith('_')) r[k] = row[k]
         }
       }
       return r

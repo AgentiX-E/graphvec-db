@@ -1528,6 +1528,10 @@ Given('having executed:', async function (query: string) {
       // 但仍然需要正常走一遍来处理非 UNWIND 的别名匹配
       if (!unwind) {
       const seenAliases = new Map<string, number>() // alias -> index in createdNodes
+      // Nodes minted earlier in this SAME CREATE statement (by alias) are in
+      // scope for later templates: `CREATE (a:End {id:0}), (:Begin {num: a.id})`
+      // must resolve `a` to the freshly-created End node so `num` evaluates to 0.
+      const localCtx: Record<string, unknown> = {}
       for (let ci = 0; ci < cns.length; ci++) {
         const cn = cns[ci]
         // 如果 alias 已见过（自循环或 reuse），不重新 seed
@@ -1545,7 +1549,7 @@ Given('having executed:', async function (query: string) {
             : v
           // 对表达式字符串求值（date(...)、time(...)、duration(...) 等）
           if (typeof raw === 'string' && _isExprValue(raw)) {
-            try { raw = _evalBinary(raw, {}) } catch {}
+            try { raw = _evalBinary(raw, localCtx) } catch {}
           }
           // BIGINT values are already `bigint` (set by the AST layer to preserve
           // precision). STRING values — including numeric string literals such as
@@ -1558,7 +1562,7 @@ Given('having executed:', async function (query: string) {
         st.nodes.push(node)
         seedGe(ge, node)
         createdNodes.push(node)
-        if (cn.alias) seenAliases.set(cn.alias, ci)
+        if (cn.alias) { seenAliases.set(cn.alias, ci); localCtx[cn.alias] = node }
       }
 
       } // !unwind

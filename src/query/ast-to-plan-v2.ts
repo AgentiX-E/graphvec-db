@@ -1023,6 +1023,22 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
             if (!plan.multiMatch) plan.multiMatch = []
             // A comma-separated MATCH clause (`MATCH (a)-->(x),(b)-->(x)`)
             // decomposes into multiple independent patterns, one per comma part.
+            // A comma-separated second MATCH may START with a bare node that is
+            // independent of the following edge pattern, e.g.
+            // `MATCH (a:A) WITH a MATCH (x:X), (a)-->(b)`.  Here the primary
+            // variable `x` is NOT an endpoint of any edge (`a`,`b`), so it is a
+            // disjoint bound node — stage it as a bare-node pattern and let the
+            // edge pattern drive its own scan (whose label is `a`'s, not `x`'s).
+            const _edgeEndpoints = new Set<string>()
+            for (const e of (parsed.edges || [])) { if (e.source) _edgeEndpoints.add(e.source); if (e.targetAlias) _edgeEndpoints.add(e.targetAlias) }
+            const _primaryIsDisjoint = !!(parsed.variable && (parsed.edges?.length) && !_edgeEndpoints.has(parsed.variable))
+            if (_primaryIsDisjoint && (parsed.label || parsed.variable)) {
+              plan.multiMatch.push({
+                scanLabel: parsed.label ?? null,
+                steps: [],
+                variable: parsed.variable || undefined,
+              })
+            }
             // Chain the edges within each part but treat each part as a distinct
             // pattern so `x` joins on identity rather than being walked as one
             // continuous path.
@@ -1030,7 +1046,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
             for (const part of parts) {
               if (!part.length) continue
               plan.multiMatch.push({
-                scanLabel: parsed.label ?? null,
+                scanLabel: _primaryIsDisjoint ? (part[0].source || null) : (parsed.label ?? null),
                 steps: part,
                 variable: part[0].source || parsed.variable || undefined,
               })

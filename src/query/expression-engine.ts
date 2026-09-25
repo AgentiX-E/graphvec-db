@@ -70,7 +70,7 @@ interface PostProcessPlan {
  * Determine whether a string is an expression (rather than a plain string literal).
  */
 export function _isExprValue(s: string): boolean {
-  return /^[a-z_]\w*\s*\(.*\)\s*$/i.test(s) || /^(?:[-+!]|NOT\b|\w+(?:\.\w+)+\s)/.test(s) || /\s+(?:AND|OR|XOR|NOT|IN|IS|=|<>|<=?|>=?|[+\-*/%])\s/.test(s)
+  return /^[a-z_]\w*\s*\(.*\)\s*$/i.test(s) || /^(?:[-+!]|NOT\b|\w+(?:\.\w+)+\s)/.test(s) || /\s+(?:AND|OR|XOR|NOT|IN|IS|=|<>|<=?|>=?|[+\-*/%])\s/.test(s) || /^\w+(?:\.\w+)+\s*$/.test(s)
 }
 export function _evaluateExpression(expr: string | Record<string, unknown>, row?: Record<string, unknown>): ExprValue {
   if (expr == null) return null
