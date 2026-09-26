@@ -2142,7 +2142,12 @@ function extractReturn(returnCtx: any): ParsedReturn {
       if (/\b(count|sum|avg|max|min|collect)\s*\(/i.test(text)) {
         const fnMatch = text.match(/^\s*(count|sum|avg|max|min|collect)\s*\(/i)
         if (fnMatch) {
-          const aggClause: AggregateClause = { function: fnMatch[1].toLowerCase(), column: text, distinct: false }
+          // Detect the DISTINCT modifier so `count(DISTINCT n.x)` carries
+          // `distinct: true` and the executor deduplicates.  Without this the
+          // RETURN-item parser silently dropped the modifier (hardcoding false),
+          // folding `count(DISTINCT {name: n.list})` to the raw row count.
+          const distinctMatch = text.match(/^\s*(count|sum|avg|max|min|collect)\s*\(\s*DISTINCT\b/i)
+          const aggClause: AggregateClause = { function: fnMatch[1].toLowerCase(), column: text, distinct: !!distinctMatch }
           if (!aggregate) aggregate = aggClause
           if (!aggregates) aggregates = []
           aggregates.push(aggClause)
