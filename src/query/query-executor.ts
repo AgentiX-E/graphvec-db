@@ -949,6 +949,38 @@ function _isExprValue(s: string): boolean {
 }
 
 /**
+ * Produce a canonical, order-insensitive string key for an arbitrary Cypher
+ * value so two structurally-equal values (maps with reordered keys, nested
+ * lists, etc.) compare equal.  Used by COUNT(DISTINCT <expr>) to deduplicate
+ * map/list literal results that `Set` would otherwise treat as distinct object
+ * identities.  Scalars are returned as-is; collections recurse; map keys are
+ * sorted so `{a:1,b:2}` and `{b:2,a:1}` collapse to the same key.
+ */
+function _stableKey(v: unknown): string {
+  if (v === null) return 'null'
+  if (v === undefined) return 'undefined'
+  if (typeof v === 'bigint') return `bigint:${v.toString()}`
+  if (typeof v === 'number') return Object.is(v, -0) ? '0' : String(v)
+  if (typeof v === 'boolean' || typeof v === 'string') return `${typeof v}:${String(v)}`
+  if (typeof v === 'object') {
+    // Node/relationship objects carry an `id`/`_label`/`props` envelope; key on
+    // identity for those so distinct node variables deduplicate correctly.
+    if ((v as any)?.id != null && typeof (v as any).id === 'number') {
+      return `nodeid:${(v as any).id}`
+    }
+    if (Array.isArray(v)) {
+      return `[${v.map(_stableKey).join(',')}]`
+    }
+    const entries = Object.entries(v as Record<string, unknown>)
+      .filter(([k]) => !(k.startsWith('__') || k === 'id' || k === '_label'))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, val]) => `${k}:${_stableKey(val)}`)
+    return `{${entries.join(',')}}`
+  }
+  return String(v)
+}
+
+/**
  * Cypher property values may be any scalar, a list of scalars, or nested lists
  * of scalars — but never a map (or a list containing a map).  Return true when
  * a value violates that constraint so the caller can raise InvalidPropertyType.
@@ -4795,7 +4827,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // aggregate so QE's post-aggregation path (~line 3798) evaluates the
           // comprehension over the raw matched rows and then aggregates.
           const _aggField = planForGe.aggregate?.field
-          if (_aggField != null && _aggField !== '*' && /[\[\(]/.test(String(_aggField))) {
+          if (_aggField != null && _aggField !== '*' && /[\[\(\{]/.test(String(_aggField))) {
             delete planForGe.aggregate
           }
           // OPTIONAL MATCH binds variables (possibly null) that the graph
@@ -7310,17 +7342,35 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // `count([p = (n)-[:T]->() | p])`): the GE path cannot evaluate it, so
           // we evaluate the field Expression against each raw row's variable
           // bindings and count the non-null results.
-          const isExpressionField = field && /[\[\(]/.test(field)
+          const isExpressionField = field && /[\[\(\{]/.test(field)
           if (isNodeOrRelVar) {
             aggRow[aggAlias] = result.length
           } else if (isExpressionField) {
-            const nonNull = rawWithEdges.filter((rw: any) => {
-              const ctx: Record<string, unknown> = { ...(rw.props || rw) }
+            // Evaluate the expression field per raw row, inject the row's bound
+            // variables (from `__crossVarRows`) so `{name: n.list}` / `[n.x]`
+            // resolve, then count distinct non-null values when DISTINCT is set.
+            const cvrPerRow = rawWithEdges.map((rw: any) => {
+              const cvr = (rw && typeof rw === 'object' && rw.__crossVarRows && typeof rw.__crossVarRows === 'object') ? rw.__crossVarRows : {}
+              const ctx: Record<string, unknown> = { ...(rw?.props || rw || {}) }
+              for (const [k, v] of Object.entries(cvr)) if (v !== undefined) ctx[k] = v
               let v: unknown
               try { v = _evalBinary(field, ctx) } catch { v = undefined }
-              return v !== null && v !== undefined
+              return v
             })
-            aggRow[aggAlias] = nonNull.length
+            const nonNull = cvrPerRow.filter(v => v !== null && v !== undefined)
+            if (agg.distinct === true) {
+              const seen = new Set<string>()
+              const unique: unknown[] = []
+              for (const v of nonNull) {
+                const key = typeof v === 'object' && v !== null ? _stableKey(v) : String(v)
+                if (seen.has(key)) continue
+                seen.add(key)
+                unique.push(v)
+              }
+              aggRow[aggAlias] = unique.length
+            } else {
+              aggRow[aggAlias] = nonNull.length
+            }
           } else {
             const nonNull = result.filter(r => {
               const v = r[field]
