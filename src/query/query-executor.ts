@@ -8919,14 +8919,22 @@ export async function _executeQuery(
         // → evaluated per node via the expression engine.
         const rawField = agg.field ?? ''
         const aggIsExpr = rawField !== '*' && rawField !== '' && /[+\-*/%]/.test(rawField)
-        // Resolution key for the aggregated value: surface the full column
-        // expression (e.g. `count(n.num)`) when there is no explicit `AS` alias.
-        // The parser stores `alias` as the bare function name ("count") in that
-        // case, so use the explicit alias when it differs from the function name,
-        // otherwise fall back to the column expression.
-        const aggKey = (agg.alias && agg.alias !== agg.function)
-          ? agg.alias
-          : (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || rawField || agg.column || 'c')
+        // Resolution key for the aggregated value.  An explicit `AS` alias wins;
+        // otherwise surface the full column expression (e.g. `count(n.num)`).
+        //
+        // A WITH aggregate (`count(*) AS count`) records the user alias on
+        // `plan.with.aggregate.alias` (absent when there is no AS); a RETURN
+        // aggregate records the bare function name on `plan.aggregate.alias` even
+        // without an AS (e.g. `count(a) + 3`), so that value is NOT a reliable
+        // alias signal.  Prefer the WITH aggregate alias, then an explicit
+        // `AS` on the column text, and only then fall back to the column text.
+        const _withAggAlias = ((plan as any).with?.aggregate?.alias != null && (plan as any).with?.aggregate?.alias !== '')
+          ? (plan as any).with.aggregate.alias as string
+          : undefined
+        const _asMatch = (agg.column || '').match(/\s+AS\s+([A-Za-z_]\w*)\s*$/i)
+        const aggKey = _withAggAlias
+          ?? (_asMatch ? _asMatch[1] : undefined)
+          ?? (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || rawField || agg.column || 'c')
         // Evaluate the aggregate value for a single node within the group.
         const _aggVal = (n: Record<string, unknown>): number => {
           if (aggIsExpr) {
@@ -8993,7 +9001,25 @@ export async function _executeQuery(
       // ORDER BY / SKIP / LIMIT) is applied, matching the normal return path at
       // the bottom of _executeViaGraphEngine.  Without this the early return
       // above silently drops the HAVING filter.
-      return _postProcessResults(result, plan as any)
+      //
+      // The grouped rows carry BOTH the grouping-key columns and the aggregate
+      // column.  When the RETURN does not select a grouping key (e.g.
+      // `WITH a.num AS a, count(*) AS count RETURN count` emits `a` and `count`
+      // but selects only `count`), drop the unselected grouping-key columns so
+      // the projection matches the RETURN exactly.
+      let projected = result
+      const _rc = (plan as any).returnColumns as string[] | undefined
+      if (_rc?.length) {
+        const keep = new Set<string>(_rc.filter((c: string) => c !== '*'))
+        projected = result.map((row: Record<string, unknown>) => {
+          const out: Record<string, unknown> = {}
+          for (const k of Object.keys(row)) {
+            if (keep.has(k)) out[k] = row[k]
+          }
+          return out
+        })
+      }
+      return _postProcessResults(projected, plan as any)
     }
   }
   const isDML = ['CREATE', 'MERGE', 'DELETE', 'SET', 'REMOVE'].includes(plan.type || '')
