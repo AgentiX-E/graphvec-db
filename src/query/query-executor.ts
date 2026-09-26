@@ -6993,7 +6993,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // `rawWithEdges`, silently restoring the un-filtered rows.
     const _withAggCols = (plan.with?.columns || []).filter(c =>
       typeof c?.expression === 'string' && /^\s*(count|sum|avg|max|min|collect)\s*\(/i.test(c.expression))
-    const _isHaving = !!(plan.aggregate && plan.with?.columns?.length && plan.whereBody && _withAggCols.length)
+    // HAVING is a WHERE that follows an aggregation and filters on the *folded*
+    // aggregate alias (`WITH count(*) AS cnt WHERE cnt > 100` references the
+    // alias `cnt`).  A merely-aggregating query whose WHERE sits in the MATCH
+    // stage (`MATCH ... WHERE other <> a WITH ... min(length(p)) AS len`) is NOT
+    // a HAVING — its WHERE references MATCH variables (`other`, `a`), not the
+    // aggregate alias (`len`).  Only treat it as HAVING when the WHERE body
+    // actually references the WITH aggregate alias.
+    const _withAggAlias = (plan as any)?.with?.aggregate?.alias
+    const _whereRefsAggAlias = !!(plan.whereBody && _withAggAlias &&
+      new RegExp(`\\b${String(_withAggAlias).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(plan.whereBody))
+    const _isHaving = !!(plan.aggregate && plan.with?.columns?.length && plan.whereBody && _withAggCols.length && _whereRefsAggAlias)
     // For DML plans (SET/DELETE/REMOVE), a WHERE predicate is already applied
     // by the graph engine *before* the side effects run.  Re-evaluating the
     // same predicate here against the mutated row would wrongly drop it (e.g.
@@ -7029,8 +7039,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 const tv = rawWithEdges[ri].__crossVarRows[tAlias]
                 // Only repair labels GE actually defaulted (never overwrite an
                 // already-correct label, e.g. relationship-variable queries where
-                // the target node label is resolved directly).
-                if (tv._label === 'Default' || tv._label === ':Default' || tv._label === undefined) {
+                // the target node label is resolved directly).  Also guard
+                // against a WITH projection that has already overwritten the
+                // target variable with a scalar (e.g. `other.name AS other`),
+                // in which case `tv` is a primitive and carries no `_label`.
+                if (tv && typeof tv === 'object' && (tv._label === 'Default' || tv._label === ':Default' || tv._label === undefined)) {
                   tv._label = dstLabel
                   if (tv.props) tv.props._label = dstLabel
                 }
@@ -7048,7 +7061,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             const tAlias = step.targetAlias
             if (tAlias && rawResult[ri][tAlias]) {
               const tv = rawResult[ri][tAlias] as any
-              if (tv._label === 'Default' || tv._label === ':Default' || tv._label === undefined) {
+              if (tv && typeof tv === 'object' && (tv._label === 'Default' || tv._label === ':Default' || tv._label === undefined)) {
                 tv._label = dstLabel
                 if (tv.props) tv.props._label = dstLabel
               }
@@ -7065,9 +7078,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 for (const step of (plan.steps || [])) {
                   const tAlias = step.targetAlias
                   if (tAlias && rawWithEdges[ri].__crossVarRows[tAlias]) {
-                    rawWithEdges[ri].__crossVarRows[tAlias]._label = dstLabel
-                    if (rawWithEdges[ri].__crossVarRows[tAlias].props) {
-                      rawWithEdges[ri].__crossVarRows[tAlias].props._label = dstLabel
+                    const tv2 = rawWithEdges[ri].__crossVarRows[tAlias]
+                    if (tv2 && typeof tv2 === 'object') {
+                      tv2._label = dstLabel
+                      if (tv2.props) tv2.props._label = dstLabel
                     }
                   }
                 }
