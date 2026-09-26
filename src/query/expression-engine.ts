@@ -3694,11 +3694,27 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue
   return _evalMulDiv(t, row)
 }
 
+/** True when a value is an integer operand for Cypher's integer division rule.
+ *  A bare `number` without a fractional part, or a `bigint`, is an integer;
+ *  a `{ __float: n }` marker (from `toFloat` / a float literal) is a float, so
+ *  it must NOT truncate.  `count(...)` returns a plain integer, so
+ *  `count(n) / 60` becomes integer division (`Math.trunc`), while
+ *  `1.5 / 2` and `toFloat(6) / 4` stay floating-point. */
+function _isIntOperand(v: ExprValue): boolean {
+  if (typeof v === 'bigint') return true
+  if (typeof v === 'number') return Number.isInteger(v)
+  if (v && typeof v === 'object' && !Array.isArray(v) && '__float' in (v as Record<string, unknown>)) return false
+  // Strings that carry an integral numeric value are still integer operands
+  // (e.g. a property stringified as "6").
+  if (typeof v === 'string') { const n = Number(v); return !isNaN(n) && Number.isInteger(n) }
+  return false
+}
+
 export function _evalMulDiv(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
     if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, right); if (_isDurationStr(right) && typeof left === 'number') return _durationScale(right, left); return Number(left) * Number(right) }
-    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, 1 / right); const nl = Number(left), nr = Number(right); if (nr === 0) { if (nl === 0) return NaN; return nl > 0 ? Infinity : -Infinity } const q = nl / nr; return Number.isInteger(q) ? { __float: q } : q }
+    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, 1 / right); const nl = Number(left), nr = Number(right); if (nr === 0) { if (nl === 0) return NaN; return nl > 0 ? Infinity : -Infinity } const q = nl / nr; return _isIntOperand(left) && _isIntOperand(right) ? Math.trunc(q) : q }
     if (t[i] === '%' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; return Number(left) % Number(right) }
   }
   return _evalExp(t, row)

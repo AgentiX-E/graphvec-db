@@ -4719,8 +4719,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     const alreadyBound = cvr && (cvr.__edgeLabel || cvr._type || cvr._label)
                     if (!alreadyBound) r.__crossVarRows[evn] = edgeInfo
                   }
-                  // 无条件注入到 'r'（最常用的边变量名），供 whereBody type(r) 等场景
-                  if (!r.__crossVarRows['r']) r.__crossVarRows['r'] = edgeInfo
+                  // Inject the bare `r` relationship variable only when the
+                  // query actually references it (e.g. `type(r)` / `RETURN r`);
+                  // an anonymous edge (`--`) must NOT leak a spurious `r` into
+                  // `__crossVarRows`, otherwise `RETURN *` would emit a `r`
+                  // column the query never bound (Return7 [1]).
+                  const _refsR = query ? /\btype\s*\(\s*r\s*\)|RETURN(?:\s+DISTINCT)?\s+r\b|[^.\w]r\./i.test(query) : false
+                  if (_refsR && !r.__crossVarRows['r']) r.__crossVarRows['r'] = edgeInfo
                   // DEBUG check
                                   }
               }

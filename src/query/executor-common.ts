@@ -165,6 +165,16 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
             result[vn] = clean
           }
         }
+        // A path variable (`MATCH p = (a)-->(b) RETURN *`) lives under
+        // `r.props[p]` as `{ __path, __pathEdges }`, not inside `__crossVarRows`.
+        // Surface it so `RETURN *` emits the `p` column the query actually bound.
+        const _pv = (plan as any).pathVar as string | undefined
+        if (_pv && r.props && typeof r.props === 'object' && (_pv in r.props)) {
+          const pv = (r.props as Record<string, unknown>)[_pv]
+          if (pv && typeof pv === 'object' && ('__path' in pv || '__pathEdges' in pv)) {
+            result[_pv] = pv
+          }
+        }
         if (Object.keys(result).length) return result
       }
       // Fallback: legacy __targetPropsMap / source-node formatting (single-step
