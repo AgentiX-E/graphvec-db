@@ -4847,6 +4847,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if ((_withHasComprehensionCol || _withHasMapOrListCol) && planForGe.aggregate != null) {
             delete planForGe.aggregate
           }
+          // A WITH clause carrying a non-aggregate WHERE filter must run BEFORE
+          // the RETURN aggregate folds the rows (`WITH n WHERE n.num = 42
+          // RETURN count(*)`).  GE folds `plan.aggregate` over the matched rows
+          // without ever applying the WITH filter, so drop the aggregate here
+          // and let QE's post-aggregation path apply the WITH filter to the raw
+          // matched rows and only then fold `count(*)`.
+          const _withHasPlainFilter = (planForGe.with?.filters || []).some((f: any) => f && f.property !== '__label' && f.property !== '_label')
+          if (_withHasPlainFilter && planForGe.aggregate != null) {
+            delete planForGe.aggregate
+          }
           // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
           delete planForGe.skip; delete planForGe.limit
           return _geExecQueryPlan(ge, planForGe)
