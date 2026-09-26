@@ -5109,6 +5109,43 @@ export function _lastTopLevelComma(s: string): number {
   return last
 }
 
+/**
+ * Locate an aggregate call nested inside a non-aggregate expression, e.g.
+ * `size(collect(a))`, `$age + avg(person.age) - 1000`, or a map literal whose
+ * value is an aggregate (`{kids: collect(child.name)}`).  `_parseAggregate`
+ * only recognises a *top-level* aggregate call (`^func(...)$`), so these wrapped
+ * forms would otherwise be treated as ordinary scalar columns and the aggregate
+ * evaluated per-row instead of folded across the row set.
+ *
+ * Returns the first aggregate call found (scanning left to right), with its
+ * function name and the field expression inside its (balanced) parentheses,
+ * or null when the expression contains no aggregate call.
+ */
+export function _parseNestedAggregate(expr: string): { fn: string; field: string; distinct: boolean } | null {
+  const re = /\b(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(/i
+  const m = re.exec(expr)
+  if (!m) return null
+  const fn = m[1].toLowerCase()
+  // `m.index` points at the function name; the opening paren follows it.
+  const openIdx = expr.indexOf('(', m.index + m[0].length - 1)
+  if (openIdx < 0) return null
+  // Match the call's closing parenthesis by tracking depth.
+  let depth = 0
+  let closeIdx = -1
+  for (let i = openIdx; i < expr.length; i++) {
+    const c = expr[i]
+    if (c === '(') depth++
+    else if (c === ')') { depth--; if (depth === 0) { closeIdx = i; break } }
+  }
+  if (closeIdx < 0) return null
+  let rawField = expr.slice(openIdx + 1, closeIdx).trim()
+  let distinct = false
+  const dm = rawField.match(/^DISTINCT\s+/i)
+  if (dm) { distinct = true; rawField = rawField.slice(dm[0].length).trim() }
+  if (!rawField) return null
+  return { fn, field: rawField, distinct }
+}
+
 /** 提取列列表中的聚合列和 GROUP BY 列 */
 export function _extractAggColumns(columns: string[]): { aggCols: AggColumnInfo[]; groupByCols: string[] } {
   const aggCols: AggColumnInfo[] = []

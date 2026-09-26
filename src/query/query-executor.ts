@@ -4830,6 +4830,19 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (_aggField != null && _aggField !== '*' && /[\[\(\{]/.test(String(_aggField))) {
             delete planForGe.aggregate
           }
+          // Nested aggregate (the aggregate call is wrapped in an outer
+          // function/expression, e.g. `size(collect(a))`, `$age + avg(x) - 1`):
+          // GE folds the inner aggregate but has no notion of the outer
+          // expression, so it returns the raw folded list without applying
+          // `size(...)`/the arithmetic.  Detect a column whose text is NOT a
+          // pure `^func(...)$` call (the aggregate name is not the column's
+          // leading token) and drop the aggregate so QE's single-aggregate path
+          // folds the inner value and applies the outer expression itself.
+          const _aggCol = planForGe.aggregate?.column
+          const _aggFn = planForGe.aggregate?.function || ''
+          if (_aggCol != null && _aggFn && !new RegExp(`^${_aggFn}\\s*\\(`, 'i').test(String(_aggCol).trim())) {
+            delete planForGe.aggregate
+          }
           // OPTIONAL MATCH binds variables (possibly null) that the graph
           // engine's aggregation path never sees — GE runs before the optional
           // match is resolved, so a `collect(x)` over an OPTIONAL MATCH target
@@ -4907,6 +4920,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const scanPlan = JSON.parse(JSON.stringify({ ...plan, scanLabel: null, callProcedure: undefined }, _bigintReplacer), _bigintReviver)
       delete scanPlan.callProcedure
       delete scanPlan.skip; delete scanPlan.limit
+      // A nested aggregate (`size(collect(a))`) folds the inner aggregate but
+      // leaves the outer expression unapplied in the graph engine (it returns
+      // the raw folded list).  Drop the aggregate so QE's single-aggregate path
+      // applies the outer expression itself — mirroring the useEdgeWalk branch.
+      const _naCol = scanPlan.aggregate?.column
+      const _naFn = scanPlan.aggregate?.function || ''
+      if (_naCol != null && _naFn && !new RegExp(`^${_naFn}\\s*\\(`, 'i').test(String(_naCol).trim())) {
+        delete scanPlan.aggregate
+      }
       rawRecords = _geExecQueryPlan(ge, scanPlan) as any[]
     }
     let records = rawRecords
@@ -7316,7 +7338,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         ?? (agg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || agg.field || agg.column || 'c')
       const aggAlias = _realAlias
       const colMatch = (agg.column || '').match(/^\w+\(\s*(?:DISTINCT\s+)?(.+?)\s*\)(?:\s+AS\s+\w+)?$/i)
-      const field = colMatch ? colMatch[1] : (agg.field || '*')
+      // Prefer the parser-resolved `agg.field` (extractReturn resolves a nested
+      // aggregate like `size(collect(a))` to its inner argument `a`); only fall
+      // back to splitting `column` when the field was left unset (the pure-call
+      // case `collect(a)`).  Without this, `size(collect(a))` would re-split on
+      // the outer `size(` and treat `collect(a)` as the field.
+      const field = (agg.field !== undefined && agg.field !== '') ? agg.field : (colMatch ? colMatch[1] : (agg.field || '*'))
 
       const aggRow: QueryRow = {}
       // The graph engine already folded the aggregate into a single synthetic
@@ -7329,6 +7356,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const _geAggRow = (rawWithEdges?.length === 1 && rawWithEdges[0]?.props && typeof rawWithEdges[0].props === 'object' && _geAggKey in rawWithEdges[0].props)
         ? rawWithEdges[0].props[_geAggKey]
         : undefined
+
       if (_geAggRow !== undefined && !(aggFn === 'percentiledisc' || aggFn === 'percentilecont')) {
         aggRow[aggAlias] = _geAggRow
       } else if (aggFn === 'count') {
@@ -7385,12 +7413,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         aggRow[aggAlias] = result[0]?.[aggAlias] ?? 0
       } else if (aggFn === 'collect') {
         // collect(value) — fold every non-null `value` across the expanded rows
-        // into a list (deduplicated when DISTINCT).  `result` here is the set of
-        // OPTIONAL MATCH-expanded rows, so `collect(f.num)` over three `f`
-        // bindings yields `[42, 43, 44]` and over an all-null binding yields `[]`.
+        // into a list (deduplicated when DISTINCT).
         const collected: unknown[] = []
         const seen = new Set<unknown>()
-        for (const r of result) {
+        for (let ri = 0; ri < result.length; ri++) {
+          const r = result[ri]
+          const rw = (rawWithEdges as any[])?.[ri] as any
           let v: unknown
           if (field === '*' || field === '') {
             v = r
@@ -7398,8 +7426,25 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             const [varName, propName] = field.split('.')
             const obj = r[varName]
             v = (obj && typeof obj === 'object') ? (obj as any)[propName] : undefined
+            // fall back to the raw cross-join row's variable binding when the
+            // projected row does not surface `varName` as a top-level key
+            if (v === null || v === undefined) {
+              const cvr = rw && typeof rw.__crossVarRows === 'object' ? rw.__crossVarRows : null
+              const bound = cvr?.[varName]
+              if (bound && typeof bound === 'object') v = (bound as any)[propName]
+            }
           } else {
             v = r[field]
+            // The projected `result` row keys are the RETURN column names, which
+            // may differ from the aggregate's field variable (e.g. a nested
+            // `size(collect(a))` projects the column `size(collect(a))`, not
+            // `a`).  Resolve a bare field against the raw row's variable bindings
+            // (`__crossVarRows.a`) so a MATCH variable folds correctly.
+            if (v === null || v === undefined) {
+              const cvr = rw && typeof rw.__crossVarRows === 'object' ? rw.__crossVarRows : null
+              if (cvr && field in cvr) v = cvr[field]
+              else if (rw && field in rw) v = rw[field]
+            }
           }
           if (v === null || v === undefined) continue
           if (agg.distinct === true) {

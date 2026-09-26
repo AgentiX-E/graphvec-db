@@ -6,7 +6,7 @@
  */
 
 import { parseCypherToPlan } from './ast-to-plan-v2'
-import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver, _parseCommaList } from './expression-engine'
+import { _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _parseNestedAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver, _parseCommaList } from './expression-engine'
 import { executeVarLenPath } from './var-length-path'
 import type { QueryPlan, FilterClause, TraverseStep, EdgeStepAST, PatternAST, WhereClauseAST, ColumnAST, ExpressionAST, PrimaryAST, AggregateClause } from './query-types'
 import type { OverGraphConfig } from '../types'
@@ -698,9 +698,17 @@ function _parseQueryImpl(query: string): QueryPlan {
     }
     // GE 兼容：把 column 中的函数名也设为 alias（GE 用 alias 做 props key）
     // count(*) → alias = 'count'，sum(n.age) → alias = 'sum'
+    // Only bind the alias to the function name when the column's leading call
+    // is the aggregate itself (a *pure* aggregate call).  A nested aggregate
+    // (`size(collect(a))`) starts with the outer function `size`, whose name is
+    // NOT the aggregate's alias — leaving `size` as the alias would corrupt the
+    // result key and skip the outer-expression application, so the alias is left
+    // undefined and the executor derives it from the full column text.
     if (!agg.alias && agg.column) {
       const fnMatch = agg.column.match(/^(\w+)\(/i)
-      if (fnMatch) agg.alias = fnMatch[1]
+      if (fnMatch && fnMatch[1].toLowerCase() === String(agg.function).toLowerCase()) {
+        agg.alias = fnMatch[1]
+      }
     }
   }
   // WITH 子句中的聚合

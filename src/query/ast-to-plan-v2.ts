@@ -11,6 +11,7 @@ import {
   CypherParser,
   CypherListener,
 } from '@neo4j-cypher/antlr4'
+import { _parseNestedAggregate } from './expression-engine'
 
 /**
  * Splits a comma-separated list of values, handling nested brackets.
@@ -1139,8 +1140,14 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
             function: ret.aggregate.function,
             column: ret.aggregate.column,
             type: ret.aggregate.function,
-            field: fnFieldMatch ? fnFieldMatch[2] : undefined,
-            distinct: fnFieldMatch ? !!fnFieldMatch[1] : false,
+            // A nested aggregate (`size(collect(a))`) is already resolved by
+            // extractReturn to the inner argument (`a`); only fall back to the
+            // top-level `^func(...)` field split when extractReturn left it
+            // unset (the pure-call case `count(n.name)`).
+            field: ret.aggregate.field !== undefined ? ret.aggregate.field
+              : (fnFieldMatch ? fnFieldMatch[2] : undefined),
+            distinct: ret.aggregate.distinct !== undefined ? !!ret.aggregate.distinct
+              : (fnFieldMatch ? !!fnFieldMatch[1] : false),
           }
           if (alias) agg.alias = alias
           plan.aggregate = agg
@@ -2139,6 +2146,20 @@ function extractReturn(returnCtx: any): ParsedReturn {
           if (!aggregate) aggregate = aggClause
           if (!aggregates) aggregates = []
           aggregates.push(aggClause)
+        } else {
+          // Aggregate is wrapped in an outer function/expression
+          // (`size(collect(a))`, `$age + avg(person.age) - 1000`): the top-level
+          // `^func(...)` probe above misses it because the column text does not
+          // start with the aggregate name.  Resolve the inner aggregate so the
+          // executor folds it across the row set and then applies the outer
+          // expression on top of the folded value.
+          const nested = _parseNestedAggregate(text)
+          if (nested) {
+            const aggClause: AggregateClause = { function: nested.fn, column: text, field: nested.field, distinct: nested.distinct || false }
+            if (!aggregate) aggregate = aggClause
+            if (!aggregates) aggregates = []
+            aggregates.push(aggClause)
+          }
         }
       }
       return

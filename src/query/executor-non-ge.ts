@@ -414,7 +414,15 @@ export async function _execNonGePaths(
   // pipeline.  Routing `MATCH (n) WITH n, n.num AS num DELETE n RETURN sum(num)`
   // here would evaluate `n.num` against the whole match array and throw
   // "Property access on non-map type".
-  const _aggIsCollect = !!(plan.aggregate && (plan.aggregate as any).function === 'collect')
+  // A *pure* collect projection (`RETURN collect(a)`, `RETURN collect(a) AS x`)
+  // folds to a list and must route through the unwind pipeline (GE cannot
+  // evaluate `collect`).  A *nested* aggregate (`size(collect(a))`) is NOT a
+  // pure list projection — the outer `size(...)` must wrap the folded list —
+  // so it is NOT a collect-only pipeline and must fall through to the main GE
+  // path whose single-aggregate branch applies the outer expression.
+  const _aggIsPureCollect = !!(plan.aggregate && (plan.aggregate as any).function === 'collect' &&
+    new RegExp(`^collect\\s*\\(`, 'i').test(String((plan.aggregate as any).column || '').trim()))
+  const _aggIsCollect = _aggIsPureCollect
   // UNWIND + CREATE/MERGE must materialize nodes via the graph engine (the
   // `_executeViaGraphEngine` createNodes expansion loop substitutes the unwind
   // variable into each created node's properties).  Routing it here would only
