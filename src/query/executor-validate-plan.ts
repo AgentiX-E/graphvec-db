@@ -330,6 +330,10 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         // then `(`)?  If so it is a function name, not a variable reference.
         const after = withoutAggs.slice(bm.index + name.length)
         if (/^[^()]*\(/.test(after)) continue
+        // A map-literal key (`{foo: ...}`) is a literal, not a variable: an
+        // identifier immediately followed (past optional whitespace) by `:` is
+        // a map key and must not be treated as an ambiguous group reference.
+        if (/^\s*:/.test(after)) continue
         // A named grouping key projected by another return column is legal.
         if (returnNamedKeys.has(name)) continue
         throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
