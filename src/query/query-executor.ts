@@ -4857,6 +4857,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (_withHasPlainFilter && planForGe.aggregate != null) {
             delete planForGe.aggregate
           }
+          // Multiple aggregate columns (`RETURN count(n), collect(n)`) cannot be
+          // folded by the graph engine, which only understands a single
+          // `plan.aggregate`.  Drop the aggregate so GE returns the raw matched
+          // rows and QE's multi-aggregate path folds every column itself.
+          if ((planForGe.aggregates?.length || 0) > 1 && planForGe.aggregate != null) {
+            delete planForGe.aggregate
+          }
           // skip/limit 由 QE 的 _postProcessResults 处理，GE 不应过滤
           delete planForGe.skip; delete planForGe.limit
           return _geExecQueryPlan(ge, planForGe)
@@ -7253,7 +7260,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
 
-    if (plan.aggregate && !plan.groupBy?.length && rawWithEdges?.length && !_withHasComprehensionCol) {
+    if (plan.aggregate && !((plan.aggregates?.length ?? 0) > 1) && !plan.groupBy?.length && rawWithEdges?.length && !_withHasComprehensionCol) {
       const agg = plan.aggregate as any
       const aggFn = (agg.function || agg.type || '').toLowerCase()
       // percentileDisc/percentileCont are computed inside the graph engine's
