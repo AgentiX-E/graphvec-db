@@ -23,6 +23,24 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   const queryForVarCheck = _stripListPredicates(query)
   _validateUndefinedVariables(queryForVarCheck, plan)
 
+  // ── SyntaxError: NoVariablesInScope ──
+  // `RETURN *` with nothing bound (e.g. `MATCH () RETURN *`) has no variable to
+  // project.  Any MATCH-bound variable (node/edge/path) or a WITH/UNWIND
+  // projection keeps at least one variable in scope, so only raise when the
+  // full scope is empty.
+  if (plan.returnColumns?.length === 0 && !plan.aggregate && /RETURN\s+(?:DISTINCT\s+)?\*\s*$/is.test(query)) {
+    const matchVars = extractMatchVariables(query)
+    const withVars: string[] = ((plan.with?.columns || []) as any[])
+      .map((c: any) => (c && typeof c === 'object' ? c.alias : c)).filter((a: any) => typeof a === 'string' && a && a !== '*')
+    const unwindVars: string[] = (() => {
+      const m = query.match(/UNWIND\s+.+?\s+AS\s+(\w+)/is)
+      return m ? [m[1]] : []
+    })()
+    if (matchVars.length === 0 && withVars.length === 0 && unwindVars.length === 0) {
+      throw Object.assign(new Error('SyntaxError: NoVariablesInScope'), { tckError: 'NoVariablesInScope' })
+    }
+  }
+
   // ── SyntaxError: UndefinedVariable (ORDER BY scope) ──
   // A WITH clause resets the variable scope, so ORDER BY may only reference
   // variables still in scope (or projection aliases of its own WITH).
