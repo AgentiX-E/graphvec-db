@@ -62,6 +62,7 @@ export interface WithClauseAST {
   limit?: number | undefined
   skip?: number | undefined
   aggregate?: AggregateClause
+  aggregates?: AggregateClause[]
 }
 
 export interface CreateClauseAST {
@@ -279,6 +280,10 @@ export interface QueryPlan {
     limit: number | undefined
     skip: number | undefined
     aggregate?: AggregateClause
+    /** All aggregate clauses in this WITH projection (supports several
+     *  aggregates, e.g. `WITH count(DISTINCT r1) AS H1, count(DISTINCT r2) AS H2`).
+     *  `aggregate` holds the first for backwards compatibility. */
+    aggregates?: AggregateClause[]
   }
   /** 多 WITH 管道：按出现顺序保留的每个 WITH 子句（含 WITH chain） */
   withChain?: Array<{
@@ -291,6 +296,7 @@ export interface QueryPlan {
     limit: number | undefined
     skip: number | undefined
     aggregate?: AggregateClause
+    aggregates?: AggregateClause[]
   }>
   /** 集合运算类型 */
   unionType?: 'union' | 'union_all' | 'intersect' | 'subtract'

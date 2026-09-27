@@ -86,6 +86,7 @@ export interface QueryPlan {
     limit: number | undefined
     skip: number | undefined
     aggregate?: AggregateClause
+    aggregates?: AggregateClause[]
   }
   unionType?: 'union' | 'union_all' | 'intersect' | 'subtract'
   rightPlan?: QueryPlan
@@ -2714,6 +2715,7 @@ function extractWith(withCtx: any): QueryPlan['with'] {
   let limit: number | undefined
   let skip: number | undefined
   let aggregate: AggregateClause | undefined
+  const aggregates: AggregateClause[] = []
 
   function walk(node: any) {
     if (!node || !node.children) return
@@ -2778,35 +2780,37 @@ function extractWith(withCtx: any): QueryPlan['with'] {
 
   walk(withCtx)
 
-  // Detect an aggregate call in the WITH projections (e.g.
-  // `WITH count(*) AS cnt`) and surface it as `with.aggregate` so the graph
-  // engine's `_executeWithClause` folds the rows instead of treating the call
-  // as a scalar projection over each row (which would yield count=1).
-  if (!aggregate) {
-    for (const col of columns) {
-      const expr = (col.expression || '').trim()
-      // Skip pure identifiers and list comprehensions.
-      if (!expr || !/^[a-zA-Z_]\w*\s*\(/.test(expr)) continue
-      if (expr.startsWith('[') && expr.includes('IN') && expr.includes('|')) continue
-      const m = expr.match(/^(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(\s*(DISTINCT\s+)?(.*?)\s*\)$/i)
-      if (m) {
-        // Strip the DISTINCT modifier from the value expression and surface it as
-        // a boolean so the graph engine can apply unique-count semantics without
-        // mis-parsing `DISTINCT n.name` as a property path.
-        aggregate = {
-          function: m[1].toLowerCase(),
-          type: m[1].toLowerCase(),
-          column: expr,
-          alias: col.alias || undefined,
-          field: m[3] || '*',
-          distinct: !!m[2],
-        }
-        break
+  // Detect aggregate calls in the WITH projections (e.g.
+  // `WITH count(*) AS cnt`, or several of them: `WITH count(DISTINCT r1) AS H1,
+  // count(DISTINCT r2) AS H2`) and surface them as `with.aggregates` (with
+  // `with.aggregate` holding the first for backwards compatibility) so the
+  // graph engine's `_executeWithClause` folds the rows per group instead of
+  // treating each call as a scalar projection over every row (which would
+  // yield count=1 and silently drop every aggregate after the first).
+  for (const col of columns) {
+    const expr = (col.expression || '').trim()
+    // Skip pure identifiers and list comprehensions.
+    if (!expr || !/^[a-zA-Z_]\w*\s*\(/.test(expr)) continue
+    if (expr.startsWith('[') && expr.includes('IN') && expr.includes('|')) continue
+    const m = expr.match(/^(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(\s*(DISTINCT\s+)?(.*?)\s*\)$/i)
+    if (m) {
+      // Strip the DISTINCT modifier from the value expression and surface it as
+      // a boolean so the graph engine can apply unique-count semantics without
+      // mis-parsing `DISTINCT n.name` as a property path.
+      const aggClause: AggregateClause = {
+        function: m[1].toLowerCase(),
+        type: m[1].toLowerCase(),
+        column: expr,
+        alias: col.alias || undefined,
+        field: m[3] || '*',
+        distinct: !!m[2],
       }
+      aggregates.push(aggClause)
+      if (!aggregate) aggregate = aggClause
     }
   }
 
-  return { columns, filters, orderBy, limit, skip, aggregate }
+  return { columns, filters, orderBy, limit, skip, aggregate, aggregates }
 }
 
 // ═══════════════════════════════════════════════════════════════

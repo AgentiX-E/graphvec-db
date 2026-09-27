@@ -1861,6 +1861,23 @@ async function _executeMultiMatchCrossJoin(
     }
   }
 
+  // ── WITH aggregate folding ──
+  // A WITH projection that carries one or more aggregates (e.g. `WITH me,
+  // count(DISTINCT r1) AS H1, count(DISTINCT r2) AS H2, you`) must fold the
+  // current row set into one row per group key (the non-aggregate columns)
+  // BEFORE the downstream RETURN expression references the aggregate aliases.
+  // The `_withCols` block above only performs pure projections/renames and
+  // deliberately skips aggregate columns, so without this fold `H1` / `H2` stay
+  // undefined and a later `sum(... / H1 ...)` evaluates to NaN → 0.  Reuse the
+  // shared `_groupAggregateWithRows` (expression-aware, multi-aggregate) helper.
+  {
+    const _withAggs = ((plan as any).with?.aggregates) || ((plan as any).with?.aggregate ? [(plan as any).with.aggregate] : [])
+    if (_withAggs.length && filtered.length) {
+      const _wcSeg = { ...(plan.with as any), columns: plan.with?.columns }
+      filtered = _groupAggregateWithRows(filtered as any, _wcSeg as any, allNodes)
+    }
+  }
+
   // ── WHERE predicate filtering ──
   // The cross-join path above applies `whereBody` but not the structured
   // `plan.filters` (property predicates like `MATCH … WHERE a.id = 1`).  Apply
