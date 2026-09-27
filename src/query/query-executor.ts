@@ -2133,6 +2133,24 @@ async function _executeMultiMatchCrossJoin(
       if (field === 'count' || field === '*') return row
       return owner
     }
+    // Apply an outer expression over a folded aggregate scalar.  `RETURN {name:
+    // count(b)} AS baz` folds `count(b)` to a scalar but must re-wrap it in the
+    // literal map (`{name: 1}`).  When the aggregate column text is not a plain
+    // `func(field)` call, substitute the folded value into the column expression
+    // and evaluate it against the group's first row (which carries `a`/`b`).
+    const _applyOuterExpr = (foldVal: unknown, row: Record<string, unknown>): unknown => {
+      // The aggregate *expression* is everything before the `AS alias`.
+      const colText = (agg?.column || '').split(/\s+AS\s+/i)[0].trim()
+      if (!colText || !aggFn) return foldVal
+      // Pure aggregate call (`count(b)`, `count(*)`) has no outer expression.
+      if (new RegExp(`^${aggFn}\\s*\\(`, 'i').test(colText)) return foldVal
+      // Otherwise wrap/substitute: replace the inner `func(field)` (or `func(*)`)
+      // with the folded value, then evaluate the remaining expression.
+      const fieldEsc = (field === '*' ? '\\*' : (field || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      const innerCall = new RegExp(`${aggFn}\\s*\\(\\s*${fieldEsc}\\s*\\)`, 'i')
+      const substituted = colText.replace(innerCall, JSON.stringify(foldVal))
+      return _evaluateExpression(substituted, row)
+    }
     // Fold an aggregate over a single group of rows, returning its scalar value.
     const _foldGroup = (groupRows: Array<Record<string, unknown>>): unknown => {
       const values = groupRows.map(rowValue)
@@ -2186,6 +2204,26 @@ async function _executeMultiMatchCrossJoin(
       for (const wc of ((plan as any).with?.columns || []) as Array<{ expression: unknown; alias?: string | null }>) {
         if (wc.alias && typeof wc.expression === 'string') _withAliasToExpr.set(wc.alias, wc.expression)
       }
+      // Grouping keys may name RETURN expression columns (`RETURN coalesce(a.num,
+      // b.num) AS foo, b.num AS bar, count(*)`) whose alias (`foo` / `bar`) does
+      // not exist as a literal key on the cross-joined row — the row carries only
+      // the bound variables (`a`, `b`).  Build an alias → expression map so the
+      // grouping loop evaluates the expression instead of reading a missing key.
+      const returnExprCols = ((plan as any).expressionColumns || []) as Array<{ expression: unknown; alias?: string | null }>
+      const _groupKeyExpr = new Map<string, string>()
+      for (const ec of returnExprCols) {
+        if (ec.alias && typeof ec.expression === 'string') _groupKeyExpr.set(ec.alias, ec.expression)
+      }
+      // Resolve the value of a grouping key against a cross-joined row: a WITH
+      // alias → its source expression; a RETURN expression column alias → its
+      // expression; otherwise read the key directly off the row.
+      const _keyVal = (gb: string, row: Record<string, unknown>): unknown => {
+        const wexpr = _withAliasToExpr.get(gb)
+        if (wexpr) return _evaluateExpression(wexpr, row)
+        const rExpr = _groupKeyExpr.get(gb)
+        if (rExpr) return _evaluateExpression(rExpr, row)
+        return row[_keyVar(gb)]
+      }
       const _keyVar = (gb: string): string => _withAliasToExpr.get(gb) || gb
       const _keyOf = (v: unknown): string => {
         if (v == null) return '__NULL__'
@@ -2200,7 +2238,7 @@ async function _executeMultiMatchCrossJoin(
       }
       const groups = new Map<string, Array<Record<string, unknown>>>()
       for (const row of filtered) {
-        const key = groupByCols.map(gb => _keyOf(row[_keyVar(gb)])).join('||')
+        const key = groupByCols.map(gb => _keyOf(_keyVal(gb, row))).join('||')
         if (!groups.has(key)) groups.set(key, [])
         groups.get(key)!.push(row)
       }
@@ -2210,21 +2248,24 @@ async function _executeMultiMatchCrossJoin(
       // mirroring the non-aggregate branch below.  Without this the grouped result
       // carries only the grouping key + aggregate alias and the downstream
       // comparison sees `rel` as null.
-      const returnExprCols = ((plan as any).expressionColumns || []) as Array<{ expression: unknown; alias?: string | null }>
       for (const [, grp] of groups) {
         const first = grp[0]
         const r: QueryRow = {}
-        for (const gb of groupByCols) r[gb] = first[_keyVar(gb)]
-        r[alias] = _foldGroup(grp)
+        for (const gb of groupByCols) r[gb] = _keyVal(gb, first)
+        r[alias] = _applyOuterExpr(_foldGroup(grp), first)
         for (const ec of returnExprCols) {
-          if (ec.alias && ec.alias !== alias) {
+          // Skip the grouping keys (already resolved via `_keyVal` against the
+          // original cross-joined row, which carries the bound variables `a`/`b`).
+          // Re-evaluating them against `{...r}` (which has only the projected
+          // aliases, not `a`/`b`) yields null and overwrites the correct value.
+          if (ec.alias && ec.alias !== alias && !groupByCols.includes(ec.alias)) {
             r[ec.alias] = _evaluateExpression(ec.expression as any, { ...r })
           }
         }
         out.push(r)
       }
     } else {
-      out = [{ [alias]: _foldGroup(filtered) }]
+      out = [{ [alias]: _applyOuterExpr(_foldGroup(filtered), filtered[0] || {}) }]
     }
   } else {
     // Expression columns (e.g. `p1 = p2`).
