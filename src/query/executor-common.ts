@@ -84,8 +84,6 @@ function _deepStripInternal(obj: unknown): unknown {
 
 function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
   const row: QueryRow = {}
-  // expressionColumns 序号索引（用于拆解后的 returnColumns 列变量恢复）
-  let _ecColIdx = 0
 
   // GE 返回格式：{ props: { _label, _alias, name, p, ... } }
   // 过滤内部属性（以 _ 开头）以保持 TCK 兼容性，避免出现 _alias 等内部字段
@@ -327,6 +325,17 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
         }
         } // if (isFnCall || isBinaryExpr)
       } // if (needsEval)
+      // `needsEval` is false when `rowVal` already holds a pre-computed value
+      // (an aggregate alias already folded by the executor, a boolean, number,
+      // or object).  Use it directly rather than falling through to the
+      // `_ecColIdx`-based property-recovery below, which assumes every column
+      // maps positionally onto `expressionColumns` and would mis-bind an
+      // aggregate alias such as `others` to an unrelated entry (`a.name`),
+      // producing a wrong value like `'a'`.
+      if (!needsEval && rowVal !== undefined && rowVal !== null) {
+        result[rc] = rowVal
+        continue
+      }
     } // expression column eval
 
         // ── 解析 "a.id" → { variable: "a", property: "id" } ──
@@ -384,9 +393,16 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
     // 必须在 (rc in row) 之前执行，防止 id 等拆后属性误从 row 取值
     let resolved = false
     if (plan.expressionColumns?.length) {
-      const ecIdx = _ecColIdx++
-      if (ecIdx < plan.expressionColumns.length) {
-        const ec = plan.expressionColumns[ecIdx]
+      // Match the current column against `expressionColumns` by its alias (`rc`)
+      // rather than by a positional cursor.  A positional `_ecColIdx` breaks
+      // whenever an earlier column short-circuits (e.g. an aggregate alias is
+      // already pre-computed), which would mis-bind `others`/`len` to an
+      // unrelated `expressionColumns` entry (`a.name`) and emit a wrong value.
+      const aliasCount = (plan.returnColumns || []).filter(c => c === rc).length
+      const ec = aliasCount <= 1
+        ? (plan.expressionColumns as any[]).find((e: any) => (e.alias || e.expression) === rc)
+        : (plan.expressionColumns as any[]).find((e: any) => e.expression === rc || e.alias === rc)
+      if (ec) {
         const origExpr = ec.expression || ''
         const propMatch2 = origExpr.match(/^(\w+)\.(\w+)$/)
         if (propMatch2 && r.__crossVarRows) {
@@ -397,7 +413,6 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           // otherwise use origExpr (e.g. "a.id") to preserve multi-variable column distinction.
           // When the same alias appears multiple times in returnColumns (e.g. RETURN a.id, b.id
           // both produce "id"), fall back to origExpr to avoid key collisions.
-          const aliasCount = (plan.returnColumns || []).filter(c => c === rc).length
           const key = (ec.alias && ec.alias !== ec.expression && aliasCount <= 1) ? rc : origExpr
           if (cvrNode && typeof cvrNode === 'object' && property in cvrNode) {
             result[key] = (cvrNode as Record<string, unknown>)[property]

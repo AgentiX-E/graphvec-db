@@ -2318,9 +2318,12 @@ function _groupAggregateWithRows(
 ): Array<Record<string, unknown>> {
   const cols = wcSeg.columns || []
   // Split the segment columns into group-by keys (non-aggregate) and aggregates.
-  const groupByCols: string[] = []
+  // A group-by key keeps its *full expression* (`a.name`, `other.name`) rather
+  // than a destructured bare name, so grouping can evaluate the expression
+  // against each row's bound variables — `a.name` groups by node `a`'s property
+  // `name`, not by a (nonexistent) top-level key `name`.
+  const groupByCols: Array<{ expr: string; alias: string | null }> = []
   const aggCols: Array<{ fn: string; field: string; prop: string; distinct?: boolean; alias?: string | null }> = []
-  const groupByAlias: Record<string, string> = {} // alias → underlying column name
   for (const wc of cols) {
     const expr = typeof wc.expression === 'string' ? wc.expression : ''
     if (!expr) continue
@@ -2328,12 +2331,9 @@ function _groupAggregateWithRows(
     if (parsed) {
       aggCols.push({ fn: parsed.fn, field: parsed.field, prop: parsed.prop, distinct: parsed.distinct, alias: wc.alias || parsed.alias })
     } else {
-      // Non-aggregate column: group-by key.  `otherPerson` and `otherPerson AS
-      // x` both group by the underlying variable `otherPerson`.
-      const bare = expr.includes('.') ? expr.split('.').pop()! : expr.trim()
+      const bare = expr.trim()
       const name = (bare.match(/^[A-Za-z_]\w*/) || [bare])[0]
-      groupByCols.push(name)
-      if (wc.alias) groupByAlias[wc.alias] = name
+      groupByCols.push({ expr: bare, alias: wc.alias || (name === bare ? null : name) })
     }
   }
   if (!aggCols.length) return rows
@@ -2362,10 +2362,25 @@ function _groupAggregateWithRows(
   }
 
   const flatRows = rows.map(r => flatten(r))
+  // Evaluate a group-by expression (`a.name`, `other.name`, or a bare `other`)
+  // against a flattened row.  A dotted expression reads the property off the
+  // bound node object (`flat.a.name`); a bare variable reads the binding itself.
+  const _groupValue = (expr: string, flat: Record<string, unknown>): unknown => {
+    const trimmed = expr.trim()
+    if (trimmed.includes('.')) {
+      const [owner, ...rest] = trimmed.split('.')
+      const o = flat[owner]
+      if (o && typeof o === 'object' && !Array.isArray(o)) {
+        return (o as Record<string, unknown>)[rest.join('.')]
+      }
+      return undefined
+    }
+    return flat[trimmed]
+  }
   // Group-by values may be node objects; build a stable string key via _id/_alias.
   const keyOfPlain = (flat: Record<string, unknown>): string =>
     groupByCols.map(gc => {
-      const v = flat[gc]
+      const v = _groupValue(gc.expr, flat)
       if (v && typeof v === 'object') {
         const o = v as any
         return `${o.__relId ?? o._id ?? o._alias ?? JSON.stringify(v)}`
@@ -2386,27 +2401,66 @@ function _groupAggregateWithRows(
   for (const k of order) {
     const { rows: gRows } = groups.get(k)!
     const out: Record<string, unknown> = {}
-    // Rebind group-by columns (use the first row's actual value).
-    for (const gc of groupByCols) out[gc] = gRows[0][gc]
-    for (const alias of Object.keys(groupByAlias)) out[alias] = out[groupByAlias[alias]]
-    // Compute each aggregate over the group.
+    // Rebind group-by columns by evaluating their expression on the first row
+    // (`a.name` → `flat.a.name`), and expose the value under the column alias.
+    for (const gc of groupByCols) {
+      const v = _groupValue(gc.expr, gRows[0])
+      const key = gc.alias || gc.expr
+      out[key] = v
+    }
+    // Compute each aggregate over the group.  An aggregate field may be a bare
+    // variable (`other`), a property access (`r.times`), a `length(x)` call
+    // over a path variable (`length(p)` → the path's hop count), or `*`.
     for (const ac of aggCols) {
       let values: unknown[]
+      const field = ac.field
+      const lenMatch = typeof field === 'string' ? field.match(/^length\s*\(\s*([A-Za-z_]\w*)\s*\)$/i) : null
+      const propMatch = typeof field === 'string' ? field.match(/^([A-Za-z_]\w*)\.(.+)$/) : null
       if (ac.prop === '*') {
         values = gRows.map(() => true)
+      } else if (lenMatch) {
+        // `length(p)` → each row's path-object hop count (number of edges).
+        const pv = lenMatch[1]
+        values = gRows.map(r => {
+          const p = r[pv] as any
+          if (p && typeof p === 'object') {
+            if (Array.isArray(p.__pathEdges)) return p.__pathEdges.length
+            if (typeof p.length === 'number') return p.length
+            if (Array.isArray(p.__path)) return Math.max(0, p.__path.length - 1)
+          }
+          return undefined
+        }).filter(v => v !== undefined && v !== null)
+      } else if (propMatch) {
+        const owner = propMatch[1]
+        const prop = propMatch[2]
+        values = gRows.map(r => {
+          const o = r[owner] as any
+          return o && typeof o === 'object' ? o[prop] : undefined
+        }).filter(v => v !== undefined && v !== null)
       } else {
         values = gRows.map(r => r[ac.prop]).filter(v => v !== undefined && v !== null)
-        if (ac.distinct) values = [...new Set(values)]
       }
+      if (ac.distinct) values = [...new Set(values)]
       const key = ac.alias || ac.fn.toLowerCase()
       out[key] = _computeAggregate(ac.fn, values, (ac as any).pctArg)
     }
     // Re-shape into the raw record form the downstream pipeline expects: expose
     // the projection keys both at the top level and in props/__crossVarRows so
-    // later WHERE / WITH segments can resolve them.
+    // later WHERE / WITH segments can resolve them.  Crucially, *also* preserve
+    // the first row's original node/path bindings (`a`, `other`, `p`) in
+    // `__crossVarRows` so a subsequent MATCH-stage filter (`WHERE other <> a`)
+    // or RETURN (`collect(other)`) can still resolve the pre-projection
+    // variables — folding must not discard the node objects it grouped over.
+    const firstFlat = gRows[0]
     const rec: Record<string, unknown> = {
       props: { ...out },
       __crossVarRows: { ...out },
+    }
+    for (const [fk, fv] of Object.entries(firstFlat)) {
+      if (fk in rec.__crossVarRows) continue
+      if (fv && typeof fv === 'object' && !Array.isArray(fv)) {
+        ;(rec.__crossVarRows as Record<string, unknown>)[fk] = fv
+      }
     }
     for (const [ok, ov] of Object.entries(out)) rec[ok] = ov
     result.push(rec)
@@ -3113,6 +3167,22 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const result = firstStep && f.source === firstStep.source && firstStep.source
       return result
     })
+    // Merge the source node's inline property constraints (`(a:T {name:'a'})`,
+    // carried as `plan.steps[0].sourceProps`) into stepSourceFilters so the
+    // variable-length / multi-step walk anchors on the correct start node.
+    // Without this, `MATCH p=(a:T {name:'a'})-[:R*]->(other)` would treat every
+    // `T`-labelled node (including `name:'c'`) as a candidate start, binding the
+    // source variable `a` to an intermediate node and corrupting GROUP BY keys.
+    const _spProps = (plan.steps?.[0] as any)?.sourceProps
+    if (_spProps && typeof _spProps === 'object') {
+      const _srcVar = plan.steps?.[0]?.source
+      for (const [pk, pv] of Object.entries(_spProps as Record<string, unknown>)) {
+        if (pk.startsWith('__')) continue
+        // Avoid duplicating an existing filter for the same source/property.
+        const dup = stepSourceFilters.some(f => f.source === _srcVar && f.property === pk)
+        if (!dup) stepSourceFilters.push({ source: _srcVar, property: pk, value: pv })
+      }
+    }
     // ── WHERE 标签谓词预过滤 ──
     // 提取 `WHERE a:A` 形式的标签检查（ANTLR 不将其解析为 filter）
     const whereLabelFilters: Array<{varName: string; targetLabel: string}> = []
@@ -4287,6 +4357,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         for (const targetIdx of boundedTargets) {
               const targetNode = allNodes[targetIdx]
               if (!targetNode) continue
+              // The full node-index path (e.g. `[0, 2, 1]` for a→c→b) that
+              // reaches this target.  Captured per-iteration so the variable-
+              // length path object `p` (with its hop count = `curPath.length-1`)
+              // can be materialised into `__crossVarRows` below, letting
+              // `length(p)` evaluate during a later WITH/aggregate fold.
+              let curPath: number[] | null = null
               const srcNode = allNodes[i] as Record<string, unknown>
               const geNode: any = {
                 id: nodeGeIds[targetIdx] || (targetIdx + 1),
@@ -4314,6 +4390,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     retDefStepIdx != null && retDefStepIdx >= 0 && retDefStepIdx + 1 < p.length && p[retDefStepIdx + 1] === targetIdx
                   )
                 }
+                if (matchingPath && matchingPath.length >= 1) curPath = matchingPath
                 if (matchingPath && matchingPath.length >= 2) {
                   const pathEdges: string[] = []
                   for (let psi = 0; psi < plan.steps.length && psi < matchingPath.length - 1; psi++) {
@@ -4644,6 +4721,34 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 // 不走后处理边变量逻辑，直接从 __targetProps 取值
                 // Pattern Comprehension (targetAlias为空) 时 props 已经是 source 节点
                 const _patNoAlias = plan.steps?.[plan.steps.length - 1]?.targetAlias === ''
+                // Materialise the variable-length path object for `pathVariable`
+                // (e.g. `p` in `MATCH p=(a)-[:R*]->(b)`).  It carries the ordered
+                // node sequence, the traversed edges, and the hop count
+                // (`length`) so `length(p)` and `min(length(p))` evaluate during
+                // a subsequent WITH/aggregate fold — before the later path
+                // reconstruction runs.
+                const _pathVar = (plan.steps?.[0] as any)?.pathVariable
+                if (_pathVar && curPath && curPath.length >= 1) {
+                  const _pNodes = curPath.map(ni => allNodes[ni]).filter(Boolean) as Array<Record<string, unknown>>
+                  const _pEdges: Array<Record<string, unknown>> = []
+                  for (let pi = 0; pi < curPath.length - 1; pi++) {
+                    const from = allNodes[curPath[pi]] as any
+                    const to = allNodes[curPath[pi + 1]] as any
+                    let _edgeLabel = ''
+                    if (from?.__edges) {
+                      const e = from.__edges.find((ed: any) =>
+                        ed.dstIdx === curPath[pi + 1] || ed.srcIdx === curPath[pi + 1]
+                      )
+                      if (e?.label) _edgeLabel = e.label
+                    }
+                    _pEdges.push({ __edgeLabel: _edgeLabel, __edgeLabelStr: _edgeLabel, _type: _edgeLabel, _label: _edgeLabel, _dir: 'out' })
+                  }
+                  geNode.__crossVarRows[_pathVar] = {
+                    __path: _pNodes,
+                    __pathEdges: _pEdges,
+                    length: curPath.length - 1,
+                  }
+                }
                 multiStepRaw.push({
                   id: geNode.id,
                   props: { ...geNode.__targetProps },
@@ -6474,7 +6579,16 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         (nm === undefined || (n as any).name === nm)
       )
     }
-    if (pathVars.size) {
+    // A WITH segment carrying a scalar aggregate over the path length
+    // (`WITH min(length(p)) AS len`) folds the matched paths into one row per
+    // group *before* we get here, and each folded row already carries a
+    // complete `p` object (with `length`) in `__crossVarRows`.  Re-traversing
+    // `_walkMultiStepsWithEdges` below would re-expand those folded groups back
+    // into the individual paths and silently discard the `min(...)` result, so
+    // skip reconstruction when such an aggregation is present.
+    const _hasWithPathAgg = (plan.withChain && plan.withChain.length ? plan.withChain : (plan.with ? [plan.with] : []))
+      .some((wc: any) => wc?.aggregate && !/^\s*collect\s*\(/i.test(String(wc.aggregate.column ?? wc.aggregate.function ?? '')))
+    if (pathVars.size && !_hasWithPathAgg) {
       // ── Multi-step / variable-length named path reconstruction ──
       // A named path spanning more than one relationship (`MATCH p =
       // (a)-->(b)-->(c)`) or a variable-length hop (`MATCH p = (a)-[:T*2]-(b)`)
@@ -6907,19 +7021,55 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         if (s.source) _stepVars.add(s.source)
         if (s.targetAlias) _stepVars.add(s.targetAlias)
       }
+      // A grouping key may name a step node variable (`a`, `other`), a WITH
+      // projection alias (`name`, `len` — already materialised into `props` by
+      // the WITH fold above), or a RETURN expression alias (`name` ← `a.name`
+      // in `expressionColumns`).  Accept the fold whenever the aggregate is
+      // count/collect AND every key is resolvable through one of those sources.
+      const _exprByAlias = new Map<string, string>()
+      for (const ec of (plan.expressionColumns || [])) {
+        const e = typeof ec === 'string' ? ec : (ec as any).expression
+        const a = typeof ec === 'string' ? ec : ((ec as any).alias || e)
+        if (typeof e === 'string' && a) _exprByAlias.set(a, e)
+      }
       const _allNodeKeys = _gbCols.every(gb => _stepVars.has(gb))
-      if (_allNodeKeys && (_gbAgg.function === 'count' || _gbAgg.function === 'collect')) {
+      const _projKeySet = new Set<string>()
+      for (const rw of rawWithEdges) {
+        const props = (rw && typeof rw === 'object' && rw.props && typeof rw.props === 'object') ? rw.props : {}
+        const cvr = (rw && rw.__crossVarRows && typeof rw.__crossVarRows === 'object') ? rw.__crossVarRows : {}
+        for (const gb of _gbCols) if (gb in props || gb in cvr) _projKeySet.add(gb)
+      }
+      const _allResolvable = _gbCols.every(gb => _stepVars.has(gb) || _projKeySet.has(gb) || _exprByAlias.has(gb))
+      if (_allResolvable && (_gbAgg.function === 'count' || _gbAgg.function === 'collect')) {
         const _aggAlias = (_gbAgg.alias && _gbAgg.alias !== _gbAgg.function)
           ? _gbAgg.alias
           : (_gbAgg.column?.replace(/^.+?\s+AS\s+/i, '').trim() || (_gbAgg.field && _gbAgg.field !== '*' ? _gbAgg.field : _gbAgg.column) || 'count(*)')
         const _groups = new Map<string, Record<string, unknown>[]>()
         for (const rw of rawWithEdges) {
           const cvr = (rw.__crossVarRows && typeof rw.__crossVarRows === 'object') ? rw.__crossVarRows : {}
+          const props = (rw.props && typeof rw.props === 'object') ? rw.props : {}
           const keyParts: string[] = []
           for (const gb of _gbCols) {
+            // Prefer the step node variable; fall back to a projection key
+            // (WITH alias already materialised into `props` by the fold), then
+            // to a RETURN expression alias (`name` ← `a.name`).
             const nodeVal = cvr[gb]
-            const id = (nodeVal && typeof nodeVal === 'object') ? ((nodeVal as any).id ?? (nodeVal as any)._label ?? 'null') : (nodeVal ?? 'null')
-            keyParts.push(`${gb}:${String(id)}`)
+            let rawId: unknown
+            if (nodeVal !== undefined && nodeVal !== null) {
+              rawId = nodeVal
+            } else if (gb in props) {
+              rawId = props[gb]
+            } else if (_exprByAlias.has(gb)) {
+              const expr = _exprByAlias.get(gb)!
+              const ctx: Record<string, unknown> = { ...cvr, ...props }
+              try { rawId = _evalBinary(expr, ctx) } catch { rawId = null }
+            } else {
+              rawId = null
+            }
+            const id = (rawId !== undefined && rawId !== null && typeof rawId === 'object')
+              ? String((rawId as any).id ?? (rawId as any)._label ?? 'null')
+              : String(rawId ?? 'null')
+            keyParts.push(`${gb}:${id}`)
           }
           const key = keyParts.join('||')
           if (!_groups.has(key)) _groups.set(key, [])
@@ -6932,11 +7082,32 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (_gbAgg.function === 'count') {
             _foldedRow.props[_aggAlias] = rows.length
           } else {
-            // collect: gather the matched target nodes under the aggregate alias.
+            // collect: gather the aggregate field's value across the group.  The
+            // field may be a step node variable (`other`), a WITH projection
+            // alias, or a property expression (`other.name`).  Resolve a
+            // property access via expression evaluation against the row's node
+            // variables, falling back to a plain variable lookup.
             const collected: unknown[] = []
+            const _field = _gbAgg.field && _gbAgg.field !== '*' ? _gbAgg.field : null
             for (const r of rows) {
               const cvr = r.__crossVarRows || {}
-              collected.push(cvr[_gbCols[_gbCols.length - 1]] ?? cvr)
+              const props = r.props || {}
+              let cv: unknown
+              if (_field) {
+                const dotIdx = _field.indexOf('.')
+                if (dotIdx > 0) {
+                  const owner = _field.slice(0, dotIdx)
+                  const prop = _field.slice(dotIdx + 1)
+                  const ownerObj = cvr[owner] || props[owner]
+                  cv = (ownerObj && typeof ownerObj === 'object')
+                    ? (ownerObj as any)[prop]
+                    : undefined
+                } else {
+                  cv = cvr[_field]
+                  if (cv === undefined && _field in props) cv = props[_field]
+                }
+              }
+              if (cv !== undefined && cv !== null) collected.push(cv)
             }
             _foldedRow.props[_aggAlias] = collected
           }
