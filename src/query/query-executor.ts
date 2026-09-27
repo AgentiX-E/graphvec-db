@@ -2143,8 +2143,15 @@ async function _executeMultiMatchCrossJoin(
     const field: string = agg?.field ?? '*'
     const varName = field.includes('.') ? field.split('.')[0] : field
     const propName = field.includes('.') ? field.split('.').pop()! : null
+    // A complex aggregate expression (`sum((1 - abs(r1.times/H1 - r2.times/H2))
+    // * ...)`) is NOT a `var.prop` / bare-variable field, so `varName`/`propName`
+    // above mis-split it (e.g. field.split('.')[0] === '(1 - abs(r1').  Detect
+    // such a field by the presence of arithmetic/function/paren characters and
+    // evaluate it as a full expression against each row instead.
+    const isComplexField = /^(?!\w+\.\w+$).*[()+\-*/]/.test(field) && field !== '*'
     const rowValue = (row: Record<string, unknown>): unknown => {
       if (field === '*' || field === '' || field === null) return row
+      if (isComplexField) return _evaluateExpression(field, row)
       const owner = row[varName]
       if (propName && owner && typeof owner === 'object') return (owner as any)[propName]
       if (field === 'count' || field === '*') return row
@@ -2170,10 +2177,19 @@ async function _executeMultiMatchCrossJoin(
     }
     // Fold an aggregate over a single group of rows, returning its scalar value.
     const _foldGroup = (groupRows: Array<Record<string, unknown>>): unknown => {
-      const values = groupRows.map(rowValue)
+      // When an upstream WITH fold collapsed a group of N source rows into a
+      // single record, it stashed the full row set under `__groupRows` so a
+      // complex aggregate (`sum((... r1.times/H1 ...))`) can iterate every edge
+      // pair rather than the one surviving row.  Expand those source rows here.
+      let effectiveRows = groupRows
+      if (isComplexField && groupRows.length === 1) {
+        const gr = (groupRows[0] as any)?.__groupRows
+        if (Array.isArray(gr) && gr.length) effectiveRows = gr
+      }
+      const values = effectiveRows.map(rowValue)
       switch (aggFn) {
         case 'count': {
-          if (field === '*' || field === '' || field === null) return groupRows.length
+          if (field === '*' || field === '' || field === null) return effectiveRows.length
           return values.filter(v => v !== null && v !== undefined).length
         }
         case 'sum': {
@@ -2480,6 +2496,14 @@ function _groupAggregateWithRows(
       }
     }
     for (const [ok, ov] of Object.entries(out)) rec[ok] = ov
+    // Preserve the group's full set of source rows so a downstream RETURN
+    // aggregate over a *complex* expression can iterate every bound edge pair
+    // (e.g. `sum((1 - abs(r1.times/H1 - r2.times/H2)) * ...)` needs all r1/r2
+    // combinations, not just the first row's).  Each source row also inherits
+    // this group's aggregate aliases (H1/H2) so the complex expression can
+    // resolve them.  Without this the fold collapses N rows → 1 and the later
+    // sum sees a single sample (and unresolved aggregate aliases) → 0/NaN.
+    ;(rec as any).__groupRows = gRows.map(r => ({ ...r, ...out }))
     result.push(rec)
   }
   return result
