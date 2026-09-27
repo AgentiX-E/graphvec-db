@@ -453,11 +453,29 @@ function _parseQueryImpl(query: string): QueryPlan {
   // (`b.name` → `name`).  A `.` inside a function call (`sum(n.num)`,
   // `collect(a.id)`) or a decimal literal (`1.5`) must be preserved verbatim,
   // otherwise `indexOf('.')` would wrongly truncate `sum(n.num)` to `num)`.
+  //
+  // Collision guard: when several *different* variables project the *same*
+  // property name (`RETURN a.id, b.id`), blindly stripping the prefixes would
+  // collapse both columns into a single `id` and silently drop one of them
+  // (and `returnAliasMap` would keep only the last).  In that case the full
+  // `var.prop` form is kept as the column key (`a.id`, `b.id`) so the two
+  // columns stay distinct — matching the TCK header `| a.id | b.id |`.
+  const _propOf = (s: string): string | null =>
+    /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(s) ? s.split('.').pop()! : null
+  const _rcPropCounts = new Map<string, number>()
+  for (const rc of plan.returnColumns || []) {
+    const p = _propOf(rc)
+    if (p != null) _rcPropCounts.set(p, (_rcPropCounts.get(p) || 0) + 1)
+  }
+  // A `var.prop` column keeps its prefix iff its bare property name appears more
+  // than once across the projection (i.e. it would collide after stripping).
+  const _stripProp = (s: string): string => {
+    const p = _propOf(s)
+    if (p == null) return s
+    return (_rcPropCounts.get(p) || 0) > 1 ? s : p
+  }
   if (plan.returnColumns?.length) {
-    plan.returnColumns = plan.returnColumns.map((rc: string) => {
-      if (/^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(rc)) return rc.substring(rc.indexOf('.') + 1)
-      return rc
-    })
+    plan.returnColumns = plan.returnColumns.map(_stripProp)
   }
   // expressionColumns 的 alias/expression 也应同步更新
   if (plan.expressionColumns?.length) {
@@ -466,20 +484,21 @@ function _parseQueryImpl(query: string): QueryPlan {
       const alias = ec.alias || expr
       // 只在顶层拆分 b.name → name，跳过表达式内的 .（如 1.5, func().prop）
       // Note: 不修改 expression（用于求值），只修改 alias（用作结果列名）
+      // 但同属性多列碰撞时保留 var.prop 形式（见上方 collision guard）。
       let dotIdx = -1
       const _topLevelProp = /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(alias)
       if (_topLevelProp) {
         dotIdx = alias.indexOf('.')
       }
       const cleanExpr = dotIdx >= 0 ? alias.substring(dotIdx + 1) : expr
-      const cleanAlias = _topLevelProp ? alias.split('.').pop()! : alias
+      const cleanAlias = _stripProp(alias)
       return { expression: expr, alias: cleanAlias }
     })
     // 同步更新 returnAliasMap
     if (plan.returnAliasMap) {
       const newAliasMap: Record<string, string> = {}
       for (const [key, val] of Object.entries(plan.returnAliasMap)) {
-        const cleanKey = /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(key) ? key.split('.').pop()! : key
+        const cleanKey = _stripProp(key)
         // 保留原始表达式值（如 'd.year'），不裁剪为 'year'
         newAliasMap[cleanKey] = val
       }

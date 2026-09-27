@@ -332,7 +332,16 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
       // maps positionally onto `expressionColumns` and would mis-bind an
       // aggregate alias such as `others` to an unrelated entry (`a.name`),
       // producing a wrong value like `'a'`.
-      if (!needsEval && rowVal !== undefined && rowVal !== null) {
+      //
+      // Guard: a bare property-access expression (`RETURN out.name`, whose
+      // `ecMap[rc]` is `"out.name"`) must NOT take this shortcut.  `row["name"]`
+      // is the *source* node's `name` property (e.g. `advertiser1`), not
+      // `out.name`, so it falls through to the `var.prop` recovery below which
+      // resolves `out` via `__crossVarRows` (yielding `product1`).  Only plain
+      // aggregate/computed aliases (which genuinely pre-compute the value into
+      // the row) may short-circuit here.
+      const _isPropAccessExpr = ecMap[rc] && /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(ecMap[rc].trim())
+      if (!needsEval && !_isPropAccessExpr && rowVal !== undefined && rowVal !== null) {
         result[rc] = rowVal
         continue
       }

@@ -1109,8 +1109,28 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         plan.returnAliasMap = {}
         // 填充 expressionColumns：结构化列Info（用于表达式求值引擎）
         plan.expressionColumns = []
+        // Collision guard: `RETURN a.id, b.id` projects the same bare property
+        // name from two different variables.  Stripping the variable prefix
+        // (`id` for both) would drop the first column from returnAliasMap and
+        // merge the two into one output key.  Detect such duplicates up front and
+        // keep the full `var.prop` form as the key so both columns stay distinct.
+        const _retBareProp = (expr: string): string | null =>
+          /^[a-zA-Z_]\w*\.[a-zA-Z_]\w*$/.test(expr) ? expr.split('.').pop()! : null
+        const _retPropCount = new Map<string, number>()
         for (const c of ret.columns) {
-          const key = (c.alias ?? c.expression).replace(/^\w+\./, '')
+          const exp = c.alias ?? c.expression
+          const bp = typeof exp === 'string' ? _retBareProp(exp) : null
+          if (bp != null) _retPropCount.set(bp, (_retPropCount.get(bp) || 0) + 1)
+        }
+        const _retKeyOf = (c: { alias?: string | null; expression: string }): string => {
+          const exp = c.alias ?? c.expression
+          if (typeof exp !== 'string') return String(exp)
+          const bp = _retBareProp(exp)
+          if (bp == null) return exp.replace(/^\w+\./, '')
+          return (_retPropCount.get(bp) || 0) > 1 ? exp : bp
+        }
+        for (const c of ret.columns) {
+          const key = _retKeyOf(c)
           plan.returnAliasMap[key] = c.expression
           plan.expressionColumns.push({ expression: c.expression, alias: c.alias ?? c.expression })
         }

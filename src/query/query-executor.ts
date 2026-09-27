@@ -2705,6 +2705,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const matchSection = query.match(/MATCH\s+(.*?)(?:\s+WHERE|\s+OPTIONAL|\s+RETURN|\s+WITH|\s+CREATE|\s+MERGE|\s+DELETE|\s+SET|\s+REMOVE|\s+UNWIND|\s+ORDER|\s+SKIP|\s+LIMIT|\s+CALL|\s+INVOKE|$)/is)
       if (matchSection) {
         const nodePatterns = [...matchSection[1].matchAll(/\((\w+)\s*(?::\s*(\w+))?\)/g)]
+        // A MATCH with relationship-traversal steps binds its node variables via
+        // the walk itself (e.g. `(advertiser)-[:T]->(out)-[:U]->(red)<-[:V]-(a)`);
+        // the positional unlabelled-seed heuristic below is only safe for a bare
+        // node MATCH (`MATCH (n)`, `MATCH (x:End)`) and would otherwise assign a
+        // wrong `_alias` (e.g. `out`→thing, `a`→p1) because the graph's node array
+        // order is unrelated to the variable order in the pattern.
+        const hasTraversalSteps = (plan.steps || []).some(s => (s as any).edgeLabel || (s as any).range)
         for (const np of nodePatterns) {
           const varName = np[1]
           const varLabel = np[2]
@@ -2712,7 +2719,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (varLabel) {
             seed = allNodes.find(n => String((n as any)._label).split(':').includes(varLabel))
           }
-          if (!seed) {
+          if (!seed && !hasTraversalSteps) {
             // Unlabelled MATCH variable binds to a matching seed node.  For a
             // single-seed graph (or repeated `MATCH (n) MATCH (m)` over the same
             // node), every such variable aliases the same node.  When there are
