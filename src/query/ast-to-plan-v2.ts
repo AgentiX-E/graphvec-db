@@ -1189,7 +1189,12 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
               if (/\b(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(/i.test(cExpr)) continue
               // Skip list comprehensions (not a scalar grouping key).
               if (cExpr.startsWith('[') && cExpr.includes('IN') && cExpr.includes('|')) continue
-              const key = cExpr.includes('.') ? cExpr.split('.').pop()! : cExpr
+              // Prefer the column alias so a complex expression
+              // (`coalesce(a.num, b.num) AS foo`) groups by `foo`, not by the
+              // trailing `num)` that a naive `split('.')` would produce.
+              const key = (c.alias && typeof c.alias === 'string' && c.alias.length)
+                ? c.alias
+                : (cExpr.includes('.') ? cExpr.split('.').pop()! : cExpr)
               if (key && key !== '*' && !implicitKeys.includes(key)) implicitKeys.push(key)
             }
             if (implicitKeys.length) plan.groupBy = implicitKeys
