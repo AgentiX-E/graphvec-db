@@ -36,7 +36,14 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       const m = query.match(/UNWIND\s+.+?\s+AS\s+(\w+)/is)
       return m ? [m[1]] : []
     })()
-    if (matchVars.length === 0 && withVars.length === 0 && unwindVars.length === 0) {
+    // A `CALL ... YIELD x` binds its yield variables into scope; `RETURN *`
+    // after such a call projects them (e.g. `CALL test.my.proc(null) YIELD out
+    // RETURN *`).  Treat each yield item's alias (or name) as an in-scope
+    // variable so the empty-scope guard does not raise NoVariablesInScope.
+    const callYieldVars: string[] = (plan.callProcedure?.yieldItems || [])
+      .map((yi: any) => (yi && yi.alias) || (yi && yi.name))
+      .filter((a: any) => typeof a === 'string' && a)
+    if (matchVars.length === 0 && withVars.length === 0 && unwindVars.length === 0 && callYieldVars.length === 0) {
       throw Object.assign(new Error('SyntaxError: NoVariablesInScope'), { tckError: 'NoVariablesInScope' })
     }
   }
