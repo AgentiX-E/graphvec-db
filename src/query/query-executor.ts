@@ -7577,7 +7577,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // on the grouped/projected row set before any later aggregate consumes it.
     for (const wcSeg of withChainToApply || []) {
       if ((wcSeg as any)?.aggregate) continue
-      const segFilters = ((wcSeg as any)?.filters || []).filter((f: any) => f?.property !== '__label')
+      // Only structured property filters (`x.prop OP value`, with a resolvable
+      // `property` and `source`) are handled here.  A complex-expression WHERE
+      // (e.g. `WITH n WHERE n.num % 2 = 0`, whose parser entry carries an empty
+      // `property` and a full `expression` like `"n.num % 2"`) is already
+      // evaluated by the `plan.whereBody` pass above; re-filtering it here via
+      // `_withFilterKeepMask` would read `flat[undefined][""]` → undefined and
+      // wrongly drop every row.  Skip such expression-only filters.
+      const segFilters = ((wcSeg as any)?.filters || []).filter((f: any) =>
+        f?.property !== '__label' && !(f?.expression && (f?.property == null || f?.property === '') && (f?.source == null || f?.source === '')))
       if (segFilters.length && rawWithEdges?.length) {
         // Determine which raw rows satisfy the segment WHERE, then apply the
         // same index mask to both `rawWithEdges` and the formatted `result` so
