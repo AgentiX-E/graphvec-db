@@ -5591,13 +5591,12 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
 
     indices.sort(comparator)
 
-    // Apply skip + limit on indices before slicing rows
-    let startIdx = 0
-    let endIdx = indices.length
-    if (p.skip !== undefined && p.skip > 0) startIdx = p.skip
-    if (p.limit !== undefined && p.limit >= 0) endIdx = Math.min(startIdx + p.limit, indices.length)
-
-    processed = indices.slice(startIdx, endIdx).map(i => result[i])
+    // Do NOT apply SKIP/LIMIT here.  A single unified SKIP/LIMIT pass runs at
+    // the bottom of this function (after HAVING), so SKIP and LIMIT compose
+    // correctly (`SKIP 2 LIMIT 2` over 5 rows yields rows [2,3]).  Applying a
+    // second slice here double-applied SKIP/LIMIT and, for example, reduced
+    // `ORDER BY ... SKIP 2 LIMIT 2` from [C,D] to [] (slice(2) again).
+    processed = indices.map(i => result[i])
   } else {
     processed = result  // no ORDER BY, use reference directly (HAVING below can filter in-place)
   }
