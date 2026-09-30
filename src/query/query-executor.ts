@@ -5096,6 +5096,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (_withHasPlainFilter && planForGe.aggregate != null) {
             delete planForGe.aggregate
           }
+          // A WITH clause carrying SKIP/LIMIT must run BEFORE the RETURN
+          // aggregate folds the rows (`WITH n LIMIT toInteger(ceil(1.7))
+          // RETURN count(*)` must count only the 2 surviving rows, not all 3).
+          // GE folds `plan.aggregate` over the matched rows without applying the
+          // WITH skip/limit, so drop the aggregate here and let QE's
+          // post-aggregation path slice the raw matched rows first, then fold
+          // `count(*)`.
+          const _withHasSkipLimit = (planForGe.with?.skip !== undefined) || (planForGe.with?.limit !== undefined)
+          if (_withHasSkipLimit && planForGe.aggregate != null) {
+            delete planForGe.aggregate
+          }
           // Multiple aggregate columns (`RETURN count(n), collect(n)`) cannot be
           // folded by the graph engine, which only understands a single
           // `plan.aggregate`.  Drop the aggregate so GE returns the raw matched
@@ -6429,6 +6440,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       let _wcRows = rawWithEdges
       const _withChainToProcess: any[] = []
       for (const wcSeg of withChainToApply) {
+        // ── WITH-segment SKIP/LIMIT ──
+        // A WITH clause may carry its own SKIP/LIMIT (`WITH n SKIP 6`, `WITH n
+        // LIMIT toInteger(ceil(1.7))`).  Apply it to the current row set BEFORE
+        // any downstream segment (aggregate fold or projection) consumes the
+        // rows, so `WITH n LIMIT 2 RETURN count(*)` counts only the 2 surviving
+        // rows.  The top-level promotion handles the non-aggregate case; this
+        // branch handles the aggregate case (where the promotion is skipped so
+        // the slice runs before the fold).
+        if ((wcSeg as any)?.skip !== undefined || (wcSeg as any)?.limit !== undefined) {
+          const _segSkip = (wcSeg as any)?.skip
+          const _segLimit = (wcSeg as any)?.limit
+          if (typeof _segSkip === 'number' && _segSkip > 0) _wcRows = _wcRows.slice(_segSkip)
+          if (typeof _segLimit === 'number' && _segLimit >= 0) _wcRows = _wcRows.slice(0, _segLimit)
+        }
         if ((wcSeg as any)?.aggregate) {
           _wcRows = _groupAggregateWithRows(_wcRows, wcSeg as any, allNodes)
           // The fold already materialised the aggregate aliases; drop the

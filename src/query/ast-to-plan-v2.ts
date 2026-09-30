@@ -1472,10 +1472,16 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
   if (!plan.orderBy?.length && plan.with?.orderBy?.length) {
     plan.orderBy = plan.with.orderBy
   }
-  if (plan.limit === undefined && plan.with?.limit !== undefined) {
+  // A WITH ... SKIP/LIMIT is only promoted to the top-level plan when the
+  // RETURN does NOT aggregate.  When the RETURN aggregates (`WITH n LIMIT 2
+  // RETURN count(*)`), the WITH skip/limit is an *intermediate* slice that must
+  // run BEFORE the aggregate folds the rows — promoting it here would apply it
+  // after the fold (against the single aggregated row) and render it a no-op.
+  // The execute layer's WITH-chain pass applies the skip/limit in that case.
+  if (plan.limit === undefined && plan.with?.limit !== undefined && !plan.aggregate) {
     plan.limit = plan.with.limit
   }
-  if (plan.skip === undefined && plan.with?.skip !== undefined) {
+  if (plan.skip === undefined && plan.with?.skip !== undefined && !plan.aggregate) {
     plan.skip = plan.with.skip
   }
 
