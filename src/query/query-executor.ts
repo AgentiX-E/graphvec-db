@@ -9084,8 +9084,21 @@ export async function _executeQuery(
       if (s?.source) _stepVars2.add(s.source)
       if (s?.targetAlias) _stepVars2.add(s.targetAlias)
     }
+    // Map a RETURN expression alias back to its source expression (`name` ←
+    // `a.name` in `expressionColumns`).  When a grouping key is such an alias
+    // (`RETURN n.num, count(*)` parses groupBy to the bare `num`, not `n.num`,
+    // but `n.num` is the alias source), `_executeViaGraphEngine` already folded
+    // the grouping in its edge-walk path (the `_exprByAlias` resolution there).
+    // Re-grouping `execQueryResult` here by the bare `num` would not find `num`
+    // as a top-level column (it lives under the edge-walk row bindings) and
+    // would collapse every row into a spurious null group.
+    const _exprAlias2 = new Set<string>()
+    for (const ec of (plan.expressionColumns || [])) {
+      const a = typeof ec === 'string' ? ec : (ec as any).alias
+      if (a) _exprAlias2.add(a)
+    }
     const _gbNodeKey = ((plan as any).groupBy as string[]).length > 0 &&
-      ((plan as any).groupBy as string[]).every((gb: string) => _stepVars2.has(gb)) &&
+      ((plan as any).groupBy as string[]).every((gb: string) => _stepVars2.has(gb) || _exprAlias2.has(gb)) &&
       ((plan as any).steps?.length || 0) > 0
     if (_gbNodeKey) {
       return _postProcessResults(execQueryResult as any, plan as any)
