@@ -5548,12 +5548,23 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
         // the row instead of looking up a single column. A bare identifier
         // (property reference) keeps the fast `row[field]` lookup.
         const expr = (o.expression as string) || ''
-        const isComposite = expr && !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(expr.trim())
+        // A bare aggregate call (`count(*)`, `sum(x)`) is a *projected column*,
+        // not an expression to re-evaluate: its value is already materialised on
+        // the row under the call's original text (or its alias).  Re-invoking it
+        // against a single (already-grouped) row would yield null and quietly
+        // disable that sort key.
+        const isAggregateCall = /^\s*(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/i.test(expr)
+        const isComposite = !isAggregateCall && expr && !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(expr.trim())
         let va: unknown, vb: unknown
         // ORDER BY on an aggregate projection (`sum(a.num + a.num2)`) sorts by
         // the alias column, not by re-invoking the aggregate.
         const aggAlias = aggExprToAlias.get(expr.replace(/\s+/g, '')) || aggExprToAlias.get(field.replace(/\s+/g, ''))
-        if (aggAlias) {
+        if (isAggregateCall && !aggAlias) {
+          // The result column is keyed by the aggregate call's original text
+          // (`count(*)` in `RETURN n.division, count(*)`), which `field` retains.
+          va = a[field] ?? null
+          vb = b[field] ?? null
+        } else if (aggAlias) {
           va = a[aggAlias] ?? null
           vb = b[aggAlias] ?? null
         } else if (isComposite) {

@@ -590,7 +590,15 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         const exprText = it.replace(/\s+AS\s+\w+$/i, '').trim()
         if (exprText) {
           projectedExprs.add(exprText)
-          if (aliasMatch) namedGroupKeys.add(exprText.replace(/\s+/g, ''))
+          if (aliasMatch) {
+            namedGroupKeys.add(exprText.replace(/\s+/g, ''))
+          } else if (/^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$/.test(exprText)) {
+            // A bare single variable / property access (`n`, `n.division`) is an
+            // implicit grouping key (a non-aggregate RETURN/WITH item alongside an
+            // aggregate).  It may legally be referenced in an ORDER BY that also
+            // carries an aggregate, unlike a bare *composite* expression.
+            namedGroupKeys.add(exprText.replace(/\s+/g, ''))
+          }
         }
       }
     }
@@ -605,7 +613,23 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         const aliasMatch = item.match(/\s+AS\s+(\w+)\s*$/i)
         if (aliasMatch) projectedAliases.add(aliasMatch[1])
         const exprText = item.replace(/\s+AS\s+\w+$/i, '').trim()
-        if (exprText) projectedExprs.add(exprText)
+        if (exprText) {
+          projectedExprs.add(exprText)
+          // A RETURN projection with an alias is a named grouping key too: `RETURN
+          // me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age)`
+          // is legal — `me.age` is the explicit grouping key, not an ambiguous
+          // reference.  Without this, the RETURN alias is only tracked as a
+          // projectedAlias (bare `age`), so the raw expression `me.age` leaking
+          // into the ORDER BY item is mis-flagged as AmbiguousAggregationExpression.
+          if (aliasMatch) {
+            namedGroupKeys.add(exprText.replace(/\s+/g, ''))
+          } else if (/^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$/.test(exprText)) {
+            // A bare single variable / property access (`n.division`) alongside an
+            // aggregate is an implicit grouping key (e.g. `RETURN n.division,
+            // count(*) ORDER BY n.division ASC`).
+            namedGroupKeys.add(exprText.replace(/\s+/g, ''))
+          }
+        }
       }
     }
     for (const obm of orderByClauses) {
