@@ -523,6 +523,21 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     throw Object.assign(new Error('SyntaxError: NegativeIntegerArgument'), { tckError: 'NegativeIntegerArgument' })
   }
 
+  // ── SyntaxError: InvalidArgumentType (floating-point SKIP/LIMIT) ──
+  // SKIP/LIMIT expect an integer constant.  `SKIP 1.5` / `LIMIT 1.7` carry a
+  // decimal point and must fail at compile time with InvalidArgumentType
+  // (openCypher rejects non-integer skip/limit arguments).  A bare scientific
+  // notation (`1e2`) or leading sign is still an integer literal and is not
+  // rejected here.
+  const skipFloat = query.match(/\bSKIP\s+([+-]?\d+\.\d+)\b/i)
+  if (skipFloat) {
+    throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+  }
+  const limitFloat = query.match(/\bLIMIT\s+([+-]?\d+\.\d+)\b/i)
+  if (limitFloat) {
+    throw Object.assign(new Error('SyntaxError: InvalidArgumentType'), { tckError: 'InvalidArgumentType' })
+  }
+
   // ── SyntaxError: NonConstantExpression ──
   // SKIP/LIMIT may take any *constant* expression (an integer literal, or an
   // expression that does not reference variables such as `toInteger(rand()*9)`).
