@@ -11,7 +11,7 @@ import {
   CypherParser,
   CypherListener,
 } from '@neo4j-cypher/antlr4'
-import { _parseNestedAggregate } from './expression-engine'
+import { _parseNestedAggregate, _evaluateExpression } from './expression-engine'
 
 /**
  * Splits a comma-separated list of values, handling nested brackets.
@@ -1701,6 +1701,46 @@ function findSymbolicName(node: any): string | null {
   return sym ? getTextRecursive(sym) : null
 }
 
+/**
+ * Resolve a SKIP/LIMIT argument to an integer.  The argument may be an integer
+ * literal (`SKIP 5`) or a constant expression that does not depend on variables
+ * (`LIMIT toInteger(ceil(1.7))`, `SKIP toInteger(rand()*9)`).  A variable
+ * reference is already rejected at compile time by the plan validator, so any
+ * expression reaching this point is guaranteed to be constant and safe to
+ * evaluate here.
+ *
+ * Returns `undefined` when the argument is absent or not an integer (so the
+ * caller can fall back to its previous behaviour).  A floating-point literal is
+ * NOT integer-coerced here — the validator rejects `SKIP 1.5` earlier.
+ */
+function resolveSkipLimitInteger(ctx: any): number | undefined {
+  if (!ctx) return undefined
+  // Read the argument as the `ExpressionContext` child (the grammar nests the
+  // SKIP/LIMIT argument under `ExpressionContext`, so `SKIP 5` yields an
+  // ExpressionContext wrapping an integer literal, and `SKIP toInteger(...)`
+  // wraps a function call).  Evaluate the whole expression text rather than
+  // recursing for an `IntegerLiteralContext`, because a nested integer literal
+  // (`SKIP toInteger(rand()*9)` → the `9`) must not be mistaken for the
+  // skip/limit argument (that previously turned `toInteger(rand()*9)` into a
+  // bogus `skip: 9`).
+  const expr = findChild(ctx, 'ExpressionContext') || findChild(ctx, 'OrExpressionContext')
+  if (!expr) return undefined
+  const text = getTextRecursive(expr).trim()
+  if (!text) return undefined
+  // A bare integer literal (`SKIP 5`) evaluates to itself; a constant function
+  // expression (`LIMIT toInteger(ceil(1.7))`) evaluates through the expression
+  // engine.  A floating-point literal is NOT coerced here — the validator
+  // rejects `SKIP 1.5` before this runs.
+  try {
+    const v = _evaluateExpression(text)
+    if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v)
+    if (typeof v === 'bigint') return Number(v)
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** 提取 NodeLabelContext 中的所有标签名（支持多标签 :A:B） */
 function extractAllLabels(nodeLabelCtx: any): string[] {
   const labels: string[] = []
@@ -2213,16 +2253,17 @@ function extractReturn(returnCtx: any): ParsedReturn {
     }
 
     if (name === 'LimitContext') {
-      const intLit = findChild(node, 'IntegerLiteralContext')
-      if (intLit) limit = parseInt(getTextRecursive(intLit), 10)
+      const v = resolveSkipLimitInteger(node)
+      if (v !== undefined) limit = v
       return
     }
 
     if (name === 'SkipContext') {
       // `SKIP n` lives in ReturnBody alongside LIMIT, as a `SkipContext` whose
-      // integer is an `IntegerLiteralContext` (mirroring `LimitContext`).
-      const intLit = findChild(node, 'IntegerLiteralContext')
-      if (intLit) skip = parseInt(getTextRecursive(intLit), 10)
+      // integer is an `IntegerLiteralContext` (mirroring `LimitContext`); a
+      // constant expression (`SKIP toInteger(rand()*9)`) is also supported.
+      const v = resolveSkipLimitInteger(node)
+      if (v !== undefined) skip = v
       return
     }
 
@@ -2785,13 +2826,13 @@ function extractWith(withCtx: any): QueryPlan['with'] {
       return
     }
     if (name === 'LimitContext') {
-      const intLit = findChild(node, 'IntegerLiteralContext')
-      if (intLit) limit = parseInt(getTextRecursive(intLit), 10)
+      const v = resolveSkipLimitInteger(node)
+      if (v !== undefined) limit = v
       return
     }
     if (name === 'SkipContext') {
-      const intLit = findChild(node, 'IntegerLiteralContext')
-      if (intLit) skip = parseInt(getTextRecursive(intLit), 10)
+      const v = resolveSkipLimitInteger(node)
+      if (v !== undefined) skip = v
       return
     }
 
