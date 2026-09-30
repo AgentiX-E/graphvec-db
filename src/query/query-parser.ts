@@ -819,7 +819,14 @@ function _parseQueryImpl(query: string): QueryPlan {
   // Only match pure aggregate functions (not nested inside list comprehensions).
   if (!plan.aggregate) {
     const AGG_FNS = new Set(['count','sum','avg','max','min','collect','stdev','stdevp','percentilecont','percentiledisc'])
-    const columns = plan.with?.columns?.length ? plan.with.columns : (plan.expressionColumns?.length ? plan.expressionColumns : [])
+    // Detect the aggregate from the RETURN columns first.  `plan.aggregate`
+    // describes the *RETURN* aggregate, so a WITH aggregate (`WITH count(*) AS
+    // count RETURN count > 0 AS nonEmpty`) must NOT be promoted onto it — that
+    // was previously picked up via `plan.with.columns` and turned the RETURN
+    // expression into a bogus `count(*)`, dropping `count > 0 AS nonEmpty`.
+    // Only fall back to `plan.with.columns` when the RETURN carried no columns
+    // (ANTLR dropped them), never when the RETURN already projected its own.
+    const columns = (plan.expressionColumns?.length ? plan.expressionColumns : (plan.with?.columns?.length ? plan.with.columns : []))
     const aggregated: any[] = []
     for (const col of columns) {
       const expr = typeof col.expression === 'string' ? col.expression : (col.expression?.expression || '')
