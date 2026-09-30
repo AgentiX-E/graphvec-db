@@ -6439,16 +6439,22 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // into the row set as it is processed.
       let _wcRows = rawWithEdges
       const _withChainToProcess: any[] = []
+      // Whether any aggregate fold happens after the WITH segments (either in a
+      // later WITH segment or in the RETURN).  Only when such a fold exists do we
+      // apply a WITH skip/limit here — the fold must run AFTER the slice.  When
+      // there is no aggregate at all, the WITH skip/limit was already promoted
+      // onto `plan.limit`/`plan.skip` and `_postProcessResults` slices after the
+      // ORDER BY, so slicing here would corrupt the sort order.
+      const _hasDownstreamAgg = !!plan.aggregate || withChainToApply.some((s: any) => !!s?.aggregate)
       for (const wcSeg of withChainToApply) {
         // ── WITH-segment SKIP/LIMIT ──
         // A WITH clause may carry its own SKIP/LIMIT (`WITH n SKIP 6`, `WITH n
         // LIMIT toInteger(ceil(1.7))`).  Apply it to the current row set BEFORE
         // any downstream segment (aggregate fold or projection) consumes the
         // rows, so `WITH n LIMIT 2 RETURN count(*)` counts only the 2 surviving
-        // rows.  The top-level promotion handles the non-aggregate case; this
-        // branch handles the aggregate case (where the promotion is skipped so
-        // the slice runs before the fold).
-        if ((wcSeg as any)?.skip !== undefined || (wcSeg as any)?.limit !== undefined) {
+        // rows, and `WITH n SKIP 3 WITH count(*) AS count RETURN count` skips 3
+        // before folding to 7.
+        if (_hasDownstreamAgg && ((wcSeg as any)?.skip !== undefined || (wcSeg as any)?.limit !== undefined)) {
           const _segSkip = (wcSeg as any)?.skip
           const _segLimit = (wcSeg as any)?.limit
           if (typeof _segSkip === 'number' && _segSkip > 0) _wcRows = _wcRows.slice(_segSkip)
