@@ -2056,6 +2056,14 @@ Then(/^a SyntaxError should be raised at compile time(?:.*)$/, function () {
   assert.ok(st.err, `no SyntaxError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })
 
+Then(/^a SyntaxError should be raised at runtime(?:.*)$/, function () {
+  // Parameterised SKIP/LIMIT (`SKIP $_skip` with `_skip = -1`) is validated at
+  // runtime in Cypher, but this engine resolves parameters into the query text
+  // and flags them in the same `_validatePlan` pass as a compile-time error.  The
+  // observable contract the TCK asserts is identical: `st.err` must be set.
+  assert.ok(st.err, `no SyntaxError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
+})
+
 Then(/^a TypeError should be raised (?:at runtime|at compile time|at any time)(?:.*)$/, function () {
   assert.ok(st.err, `no TypeError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })

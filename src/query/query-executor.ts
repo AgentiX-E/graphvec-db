@@ -2395,20 +2395,35 @@ function _groupAggregateWithRows(
   }
 
   const flatRows = rows.map(r => flatten(r))
-  // Evaluate a group-by expression (`a.name`, `other.name`, or a bare `other`)
-  // against a flattened row.  A dotted expression reads the property off the
-  // bound node object (`flat.a.name`); a bare variable reads the binding itself.
+  // Evaluate a group-by expression against a flattened row.  Two shapes are
+  // supported:
+  //   - a bare variable (`other`) or a simple dotted property access
+  //     (`a.name`) reads the binding/property off the flattened row directly;
+  //   - any composite expression (`a.num2 % 3`, `a.bool AND a.bool2`) is a real
+  //     arithmetic/logical expression and must be evaluated by the expression
+  //     engine so the operator (not just the property) is honoured.  Treating a
+  //     composite as a dotted access would look up the literal property
+  //     `a["num2 % 3"]` and collapse every group onto a `__NULL__` key.
   const _groupValue = (expr: string, flat: Record<string, unknown>): unknown => {
     const trimmed = expr.trim()
-    if (trimmed.includes('.')) {
-      const [owner, ...rest] = trimmed.split('.')
-      const o = flat[owner]
-      if (o && typeof o === 'object' && !Array.isArray(o)) {
-        return (o as Record<string, unknown>)[rest.join('.')]
+    const isSimpleAccess = /^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$/.test(trimmed)
+    if (isSimpleAccess) {
+      if (trimmed.includes('.')) {
+        const [owner, ...rest] = trimmed.split('.')
+        const o = flat[owner]
+        if (o && typeof o === 'object' && !Array.isArray(o)) {
+          return (o as Record<string, unknown>)[rest.join('.')]
+        }
+        return undefined
       }
+      return flat[trimmed]
+    }
+    // Composite expression: resolve via the shared expression engine.
+    try {
+      return _evaluateExpression(trimmed, flat)
+    } catch {
       return undefined
     }
-    return flat[trimmed]
   }
   // Group-by values may be node objects; build a stable string key via _id/_alias.
   const keyOfPlain = (flat: Record<string, unknown>): string =>
@@ -2448,7 +2463,7 @@ function _groupAggregateWithRows(
       let values: unknown[]
       const field = ac.field
       const lenMatch = typeof field === 'string' ? field.match(/^length\s*\(\s*([A-Za-z_]\w*)\s*\)$/i) : null
-      const propMatch = typeof field === 'string' ? field.match(/^([A-Za-z_]\w*)\.(.+)$/) : null
+      const propMatch = typeof field === 'string' ? field.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/) : null
       if (ac.prop === '*') {
         values = gRows.map(() => true)
       } else if (lenMatch) {
@@ -2469,6 +2484,14 @@ function _groupAggregateWithRows(
         values = gRows.map(r => {
           const o = r[owner] as any
           return o && typeof o === 'object' ? o[prop] : undefined
+        }).filter(v => v !== undefined && v !== null)
+      } else if (typeof field === 'string' && !/^[A-Za-z_]\w*$/.test(field.trim())) {
+        // Composite aggregate field (`a.num + a.num2`, `1 - abs(x)`, ...):
+        // `_parseAggregate` narrowed `prop` to the trailing identifier (`num2`),
+        // which is meaningless here.  Evaluate the full field expression against
+        // each flattened row so the arithmetic is actually performed.
+        values = gRows.map(r => {
+          try { return _evaluateExpression(field, r) } catch { return undefined }
         }).filter(v => v !== undefined && v !== null)
       } else {
         values = gRows.map(r => r[ac.prop]).filter(v => v !== undefined && v !== null)
@@ -6439,33 +6462,47 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // into the row set as it is processed.
       let _wcRows = rawWithEdges
       const _withChainToProcess: any[] = []
-      // Whether any aggregate fold happens after the WITH segments (either in a
-      // later WITH segment or in the RETURN).  Only when such a fold exists do we
-      // apply a WITH skip/limit here — the fold must run AFTER the slice.  When
-      // there is no aggregate at all, the WITH skip/limit was already promoted
-      // onto `plan.limit`/`plan.skip` and `_postProcessResults` slices after the
-      // ORDER BY, so slicing here would corrupt the sort order.
-      const _hasDownstreamAgg = !!plan.aggregate || withChainToApply.some((s: any) => !!s?.aggregate)
+      // Whether an aggregate fold happens after the current WITH segment (either
+      // in a later WITH segment or in the RETURN).  This decides WHERE a WITH
+      // skip/limit is applied:
+      //   - If the CURRENT segment itself aggregates, its own ORDER BY / SKIP /
+      //     LIMIT operate on the *grouped* result (Cypher semantics: project →
+      //     aggregate → ORDER BY → SKIP/LIMIT).  They must run AFTER the fold, so
+      //     `WITH a.num2 % 3 AS mod, sum(a.num + a.num2) AS sum ORDER BY sum
+      //     LIMIT 2` first folds to 3 groups, then sorts and takes 2.
+      //   - If only a LATER segment / the RETURN aggregates, the current segment's
+      //     skip/limit slice the pre-fold row set (`WITH n LIMIT 2 RETURN
+      //     count(*)` counts 2 rows; `WITH n SKIP 3 WITH count(*) RETURN count`
+      //     skips 3 before folding to 7).
+      //   - If nothing aggregates at all, the WITH skip/limit was promoted onto
+      //     `plan.skip`/`plan.limit` and `_postProcessResults` slices after the
+      //     ORDER BY, so slicing here would corrupt the sort order.
+      const _hasAnyAgg = !!plan.aggregate || withChainToApply.some((s: any) => !!s?.aggregate)
       for (const wcSeg of withChainToApply) {
-        // ── WITH-segment SKIP/LIMIT ──
-        // A WITH clause may carry its own SKIP/LIMIT (`WITH n SKIP 6`, `WITH n
-        // LIMIT toInteger(ceil(1.7))`).  Apply it to the current row set BEFORE
-        // any downstream segment (aggregate fold or projection) consumes the
-        // rows, so `WITH n LIMIT 2 RETURN count(*)` counts only the 2 surviving
-        // rows, and `WITH n SKIP 3 WITH count(*) AS count RETURN count` skips 3
-        // before folding to 7.
-        if (_hasDownstreamAgg && ((wcSeg as any)?.skip !== undefined || (wcSeg as any)?.limit !== undefined)) {
-          const _segSkip = (wcSeg as any)?.skip
-          const _segLimit = (wcSeg as any)?.limit
-          if (typeof _segSkip === 'number' && _segSkip > 0) _wcRows = _wcRows.slice(_segSkip)
-          if (typeof _segLimit === 'number' && _segLimit >= 0) _wcRows = _wcRows.slice(0, _segLimit)
-        }
-        if ((wcSeg as any)?.aggregate) {
+        const _segAgg = !!(wcSeg as any)?.aggregate
+        const _segSkip = (wcSeg as any)?.skip
+        const _segLimit = (wcSeg as any)?.limit
+        const _segHasSlice = (_segSkip !== undefined && _segSkip > 0) || (_segLimit !== undefined && _segLimit >= 0)
+
+        if (_segAgg) {
+          // Fold FIRST.  The segment's own ORDER BY / SKIP / LIMIT act on the
+          // grouped rows, but those were already promoted onto `plan.orderBy` /
+          // `plan.limit` / `plan.skip` (the RETURN has no aggregate here), so
+          // `_postProcessResults` applies them after this fold.  Slicing here
+          // would run BEFORE the sort and, worse, `_postProcessResults` would
+          // then re-slice — corrupting the result.  Leave the grouped rows
+          // unsliced.
           _wcRows = _groupAggregateWithRows(_wcRows, wcSeg as any, allNodes)
           // The fold already materialised the aggregate aliases; drop the
           // segment from the per-row projection pass below (its columns would
           // otherwise be re-evaluated against the already-grouped rows).
           continue
+        }
+
+        // Non-aggregate segment: slice BEFORE any downstream aggregate fold.
+        if (_hasAnyAgg && _segHasSlice) {
+          if (typeof _segSkip === 'number' && _segSkip > 0) _wcRows = _wcRows.slice(_segSkip)
+          if (typeof _segLimit === 'number' && _segLimit >= 0) _wcRows = _wcRows.slice(0, _segLimit)
         }
         _withChainToProcess.push(wcSeg)
       }
