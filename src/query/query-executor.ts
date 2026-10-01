@@ -2149,30 +2149,124 @@ async function _executeMultiMatchCrossJoin(
     // such a field by the presence of arithmetic/function/paren characters and
     // evaluate it as a full expression against each row instead.
     const isComplexField = /^(?!\w+\.\w+$).*[()+\-*/]/.test(field) && field !== '*'
-    const rowValue = (row: Record<string, unknown>): unknown => {
-      if (field === '*' || field === '' || field === null) return row
-      if (isComplexField) return _evaluateExpression(field, row)
-      const owner = row[varName]
-      if (propName && owner && typeof owner === 'object') return (owner as any)[propName]
-      if (field === 'count' || field === '*') return row
+    const rowValue = (row: Record<string, unknown>, fld?: string): unknown => {
+      const f = (fld ?? field) as string
+      if (typeof f !== 'string') { return (fld === '*' || f === '*' || fld === '' || f === '') ? row : (row as any)[fld as any] ?? (row as any)[f] }
+      const fComplex = /^(?!\w+\.\w+$).*[()+\-*/]/.test(f) && f !== '*'
+      if (f === '*' || f === '' || f === null) return row
+      if (fComplex) return _evaluateExpression(f, row)
+      const fVar = f.includes('.') ? f.split('.')[0] : f
+      const fProp = f.includes('.') ? f.split('.').pop()! : null
+      const owner = row[fVar]
+      if (fProp && owner && typeof owner === 'object') return (owner as any)[fProp]
+      if (f === 'count' || f === '*') return row
       return owner
+    }
+    // Fold an arbitrary aggregate `(fn, field, distinct)` over a set of rows, so a
+    // multi-aggregate expression (`count(a) * 10 + count(b) * 5`) can fold each
+    // call independently instead of only the first one captured in `plan.aggregate`.
+    const _foldSimpleAgg = (fn: string, fld: string, distinct: boolean, rows: Array<Record<string, unknown>>): unknown => {
+      const values = rows.map(r => rowValue(r, fld))
+      switch (fn.toLowerCase()) {
+        case 'count': {
+          if (fld === '*' || fld === '' || fld === null) return rows.length
+          return values.filter(v => v !== null && v !== undefined).length
+        }
+        case 'sum': {
+          const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+          return nums.reduce((a: number, b: number) => a + b, 0)
+        }
+        case 'avg': {
+          const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+          return nums.length ? nums.reduce((a: number, b: number) => a + b, 0) / nums.length : 0
+        }
+        case 'min': {
+          const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+          return nums.length ? Math.min(...nums) : 0
+        }
+        case 'max': {
+          const nums = values.map(v => (typeof v === 'number' ? v : Number(v))).filter(v => !isNaN(v))
+          return nums.length ? Math.max(...nums) : 0
+        }
+        case 'collect': {
+          const seen = new Set<unknown>()
+          return values.filter(v => {
+            if (v === null || v === undefined) return false
+            if (distinct) {
+              const key = typeof v === 'object' ? JSON.stringify(v) : String(v)
+              if (seen.has(key)) return false
+              seen.add(key)
+            }
+            return true
+          })
+        }
+        default:
+          return rows.length
+      }
     }
     // Apply an outer expression over a folded aggregate scalar.  `RETURN {name:
     // count(b)} AS baz` folds `count(b)` to a scalar but must re-wrap it in the
     // literal map (`{name: 1}`).  When the aggregate column text is not a plain
     // `func(field)` call, substitute the folded value into the column expression
     // and evaluate it against the group's first row (which carries `a`/`b`).
-    const _applyOuterExpr = (foldVal: unknown, row: Record<string, unknown>): unknown => {
+    const _applyOuterExpr = (foldVal: unknown, row: Record<string, unknown>, rows?: Array<Record<string, unknown>>): unknown => {
       // The aggregate *expression* is everything before the `AS alias`.
       const colText = (agg?.column || '').split(/\s+AS\s+/i)[0].trim()
       if (!colText || !aggFn) return foldVal
-      // Pure aggregate call (`count(b)`, `count(*)`) has no outer expression.
-      if (new RegExp(`^${aggFn}\\s*\\(`, 'i').test(colText)) return foldVal
-      // Otherwise wrap/substitute: replace the inner `func(field)` (or `func(*)`)
-      // with the folded value, then evaluate the remaining expression.
-      const fieldEsc = (field === '*' ? '\\*' : (field || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      const innerCall = new RegExp(`${aggFn}\\s*\\(\\s*${fieldEsc}\\s*\\)`, 'i')
-      const substituted = colText.replace(innerCall, JSON.stringify(foldVal))
+      // Pure aggregate call (`count(b)`, `count(*)`) has no outer expression.  It
+      // must match the ENTIRE column, not merely begin with the call — otherwise
+      // `count(a) * 10 + count(b) * 5` would be misclassified as a bare `count(a)`.
+      if (new RegExp(`^${aggFn}\\s*\\(`, 'i').test(colText)) {
+        // The whole column is a single aggregate call iff there is no trailing
+        // arithmetic past its balanced closing parenthesis.
+        const openIdx = colText.indexOf('(')
+        let depth = 0, closeIdx = -1
+        for (let i = openIdx; i < colText.length; i++) {
+          if (colText[i] === '(') depth++
+          else if (colText[i] === ')') { depth--; if (depth === 0) { closeIdx = i; break } }
+        }
+        if (closeIdx === colText.length - 1) return foldVal
+        // Otherwise fall through to the multi-aggregate substitution below.
+      }
+      // Collect every aggregate call in the column expression and fold each one
+      // (first the primary `agg`, then any additional calls) before evaluating the
+      // surrounding arithmetic.
+      const aggCallRe = /\b(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(/gi
+      let m: RegExpExecArray | null
+      const calls: Array<{ fn: string; raw: string; field: string; distinct: boolean }> = []
+      while ((m = aggCallRe.exec(colText)) !== null) {
+        const fn = m[1].toLowerCase()
+        const open = colText.indexOf('(', m.index + m[0].length - 1)
+        let depth = 0, close = -1
+        for (let i = open; i < colText.length; i++) {
+          if (colText[i] === '(') depth++
+          else if (colText[i] === ')') { depth--; if (depth === 0) { close = i; break } }
+        }
+        const raw = colText.slice(m.index, close + 1)
+        let inner = raw.slice(raw.indexOf('(') + 1, -1).trim()
+        let distinct = false
+        const dm = inner.match(/^DISTINCT\s+/i)
+        if (dm) { distinct = true; inner = inner.slice(dm[0].length).trim() }
+        calls.push({ fn, raw, field: inner, distinct })
+      }
+      if (!calls.length) return foldVal
+      if (calls.length === 1) {
+        // Single call: the primary fold already produced `foldVal`; substitute it.
+        const fieldEsc = (field === '*' ? '\\*' : (field || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        const innerCall = new RegExp(`${aggFn}\\s*\\(\\s*${fieldEsc}\\s*\\)`, 'i')
+        const substituted = colText.replace(innerCall, JSON.stringify(foldVal))
+        return _evaluateExpression(substituted, row)
+      }
+      // Multiple calls: fold each independently against the full row set.
+      const srcRows = rows && rows.length ? rows : [row]
+      const primaryRaw = calls[0].raw
+      const sameAsPrimary = (c: typeof calls[number]) => c.fn === (aggFn || '').toLowerCase() && (c.field === field || c.field === (field === '*' ? '*' : c.field))
+      let substituted = colText
+      for (const c of calls) {
+        const isPrimary = c.raw === primaryRaw && sameAsPrimary(c)
+        const fval = isPrimary ? foldVal : _foldSimpleAgg(c.fn, c.field, c.distinct, srcRows)
+        substituted = substituted.replace(c.raw, JSON.stringify(fval))
+      }
       return _evaluateExpression(substituted, row)
     }
     // Fold an aggregate over a single group of rows, returning its scalar value.
@@ -2186,7 +2280,7 @@ async function _executeMultiMatchCrossJoin(
         const gr = (groupRows[0] as any)?.__groupRows
         if (Array.isArray(gr) && gr.length) effectiveRows = gr
       }
-      const values = effectiveRows.map(rowValue)
+      const values = effectiveRows.map((r: Record<string, unknown>) => rowValue(r))
       switch (aggFn) {
         case 'count': {
           if (field === '*' || field === '' || field === null) return effectiveRows.length
@@ -2285,7 +2379,7 @@ async function _executeMultiMatchCrossJoin(
         const first = grp[0]
         const r: QueryRow = {}
         for (const gb of groupByCols) r[gb] = _keyVal(gb, first)
-        r[alias] = _applyOuterExpr(_foldGroup(grp), first)
+        r[alias] = _applyOuterExpr(_foldGroup(grp), first, grp)
         for (const ec of returnExprCols) {
           // Skip the grouping keys (already resolved via `_keyVal` against the
           // original cross-joined row, which carries the bound variables `a`/`b`).
@@ -2298,7 +2392,7 @@ async function _executeMultiMatchCrossJoin(
         out.push(r)
       }
     } else {
-      out = [{ [alias]: _applyOuterExpr(_foldGroup(filtered), filtered[0] || {}) }]
+      out = [{ [alias]: _applyOuterExpr(_foldGroup(filtered), filtered[0] || {}, filtered) }]
     }
   } else {
     // Expression columns (e.g. `p1 = p2`).
