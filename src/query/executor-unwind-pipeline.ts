@@ -484,23 +484,35 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
           if (!(key in varCtx)) varCtx[key] = rows[0][key]
         }
       }
-      const items = _resolveUnwindList(u, varCtx)
-      const unwrapped = (Array.isArray(items) ? items : [items]).map(item => {
-        if (typeof item === 'string' && item.startsWith('{') && item.endsWith('}')) {
-          const parsed = _evaluateExpression(item, varCtx)
-          if (parsed != null && typeof parsed === 'object') return parsed
-        }
-        return item
-      })
       // 对当前 rows 中的每一行，展开当前 UNWIND
       if (rows.length === 0) {
-        // 初始行：直接展开
+        // 初始行：用 varCtx 解析列表，直接展开
+        const items = _resolveUnwindList(u, varCtx)
+        const unwrapped = (Array.isArray(items) ? items : [items]).map(item => {
+          if (typeof item === 'string' && item.startsWith('{') && item.endsWith('}')) {
+            const parsed = _evaluateExpression(item, varCtx)
+            if (parsed != null && typeof parsed === 'object') return parsed
+          }
+          return item
+        })
         rows = unwrapped.map(item => ({ [u.name]: item }))
       } else {
-        // 已有多行：每行做笛卡尔积展开
+        // 已有多行：每行做笛卡尔积展开。第二层（及以后）UNWIND 的列表源可能是
+        // 索引式表达式（`UNWIND qrows[p] AS q`），其值依赖于**当前行**绑定的一层
+        // 变量 `p`，因此必须逐行用 `{...varCtx, ...row}` 解析列表，而非复用统一
+        // 的 varCtx（后者只含 rows[0] 的绑定，会把 qrows[p] 恒解析为 qrows[0]）。
         const newRows: Array<Record<string, unknown>> = []
         for (const row of rows) {
-          for (const item of unwrapped) {
+          const rowCtx: Record<string, unknown> = { ...varCtx, ...row }
+          const rowItems = _resolveUnwindList(u, rowCtx)
+          const rowUnwrapped = (Array.isArray(rowItems) ? rowItems : [rowItems]).map(item => {
+            if (typeof item === 'string' && item.startsWith('{') && item.endsWith('}')) {
+              const parsed = _evaluateExpression(item, rowCtx)
+              if (parsed != null && typeof parsed === 'object') return parsed
+            }
+            return item
+          })
+          for (const item of rowUnwrapped) {
             newRows.push({ ...row, [u.name]: item })
           }
         }
@@ -575,14 +587,18 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       rows = [{ [plan.unwind.name]: resolvedList1 }]
     } else if (plan.secondUnwind) {
       // 双 UNWIND：笛卡尔积（向后兼容 plan.secondUnwind / plan.unwind 字段）
-      const list2 = _resolveUnwindList(plan.secondUnwind, varCtx).map(item => {
-        if (typeof item === 'string' && item.startsWith('{') && item.endsWith('}')) {
-          const parsed = _evaluateExpression(item, varCtx)
-          if (parsed != null && typeof parsed === 'object') return parsed
-        }
-        return item
-      })
+      // The second UNWIND source may be indexed by the outer variable
+      // (`UNWIND qrows[p] AS q`), so it must be resolved per-item with `p`
+      // bound, not once against the bare `varCtx` (where `p` is undefined).
       for (const item1 of resolvedList1) {
+        const innerCtx: Record<string, unknown> = { ...varCtx, [plan.unwind.name!]: item1 }
+        const list2 = _resolveUnwindList(plan.secondUnwind, innerCtx).map(item => {
+          if (typeof item === 'string' && item.startsWith('{') && item.endsWith('}')) {
+            const parsed = _evaluateExpression(item, innerCtx)
+            if (parsed != null && typeof parsed === 'object') return parsed
+          }
+          return item
+        })
         const list2Arr = Array.isArray(list2) ? list2 : [list2]
         for (const item2 of list2Arr) {
           const row: Record<string, unknown> = { [plan.unwind.name]: item1 }
@@ -713,6 +729,10 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     const isAggCol: boolean[] = plan.with.columns.map(col => typeof col.expression === 'string' ? aggFnPattern.test(col.expression) : false)
     const hasAgg = isAggCol.some(Boolean)
     const aggCols: Array<{ alias: string; fn: string; rows: unknown[] }> = []
+    // Grouping keys = the non-aggregate projection columns.  Their aliases carve
+    // the UNWIND rows into groups, so `WITH p, count(q) AS rng` folds per `p`
+    // (p=0 → count 1, p=1 → count 2) instead of a single global count.
+    const groupKeyAliases: string[] = []
     if (hasAgg) {
       for (let i = 0; i < plan.with.columns.length; i++) {
         if (isAggCol[i]) {
@@ -723,12 +743,24 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
             fn: fnMatch ? fnMatch[1].toLowerCase() : 'collect',
             rows: [],
           })
+        } else {
+          groupKeyAliases.push(plan.with.columns[i].alias || plan.with.columns[i].expression)
         }
       }
     }
+    // Grouped aggregation: map from a stringified grouping-key tuple to the
+    // per-column accumulated aggregate inputs plus a representative output row.
+    const grouped = new Map<string, { aggRows: unknown[][]; groupVals: Record<string, unknown> }>()
+    const groupedOrder: string[] = []
     rows = rows.map(row => {
       const newRow: Record<string, unknown> = { ...row }
       const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+      // Compute this row's grouping key now (before projection) so the
+      // non-aggregate columns here reflect the UNWIND-expanded bindings.
+      const _gk = hasAgg ? groupKeyAliases.map(k => {
+        const v = evalCtx[k]
+        return v && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '__NULL__')
+      }).join('\u0000') : ''
       let aggIdx = 0
       for (let i = 0; i < plan.with.columns.length; i++) {
         const col = plan.with.columns[i]
@@ -748,7 +780,19 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
             // count(*) → 每个值都是 1
             const innerExpr = innerMatch[1].trim()
             const val = innerExpr === '*' ? 1 : _evaluateExpression(innerExpr, evalCtx)
-            aggCols[aggIdx].rows.push(val !== undefined ? val : null)
+            const v = val !== undefined ? val : null
+            aggCols[aggIdx].rows.push(v)
+            // Also accumulate per-group so the final fold can group by the
+            // non-aggregate keys.
+            if (hasAgg && groupKeyAliases.length) {
+              if (!grouped.has(_gk)) {
+                const gv: Record<string, unknown> = {}
+                for (const ka of groupKeyAliases) gv[ka] = evalCtx[ka]
+                grouped.set(_gk, { aggRows: aggCols.map(() => [] as unknown[]), groupVals: gv })
+                groupedOrder.push(_gk)
+              }
+              grouped.get(_gk)!.aggRows[aggIdx].push(v)
+            }
           }
           aggIdx++
         } else {
@@ -795,19 +839,33 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     // Skip aggregation row construction when all agg columns were pre-computed
     // (their values are already snapshotted in newRow via _preAggAliases skip).
     if (hasAgg && aggCols.some(ac => ac.rows.length > 0)) {
-      const aggRow: Record<string, unknown> = {}
-      for (const ac of aggCols) {
-        aggRow[ac.alias] = _computeAggregate(ac.fn, ac.rows)
-      }
-      // 保留非聚合列（取第一行的值即可）
-      if (rows.length > 0) {
-        for (const key of Object.keys(rows[0])) {
-          if (!(key in aggRow)) {
-            aggRow[key] = rows[0][key]
+      if (groupKeyAliases.length && groupedOrder.length) {
+        // Grouped aggregation: one output row per non-aggregate key tuple.
+        const grpRows: Array<Record<string, unknown>> = []
+        for (const gk of groupedOrder) {
+          const g = grouped.get(gk)!
+          const out: Record<string, unknown> = { ...g.groupVals }
+          for (let ci = 0; ci < aggCols.length; ci++) {
+            out[aggCols[ci].alias] = _computeAggregate(aggCols[ci].fn, g.aggRows[ci])
+          }
+          grpRows.push(out)
+        }
+        rows = grpRows
+      } else {
+        const aggRow: Record<string, unknown> = {}
+        for (const ac of aggCols) {
+          aggRow[ac.alias] = _computeAggregate(ac.fn, ac.rows)
+        }
+        // 保留非聚合列（取第一行的值即可）
+        if (rows.length > 0) {
+          for (const key of Object.keys(rows[0])) {
+            if (!(key in aggRow)) {
+              aggRow[key] = rows[0][key]
+            }
           }
         }
+        rows = [aggRow]
       }
-      rows = [aggRow]
     }
   }
 

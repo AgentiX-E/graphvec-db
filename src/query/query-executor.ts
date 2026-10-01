@@ -2446,6 +2446,24 @@ function _groupAggregateWithRows(
   }
 
   const result: Array<Record<string, unknown>> = []
+  // Empty input + aggregate WITHOUT a grouping key → a single "null group" row.
+  // Cypher aggregates over zero rows still produce one output row: COUNT → 0,
+  // SUM → 0, AVG/MAX/MIN → NULL, COLLECT → [].  Without this, `MATCH (...)
+  // WITH avg(person.age) AS avgAge RETURN avgAge` over an empty graph returned
+  // zero rows instead of [{avgAge: null}].  When a grouping key is present
+  // (`WITH me.age AS age, count(you.age) AS cnt`), an empty input yields *zero*
+  // rows — there are no groups to emit.
+  if (flatRows.length === 0 && groupByCols.length === 0) {
+    const out: Record<string, unknown> = {}
+    for (const ac of aggCols) {
+      out[ac.alias || ac.fn.toLowerCase()] = _computeAggregate(ac.fn, [], (ac as any).pctArg)
+    }
+    return [{
+      props: { ...out },
+      __crossVarRows: { ...out },
+      ...out,
+    }]
+  }
   for (const k of order) {
     const { rows: gRows } = groups.get(k)!
     const out: Record<string, unknown> = {}
