@@ -5425,8 +5425,16 @@ export function _compareOrderByValue(a: unknown, b: unknown): number {
     return a.length - b.length
   }
 
-  // Same-type numeric comparison.
-  if (ta === 'number' && tb === 'number') return a < b ? -1 : 1
+  // Same-type numeric comparison.  NaN is ordered after every ordinary number
+  // (openCypher: … < number < NaN < null), and `a < b` / `b < a` are both false
+  // when either operand is NaN, so handle NaN explicitly to keep the comparator
+  // antisymmetric — otherwise `_compareOrderByValue(NaN, 1.5)` and
+  // `_compareOrderByValue(1.5, NaN)` would both return 1.
+  if (ta === 'number' && tb === 'number') {
+    const na = Number.isNaN(a as number), nb = Number.isNaN(b as number)
+    if (na || nb) return na === nb ? 0 : na ? 1 : -1
+    return a < b ? -1 : 1
+  }
   if ((ta === 'bigint' && tb === 'bigint')) return a < b ? -1 : 1
 
   // Temporal strings order by absolute instant; kept inside the string branch
@@ -5584,12 +5592,25 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
         if (va === null && vb === null) cmp = 0
         else if (va === null) cmp = 1
         else if (vb === null) cmp = -1
-        else if (Array.isArray(va) || Array.isArray(vb)) cmp = _compareOrderByValue(va, vb)
-        else if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb
+        else if (typeof va === 'object' || typeof vb === 'object' || typeof va !== typeof vb) {
+          // Any cross-type pair — node/rel/path/map (objects), list vs string,
+          // number vs string, boolean vs number, etc. — must follow openCypher's
+          // total type order (map < node < relation < list < path < string <
+          // boolean < number < null) via `_compareOrderByValue`.  Falling back to
+          // `String()` here would collapse objects to "[object Object]" (a silent
+          // tie) and mis-order scalars ("text" vs 1.5 by their string form).
+          cmp = _compareOrderByValue(va, vb)
+        }
+        else if (typeof va === 'number') {
+          // Route same-type numerics through `_compareOrderByValue` too: a plain
+          // `va - vb` yields NaN when either operand is NaN, and returning NaN
+          // from a sort comparator is treated as 0 by Array#sort, silently
+          // breaking the order ("NaN" slips next to ordinary numbers / null).
+          cmp = _compareOrderByValue(va, vb)
+        }
         else {
-          // Offset-bearing temporal values sort by absolute instant (UTC), not
-          // by their local clock text. When both sides normalize, compare the
-          // UTC keys; otherwise fall back to plain textual ordering.
+          // Both strings: offset-bearing temporal values sort by absolute instant
+          // (UTC), not by their local clock text; otherwise plain locale order.
           const ta = _temporalSortKey(va)
           const tb = _temporalSortKey(vb)
           if (ta !== null && tb !== null) cmp = ta.localeCompare(tb)
