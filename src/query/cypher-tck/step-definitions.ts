@@ -1987,9 +1987,15 @@ When('executing query:', async function (query: string) {
   // appear WITHOUT a WITH pipe — a WITH chains the MERGEs into a single query,
   // whereas bare newline-separated MERGEs are independent statements.
   const hasWith = /\bWITH\b/i.test(st.q)
+  // A UNWIND/MATCH pipe establishes row context that the following MERGEs
+  // consume (e.g. `UNWIND $events ... MERGE ... MERGE ...`), so those MERGEs
+  // are sequential clauses of ONE query, not independent statements.  Only the
+  // bare `MERGE (a) MERGE (b) RETURN p` form (no WITH/UNWIND/MATCH preamble) is
+  // a statement sequence to split.
+  const hasUnwindMatch = /\bUNWIND\b|\bMATCH\b/i.test(st.q)
   const rawLines = st.q.split('\n').map((s: string) => s.trim()).filter(Boolean)
   const mergeCount = rawLines.filter((l: string) => /^MERGE\b/i.test(l)).length
-  if (mergeCount > 1 && !hasWith) {
+  if (mergeCount > 1 && !hasWith && !hasUnwindMatch) {
     const lines: string[] = []
     let pending = ''
     for (const line of rawLines) {
