@@ -367,6 +367,11 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   // result (e.g., UNWIND nodes AS n), so we must evaluate aggregate WITH first
   // and inject the result into varCtx before the UNWIND step resolves its list.
   const _preAggAliases = new Set<string>()
+  // Aggregate projections already folded by the per-UNWIND middle-WITH pass.
+  // Step 3 must not re-fold these (they were collapsed into a single `rows`
+  // value before the next UNWIND expanded it), otherwise the downstream
+  // UNWIND-produced columns are dropped.
+  const _middleWithAggAliases = new Set<string>()
   if (plan.hasMatch && plan.with && query &&
       (plan.aggregate || plan.type === 'SET' || plan.type === 'DELETE')) {
     _preProcessAggregateWith(varCtx, _preAggAliases, plan, query, _nodes)
@@ -547,25 +552,55 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
             const clauseBody = m[1].trim()
             if (!clauseBody) continue
             const columns = _splitWithColumns(clauseBody)
-            rows = rows.map(row => {
-              const newRow: Record<string, unknown> = { ...row }
-              const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
-              for (const col of columns) {
-                const eqIdx = col.search(/\s+AS\s+/i)
-                if (eqIdx >= 0) {
-                  const expr = col.substring(0, eqIdx).trim()
-                  const alias = col.substring(eqIdx + 3).trim().replace(/\s+$/, '')
-                  // 函数调用如 CASE/coalesce 等
-                  const val = _evaluateExpression(expr, evalCtx)
-                  newRow[alias] = val !== undefined ? val : null
-                } else {
-                  // 无 AS，直接引用变量
-                  const val = _evaluateExpression(col, evalCtx)
-                  if (val !== undefined) newRow[col] = val
+            // Detect whether this WITH projection carries an aggregate
+            // (`collect(row)`), which must fold across ALL current rows into a
+            // single row — not be evaluated per row (which would produce
+            // `collect` of a single element on each row and then only keep the
+            // first row's result, truncating the list).
+            const aggCols = columns.map(c => {
+              const eqIdx = c.search(/\s+AS\s+/i)
+              const expr = eqIdx >= 0 ? c.substring(0, eqIdx).trim() : c.trim()
+              const alias = eqIdx >= 0 ? c.substring(eqIdx + 3).trim().replace(/\s+$/, '') : expr
+              const am = /^\s*(collect|count|sum|avg|max|min)\s*\(([\s\S]*)\)\s*$/i.exec(expr)
+              if (!am) return null
+              return { fn: am[1].toLowerCase(), args: am[2].trim(), alias, expr }
+            }).filter(Boolean) as Array<{ fn: string; args: string; alias: string; expr: string }>
+            if (aggCols.length) {
+              // Aggregate fold: each aggregate column is computed over the whole
+              // current row set, producing a single output row.
+              const aggRow: Record<string, unknown> = {}
+              for (const ac of aggCols) {
+                const vals: unknown[] = []
+                for (const row of rows) {
+                  const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+                  if (ac.fn === 'count' && ac.args === '*') { vals.push(row); continue }
+                  vals.push(_evaluateExpression(ac.args, evalCtx))
                 }
+                aggRow[ac.alias] = _computeAggregate(ac.fn, vals)
+                _middleWithAggAliases.add(ac.alias)
               }
-              return newRow
-            })
+              rows = [aggRow]
+            } else {
+              rows = rows.map(row => {
+                const newRow: Record<string, unknown> = { ...row }
+                const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+                for (const col of columns) {
+                  const eqIdx = col.search(/\s+AS\s+/i)
+                  if (eqIdx >= 0) {
+                    const expr = col.substring(0, eqIdx).trim()
+                    const alias = col.substring(eqIdx + 3).trim().replace(/\s+$/, '')
+                    // 函数调用如 CASE/coalesce 等
+                    const val = _evaluateExpression(expr, evalCtx)
+                    newRow[alias] = val !== undefined ? val : null
+                  } else {
+                    // 无 AS，直接引用变量
+                    const val = _evaluateExpression(col, evalCtx)
+                    if (val !== undefined) newRow[col] = val
+                  }
+                }
+                return newRow
+              })
+            }
             // 将中间 WITH 结果写回 varCtx（用于后续 UNWIND 层的列表解析）
             if (rows.length > 0) {
               Object.assign(varCtx, rows[0])
@@ -726,7 +761,13 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   if (plan.with?.columns?.length) {
     // 判断哪些列是聚合函数
     const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
-    const isAggCol: boolean[] = plan.with.columns.map(col => typeof col.expression === 'string' ? aggFnPattern.test(col.expression) : false)
+    const isAggCol: boolean[] = plan.with.columns.map(col => {
+      const alias = col.alias || col.expression
+      // A middle-WITH aggregate already folded by the UNWIND loop must not be
+      // re-folded here (its value is already the collapsed list on each row).
+      if (_middleWithAggAliases.has(alias)) return false
+      return typeof col.expression === 'string' ? aggFnPattern.test(col.expression) : false
+    })
     const hasAgg = isAggCol.some(Boolean)
     const aggCols: Array<{ alias: string; fn: string; rows: unknown[] }> = []
     // Grouping keys = the non-aggregate projection columns.  Their aliases carve
