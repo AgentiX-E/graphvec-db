@@ -2029,6 +2029,7 @@ Then('the result should be empty', function () {
 Then(/^the result should be, in any order:\s*$/, function (dt: DataTable) { cmp(dt) })
 Then(/^the result should be, in order:\s*$/, function (dt: DataTable) { cmp(dt, true) })
 Then(/^the result should be \(ignoring element order for lists\):\s*$/, function (dt: DataTable) { cmp(dt, false, true) })
+Then(/^the result should be, in order \(ignoring element order for lists\):\s*$/, function (dt: DataTable) { cmp(dt, true, true) })
 
 Then(/^the result should have (\d+) rows?$/, function (c: string) {
   if (st.err) throw st.err; assert.strictEqual(st.res.length, parseInt(c, 10))

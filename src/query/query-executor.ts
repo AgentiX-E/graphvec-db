@@ -7278,21 +7278,21 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const props = (rw.props && typeof rw.props === 'object') ? rw.props : {}
           const keyParts: string[] = []
           for (const gb of _gbCols) {
-            // Prefer the step node variable; fall back to a projection key
-            // (WITH alias already materialised into `props` by the fold), then
-            // to a RETURN expression alias (`name` ← `a.name`).
-            const nodeVal = cvr[gb]
+            // A grouping key that is a RETURN expression alias (`l` ←
+            // `length(p)`) is not yet materialised at fold time, so evaluate it
+            // BEFORE trusting any same-named key in `cvr` — a variable-length walk
+            // can leave a stray relationship under the alias, which would
+            // otherwise be mistaken for the group key and collapse every row.
+            const ctx: Record<string, unknown> = { ...cvr, ...props }
+            const expr = _exprByAlias.get(gb)
             let rawId: unknown
-            if (nodeVal !== undefined && nodeVal !== null) {
-              rawId = nodeVal
-            } else if (gb in props) {
-              rawId = props[gb]
-            } else if (_exprByAlias.has(gb)) {
-              const expr = _exprByAlias.get(gb)!
-              const ctx: Record<string, unknown> = { ...cvr, ...props }
+            if (expr) {
               try { rawId = _evalBinary(expr, ctx) } catch { rawId = null }
             } else {
-              rawId = null
+              const nodeVal = cvr[gb]
+              if (nodeVal !== undefined && nodeVal !== null) rawId = nodeVal
+              else if (gb in props) rawId = props[gb]
+              else rawId = null
             }
             const id = (rawId !== undefined && rawId !== null && typeof rawId === 'object')
               ? String((rawId as any).id ?? (rawId as any)._label ?? 'null')
@@ -7307,6 +7307,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         for (const [, rows] of _groups) {
           const first = rows[0]
           const _foldedRow: any = { ...first, props: { ...(first.props || {}) } }
+          // Materialise each grouping key onto the folded row using the same
+          // evaluation order as the key computation (RETURN expression alias
+          // first, then the raw binding).  `first` may carry a stale value under
+          // the alias (a stray relationship from the variable-length walk), so
+          // re-evaluate `length(p)` rather than copying `first` verbatim.
+          for (const gb of _gbCols) {
+            const _ctx: Record<string, unknown> = { ...(first.__crossVarRows || {}), ...(first.props || {}) }
+            const _gexpr = _exprByAlias.get(gb)
+            let _gval: unknown
+            if (_gexpr) { try { _gval = _evalBinary(_gexpr, _ctx) } catch { _gval = null } }
+            else { _gval = first.__crossVarRows?.[gb] ?? (gb in (first.props || {}) ? first.props[gb] : null) }
+            _foldedRow.props[gb] = _gval
+            if (_foldedRow.__crossVarRows) _foldedRow.__crossVarRows[gb] = _gval
+          }
           if (_gbAgg.function === 'count') {
             _foldedRow.props[_aggAlias] = rows.length
           } else {
@@ -7323,7 +7337,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               let cv: unknown
               if (_field) {
                 const dotIdx = _field.indexOf('.')
-                if (dotIdx > 0) {
+                if (/^\w+\s*\(/.test(_field)) {
+                  // A function-call field (`nodes(p)`, `relationships(p)`) must
+                  // be evaluated against the row's bindings, not looked up as a
+                  // literal key in `cvr` (which would be undefined).
+                  const ctx: Record<string, unknown> = { ...cvr, ...props }
+                  try { cv = _evalBinary(_field, ctx) } catch { cv = undefined }
+                } else if (dotIdx > 0) {
                   const owner = _field.slice(0, dotIdx)
                   const prop = _field.slice(dotIdx + 1)
                   const ownerObj = cvr[owner] || props[owner]

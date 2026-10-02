@@ -677,6 +677,43 @@ function _parseQueryImpl(query: string): QueryPlan {
             plan.returnAliasMap = {}
             for (const c of plan.returnColumns) plan.returnAliasMap[c] = c
           }
+          // ANTLR failed to produce `ReturnItemContext` nodes for these columns
+          // (nested function calls such as `collect(nodes(p))` trip it up), so
+          // `expressionColumns` and `aggregate` were left unset.  Rebuild them
+          // from the raw column text so aggregation + implicit grouping still
+          // work: `RETURN collect(nodes(p)) AS paths, length(p) AS l ORDER BY l`
+          // must fold on `collect` grouped by `l`.
+          const AGG_FNS = new Set(['count','sum','avg','max','min','collect','stdev','stdevp'])
+          const aggList: any[] = []
+          const rebuiltExprCols: Array<{ expression: string; alias: string | null }> = []
+          const implicitKeys: string[] = []
+          for (const c of cols) {
+            const asMatch = c.match(/^(.+?)\s+AS\s+(\w+)\s*$/i)
+            const exprText = asMatch ? asMatch[1].trim() : c.trim()
+            const alias = asMatch ? asMatch[2] : null
+            rebuiltExprCols.push({ expression: exprText, alias })
+            const aggMatch = exprText.match(/^(\w+)\(\s*(.+?)\s*\)$/i)
+            if (aggMatch && AGG_FNS.has(aggMatch[1].toLowerCase())) {
+              const distinctMatch = exprText.match(/^\w+\(\s*(DISTINCT\s+)?(.+?)\s*\)$/i)
+              aggList.push({
+                function: aggMatch[1].toLowerCase(),
+                column: exprText,
+                type: aggMatch[1].toLowerCase(),
+                alias: alias || '',
+                field: distinctMatch ? distinctMatch[2] : aggMatch[2],
+                distinct: distinctMatch ? !!distinctMatch[1] : undefined,
+              })
+            } else if (alias) {
+              // Non-aggregate aliased column → implicit grouping key.
+              implicitKeys.push(alias)
+            }
+          }
+          if (aggList.length) {
+            plan.aggregate = aggList[0]
+            plan.aggregates = aggList
+            if (!plan.groupBy && implicitKeys.length) plan.groupBy = implicitKeys
+          }
+          plan.expressionColumns = rebuiltExprCols
         }
       }
     }
