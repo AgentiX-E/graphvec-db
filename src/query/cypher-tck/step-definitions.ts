@@ -1884,7 +1884,9 @@ Given('parameters are:', function (dt: any) {
       } else if (/^-?\d+\.\d+$/.test(cleaned)) {
         parsed = Number(cleaned)
       } else if (/^\[.*\]$/.test(cleaned)) {
-        try { parsed = JSON.parse(cleaned.replace(/'/g, '"')) } catch { parsed = cleaned }
+        // Array literals may contain Cypher maps with unquoted keys
+        // (`[{year: 2016, id: 1}]`); quote the keys before JSON.parse.
+        try { parsed = JSON.parse(cleaned.replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"')) } catch { parsed = cleaned }
       } else if (/^\{.+\}$/.test(cleaned) && !hasQuotes) {
         // Map 字面量：{key: 'val', key2: 'val2'} 或 {key: val} 
         try {

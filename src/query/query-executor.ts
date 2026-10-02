@@ -3042,6 +3042,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             if (typeof raw !== 'string') return v
             for (const [name, val] of binding) {
               if (raw === name) return val
+              // `event.id` / `prop.login` — property access off an unwound
+              // element must resolve to the element's field, not remain the
+              // bare string (which MERGE/SET would materialise as a literal).
+              const pre = name + '.'
+              if (raw.startsWith(pre)) {
+                const prop = raw.slice(pre.length)
+                if (val && typeof val === 'object') return (val as any)[prop]
+              }
             }
             return v
           }
