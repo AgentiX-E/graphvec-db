@@ -577,19 +577,74 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
             }).filter(Boolean) as Array<{ fn: string; args: string; alias: string; expr: string }>
             if (aggCols.length) {
               // Aggregate fold: each aggregate column is computed over the whole
-              // current row set, producing a single output row.
-              const aggRow: Record<string, unknown> = {}
-              for (const ac of aggCols) {
-                const vals: unknown[] = []
+              // current row set.  When the WITH also carries non-aggregate columns
+              // (`WITH p, count(q) AS rng`), those columns are the implicit GROUP
+              // BY keys — the aggregate must be folded *per group* (one output row
+              // per distinct key tuple), not collapsed into a single global row
+              // (which drops `p = 1` and truncates a later ORDER BY to `p = 0`).
+              const aggAliases = new Set(aggCols.map(ac => ac.alias))
+              const groupKeyCols = columns.filter(c => {
+                const eqIdx = c.search(/\s+AS\s+/i)
+                const key = (eqIdx >= 0 ? c.substring(eqIdx + 3).trim() : c.trim()).replace(/\s+$/, '')
+                return !aggAliases.has(key) && key.length > 0
+              })
+              if (groupKeyCols.length) {
+                const grouped = new Map<string, { keyVals: Record<string, unknown>; src: Record<string, unknown> }>()
+                const groupedOrder: string[] = []
                 for (const row of rows) {
                   const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
-                  if (ac.fn === 'count' && ac.args === '*') { vals.push(row); continue }
-                  vals.push(_evaluateExpression(ac.args, evalCtx))
+                  const keyVals: Record<string, unknown> = {}
+                  for (const kc of groupKeyCols) {
+                    const eqIdx = kc.search(/\s+AS\s+/i)
+                    const expr = (eqIdx >= 0 ? kc.substring(0, eqIdx).trim() : kc.trim())
+                    const alias = (eqIdx >= 0 ? kc.substring(eqIdx + 3).trim() : kc).replace(/\s+$/, '')
+                    keyVals[alias] = _evaluateExpression(expr, evalCtx)
+                  }
+                  const keyStr = JSON.stringify(keyVals)
+                  if (!grouped.has(keyStr)) {
+                    grouped.set(keyStr, { keyVals, src: row })
+                    groupedOrder.push(keyStr)
+                  }
                 }
-                aggRow[ac.alias] = _computeAggregate(ac.fn, vals)
-                _middleWithAggAliases.add(ac.alias)
+                const newRows: Array<Record<string, unknown>> = []
+                for (const keyStr of groupedOrder) {
+                  const { keyVals } = grouped.get(keyStr)!
+                  const aggRow: Record<string, unknown> = { ...keyVals }
+                  for (const ac of aggCols) {
+                    const vals: unknown[] = []
+                    for (const row of rows) {
+                      const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+                      const rowKey: Record<string, unknown> = {}
+                      for (const kc of groupKeyCols) {
+                        const eqIdx = kc.search(/\s+AS\s+/i)
+                        const expr = (eqIdx >= 0 ? kc.substring(0, eqIdx).trim() : kc.trim())
+                        const alias = (eqIdx >= 0 ? kc.substring(eqIdx + 3).trim() : kc).replace(/\s+$/, '')
+                        rowKey[alias] = _evaluateExpression(expr, evalCtx)
+                      }
+                      if (JSON.stringify(rowKey) !== keyStr) continue
+                      if (ac.fn === 'count' && ac.args === '*') { vals.push(row); continue }
+                      vals.push(_evaluateExpression(ac.args, evalCtx))
+                    }
+                    aggRow[ac.alias] = _computeAggregate(ac.fn, vals)
+                    _middleWithAggAliases.add(ac.alias)
+                  }
+                  newRows.push(aggRow)
+                }
+                rows = newRows
+              } else {
+                const aggRow: Record<string, unknown> = {}
+                for (const ac of aggCols) {
+                  const vals: unknown[] = []
+                  for (const row of rows) {
+                    const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
+                    if (ac.fn === 'count' && ac.args === '*') { vals.push(row); continue }
+                    vals.push(_evaluateExpression(ac.args, evalCtx))
+                  }
+                  aggRow[ac.alias] = _computeAggregate(ac.fn, vals)
+                  _middleWithAggAliases.add(ac.alias)
+                }
+                rows = [aggRow]
               }
-              rows = [aggRow]
             } else {
               rows = rows.map(row => {
                 const newRow: Record<string, unknown> = { ...row }
