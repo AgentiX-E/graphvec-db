@@ -782,6 +782,63 @@ Given('an empty graph', () => {
 })
 Given('any graph', () => {})
 
+/**
+ * Build the openCypher TCK predefined `binary-tree-1` / `binary-tree-2` graphs
+ * (see `tck/graphs/binary-tree-N/binary-tree-N.cypher`).  Both share the same
+ * node inventory and KNOWS/FOLLOWS/FRIEND edge structure; they differ only in
+ * the labels of the leaf nodes `c12`/`c22`/`c32`/`c42` (all `:X` in tree-1,
+ * `:Y` in tree-2 — every other leaf is `:X` in both).
+ */
+function _buildBinaryTreeGraph(variant: 'binary-tree-1' | 'binary-tree-2'): void {
+  const isTree2 = variant === 'binary-tree-2'
+  const leafLabel = (name: string): string => {
+    if (isTree2 && (name === 'c12' || name === 'c22' || name === 'c32' || name === 'c42')) return 'Y'
+    return 'X'
+  }
+  // node name → index in st.nodes
+  const idx = new Map<string, number>()
+  const nodes: Array<Record<string, unknown>> = []
+  const addNode = (name: string, label: string): void => {
+    idx.set(name, nodes.length)
+    nodes.push({ _label: label, name })
+  }
+  addNode('a', 'A')
+  for (const n of ['b1', 'b2', 'b3', 'b4']) addNode(n, 'X')
+  for (const n of ['c11', 'c12', 'c21', 'c22', 'c31', 'c32', 'c41', 'c42']) addNode(n, leafLabel(n))
+  const edges: Array<[string, string, string]> = [
+    // a → b (KNOWS / FOLLOWS)
+    ['a', 'b1', 'KNOWS'], ['a', 'b2', 'KNOWS'], ['a', 'b3', 'FOLLOWS'], ['a', 'b4', 'FOLLOWS'],
+    // b → c (FRIEND)
+    ['b1', 'c11', 'FRIEND'], ['b1', 'c12', 'FRIEND'],
+    ['b2', 'c21', 'FRIEND'], ['b2', 'c22', 'FRIEND'],
+    ['b3', 'c31', 'FRIEND'], ['b3', 'c32', 'FRIEND'],
+    ['b4', 'c41', 'FRIEND'], ['b4', 'c42', 'FRIEND'],
+    // b cycle (FRIEND)
+    ['b1', 'b2', 'FRIEND'], ['b2', 'b3', 'FRIEND'], ['b3', 'b4', 'FRIEND'], ['b4', 'b1', 'FRIEND'],
+  ]
+  for (const [s, t, label] of edges) {
+    const srcIdx = idx.get(s)!
+    const dstIdx = idx.get(t)!
+    const src = nodes[srcIdx] as any
+    if (!src.__edges) src.__edges = []
+    src.__edges.push({ srcIdx, dstIdx, label, props: null })
+  }
+  st.nodes = nodes
+  const ge = persistGe()
+  for (const node of nodes) seedGe(ge, node)
+}
+
+Given(/^the (binary-tree-1|binary-tree-2) graph$/, function (variant: string) {
+  st.nodes = []
+  // Close and drop the persistent GE so the predefined graph seeds into a clean
+  // instance (the scenario may re-open one via persistGe() on first use).
+  try { st.pGe?.close() } catch {}
+  try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}
+  st.pGe = undefined
+  st.pDir = undefined
+  _buildBinaryTreeGraph(variant as 'binary-tree-1' | 'binary-tree-2')
+})
+
 Given('a graph with the following nodes:', function (dt: DataTable) {
   st.nodes = dtToNodes(dt)
   // Also seed the persistent GE so having executed can use it
