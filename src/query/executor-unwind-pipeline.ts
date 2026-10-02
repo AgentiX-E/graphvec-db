@@ -62,8 +62,17 @@ function _preProcessAggregateWith(
       // wrap it, breaking `UNWIND rows AS node RETURN node.id`.
       const collectM = expr.match(/^\s*collect\s*\(\s*([a-zA-Z_]\w*)\s*\)\s*$/i)
       if (collectM) {
-        const inner = varCtx[collectM[1]]
-        val = Array.isArray(inner) ? inner : (inner == null ? [] : [inner])
+        // If the alias was already folded upstream (e.g. `_groupAggregateWithRows`
+        // collapsed the MATCH rows and stored `rows = [node1, node2]`), do not
+        // re-collect from a single-node `varCtx[inner]` — that would overwrite the
+        // collapsed list with a one-element list (`[node1]`) and truncate the
+        // downstream UNWIND.
+        if (Array.isArray(varCtx[alias]) && varCtx[alias].length > 0) {
+          val = varCtx[alias]
+        } else {
+          const inner = varCtx[collectM[1]]
+          val = Array.isArray(inner) ? inner : (inner == null ? [] : [inner])
+        }
       } else {
         val = _evaluateExpression(expr, varCtx)
       }
@@ -372,8 +381,9 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   // value before the next UNWIND expanded it), otherwise the downstream
   // UNWIND-produced columns are dropped.
   const _middleWithAggAliases = new Set<string>()
+  const _hasWithAgg = !!((plan as any).with?.aggregate || (plan as any).with?.aggregates?.length)
   if (plan.hasMatch && plan.with && query &&
-      (plan.aggregate || plan.type === 'SET' || plan.type === 'DELETE')) {
+      (plan.aggregate || _hasWithAgg || plan.type === 'SET' || plan.type === 'DELETE')) {
     _preProcessAggregateWith(varCtx, _preAggAliases, plan, query, _nodes)
   }
 
