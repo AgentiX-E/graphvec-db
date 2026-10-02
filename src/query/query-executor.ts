@@ -1878,6 +1878,40 @@ async function _executeMultiMatchCrossJoin(
     }
   }
 
+  // ── UNWIND re-materialisation after WITH aggregation ──
+  // `MATCH … WITH a, collect(b1) AS bees UNWIND bees AS b2 MATCH (a)-[:Y]->(b2)`
+  // folds `collect(b1)` into `bees` above and drops the UNWIND variable `b2` from
+  // the row top level (it survives only inside `__crossVarRows`), so the later
+  // RETURN projection `_evaluateExpression('b2', row)` resolves it to null even
+  // though the cross-join correctly enumerated the `(a)-[:Y]->(b2)` target.
+  // Re-expand the UNWIND here: for each folded row, iterate the UNWIND source
+  // list (`bees`) and bind each element to the UNWIND variable (`b2`) at the top
+  // level so the downstream RETURN/WHERE sees the concrete node.  The second
+  // MATCH is a *filter* on the already-bound `b2` (verify `a` has a `Y` edge to
+  // it), which the cross-join enumeration above already satisfied; when the
+  // UNWIND list is empty a folded row expands to zero rows (no surviving binding).
+  {
+    const uw = (plan as any).unwind as { list?: unknown[]; name?: string; var?: string } | undefined
+    if (uw?.name && (uw.list?.length || uw.var) && filtered.length) {
+      const srcList = Array.isArray(uw.list) && uw.list.length
+        ? uw.list
+        : (filtered[0] as any)?.[uw.var as string] ?? (filtered[0] as any)?.__crossVarRows?.[uw.var as string]
+      if (Array.isArray(srcList) && srcList.length) {
+        const next: Array<Record<string, unknown>> = []
+        for (const row of filtered) {
+          const list = Array.isArray(uw.list) && uw.list.length
+            ? uw.list
+            : (row as any)?.[uw.var as string] ?? (row as any)?.__crossVarRows?.[uw.var as string]
+          const items = Array.isArray(list) ? list : []
+          for (const item of items) {
+            next.push({ ...row, [uw.name]: item })
+          }
+        }
+        if (next.length) filtered = next
+      }
+    }
+  }
+
   // ── WHERE predicate filtering ──
   // The cross-join path above applies `whereBody` but not the structured
   // `plan.filters` (property predicates like `MATCH … WHERE a.id = 1`).  Apply
