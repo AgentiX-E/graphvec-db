@@ -3060,6 +3060,26 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               for (const [k, v] of Object.entries(cn.props)) newProps[k] = _subst(v)
               ecn.props = newProps as any
             }
+            // A trailing SET clause (`UNWIND ... MERGE (p {...}) SET p.name =
+            // prop.name`) assigns a property derived from the unwound element.
+            // Fold the per-combo SET assignment into the node template so the
+            // property is materialised on the (re)matched node — the plain
+            // MERGE SET path below would otherwise look up `prop` only in an
+            // empty context and write a literal/undefined value.
+            if (cn.alias && (plan as any).setClauses?.length) {
+              for (const sc of (plan as any).setClauses) {
+                if (sc.alias !== cn.alias || !sc.property || sc.kind === 'LABEL') continue
+                let sv: any = sc.value
+                const raw = isTypedValue(sv) ? sv.value : sv
+                if (sc.expression != null && typeof sc.expression === 'string') {
+                  sv = _subst({ value: sc.expression, type: 'STRING' })
+                } else if (typeof raw === 'string') {
+                  sv = _subst(sv)
+                }
+                if (!ecn.props) ecn.props = {}
+                ;(ecn.props as any)[sc.property] = sv
+              }
+            }
             if (cn.alias && binding.has(cn.alias)) {
               ecn.alias = cn.alias + '_' + comboIdx
             }
