@@ -5129,6 +5129,15 @@ export function _parseNestedAggregate(expr: string): { fn: string; field: string
   // `m.index` points at the function name; the opening paren follows it.
   const openIdx = expr.indexOf('(', m.index + m[0].length - 1)
   if (openIdx < 0) return null
+  // A quantifier / list-comprehension source (`ALL(x IN collect(...) WHERE ...)`,
+  // `[x IN collect(...) | ...]`) is NOT a nested aggregate: `collect` is merely
+  // the list argument of the predicate, and the surrounding construct is a
+  // predicate/quantifier, not an arithmetic wrapper around the aggregate.  Such
+  // a column must stay on the expression path (the per-row list is materialised
+  // then folded by the quantifier kernel), otherwise the executor would treat
+  // `ALL(...)` as a collect aggregation and drain it to `[]`.
+  const prefix = expr.slice(0, m.index)
+  if (/\b(?:IN|WHERE)\s*$/i.test(prefix)) return null
   // Match the call's closing parenthesis by tracking depth.
   let depth = 0
   let closeIdx = -1
