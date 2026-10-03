@@ -2234,6 +2234,17 @@ async function _executeMultiMatchCrossJoin(
             return true
           })
         }
+        case 'percentiledisc':
+        case 'percentilecont': {
+          // Split `value, percentile` and delegate to _computeAggregate so the
+          // percentile range check (NumberOutOfRange) is applied consistently
+          // with the primary fold path.
+          const comma = _lastTopLevelComma(fld)
+          const valueField = comma >= 0 ? fld.slice(0, comma).trim() : fld
+          const pctArg = comma >= 0 ? fld.slice(comma + 1).trim() : null
+          const pctValues = rows.map((r: Record<string, unknown>) => rowValue(r, valueField))
+          return _computeAggregate(fn.toUpperCase(), pctValues, pctArg)
+        }
         default:
           return rows.length
       }
@@ -2347,6 +2358,18 @@ async function _executeMultiMatchCrossJoin(
             }
             return true
           })
+        }
+        case 'percentiledisc':
+        case 'percentilecont': {
+          // Split `value, percentile` on the last top-level comma.  The value
+          // expression is aggregated (collected across rows) and the trailing
+          // percentile argument is validated to lie in [0, 1]; an out-of-range
+          // (or non-numeric) percentile raises NumberOutOfRange to match the TCK.
+          const comma = _lastTopLevelComma(field)
+          const valueField = comma >= 0 ? field.slice(0, comma).trim() : field
+          const pctArg = comma >= 0 ? field.slice(comma + 1).trim() : null
+          const pctValues = effectiveRows.map((r: Record<string, unknown>) => rowValue(r, valueField))
+          return _computeAggregate(aggFn.toUpperCase(), pctValues, pctArg)
         }
         default:
           return groupRows.length
@@ -9597,6 +9620,24 @@ export async function _executeQuery(
           row[aggKey] = Math.min(...groupRows.map(n => _aggVal(n)))
         } else if (agg.function === 'max') {
           row[aggKey] = Math.max(...groupRows.map(n => _aggVal(n)))
+        } else if (agg.function === 'percentiledisc' || agg.function === 'percentilecont') {
+          // percentileDisc/percentileCont(value, percentile): the raw field is
+          // `value, percentile` (unsplit).  Collect the value expression across
+          // the group and validate the percentile argument (0..1) via
+          // _computeAggregate, which raises NumberOutOfRange on an out-of-range
+          // (or non-numeric) percentile — matching the TCK expectation for
+          // `percentileDisc(0.90, deg)` where `deg` exceeds 1.
+          const comma = _lastTopLevelComma(rawField)
+          const valueField = comma >= 0 ? rawField.slice(0, comma).trim() : rawField
+          const pctArg = comma >= 0 ? rawField.slice(comma + 1).trim() : null
+          const pctValues = groupRows.map((n: Record<string, unknown>) => {
+            const ctx: Record<string, unknown> = {}
+            for (const [k, v] of Object.entries(n)) if (!k.startsWith('_')) ctx[k] = v
+            if ((plan as any).matchVar) ctx[(plan as any).matchVar] = n
+            ctx.n = n
+            return _evalBinary(valueField, ctx) ?? n[valueField as string]
+          })
+          row[aggKey] = _computeAggregate(agg.function.toUpperCase(), pctValues, pctArg)
         } else {
           row[aggKey] = groupRows.length
         }
