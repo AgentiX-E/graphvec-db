@@ -1103,6 +1103,17 @@ async function _executeMultiMatchCrossJoin(
   }
   if (!mm?.length) return null
 
+  // A multi-MATCH DML statement (`MATCH (x:X), (y:Y) CREATE (x)<-[:R]-(y)`)
+  // still performs a real write.  The cross-join below only enumerates MATCH
+  // bindings and would early-return here, silently dropping the CREATE edge so
+  // a later control query finds no relationship.  Bail out to the main GE/DML
+  // path whenever the plan carries a CREATE write (nodes or edges) alongside
+  // the multi-MATCH — except the bare-node row-counting MERGE downgraded above
+  // (already re-typed to QUERY and stripped of merge semantics).
+  if ((plan as any).createNodes?.length || (plan as any).createEdges?.length) {
+    return null
+  }
+
   // Assemble all independent patterns: pattern[0] = primary MATCH
   // (plan.steps + plan.scanLabel), pattern[1..] = additional MATCH (multiMatch[i]).
   // Each pattern also records its source node variable (e.g. `a`) so that
