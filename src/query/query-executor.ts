@@ -2976,7 +2976,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (_seen.has(name)) return undefined
       _seen.add(name)
       const wc = allWithColumns.find(c => c.alias === name)
-      if (wc && wc.expression) {
+      // A WITH projection whose expression is a structured value (e.g.
+      // `WITH [123, n] AS list` parses `expression` to `{type:'LIST', ...}`)
+      // cannot be resolved as a bare variable name — skip it.
+      if (wc && wc.expression && typeof wc.expression === 'string') {
         const exprVar = wc.expression.trim()
         // A self-referential projection (`p AS p`) names the same binding; guard
         // against the infinite chain p -> p -> p by stopping when the expression
@@ -3028,7 +3031,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
     if (_scalarBindings.size) {
       for (const wc of allWithColumns) {
-        if (wc.expression && _scalarBindings.has(wc.expression.trim())) {
+        if (wc.expression && typeof wc.expression === 'string' && _scalarBindings.has(wc.expression.trim())) {
           _scalarBindings.set(wc.alias, _scalarBindings.get(wc.expression.trim()))
         }
       }
