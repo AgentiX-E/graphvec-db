@@ -534,8 +534,13 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         rows = newRows
       }
       // 如果当前层 UNWIND 后还有中间 WITH 投影（非列表字面量的 WITH）
-      // 从 query 文本提取对应于此层 UNWIND 之后的中间 WITH 并应用
-      if (query && ui < plan.unwinds.length) {
+      // 从 query 文本提取对应于此层 UNWIND 之后的中间 WITH 并应用。
+      // Only up to the *second-to-last* UNWIND: the WITH clauses after the final
+      // UNWIND are `plan.with` (handled by Step 3), not per-UNWIND intermediate
+      // projections.  Folding them here (e.g. `WITH any(...) AS result,
+      // count(*) AS cnt`) would mark `cnt` as an already-folded middle-WITH
+      // aggregate, making Step 3 skip it and leak one row per pre-fold group.
+      if (query && ui < plan.unwinds.length - 1) {
         // 找到 query 中第 (ui+1) 个 UNWIND 的位置（索引从 0 开始）
         let targetUnwindIdx = -1
         let found = 0
@@ -838,7 +843,13 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     // Grouping keys = the non-aggregate projection columns.  Their aliases carve
     // the UNWIND rows into groups, so `WITH p, count(q) AS rng` folds per `p`
     // (p=0 → count 1, p=1 → count 2) instead of a single global count.
+    // Only a *bare* variable / property reference is a genuine grouping key.  A
+    // scalar function expression (`WITH any(x IN list WHERE false) AS result,
+    // count(*) AS cnt`) is NOT a group key — it is evaluated once over the
+    // folded row set (the aggregate collapses all rows to one), so folding by
+    // `result` would wrongly split the single group into multiple rows.
     const groupKeyAliases: string[] = []
+    const scalarExprCols: Array<{ alias: string; expr: string }> = []
     if (hasAgg) {
       for (let i = 0; i < plan.with.columns.length; i++) {
         if (isAggCol[i]) {
@@ -850,7 +861,16 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
             rows: [],
           })
         } else {
-          groupKeyAliases.push(plan.with.columns[i].alias || plan.with.columns[i].expression)
+          const alias = plan.with.columns[i].alias || plan.with.columns[i].expression
+          const colExpr = typeof plan.with.columns[i].expression === 'string' ? plan.with.columns[i].expression : ''
+          // A bare identifier / property reference is a grouping key; anything
+          // else (function call, arithmetic, CASE, etc.) is a scalar projection
+          // evaluated after the fold.
+          if (/^[a-zA-Z_]\w*(\.[a-zA-Z_]\w*)?$/.test(colExpr)) {
+            groupKeyAliases.push(alias)
+          } else {
+            scalarExprCols.push({ alias, expr: colExpr })
+          }
         }
       }
     }
