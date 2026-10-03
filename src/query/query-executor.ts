@@ -7628,7 +7628,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             for (const s of om.steps || []) {
               if (s.source) optVarSet.add(s.source)
               if (s.targetAlias) optVarSet.add(s.targetAlias)
-              if (s.targetAlias) optVarSet.add(s.targetAlias)
+              if (s.edgeVariable) optVarSet.add(s.edgeVariable)
+              if (s.edgeAlias) optVarSet.add(s.edgeAlias)
             }
           }
           // 加入 OPTIONAL MATCH 的 expressionColumns 别名（如 x0）
@@ -8690,6 +8691,47 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             if (edgeVar) row[edgeVar] = null
             if (optVarName) row[optVarName] = null
           }
+        }
+      }
+    }
+
+    // ── Deferred whereBody for OPTIONAL MATCH variables ──
+    // A WHERE that references a variable bound (or nullable) by an OPTIONAL
+    // MATCH — e.g. `WITH c WHERE r IS NULL` / `r IS NOT NULL` — must be
+    // evaluated AFTER the OPTIONAL MATCH has bound `r`.  The main whereBody
+    // pass (before OPTIONAL MATCH) skips such predicates (the referenced
+    // variable is optional-only), so re-evaluate them here against the rows
+    // now carrying the correct (null or bound) optional bindings.
+    //
+    // Restricted to a pure null-check on an OPTIONAL-only variable (e.g.
+    // `WITH c WHERE r IS NULL` / `r IS NOT NULL`): the edge/target variable
+    // introduced solely by OPTIONAL MATCH is null when the optional hop found
+    // no trail and non-null otherwise.  General WHERE predicates (property
+    // comparisons such as `x.val < y.val`) keep Cypher's "optional filter"
+    // semantics handled by the Post-OPTIONAL block below and must NOT be
+    // re-evaluated here, otherwise primary rows whose optional side is null
+    // would be wrongly dropped.
+    if (plan.optionalMatchSteps?.length && plan.whereBody && result.length) {
+      const _nullCheck = plan.whereBody.match(/^\s*(\w+)\s+IS\s+(NOT\s+)?NULL\s*$/i)
+      if (_nullCheck) {
+        const _varName = _nullCheck[1]
+        const _isNot = !!_nullCheck[2]
+        let _varIsOptionalOnly = false
+        for (const om of plan.optionalMatchSteps) {
+          for (const st of om.steps || []) {
+            if (st.edgeVariable === _varName || st.edgeAlias === _varName) _varIsOptionalOnly = true
+          }
+        }
+        if (_varIsOptionalOnly) {
+          const _filteredWb: QueryRow[] = []
+          for (const row of result) {
+            const val = row[_varName]
+            const isNull = val === null || val === undefined
+            const keep = _isNot ? !isNull : isNull
+            if (keep) _filteredWb.push(row)
+          }
+          result.length = 0
+          result.push(..._filteredWb)
         }
       }
     }
