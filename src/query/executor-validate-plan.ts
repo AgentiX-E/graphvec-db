@@ -382,6 +382,11 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
     const aggFn = /\b(?:count|sum|avg|max|min|collect|stdev|stdevp|percentileCont|percentileDisc)\s*\(/i
     for (const col of withCols) {
       const expr = typeof col.expression === 'string' ? col.expression : (col.expression as any)?.expression || ''
+      // A list comprehension (`[x IN collect(p) | head(nodes(x))]`) carries its
+      // own comprehension variable (`x`) and any aggregate inside it (`collect`)
+      // is scoped to the comprehension, not an ambiguous top-level grouping key —
+      // skip the mix check for such columns.
+      if (/\[[^\]]*\bIN\b[^\]]*\|/.test(expr)) continue
       const strippedLit = expr.replace(/'[^']*'/g, "'' ").replace(/"[^"]*"/g, '" ')
       if (!aggFn.test(strippedLit)) continue
       // Remove aggregate calls (balanced args) so variables inside a call are not
@@ -467,6 +472,8 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       const expr = typeof col.expression === 'string' ? col.expression.trim() : ''
       if (!expr) continue
       if (col.alias) continue
+      // `WITH *` expands to every in-scope variable and needs no alias.
+      if (expr === '*') continue
       // A bare variable / property access is a legal unaliased column.
       if (/^[A-Za-z_]\w*(\.[A-Za-z_]\w*)?$/.test(expr) || /^\$\w+$/.test(expr)) continue
       // Anything else (aggregate call, arithmetic, map/list literal, etc.) needs

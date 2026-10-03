@@ -780,26 +780,43 @@ function _parseQueryImpl(query: string): QueryPlan {
   // ANTLR 对 `tail(nodes(p)) AS nodes` 等函数调用+AS 别名的解析失败时，
   // plan.with.columns 为空但 plan.returnAliasMap 不为空。
   // 需要从 WITH 子句文本填充表情表达式。
-  if (plan.with && Array.isArray(plan.with.columns) && plan.with.columns.length === 0 && query) {
+  // A list comprehension (`[x IN collect(p) | head(nodes(x))] AS p`) also trips
+  // ANTLR (`no viable alternative at input '[x IN ...'`), leaving a truncated
+  // `["[x"]` column — detect an unbalanced `[` opening and re-extract from text.
+  const _hasListComprehension = (q: string): boolean => /\[\s*\w+\s+IN\b[^\]]*\|\s*/.test(q)
+  const _withColumnsTruncated = (cols?: Array<{ expression: unknown }>): boolean =>
+    !!cols && cols.length > 0 && cols.some(c => {
+      const e = typeof c.expression === 'string' ? c.expression.trim() : ''
+      return e.startsWith('[') && !e.endsWith(']')
+    })
+  const shouldRebuildWith = plan.with && Array.isArray(plan.with.columns) &&
+    (plan.with.columns.length === 0 || (_hasListComprehension(query) && _withColumnsTruncated(plan.with.columns)))
+  if (shouldRebuildWith && query) {
     const withMatch = query.match(/WITH\s+(.+?)(?:\s+(RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW|WITH|MATCH|ORDER|SKIP|LIMIT|WHERE)\s|$)/is)
     if (withMatch) {
       const withBody = withMatch[1].trim()
-      // 按逗号分割 WITH 列（括号/引号感知）
-      const colParts = withBody.split(',').map((c: string) => c.trim()).filter(Boolean)
-      for (const part of colParts) {
-        // AS 别名：tail(nodes(p)) AS nodes → expression="tail(nodes(p))", alias="nodes"
-        const asMatch = part.match(/^(.+?)\s+AS\s+(\w+)$/i)
-        if (asMatch) {
-          plan.with.columns.push({
-            expression: asMatch[1].trim(),
-            alias: asMatch[2],
-          })
-        } else {
-          // 无 AS 别名：直接作为表达式
-          plan.with.columns.push({
-            expression: part,
-            alias: null,
-          })
+      // 按逗号分割 WITH 列（括号/引号感知，list comprehension 的 `|` / `IN`
+      // 位于 `[]` 内不会误切分）
+      const colParts = _splitWithColumns(withBody)
+      // Rebuild from scratch only when the ANTLR columns were truncated (or
+      // empty); otherwise keep the authoritative ANTLR result.
+      if (plan.with.columns.length === 0 || _withColumnsTruncated(plan.with.columns)) {
+        plan.with.columns.length = 0
+        for (const part of colParts) {
+          // AS 别名：tail(nodes(p)) AS nodes → expression="tail(nodes(p))", alias="nodes"
+          const asMatch = part.match(/^(.+?)\s+AS\s+(\w+)$/i)
+          if (asMatch) {
+            plan.with.columns.push({
+              expression: asMatch[1].trim(),
+              alias: asMatch[2],
+            })
+          } else {
+            // 无 AS 别名：直接作为表达式
+            plan.with.columns.push({
+              expression: part,
+              alias: null,
+            })
+          }
         }
       }
     }
@@ -810,6 +827,14 @@ function _parseQueryImpl(query: string): QueryPlan {
     for (const col of plan.with.columns) {
       if (typeof col.expression === 'string') {
         const expr = col.expression.trim()
+        // A list comprehension (`[x IN collect(p) | head(nodes(x))]`) is NOT a
+        // plain list literal — keep it as raw expression text so the expression
+        // engine folds `collect(p)` across rows and evaluates the per-element
+        // projection itself, rather than converting `x IN ... | ...` into a
+        // bogus single-string LIST item.
+        if (/\[[^\]]*\bIN\b[^\]]*\|/.test(expr)) {
+          continue
+        }
         // 列表字面量 [1,2] or [a, 1]
         if (expr.startsWith('[') && expr.endsWith(']')) {
           try {
