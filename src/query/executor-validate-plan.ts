@@ -885,6 +885,10 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
       const isVarForward = /^[a-zA-Z_]\w*$/.test(valueExpr) &&
         (matchNodeVars.includes(valueExpr) || edgeVars.includes(valueExpr) || pathAssignments.includes(valueExpr))
       if (isVarForward) continue
+      // `WITH null AS a OPTIONAL MATCH p = (a)-[r]->()` is legal: null propagates
+      // through the OPTIONAL MATCH (no match) and yields null rows — not a type
+      // conflict.
+      if (valueExpr === 'null') continue
       // A node-/edge-typed expression (e.g. `coalesce(b, c)` where b and c are
       // node variables) still yields a node, so reusing its alias as a node in a
       // later MATCH is legal — only scalar/expression values conflict.
