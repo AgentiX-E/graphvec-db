@@ -1302,7 +1302,13 @@ Given('having executed:', async function (query: string) {
           let resolvedList: unknown[] | null = null
           if (_uwAll.length) {
             // Nest every UNWIND into a Cartesian product of row bindings.
-            const resolvedLists = _uwAll.map(u => (u.list && u.list.length) ? u.list : _resolveUnwindList({ list: u.list || [], var: u.var, name: u.name || '' } as any, {}))
+            // Always resolve through _resolveUnwindList: it unquotes string
+            // literal elements (`'a'` → `a`) and evaluates non-plain elements
+            // (`range(...)`, temporal literals), so the bound value is the real
+            // Cypher value rather than the raw `'a'` text.  Using `u.list`
+            // directly would seed nodes with `name: "'a'"` (quotes included),
+            // breaking string-range comparisons like `'a' < n.name`.
+            const resolvedLists = _uwAll.map(u => _resolveUnwindList({ list: u.list || [], var: u.var, name: u.name || '' } as any, {}))
             resolvedList = resolvedLists[0]
             const total = resolvedLists.reduce((a, l) => a * Math.max(l.length, 1), 1)
             const out: typeof cns = []
@@ -1738,10 +1744,11 @@ Given('having executed:', async function (query: string) {
       if (_uwAllSingle.length) {
         // Resolve each UNWIND list to concrete values via the authoritative helper
         // (`_resolveUnwindList`), so quoted string literals (`'a'`) restore to `a`
-        // and temporal/range expressions evaluate.
-        const resolvedLists = _uwAllSingle.map(u => (u.list && u.list.length)
-          ? u.list
-          : _resolveUnwindList({ list: u.list || [], var: u.var, name: u.name || '' } as any, {}))
+        // and temporal/range expressions evaluate.  Always route through the
+        // helper (never use `u.list` directly): `u.list` still carries quoted
+        // string elements (`["'a'","'b'","'c'"]`), which would seed nodes with
+        // `name: "'a'"` and break string-range comparisons (`'a' < n.name`).
+        const resolvedLists = _uwAllSingle.map(u => _resolveUnwindList({ list: u.list || [], var: u.var, name: u.name || '' } as any, {}))
         const cnTemplate = cns.length > 0 ? cns[0] : null
         if (cnTemplate) {
           const total = resolvedLists.reduce((a, l) => a * Math.max(l.length, 1), 1)

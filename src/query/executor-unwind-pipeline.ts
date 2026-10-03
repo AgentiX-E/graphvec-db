@@ -387,11 +387,17 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     _preProcessAggregateWith(varCtx, _preAggAliases, plan, query, _nodes)
   }
 
-  // Materialize intermediate WITH projections before the first UNWIND in a
-  // pure WITH/UNWIND pipeline (no MATCH).  These are not aggregate clauses and
-  // are otherwise dropped, e.g. `WITH values, size(values) AS numOfValues`
-  // must expose numOfValues to a later RETURN range(0, numOfValues-1).
-  if (query && !plan.hasMatch && plan.unwind) {
+  // Materialize WITH projections before the first UNWIND.  These are not
+  // aggregate clauses and are otherwise dropped.  Two cases need this:
+  //   * pure WITH/UNWIND (no MATCH): `WITH values, size(values) AS numOfValues`
+  //     must expose numOfValues to a later RETURN range(0, numOfValues-1);
+  //   * MATCH + WITH + UNWIND: `MATCH p=(n)-[r]->() WITH [n,r,p,...] AS types
+  //     UNWIND range(0, size(types)-1) AS i` — `types` must be materialized
+  //     before UNWIND resolves `size(types)`, otherwise it is undefined and
+  //     `range` throws ArgumentError.
+  // The prefix slice below already stops at the first UNWIND, so only the
+  // pre-UNWIND projections are materialized in both cases.
+  if (query && plan.unwind) {
     _materializePreUnwindProjections(query, varCtx)
   }
 

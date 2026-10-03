@@ -3026,7 +3026,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // value table used to substitute a bare variable reference in MERGE props.
     const _scalarBindings = new Map<string, unknown>()
     if (plan.unwind?.name) {
-      const _uw = _resolveUnwindList(plan.unwind as any, {})
+      // Only literal-list UNWINDs (`UNWIND [42] AS props`) contribute scalar
+      // bindings for MERGE substitution.  An expression UNWIND (`UNWIND
+      // range(0, size(types)-1) AS i`) cannot be resolved from an empty context
+      // and resolving it here would throw an ArgumentError (e.g. `size(types)`
+      // reads an undefined `types`), so skip it — this path is best-effort for
+      // MERGE only and must never fail the whole query.
+      const _uw = (plan.unwind as any)?.list?.length ? _resolveUnwindList(plan.unwind as any, {}) : []
       if (_uw.length) _scalarBindings.set(plan.unwind.name, _uw[0])
     }
     if (_scalarBindings.size) {
