@@ -827,12 +827,13 @@ function _parseQueryImpl(query: string): QueryPlan {
     for (const col of plan.with.columns) {
       if (typeof col.expression === 'string') {
         const expr = col.expression.trim()
-        // A list comprehension (`[x IN collect(p) | head(nodes(x))]`) is NOT a
-        // plain list literal — keep it as raw expression text so the expression
-        // engine folds `collect(p)` across rows and evaluates the per-element
-        // projection itself, rather than converting `x IN ... | ...` into a
-        // bogus single-string LIST item.
-        if (/\[[^\]]*\bIN\b[^\]]*\|/.test(expr)) {
+        // A list comprehension (`[x IN collect(p) | head(nodes(x))]`) or a
+        // pattern comprehension (`[p = (a)-[*]->(b) | p]`) is NOT a plain list
+        // literal — keep it as raw expression text so the expression engine
+        // materialises per-row and folds/quantifies itself, rather than
+        // converting the `... | ...` body into a bogus single-string LIST item.
+        // Both carry the `|` separator; a plain list literal never does.
+        if (expr.includes('|')) {
           continue
         }
         // 列表字面量 [1,2] or [a, 1]
