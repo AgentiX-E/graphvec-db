@@ -346,7 +346,9 @@ function _parseQueryImpl(query: string): QueryPlan {
         const matchClauses = rawQuery.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
         const isLabelInMatch = matchClauses.some((mc: string) => {
           // 在节点模式中查找 :scanLabel：如 (:Person), :Person), :Person {prop}
-          const labelPattern = new RegExp(':' + subPlan.scanLabel + '(?=[\)\\s{]|$)')
+          // `\s*` tolerates a space after the colon (`(n: Label)`), which ANTLR
+          // folds into the SymbolicName but our trim-based label extraction strips.
+          const labelPattern = new RegExp(':' + '\\s*' + subPlan.scanLabel + '(?=[\)\\s{]|$)')
           return labelPattern.test(mc)
         })
         // 如果 scanLabel 在 MATCH 子句中不是作为标签出现，则是变量名，清除
@@ -380,7 +382,9 @@ function _parseQueryImpl(query: string): QueryPlan {
       const matchClauses = rawQuery.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
       for (const mm of subPlan.multiMatch) {
         if (mm.scanLabel) {
-          const labelPattern = new RegExp(':' + mm.scanLabel + '(?=[\)\\s{]|$)')
+          // `\s*` tolerates a space after the colon (`(n: Label)`) — see the
+          // primary scanLabel fix above.
+          const labelPattern = new RegExp(':' + '\\s*' + mm.scanLabel + '(?=[\)\\s{]|$)')
           const isLabelInMatch = matchClauses.some((mc: string) => labelPattern.test(mc))
           if (!isLabelInMatch) {
             mm.scanLabel = null

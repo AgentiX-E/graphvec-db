@@ -1753,7 +1753,7 @@ function extractAllLabels(nodeLabelCtx: any): string[] {
   // 尝试通过 findAllChildren 找 SymbolicNameContext
   const syms = findAllChildren(nodeLabelCtx, 'SymbolicNameContext')
   for (const sym of syms) {
-    const name = getTextRecursive(sym)
+    const name = getTextRecursive(sym).trim()
     if (name) labels.push(name)
   }
   if (labels.length) return labels
