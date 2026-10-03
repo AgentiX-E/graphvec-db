@@ -171,14 +171,45 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
         : { varName: expr.trim(), propPart: null }
     }
     // Aggregate over the relationship properties (`RETURN sum(r.num)`).
+    // A WITH aggregate (`... CREATE ()-[r:R {num:x}]->() WITH sum(r.num) AS sum
+    // RETURN sum`) carries the aggregate on `plan.with.aggregate`; fold it over
+    // the created edges too, collapsing to one aggregate row while the side
+    // effects (nodes + relationships) still take effect.
+    const _withAggRel = (plan as any).with?.aggregates?.length
+      ? (plan as any).with.aggregates[0]
+      : ((plan as any).with?.aggregate ?? null)
+    if (_withAggRel) {
+      const aggFn = _withAggRel.function || _withAggRel.fn || _withAggRel.type || ''
+      const rawField = _withAggRel.field || _withAggRel.property || ''
+      const propField = rawField.includes('.') ? rawField.split('.').pop()! : rawField
+      const alias = _withAggRel.alias || _withAggRel.column || propField || 'c'
+      const aggRow: QueryRow = {}
+      if (aggFn === 'count') aggRow[alias] = createEdges.length
+      else if (propField) {
+        const values = createEdges
+          .map((e: any) => e.props?.[propField])
+          .filter((v: any) => v !== undefined && v !== null)
+          .map(Number)
+          .filter((v: any) => !isNaN(v))
+        if (aggFn === 'sum') aggRow[alias] = values.reduce((a: number, b: number) => a + b, 0)
+        else if (aggFn === 'avg') aggRow[alias] = values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0
+        else if (aggFn === 'max') aggRow[alias] = values.length ? Math.max(...values) : 0
+        else if (aggFn === 'min') aggRow[alias] = values.length ? Math.min(...values) : 0
+        else aggRow[alias] = 0
+      } else aggRow[alias] = 0
+      return [aggRow]
+    }
     if (plan.aggregate) {
       const agg = plan.aggregate as any
       const aggFn = agg.function || agg.fn || agg.type || ''
       const rawField = agg.field || agg.property || ''
       const propField = rawField.includes('.') ? rawField.split('.').pop()! : rawField
-      const alias = (agg.alias && agg.alias !== agg.function)
+      const _retKeys2 = plan.returnAliasMap && typeof plan.returnAliasMap === 'object'
+        ? Object.keys(plan.returnAliasMap as Record<string, unknown>)
+        : []
+      const alias = (agg.alias && _retKeys2.includes(agg.alias))
         ? agg.alias
-        : (agg.column || propField || 'c')
+        : ((agg.column || '').replace(/^.+?\s+AS\s+/i, '').trim() || propField || 'c')
       const aggRow: QueryRow = {}
       if (aggFn === 'count') {
         aggRow[alias] = createEdges.length
@@ -248,6 +279,36 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       rows.push(row)
     }
     // Apply aggregate columns if any (sum/count/avg/min/max over created nodes).
+    // A WITH aggregate (`UNWIND ... CREATE (n) WITH sum(n.num) AS sum RETURN
+    // sum`) carries the aggregate on `plan.with.aggregate` (not `plan.aggregate`,
+    // which is reserved for the RETURN clause), so fold it here as well: collapse
+    // the N created-node rows into a single aggregated row keyed by the WITH
+    // alias, so the side effects (N nodes) still happen while the result set is
+    // the single aggregate row.
+    const _withAgg = (plan as any).with?.aggregates?.length
+      ? (plan as any).with.aggregates[0]
+      : ((plan as any).with?.aggregate ?? null)
+    if (_withAgg) {
+      const aggFn = _withAgg.function || _withAgg.fn || _withAgg.type || ''
+      const rawField = _withAgg.field || _withAgg.property || ''
+      const propField = rawField.includes('.') ? rawField.split('.').pop()! : rawField
+      const alias = _withAgg.alias || _withAgg.column || propField || 'c'
+      const aggRow: QueryRow = {}
+      if (aggFn === 'count') aggRow[alias] = unwoundNodes.length
+      else if (propField) {
+        const values = unwoundNodes
+          .map(n => (n as any)[propField] ?? (n as any).props?.[propField])
+          .filter((v: any) => v !== undefined && v !== null)
+          .map(Number)
+          .filter((v: any) => !isNaN(v))
+        if (aggFn === 'sum') aggRow[alias] = values.reduce((a: number, b: number) => a + b, 0)
+        else if (aggFn === 'avg') aggRow[alias] = values.length ? values.reduce((a: number, b: number) => a + b, 0) / values.length : 0
+        else if (aggFn === 'max') aggRow[alias] = values.length ? Math.max(...values) : 0
+        else if (aggFn === 'min') aggRow[alias] = values.length ? Math.min(...values) : 0
+        else aggRow[alias] = 0
+      } else aggRow[alias] = 0
+      return [aggRow]
+    }
     if (plan.aggregate) {
       const agg = plan.aggregate as any
       const aggFn = agg.function || agg.fn || agg.type || ''
@@ -257,10 +318,16 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
       const aggRow: QueryRow = {}
       // `count(*)`/`count(a)` carry the function name as a synthetic `alias`, so
       // fall back to the full `column` (`count(*)`) unless the user supplied an
-      // explicit `AS` alias.
-      const alias = (agg.alias && agg.alias !== agg.function)
+      // explicit `AS` alias.  Since `alias === function` is NOT a reliable signal
+      // of an absent alias (e.g. `sum(num) AS sum` also has `alias === function`),
+      // resolve the canonical result key from `plan.returnAliasMap` when the alias
+      // is present there, else strip an `AS` suffix from `agg.column`.
+      const _retKeys = plan.returnAliasMap && typeof plan.returnAliasMap === 'object'
+        ? Object.keys(plan.returnAliasMap as Record<string, unknown>)
+        : []
+      const alias = (agg.alias && _retKeys.includes(agg.alias))
         ? agg.alias
-        : (agg.column || propField || 'c')
+        : ((agg.column || '').replace(/^.+?\s+AS\s+/i, '').trim() || propField || 'c')
       if (aggFn === 'count') aggRow[alias] = unwoundNodes.length
       else if (propField) {
         const values = unwoundNodes
