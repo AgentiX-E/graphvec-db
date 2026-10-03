@@ -1045,11 +1045,6 @@ Given('having executed:', async function (query: string) {
   // intact (the splitter above would otherwise detach the leading `MATCH (x:X)`).
   const _isDmlReadWrite = /\bMATCH\s*\([^)]*\)[\s\S]*\b(CREATE|MERGE|DELETE|DETACH\s+DELETE|SET|REMOVE)\b/i.test(q)
   for (const line of rawLines) {
-    // A pending statement that ended with a comma is mid-list: the comma
-    // declares a continuation, so the next line (a sibling node/edge pattern
-    // like `(e2:E ...)` or `(d)-[:LIKES]->(e2)`) extends the SAME statement
-    // regardless of whether it ends with a comma or starts a new clause.
-    const pendingEndsWithComma = pending ? pending.trimEnd().endsWith(',') : false
     // A MATCH clause followed by a write clause (`CREATE`/`MERGE`/`DELETE`/
     // `SET`/`REMOVE`) is a single DML statement (`MATCH (d:D) CREATE …`), not
     // two independent statements — keep them combined.
@@ -1063,11 +1058,17 @@ Given('having executed:', async function (query: string) {
     const lineIsWrite = /^(CREATE|MERGE|DELETE|SET|REMOVE|DETACH\s+DELETE)\b/i.test(line.trim())
     const lineIsReturn = /^RETURN\b/i.test(line.trim())
     if (pending) {
+      // A pending statement stays open only while the *current* line is itself
+      // a continuation (a trailing comma means "more sibling patterns follow").
+      // A line without a trailing comma closes the statement, so the pending
+      // list is pushed together with it.  This prevents a following independent
+      // clause (e.g. `CREATE (n2:X)…` after a comma-continued edge list) from
+      // being absorbed into the still-open statement and losing its own edges.
+      if (line.endsWith(',')) { pending += '\n' + line; continue }
       pending += '\n' + line
-      if (pendingEndsWithComma) continue
       if (pendingIsMatchTail && lineIsWrite) continue
       if (pendingIsMergeTail && lineIsReturn) continue
-      if (!line.endsWith(',') && !_isBareClauseKeyword(line)) { lines.push(pending); pending = '' }
+      if (!_isBareClauseKeyword(line)) { lines.push(pending); pending = '' }
     } else {
       // A MERGE path assignment (`MERGE p = (a)-[:R]->(b)`) is often followed by
       // a `RETURN p` projection on the next line.  Neither is a bare keyword, so

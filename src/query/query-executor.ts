@@ -6942,6 +6942,25 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
             if (!row.props) row.props = {}
             row.props[_multiStepPathVar!] = { __path: pathNodes, __pathEdges: pathEdges }
+            // The template row is cloned from the first matched path, so its
+            // `__crossVarRows` bindings (source variables like `n` and the path
+            // variable `p`) all still point at that first path's nodes.  Refresh
+            // them for the current path, otherwise RETURN n / nodes(p) resolve
+            // against the wrong (first) path for every subsequent row.
+            if (row.__crossVarRows && typeof row.__crossVarRows === 'object') {
+              if (_multiStepPathVar) {
+                row.__crossVarRows[_multiStepPathVar] = { __path: pathNodes, __pathEdges: pathEdges, length: pathEdges.length }
+              }
+              const _srcVar = plan.steps?.[0]?.source
+              if (_srcVar && pathNodes.length) {
+                const anchor = pathNodes[0]
+                const _clean: Record<string, unknown> = {}
+                for (const k of Object.keys(anchor || {})) {
+                  if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) _clean[k] = anchor[k]
+                }
+                row.__crossVarRows[_srcVar] = { ..._clean, props: { ..._clean } }
+              }
+            }
             rebuilt.push(row)
           }
           rawWithEdges.length = 0
