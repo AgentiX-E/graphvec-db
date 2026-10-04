@@ -796,7 +796,7 @@ function _parseQueryImpl(query: string): QueryPlan {
   const shouldRebuildWith = plan.with && Array.isArray(plan.with.columns) &&
     (plan.with.columns.length === 0 || (_hasListComprehension(query) && _withColumnsTruncated(plan.with.columns)))
   if (shouldRebuildWith && query) {
-    const withMatch = query.match(/WITH\s+(.+?)(?:\s+(RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW|WITH|MATCH|ORDER|SKIP|LIMIT|WHERE)\s|$)/is)
+    const withMatch = query.match(/WITH\s+(.+?)(?:\s+(RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW|WITH|OPTIONAL|MATCH|ORDER|SKIP|LIMIT|WHERE)\s|$)/is)
     if (withMatch) {
       const withBody = withMatch[1].trim()
       // 按逗号分割 WITH 列（括号/引号感知，list comprehension 的 `|` / `IN`
