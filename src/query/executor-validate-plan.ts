@@ -421,6 +421,11 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
         if (allProjectedAliases.has(name)) continue
         const after = withoutAggs.slice(bm.index + name.length)
         if (/^[^()]*\(/.test(after)) continue
+        // A map-literal key (`{key: collect(u)}` → `key`) is not a grouping
+        // reference: after the identifier the next non-whitespace character is
+        // `:` (the map value separator).  It is a structural literal, not a bare
+        // variable mixing with the aggregate.
+        if (/^\s*:/.test(after)) continue
         throw Object.assign(new Error('SyntaxError: AmbiguousAggregationExpression'), { tckError: 'AmbiguousAggregationExpression' })
       }
     }

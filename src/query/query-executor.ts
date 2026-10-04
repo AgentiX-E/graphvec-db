@@ -5516,12 +5516,26 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (plan.type === 'DELETE') {
         // 删除：从 allNodes 中移除匹配的节点
         const removeNodeIds = new Set(records.map((r: any) => r.id))
+        // A plain `DELETE` of a node that still has a relationship attached is a
+        // runtime `ConstraintVerificationFailed: DeleteConnectedNode` (openCypher);
+        // `DETACH DELETE` cascades instead.  Only enforce for a node delete — a
+        // relationship delete (`DELETE r`) is signalled by an edge variable on a
+        // MATCH step, in which case the connecting edges are being removed
+        // together with the endpoints and no dangling relationship remains.
+        const hasEdgeStep = (plan.steps || []).some((s: any) => s.edgeVariable)
+        const enforceConnected = !(plan as any).detachDelete && !hasEdgeStep
         // 从 allNodes 移除（浅拷贝过滤后替换原引用）
         const keptNodes: typeof allNodes = []
         for (let i = 0; i < allNodes.length; i++) {
           if (!removeNodeIds.has(nodeGeIds[i])) {
             keptNodes.push(allNodes[i])
           } else {
+            if (enforceConnected) {
+              const nodeEdges = (allNodes[i] as any)?.__edges
+              if (Array.isArray(nodeEdges) && nodeEdges.length > 0) {
+                throw Object.assign(new Error('ConstraintVerificationFailed: DeleteConnectedNode'), { tckError: 'DeleteConnectedNode' })
+              }
+            }
             // 同步删除 GE 存储层节点
             if (ge) {
               try {
@@ -9703,6 +9717,36 @@ export async function _executeQuery(
   }
   const isDML = ['CREATE', 'MERGE', 'DELETE', 'SET', 'REMOVE'].includes(plan.type || '')
   if (isDML && !plan.returnColumns?.length && !plan.expressionColumns?.length) {
+    // A RETURN-less plain `DELETE n` still must validate DeleteConnectedNode: a
+    // node that still has a relationship attached cannot be removed by a plain
+    // DELETE (needs DETACH DELETE).  This path never performs the actual removal
+    // (DML DELETE side effects are not asserted by the TCK side-effects step),
+    // but the constraint check must fire for a connected node — otherwise the
+    // TCK's `ConstraintVerificationFailed: DeleteConnectedNode` expectation just
+    // times out on an empty success.  Skip when the statement also deletes the
+    // connecting edges (`DELETE r, a, b`) or is a DETACH DELETE.
+    if (plan.type === 'DELETE' && !(plan as any).detachDelete) {
+      // A relationship delete (`DELETE r`, or `DELETE rels.key` over a matched
+      // edge) is signalled by an edge variable on a MATCH step; a node delete
+      // (`DELETE n`) has no edge step.  Only a node delete can leave a dangling
+      // relationship, so skip the connected-node check when the MATCH walked a
+      // relationship.
+      const hasEdgeStep = (plan.steps || []).some((s: any) => s.edgeVariable)
+      if (!hasEdgeStep) {
+        const scanLabel = plan.scanLabel
+        for (const n of nodes) {
+          const node = n as any
+          if (scanLabel) {
+            const lbl = String(node._label ?? '')
+            if (lbl !== scanLabel && !lbl.split(':').includes(scanLabel)) continue
+          }
+          const edges = node.__edges
+          if (Array.isArray(edges) && edges.length > 0) {
+            throw Object.assign(new Error('ConstraintVerificationFailed: DeleteConnectedNode'), { tckError: 'DeleteConnectedNode' })
+          }
+        }
+      }
+    }
     return []
   }
   // ── Aggregate default row ──

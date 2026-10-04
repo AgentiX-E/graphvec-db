@@ -1,0 +1,2128 @@
+[
+  {
+    "description": "",
+    "elements": [
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[1]-handling-triadic-friend-of-a-friend",
+        "keyword": "Scenario",
+        "line": 33,
+        "name": "[1] Handling triadic friend of a friend",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 694594
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 34,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 7960370
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c)\nRETURN c.name",
+                "line": 36
+              }
+            ],
+            "keyword": "When ",
+            "line": 35,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 179569794
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c12'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c22'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 40,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 848869
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 48,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 77074
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 10283862
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[2]-handling-triadic-friend-of-a-friend-that-is-not-a-friend",
+        "keyword": "Scenario",
+        "line": 50,
+        "name": "[2] Handling triadic friend of a friend that is not a friend",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 169646
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 51,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 5417571
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 53
+              }
+            ],
+            "keyword": "When ",
+            "line": 52,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 98164303
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c12'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c22'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 59,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 146512
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 66,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 37013
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 10456351
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[3]-handling-triadic-friend-of-a-friend-that-is-not-a-friend-with-different-relationship-type",
+        "keyword": "Scenario",
+        "line": 68,
+        "name": "[3] Handling triadic friend of a friend that is not a friend with different relationship type",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 144862
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 69,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 5311951
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c)\nOPTIONAL MATCH (a)-[r:FOLLOWS]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 71
+              }
+            ],
+            "keyword": "When ",
+            "line": 70,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 58667607
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c12'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c22'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 77,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 1099466,
+              "error_message": "AssertionError [ERR_ASSERTION]: unexpected row: {\"c.name\":\"'b3'\"}\nExpected: [{\"c.name\":\"'b2'\"},{\"c.name\":\"'c11'\"},{\"c.name\":\"'c12'\"},{\"c.name\":\"'c21'\"},{\"c.name\":\"'c22'\"}]\nActual: [{\"c.name\":\"'c11'\"},{\"c.name\":\"'c12'\"},{\"c.name\":\"'c21'\"},{\"c.name\":\"'c22'\"},{\"c.name\":\"'b3'\"}]\n    + expected - actual\n\n     [\n       {\n    +    \"c.name\": \"'b2'\"\n    +  }\n    +  {\n         \"c.name\": \"'c11'\"\n       }\n       {\n         \"c.name\": \"'c12'\"\n       }\n       {\n         \"c.name\": \"'c22'\"\n       }\n    -  {\n    -    \"c.name\": \"'b3'\"\n    -  }\n     ]\n\n    at new AssertionError (node:internal/assert/assertion_error:380:5)\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:703:17)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 84,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 11425032
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[4]-handling-triadic-friend-of-a-friend-that-is-not-a-friend-with-superset-of-relationship-type",
+        "keyword": "Scenario",
+        "line": 86,
+        "name": "[4] Handling triadic friend of a friend that is not a friend with superset of relationship type",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 146096
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 87,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 4949697
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c)\nOPTIONAL MATCH (a)-[r]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 89
+              }
+            ],
+            "keyword": "When ",
+            "line": 88,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 36309089
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c12'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c22'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 95,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 813122,
+              "error_message": "AssertionError [ERR_ASSERTION]: row count: expected 4, got 5\nExpected: [{\"c.name\":\"'c11'\"},{\"c.name\":\"'c12'\"},{\"c.name\":\"'c21'\"},{\"c.name\":\"'c22'\"}]\nActual: [{\"c.name\":\"'c11'\"},{\"c.name\":\"'c12'\"},{\"c.name\":\"'c21'\"},{\"c.name\":\"'c22'\"},{\"c.name\":\"'b3'\"}]\n\n5 !== 4\n\n    + expected - actual\n\n    -5\n    +4\n\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:655:10)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 101,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 14549448
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[5]-handling-triadic-friend-of-a-friend-that-is-not-a-friend-with-implicit-subset-of-relationship-type",
+        "keyword": "Scenario",
+        "line": 103,
+        "name": "[5] Handling triadic friend of a friend that is not a friend with implicit subset of relationship type",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 135301
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 104,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 11382722
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-->(b)-->(c)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 106
+              }
+            ],
+            "keyword": "When ",
+            "line": 105,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 54969930
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b4'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c12'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c22'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c31'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c32'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c41'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c42'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 112,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 418870,
+              "error_message": "AssertionError [ERR_ASSERTION]: row count: expected 10, got 1\nExpected: [{\"c.name\":\"'b3'\"},{\"c.name\":\"'b4'\"},{\"c.name\":\"'c11'\"},{\"c.name\":\"'c12'\"},{\"c.name\":\"'c21'\"},{\"c.name\":\"'c22'\"},{\"c.name\":\"'c31'\"},{\"c.name\":\"'c32'\"},{\"c.name\":\"'c41'\"},{\"c.name\":\"'c42'\"}]\nActual: [{\"c.name\":\"null\"}]\n\n1 !== 10\n\n    + expected - actual\n\n    -1\n    +10\n\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:655:10)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 124,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 10969660
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[6]-handling-triadic-friend-of-a-friend-that-is-not-a-friend-with-explicit-subset-of-relationship-type",
+        "keyword": "Scenario",
+        "line": 126,
+        "name": "[6] Handling triadic friend of a friend that is not a friend with explicit subset of relationship type",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 192914
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 127,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 4944715
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS|FOLLOWS]->(b)-->(c)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 129
+              }
+            ],
+            "keyword": "When ",
+            "line": 128,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 39388488
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b4'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c12'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c22'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c31'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c32'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c41'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c42'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 135,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 490385,
+              "error_message": "AssertionError [ERR_ASSERTION]: row count: expected 10, got 12\nExpected: [{\"c.name\":\"'b3'\"},{\"c.name\":\"'b4'\"},{\"c.name\":\"'c11'\"},{\"c.name\":\"'c12'\"},{\"c.name\":\"'c21'\"},{\"c.name\":\"'c22'\"},{\"c.name\":\"'c31'\"},{\"c.name\":\"'c32'\"},{\"c.name\":\"'c41'\"},{\"c.name\":\"'c42'\"}]\nActual: [{\"c.name\":\"'c11'\"},{\"c.name\":\"'c12'\"},{\"c.name\":\"'b2'\"},{\"c.name\":\"'c21'\"},{\"c.name\":\"'c22'\"},{\"c.name\":\"'b3'\"},{\"c.name\":\"'c31'\"},{\"c.name\":\"'c32'\"},{\"c.name\":\"'b4'\"},{\"c.name\":\"'c41'\"},{\"c.name\":\"'c42'\"},{\"c.name\":\"'b1'\"}]\n\n12 !== 10\n\n    + expected - actual\n\n    -12\n    +10\n\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:655:10)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 147,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 14743150
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[7]-handling-triadic-friend-of-a-friend-that-is-not-a-friend-with-same-labels",
+        "keyword": "Scenario",
+        "line": 149,
+        "name": "[7] Handling triadic friend of a friend that is not a friend with same labels",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 130065
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 150,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 7730544
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b:X)-->(c:X)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 152
+              }
+            ],
+            "keyword": "When ",
+            "line": 151,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 35324350
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 158,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 100349
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 163,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 20455
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 17695909
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[8]-handling-triadic-friend-of-a-friend-that-is-not-a-friend-with-different-labels",
+        "keyword": "Scenario",
+        "line": 165,
+        "name": "[8] Handling triadic friend of a friend that is not a friend with different labels",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 192108
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 166,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 4653790
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b:X)-->(c:Y)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 168
+              }
+            ],
+            "keyword": "When ",
+            "line": 167,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 30124446
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c12'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c22'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 174,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 117934
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 178,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 40009
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 22713070
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[9]-handling-triadic-friend-of-a-friend-that-is-not-a-friend-with-implicit-subset-of-labels",
+        "keyword": "Scenario",
+        "line": 180,
+        "name": "[9] Handling triadic friend of a friend that is not a friend with implicit subset of labels",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 174805
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 181,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 14735676
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c:X)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 183
+              }
+            ],
+            "keyword": "When ",
+            "line": 182,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 43811830
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 189,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 134025
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 194,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 37683
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 20055994
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[10]-handling-triadic-friend-of-a-friend-that-is-not-a-friend-with-implicit-superset-of-labels",
+        "keyword": "Scenario",
+        "line": 196,
+        "name": "[10] Handling triadic friend of a friend that is not a friend with implicit superset of labels",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 185940
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 197,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 27121938
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b:X)-->(c)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NULL\nRETURN c.name",
+                "line": 199
+              }
+            ],
+            "keyword": "When ",
+            "line": 198,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 38827344
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c11'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c12'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c21'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'c22'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 205,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 205132
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 212,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 39688
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 10967655
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[11]-handling-triadic-friend-of-a-friend-that-is-a-friend",
+        "keyword": "Scenario",
+        "line": 214,
+        "name": "[11] Handling triadic friend of a friend that is a friend",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 123790
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 215,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 6690601
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 217
+              }
+            ],
+            "keyword": "When ",
+            "line": 216,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 50301213
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 223,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 262280
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 226,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 43652
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 12787561
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[12]-handling-triadic-friend-of-a-friend-that-is-a-friend-with-different-relationship-type",
+        "keyword": "Scenario",
+        "line": 228,
+        "name": "[12] Handling triadic friend of a friend that is a friend with different relationship type",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 279935
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 229,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 14994509
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c)\nOPTIONAL MATCH (a)-[r:FOLLOWS]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 231
+              }
+            ],
+            "keyword": "When ",
+            "line": 230,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 37290387
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 237,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 294740,
+              "error_message": "AssertionError [ERR_ASSERTION]: unexpected row: {\"c.name\":\"'b2'\"}\nExpected: [{\"c.name\":\"'b3'\"}]\nActual: [{\"c.name\":\"'b2'\"}]\n    + expected - actual\n\n     [\n       {\n    -    \"c.name\": \"'b2'\"\n    +    \"c.name\": \"'b3'\"\n       }\n     ]\n\n    at new AssertionError (node:internal/assert/assertion_error:380:5)\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:703:17)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 240,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 11733222
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[13]-handling-triadic-friend-of-a-friend-that-is-a-friend-with-superset-of-relationship-type",
+        "keyword": "Scenario",
+        "line": 242,
+        "name": "[13] Handling triadic friend of a friend that is a friend with superset of relationship type",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 157999
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 243,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 7720929
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c)\nOPTIONAL MATCH (a)-[r]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 245
+              }
+            ],
+            "keyword": "When ",
+            "line": 244,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 28236786
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b3'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 251,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 366497,
+              "error_message": "AssertionError [ERR_ASSERTION]: row count: expected 2, got 1\nExpected: [{\"c.name\":\"'b2'\"},{\"c.name\":\"'b3'\"}]\nActual: [{\"c.name\":\"'b2'\"}]\n\n1 !== 2\n\n    + expected - actual\n\n    -1\n    +2\n\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:655:10)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 255,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 15710203
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[14]-handling-triadic-friend-of-a-friend-that-is-a-friend-with-implicit-subset-of-relationship-type",
+        "keyword": "Scenario",
+        "line": 257,
+        "name": "[14] Handling triadic friend of a friend that is a friend with implicit subset of relationship type",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 164800
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 258,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 8844061
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-->(b)-->(c)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 260
+              }
+            ],
+            "keyword": "When ",
+            "line": 259,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 49226726
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b1'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 266,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 503408,
+              "error_message": "AssertionError [ERR_ASSERTION]: row count: expected 2, got 12\nExpected: [{\"c.name\":\"'b1'\"},{\"c.name\":\"'b2'\"}]\nActual: [{\"c.name\":\"'c11'\"},{\"c.name\":\"'c12'\"},{\"c.name\":\"'b2'\"},{\"c.name\":\"'c21'\"},{\"c.name\":\"'c22'\"},{\"c.name\":\"'b3'\"},{\"c.name\":\"'c31'\"},{\"c.name\":\"'c32'\"},{\"c.name\":\"'b4'\"},{\"c.name\":\"'c41'\"},{\"c.name\":\"'c42'\"},{\"c.name\":\"'b1'\"}]\n\n12 !== 2\n\n    + expected - actual\n\n    -12\n    +2\n\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:655:10)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 270,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 12644908
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[15]-handling-triadic-friend-of-a-friend-that-is-a-friend-with-explicit-subset-of-relationship-type",
+        "keyword": "Scenario",
+        "line": 272,
+        "name": "[15] Handling triadic friend of a friend that is a friend with explicit subset of relationship type",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 156359
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 273,
+            "name": "the binary-tree-1 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 14630864
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS|FOLLOWS]->(b)-->(c)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 275
+              }
+            ],
+            "keyword": "When ",
+            "line": 274,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 37272388
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b1'"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 281,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 353215,
+              "error_message": "AssertionError [ERR_ASSERTION]: row count: expected 2, got 1\nExpected: [{\"c.name\":\"'b1'\"},{\"c.name\":\"'b2'\"}]\nActual: [{\"c.name\":\"null\"}]\n\n1 !== 2\n\n    + expected - actual\n\n    -1\n    +2\n\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:655:10)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 285,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 13969311
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[16]-handling-triadic-friend-of-a-friend-that-is-a-friend-with-same-labels",
+        "keyword": "Scenario",
+        "line": 287,
+        "name": "[16] Handling triadic friend of a friend that is a friend with same labels",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 119912
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 288,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 7524464
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b:X)-->(c:X)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 290
+              }
+            ],
+            "keyword": "When ",
+            "line": 289,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 51961713
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 296,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 123313
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 299,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 28568
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 12256392
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[17]-handling-triadic-friend-of-a-friend-that-is-a-friend-with-different-labels",
+        "keyword": "Scenario",
+        "line": 301,
+        "name": "[17] Handling triadic friend of a friend that is a friend with different labels",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 162143
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 302,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 8854167
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b:X)-->(c:Y)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 304
+              }
+            ],
+            "keyword": "When ",
+            "line": 303,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 27634876
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 310,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "failed",
+              "duration": 354646,
+              "error_message": "AssertionError [ERR_ASSERTION]: row count: expected 0, got 1\nExpected: []\nActual: [{}]\n\n1 !== 0\n\n    + expected - actual\n\n    -1\n    +0\n\n    at cmp (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:655:10)\n    at World.<anonymous> (/home/admin/openclaw/workspace/agentiX-graphvec/src/query/cypher-tck/step-definitions.ts:2094:77)"
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 312,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "skipped",
+              "duration": 0
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 21013628
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[18]-handling-triadic-friend-of-a-friend-that-is-a-friend-with-implicit-subset-of-labels",
+        "keyword": "Scenario",
+        "line": 314,
+        "name": "[18] Handling triadic friend of a friend that is a friend with implicit subset of labels",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 125990
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 315,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 8743473
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b)-->(c:X)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 317
+              }
+            ],
+            "keyword": "When ",
+            "line": 316,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 41367578
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 323,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 97415
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 326,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 29398
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 14362717
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      },
+      {
+        "description": "",
+        "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs;[19]-handling-triadic-friend-of-a-friend-that-is-a-friend-with-implicit-superset-of-labels",
+        "keyword": "Scenario",
+        "line": 328,
+        "name": "[19] Handling triadic friend of a friend that is a friend with implicit superset of labels",
+        "steps": [
+          {
+            "keyword": "Before",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 168043
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "Given ",
+            "line": 329,
+            "name": "the binary-tree-2 graph",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:831"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 7081513
+            }
+          },
+          {
+            "arguments": [
+              {
+                "content": "MATCH (a:A)-[:KNOWS]->(b:X)-->(c)\nOPTIONAL MATCH (a)-[r:KNOWS]->(c)\nWITH c WHERE r IS NOT NULL\nRETURN c.name",
+                "line": 331
+              }
+            ],
+            "keyword": "When ",
+            "line": 330,
+            "name": "executing query:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2040"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 46917274
+            }
+          },
+          {
+            "arguments": [
+              {
+                "rows": [
+                  {
+                    "cells": [
+                      "c.name"
+                    ]
+                  },
+                  {
+                    "cells": [
+                      "'b2'"
+                    ]
+                  }
+                ]
+              }
+            ],
+            "keyword": "Then ",
+            "line": 337,
+            "name": "the result should be, in any order:",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2094"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 102699
+            }
+          },
+          {
+            "arguments": [],
+            "keyword": "And ",
+            "line": 340,
+            "name": "no side effects",
+            "match": {
+              "location": "src/query/cypher-tck/step-definitions.ts:2154"
+            },
+            "result": {
+              "status": "passed",
+              "duration": 30297
+            }
+          },
+          {
+            "keyword": "After",
+            "hidden": true,
+            "result": {
+              "status": "passed",
+              "duration": 13635268
+            }
+          }
+        ],
+        "tags": [],
+        "type": "scenario"
+      }
+    ],
+    "id": "triadicselection1---query-three-related-nodes-on-binary-tree-graphs",
+    "line": 31,
+    "keyword": "Feature",
+    "name": "TriadicSelection1 - Query three related nodes on binary-tree graphs",
+    "tags": [],
+    "uri": "src/query/cypher-tck/features/useCases/triadicSelection/TriadicSelection1.feature"
+  }
+]

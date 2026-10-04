@@ -1,0 +1,20 @@
+useCases TOTAL 30 FAILED 19
+  X [1] Handling triadic friend of a friend -> 
+  X [2] Handling triadic friend of a friend that is not a friend -> 
+  X [3] Handling triadic friend of a friend that is not a friend with different relationship type -> 
+  X [4] Handling triadic friend of a friend that is not a friend with superset of relationship type -> 
+  X [5] Handling triadic friend of a friend that is not a friend with implicit subset of relationship type -> 
+  X [6] Handling triadic friend of a friend that is not a friend with explicit subset of relationship type -> 
+  X [7] Handling triadic friend of a friend that is not a friend with same labels -> 
+  X [8] Handling triadic friend of a friend that is not a friend with different labels -> 
+  X [9] Handling triadic friend of a friend that is not a friend with implicit subset of labels -> 
+  X [10] Handling triadic friend of a friend that is not a friend with implicit superset of labels -> 
+  X [11] Handling triadic friend of a friend that is a friend -> 
+  X [12] Handling triadic friend of a friend that is a friend with different relationship type -> 
+  X [13] Handling triadic friend of a friend that is a friend with superset of relationship type -> 
+  X [14] Handling triadic friend of a friend that is a friend with implicit subset of relationship type -> 
+  X [15] Handling triadic friend of a friend that is a friend with explicit subset of relationship type -> 
+  X [16] Handling triadic friend of a friend that is a friend with same labels -> 
+  X [17] Handling triadic friend of a friend that is a friend with different labels -> 
+  X [18] Handling triadic friend of a friend that is a friend with implicit subset of labels -> 
+  X [19] Handling triadic friend of a friend that is a friend with implicit superset of labels -> 

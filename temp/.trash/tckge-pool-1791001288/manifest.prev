@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "label_token_schema_version": 1,
+  "node_label_tokens": {},
+  "edge_label_tokens": {},
+  "next_node_label_id": 1,
+  "next_edge_label_id": 1,
+  "segments": [],
+  "next_node_id": 1,
+  "next_edge_id": 1,
+  "dense_vector": {
+    "dimension": 384,
+    "metric": "Cosine",
+    "hnsw": {
+      "m": 16,
+      "ef_construction": 200
+    }
+  },
+  "prune_policies": {},
+  "next_engine_seq": 0,
+  "next_wal_generation_id": 0,
+  "active_wal_generation_id": 0,
+  "pending_flush_epochs": [],
+  "secondary_indexes": [],
+  "next_secondary_index_id": 1
+}
