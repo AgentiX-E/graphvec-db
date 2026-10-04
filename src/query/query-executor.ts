@@ -6530,6 +6530,27 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       if (/[+*/<>=!]|(\s+(?:IN|AND|OR|XOR|IS\s+NULL|IS\s+NOT\s+NULL)\s+)/i.test(rc)) return false
       if (nodeAliases.has(rc)) return false
       if (_optionalEdgeVars.has(rc)) return false
+      // Exclude aggregate aliases: `RETURN sum` / `WITH sum(n.num) AS sum`
+      // names the folded aggregate (a scalar), not a relationship variable, so
+      // it must never be stringified as an edge placeholder `[:R]`.  Collect the
+      // alias of every aggregate — the RETURN aggregate and every WITH segment's
+      // aggregate(s) — and skip a RETURN column that equals one of them.
+      const _aggAliases = new Set<string>()
+      const _pushAggAlias = (a: any) => {
+        if (!a) return
+        const al = a.alias || a.column || ''
+        if (al) {
+          const m = /^[A-Za-z_]\w*$/.test(al) ? al : String(al).replace(/^.+?\s+AS\s+/i, '').trim()
+          if (m) _aggAliases.add(m)
+        }
+      }
+      _pushAggAlias((plan as any).aggregate)
+      _pushAggAlias((plan as any).with?.aggregate)
+      for (const wcSeg of (plan as any).withChain || []) {
+        _pushAggAlias(wcSeg?.aggregate)
+        for (const a of wcSeg?.aggregates || []) _pushAggAlias(a)
+      }
+      if (_aggAliases.has(rc)) return false
       // Exclude expressionColumns aliases (e.g. a list comprehension
       // `[x IN [r,0] | type(x)] AS list`, Pattern Comprehension, etc.) — they
       // are expression columns evaluated by _formatResultRow, not edge
@@ -6709,6 +6730,87 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       //     `plan.skip`/`plan.limit` and `_postProcessResults` slices after the
       //     ORDER BY, so slicing here would corrupt the sort order.
       const _hasAnyAgg = !!plan.aggregate || withChainToApply.some((s: any) => !!s?.aggregate)
+
+      // ── Projection-materialisation helper (extracted so it can run BEFORE an
+      // aggregate fold) ──
+      // A non-aggregate WITH segment materialises its projection aliases into each
+      // row's props.  When an aggregate segment follows (`WITH r, r.num AS num
+      // WITH sum(num) AS sum`), that projection MUST run before the aggregate is
+      // folded, otherwise `sum(num)` reads a still-unmaterialised `num` and folds
+      // to 0.  This helper applies the given segments' projections to a row set,
+      // so the fold can be interleaved with projections in WITH-chain order.
+      const _applyWithProjections = (rows: Array<Record<string, unknown>>, segments: any[]): Array<Record<string, unknown>> => {
+        if (!segments.length) return rows
+        for (const rawRow of rows) {
+          // Snapshot node variables that alias rawRow.props before writing WITH
+          // projection aliases back into props (see matching comment below).
+          if (rawRow.__crossVarRows && rawRow.props && typeof rawRow.props === 'object') {
+            for (const vn of Object.keys(rawRow.__crossVarRows)) {
+              if (rawRow.__crossVarRows[vn] === rawRow.props) {
+                rawRow.__crossVarRows[vn] = { ...rawRow.props }
+              }
+            }
+          }
+          for (const withClause of segments) {
+            const baseRc: Record<string, unknown> = {}
+            if (rawRow.props) {
+              for (const [k, v] of Object.entries(rawRow.props)) {
+                if (!k.startsWith('_')) baseRc[k] = v
+              }
+            }
+            if (rawRow.__crossVarRows) {
+              for (const [k, v] of Object.entries(rawRow.__crossVarRows)) {
+                if (!(k in baseRc)) baseRc[k] = v
+              }
+            }
+            for (const k of Object.keys(baseRc)) {
+              const rcv = baseRc[k] as any
+              if (rcv && typeof rcv === 'object' && !Array.isArray(rcv) && rcv.__edges === undefined) {
+                const byAlias = rcv._alias
+                  ? (allNodes as any[]).find((a: any) => a._alias === rcv._alias)
+                  : undefined
+                if (byAlias && Array.isArray(byAlias.__edges)) {
+                  rcv.__edges = byAlias.__edges
+                }
+              }
+            }
+            for (const wc of withClause.columns || []) {
+              const alias = typeof wc === 'object' ? wc.alias : null
+              if (!alias || (wc.expression as any)?.type === 'IDENTIFIER') continue
+              const wcExpr = typeof wc.expression === 'string' ? wc.expression :
+                (wc.expression?.type === 'LIST'
+                  ? '[' + (wc.expression.items || []).map((i: any) => i.name ?? i.value ?? '').join(', ') + ']'
+                  : null)
+              if (!wcExpr) continue
+              if (typeof wcExpr === 'string' && /^\s*(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(/i.test(wcExpr)) continue
+              const rc: Record<string, unknown> = { ...baseRc }
+              const _exprVars = wcExpr.match(/([a-zA-Z_]\w*)/g)
+              const _firstVar = _exprVars?.[0]
+              if (_firstVar && rawRow?.props && !(_firstVar in rc)) {
+                rc[_firstVar] = rawRow.props
+              }
+              try {
+                const evaluated = _evalBinary(wcExpr, rc)
+                if (evaluated === undefined) {
+                  // absent variable: leave the GE value untouched
+                } else if (typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)) {
+                  const cleanVal: Record<string, unknown> = {}
+                  for (const [ek, ev] of Object.entries(evaluated as Record<string, unknown>)) {
+                    if (ek !== '__edges' && ek !== 'props' && !ek.startsWith('__')) cleanVal[ek] = ev
+                  }
+                  rawRow.props[alias] = cleanVal
+                } else {
+                  rawRow.props[alias] = evaluated
+                }
+              } catch {
+                // Fallback: keep GE's value
+              }
+            }
+          }
+        }
+        return rows
+      }
+
       for (const wcSeg of withChainToApply) {
         const _segAgg = !!(wcSeg as any)?.aggregate
         const _segSkip = (wcSeg as any)?.skip
@@ -6716,6 +6818,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         const _segHasSlice = (_segSkip !== undefined && _segSkip > 0) || (_segLimit !== undefined && _segLimit >= 0)
 
         if (_segAgg) {
+          // Materialise any projections from preceding non-aggregate segments
+          // FIRST — a following aggregate (`sum(num)`) reads those projected
+          // aliases, so they must be written before the fold (see the helper's
+          // comment).
+          _wcRows = _applyWithProjections(_wcRows, _withChainToProcess)
+          _withChainToProcess.length = 0
           // Fold FIRST.  The segment's own ORDER BY / SKIP / LIMIT act on the
           // grouped rows, but those were already promoted onto `plan.orderBy` /
           // `plan.limit` / `plan.skip` (the RETURN has no aggregate here), so
