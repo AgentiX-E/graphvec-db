@@ -1631,8 +1631,19 @@ async function _executeMultiMatchCrossJoin(
   // b.num` evaluates to NULL, dropping every row.  Evaluate the expression
   // against the row's resolved bindings; a bare variable reference (`WITH r AS
   // x`) simply re-binds the existing value.
+  // Durable WITH projections.  A query can chain several WITH clauses
+  // (`MATCH (n) MATCH (m) WITH n AS a, m AS b MERGE ... WITH a AS x, b AS y
+  // RETURN x.id`), and each later WITH may rename a variable introduced by an
+  // earlier one (`x` renames `a`, which itself renames `n`).  Project the FULL
+  // chain in order (`n→a` then `a→x`) so every intermediate alias is materialised
+  // before its consumer is evaluated; projecting only the final `plan.with` would
+  // leave `a`/`b` unbound and collapse `x.id`/`y.id` to null.
   const _withProjCols = ((plan as any).with?.columns || []) as Array<{ expression: unknown; alias?: string | null }>
-  if (_withProjCols.length && crossRows.length) {
+  const _withChainForProj: Array<{ expression: unknown; alias?: string | null }> =
+    ((plan as any).withChain?.length ? (plan as any).withChain : (plan.with ? [plan.with] : []))
+      .flatMap((seg: any) => seg?.columns || [])
+  const _projColsToApply = _withChainForProj.length ? _withChainForProj : _withProjCols
+  if (_projColsToApply.length && crossRows.length) {
     // Variables the primary MATCH already binds.  A WITH whose alias collides
     // with one of these is a pure RENAME over an existing binding (e.g.
     // `MATCH (a:A)-[r]->(b:B) WITH b AS a MATCH (a)-[r]->(b)`), NOT a fresh
@@ -1647,7 +1658,7 @@ async function _executeMultiMatchCrossJoin(
       }
     }
     for (const row of crossRows) {
-      for (const wc of _withProjCols) {
+      for (const wc of _projColsToApply) {
         const alias = wc.alias
         if (!alias) continue
         if (_projPrimaryBound.has(alias)) continue
