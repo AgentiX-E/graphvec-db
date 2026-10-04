@@ -1110,7 +1110,12 @@ async function _executeMultiMatchCrossJoin(
   // path whenever the plan carries a CREATE write (nodes or edges) alongside
   // the multi-MATCH — except the bare-node row-counting MERGE downgraded above
   // (already re-typed to QUERY and stripped of merge semantics).
-  if ((plan as any).createNodes?.length || (plan as any).createEdges?.length) {
+  // Only a *pure* CREATE write (non-merge) should bail here: MERGE nodes carry
+  // `_isMerge:true` and are legitimately handled by the cross-join (a bare
+  // `MERGE (b)` is a row-counting match, not an update — see above).
+  const _pureCreateNodes = ((plan as any).createNodes || []).filter((cn: any) => !cn?._isMerge)
+  const _pureCreateEdges = ((plan as any).createEdges || []).filter((ce: any) => !ce?._isMerge)
+  if (_pureCreateNodes.length || _pureCreateEdges.length) {
     return null
   }
 
