@@ -1515,6 +1515,35 @@ async function _executeMultiMatchCrossJoin(
       _withAliasToBase.set(wc.alias, wc.expression)
     }
   }
+  // Bound relationship-list variable-length patterns.  `MATCH (a)-[r1]->()-[r2]->(b)
+  // WITH [r1,r2] AS rs, b AS first, a AS second MATCH (first)-[rs*]->(second)` reuses
+  // an already-bound relationship LIST as the variable-length step: `first`,
+  // `second` and `rs` are all bound by the preceding MATCH/WITH, so the second
+  // MATCH is a *verification* of direction (first must be `rs[0]`'s source and
+  // `second` `rs[last]`'s target), NOT a fresh enumeration.  The single-step BFS
+  // below enumerates from every node and would accept a reversed binding, so we
+  // record such patterns and re-verify their endpoints against `rs` after the
+  // cross-join (the relationship objects now carry `__srcIdx`/`__dstIdx`).
+  const _boundRelListPatterns: Array<{ source: string; srcBase: string; target: string; tgtBase: string; edgeVar: string }> = []
+  for (const p of mm || []) {
+    const st = (p?.steps || [])[0] as any
+    if (!st?.range || !st?.edgeVariable) continue
+    if (!st.source || !st.targetAlias) continue
+    // `rs` (edgeVariable) is bound when its WITH alias is a LIST expression
+    // (the alias-to-base map only maps bare variable renames, so a list stays
+    // un-mapped); `first`/`second` are bound when they rename primary variables.
+    const withCols = ((plan as any).with?.columns || []) as Array<{ expression: unknown; alias?: string | null }>
+    const withColExpr = (alias: string): unknown => withCols.find(c => c.alias === alias)?.expression
+    const rsExpr = withColExpr(st.edgeVariable)
+    const rsIsList = rsExpr && typeof rsExpr === 'object' && (rsExpr as any).type === 'LIST'
+    const srcBase = _withAliasToBase.get(st.source)
+    const tgtBase = _withAliasToBase.get(st.targetAlias)
+    const srcBound = srcBase !== undefined || (plan.steps || []).some((ps: any) => ps.source === st.source || ps.targetAlias === st.source)
+    const tgtBound = tgtBase !== undefined || (plan.steps || []).some((ps: any) => ps.source === st.targetAlias || ps.targetAlias === st.targetAlias)
+    if (rsIsList && srcBound && tgtBound) {
+      _boundRelListPatterns.push({ source: st.source, srcBase: srcBase || st.source, target: st.targetAlias, tgtBase: tgtBase || st.targetAlias, edgeVar: st.edgeVariable })
+    }
+  }
   let crossRows: Array<Record<string, unknown>> = [{}]
   for (const matches of matchLists) {
     const next: Array<Record<string, unknown>> = []
@@ -1541,6 +1570,49 @@ async function _executeMultiMatchCrossJoin(
     crossRows = next
   }
   if (!crossRows.length) return []
+
+  // Verify bound relationship-list variable-length patterns (see declaration
+  // above).  Each relationship object now carries `__srcIdx`/`__dstIdx`, and the
+  // bound source/target resolve (via their base variable) to a concrete node, so
+  // a directed check is exact: the walk is valid only when the base source node
+  // is the first relationship's source and the base target node the last
+  // relationship's target.
+  if (_boundRelListPatterns.length) {
+    crossRows = crossRows.filter((row) => {
+      for (const bp of _boundRelListPatterns) {
+        const relList = row[bp.edgeVar]
+        if (!Array.isArray(relList) || relList.length === 0) return false
+        const firstRel = relList[0] as any
+        const lastRel = relList[relList.length - 1] as any
+        if (typeof firstRel?.__srcIdx !== 'number' || typeof lastRel?.__dstIdx !== 'number') continue
+        // Compare the base binding's node against the relationship list's
+        // directed endpoint by stable node identity (alias, else a label+property
+        // fingerprint, else reference equality).
+        const _nodeSameIdx = (v: unknown, idx: number): boolean => {
+          if (typeof v === 'number') return v === idx
+          const target = allNodes[idx] as any
+          if (!target) return false
+          if (v && typeof v === 'object') {
+            if (v === target) return true
+            const vo = v as any
+            if (vo._alias !== undefined && target._alias !== undefined) return vo._alias === target._alias
+            const fp = (n: any): string => {
+              const label = String(n?._label ?? '')
+              const keys = Object.keys(n || {}).filter(k => !k.startsWith('_') && k !== 'id' && k !== '__edges' && k !== 'props').sort()
+              return label + '|' + keys.map(k => `${k}=${JSON.stringify(n[k])}`).join('|')
+            }
+            return fp(vo) === fp(target)
+          }
+          return false
+        }
+        const srcVal = row[bp.srcBase]
+        const tgtVal = row[bp.tgtBase]
+        if (!_nodeSameIdx(srcVal, firstRel.__srcIdx) || !_nodeSameIdx(tgtVal, lastRel.__dstIdx)) return false
+      }
+      return true
+    })
+    if (!crossRows.length) return []
+  }
 
   // Resolve node-index bindings back to concrete node objects for the WHERE /
   // RETURN projection stages.

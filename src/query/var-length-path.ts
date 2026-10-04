@@ -40,6 +40,16 @@ function _dedupEdges(edges: Array<{ srcIdx: number; dstIdx: number; label: strin
 
 function _edgeToRelObj(e: { srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }): Record<string, unknown> {
   const edgeNode: Record<string, unknown> = { _type: e.label || '' }
+  // Preserve the directed endpoints on internal `__`-prefixed keys so a
+  // *relationship-list* variable-length step (`MATCH ()-[rs*]->()`, where `rs`
+  // is an already-bound list of relationships) can later verify that a bound
+  // source/target pair traverses the list in the correct direction.  The
+  // `__`-prefix is stripped by the serialization layer, so this never leaks
+  // into TCK-rendered rows.
+  if (typeof e.srcIdx === 'number' && typeof e.dstIdx === 'number') {
+    edgeNode.__srcIdx = e.srcIdx
+    edgeNode.__dstIdx = e.dstIdx
+  }
   if (e.props) { for (const [k, v] of Object.entries(e.props)) { if (k !== '_type') edgeNode[k] = v } }
   return edgeNode
 }
