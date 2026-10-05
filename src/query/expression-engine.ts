@@ -1407,12 +1407,12 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     }
     return null;
   },
-  abs: ([a], r) => Math.abs(Number(_evalBinary(a, r))),
-  sqrt: ([a], r) => Math.sqrt(Number(_evalBinary(a, r))),
-  ceil: ([a], r) => Math.ceil(Number(_evalBinary(a, r))),
-  floor: ([a], r) => Math.floor(Number(_evalBinary(a, r))),
-  round: ([a], r) => Math.round(Number(_evalBinary(a, r))),
-  sign: ([a], r) => Math.sign(Number(_evalBinary(a, r))),
+  abs: ([a], r) => Math.abs(_num(_evalBinary(a, r))),
+  sqrt: ([a], r) => Math.sqrt(_num(_evalBinary(a, r))),
+  ceil: ([a], r) => Math.ceil(_num(_evalBinary(a, r))),
+  floor: ([a], r) => Math.floor(_num(_evalBinary(a, r))),
+  round: ([a], r) => Math.round(_num(_evalBinary(a, r))),
+  sign: ([a], r) => Math.sign(_num(_evalBinary(a, r))),
   rand: () => Math.random(),
   coalesce: (as, r) => { for (const a of as) { const v = _evalBinary(a, r); if (v != null) return v } return null },
   toupper: ([a], r) => String(_evalBinary(a, r)).toUpperCase(),
@@ -1437,11 +1437,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   tofloat: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'boolean') _throwInvalidArgumentValue(); const n = parseFloat(String(v)); if (isNaN(n)) return null; return Number.isInteger(n) ? { __float: n } : n },
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'number') _throwInvalidArgumentValue(); if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
-  labels: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
-  type: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
-  startnode: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for startNode()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); return uw._startNode ?? uw._src ?? null },
-  endnode: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for endNode()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); return uw._endNode ?? uw._dst ?? null },
-  properties: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_') && ['id', 'type'].indexOf(k) === -1) o[k] = vv; return o },
+  labels: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
+  type: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
+  startnode: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for startNode()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); return uw._startNode ?? uw._src ?? null },
+  endnode: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for endNode()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); return uw._endNode ?? uw._dst ?? null },
+  properties: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_') && ['id', 'type'].indexOf(k) === -1) o[k] = vv; return o },
   keys: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); const isNodeOrRel = '_label' in uw || '__fullLabel' in uw || '__edgeLabel' in uw || '_type' in uw; return Object.keys(uw).filter(k => !k.startsWith('_') && ['id', 'type'].indexOf(k) === -1 && (!isNodeOrRel || uw[k] != null)); } return [] },
   id: ([a], r) => { const v = _evalBinary(a, r); if (v && typeof v === 'object') { const uw = _unwrapRecord(v); const uid = '_id' in uw ? uw._id : ('id' in uw && typeof uw.id === 'number' ? uw.id : 0); return typeof uid === 'number' ? uid : 0; } return 0 },
   head: ([a], r) => { const v = _evalBinary(a, r); return Array.isArray(v) && v.length ? v[0] : null },
@@ -3229,6 +3229,11 @@ export function _comparableTypes(a: unknown, b: unknown): boolean {
 }
 
 export function _compareValues(a: unknown, b: unknown, op: string): boolean | null {
+  // Unwrap the `__float` marker before any comparison: an Int `1` and a Float
+  // `1.0` compare equal, and ordering comparisons need the raw number (a bare
+  // `Number({ __float: n })` would be NaN, corrupting `<`/`>`/`<=`/`>=`).
+  if (a && typeof a === 'object' && !Array.isArray(a) && '__float' in (a as Record<string, unknown>)) a = (a as Record<string, unknown>).__float
+  if (b && typeof b === 'object' && !Array.isArray(b) && '__float' in (b as Record<string, unknown>)) b = (b as Record<string, unknown>).__float
   if (a == null || b == null) return null  // Cypher 三值逻辑
 
   // Fast path: same-type number (most common comparison in practice)
@@ -3368,6 +3373,8 @@ export function _endsWithIsNull(s: string): 'IS NULL' | 'IS NOT NULL' | false {
 }
 
 export function _deepEqWithNull(a: unknown, b: unknown): { match: boolean; hasNull: boolean } {
+  if (a && typeof a === 'object' && !Array.isArray(a) && '__float' in (a as Record<string, unknown>)) a = (a as Record<string, unknown>).__float
+  if (b && typeof b === 'object' && !Array.isArray(b) && '__float' in (b as Record<string, unknown>)) b = (b as Record<string, unknown>).__float
   if (a === b) return { match: true, hasNull: a == null || b == null }
   if (a == null || b == null) return { match: a === b, hasNull: true }
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -3398,6 +3405,8 @@ export function _deepEqWithNull(a: unknown, b: unknown): { match: boolean; hasNu
 
 /** 浅层深度相等（不含 null 传播，用于 <> 和简单比较） */
 export function _deepEq(a: unknown, b: unknown): boolean {
+  if (a && typeof a === 'object' && !Array.isArray(a) && '__float' in (a as Record<string, unknown>)) a = (a as Record<string, unknown>).__float
+  if (b && typeof b === 'object' && !Array.isArray(b) && '__float' in (b as Record<string, unknown>)) b = (b as Record<string, unknown>).__float
   if (a === b) return true
   if (a == null || b == null) return false
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -3656,7 +3665,7 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue
       // datetime (local) + duration / duration + datetime (local)
       if (_isDateTimeStr(left) && _isDurationStr(right)) return _dateTimeAddDuration(left, right)
       if (_isDurationStr(left) && _isDateTimeStr(right)) return _dateTimeAddDuration(right, left)
-      return typeof left === 'string' || typeof right === 'string' ? String(left) + String(right) : Number(left) + Number(right)
+      return typeof left === 'string' || typeof right === 'string' ? String(left) + String(right) : _num(left) + _num(right)
     }
     // A `-` is only a binary subtraction operator when it is not preceded
     // (ignoring whitespace) by another operator — e.g. in `5 * -1`, `5 - -1`,
@@ -3688,7 +3697,7 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue
       if (_isTimeStrDirect(left) && _isDurationStrDirect(right)) return _timeSubDuration(left, right)
       // datetime - duration
       if (_isDateTimeStrDirect(left) && _isDurationStrDirect(right)) return _dateTimeSubDuration(left, right)
-      return Number(left) - Number(right)
+      return _num(left) - _num(right)
     }
   }
   return _evalMulDiv(t, row)
@@ -3710,11 +3719,33 @@ function _isIntOperand(v: ExprValue): boolean {
   return false
 }
 
+// Unwrap the `__float` marker for functions that must *reject* scalar/Float
+// arguments (e.g. `type(1.0)`, `labels(0)` raise InvalidArgumentValue).  A Float
+// literal is a number in Cypher, so a `{ __float: n }` marker must be treated as
+// a numeric (non-node) argument — unwrapping it to a plain number lets the
+// `typeof v !== 'object'` guard reject it instead of mistaking it for a node.
+function _unwrapFloatForType(v: unknown): unknown {
+  if (v && typeof v === 'object' && !Array.isArray(v) && '__float' in (v as Record<string, unknown>)) {
+    return (v as Record<string, unknown>).__float
+  }
+  return v
+}
+
+// Unwrap a numeric value to a plain JS number, resolving the `__float` marker
+// (`{ __float: n }` → `n`) so arithmetic does not coerce the marker object to
+// NaN.  A float marker also means the operand is a Float, not an Int.
+function _num(v: ExprValue): number {
+  if (v && typeof v === 'object' && !Array.isArray(v) && '__float' in (v as Record<string, unknown>)) {
+    return Number((v as Record<string, unknown>).__float)
+  }
+  return Number(v)
+}
+
 export function _evalMulDiv(s: string, row?: Record<string, unknown>): ExprValue {
   const t = s.trim()
   for (let i = t.length - 1; i >= 0; i--) {
-    if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, right); if (_isDurationStr(right) && typeof left === 'number') return _durationScale(right, left); return Number(left) * Number(right) }
-    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, 1 / right); const nl = Number(left), nr = Number(right); if (nr === 0) { if (nl === 0) return NaN; return nl > 0 ? Infinity : -Infinity } const q = nl / nr; return _isIntOperand(left) && _isIntOperand(right) ? Math.trunc(q) : q }
+    if (t[i] === '*' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, right); if (_isDurationStr(right) && typeof left === 'number') return _durationScale(right, left); return _num(left) * _num(right) }
+    if (t[i] === '/' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; if (_isDurationStr(left) && typeof right === 'number') return _durationScale(left, 1 / right); const nl = _num(left), nr = _num(right); if (nr === 0) { if (nl === 0) return NaN; return nl > 0 ? Infinity : -Infinity } const q = nl / nr; if (_isIntOperand(left) && _isIntOperand(right)) return Math.trunc(q); return Number.isInteger(q) ? { __float: q } : q }
     if (t[i] === '%' && !_inBrackets(t, i) && !_inString(t, i)) { const left = _evalMulDiv(t.slice(0, i), row); const right = _evalExp(t.slice(i + 1), row); if (left == null || right == null) return null; return Number(left) % Number(right) }
   }
   return _evalExp(t, row)
@@ -3729,7 +3760,7 @@ export function _evalExp(s: string, row?: Record<string, unknown>): ExprValue {
       const left = _evalExp(t.slice(0, i).trim(), row)
       const right = _evalUnary(t.slice(i + 1).trim(), row)
       if (left == null || right == null) return null
-      return Math.pow(Number(left), Number(right))
+      return Math.pow(_num(left), _num(right))
     }
   }
   return _evalUnary(t, row)
@@ -3740,12 +3771,22 @@ export function _evalUnary(s: string, row?: Record<string, unknown>): ExprValue 
   if (t.startsWith('-')) {
     const inner = _evalUnary(t.slice(1), row)
     if (inner == null) return null
-    return typeof inner === 'bigint' ? -inner : -Number(inner)
+    if (typeof inner === 'bigint') return -inner
+    // Preserve the float marker through unary minus so `-2.0` stays a Float
+    // (`{ __float: -2 }`) rather than silently becoming an Int (`-2`).
+    if (inner && typeof inner === 'object' && !Array.isArray(inner) && '__float' in (inner as Record<string, unknown>)) {
+      return { __float: -Number((inner as Record<string, unknown>).__float) }
+    }
+    return -Number(inner)
   }
   if (t.startsWith('+')) {
     const inner = _evalUnary(t.slice(1), row)
     if (inner == null) return null
-    return typeof inner === 'bigint' ? inner : Number(inner)
+    if (typeof inner === 'bigint') return inner
+    if (inner && typeof inner === 'object' && !Array.isArray(inner) && '__float' in (inner as Record<string, unknown>)) {
+      return { __float: Number((inner as Record<string, unknown>).__float) }
+    }
+    return Number(inner)
   }
   return _evalAtom(t, row)
 }
@@ -4539,7 +4580,27 @@ export function _evalLiteral(s: string, row?: Record<string, unknown>): ExprValu
         }
       } catch { /* fall through to Number */ }
     }
-    return parseFloat(v)
+    // A float *literal* written with an explicit decimal point whose fractional
+    // digits are all zero (e.g. `2.0`, `0.0`, `2.00`) or with an exponent that
+    // resolves to an integral value (`1e9` → `1000000000.0`) must retain its
+    // Cypher Float type even though its value is integral: `1 / 2.0` yields an
+    // integer-typed operand that would otherwise force integer (truncating)
+    // division.  Mark such literals with the `__float` wrapper (mirroring
+    // `toFloat`) so `_isIntOperand` treats them as floats and the serializer
+    // renders them with a trailing `.0`.
+    //
+    // A very large / very small float that JS must render in scientific notation
+    // (`12635...218.0` → `1.263e+305`, `.000...01` → `1e-305`) is NOT wrapped:
+    // `String(n) + '.0'` would corrupt it to `1.263e+305.0`.  Such values stay
+    // plain numbers (whose `String()` output the serializer already normalises to
+    // Cypher's `e` form) and are non-integral in the `Number.isInteger` sense of
+    // `_isIntOperand` anyway when they exceed the safe-integer range.
+    const n = parseFloat(v)
+    const isFloatLiteral = v.includes('.') || /[eE]/.test(v)
+    if (isFloatLiteral && Number.isInteger(n) && !/[eE]/.test(String(n))) {
+      return { __float: n }
+    }
+    return n
   }
   if (/^0[xX][0-9a-fA-F]+$/.test(v)) {
     const n = parseInt(v, 16)
