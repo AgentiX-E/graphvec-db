@@ -5479,6 +5479,12 @@ function _orderByTypeRank(v: unknown): number {
  *  predicate logic and returns null on null / cross-type), this comparator is
  *  total: `null` sorts last, and cross-type pairs order by `_orderByTypeRank`. */
 export function _compareOrderByValue(a: unknown, b: unknown): number {
+  // Unwrap the `__float` marker before ordering: a Float literal with an
+  // integral value (`3.0` → `{ __float: 3 }`) must sort as the *number* 3, not
+  // as a map (which would rank it before all numbers and mis-order the row
+  // set).  This mirrors `_compareValues`'s unwrap.
+  if (a && typeof a === 'object' && !Array.isArray(a) && '__float' in (a as Record<string, unknown>)) a = (a as Record<string, unknown>).__float
+  if (b && typeof b === 'object' && !Array.isArray(b) && '__float' in (b as Record<string, unknown>)) b = (b as Record<string, unknown>).__float
   if (a === b) return 0
   if (a === null || a === undefined) return 1
   if (b === null || b === undefined) return -1
