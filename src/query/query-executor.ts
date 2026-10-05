@@ -1101,7 +1101,50 @@ async function _executeMultiMatchCrossJoin(
       ;(plan as any).multiMatch = mm
     }
   }
-  if (!mm?.length) return null
+  // Single-MATCH queries whose OPTIONAL MATCH introduces a *free* source (a
+  // variable neither bound by the leading MATCH nor by any traverse step) must
+  // still route through this cross-join executor.  The GE main path's OPTIONAL
+  // handling only resolves a *bound* source from `__crossVarRows`, so a free
+  // source like `a` in `MATCH (other:B) OPTIONAL MATCH (a)-[r]->(other)` would
+  // be left unresolved (srcNodeIdx === -1) and `a IS NULL` would never hold.
+  // Detect an OPTIONAL MATCH whose STARTING node is free (unbound by the
+  // leading MATCH and by any preceding OPTIONAL MATCH).  Only such a free
+  // source needs the cross-join enumerator; a bound source (or one bound by an
+  // earlier OPTIONAL MATCH in the same chain) must stay on the GE main path.
+  const _boundSoFar = new Set<string>()
+  if ((plan as any).matchVar) _boundSoFar.add((plan as any).matchVar)
+  for (const st of (plan.steps || [])) {
+    if ((st as any).source) _boundSoFar.add((st as any).source)
+    if ((st as any).targetAlias) _boundSoFar.add((st as any).targetAlias)
+    if ((st as any).edgeVariable) _boundSoFar.add((st as any).edgeVariable)
+  }
+  for (const m of (mm || [])) if (m?.variable) _boundSoFar.add(m.variable)
+  let _optionalHasFreeSource = false
+  for (const om of ((plan as any).optionalMatchSteps || [])) {
+    // Only the FIRST step's source decides whether THIS OPTIONAL MATCH starts
+    // free.  Later steps bind their source from the previous step (an
+    // OPTIONAL-chain intermediate, not a free source).
+    const firstStep = (om.steps || [])[0]
+    const firstSrc = firstStep && firstStep.source
+    const edgeVar = firstStep && (firstStep.edgeVariable || firstStep.edgeAlias)
+    // Reusing an already-bound relationship (`[r]` in `MATCH (a1)-[r]->() …
+    // OPTIONAL MATCH (a2)<-[r]-(b2)`) is a *reverse relationship lookup*, not a
+    // free-source enumeration — the GE main path resolves it correctly.  Only a
+    // truly free source AND a free relationship variable need the cross-join
+    // enumerator (e.g. `MATCH (other:B) OPTIONAL MATCH (a)-[r]->(other)`).
+    if (firstSrc && !_boundSoFar.has(firstSrc) && firstSrc !== firstStep?.targetAlias && !(edgeVar && _boundSoFar.has(edgeVar))) {
+      _optionalHasFreeSource = true
+      break
+    }
+    // This OPTIONAL MATCH's own bindings (target/edge vars) are now bound for
+    // any subsequent OPTIONAL MATCH in the chain.
+    for (const st of (om.steps || [])) {
+      if ((st as any).source) _boundSoFar.add((st as any).source)
+      if ((st as any).targetAlias) _boundSoFar.add((st as any).targetAlias)
+      if ((st as any).edgeVariable) _boundSoFar.add((st as any).edgeVariable)
+    }
+  }
+  if (!mm?.length && !_optionalHasFreeSource) return null
 
   // A multi-MATCH DML statement (`MATCH (x:X), (y:Y) CREATE (x)<-[:R]-(y)`)
   // still performs a real write.  The cross-join below only enumerates MATCH
@@ -1126,9 +1169,13 @@ async function _executeMultiMatchCrossJoin(
   // are joined on that bound node rather than Cartesian-producted.
   const patterns: Array<{ scanLabel: string | null; steps: TraverseStep[]; variable?: string }> = [
     { scanLabel: plan.scanLabel ?? null, steps: plan.steps || [], variable: (plan as any).matchVar, sourceProps: (plan as any).matchSourceProps },
-    ...mm.map(p => ({ scanLabel: p.scanLabel ?? null, steps: p.steps || [], variable: p.variable, sourceProps: (p as any).sourceProps })),
+    ...(mm || []).map(p => ({ scanLabel: p.scanLabel ?? null, steps: p.steps || [], variable: p.variable, sourceProps: (p as any).sourceProps })),
   ]
-  if (patterns.length < 2) return null
+  // Two-or-more MATCH patterns normally cross-join; a single MATCH with a free-
+  // source OPTIONAL MATCH (routed here via `_optionalHasFreeSource` above) is
+  // allowed to proceed with a single pattern so the OPTIONAL expansion can
+  // enumerate the free source.
+  if (patterns.length < 2 && !_optionalHasFreeSource) return null
   // Any two-or-more independent MATCH patterns must be cross-joined: either on
   // a shared bound node variable (`MATCH (a:A) MATCH (a)-[:R]->(c)`), on
   // relationship/path variable materialisation (`MATCH (a)-[r]->(b) MATCH ...`),
@@ -1676,9 +1723,24 @@ async function _executeMultiMatchCrossJoin(
   }
 
   // Evaluate WHERE (relationship identity / path equality / pattern predicates).
-  let filtered = crossRows
-  if (plan.whereBody) {
-    filtered = []
+  // A WHERE that references a variable bound by an OPTIONAL MATCH must be
+  // applied *after* the optional expansion below (the variable is undefined —
+  // hence `IS NULL` evaluates true — before it).  Detect such a reference and
+  // defer the whole WHERE filter until the optional variables are bound (or
+  // nulled for non-matching rows).
+  const _optionalBoundVars = new Set<string>()
+  for (const om of ((plan as any).optionalMatchSteps || []) as Array<any>) {
+    for (const st of (om.steps || [])) {
+      if ((st as any).source) _optionalBoundVars.add((st as any).source)
+      if ((st as any).targetAlias) _optionalBoundVars.add((st as any).targetAlias)
+      if ((st as any).edgeVariable) _optionalBoundVars.add((st as any).edgeVariable)
+      if ((st as any).pathVariable) _optionalBoundVars.add((st as any).pathVariable)
+    }
+  }
+  const _whereRefsOptionalVar = !!(plan.whereBody && [..._optionalBoundVars].some(v =>
+    new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(plan.whereBody)))
+  let filtered = _whereRefsOptionalVar ? crossRows : (plan.whereBody ? [] : crossRows)
+  if (plan.whereBody && !_whereRefsOptionalVar) {
     for (const row of crossRows) {
       // Resolve pattern predicates (`(a)-[:T]->(b:X)`) to boolean literals before
       // expression evaluation — the expression engine cannot parse relationship
@@ -1711,7 +1773,13 @@ async function _executeMultiMatchCrossJoin(
         if (ai >= 0) return ai
       }
       const lbl = o._label || ''
-      const keys = Object.keys(o).filter(k => !k.startsWith('_') && k !== 'id' && k !== '__edges')
+      // Include `id` in the distinguishing key set: it is a legitimate user
+      // property (`CREATE (b:B {id:1})`) and must disambiguate two same-label
+      // nodes (`B{id:1}` vs `B{id:2}`).  Excluding it left an empty key set for
+      // anonymous nodes like `(:B {id:2})`, so every same-label node collapsed
+      // onto the first match (`_nodeIdxOf` → index of `b` instead of the `id:2`
+      // node), breaking `WHERE a IS NULL` for an OPTIONAL MATCH free source.
+      const keys = Object.keys(o).filter(k => !k.startsWith('_') && k !== '__edges')
       for (let i = 0; i < allNodes.length; i++) {
         const c = allNodes[i] as any
         if (String(c?._label ?? '') !== lbl) continue
@@ -1884,6 +1952,19 @@ async function _executeMultiMatchCrossJoin(
     filtered = expanded
   }
 
+  // A WHERE deferred above because it references an OPTIONAL variable is now
+  // safe to apply: the optional expansion has bound the variable (or set it to
+  // null for non-matching rows), so `r IS NULL` / `a IS NULL` evaluate per row.
+  if (_whereRefsOptionalVar && plan.whereBody) {
+    const _wf: Array<Record<string, unknown>> = []
+    for (const row of filtered) {
+      let whereExpr = _resolveWherePatternPredicates(plan.whereBody, { ...row }, allNodes)
+      const val = _evaluateExpression(whereExpr, { ...row })
+      if (val === true) _wf.push(row)
+    }
+    filtered = _wf.length ? _wf : []
+  }
+
   // ── WITH-driven MULTI-MATCH constraint ──
   // A MATCH whose source variable is (re)defined by a preceding WITH projection
   // (`WITH coalesce(b, c) AS x MATCH (x)-->(d)`) must resolve `x` from the WITH
@@ -1920,7 +2001,7 @@ async function _executeMultiMatchCrossJoin(
     if ((plan as any).matchVar) primaryBound.add((plan as any).matchVar)
     // Sources of any multi-match pattern that are re-bound by WITH.
     const drivenSources = new Set<string>()
-    for (const m of mm) {
+    for (const m of (mm || [])) {
       const src = m.steps?.[0]?.source as string | undefined
       // Skip pure renames over already-bound primary-match variables.
       if (src && _withExprByAlias.has(src) && !primaryBound.has(src)) drivenSources.add(src)
