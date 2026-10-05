@@ -3396,8 +3396,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // No match → fall through to creation below (ON CREATE branch).
           ;(cn as any)._matched = false
         }
-        // 跳过仅引用已匹配节点的 createNode（无 label 无 props，且变量名已存在 MATCH 中）
-        if (cn.alias && matchVars.has(cn.alias) && !cn.label && (!cn.props || !Object.keys(cn.props).length)) {
+        // 跳过仅引用已绑定节点的 createNode（无 label 无 props，且变量名已绑定：
+        // 要么是 MATCH 变量，要么已作为前一条语句的节点出现在 allNodes 中）。
+        // 纯 CREATE 跨语句引用（`CREATE (a {name:'A'})` 后跟独立的
+        // `CREATE (a)-[:REL]->()`）里 `a` 是已有节点引用，必须复用而非重复创建，
+        // 否则 `MATCH (a)-->()` 会把边挂到重复的 a 上、原始 a 无边。
+        const _aliasAlreadyBound = matchVars.has(cn.alias) ||
+          (allNodes.some(n => (n as any)._alias === cn.alias))
+        if (cn.alias && _aliasAlreadyBound && !cn.label && (!cn.props || !Object.keys(cn.props).length)) {
           // 不创建新节点，但保留 _alias 引用
           // 优先用绑定表解析（支持 `WITH n AS a, m AS b` 多别名指向同一节点）。
           const boundNode = varToNodeMap.get(cn.alias)
@@ -5138,24 +5144,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           }
           // 恢复 edgeLabel
           if (plan.steps?.[0]) plan.steps[0].edgeLabel = savedEdgeLabel
-          // Pattern Comprehension 去重：当 targetAlias 为空（匿名目标）时，
-          // 每个 source 节点可能产生多行（不同目标节点）。
-          // 去重：只保留每个 source 节点一行
-          const lastStepTargetAlias = plan.steps?.[plan.steps.length - 1]?.targetAlias
-          if (lastStepTargetAlias === '' && plan.steps?.length && !hasMultiStep) {
-            const seenSourceVals = new Set<string>()
-            multiStepRaw = multiStepRaw.filter((r: any) => {
-              const cvr = r.__crossVarRows
-              if (!cvr) return true
-              const srcVar = plan.steps![0].source
-              if (!srcVar) return true
-              const srcVal = cvr[srcVar]
-              const key = typeof srcVal === 'object' ? JSON.stringify(srcVal) : String(srcVal)
-              if (seenSourceVals.has(key)) return false
-              seenSourceVals.add(key)
-              return true
-            })
-          }
+          // NOTE: a prior version collapsed `MATCH (a)-->()` (anonymous target,
+          // single fixed step) to one row per *source* node.  That violates
+          // openCypher relationship multiplicity: `MATCH (a)-->() RETURN a`
+          // (and `count(*)` over it) must emit one row per matched relationship,
+          // e.g. three `a -[:REL]->()` edges yield three rows.  `_walkMultiSteps`
+          // already preserves per-edge multiplicity, so no extra deduplication is
+          // needed here.
           // 边变量过滤：WHERE r.name = 'monkey' 场景，
           // 用边属性过滤结果，并附加边属性到 __crossVarRows 供下游 whereBody 评估使用
           if (multiStepRaw.length && (plan.filters || []).some((f: any) => {
@@ -7797,7 +7792,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const _withAggAlias = (plan as any)?.with?.aggregate?.alias
     const _whereRefsAggAlias = !!(plan.whereBody && _withAggAlias &&
       new RegExp(`\\b${String(_withAggAlias).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(plan.whereBody))
-    const _isHaving = !!(plan.aggregate && plan.with?.columns?.length && plan.whereBody && _withAggCols.length && _whereRefsAggAlias)
+    const _isHaving = !!(((plan as any).aggregate || (plan as any).with?.aggregate) && plan.with?.columns?.length && plan.whereBody && _withAggCols.length && _whereRefsAggAlias)
     // For DML plans (SET/DELETE/REMOVE), a WHERE predicate is already applied
     // by the graph engine *before* the side effects run.  Re-evaluating the
     // same predicate here against the mutated row would wrongly drop it (e.g.
