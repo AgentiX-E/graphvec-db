@@ -12,7 +12,7 @@ import { parseCypherToPlan } from './ast-to-plan-v2'
 import { GraphEngine } from '../core/graph-engine'
 import type { OverGraphConfig } from '../types'
 import { globalRegistry as _procedureRegistry } from './procedure-registry'
-import { _evalBinary, _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver, _computeAggregate, _lastTopLevelComma } from './expression-engine'
+import { _evalBinary, _evaluateExpression, _postProcessResults, QueryRow, _parseAggregate, _extractAggColumns, _hasAggregates, _executeAggregation, _enrichWithAggregates, _validateLiterals, _bigintReplacer, _bigintReviver, _computeAggregate, _lastTopLevelComma, _compareValues, _splitTopLevel } from './expression-engine'
 import { _walkMultiSteps, _walkMultiStepsWithEdges, _pathEndIndices, _stepMatchConstraint, _resolveUnwindList, _extractWithClausesAfterUnwind, _applyYieldAliases, resolveVariableNodeIdx, _findWhereOutsideBrackets, _fastDedup, _fastIntersect, _fastSubtract } from './query-parser'
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
 import type { QueryPlan, FilterClause, TraverseStep, AggregateClause, SetClause, InternalNode } from './query-types'
@@ -2132,10 +2132,10 @@ async function _executeMultiMatchCrossJoin(
         switch (f.operator) {
           case 'EQ': return actual === fv
           case 'NEQ': return actual !== fv
-          case 'GT': return Number(actual) > Number(fv)
-          case 'GTE': return Number(actual) >= Number(fv)
-          case 'LT': return Number(actual) < Number(fv)
-          case 'LTE': return Number(actual) <= Number(fv)
+          case 'GT': return _compareValues(actual, fv, '>') === true
+          case 'GTE': return _compareValues(actual, fv, '>=') === true
+          case 'LT': return _compareValues(actual, fv, '<') === true
+          case 'LTE': return _compareValues(actual, fv, '<=') === true
           case 'IS_NULL': return false
           case 'IS_NOT_NULL': return true
           case 'IN': {
@@ -2925,10 +2925,10 @@ function _withFilterKeepMask(
       switch (f.operator) {
         case 'EQ': return actual === fv
         case 'NEQ': return actual !== fv
-        case 'GT': return Number(actual) > Number(fv)
-        case 'GTE': return Number(actual) >= Number(fv)
-        case 'LT': return Number(actual) < Number(fv)
-        case 'LTE': return Number(actual) <= Number(fv)
+        case 'GT': return _compareValues(actual, fv, '>') === true
+        case 'GTE': return _compareValues(actual, fv, '>=') === true
+        case 'LT': return _compareValues(actual, fv, '<') === true
+        case 'LTE': return _compareValues(actual, fv, '<=') === true
         case 'IS_NULL': return false
         case 'IS_NOT_NULL': return true
         default: return String(actual) === String(fv)
@@ -8197,7 +8197,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // wrongly drop every row.  Skip such expression-only filters.
       const segFilters = ((wcSeg as any)?.filters || []).filter((f: any) =>
         f?.property !== '__label' && !(f?.expression && (f?.property == null || f?.property === '') && (f?.source == null || f?.source === '')))
-      if (segFilters.length && rawWithEdges?.length) {
+      // The `whereBody` pass above already evaluated the full WHERE expression
+      // (including OR / NOT / XOR structure) against every row.  `_withFilterKeepMask`
+      // only understands an implicit AND over the flattened filter list, so it
+      // MUST NOT re-run when the WHERE is a top-level OR — doing so would drop
+      // rows that `whereBody` legitimately kept (e.g. `NULL OR true` = true).
+      // Re-filtering is only safe when the WHERE is a pure AND (or a single
+      // predicate), which `every` reproduces exactly.
+      const _whereIsTopLevelOr = !!plan.whereBody && _splitTopLevel(String(plan.whereBody).replace(/^WHERE\s+/i, '').trim(), 'OR').length > 1
+      if (segFilters.length && rawWithEdges?.length && !_whereIsTopLevelOr) {
         // Determine which raw rows satisfy the segment WHERE, then apply the
         // same index mask to both `rawWithEdges` and the formatted `result` so
         // a later aggregate over either sees a consistent row set.
