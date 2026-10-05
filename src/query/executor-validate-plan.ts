@@ -13,6 +13,21 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   if (!plan || !plan.type) return
   if (!query) return
 
+  // ── SemanticError: MergeReadOwnWrites ──
+  // MERGE cannot use `null` in a property: a null property value can never match
+  // an existing node/relationship (Cypher's `null` comparison is unknown), so
+  // `MERGE ({num: null})` / `MERGE (a)-[r:X {num: null}]->(b)` would read its own
+  // write unreliably.  Cypher rejects these with a runtime SemanticError.  A
+  // property VALUE of null is the violation; a null props MAP (`props: null`)
+  // simply means "no property constraint" and is legal.
+  const _hasNullMergeProp = (props: Record<string, unknown> | null | undefined): boolean =>
+    !!props && Object.values(props).some((v) => v === null)
+  const _mergeNodes = (plan as any).mergeNodes as Array<{ props?: Record<string, unknown> | null }> | undefined
+  const _mergeEdges = (plan as any).mergeEdges as Array<{ props?: Record<string, unknown> | null }> | undefined
+  if ((_mergeNodes?.some((n) => _hasNullMergeProp(n.props))) || (_mergeEdges?.some((e) => _hasNullMergeProp(e.props)))) {
+    throw Object.assign(new Error('SemanticError: MergeReadOwnWrites'), { tckError: 'SemanticError', statusCode: 'MergeReadOwnWrites' })
+  }
+
   // 从 WHERE 子句检测未绑定变量
   const qUpper = query.toUpperCase()
 

@@ -2138,6 +2138,12 @@ Then(/^a SyntaxError should be raised at runtime(?:.*)$/, function () {
   assert.ok(st.err, `no SyntaxError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })
 
+Then(/^a SemanticError should be raised at runtime(?:.*)$/, function () {
+  // SemanticErrors (e.g. MergeReadOwnWrites) are raised from the same `_validatePlan`
+  // pass that flags compile-time errors; the TCK only asserts `st.err` is set.
+  assert.ok(st.err, `no SemanticError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
+})
+
 Then(/^a TypeError should be raised (?:at runtime|at compile time|at any time)(?:.*)$/, function () {
   assert.ok(st.err, `no TypeError\nQuery: ${st.q}\nResult: ${JSON.stringify(st.res)}`)
 })
