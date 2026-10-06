@@ -1,13 +1,20 @@
 /**
- * CASE 表达式运行时求值单元测试
+ * CASE expression runtime evaluation unit tests.
  *
- * 测试 _evalCaseExprOnRow 对 PEG 生成的 CASE AST 的运行时求值。
+ * Tests _evalCase (string-based Cypher CASE evaluation). The legacy
+ * AST-object API (_evalCaseExprOnRow/_applyCaseColumns) was replaced by the
+ * string-driven _evalCase in expression-engine.ts. This spec migrates the
+ * semantic matrix to the new API while preserving coverage of:
+ *   - searched CASE with comparison operators (EQ/GT/GTE/LT/NEQ)
+ *   - AND / OR compound conditions
+ *   - ELSE fallback and short-circuit multi-WHEN matching
+ *   - simple CASE (CASE <value> WHEN <v> THEN ...)
+ *   - NULL / missing-property propagation
  */
+import { describe, it, expect } from 'vitest'
+import { _evalCase } from './expression-engine'
 
-import { _evalCaseExprOnRow, _applyCaseColumns } from './query-engine'
-
-// ── 辅助函数：构造行数据 ──
-
+// Helper: build a row with sensible defaults.
 function row(overrides: Record<string, any> = {}): Record<string, any> {
   return {
     name: 'Alice',
@@ -19,393 +26,94 @@ function row(overrides: Record<string, any> = {}): Record<string, any> {
   }
 }
 
-// ── Test Suite ──
-
-describe('_evalCaseExprOnRow — CASE 表达式运行时求值', () => {
-
-  // 1. CASE WHEN 属性引用 + 比较操作符
-  test('CASE WHEN n.age = 30 THEN adult', () => {
-    // CASE WHEN n.age = 30 THEN 'adult'
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'EQ',
-            left: { type: 'PROP_REF', name: 'n', property: 'age' },
-            right: { type: 'NUMBER', value: 30 },
-          },
-          result: { type: 'STRING', value: 'adult' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row())).toBe('adult')
-    expect(_evalCaseExprOnRow(expr, row({ age: 25 }))).toBeNull()
+describe('_evalCase — searched CASE (CASE WHEN <cond> THEN <r>)', () => {
+  it('EQ comparison', () => {
+    expect(_evalCase("CASE WHEN age = 30 THEN 'adult' END", row())).toBe('adult')
+    expect(_evalCase("CASE WHEN age = 30 THEN 'adult' END", row({ age: 25 }))).toBeNull()
   })
 
-  test('CASE WHEN n.age > 18 THEN adult', () => {
-    // CASE WHEN n.age > 18 THEN 'adult'
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'GT',
-            left: { type: 'PROP_REF', name: 'n', property: 'age' },
-            right: { type: 'NUMBER', value: 18 },
-          },
-          result: { type: 'STRING', value: 'adult' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row({ age: 20 }))).toBe('adult')
-    expect(_evalCaseExprOnRow(expr, row({ age: 15 }))).toBeNull()
+  it('GT comparison', () => {
+    expect(_evalCase("CASE WHEN age > 18 THEN 'adult' END", row({ age: 20 }))).toBe('adult')
+    expect(_evalCase("CASE WHEN age > 18 THEN 'adult' END", row({ age: 15 }))).toBeNull()
   })
 
-  test('CASE WHEN n.score >= 60 THEN pass', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'GTE',
-            left: { type: 'PROP_REF', name: 'n', property: 'score' },
-            right: { type: 'NUMBER', value: 60 },
-          },
-          result: { type: 'STRING', value: 'pass' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row({ score: 85 }))).toBe('pass')
-    expect(_evalCaseExprOnRow(expr, row({ score: 59 }))).toBeNull()
+  it('GTE comparison', () => {
+    expect(_evalCase("CASE WHEN score >= 60 THEN 'pass' END", row({ score: 85 }))).toBe('pass')
+    expect(_evalCase("CASE WHEN score >= 60 THEN 'pass' END", row({ score: 59 }))).toBeNull()
   })
 
-  test('CASE WHEN n.age < 18 THEN minor', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'LT',
-            left: { type: 'PROP_REF', name: 'n', property: 'age' },
-            right: { type: 'NUMBER', value: 18 },
-          },
-          result: { type: 'STRING', value: 'minor' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row({ age: 15 }))).toBe('minor')
-    expect(_evalCaseExprOnRow(expr, row({ age: 20 }))).toBeNull()
+  it('LT comparison', () => {
+    expect(_evalCase("CASE WHEN age < 18 THEN 'minor' END", row({ age: 15 }))).toBe('minor')
+    expect(_evalCase("CASE WHEN age < 18 THEN 'minor' END", row({ age: 20 }))).toBeNull()
   })
 
-  test('CASE WHEN n.name != Alice THEN other', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'NEQ',
-            left: { type: 'PROP_REF', name: 'n', property: 'name' },
-            right: { type: 'STRING', value: 'Alice' },
-          },
-          result: { type: 'STRING', value: 'other' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row({ name: 'Bob' }))).toBe('other')
-    expect(_evalCaseExprOnRow(expr, row({ name: 'Alice' }))).toBeNull()
+  it('NEQ comparison (Cypher <> inequality)', () => {
+    expect(_evalCase("CASE WHEN name <> 'Alice' THEN 'other' END", row({ name: 'Bob' }))).toBe('other')
+    expect(_evalCase("CASE WHEN name <> 'Alice' THEN 'other' END", row({ name: 'Alice' }))).toBeNull()
+  })
+})
+
+describe('_evalCase — AND / OR compound conditions', () => {
+  it('AND', () => {
+    expect(_evalCase("CASE WHEN age > 18 AND age < 65 THEN 'working' END", row({ age: 30 }))).toBe('working')
+    expect(_evalCase("CASE WHEN age > 18 AND age < 65 THEN 'working' END", row({ age: 10 }))).toBeNull()
+    expect(_evalCase("CASE WHEN age > 18 AND age < 65 THEN 'working' END", row({ age: 70 }))).toBeNull()
   })
 
-  // 2. CASE WHEN AND/OR 组合条件
-  test('CASE WHEN n.age > 18 AND n.age < 65 THEN working', () => {
-    // CASE WHEN n.age > 18 AND n.age < 65 THEN 'working'
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'AND',
-            left: {
-              type: 'COMPARISON',
-              operator: 'GT',
-              left: { type: 'PROP_REF', name: 'n', property: 'age' },
-              right: { type: 'NUMBER', value: 18 },
-            },
-            right: {
-              type: 'COMPARISON',
-              operator: 'LT',
-              left: { type: 'PROP_REF', name: 'n', property: 'age' },
-              right: { type: 'NUMBER', value: 65 },
-            },
-          },
-          result: { type: 'STRING', value: 'working' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row({ age: 30 }))).toBe('working')
-    expect(_evalCaseExprOnRow(expr, row({ age: 10 }))).toBeNull()
-    expect(_evalCaseExprOnRow(expr, row({ age: 70 }))).toBeNull()
+  it('OR', () => {
+    expect(_evalCase("CASE WHEN age < 18 OR age > 65 THEN 'special' END", row({ age: 15 }))).toBe('special')
+    expect(_evalCase("CASE WHEN age < 18 OR age > 65 THEN 'special' END", row({ age: 70 }))).toBe('special')
+    expect(_evalCase("CASE WHEN age < 18 OR age > 65 THEN 'special' END", row({ age: 30 }))).toBeNull()
   })
 
-  test('CASE WHEN n.age < 18 OR n.age > 65 THEN special', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'OR',
-            left: {
-              type: 'COMPARISON',
-              operator: 'LT',
-              left: { type: 'PROP_REF', name: 'n', property: 'age' },
-              right: { type: 'NUMBER', value: 18 },
-            },
-            right: {
-              type: 'COMPARISON',
-              operator: 'GT',
-              left: { type: 'PROP_REF', name: 'n', property: 'age' },
-              right: { type: 'NUMBER', value: 65 },
-            },
-          },
-          result: { type: 'STRING', value: 'special' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row({ age: 15 }))).toBe('special')
-    expect(_evalCaseExprOnRow(expr, row({ age: 70 }))).toBe('special')
-    expect(_evalCaseExprOnRow(expr, row({ age: 30 }))).toBeNull()
+  it('AND across two properties', () => {
+    expect(_evalCase("CASE WHEN age > 18 AND city = 'Beijing' THEN 'local-adult' END", row({ age: 25, city: 'Beijing' }))).toBe('local-adult')
+    expect(_evalCase("CASE WHEN age > 18 AND city = 'Beijing' THEN 'local-adult' END", row({ age: 25, city: 'Shanghai' }))).toBeNull()
+  })
+})
+
+describe('_evalCase — ELSE fallback and short-circuit multi-WHEN', () => {
+  it('ELSE fallback', () => {
+    expect(_evalCase("CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END", row({ age: 25 }))).toBe('adult')
+    expect(_evalCase("CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END", row({ age: 15 }))).toBe('minor')
   })
 
-  test('CASE WHEN n.age > 18 AND n.city = Beijing THEN local-adult', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'AND',
-            left: {
-              type: 'COMPARISON',
-              operator: 'GT',
-              left: { type: 'PROP_REF', name: 'n', property: 'age' },
-              right: { type: 'NUMBER', value: 18 },
-            },
-            right: {
-              type: 'COMPARISON',
-              operator: 'EQ',
-              left: { type: 'PROP_REF', name: 'n', property: 'city' },
-              right: { type: 'STRING', value: 'Beijing' },
-            },
-          },
-          result: { type: 'STRING', value: 'local-adult' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row({ age: 25, city: 'Beijing' }))).toBe('local-adult')
-    expect(_evalCaseExprOnRow(expr, row({ age: 25, city: 'Shanghai' }))).toBeNull()
+  it('multi-WHEN short-circuit (first match wins)', () => {
+    const expr = "CASE WHEN score >= 90 THEN 'A' WHEN score >= 80 THEN 'B' ELSE 'C' END"
+    expect(_evalCase(expr, row({ score: 95 }))).toBe('A')
+    expect(_evalCase(expr, row({ score: 85 }))).toBe('B')
+    expect(_evalCase(expr, row({ score: 70 }))).toBe('C')
   })
 
-  // 3. CASE ELSE 兜底
-  test('CASE WHEN n.age > 18 THEN adult ELSE minor', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'GT',
-            left: { type: 'PROP_REF', name: 'n', property: 'age' },
-            right: { type: 'NUMBER', value: 18 },
-          },
-          result: { type: 'STRING', value: 'adult' },
-        },
-      ],
-      elseExpr: { type: 'STRING', value: 'minor' },
-    }
-    expect(_evalCaseExprOnRow(expr, row({ age: 25 }))).toBe('adult')
-    expect(_evalCaseExprOnRow(expr, row({ age: 15 }))).toBe('minor')
+  it('multi-WHEN equality short-circuit', () => {
+    const expr = "CASE WHEN age = 10 THEN 'first' WHEN age = 20 THEN 'second' END"
+    expect(_evalCase(expr, row({ age: 10 }))).toBe('first')
+    expect(_evalCase(expr, row({ age: 20 }))).toBe('second')
+    expect(_evalCase(expr, row({ age: 30 }))).toBeNull()
+  })
+})
+
+describe('_evalCase — simple CASE (CASE <value> WHEN <v> THEN <r>)', () => {
+  it('numeric WHEN values', () => {
+    const expr = "CASE age WHEN 10 THEN 'child' WHEN 20 THEN 'youth' ELSE 'other' END"
+    expect(_evalCase(expr, row({ age: 10 }))).toBe('child')
+    expect(_evalCase(expr, row({ age: 20 }))).toBe('youth')
+    expect(_evalCase(expr, row({ age: 30 }))).toBe('other')
   })
 
-  test('CASE WHEN n.score >= 90 THEN A WHEN n.score >= 80 THEN B ELSE C', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'GTE',
-            left: { type: 'PROP_REF', name: 'n', property: 'score' },
-            right: { type: 'NUMBER', value: 90 },
-          },
-          result: { type: 'STRING', value: 'A' },
-        },
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'GTE',
-            left: { type: 'PROP_REF', name: 'n', property: 'score' },
-            right: { type: 'NUMBER', value: 80 },
-          },
-          result: { type: 'STRING', value: 'B' },
-        },
-      ],
-      elseExpr: { type: 'STRING', value: 'C' },
-    }
-    expect(_evalCaseExprOnRow(expr, row({ score: 95 }))).toBe('A')
-    expect(_evalCaseExprOnRow(expr, row({ score: 85 }))).toBe('B')
-    expect(_evalCaseExprOnRow(expr, row({ score: 70 }))).toBe('C')
+  it('string WHEN value', () => {
+    const expr = "CASE name WHEN 'Alice' THEN 'found' ELSE 'missing' END"
+    expect(_evalCase(expr, row({ name: 'Alice' }))).toBe('found')
+    expect(_evalCase(expr, row({ name: 'Bob' }))).toBe('missing')
+  })
+})
+
+describe('_evalCase — NULL / missing-property propagation', () => {
+  it('missing property falls through to ELSE', () => {
+    expect(_evalCase("CASE WHEN missingProp = 10 THEN 'found' ELSE 'not-found' END", row())).toBe('not-found')
   })
 
-  // 4. 简化 CASE (CASE expr WHEN val)
-  test('CASE n.age WHEN 10 THEN child WHEN 20 THEN youth', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: { type: 'PROP_REF', name: 'n', property: 'age' },
-      whens: [
-        {
-          condition: { type: 'NUMBER', value: 10 },
-          result: { type: 'STRING', value: 'child' },
-        },
-        {
-          condition: { type: 'NUMBER', value: 20 },
-          result: { type: 'STRING', value: 'youth' },
-        },
-      ],
-      elseExpr: { type: 'STRING', value: 'other' },
-    }
-    expect(_evalCaseExprOnRow(expr, row({ age: 10 }))).toBe('child')
-    expect(_evalCaseExprOnRow(expr, row({ age: 20 }))).toBe('youth')
-    expect(_evalCaseExprOnRow(expr, row({ age: 30 }))).toBe('other')
-  })
-
-  test('CASE n.name WHEN Alice THEN found ELSE missing', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: { type: 'PROP_REF', name: 'n', property: 'name' },
-      whens: [
-        {
-          condition: { type: 'STRING', value: 'Alice' },
-          result: { type: 'STRING', value: 'found' },
-        },
-      ],
-      elseExpr: { type: 'STRING', value: 'missing' },
-    }
-    expect(_evalCaseExprOnRow(expr, row({ name: 'Alice' }))).toBe('found')
-    expect(_evalCaseExprOnRow(expr, row({ name: 'Bob' }))).toBe('missing')
-  })
-
-  // 5. _applyCaseColumns 集成测试
-  test('_applyCaseColumns 添加计算列', () => {
-    const rows = [
-      { name: 'Alice', age: 25 },
-      { name: 'Bob', age: 15 },
-      { name: 'Charlie', age: 30 },
-    ]
-
-    const caseColumns = [
-      {
-        alias: 'category',
-        expression: {
-          type: 'CASE',
-          caseExpr: null,
-          whens: [
-            {
-              condition: {
-                type: 'COMPARISON',
-                operator: 'GT',
-                left: { type: 'PROP_REF', name: 'n', property: 'age' },
-                right: { type: 'NUMBER', value: 18 },
-              },
-              result: { type: 'STRING', value: 'adult' },
-            },
-          ],
-          elseExpr: { type: 'STRING', value: 'minor' },
-        },
-      },
-    ]
-
-    const result = _applyCaseColumns(rows as any, caseColumns as any)
-    expect(result[0].category).toBe('adult')
-    expect(result[1].category).toBe('minor')
-    expect(result[2].category).toBe('adult')
-    // Original columns preserved
-    expect(result[0].name).toBe('Alice')
-    expect(result[1].age).toBe(15)
-  })
-
-  // 6. NULL/空值处理
-  test('CASE WHEN 处理缺失属性', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'EQ',
-            left: { type: 'PROP_REF', name: 'n', property: 'missingProp' },
-            right: { type: 'NUMBER', value: 10 },
-          },
-          result: { type: 'STRING', value: 'found' },
-        },
-      ],
-      elseExpr: { type: 'STRING', value: 'not-found' },
-    }
-    // Missing property should evaluate to null, comparison null === 10 is false
-    expect(_evalCaseExprOnRow(expr, row())).toBe('not-found')
-  })
-
-  // 7. 多个 WHEN 依次匹配
-  test('CASE WHEN 多个 WHEN 依次匹配（短路）', () => {
-    const expr = {
-      type: 'CASE',
-      caseExpr: null,
-      whens: [
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'EQ',
-            left: { type: 'PROP_REF', name: 'n', property: 'age' },
-            right: { type: 'NUMBER', value: 10 },
-          },
-          result: { type: 'STRING', value: 'first' },
-        },
-        {
-          condition: {
-            type: 'COMPARISON',
-            operator: 'EQ',
-            left: { type: 'PROP_REF', name: 'n', property: 'age' },
-            right: { type: 'NUMBER', value: 20 },
-          },
-          result: { type: 'STRING', value: 'second' },
-        },
-      ],
-      elseExpr: null,
-    }
-    expect(_evalCaseExprOnRow(expr, row({ age: 10 }))).toBe('first')
-    expect(_evalCaseExprOnRow(expr, row({ age: 20 }))).toBe('second')
-    expect(_evalCaseExprOnRow(expr, row({ age: 30 }))).toBeNull()
+  it('no match and no ELSE yields null', () => {
+    expect(_evalCase("CASE WHEN age = 999 THEN 'never' END", row())).toBeNull()
   })
 })
