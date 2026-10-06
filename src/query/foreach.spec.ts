@@ -13,7 +13,13 @@
  */
 import { describe, it, expect } from 'vitest'
 import { parseQuery, _executeQuery, QueryPlan } from './query-engine'
-import { _executeForeach, _evalForeachCondition, ForEachClause } from './foreach-exec'
+import { executeForeachInlineTop, evalForeachCondTop } from './foreach-exec'
+
+// The runtime foreach structure uses { variable, list, isVarRef, operation },
+// which the legacy `ForEachClause` interface (still exposing `updates`) does not
+// reflect. Use `any` to match the actual runtime shape consumed by
+// executeForeachInlineTop / applyForeachOpTop.
+type ForEachClause = any
 
 // =============================================================
 // 解析测试（维持原有 6 个不变）
@@ -184,10 +190,10 @@ describe('FOREACH 执行 — _executeQuery 集成', () => {
 })
 
 // =============================================================
-// _executeForeach 单元测试
+// executeForeachInlineTop 单元测试
 // =============================================================
 
-describe('_executeForeach 单元测试', () => {
+describe('executeForeachInlineTop 单元测试', () => {
   it('CREATE 操作: 字面量列表产生对应行数', () => {
     const foreachClause: ForEachClause = {
       variable: 'x',
@@ -195,7 +201,7 @@ describe('_executeForeach 单元测试', () => {
       isVarRef: false,
       operation: { type: 'CREATE' },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     expect(result).toHaveLength(3)
     expect(result[0].x).toBe('a')
     expect(result[1].x).toBe('b')
@@ -209,7 +215,7 @@ describe('_executeForeach 单元测试', () => {
       isVarRef: false,
       operation: { type: 'CREATE' },
     }
-    const result = _executeForeach([{ tag: 'a' }, { tag: 'b' }], foreachClause)
+    const result = executeForeachInlineTop([{ tag: 'a' }, { tag: 'b' }], foreachClause)
     expect(result).toHaveLength(4) // 2 rows × 2 items
     // 每行应继承原始上下文
     expect(result.filter(r => r.tag === 'a')).toHaveLength(2)
@@ -230,7 +236,7 @@ describe('_executeForeach 单元测试', () => {
       { name: 'Alice', _alias: 'n' },
       { name: 'Bob', _alias: 'm' },
     ]
-    const result = _executeForeach(candidates, foreachClause)
+    const result = executeForeachInlineTop(candidates, foreachClause)
     expect(result).toHaveLength(1)
     expect(result[0].name).toBe('Bob')
   })
@@ -246,7 +252,7 @@ describe('_executeForeach 单元测试', () => {
       },
     }
     const candidates = [{ name: 'Alice' }]
-    const result = _executeForeach(candidates, foreachClause)
+    const result = executeForeachInlineTop(candidates, foreachClause)
     expect(result).toHaveLength(1)
     // setClauses 设置 n.flag，flag 属性应被设置
     expect(result[0]).toHaveProperty('name', 'Alice')
@@ -260,7 +266,7 @@ describe('_executeForeach 单元测试', () => {
       operation: { type: 'CREATE' },
     }
     const candidates = [{ name: 'Alice' }]
-    const result = _executeForeach(candidates, foreachClause)
+    const result = executeForeachInlineTop(candidates, foreachClause)
     expect(result).toHaveLength(1) // 原始行不变
     expect(result[0].name).toBe('Alice')
   })
@@ -272,7 +278,7 @@ describe('_executeForeach 单元测试', () => {
       isVarRef: false,
       operation: { type: 'CREATE' as any }, // default type
     }
-    const result = _executeForeach([{ id: 1 }], foreachClause)
+    const result = executeForeachInlineTop([{ id: 1 }], foreachClause)
     expect(result).toHaveLength(2)
   })
 })
@@ -316,7 +322,7 @@ describe('嵌套 FOREACH', () => {
         },
       },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     // 外层 2 个元素 × 内层 2 个元素 = 4 个结果
     expect(result).toHaveLength(4)
     // 外层变量 x 应正确绑定
@@ -351,7 +357,7 @@ describe('嵌套 FOREACH', () => {
         },
       },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     // 2 × 2 = 4 个结果
     expect(result).toHaveLength(4)
     // 内层应可见外层变量 x
@@ -389,7 +395,7 @@ describe('嵌套 FOREACH', () => {
         },
       },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     // 1 × 1 × 1 = 1 个结果
     expect(result).toHaveLength(1)
     expect(result[0].x).toBe(1)
@@ -413,11 +419,11 @@ describe('嵌套 FOREACH', () => {
         },
       },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     // 内层空列表：外层不展开输出，因为没有内层行可产出
-    // 当所有内层都为空时，_executeForeach 的 allItems 来自外层
+    // 当所有内层都为空时，executeForeachInlineTop 的 allItems 来自外层
     // 外层有 2 个元素，内层 FOREACH 对每个元素递归调用
-    // 由于内层列表为空，_executeForeach 返回原始候选行
+    // 由于内层列表为空，executeForeachInlineTop 返回原始候选行
     // 所以每个外层元素生成 1 行（原始候选行）
     // 总共 2 行
     expect(result).toHaveLength(2)
@@ -438,7 +444,7 @@ describe('嵌套 FOREACH', () => {
     }
   })
 
-  // — 测试 7：FOREACH + WITH 数据流（通过 _executeForeach 模拟 WITH 上下文） —
+  // — 测试 7：FOREACH + WITH 数据流（通过 executeForeachInlineTop 模拟 WITH 上下文） —
   it('FOREACH + WITH 数据流: 从上下文读变量', () => {
     // 模拟 WITH [1,2] AS data 产生的上下文
     const withContext = [{ data: [1, 2] }]
@@ -448,7 +454,7 @@ describe('嵌套 FOREACH', () => {
       isVarRef: true,
       operation: { type: 'CREATE' },
     }
-    const result = _executeForeach(withContext, foreachClause)
+    const result = executeForeachInlineTop(withContext, foreachClause)
     // WITH 产生 1 行 {data: [1,2]}, FOREACH 展开 data → 2 行
     expect(result).toHaveLength(2)
     expect(result[0].x).toBe(1)
@@ -501,7 +507,7 @@ describe('FOREACH WHERE 过滤', () => {
       isVarRef: false,
       operation: { type: 'CREATE', where: 'x > 1' },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     expect(result).toHaveLength(2) // [2, 3] 通过过滤
     expect(result[0].x).toBe(2)
     expect(result[1].x).toBe(3)
@@ -514,7 +520,7 @@ describe('FOREACH WHERE 过滤', () => {
       isVarRef: false,
       operation: { type: 'CREATE', where: 'x IN [1,2]' },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     expect(result).toHaveLength(2)
     expect(result[0].x).toBe(1)
     expect(result[1].x).toBe(2)
@@ -527,7 +533,7 @@ describe('FOREACH WHERE 过滤', () => {
       isVarRef: false,
       operation: { type: 'CREATE', where: 'x > 100' },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     // 所有元素被过滤掉 → allItems 为空 → 返回原始候选行
     expect(result).toHaveLength(1) // 原始候选行不变
     expect(result[0]).toEqual({}) // 没有 x 属性
@@ -538,7 +544,7 @@ describe('FOREACH WHERE 过滤', () => {
       variable: 'x', list: [1, 2, 3], isVarRef: false,
       operation: { type: 'CREATE', where: 'x >= 2' },
     }
-    const resultGE = _executeForeach([{}], clauseGE)
+    const resultGE = executeForeachInlineTop([{}], clauseGE)
     expect(resultGE).toHaveLength(2)
     expect(resultGE[0].x).toBe(2)
 
@@ -546,7 +552,7 @@ describe('FOREACH WHERE 过滤', () => {
       variable: 'x', list: [1, 2, 3], isVarRef: false,
       operation: { type: 'CREATE', where: 'x <= 2' },
     }
-    const resultLE = _executeForeach([{}], clauseLE)
+    const resultLE = executeForeachInlineTop([{}], clauseLE)
     expect(resultLE).toHaveLength(2)
     expect(resultLE[0].x).toBe(1)
 
@@ -554,7 +560,7 @@ describe('FOREACH WHERE 过滤', () => {
       variable: 'x', list: [1, 2, 3], isVarRef: false,
       operation: { type: 'CREATE', where: 'x != 2' },
     }
-    const resultNE = _executeForeach([{}], clauseNE)
+    const resultNE = executeForeachInlineTop([{}], clauseNE)
     expect(resultNE).toHaveLength(2)
     expect(resultNE[0].x).toBe(1)
     expect(resultNE[1].x).toBe(3)
@@ -580,7 +586,7 @@ describe('FOREACH REMOVE', () => {
       operation: { type: 'REMOVE', targets: ['n.flag'] },
     }
     const candidates = [{ name: 'Alice', flag: true }]
-    const result = _executeForeach(candidates, foreachClause)
+    const result = executeForeachInlineTop(candidates, foreachClause)
     expect(result).toHaveLength(1)
     expect(result[0]).not.toHaveProperty('flag')
     expect(result[0]).toHaveProperty('name', 'Alice')
@@ -605,7 +611,7 @@ describe('FOREACH 混合操作', () => {
         ],
       },
     }
-    const result = _executeForeach([{}], foreachClause)
+    const result = executeForeachInlineTop([{}], foreachClause)
     // CREATE 展开 2 行，然后 SET 设 flag=x
     // 注意: SET 在 MULTI 中是对每个候选行应用（取最后一个 item 值）
     expect(result).toHaveLength(2)
@@ -631,7 +637,7 @@ describe('FOREACH 混合操作', () => {
       { name: 'Alice', _alias: 'n' },
       { name: 'Bob', _alias: 'm' },
     ]
-    const result = _executeForeach(candidates, foreachClause)
+    const result = executeForeachInlineTop(candidates, foreachClause)
     // MULTI 先执行 CREATE → 展开 (2 items × 2 rows = 4 rows with x)
     // 然后 DELETE n → 移除 _alias=n 的行
     // Alice 的 _alias='n' 被移除 → Alice 的 2 行被删
@@ -647,50 +653,50 @@ describe('FOREACH 混合操作', () => {
 })
 
 // =============================================================
-// _evalForeachCondition 单元测试（新增 V18）
+// evalForeachCondTop 单元测试（新增 V18）
 // =============================================================
 
-describe('_evalForeachCondition 单元测试', () => {
+describe('evalForeachCondTop 单元测试', () => {
   it('x > 1: 数值大于', () => {
-    expect(_evalForeachCondition('x > 1', 'x', 2)).toBe(true)
-    expect(_evalForeachCondition('x > 1', 'x', 1)).toBe(false)
-    expect(_evalForeachCondition('x > 1', 'x', 0)).toBe(false)
+    expect(evalForeachCondTop('x > 1', 'x', 2)).toBe(true)
+    expect(evalForeachCondTop('x > 1', 'x', 1)).toBe(false)
+    expect(evalForeachCondTop('x > 1', 'x', 0)).toBe(false)
   })
 
   it('x < 3: 数值小于', () => {
-    expect(_evalForeachCondition('x < 3', 'x', 2)).toBe(true)
-    expect(_evalForeachCondition('x < 3', 'x', 3)).toBe(false)
-    expect(_evalForeachCondition('x < 3', 'x', 4)).toBe(false)
+    expect(evalForeachCondTop('x < 3', 'x', 2)).toBe(true)
+    expect(evalForeachCondTop('x < 3', 'x', 3)).toBe(false)
+    expect(evalForeachCondTop('x < 3', 'x', 4)).toBe(false)
   })
 
   it('x >= 2: 大于等于', () => {
-    expect(_evalForeachCondition('x >= 2', 'x', 2)).toBe(true)
-    expect(_evalForeachCondition('x >= 2', 'x', 3)).toBe(true)
-    expect(_evalForeachCondition('x >= 2', 'x', 1)).toBe(false)
+    expect(evalForeachCondTop('x >= 2', 'x', 2)).toBe(true)
+    expect(evalForeachCondTop('x >= 2', 'x', 3)).toBe(true)
+    expect(evalForeachCondTop('x >= 2', 'x', 1)).toBe(false)
   })
 
   it('x <= 2: 小于等于', () => {
-    expect(_evalForeachCondition('x <= 2', 'x', 2)).toBe(true)
-    expect(_evalForeachCondition('x <= 2', 'x', 1)).toBe(true)
-    expect(_evalForeachCondition('x <= 2', 'x', 3)).toBe(false)
+    expect(evalForeachCondTop('x <= 2', 'x', 2)).toBe(true)
+    expect(evalForeachCondTop('x <= 2', 'x', 1)).toBe(true)
+    expect(evalForeachCondTop('x <= 2', 'x', 3)).toBe(false)
   })
 
   it('x = 5: 等于（数字）', () => {
-    expect(_evalForeachCondition('x = 5', 'x', 5)).toBe(true)
-    expect(_evalForeachCondition('x = 5', 'x', 4)).toBe(false)
+    expect(evalForeachCondTop('x = 5', 'x', 5)).toBe(true)
+    expect(evalForeachCondTop('x = 5', 'x', 4)).toBe(false)
   })
 
   it('x != 5: 不等于', () => {
-    expect(_evalForeachCondition('x != 5', 'x', 4)).toBe(true)
-    expect(_evalForeachCondition('x != 5', 'x', 5)).toBe(false)
+    expect(evalForeachCondTop('x != 5', 'x', 4)).toBe(true)
+    expect(evalForeachCondTop('x != 5', 'x', 5)).toBe(false)
   })
 
   it('x IN [1,2,3]: IN 操作（数字列表）', () => {
-    expect(_evalForeachCondition('x IN [1,2,3]', 'x', 2)).toBe(true)
-    expect(_evalForeachCondition('x IN [1,2,3]', 'x', 4)).toBe(false)
+    expect(evalForeachCondTop('x IN [1,2,3]', 'x', 2)).toBe(true)
+    expect(evalForeachCondTop('x IN [1,2,3]', 'x', 4)).toBe(false)
   })
 
   it('x IN [1,2]: 字符串 IN 匹配', () => {
-    expect(_evalForeachCondition('x IN [1,2]', 'x', '1')).toBe(true)
+    expect(evalForeachCondTop('x IN [1,2]', 'x', '1')).toBe(true)
   })
 })
