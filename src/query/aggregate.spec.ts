@@ -466,8 +466,9 @@ describe('_executeQuery — Standalone query execution with aggregation', () => 
   // k. Mixed aggregation with non-aggregate — group by node
   it('k. WITH n, count(*) AS cnt RETURN n, cnt — group by n', async () => {
     const nodes = createNodes()
-    const plan = parseQuery('MATCH (n) WITH n, count(*) AS cnt RETURN n, cnt')
-    const result = await _executeQuery(plan, nodes)
+    const q = 'MATCH (n) WITH n, count(*) AS cnt RETURN n, cnt'
+    const plan = parseQuery(q)
+    const result = await _executeQuery(plan, nodes, q)
     // Each node gets count 1 (each is unique by identity)
     expect(result.length).toBe(10)
     // Since we project by column name, cnt should be 1 for each
@@ -498,8 +499,9 @@ describe('_executeQuery — Standalone query execution with aggregation', () => 
   // n. COUNT(DISTINCT name) via WITH
   it('n. COUNT(DISTINCT name) via WITH', async () => {
     const nodes = createNodesWithNames()
-    const plan = parseQuery('MATCH (n) WITH count(DISTINCT n.name) AS unique_names RETURN unique_names')
-    const result = await _executeQuery(plan, nodes)
+    const q = 'MATCH (n) WITH count(DISTINCT n.name) AS unique_names RETURN unique_names'
+    const plan = parseQuery(q)
+    const result = await _executeQuery(plan, nodes, q)
     expect(result.length).toBe(1)
     expect(result[0].unique_names).toBe(5) // X, Y, Z, W, V
   })
@@ -519,8 +521,9 @@ describe('_executeQuery — Standalone query execution with aggregation', () => 
     const nodes = createNodes()
     // MATCH (n) WITH n, count(*) AS friends ORDER BY friends DESC LIMIT 5 RETURN n, friends
     // Each node is unique, so count per node = 1
-    const plan = parseQuery('MATCH (n) WITH n, count(*) AS friends ORDER BY friends DESC LIMIT 5 RETURN n, friends')
-    const result = await _executeQuery(plan, nodes)
+    const q = 'MATCH (n) WITH n, count(*) AS friends ORDER BY friends DESC LIMIT 5 RETURN n, friends'
+    const plan = parseQuery(q)
+    const result = await _executeQuery(plan, nodes, q)
     expect(result.length).toBe(5) // LIMIT 5
     expect(result[0].friends).toBe(1) // each node has count=1
   })
@@ -534,8 +537,9 @@ describe('_executeQuery — Standalone query execution with aggregation', () => 
     const resultTotal = await _executeQuery(planTotal, nodes)
     expect(resultTotal[0]['count(n)']).toBe(10)
 
-    const planUnique = parseQuery('MATCH (n) WITH count(DISTINCT n.name) AS unique_names RETURN unique_names')
-    const resultUnique = await _executeQuery(planUnique, nodes)
+    const qUnique = 'MATCH (n) WITH count(DISTINCT n.name) AS unique_names RETURN unique_names'
+    const planUnique = parseQuery(qUnique)
+    const resultUnique = await _executeQuery(planUnique, nodes, qUnique)
     expect(resultUnique[0].unique_names).toBe(5)
   })
 })
