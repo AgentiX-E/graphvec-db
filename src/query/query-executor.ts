@@ -1136,8 +1136,14 @@ async function _executeMultiMatchCrossJoin(
       _optionalHasFreeSource = true
       break
     }
-    // This OPTIONAL MATCH's own bindings (target/edge vars) are now bound for
-    // any subsequent OPTIONAL MATCH in the chain.
+    // This OPTIONAL MATCH's own bindings (variable / target / edge vars) are
+    // now bound for any subsequent OPTIONAL MATCH in the chain.  A bare
+    // label-scan OPTIONAL (`OPTIONAL MATCH (n:Label)`) has no traversal steps,
+    // so its bound variable is carried by `om.variableName` and MUST be added
+    // here — otherwise a following `OPTIONAL MATCH (n)-[r]->()` reusing that
+    // variable is mistaken for a free source and routed to cross-join, which
+    // drops the null-preserving row (Graph9 [3] `properties()` on null).
+    if ((om as any).variableName) _boundSoFar.add((om as any).variableName)
     for (const st of (om.steps || [])) {
       if ((st as any).source) _boundSoFar.add((st as any).source)
       if ((st as any).targetAlias) _boundSoFar.add((st as any).targetAlias)
