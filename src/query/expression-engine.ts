@@ -147,20 +147,25 @@ export function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Rec
 }
 
 export function _evalCase(s: string, row?: Record<string, unknown>): ExprValue {
-  // CASE <value> WHEN <v1> THEN <r1> WHEN <v2> THEN <r2> ... ELSE <default> END
-  // 或 CASE WHEN <cond1> THEN <r1> WHEN <cond2> THEN <r2> ... ELSE <default> END
+  // Two syntactic forms:
+  //   searched:  CASE WHEN <cond> THEN <r> [WHEN <cond> THEN <r> ...] [ELSE <d>] END
+  //   simple:    CASE <value> WHEN <v> THEN <r> [WHEN <v> THEN <r> ...] [ELSE <d>] END
+  // Distinguish by whether WHen follows CASE directly (searched) or an
+  // expression precedes the first WHEN (simple).
   const t = s.replace(/\bEND\b\s*$/i, '').trim()  // 去掉尾部 END
-  const caseMatch = t.match(/^CASE\s+(.+?)\s+WHEN\s/i)
-  const simpleCase = caseMatch !== null
+  const searched = /^CASE\s+WHEN\b/i.test(t)
+
   let remainder: string
   let baseValue: unknown = null
-  if (simpleCase) {
-    baseValue = _evaluateExpression(caseMatch[1], row)
-    remainder = t.slice(caseMatch[0].length)  // WHEN ... 部分（不含 WHEN 前缀）
+  if (searched) {
+    // Strip the full "CASE WHEN " prefix so the first WHEN arm is not lost.
+    const m = t.match(/^CASE\s+(WHEN\s+)/i)
+    remainder = m ? t.slice(m[0].length) : t.replace(/^CASE\s+/i, '')
   } else {
-    // 没有 CASE <value>，直接解析 WHEN ... THEN ... ELSE
-    const caseWhenMatch = t.match(/^CASE\s+(WHEN\s)/i)
-    remainder = caseWhenMatch ? t.slice(caseWhenMatch[1].length) : t.replace(/^CASE\s+/i, '')
+    // Simplified CASE: extract the base <value> before the first WHEN.
+    const caseMatch = t.match(/^CASE\s+(.+?)\s+WHEN\s/i)
+    baseValue = caseMatch ? _evaluateExpression(caseMatch[1], row) : null
+    remainder = caseMatch ? t.slice(caseMatch[0].length) : t.replace(/^CASE\s+/i, '')
   }
 
   // 拆分 WHEN ... THEN ... WHEN ... THEN ... [ELSE ...]
@@ -192,7 +197,7 @@ export function _evalCase(s: string, row?: Record<string, unknown>): ExprValue {
     }
     if (hasMatch) continue  // 已匹配，跳过剩余
     let condResult: boolean
-    if (simpleCase) {
+    if (!searched) {
       condResult = _compareValues(baseValue, cond, '=')
     } else {
       condResult = cond === true
