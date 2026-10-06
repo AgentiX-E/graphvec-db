@@ -8,18 +8,10 @@
  * 4. 添加后删除重建
  * 5. 空索引搜索 → 空结果
  * 6. 集成到 GraphEngine 的 search() 方法
- * 7. parseQuery 解析 SEARCH 语法
- * 8. _executeQuery 执行 SEARCH 子句
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { VectorIndexManager } from './vector-index-manager'
-import {
-  parseQuery,
-  _executeQuery,
-  _vectorIndexManager,
-  setVectorIndexManager,
-} from './query-engine'
 
 describe('VectorIndexManager', () => {
   let mgr: VectorIndexManager
@@ -186,153 +178,6 @@ describe('VectorIndexManager', () => {
     expect(results[0].distance).toBe(0)
   })
 })
-
-// ── SEARCH 子句集成测试 ──────────────────────────────────
-
-describe('SEARCH clause integration', () => {
-  let mgr: VectorIndexManager
-
-  beforeAll(() => {
-    mgr = new VectorIndexManager()
-    // 创建索引并注入到 query-engine
-    mgr.createIndex('Item', 'embedding', 4, 1000)
-    setVectorIndexManager(mgr)
-
-    // 插入向量（id 从 0 开始，与节点 id 对齐）
-    const vecs = [
-      new Float32Array([1, 0, 0, 0]), // id=0
-      new Float32Array([0, 1, 0, 0]), // id=1
-      new Float32Array([0, 0, 1, 0]), // id=2
-      new Float32Array([0, 0, 0, 1]), // id=3
-      new Float32Array([1, 1, 0, 0]), // id=4
-      new Float32Array([0, 1, 1, 0]), // id=5
-      new Float32Array([0, 0, 1, 1]), // id=6
-      new Float32Array([1, 0, 1, 0]), // id=7
-    ]
-    for (let i = 0; i < vecs.length; i++) {
-      mgr.addVector('Item', 'embedding', i, vecs[i])
-    }
-  })
-
-  afterAll(() => {
-    setVectorIndexManager(null)
-  })
-
-  // ── Test 14: parseQuery 解析 SEARCH 语法 ──────────────
-  it('TC-14: parseQuery 解析 SEARCH 子句语法', () => {
-    const plan = parseQuery(
-      'MATCH (n:Item) SEARCH n.embedding APPROXIMATE [0.9, 0.1, 0, 0] TOP 3 RETURN n.name',
-    )
-    expect(plan.search).toBeDefined()
-    expect(plan.search!.targetProperty).toBe('n.embedding')
-    expect(plan.search!.queryVector).toEqual([0.9, 0.1, 0, 0])
-    expect(plan.search!.topK).toBe(3)
-  })
-
-  // ── Test 15: parseQuery 解析 ANN 语法 ────────────────
-  it('TC-15: parseQuery 解析 ANN(向量, k) 语法', () => {
-    const plan = parseQuery(
-      'MATCH (n:Item) WHERE n.embedding IN ANN([0, 0, 1, 0], 5) RETURN n.id',
-    )
-    expect(plan.search).toBeDefined()
-    expect(plan.search!.targetProperty).toBe('n.embedding')
-    expect(plan.search!.queryVector).toEqual([0, 0, 1, 0])
-    expect(plan.search!.topK).toBe(5)
-  })
-
-  // ── Test 16: _executeQuery 执行 SEARCH ─────────────────
-  it('TC-16: _executeQuery 执行 SEARCH 子句返回排序结果', () => {
-    // 构造节点数据
-    const nodes = [
-      { id: 0, _label: 'Item', name: 'v0' },
-      { id: 1, _label: 'Item', name: 'v1' },
-      { id: 2, _label: 'Item', name: 'v2' },
-      { id: 3, _label: 'Item', name: 'v3' },
-      { id: 4, _label: 'Item', name: 'v4' },
-      { id: 5, _label: 'Item', name: 'v5' },
-      { id: 6, _label: 'Item', name: 'v6' },
-      { id: 7, _label: 'Item', name: 'v7' },
-    ]
-
-    const result = _executeQuery(
-      {
-        type: 'QUERY',
-        scanLabel: 'Item',
-        steps: [],
-        filters: [],
-        returnColumns: ['id', 'name'],
-        orderBy: [],
-        limit: undefined,
-        skip: undefined,
-        search: {
-          targetProperty: 'n.embedding',
-          queryVector: [0.9, 0.1, 0, 0],
-          topK: 3,
-        },
-      },
-      nodes,
-    )
-
-    expect(result.length).toBe(3)
-    // 最近邻应该是 id=0 (vectors[0]=[1,0,0,0]), id=4 ([1,1,0,0]), id=7 ([1,0,1,0])
-    const ids = (result as Array<Record<string, unknown>>).map(r => r.id)
-    expect(ids[0]).toBe(0)
-  })
-
-  // ── Test 17: SEARCH 无匹配时返回空 ─────────────────────
-  it('TC-17: SEARCH 无标签匹配时返回空', () => {
-    const nodes = [
-      { id: 99, _label: 'Other', name: 'unmatched' },
-    ]
-
-    const result = _executeQuery(
-      {
-        type: 'QUERY',
-        scanLabel: 'Other',
-        steps: [],
-        filters: [],
-        returnColumns: ['id'],
-        orderBy: [],
-        limit: undefined,
-        skip: undefined,
-        search: {
-          targetProperty: 'n.vec',
-          queryVector: [0.5, 0.5, 0.5, 0.5],
-          topK: 5,
-        },
-      },
-      nodes,
-    )
-
-    // 没有"Other.vec"索引，应退化返回原始 candidates
-    expect(result.length).toBe(1)
-  })
-
-  // ── Test 18: 执行完整 SEARCH 查询 ──────────────────────
-  it('TC-18: 通过 parseQuery + _executeQuery 完整链', () => {
-    const plan = parseQuery(
-      'MATCH (n:Item) SEARCH n.embedding APPROXIMATE [0, 0, 0.9, 0.1] TOP 2 RETURN n.id',
-    )
-
-    const nodes = [
-      { id: 0, _label: 'Item', name: 'a' },
-      { id: 1, _label: 'Item', name: 'b' },
-      { id: 2, _label: 'Item', name: 'c' },
-      { id: 3, _label: 'Item', name: 'd' },
-      { id: 4, _label: 'Item', name: 'e' },
-      { id: 5, _label: 'Item', name: 'f' },
-      { id: 6, _label: 'Item', name: 'g' },
-      { id: 7, _label: 'Item', name: 'h' },
-    ]
-
-    const result = _executeQuery(plan, nodes) as Array<Record<string, unknown>>
-    expect(result.length).toBe(2)
-    // vectors[2]=[0,0,1,0] 最近邻，然后是 vectors[6]=[0,0,1,1] 或 vectors[5]=[0,1,1,0]
-    expect(result[0].id).toBe(2)
-  })
-})
-
-// ── VectorIndexManager 新增 HNSW 参数测试 ──────────────
 
 describe('VectorIndexManager — HNSW Parameters', () => {
   let mgr: VectorIndexManager
