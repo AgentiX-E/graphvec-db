@@ -83,7 +83,7 @@ describe('内置 Procedure — globalRegistry', function() {
 describe('CALL procedure — 解析与执行', function() {
   it('解析 CALL db.labels()', function() {
     const plan = parseQuery('CALL db.labels()')
-    expect(plan.type).toBe('CALL_PROCEDURE')
+    expect(plan.type).toBe('CALL')
     expect(plan.callProcedure).toBeDefined()
     if (plan.callProcedure) {
       expect(plan.callProcedure.name).toBe('db.labels')
@@ -93,7 +93,7 @@ describe('CALL procedure — 解析与执行', function() {
 
   it('解析 CALL db.labels() YIELD label', function() {
     const plan = parseQuery('CALL db.labels() YIELD label')
-    expect(plan.type).toBe('CALL_PROCEDURE')
+    expect(plan.type).toBe('CALL')
     expect(plan.callProcedure).toBeDefined()
     if (plan.callProcedure) {
       expect(plan.callProcedure.yieldItems).toBeDefined()
@@ -104,7 +104,7 @@ describe('CALL procedure — 解析与执行', function() {
 
   it('解析 CALL db.index.fulltext.queryNodes()', function() {
     const plan = parseQuery('CALL db.index.fulltext.queryNodes("idx", "term") YIELD node, score')
-    expect(plan.type).toBe('CALL_PROCEDURE')
+    expect(plan.type).toBe('CALL')
     if (plan.callProcedure) {
       expect(plan.callProcedure.name).toBe('db.index.fulltext.queryNodes')
       expect(plan.callProcedure.args).toEqual(['idx', 'term'])
@@ -112,8 +112,8 @@ describe('CALL procedure — 解析与执行', function() {
     }
   })
 
-  it('执行 CALL db.labels() — 返回 label 列表', function() {
-    const result = _executeQuery(
+  it('执行 CALL db.labels() — 返回 label 列表', async function() {
+    const result = await _executeQuery(
       parseQuery('CALL db.labels()'),
       testGraph,
     ) as any[]
@@ -124,8 +124,8 @@ describe('CALL procedure — 解析与执行', function() {
     expect(labels).toContain('Pet')
   })
 
-  it('执行 CALL db.labels() YIELD label — 返回 label 列', function() {
-    const result = _executeQuery(
+  it('执行 CALL db.labels() YIELD label — 返回 label 列', async function() {
+    const result = await _executeQuery(
       parseQuery('CALL db.labels() YIELD label'),
       testGraph,
     ) as any[]
@@ -137,30 +137,30 @@ describe('CALL procedure — 解析与执行', function() {
     }
   })
 
-  it('YIELD 过滤不存在的列 — 报错', function() {
-    expect(() => {
+  it('YIELD 过滤不存在的列 — 报错', async function() {
+    await expect(
       _executeQuery(
         parseQuery('CALL db.labels() YIELD nonExistentColumn'),
         testGraph,
       )
-    }).toThrow(/Invalid YIELD field/)
+    ).rejects.toThrow(/Invalid YIELD field/)
   })
 
-  it('调用不存在的 procedure — 报错', function() {
-    expect(() => {
+  it('调用不存在的 procedure — 报错', async function() {
+    await expect(
       _executeQuery(
         parseQuery('CALL some.nonexistent.procedure()'),
         testGraph,
       )
-    }).toThrow(/Unknown procedure/)
+    ).rejects.toThrow(/Unknown procedure/)
   })
 })
 
 // ── 4. 高级 YIELD 测试 ────────────────────────────────────
 
 describe('CALL procedure — YIELD 高级场景', function() {
-  it('YIELD label AS lbl — 别名', function() {
-    const result = _executeQuery(
+  it('YIELD label AS lbl — 别名', async function() {
+    const result = await _executeQuery(
       parseQuery('CALL db.labels() YIELD label AS lbl'),
       testGraph,
     ) as any[]
@@ -175,8 +175,8 @@ describe('CALL procedure — YIELD 高级场景', function() {
 // ── 5. 更多内置过程 ──────────────────────────────────────
 
 describe('其他内置 Procedure', function() {
-  it('db.stats.retrieve() — 返回统计Info', function() {
-    const result = _executeQuery(
+  it('db.stats.retrieve() — 返回统计Info', async function() {
+    const result = await _executeQuery(
       parseQuery('CALL db.stats.retrieve()'),
       testGraph,
     ) as any[]
@@ -186,19 +186,24 @@ describe('其他内置 Procedure', function() {
     expect(result[0].stat.nodeCount).toBe(4)
   })
 
-  it('db.schema.visualization() — 返回拓扑Info', function() {
-    const result = _executeQuery(
+  it('db.schema.visualization() — 返回拓扑Info', async function() {
+    const result = await _executeQuery(
       parseQuery('CALL db.schema.visualization()'),
       testGraph,
     ) as any[]
     expect(result.length).toBe(1)
-    expect(typeof result[0].nodes).toBe('number')
-    expect(typeof result[0].edges).toBe('number')
-    expect(result[0].degreeDistribution).toBeDefined()
+    // The active executor path returns a detail map: nodes and relationships
+    // as arrays of label/type descriptors (see query-engine.spec.ts).
+    const schema = result[0]
+    expect(Array.isArray(schema.nodes)).toBe(true)
+    expect(Array.isArray(schema.relationships)).toBe(true)
+    const nodeNames = schema.nodes.map((n: any) => n.name)
+    expect(nodeNames).toContain('Person')
+    expect(nodeNames).toContain('Pet')
   })
 
-  it('dbms.listConfig() — 返回配置Info', function() {
-    const result = _executeQuery(
+  it('dbms.listConfig() — 返回配置Info', async function() {
+    const result = await _executeQuery(
       parseQuery('CALL dbms.listConfig()'),
       testGraph,
     ) as any[]
@@ -208,8 +213,8 @@ describe('其他内置 Procedure', function() {
     expect(result[0].value).toBeDefined()
   })
 
-  it('db.index.fulltext.queryNodes() — 空结果', function() {
-    const result = _executeQuery(
+  it('db.index.fulltext.queryNodes() — 空结果', async function() {
+    const result = await _executeQuery(
       parseQuery('CALL db.index.fulltext.queryNodes("idx", "term")'),
       testGraph,
     ) as any[]
