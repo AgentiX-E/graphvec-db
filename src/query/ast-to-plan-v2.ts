@@ -2751,7 +2751,15 @@ function extractCall(callCtx: any): {
   if (procMatch) {
     const procedureName = procMatch[1]
     const argsText = procMatch[2].trim()
-    const args = argsText ? argsText.split(',').map(a => a.trim()) : []
+    const args = argsText ? argsText.split(',').map(a => {
+      const t = a.trim()
+      // Unquote string literals (single or double quotes); leave numbers and
+      // other tokens as-is so numeric args stay numeric.
+      if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+        return t.slice(1, -1)
+      }
+      return t
+    }) : []
     const yieldItems: Array<{ name: string; alias: string | null }> = []
     if (procMatch[4]) {
       const yields = procMatch[4].split(',')

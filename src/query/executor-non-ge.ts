@@ -125,10 +125,10 @@ export async function _execNonGePaths(
         if (args?.length) {
           // 如果 args 中包含字符串参数，可能要做筛选（但 Cypher 标准 db.labels() 无参数）
         }
-        return Array.from(labels).map(l => ({ label: l })) as any
+        return _applyYieldAliases(Array.from(labels).map(l => ({ label: l })), plan.callProcedure.yieldItems, query) as any
       }
       case 'db.indexes': {
-        return _getAllIndexes().map(idx => ({
+        return _applyYieldAliases(_getAllIndexes().map(idx => ({
           id: `${idx.label}:${idx.property}`,
           name: `${idx.label}:${idx.property}`,
           state: 'ONLINE',
@@ -137,10 +137,10 @@ export async function _execNonGePaths(
           properties: [idx.property],
           provider: 'native-btree-1.0',
           entityType: 'NODE',
-        })) as any
+        })), plan.callProcedure.yieldItems, query) as any
       }
       case 'db.constraints': {
-        return _getAllConstraints().map(c => ({
+        return _applyYieldAliases(_getAllConstraints().map(c => ({
           id: c.name,
           name: c.name,
           state: 'ONLINE',
@@ -148,7 +148,7 @@ export async function _execNonGePaths(
           entityType: 'NODE',
           labelsOrTypes: [c.label],
           properties: [c.property],
-        })) as any
+        })), plan.callProcedure.yieldItems, query) as any
       }
       case 'db.schema.visualization': {
         // 从 nodes 遍历实际 schema
@@ -185,7 +185,7 @@ export async function _execNonGePaths(
           }
         }
 
-        return [{
+        return _applyYieldAliases([{
           nodes: Array.from(labels).map(l => ({
             id: l,
             name: l,
@@ -197,11 +197,15 @@ export async function _execNonGePaths(
             type: r,
             properties: Array.from(relTypeProps.get(r) || []),
           })),
-        }] as any
+        }], plan.callProcedure.yieldItems, query) as any
       }
       default: {
-        // Standalone CALL: nodes 为空时直接返回 proc 结果
-        if (nodes.length === 0) {
+        // Standalone CALL (no MATCH/wscan/step): return the procedure result
+        // directly, without cross-joining against the node list. A bare
+        // `CALL db.stats.retrieve()` describes the whole graph and must yield a
+        // single row, not one row per node.
+        const isStandalone = !plan.hasMatch && !plan.scanLabel && (!plan.steps || plan.steps.length === 0)
+        if (nodes.length === 0 || isStandalone) {
           const proc = _procedureRegistry.get(name)
           if (!proc) throw new Error(`Unknown procedure: ${name}`)
           const ctx: import('./procedure-registry').ProcedureContext = {

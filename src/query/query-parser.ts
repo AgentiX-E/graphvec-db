@@ -1841,17 +1841,31 @@ function _applyYieldAliases(
   query: string | undefined
 ): Array<Record<string, unknown>> {
   if (!yieldItems || yieldItems.length === 0) return rows
-  const needsRemap = yieldItems.some(yi => yi.alias && yi.alias !== yi.name)
-  if (!needsRemap) return rows
+  // A YIELD clause both *projects* the listed columns and *renames* those with
+  // an alias.  Column names that the procedure did not produce must be
+  // rejected (e.g. `CALL db.labels() YIELD nonExistentColumn`).
+  // The set of produced columns is inferred from the first row; when there are
+  // no rows (empty result) there is nothing to validate against, so the YIELD
+  // names are treated as the projection keys.
+  const producedCols = rows.length > 0
+    ? new Set(Object.keys(rows[0]))
+    : null
+  if (producedCols) {
+    for (const yi of yieldItems) {
+      if (!producedCols.has(yi.name)) {
+        throw new Error(`Invalid YIELD field: ${yi.name}`)
+      }
+    }
+  }
   const aliasMap = new Map<string, string>()
   for (const yi of yieldItems) {
     aliasMap.set(yi.name, yi.alias || yi.name)
   }
   return rows.map(r => {
     const mapped: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(r)) {
-      const newKey = aliasMap.get(k) ?? k
-      mapped[newKey] = v
+    for (const yi of yieldItems) {
+      const key = yi.name
+      if (r[key] !== undefined) mapped[yi.alias || yi.name] = r[key]
     }
     return mapped
   })
