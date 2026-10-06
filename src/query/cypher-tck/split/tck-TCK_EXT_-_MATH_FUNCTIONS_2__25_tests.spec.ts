@@ -136,7 +136,7 @@ describe('TCK EXT - MATH_FUNCTIONS_2 (25 tests)', () => {
     }
   }, 10000)
 
-  test('MATH2-14 RETURN nested arithmetic', { timeout: 300000 }, () => {
+  test('MATH2-14 RETURN nested arithmetic', { timeout: 300000 }, async () => {
     const plan = execQuery('RETURN (((1 + 2) * 3) - 4) / 2 AS nested_result')
     expect(plan).toBeDefined()
     expect(plan.type).toBeDefined()
