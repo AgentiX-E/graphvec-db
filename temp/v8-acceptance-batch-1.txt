@@ -1,6 +1,0 @@
-Batch 1: 全文搜索持久化 + Schema校验
-Result: PASS
-- search/fulltext-persistence.spec.ts: 19 tests passed
-- schema/schema-validator.spec.ts: 18 tests passed
-Total: 37 passed, 0 failed
-Duration: 94.02s

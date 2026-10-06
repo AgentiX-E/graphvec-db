@@ -1,6 +1,0 @@
-Batch 2: EXPLAIN + Prometheus
-Result: PASS
-- query/explain.spec.ts: 24 tests passed
-- ops/prometheus-exporter.spec.ts: 20 tests passed
-Total: 44 passed, 0 failed
-Duration: 1.85s

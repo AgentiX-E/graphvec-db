@@ -1,2 +1,0 @@
-passed: 2/2
-Tests: 77/77 passed

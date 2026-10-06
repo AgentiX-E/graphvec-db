@@ -1,0 +1,39 @@
+DIR | PASS/FAIL
+[call] 52/52
+[create] 78/78
+[delete] 41/41
+[match] 381/381
+[match-where] 34/34
+[merge] 75/75
+[remove] 33/33
+[return] 63/63
+[return-orderby] 35/35
+[return-skip-limit] 31/31
+[set] 53/53
+[union] 12/12
+[unwind] 14/14
+[with] 29/29
+[with-orderBy] 292/292
+[with-skip-limit] 9/9
+[with-where] 19/19
+[aggregation] 35/35
+[boolean] 150/150
+[comparison] 72/72
+[conditional] 13/13
+[existentialSubqueries] 10/10
+[graph] 60/61
+    FAIL: [3] `properties()` on null
+[list] 185/185
+[literals] 131/131
+[map] 44/44
+[mathematical] 6/6
+[null] 44/44
+[path] 7/7
+[pattern] 50/50
+[precedence] 121/121
+[quantifier] 604/604
+[string] 32/32
+[temporal] 1004/1004
+[typeConversion] 47/47
+======================================
+TOTAL: 3866 PASS, 3867 FAIL, 7733 scenarios

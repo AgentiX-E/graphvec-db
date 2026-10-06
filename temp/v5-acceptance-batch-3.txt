@@ -1,2 +1,0 @@
-passed: 3/3
-Tests: 51/51 passed

@@ -1,8 +1,0 @@
-=== delete ===
-  TOTAL 41 FAILED 5
-   X [7] Failing when deleting connected nodes
-   X [5] Detach delete nodes from nested map/list
-   X [6] Delete relationships from nested map/list
-   X [7] Delete paths from nested map/list
-   X [14] Aggregating in `WITH` after deleting relationships affects the result set b
-=== match ===

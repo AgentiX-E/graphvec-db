@@ -1,3 +1,0 @@
-=== Batch 6: V7 回归 ===
-Test Files: 5 passed | Tests: 73 passed
-

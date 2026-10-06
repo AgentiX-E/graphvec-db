@@ -1,2 +1,0 @@
-list TOTAL 185 FAILED 1
-  X [3] Create an empty list if range direction and step direction are inconsistent -> AssertionError [ERR_ASSERTION]: unexpected row: {"okay":"[]"} Expected: [{"okay":"true"}] Actual: [{"okay":"[]"}]     + 
