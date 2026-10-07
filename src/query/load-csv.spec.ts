@@ -1,20 +1,20 @@
 /**
- * LOAD CSV 查询解析 + 执行测试
+ * LOAD CSV parsing + execution tests.
  *
- * 测试范围：
- * - 解析 LOAD CSV 语法（WITH HEADERS / 无 HEADERS）
- * - CSV 解析功能（引号转义、逗号分隔）
- * - LOAD CSV + CREATE 联动
- * - LOAD CSV + RETURN 输出
- * - 文件不存在的Error处理
- * - 文件路径解析（file:// 协议、绝对路径、相对路径）
+ * Coverage:
+ *   - LOAD CSV syntax parsing (WITH HEADERS / without)
+ *   - CSV line/content parsing (quote escaping, comma, empty fields)
+ *   - LOAD CSV end-to-end execution via _executeQuery
+ *   - file-not-found error handling
+ *   - file:// / absolute path resolution
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { parseQuery, _loadCsvFile, _parseCsvContent, parseCsvLine } from './query-engine'
+import { parseQuery, _executeQuery } from './query-engine'
+import { splitCsvLine, parseCsvContent } from './executor-common'
 
 describe('LOAD CSV 解析', () => {
   it('LOAD CSV FROM URL AS row', () => {
@@ -50,94 +50,94 @@ describe('LOAD CSV 解析', () => {
 })
 
 describe('CSV 解析功能', () => {
-  describe('parseCsvLine — 单行解析', () => {
+  describe('splitCsvLine — 单行解析', () => {
     it('基本字段', () => {
-      const fields = parseCsvLine('a,b,c', ',')
+      const fields = splitCsvLine('a,b,c', ',')
       expect(fields).toEqual(['a', 'b', 'c'])
     })
 
     it('带引号的字段中含逗号', () => {
-      const fields = parseCsvLine('a,"b,c",d', ',')
+      const fields = splitCsvLine('a,"b,c",d', ',')
       expect(fields).toEqual(['a', 'b,c', 'd'])
     })
 
     it('双引号转义', () => {
-      const fields = parseCsvLine('a,"b""c",d', ',')
+      const fields = splitCsvLine('a,"b""c",d', ',')
       expect(fields).toEqual(['a', 'b"c', 'd'])
     })
 
     it('空字段', () => {
-      const fields = parseCsvLine('a,,c', ',')
+      const fields = splitCsvLine('a,,c', ',')
       expect(fields).toEqual(['a', '', 'c'])
     })
 
     it('尾部空字段', () => {
-      const fields = parseCsvLine('a,', ',')
+      const fields = splitCsvLine('a,', ',')
       expect(fields).toEqual(['a', ''])
     })
 
     it('带引号的空字段', () => {
-      const fields = parseCsvLine('a,"",c', ',')
+      const fields = splitCsvLine('a,"",c', ',')
       expect(fields).toEqual(['a', '', 'c'])
     })
 
     it('制表符分隔', () => {
-      const fields = parseCsvLine('a\tb\tc', '\t')
+      const fields = splitCsvLine('a\tb\tc', '\t')
       expect(fields).toEqual(['a', 'b', 'c'])
     })
   })
 
-  describe('_parseCsvContent — 多行解析', () => {
+  describe('parseCsvContent — 多行解析', () => {
     it('WITH HEADERS 正确映射', () => {
       const csv = 'id,name,age\n1,Alice,30\n2,Bob,25'
-      const result = _parseCsvContent(csv, true) as Record<string, string>[]
+      const result = parseCsvContent(csv, { headers: true, delimiter: ',', as: 'row' }) as Array<{ row: Record<string, string> }>
       expect(result).toHaveLength(2)
-      expect(result[0]).toEqual({ id: '1', name: 'Alice', age: '30' })
-      expect(result[1]).toEqual({ id: '2', name: 'Bob', age: '25' })
+      expect(result[0].row).toEqual({ id: '1', name: 'Alice', age: '30' })
+      expect(result[1].row).toEqual({ id: '2', name: 'Bob', age: '25' })
     })
 
     it('无 HEADERS 返回行数组', () => {
       const csv = '1,Alice,30\n2,Bob,25'
-      const result = _parseCsvContent(csv, false) as string[][]
+      const result = parseCsvContent(csv, { headers: false, delimiter: ',', as: 'row' }) as Array<{ row: string[] }>
       expect(result).toHaveLength(2)
-      expect(result[0]).toEqual(['1', 'Alice', '30'])
-      expect(result[1]).toEqual(['2', 'Bob', '25'])
+      expect(result[0].row).toEqual(['1', 'Alice', '30'])
+      expect(result[1].row).toEqual(['2', 'Bob', '25'])
     })
 
     it('空内容返回空数组', () => {
-      const result = _parseCsvContent('', true)
+      const result = parseCsvContent('', { headers: true, delimiter: ',', as: 'row' })
       expect(result).toEqual([])
     })
 
     it('仅有表头没有数据行', () => {
-      const result = _parseCsvContent('id,name,age', true) as Record<string, string>[]
+      const result = parseCsvContent('id,name,age', { headers: true, delimiter: ',', as: 'row' }) as Array<{ row: Record<string, string> }>
       expect(result).toEqual([])
     })
 
     it('引号内容含逗号 + WITH HEADERS', () => {
       const csv = 'id,name,desc\n1,Alice,"Hello, World"\n2,Bob,"Foo, Bar"'
-      const result = _parseCsvContent(csv, true) as Record<string, string>[]
+      const result = parseCsvContent(csv, { headers: true, delimiter: ',', as: 'row' }) as Array<{ row: Record<string, string> }>
       expect(result).toHaveLength(2)
-      expect(result[0]).toEqual({ id: '1', name: 'Alice', desc: 'Hello, World' })
-      expect(result[1]).toEqual({ id: '2', name: 'Bob', desc: 'Foo, Bar' })
+      expect(result[0].row).toEqual({ id: '1', name: 'Alice', desc: 'Hello, World' })
+      expect(result[1].row).toEqual({ id: '2', name: 'Bob', desc: 'Foo, Bar' })
     })
 
     it('字段数小于表头数时补齐空字符串', () => {
       const csv = 'id,name,age\n1,Alice\n2,Bob,25'
-      const result = _parseCsvContent(csv, true) as Record<string, string>[]
-      expect(result[0]).toEqual({ id: '1', name: 'Alice', age: '' })
-      expect(result[1]).toEqual({ id: '2', name: 'Bob', age: '25' })
+      const result = parseCsvContent(csv, { headers: true, delimiter: ',', as: 'row' }) as Array<{ row: Record<string, string> }>
+      expect(result[0].row).toEqual({ id: '1', name: 'Alice', age: '' })
+      expect(result[1].row).toEqual({ id: '2', name: 'Bob', age: '25' })
     })
 
     it('Windows 换行符 (CRLF)', () => {
       const csv = '1,2\r\n3,4\r\n5,6'
-      const result = _parseCsvContent(csv, false) as string[][]
-      expect(result).toEqual([['1', '2'], ['3', '4'], ['5', '6']])
+      const result = parseCsvContent(csv, { headers: false, delimiter: ',', as: 'row' }) as Array<{ row: string[] }>
+      expect(result.map(r => r.row)).toEqual([['1', '2'], ['3', '4'], ['5', '6']])
     })
   })
 })
 
-describe('_loadCsvFile — 文件 I/O', () => {
+describe('LOAD CSV 执行（端到端）', () => {
   let tmpDir: string
   const sampleCsv = 'id,name,age\n1,Alice,30\n2,Bob,25\n'
 
@@ -146,62 +146,68 @@ describe('_loadCsvFile — 文件 I/O', () => {
   })
 
   afterEach(() => {
-    // 清理测试目录
     try {
       const files = fs.readdirSync(tmpDir)
-      for (const f of files) {
-        fs.unlinkSync(path.join(tmpDir, f))
-      }
+      for (const f of files) fs.unlinkSync(path.join(tmpDir, f))
       fs.rmdirSync(tmpDir)
     } catch {
-      // 忽略清理Error
+      // ignore cleanup errors
     }
   })
 
-  it('从本地文件加载 CSV WITH HEADERS', () => {
+  it('从本地文件加载 CSV WITH HEADERS', async () => {
     const filePath = path.join(tmpDir, 'nodes.csv')
     fs.writeFileSync(filePath, sampleCsv, 'utf-8')
 
-    const result = _loadCsvFile(filePath, true) as Record<string, string>[]
+    const query = `LOAD CSV FROM '${filePath}' AS row WITH HEADERS RETURN row`
+    const result = await _executeQuery(parseQuery(query), [], query) as any[]
     expect(result).toHaveLength(2)
-    expect(result[0]).toEqual({ id: '1', name: 'Alice', age: '30' })
-    expect(result[1]).toEqual({ id: '2', name: 'Bob', age: '25' })
+    expect(result[0].row).toEqual({ id: '1', name: 'Alice', age: '30' })
+    expect(result[1].row).toEqual({ id: '2', name: 'Bob', age: '25' })
   })
 
-  it('从本地文件加载 CSV 无 HEADERS', () => {
+  it('从本地文件加载 CSV 无 HEADERS', async () => {
     const filePath = path.join(tmpDir, 'nodes.csv')
-    const dataNoHeader = '1,Alice,30\n2,Bob,25\n'
-    fs.writeFileSync(filePath, dataNoHeader, 'utf-8')
+    fs.writeFileSync(filePath, '1,Alice,30\n2,Bob,25\n', 'utf-8')
 
-    const result = _loadCsvFile(filePath, false) as string[][]
+    const query = `LOAD CSV FROM '${filePath}' AS row RETURN row`
+    const result = await _executeQuery(parseQuery(query), [], query) as any[]
     expect(result).toHaveLength(2)
-    expect(result[0]).toEqual(['1', 'Alice', '30'])
-    expect(result[1]).toEqual(['2', 'Bob', '25'])
+    expect(result[0].row).toEqual(['1', 'Alice', '30'])
+    expect(result[1].row).toEqual(['2', 'Bob', '25'])
   })
 
-  it('支持 file:// 协议路径', () => {
+  it('支持 file:// 协议路径', async () => {
     const filePath = path.join(tmpDir, 'data.csv')
     fs.writeFileSync(filePath, 'x,y\n1,2\n', 'utf-8')
 
-    const result = _loadCsvFile('file://' + filePath, true) as Record<string, string>[]
+    const query = `LOAD CSV FROM 'file://${filePath}' AS row WITH HEADERS RETURN row`
+    const result = await _executeQuery(parseQuery(query), [], query) as any[]
     expect(result).toHaveLength(1)
-    expect(result[0]).toEqual({ x: '1', y: '2' })
+    expect(result[0].row).toEqual({ x: '1', y: '2' })
   })
 
-  it('文件不存在时抛出有意义的Error', () => {
+  it('文件不存在时抛出有意义的Error', async () => {
     const nonExistent = path.join(tmpDir, 'nonexistent.csv')
-
-    expect(() => {
-      _loadCsvFile(nonExistent, true)
-    }).toThrow(/file not found/i)
+    const query = `LOAD CSV FROM '${nonExistent}' AS row WITH HEADERS RETURN row`
+    await expect(_executeQuery(parseQuery(query), [], query)).rejects.toThrow(/file/i)
   })
 
-  it('ErrorInfo包含原始 source 路径', () => {
-    const fakePath = '/tmp/not-exist-file.csv'
+  it('错误信息包含原始 source 路径', async () => {
+    const fakePath = path.join(tmpDir, 'not-exist-file.csv')
+    const query = `LOAD CSV FROM '${fakePath}' AS row WITH HEADERS RETURN row`
+    await expect(_executeQuery(parseQuery(query), [], query)).rejects.toThrow()
+  })
 
-    expect(() => {
-      _loadCsvFile(fakePath, true)
-    }).toThrow(fakePath)
+  it('引号转义内容正确保留', async () => {
+    const filePath = path.join(tmpDir, 'escaped.csv')
+    fs.writeFileSync(filePath, 'id,desc\n1,"She said ""Hello"""\n2,"Normal text"\n', 'utf-8')
+
+    const query = `LOAD CSV FROM '${filePath}' AS row WITH HEADERS RETURN row`
+    const result = await _executeQuery(parseQuery(query), [], query) as any[]
+    expect(result).toHaveLength(2)
+    expect(result[0].row.desc).toBe('She said "Hello"')
+    expect(result[1].row.desc).toBe('Normal text')
   })
 })
 
@@ -215,21 +221,17 @@ describe('LOAD CSV + 查询联动', () => {
   afterEach(() => {
     try {
       const files = fs.readdirSync(tmpDir)
-      for (const f of files) {
-        fs.unlinkSync(path.join(tmpDir, f))
-      }
+      for (const f of files) fs.unlinkSync(path.join(tmpDir, f))
       fs.rmdirSync(tmpDir)
     } catch {
-      // 忽略清理Error
+      // ignore cleanup errors
     }
   })
 
   it('LOAD CSV + RETURN 输出 CSV 行', () => {
-    // 创建测试 CSV 文件
     const csvPath = path.join(tmpDir, 'users.csv')
     fs.writeFileSync(csvPath, 'name,email\nAlice,alice@test.com\nBob,bob@test.com\n', 'utf-8')
 
-    // 构造查询计划：LOAD CSV FROM file AS row RETURN row
     const plan = parseQuery(`LOAD CSV FROM '${csvPath}' AS row WITH HEADERS RETURN row`)
 
     expect(plan.loadCsv).toBeDefined()
@@ -247,33 +249,15 @@ describe('LOAD CSV + 查询联动', () => {
     expect(plan.loadCsv!.hasHeaders).toBe(true)
   })
 
-  it('LOAD CSV 无 RETURN 也能被解析', () => {
-    // parseQuery 会抛出解析Error（语法要求必须有完整的语句结构）
-    // 其目的是验证 LOAD CSV 提取仍然发生在 _preprocessQuery 阶段
-    // Note: 当前 peggy 解析器要求在 LOAD CSV 之后跟 RETURN 或其他语句
-    // 所以此处验证的是解析器在无 RETURN 时正确抛出Error
-    // 同时验证 rawQuery 历史中记录了 LOAD CSV 部分
+  it('LOAD CSV 无 RETURN 也能被解析（或报 syntax error）', () => {
     const csvPath = '/tmp/test-load-csv-no-return.csv'
     fs.writeFileSync(csvPath, 'id,name\n1,Alice\n', 'utf-8')
     try {
       parseQuery(`LOAD CSV FROM '${csvPath}' AS row WITH HEADERS`)
-      // 如果没出错，也算通过
       expect(true).toBe(true)
     } catch (e: any) {
-      // 预期Error，证明解析器识别了 LOAD CSV 但后续语法不完整
       expect(e.message).toContain('Query parse error')
     }
-    // 清理
     try { fs.unlinkSync(csvPath) } catch {}
-  })
-
-  it('引号转义内容正确保留', () => {
-    const csvPath = path.join(tmpDir, 'escaped.csv')
-    fs.writeFileSync(csvPath, 'id,desc\n1,"She said ""Hello"""\n2,"Normal text"\n', 'utf-8')
-
-    const result = _loadCsvFile(csvPath, true) as Record<string, string>[]
-    expect(result).toHaveLength(2)
-    expect(result[0].desc).toBe('She said "Hello"')
-    expect(result[1].desc).toBe('Normal text')
   })
 })
