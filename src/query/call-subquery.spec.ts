@@ -1,14 +1,16 @@
 /**
- * CALL 子查询单元测试
+ * CALL { ... } subquery tests — parsing and execution.
  *
- * 测试 CALL { subquery } 的解析与执行。
+ * A CALL subquery runs its own MATCH/RETURN against the same node set, then the
+ * outer RETURN projects the subquery's columns.  These tests drive the full
+ * executor (`_executeQuery`) so the subquery boundary and column projection are
+ * exercised end-to-end, not just the parser.
  */
 
+import { describe, it, expect } from 'vitest'
 import { parseQuery, _executeQuery } from './query-engine'
 
-// ── Test only图数据 ──────────────────────────────────────────
-
-var testGraph = [
+const testGraph = [
   { _id: 'p1', _label: 'Person', name: 'Alice', age: 30 },
   { _id: 'p2', _label: 'Person', name: 'Bob', age: 25 },
   { _id: 'p3', _label: 'Person', name: 'Charlie', age: 35 },
@@ -16,109 +18,115 @@ var testGraph = [
   { _id: 'p5', _label: 'Pet', name: 'Buddy', type: 'dog' },
 ]
 
-// ── 1. 解析 CALL 子查询 ───────────────────────────────────
-
-describe('CALL 子查询 — 解析', function() {
-  it('解析 CALL 子查询 — parseQuery 正确识别 CALL 子句', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name')
+describe('CALL 子查询 — 解析', () => {
+  it('解析 CALL 子查询 — parseQuery 正确识别 CALL 子句', () => {
+    const plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name') as any
     expect(plan.type).toBe('CALL')
     expect(plan.callQuery).toBeDefined()
-    if (plan.callQuery) {
-      expect(plan.callQuery.type).toBe('QUERY')
-      expect(plan.callQuery.scanLabel).toBe('Person')
-      expect(plan.callQuery.returnColumns).toContain('name')
-    }
+    expect(plan.callQuery.type).toBe('QUERY')
+    expect(plan.callQuery.scanLabel).toBe('Person')
+    expect(plan.callQuery.returnColumns).toContain('name')
     expect(plan.returnColumns).toContain('name')
+  })
+
+  it('无 RETURN 的 CALL — CALL 仅做数据操作', () => {
+    const plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name }') as any
+    expect(plan.type).toBe('CALL')
+    expect(plan.callQuery).toBeDefined()
+    expect(plan.returnColumns.length).toBe(0)
   })
 })
 
-// ── 2. CALL + RETURN 外层 ─────────────────────────────────
-
-describe('CALL 子查询 — 执行', function() {
-  it('CALL + RETURN 外层 — 子查询结果被外层 RETURN 引用', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name')
-    var result = _executeQuery(plan, testGraph)
+describe('CALL 子查询 — 执行', () => {
+  it('CALL + RETURN 外层 — 子查询结果被外层 RETURN 引用', async () => {
+    const query = 'CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name'
+    const result = await _executeQuery(parseQuery(query), testGraph, query) as any[]
     expect(result.length).toBe(3)
-    var names = result.map(function(r) { return r.name }).sort()
+    const names = result.map((r: any) => r.name).sort()
     expect(names).toEqual(['Alice', 'Bob', 'Charlie'])
   })
 
-  it('CALL 变量作用域隔离 — 内层临时变量不泄漏', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name')
-    var result = _executeQuery(plan, testGraph)
-    for (var i = 0; i < result.length; i++) {
+  it('CALL 变量作用域隔离 — 内层临时变量不泄漏', async () => {
+    const query = 'CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name'
+    const result = await _executeQuery(parseQuery(query), testGraph, query) as any[]
+    for (let i = 0; i < result.length; i++) {
       expect(result[i].n).toBeUndefined()
     }
     expect(result.length).toBe(3)
   })
 
-  it('CALL 多层嵌套 — CALL 内部 MATCH + RETURN 完整执行', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name')
-    var result = _executeQuery(plan, testGraph)
+  it('CALL 多层嵌套 — CALL 内部 MATCH + RETURN 完整执行', async () => {
+    const query = 'CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name'
+    const result = await _executeQuery(parseQuery(query), testGraph, query) as any[]
     expect(result.length).toBe(3)
-    var names = result.map(function(r) { return r.name }).sort()
+    const names = result.map((r: any) => r.name).sort()
     expect(names).toEqual(['Alice', 'Bob', 'Charlie'])
   })
 
-  it('CALL 标签过滤 — 子查询仅返回指定标签节点', function() {
-    var plan = parseQuery('CALL { MATCH (n:Pet) RETURN n.name AS name } RETURN name')
-    var result = _executeQuery(plan, testGraph)
+  it('CALL 标签过滤 — 子查询仅返回指定标签节点', async () => {
+    const query = 'CALL { MATCH (n:Pet) RETURN n.name AS name } RETURN name'
+    const result = await _executeQuery(parseQuery(query), testGraph, query) as any[]
     expect(result.length).toBe(2)
-    var names = result.map(function(r) { return r.name }).sort()
+    const names = result.map((r: any) => r.name).sort()
     expect(names).toEqual(['Buddy', 'Whiskers'])
   })
 
-  it('CALL 空结果 — 子查询没有匹配的标签', function() {
-    var plan = parseQuery('CALL { MATCH (n:Robot) RETURN n.name AS name } RETURN name')
-    var result = _executeQuery(plan, testGraph)
+  it('CALL 空结果 — 子查询没有匹配的标签', async () => {
+    const query = 'CALL { MATCH (n:Robot) RETURN n.name AS name } RETURN name'
+    const result = await _executeQuery(parseQuery(query), testGraph, query) as any[]
     expect(result.length).toBe(0)
   })
 
-  it('CALL 重复执行 — 多次执行结果一致（无副作用残留）', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name')
-    var result1 = _executeQuery(plan, testGraph)
-    var result2 = _executeQuery(plan, testGraph)
+  it('CALL 重复执行 — 多次执行结果一致（无副作用残留）', async () => {
+    const query = 'CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name'
+    const result1 = await _executeQuery(parseQuery(query), testGraph, query) as any[]
+    const result2 = await _executeQuery(parseQuery(query), testGraph, query) as any[]
     expect(result1.length).toBe(result2.length)
-    for (var i = 0; i < result1.length; i++) {
+    for (let i = 0; i < result1.length; i++) {
       expect(result1[i].name).toBe(result2[i].name)
     }
   })
 
-  it('无 RETURN 的 CALL — CALL 仅做数据操作', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name }')
-    expect(plan.type).toBe('CALL')
-    expect(plan.callQuery).toBeDefined()
-    expect(plan.returnColumns.length).toBe(0)
-  })
-
-  it('CALL + ORDER BY / LIMIT — 外层排序和限制', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name ORDER BY name ASC LIMIT 2')
+  it('CALL + ORDER BY / LIMIT — 外层排序和限制', async () => {
+    const query = 'CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name ORDER BY name ASC LIMIT 2'
+    const plan = parseQuery(query) as any
     expect(plan.type).toBe('CALL')
     expect(plan.orderBy.length).toBe(1)
     expect(plan.orderBy[0].direction).toBe('ASC')
     expect(plan.limit).toBe(2)
 
-    var result = _executeQuery(plan, testGraph)
+    const result = await _executeQuery(plan, testGraph, query) as any[]
     expect(result.length).toBe(2)
     expect(result[0].name).toBe('Alice')
     expect(result[1].name).toBe('Bob')
   })
 
-  it('CALL 仅子查询 + RETURN 属性', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name')
-    var result = _executeQuery(plan, testGraph)
+  it('CALL 仅子查询 + RETURN 属性', async () => {
+    const query = 'CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name'
+    const result = await _executeQuery(parseQuery(query), testGraph, query) as any[]
     expect(result.length).toBe(3)
-    var names = result.map(function(r) { return r.name }).sort()
+    const names = result.map((r: any) => r.name).sort()
     expect(names).toEqual(['Alice', 'Bob', 'Charlie'])
   })
 
-  it('CALL 子查询结果包含多列', function() {
-    var plan = parseQuery('CALL { MATCH (n:Person) RETURN n.name AS name, n.age AS age } RETURN name, age')
+  it('CALL 子查询结果包含多列', async () => {
+    const query = 'CALL { MATCH (n:Person) RETURN n.name AS name, n.age AS age } RETURN name, age'
+    const plan = parseQuery(query) as any
     expect(plan.returnColumns).toContain('name')
     expect(plan.returnColumns).toContain('age')
-    var result = _executeQuery(plan, testGraph)
+    const result = await _executeQuery(plan, testGraph, query) as any[]
     expect(result.length).toBe(3)
-    var names = result.map(function(r) { return r.name }).sort()
+    const names = result.map((r: any) => r.name).sort()
     expect(names).toEqual(['Alice', 'Bob', 'Charlie'])
+  })
+
+  it('CALL 子查询投影隔离 — 未投影的属性不泄漏到结果', async () => {
+    const query = 'CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name'
+    const result = await _executeQuery(parseQuery(query), testGraph, query) as any[]
+    for (const row of result) {
+      expect(row).not.toHaveProperty('age')
+      expect(row).not.toHaveProperty('_id')
+      expect(row).not.toHaveProperty('_label')
+    }
   })
 })
