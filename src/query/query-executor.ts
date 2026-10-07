@@ -3540,6 +3540,47 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
 
+    // ── MERGE ON CREATE / ON MATCH SET (DML, RETURN-agnostic) ──
+    // Apply the ON CREATE / ON MATCH side effects to the matched/created nodes
+    // regardless of whether a RETURN is present.  A bare `MERGE (...) ON CREATE
+    // SET n.x = 10` (no RETURN) is a valid DML statement and must still land the
+    // SET on the node — previously this only ran inside the "DML + RETURN" block
+    // below, so the no-RETURN path created the node but dropped the SET.
+    if (plan.type === 'MERGE' && (plan.mergeOnCreate?.length || plan.mergeOnMatch?.length)) {
+      const _applyMergeSetDml = (target: any, set: any): void => {
+        if (set.kind === 'LABEL') {
+          const cur = String(target?._label ?? '').split(':').map((s: string) => s.trim()).filter(Boolean)
+          if (set.label && !cur.includes(set.label)) {
+            cur.push(set.label)
+            target._label = cur.join(':')
+            target.__fullLabel = cur.join(':')
+          }
+          return
+        }
+        const propName = set.property
+        if (!propName) return
+        let val: unknown = set.value
+        if (set.expression) {
+          const ctx: Record<string, unknown> = {}
+          for (const [k, v] of (varToNodeMap as Map<string, any>).entries()) ctx[k] = (v as any).props ?? v
+          if (target) ctx[set.alias || ''] = target
+          try { val = _evalBinary(set.expression, ctx) } catch { val = set.expression }
+        } else if (val && typeof val === 'object' && 'value' in val) {
+          val = (val as any).value
+        }
+        target[propName] = val
+      }
+      for (const cn of effectiveCreateNodes) {
+        const mn = cn as any
+        if (!mn._isMerge) continue
+        const target = mn._matchedIdx != null ? allNodes[mn._matchedIdx] : null
+        const setList = mn._matched ? plan.mergeOnMatch : plan.mergeOnCreate
+        if (target && setList) {
+          for (const s of setList) _applyMergeSetDml(target, s)
+        }
+      }
+    }
+
     // Expose the (UNWIND-expanded) relationship payloads to `_buildDmlRows` so a
     // `RETURN r.num` projection can emit one row per freshly-created relationship
     // (with its unwound property values) rather than a single `{num:'x'}` row.
@@ -4111,51 +4152,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
 
     // ── DML + RETURN：从 createNodes 构造结果行（GE 对 DML 返回空） ──
     if ((plan.type === 'CREATE' || plan.type === 'MERGE') && (plan.returnColumns?.length || (plan as any).mergeEdges?.length)) {
-      // ── MERGE ON CREATE / ON MATCH SET ──
-      // Apply ON CREATE/ON MATCH side effects to the nodes *before* building the
-      // result rows, so `MERGE ... ON CREATE SET a.num = 42 RETURN a.num` returns
-      // the post-SET value (42) rather than the pre-SET value.  Each merge node
-      // carries a `_matched` flag from the match-or-create step: matched=true fires
-      // ON MATCH against the reused node, matched=false fires ON CREATE against the
-      // freshly created node.
-      if (plan.type === 'MERGE' && (plan.mergeOnCreate?.length || plan.mergeOnMatch?.length)) {
-        const _applyMergeSet = (target: any, set: any): void => {
-          if (set.kind === 'LABEL') {
-            // Append the label to the node's `_label` (colon-joined, deduped).
-            const cur = String(target?._label ?? '').split(':').map((s: string) => s.trim()).filter(Boolean)
-            if (set.label && !cur.includes(set.label)) {
-              cur.push(set.label)
-              target._label = cur.join(':')
-              target.__fullLabel = cur.join(':')
-            }
-            return
-          }
-          // PROP assignment (kind may be undefined for legacy {property,value}).
-          const propName = set.property
-          if (!propName) return
-          let val: unknown = set.value
-          // An expression RHS (a variable reference or computed value) is
-          // evaluated against the bound variables (the MERGE node + its alias).
-          if (set.expression) {
-            const ctx: Record<string, unknown> = {}
-            for (const [k, v] of (varToNodeMap as Map<string, any>).entries()) ctx[k] = (v as any).props ?? v
-            if (target) ctx[set.alias || ''] = target
-            try { val = _evalBinary(set.expression, ctx) } catch { val = set.expression }
-          } else if (val && typeof val === 'object' && 'value' in val) {
-            val = (val as any).value
-          }
-          target[propName] = val
-        }
-        for (const cn of effectiveCreateNodes) {
-          const mn = cn as any
-          if (!mn._isMerge) continue
-          const target = mn._matchedIdx != null ? allNodes[mn._matchedIdx] : null
-          const setList = mn._matched ? plan.mergeOnMatch : plan.mergeOnCreate
-          if (target && setList) {
-            for (const s of setList) _applyMergeSet(target, s)
-          }
-        }
-      }
+      // (MERGE ON CREATE / ON MATCH SET were already applied unconditionally
+      // above, so a bare `MERGE ... ON CREATE SET` without RETURN still lands the
+      // SET on the node.)
 
       // ── Relationship MERGE (no-MATCH path) ──
       // A bare relationship MERGE (`MERGE (a)-[r:TYPE]-(b)`) has no MATCH clause,
@@ -9580,7 +9579,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       // `MATCH (x),(y) CREATE (x)-[:R]->(y)` pushes the new edge onto x/y's
       // `__edges` (in the allNodes clone).  Without copying those back, a later
       // control query `MATCH (x)-[:R]->(y)` finds no relationship (Create2).
+      // MERGE with an ON MATCH SET mutates an *existing* node (the matched one)
+      // in the allNodes clone; copy those mutations back too, so
+      // `MERGE ... ON MATCH SET n.y = 99` persists on the caller's array.
       if (plan.type === 'SET' || plan.type === 'REMOVE' || plan.type === 'MATCH_MODIFY' ||
+          (plan.type === 'MERGE' && (plan.mergeOnMatch?.length || plan.mergeOnCreate?.length)) ||
           (plan.type === 'CREATE' && (plan.createEdges?.length || plan.createNodes?.some(cn => cn.alias != null && !plan.steps?.length)))) {
         for (let i = 0; i < originalNodeCount && i < allNodes.length && i < nodes.length; i++) {
           const src = allNodes[i] as Record<string, unknown>
