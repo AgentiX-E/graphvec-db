@@ -2137,7 +2137,13 @@ function parseSingleCondition(text: string): FilterClause | null {
   // Handle NOT prefix: "NOT n.name = 'Alice'" → parse "n.name = 'Alice'" with negated flag
   const notMatch = t.match(/^NOT\s+(.+)$/i)
   if (notMatch) {
-    const inner = parseSingleCondition(notMatch[1].trim())
+    // Strip a single wrapping paren pair so `NOT (n.age > 30)` parses the same
+    // as `NOT n.age > 30`.
+    let innerText = notMatch[1].trim()
+    if (innerText.startsWith('(') && innerText.endsWith(')')) {
+      innerText = innerText.slice(1, -1).trim()
+    }
+    const inner = parseSingleCondition(innerText)
     if (inner) {
       inner.negated = true
       return inner
