@@ -6489,6 +6489,17 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   case 'LTE':  baseResult = Number(actualVal) <= Number(fv); break;
                   case 'IS_NULL':     baseResult = actualVal == null; break;
                   case 'IS_NOT_NULL': baseResult = actualVal != null; break;
+                  case 'IN': {
+                    // Membership test.  The RHS is a Cypher list literal; the
+                    // single-element case `[30]` used to accidentally pass the
+                    // `default` string-equality branch (`"30" === "30"`) but a
+                    // multi-element list never matched, silently dropping every
+                    // row for `WHERE n.age IN [20, 30, 40]`.
+                    baseResult = Array.isArray(fv)
+                      ? fv.includes(actualVal)
+                      : String(actualVal) === String(fv)
+                    break
+                  }
                   case 'STARTS_WITH': baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break;
                   case 'ENDS_WITH':   baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.endsWith(fv); break;
                   case 'CONTAINS':    baseResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.includes(fv); break;

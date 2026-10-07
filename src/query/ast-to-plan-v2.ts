@@ -2046,6 +2046,88 @@ function splitByTopLevelAndOr(text: string): string[] {
 }
 
 /**
+ * Parse a Cypher list literal `[...]` into a JS array of values.
+ *
+ * Cypher list literals may use single or double quotes for strings, which plain
+ * `JSON.parse` cannot handle (single quotes are invalid JSON).  Empty lists
+ * `[]` must also resolve to an empty array rather than being dropped.
+ *
+ * Strategy:
+ *   1. Trim to `[ ... ]`; an empty body yields `[]`.
+ *   2. Try `JSON.parse` after normalising single quotes to double quotes
+ *      (works for `[1, 2, 3]`, `["a", "b"]`, `['a', 'b']`).
+ *   3. Fall back to manual comma-splitting (quote-aware) for mixed/identifier
+ *      content.
+ */
+function _parseCypherListLiteral(raw: string): unknown[] {
+  const text = raw.trim()
+  if (!text.startsWith('[') || !text.endsWith(']')) return [text]
+  const body = text.slice(1, -1).trim()
+  if (body === '') return []
+
+  // Normalise single-quoted strings to double quotes so JSON.parse can handle
+  // them.  This is safe because Cypher string literals do not nest quotes of
+  // the alternate kind.
+  try {
+    return JSON.parse(body.replace(/'/g, '"'))
+  } catch {
+    // Fall through to manual splitting for identifiers or mixed content.
+  }
+
+  const items: unknown[] = []
+  const parts = _splitCypherListBody(body)
+  for (const part of parts) {
+    const p = part.trim()
+    if (p === '') continue
+    if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(p)) {
+      items.push(parseFloat(p))
+    } else if ((p.startsWith("'") && p.endsWith("'")) || (p.startsWith('"') && p.endsWith('"'))) {
+      items.push(p.slice(1, -1))
+    } else if (/^(?:true|false)$/i.test(p)) {
+      items.push(p.toLowerCase() === 'true')
+    } else if (/^null$/i.test(p)) {
+      items.push(null)
+    } else {
+      items.push(p)
+    }
+  }
+  return items
+}
+
+/** Split a list literal body on top-level commas (quote-aware). */
+function _splitCypherListBody(body: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let inString = false
+  let stringChar = ''
+  let current = ''
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]
+    if (inString) {
+      current += ch
+      if (ch === stringChar && body[i - 1] !== '\\') inString = false
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      inString = true
+      stringChar = ch
+      current += ch
+      continue
+    }
+    if (ch === '[' || ch === '(' || ch === '{') depth++
+    if (ch === ']' || ch === ')' || ch === '}') depth--
+    if (ch === ',' && depth === 0) {
+      parts.push(current.trim())
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current.trim()) parts.push(current.trim())
+  return parts
+}
+
+/**
  * 解析单个条件属性表达式。
  * 支持: prop op value, x IN [...], x IS [NOT] NULL, NOT prop ...
  */
@@ -2074,10 +2156,9 @@ function parseSingleCondition(text: string): FilterClause | null {
   }
 
   // IN [...]
-  const inMatch = t.match(/^(\w+)\.(\w+)\s+IN\s+(\[.+?\])$/i)
+  const inMatch = t.match(/^(\w+)\.(\w+)\s+IN\s+(\[.*?\])$/i)
   if (inMatch) {
-    let listValue: unknown = inMatch[3]
-    try { listValue = JSON.parse(inMatch[3]) } catch {}
+    const listValue: unknown = _parseCypherListLiteral(inMatch[3])
     return {
       source: inMatch[1],
       property: inMatch[2],
