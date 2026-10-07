@@ -42,10 +42,15 @@ function splitCsvLine(line: string, delimiter: string): string[] {
   for (let i = 0; i < line.length; i++) {
     const ch = line[i]
     if (ch === '"') {
-      // 检查是否转义引号（"" → "）
-      if (i + 1 < line.length && line[i + 1] === '"') {
+      // An embedded quote is only an escape sequence (`""` -> `"`) *inside*
+      // a quoted field.  A pair of quotes outside a field is an empty quoted
+      // field (e.g. `a,"",c` yields an empty middle column), and a single
+      // quote toggles field quoting.  Without the `inQuotes` guard the
+      // `a,"",c` case was misread as an escaped quote and produced a stray
+      // `"` instead of an empty string.
+      if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
         current += '"'
-        i++ // skip next
+        i++ // skip the escaped quote
       } else {
         inQuotes = !inQuotes
       }

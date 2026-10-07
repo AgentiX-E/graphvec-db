@@ -346,12 +346,15 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
     const aliasNames = [...beforeAs.matchAll(/\bAS\s+(\w+)/gi)].map(m => m[1])
     for (const an of aliasNames) varSet.add(an)
     const varIdents = [...varSet]
+    // LOAD CSV binds its row variable (`LOAD CSV ... AS row`), which must be
+    // treated as defined so `RETURN row` does not raise UndefinedVariable.
+    const loadCsvRowVar = plan?.loadCsv?.rowVariable as string | undefined
     if (matchVars.length === 0 && varIdents.length > 0) {
       for (const v of varIdents) {
         const vu = v.toUpperCase()
         if (_TCK_KEYWORDS.has(vu)) continue
         // 检查是否在 MATCH、WITH 变量、CREATE 边变量、CREATE 节点变量中定义
-        const allDefinedVars = [...matchVars, ...withVars, ...createEdgeVars, ...createNodeVars, ...callYieldVars]
+        const allDefinedVars = [...matchVars, ...withVars, ...createEdgeVars, ...createNodeVars, ...callYieldVars, ...(loadCsvRowVar ? [loadCsvRowVar] : [])]
         if (!allDefinedVars.includes(v)) {
           // 额外检查：如果 v 看起来是属性访问（有小数点），跳过
           if (v.includes('.') && allDefinedVars.includes(v.split('.')[0])) continue
