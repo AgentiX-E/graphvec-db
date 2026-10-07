@@ -206,17 +206,44 @@ function _computeAggregate(fn: string, rows: unknown[]): unknown {
  * Returns `null` when no cross-row collect is present (so Step 5 proceeds
  * normally), otherwise returns the single aggregated row set.
  */
+
+/**
+ * True when any RETURN expression is an aggregate wrapped in an outer function
+ * (`size(collect(x))`, `toInteger(count(n))`, ...), rather than a *pure*
+ * top-level aggregate call (`collect(x)` / `count(n)`).  Nested aggregates must
+ * go through the cross-row materialisation so the outer wrapper operates on the
+ * folded list, not on a single row.
+ */
+function _hasNestedAggregateExpr(plan: QueryPlan): boolean {
+  const cols = plan.expressionColumns || []
+  if (!cols.length) return false
+  return cols.some(c => {
+    const expr = (c.expression || '').trim()
+    // Pure aggregate: the whole expression is one aggregate call (optionally
+    // with a trailing AS alias). Nested otherwise.
+    return /^[a-z_]+\(/i.test(expr) && !/^(count|sum|avg|max|min|collect|stdev|stdevp|percentilecont|percentiledisc)\s*\(/i.test(expr)
+      && /\b(count|sum|avg|max|min|collect)\s*\(/i.test(expr)
+  })
+}
+
 function _materializeReturnAggregates(
   plan: QueryPlan,
   rows: Array<Record<string, unknown>>,
   varCtx: Record<string, unknown>
 ): Array<Record<string, unknown>> | null {
   // Only materialize cross-row collect when the parser did NOT synthesize a
-  // top-level plan.aggregate.  A top-level `collect(x) AS y` / `count(x) AS y`
-  // already sets plan.aggregate (and is handled downstream by Step 4); we must
-  // not collapse those rows here, or we would change their (already-broken but
-  // distinct) top-level-aggregation semantics.
-  if (plan.aggregate) return null
+  // *pure* top-level plan.aggregate.  A top-level `collect(x) AS y` /
+  // `count(x) AS y` already sets plan.aggregate (and is handled downstream by
+  // Step 4); we must not collapse those rows here, or we would change their
+  // (already-broken but distinct) top-level-aggregation semantics.
+  //
+  // A *nested* aggregate (`size(collect(x))`) also sets plan.aggregate (its
+  // parser probe records the inner `collect`), but it must NOT be short-
+  // circuited here: the outer `size(...)` wrapper needs the cross-row list
+  // materialised first, then applied on top.  Detect the nesting by checking
+  // whether any RETURN expression is a pure aggregate call vs. an aggregate
+  // wrapped in an outer function.
+  if (plan.aggregate && !_hasNestedAggregateExpr(plan)) return null
   const exprCols = (plan.expressionColumns || [])
   let hasCrossRowCollect = false
   const matExprs: Array<{ alias: string; expr: string }> = []

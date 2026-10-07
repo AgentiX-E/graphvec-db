@@ -2366,16 +2366,14 @@ function extractReturn(returnCtx: any): ParsedReturn {
           // Aggregate is wrapped in an outer function/expression
           // (`size(collect(a))`, `$age + avg(person.age) - 1000`): the top-level
           // `^func(...)` probe above misses it because the column text does not
-          // start with the aggregate name.  Resolve the inner aggregate so the
-          // executor folds it across the row set and then applies the outer
-          // expression on top of the folded value.
-          const nested = _parseNestedAggregate(text)
-          if (nested) {
-            const aggClause: AggregateClause = { function: nested.fn, column: text, field: nested.field, distinct: nested.distinct || false }
-            if (!aggregate) aggregate = aggClause
-            if (!aggregates) aggregates = []
-            aggregates.push(aggClause)
-          }
+          // start with the aggregate name.  Do NOT synthesise a top-level
+          // plan.aggregate here — that would route `size(collect(x))` into Step
+          // 4's plain `collect` branch (emitting the raw list, dropping the
+          // outer `size(...)`).  Instead leave plan.aggregate unset so the
+          // executor's cross-row materialisation handles the nesting: it folds
+          // `collect(x)` to a list and then applies the outer expression on top.
+          // (Resolving the inner aggregate is still useful for validation; do
+          // not record it as a folding aggregate.)
         }
       }
       return
