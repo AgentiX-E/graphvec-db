@@ -1133,7 +1133,12 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // ═══════════════════════════════════════════════════════════════
   // CALL 校验 — 编译时Error
   // ═══════════════════════════════════════════════════════════════
-  if (plan.type === 'CALL' && query) {
+  // A `CALL { ... }` subquery (`plan.callQuery` set, no procedure) is NOT a
+  // procedure call.  Running the procedure checks below against it would
+  // regex-match `CALL\s+(\S+)` to `{` and raise a bogus ProcedureNotFound.
+  // Subqueries carry their own `callQuery` plan (already built recursively);
+  // skip the procedure-specific compile-time validation for them.
+  if (plan.type === 'CALL' && query && !(plan as any).callQuery) {
     const cp = plan.callProcedure as { name: string; args: any[]; yieldItems?: Array<{ name: string; alias: string | null }> } | undefined
     let resolvedName: string | undefined
     let resolvedArgs: string[] | undefined

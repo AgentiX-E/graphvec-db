@@ -256,6 +256,15 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
   // Only process plans with expressionColumns (RETURN or WITH)
   if (!plan.expressionColumns?.length) return
 
+  // A CALL subquery's `returnColumns` are re-derived from the OUTER `RETURN`
+  // (the text after the closing brace) in buildQueryPlan, because ANTLR stops
+  // at `{` and the subquery body leaks into top-level clause collection.
+  // Running this pass against the WHOLE query text would match the INNER
+  // `RETURN` (inside `CALL { ... }`) and rebuild the columns from the subquery
+  // body again, undoing that fix.  Skip it — the outer projection is already
+  // correct on `plan`.
+  if (plan.type === 'CALL' && (plan as any).callQuery) return
+
   // A UNION plan (left side merged into `plan`, right side in `plan.rightPlan`)
   // is ALREADY post-processed: `parseUnion` recursed through the full
   // `parseCypherToPlan` on both sides, so each side's RETURN expressions were
@@ -798,6 +807,40 @@ function buildQueryPlan(query: string): QueryPlan {
       const subPlan = buildQueryPlan(callInfo.innerQuery)
       plan.type = 'CALL'
       plan.callQuery = subPlan
+
+      // ANTLR cannot parse `CALL { ... }` (it stops at `{`), so the trailing
+      // subquery body leaks into the top-level clause collection and pollutes
+      // `plan.returnColumns` (e.g. `CALL { MATCH (n) RETURN n.name } RETURN
+      // name` yields `["n.name } RETURN name"]`).  Re-derive the OUTER RETURN
+      // columns from `afterQuery` so the caller's own RETURN is projected
+      // correctly and the subquery body stays inside `callQuery`.
+      const outerRet = callInfo.afterQuery.match(/^RETURN\s+((?:(?!\s+(?:ORDER\s+BY|SKIP|LIMIT)).)*)/is)
+      if (outerRet) {
+        const outerCols = outerRet[1].trim()
+        if (outerCols === '*') {
+          plan.returnColumns = []
+        } else {
+          const cols = outerCols.split(',').map(c => c.trim()).filter(Boolean)
+          plan.returnColumns = cols.map(c => {
+            const asMatch = c.match(/\bAS\s+(\w+)\s*$/i)
+            return asMatch ? asMatch[1] : c
+          })
+        }
+        // Rebuild returnAliasMap for the outer columns from the raw text.
+        plan.returnAliasMap = plan.returnAliasMap || {}
+        const rawCols = outerCols === '*' ? [] : outerCols.split(',').map(c => c.trim()).filter(Boolean)
+        for (const c of rawCols) {
+          const asMatch = c.match(/^(.+?)\s+AS\s+(\w+)\s*$/i)
+          if (asMatch) plan.returnAliasMap[asMatch[2]] = asMatch[1].trim()
+          else plan.returnAliasMap[c] = c
+        }
+      } else {
+        // No outer RETURN (data-only `CALL { ... }` with no trailing projection):
+        // the subquery body's RETURN was wrongly collected as the top-level
+        // projection.  Clear it so the plan reports no projected columns.
+        plan.returnColumns = []
+        plan.returnAliasMap = {}
+      }
 
       // Check for IN TRANSACTIONS in the after-query text
       const txMatch = callInfo.afterQuery.match(/IN\s+TRANSACTIONS(?:\s+OF\s+(\d+)\s+ROWS)?/i)

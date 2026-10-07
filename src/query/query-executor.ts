@@ -9644,6 +9644,30 @@ export async function _executeQuery(
   // 所以 GE 路径必须在执行前深拷贝
   // 快捷路径（LOAD CSV, SHOW, catalog, DML, bare CALL）不 mutate plan → 无需拷贝
 
+  // ── CALL { ... } subquery execution ──
+  // A subquery plan (`plan.callQuery`) executes its own MATCH/RETURN against the
+  // same node set, then the outer RETURN projects the subquery's columns.  This
+  // was previously never dispatched: the generic GE path ignored `callQuery`,
+  // scanned the subquery's label and leaked unprojected node properties into
+  // the result.  Run the subquery through the normal executor and then project
+  // the outer `returnColumns` so only the declared columns survive.
+  if (plan.type === 'CALL' && plan.callQuery && !plan.callProcedure) {
+    const subRows = await _executeQuery(plan.callQuery, nodes, query) as any[]
+    const outerCols = plan.returnColumns || []
+    // A subquery with no outer RETURN (data-only CALL) yields no projected rows.
+    if (!outerCols.length) return [] as any
+    const projected = subRows.map((row: any) => {
+      const out: Record<string, unknown> = {}
+      for (const col of outerCols) {
+        // The outer column may be a bare alias (`name`) or `var.prop` (`n.name`).
+        const key = typeof col === 'string' ? col.replace(/^\w+\./, '') : col
+        if (row && Object.prototype.hasOwnProperty.call(row, key)) out[key] = row[key]
+      }
+      return out
+    })
+    return _postProcessResults(projected, plan)
+  }
+
   // ── bare CALL dispatch：CALL name（无括号语法）──
   if (plan.type === 'CALL' && !plan.callProcedure && query) {
     const callMatch = query.match(/CALL\s+(\S+)(?:\s+|\s*$)/i)
