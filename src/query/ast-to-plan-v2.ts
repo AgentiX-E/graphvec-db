@@ -677,7 +677,16 @@ function buildQueryPlan(query: string): QueryPlan {
     }
   }
 
-  const is = new antlr4.InputStream(trimmed)
+  // ── `replace` keyword collision ──
+  // `replace` is a Cypher reserved word (DDL `ALTER ... REPLACE`), so ANTLR
+  // lexes it as the REPLACE keyword and fails to parse `replace(...)` as a
+  // function invocation, mangling the RETURN projection into multiple columns.
+  // Quote the function name with backticks (a valid EscapedSymbolicName) before
+  // parsing; `_evalExpression._tryFnCall` strips the backticks when dispatching,
+  // so execution still reaches the `replace` builtin unchanged.
+  const parseSource = trimmed.replace(/\breplace\s*\(/gi, '`replace`(')
+
+  const is = new antlr4.InputStream(parseSource)
   const lexer = new CypherLexer(is)
   const tokens = new antlr4.CommonTokenStream(lexer)
   const parser = new CypherParser(tokens)

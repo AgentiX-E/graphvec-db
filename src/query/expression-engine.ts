@@ -1416,7 +1416,15 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   sqrt: ([a], r) => Math.sqrt(_num(_evalBinary(a, r))),
   ceil: ([a], r) => Math.ceil(_num(_evalBinary(a, r))),
   floor: ([a], r) => Math.floor(_num(_evalBinary(a, r))),
-  round: ([a], r) => Math.round(_num(_evalBinary(a, r))),
+  round: ([a, p], r) => {
+    const v = _num(_evalBinary(a, r))
+    if (p == null) return Math.round(v)
+    const prec = Math.trunc(Number(_evalBinary(p, r)))
+    const f = Math.pow(10, prec)
+    // Round half away from zero consistently with Math.round (which rounds
+    // toward +Infinity), matching Cypher's `round(value, precision)`.
+    return Math.round((v + Number.EPSILON) * f) / f
+  },
   sign: ([a], r) => Math.sign(_num(_evalBinary(a, r))),
   rand: () => Math.random(),
   coalesce: (as, r) => { for (const a of as) { const v = _evalBinary(a, r); if (v != null) return v } return null },
@@ -2793,11 +2801,18 @@ export function _evalBinary(s: string, row?: Record<string, unknown>): ExprValue
   // 先尝试函数匹配（需在 fast path 之前，否则会跳到 _evalComparison 错过新函数匹配）
   const _tryFnCall = (t: string): unknown => {
     const fnParenIdx = t.indexOf('(')
-    if (fnParenIdx > 0 && t.endsWith(')') && /^[\w.]+$/.test(t.slice(0, fnParenIdx))) {
+    // Backtick-quoted function names are allowed so keyword-colliding functions
+    // like `replace` (a Cypher reserved word) can still be invoked.  The parser
+    // rewrites `replace(` to `` `replace`( `` before ANTLR (see parseCypherToPlan),
+    // so accept an optional surrounding backtick pair here and strip it before
+    // dispatch.
+    const rawFnHead = t.slice(0, fnParenIdx)
+    const headMatch = rawFnHead.match(/^`?([\w.]+)`?$/)
+    if (fnParenIdx > 0 && t.endsWith(')') && headMatch) {
       // Skip boolean operator keywords — they are handled by _evalOr/_evalAnd/_evalNot,
       // not as function calls. E.g., NOT(n.name = 'apa' AND false) must NOT be
       // intercepted as a call to a non-existent "NOT" function.
-      const fnNameLower = t.slice(0, fnParenIdx).toLowerCase()
+      const fnNameLower = headMatch[1].toLowerCase()
       if (fnNameLower === 'not' || fnNameLower === 'and' || fnNameLower === 'or' || fnNameLower === 'xor') {
         return undefined
       }
@@ -2807,7 +2822,7 @@ export function _evalBinary(s: string, row?: Record<string, unknown>): ExprValue
         else if (t[i] === ')') { depth--; if (depth === 0) { matchEnd = i; break } }
       }
       if (matchEnd === t.length - 1) {
-        const fnName = t.slice(0, fnParenIdx)
+        const fnName = headMatch[1]
         const argsRaw = t.slice(fnParenIdx + 1, -1).trim()
         const args = argsRaw ? _parseCommaList(argsRaw).map(a => a.trim()) : []
         return _callFunction(fnName, args, row)
