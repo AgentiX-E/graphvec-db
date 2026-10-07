@@ -1,141 +1,108 @@
 /**
- * Pattern Comprehension 模式推导测试
+ * Pattern Comprehension tests — parsing and end-to-end execution.
  *
- * 语法：[(n)-[:R]->(m) | m.prop] 或 [(n)-[:R]->(m) WHERE cond | m.prop]
+ * Syntax: `[(n)-[:R]->(m) | m.prop]` (optionally `WHERE cond`), or the
+ * variable-length form `[p = (a)-[*]->(b) | p]`.
  *
- * 测试清单：
- * 1. 基本 pattern comprehension
- * 2. 带 WHERE 过滤
- * 3. 嵌套 comprehension（在列表达式中使用）
- * 4. 空结果 → []
+ * The old `comprehensionColumns` AST (nested `PATTERN_COMPREHENSION` nodes) was
+ * removed; the comprehension is now carried as a string expression on
+ * `plan.expressionColumns` and evaluated by `_evalPatternComprehension` (see
+ * pattern-comprehension-units.spec.ts for the evaluator unit tests).  These
+ * tests verify the observable behaviour end-to-end: alias projection and the
+ * actual matched neighbour lists.
  */
+
 import { describe, it, expect } from 'vitest'
-import { parseQuery } from './query-engine'
+import { parseQuery, _executeQuery } from './query-engine'
 
-describe('Pattern Comprehension 解析', () => {
-  it('基本 pattern comprehension — 解析正确', () => {
-    const plan = parseQuery('MATCH (n) RETURN [(n)-[:KNOWS]->(m) | m.name]')
-    const compCol = plan.comprehensionColumns
-    expect(compCol).toBeDefined()
-    expect(compCol!.length).toBe(1)
-    const expr = compCol![0].expression
-    expect(expr.type).toBe('PATTERN_COMPREHENSION')
-    expect(expr.fromNode.name).toBe('n')
-    expect(expr.edge.label).toBe('KNOWS')
-    expect(expr.edge.direction).toBe('out')
-    expect(expr.targetNode.name).toBe('m')
-    expect(expr.project.type).toBe('PROP_REF')
-    expect(expr.project.property).toBe('name')
-    expect(expr.where).toBeNull()
-  })
+// A graph where Alice knows Bob and Charlie, Bob knows no-one, Charlie knows David.
+// Relationships are expressed via the engine's `__edges` contract
+// (`{ srcIdx, dstIdx, label }`), not as standalone `{_label:'KNOWS'}` nodes.
+function graphWithEdges() {
+  return [
+    { _id: 'a', _label: 'Person', name: 'Alice', age: 30, _alias: 'a', __edges: [{ srcIdx: 0, dstIdx: 1, label: 'KNOWS' }, { srcIdx: 0, dstIdx: 2, label: 'KNOWS' }] },
+    { _id: 'b', _label: 'Person', name: 'Bob', age: 25, _alias: 'b', __edges: [] },
+    { _id: 'c', _label: 'Person', name: 'Charlie', age: 35, _alias: 'c', __edges: [{ srcIdx: 2, dstIdx: 3, label: 'KNOWS' }] },
+    { _id: 'd', _label: 'Person', name: 'David', age: 40, _alias: 'd', __edges: [] },
+  ]
+}
 
-  it('带 WHERE 过滤的模式推导', () => {
-    const plan = parseQuery(
-      'MATCH (n) RETURN [(n)-[:KNOWS]->(m) WHERE m.age > 18 | m.name]',
-    )
-    const compCol = plan.comprehensionColumns
-    expect(compCol).toBeDefined()
-    expect(compCol!.length).toBe(1)
-    const expr = compCol![0].expression
-    expect(expr.type).toBe('PATTERN_COMPREHENSION')
-    expect(expr.where).toBeDefined()
-    expect(expr.where.type).toBe('COMPARISON')
-    expect(expr.where.operator).toBe('GT')
-    expect(expr.where.left.type).toBe('PROP_REF')
-    expect(expr.where.left.property).toBe('age')
-    expect(expr.project.type).toBe('PROP_REF')
-    expect(expr.project.property).toBe('name')
-  })
-
-  it('模式推导在列表达式中正确注册 alias', () => {
-    const plan = parseQuery(
-      'MATCH (n) RETURN [(n)-[:KNOWS]->(m) | m.name] AS friends',
-    )
-    const compCol = plan.comprehensionColumns
-    expect(compCol).toBeDefined()
-    expect(compCol![0].alias).toBe('friends')
+describe('Pattern Comprehension — 解析', () => {
+  it('基本 comprehension 解析到 returnColumns 别名', () => {
+    const plan = parseQuery('MATCH (n) RETURN [(n)-[:KNOWS]->(m) | m.name] AS friends') as any
     expect(plan.returnColumns).toContain('friends')
+    expect(plan.expressionColumns.length).toBe(1)
+    expect(plan.expressionColumns[0].alias).toBe('friends')
+    expect(plan.expressionColumns[0].expression).toContain('KNOWS')
   })
 
-  it('模式推导列入 returnColumns', () => {
+  it('无别名 comprehension — 表达式文本作为列', () => {
+    const plan = parseQuery('MATCH (n) RETURN [(n)-[:KNOWS]->(m) | m.name]') as any
+    expect(plan.returnColumns.length).toBe(1)
+    expect(plan.returnColumns[0]).toContain('KNOWS')
+  })
+
+  it('带 WHERE 过滤的 comprehension', () => {
     const plan = parseQuery(
-      'MATCH (n) RETURN n.name, [(n)-[:KNOWS]->(m) | m.name]',
-    )
-    expect(plan.returnColumns.length).toBe(2)
-    expect(plan.returnColumns).toContain('_pc_1')
-    expect(plan.comprehensionColumns).toBeDefined()
-    expect(plan.comprehensionColumns!.length).toBe(1)
+      'MATCH (n) RETURN [(n)-[:KNOWS]->(m) WHERE m.age > 18 | m.name] AS adults',
+    ) as any
+    expect(plan.returnColumns).toContain('adults')
+    expect(plan.expressionColumns[0].expression).toContain('WHERE')
   })
 
-  // ── 新增 tests ──
-
-  it('带 WHERE 过滤的模式推导', () => {
-    const plan = parseQuery(
-      'MATCH (n) RETURN [(n)-[:KNOWS]->(m) WHERE m.age > 18 | m.name] AS friends_adults',
-    )
-    const compCol = plan.comprehensionColumns
-    expect(compCol).toBeDefined()
-    expect(compCol!.length).toBe(1)
-    const expr = compCol![0].expression
-    expect(expr.type).toBe('PATTERN_COMPREHENSION')
-    expect(expr.where).toBeDefined()
-  })
-
-  it('多个模式推导在同一个查询中分别注册', () => {
-    // Two comprehension columns in one query
-    const plan = parseQuery(
-      'MATCH (n) RETURN [(n)-[:FRIENDS]->(f) | f.name] AS friends, [(n)-[:KNOWS]->(k) | k.age] AS known_ages',
-    )
-    expect(plan.comprehensionColumns).toBeDefined()
-    expect(plan.comprehensionColumns!.length).toBe(2)
-    expect(plan.comprehensionColumns![0].alias).toBe('friends')
-    expect(plan.comprehensionColumns![1].alias).toBe('known_ages')
-  })
-
-  it('空匹配时模式推导正确解析', () => {
-    // This checks parse doesn't crash
-    const plan = parseQuery(
-      'MATCH (n) RETURN [(n)-[:UNKNOWN]->(x) | x.name] AS empty_list',
-    )
-    expect(plan.comprehensionColumns).toBeDefined()
-    expect(plan.comprehensionColumns!.length).toBe(1)
-    expect(plan.comprehensionColumns![0].alias).toBe('empty_list')
-  })
-
-  it('模式推导带 alias 时正确注册到 returnColumns', () => {
+  it('多列投影 + comprehension 别名正确注册', () => {
     const plan = parseQuery(
       'MATCH (n) RETURN n.name, [(n)-[:KNOWS]->(f) | f.name] AS friend_names, n.age',
-    )
-    expect(plan.comprehensionColumns).toBeDefined()
-    expect(plan.comprehensionColumns!.length).toBe(1)
+    ) as any
     expect(plan.returnColumns).toContain('friend_names')
     expect(plan.returnColumns).toContain('name')
+    expect(plan.returnColumns).toContain('age')
   })
 
-  it('反向关系（m → n）的模式推导', () => {
+  it('多个 comprehension 在同一查询', () => {
     const plan = parseQuery(
-      'MATCH (n) RETURN [(m)-[:KNOWS]->(n) | m.name]',
-    )
-    const compCol = plan.comprehensionColumns
-    expect(compCol).toBeDefined()
-    expect(compCol!.length).toBe(1)
-    const expr = compCol![0].expression
-    expect(expr.type).toBe('PATTERN_COMPREHENSION')
-    expect(expr.fromNode.name).toBe('m')
-    expect(expr.edge.label).toBe('KNOWS')
-    expect(expr.edge.direction).toBe('out')
-    expect(expr.targetNode.name).toBe('n')
+      'MATCH (n) RETURN [(n)-[:FRIENDS]->(f) | f.name] AS friends, [(n)-[:KNOWS]->(k) | k.age] AS known_ages',
+    ) as any
+    expect(plan.returnColumns).toContain('friends')
+    expect(plan.returnColumns).toContain('known_ages')
+  })
+})
+
+describe('Pattern Comprehension — 执行', () => {
+  it('基本 comprehension 返回正确的邻居 name 列表', async () => {
+    const query = 'MATCH (n:Person) RETURN [(n)-[:KNOWS]->(m) | m.name] AS friends'
+    const result = await _executeQuery(parseQuery(query), graphWithEdges(), query) as any[]
+
+    const alice = result.find((r: any) => r.name === 'Alice')
+    const bob = result.find((r: any) => r.name === 'Bob')
+    const charlie = result.find((r: any) => r.name === 'Charlie')
+
+    expect(alice.friends.sort()).toEqual(['Bob', 'Charlie'])
+    expect(bob.friends).toEqual([])
+    expect(charlie.friends).toEqual(['David'])
   })
 
-  it('多 WHERE 条件的模式推导', () => {
-    const plan = parseQuery(
-      'MATCH (n) RETURN [(n)-[:KNOWS]->(m) WHERE m.age > 18 AND m.city = "NYC" | m.name] AS friends_nyc',
-    )
-    const compCol = plan.comprehensionColumns
-    expect(compCol).toBeDefined()
-    expect(compCol!.length).toBe(1)
-    const expr = compCol![0].expression
-    expect(expr.type).toBe('PATTERN_COMPREHENSION')
-    expect(expr.where).toBeDefined()
+  it('空匹配 — 无 KNOWS 边时返回空列表', async () => {
+    const nodes = [
+      { _id: 'a', _label: 'Person', name: 'Alice', age: 30, _alias: 'a', __edges: [] },
+      { _id: 'b', _label: 'Person', name: 'Bob', age: 25, _alias: 'b', __edges: [] },
+    ]
+    const query = 'MATCH (n:Person) RETURN [(n)-[:KNOWS]->(m) | m.name] AS friends'
+    const result = await _executeQuery(parseQuery(query), nodes, query) as any[]
+    expect(result).toHaveLength(2)
+    for (const r of result) {
+      expect(r.friends).toEqual([])
+    }
+  })
+
+  it('带 WHERE 过滤的 comprehension 可解析（执行缺口另行立项）', () => {
+    // The WHERE clause inside a pattern comprehension is not yet evaluated by
+    // `_evalPatternComprehension` (see the tracked follow-up); here we only
+    // assert that the query parses and registers the alias so the gap is
+    // explicit rather than silently swallowed.
+    const query = 'MATCH (n:Person) RETURN [(n)-[:KNOWS]->(m) WHERE m.age > 30 | m.name] AS adults'
+    const plan = parseQuery(query) as any
+    expect(plan.returnColumns).toContain('adults')
+    expect(plan.expressionColumns[0].expression).toContain('WHERE')
   })
 })
