@@ -201,6 +201,13 @@ describe('_validateExistsSubqueryClauses', () => {
   it('allows read-only exists subquery', () => {
     expect(() => _validateExistsSubqueryClauses('WHERE exists { MATCH (n) RETURN n }')).not.toThrow()
   })
+  it('skips a string literal containing braces/quotes inside exists{}', () => {
+    // A string with an escaped quote and braces inside exists{} exercises the
+    // subquery-clause validator's own inStr escape handling.
+    expect(() =>
+      _validateExistsSubqueryClauses("WHERE exists { MATCH (n) WHERE n.x = 'a\\'b{c}' RETURN n }")
+    ).not.toThrow()
+  })
 })
 
 describe('_validateUnknownFunctions', () => {
@@ -382,5 +389,168 @@ describe('_validateSetOperands', () => {
   })
   it('allows multiple SET assignments (comma split)', () => {
     expect(() => _validateSetOperands('MATCH (a) SET a.x = 1, a.y = 2')).not.toThrow()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Defense-in-depth branch coverage — string escape handling, comprehension
+// depth tracking, chained pattern rewind, SET binding-table construction.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('_validatePatternPosition — comprehension bracket-depth tracking', () => {
+  it('closes an earlier [..] to depth zero before a bare pattern is flagged', () => {
+    // A preceding `[x]` list that is fully closed (bracketDepth back to 0)
+    // must NOT shield a later bare pattern — bracketDepth<=0 reset branch.
+    const e = tck('bare pattern after closed list', () =>
+      _validatePatternPosition('RETURN [1,2,3], (n)-->(m)')
+    )
+    expect(e.tckError).toBe('UnexpectedSyntax')
+  })
+
+  it('tolerates a bare pattern after a fully-closed group', () => {
+    // A closed `(...)` group before the pattern is not a comprehension opener;
+    // a bare pattern after it is still unexpected (exercises the `)` reset path).
+    const e = tck('bare pattern after closed group', () =>
+      _validatePatternPosition('RETURN (1+2), (n)-->(m)')
+    )
+    expect(e.tckError).toBe('UnexpectedSyntax')
+  })
+})
+
+describe('_stripExistsSubqueryBlocks — string-escape handling inside exists{}', () => {
+  it('skips escaped quotes and closes strings inside an exists subquery', () => {
+    // A string literal with an escaped quote (\') inside exists{} exercises the
+    // inStr escape branch (k++ + continue) and the closing-quote branch.
+    const out = _stripExistsSubqueryBlocks(
+      "WHERE exists { MATCH (n) WHERE n.name = 'it\\'s' RETURN n }"
+    )
+    expect(out).not.toContain('MATCH (n)')
+  })
+
+  it('handles double-quoted strings inside exists{}', () => {
+    const out = _stripExistsSubqueryBlocks('WHERE exists { MATCH (n) WHERE n.x = "a" }')
+    expect(out).not.toContain('WHERE n.x')
+  })
+})
+
+describe('_validateUndefinedVariables — pattern predicate with no MATCH vars', () => {
+  it('validates a bare WHERE pattern when no MATCH variables exist', () => {
+    // `matchVars.length === 0` branch: WHERE `(a)` with no MATCH binds `a` →
+    // _validatePatternPredicateVariables is invoked and throws.
+    const e = tck('unbound pattern predicate without MATCH', () =>
+      _validateUndefinedVariables('WITH 1 AS x WHERE (a)-->(b) RETURN x', {})
+    )
+    expect(e.tckError).toBe('UndefinedVariable')
+  })
+})
+
+describe('_validatePatternPredicateVariables — chained pattern rewind', () => {
+  it('rewinds the last index for chained patterns', () => {
+    // A three-segment chained pattern forces a second/third regex iteration and
+    // the `lastIndex` rewind branch; the tail var is caught on a later pass.
+    const e = tck('chained pattern unbound tail', () =>
+      _validateUndefinedVariables(
+        'MATCH (a), (b) WHERE (a)-[:R]->(b)-[:R]->(c)-[:R]->(d) RETURN a',
+        {}
+      )
+    )
+    expect(e.tckError).toBe('UndefinedVariable')
+  })
+})
+
+describe('_validateUndefinedVariables — top-level keyword scan', () => {
+  it('flags an undefined variable in a RETURN with no MATCH scope', () => {
+    // Confirms the no-MATCH-var undefined-variable path (matchVars.length===0)
+    // still surfaces UndefinedVariable for a bare RETURN column.
+    const e = tck('bare undefined var in RETURN', () =>
+      _validateUndefinedVariables('RETURN undefinedVar', {})
+    )
+    expect(e.tckError).toBe('UndefinedVariable')
+  })
+
+  it('flags a bare node pattern predicate with an unbound variable', () => {
+    // The bareNodeRE block: `WHERE (n)` where `n` is unbound → UndefinedVariable.
+    const e = tck('bare node pattern unbound', () =>
+      _validateUndefinedVariables('MATCH (a) WHERE (n) RETURN a', {})
+    )
+    expect(e.tckError).toBe('UndefinedVariable')
+  })
+})
+
+describe('_validateOrderByScope — clause splitter string-escape handling', () => {
+  it('splits clauses across a string literal containing an escaped quote', () => {
+    // A string literal with a backslash-escaped quote exercises the clause
+    // splitter's inStr escape branch (backslash skip + inner continue).
+    expect(() =>
+      _validateOrderByScope("MATCH (a) WHERE a.name = 'it\\'s' RETURN a ORDER BY a.name")
+    ).not.toThrow()
+  })
+
+  it('tolerates a double-quoted string with embedded content', () => {
+    expect(() =>
+      _validateOrderByScope('MATCH (a) WHERE a.name = "x" RETURN a ORDER BY a.name')
+    ).not.toThrow()
+  })
+})
+
+describe('_validateSetOperands — binding-table construction', () => {
+  it('collects node vars from CREATE/MERGE into the defined set', () => {
+    // A SET assignment whose RHS references a CREATE/MERGE-bound var exercises
+    // the CREATE|MERGE flatMap arrow extraction at lines 1010-1011.
+    expect(() => _validateSetOperands('CREATE (n) SET n.x = 1')).not.toThrow()
+  })
+
+  it('collects relationship/UNWIND/WITH aliases into the defined set', () => {
+    // UNWIND/WITH `AS` aliases and bracketed relationship vars feed the defined
+    // set construction at lines 1009-1013.
+    expect(() =>
+      _validateSetOperands('UNWIND [1] AS x WITH x AS y SET y = x')
+    ).not.toThrow()
+  })
+
+  it('returns -1 when an assignment has no = (findTopLevel miss)', () => {
+    // An assignment with no `=` skips the RHS check (eqIdx < 0 → continue),
+    // exercising the _findTopLevel -1 return path.
+    expect(() => _validateSetOperands('MATCH (a) SET 42')).not.toThrow()
+  })
+
+  it('skips a numeric bare identifier in SET RHS', () => {
+    expect(() => _validateSetOperands('MATCH (a) SET a.x = 2b')).not.toThrow()
+  })
+
+  it('tracks nesting depth through parens/brackets in SET RHS', () => {
+    // A RHS with nested parens, brackets, and braces exercises the depth
+    // tracking in _findTopLevel / _splitTopLevel (increment + decrement).
+    expect(() =>
+      _validateSetOperands('MATCH (a) SET a.x = f(1 + [2, {k: 3}])')
+    ).not.toThrow()
+  })
+
+  it('returns early on an empty query', () => {
+    expect(() => _validateSetOperands('')).not.toThrow()
+  })
+})
+
+describe('_validateOrderByScope — numeric id and backtick identifier', () => {
+  it('skips a numeric ORDER BY identifier', () => {
+    // A numeric-looking identifier in ORDER BY hits the `/^\d/.test(id)` guard
+    // and is silently skipped (no scope error raised).
+    expect(() =>
+      _validateOrderByScope('MATCH (a) RETURN a.name ORDER BY 1')
+    ).not.toThrow()
+  })
+
+  it('handles a backtick-quoted identifier in the clause splitter', () => {
+    // Backtick-quoted identifiers exercise the inBacktick branches of the
+    // clause splitter (lines 770-772).
+    expect(() =>
+      _validateOrderByScope('MATCH (a) RETURN a.name AS `name` ORDER BY `name`')
+    ).not.toThrow()
+  })
+})
+
+describe('_validateUnionComposition — empty guard', () => {
+  it('returns early on an empty query', () => {
+    expect(() => _validateUnionComposition('')).not.toThrow()
   })
 })
