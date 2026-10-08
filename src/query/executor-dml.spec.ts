@@ -824,4 +824,659 @@ describe('_buildDmlRows — relationship MERGE DELETE fan-out (__matchFanOutCoun
     expect(rows[0].name).toBe('rel3')
     expect(rows[2].name).toBe('rel3')
   })
+
+  it('does not fan out when the delete cardinality is 1', () => {
+    const allNodes: Node[] = [{ _label: 'T' }]
+    ;(allNodes as any).__matchFanOutCount = 1
+    const plan = planOf({
+      returnColumns: ['name'],
+      returnAliasMap: { name: 't2.name' },
+      mergeEdges: [{ source: 'a', target: 'b', label: 'T', direction: 'out' }],
+    })
+    ;(allNodes as any).__relVarMap = new Map([['t2', { _type: 'T', props: { name: 'rel3' } }]])
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+  })
+})
+
+describe('_buildDmlRows — plain plan.aggregate over bare DML (prop-field switch)', () => {
+  it('aggregates avg over node properties', () => {
+    const allNodes: Node[] = [{ age: 10 }, { age: 20 }, { age: 30 }]
+    const plan = planOf({
+      returnColumns: ['avg'],
+      aggregate: { function: 'avg', field: 'age', alias: 'avg', column: 'avg(n.age)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['avg(n.age)']).toBe(20)
+  })
+
+  it('aggregates max over node properties', () => {
+    const allNodes: Node[] = [{ age: 10 }, { age: 30 }, { age: 20 }]
+    const plan = planOf({
+      returnColumns: ['max'],
+      aggregate: { function: 'max', field: 'age', alias: 'max', column: 'max(n.age)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['max(n.age)']).toBe(30)
+  })
+
+  it('aggregates min over node properties', () => {
+    const allNodes: Node[] = [{ age: 10 }, { age: 30 }, { age: 20 }]
+    const plan = planOf({
+      returnColumns: ['min'],
+      aggregate: { function: 'min', field: 'age', alias: 'min', column: 'min(n.age)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['min(n.age)']).toBe(10)
+  })
+
+  it('unknown aggregate function falls back to 0 (default switch)', () => {
+    const allNodes: Node[] = [{ age: 10 }]
+    const plan = planOf({
+      returnColumns: ['x'],
+      aggregate: { function: 'collect', field: 'age', alias: 'x', column: 'collect(n.age)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].x).toBe(0)
+  })
+
+  it('aggregate without a prop field falls back to 0', () => {
+    const plan = planOf({
+      returnColumns: ['x'],
+      aggregate: { function: 'sum', field: '', alias: 'x', column: 'sum(*)' },
+    })
+    const rows = _buildDmlRows(plan, [])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].x).toBe(0)
+  })
+})
+
+describe('_buildDmlRows — stage-4b createEdges property + fnCall fallback', () => {
+  it('resolves a createEdges property via returnAliasMap (edge prop not on any node)', () => {
+    const plan = planOf({
+      returnColumns: ['num'],
+      returnAliasMap: { num: 'r.num' },
+      createEdges: [{ source: 'a', target: 'b', label: 'R', props: { num: 99 } }],
+    })
+    const rows = _buildDmlRows(plan, [])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].num).toBe(99)
+  })
+
+  it('resolves a function-call column via __varToNodeMap fallback (no _alias)', () => {
+    const bound = { _label: 'Person', name: 'Alice' }
+    const allNodes: Node[] = [bound]
+    ;(allNodes as any).__varToNodeMap = new Map([['a', bound]])
+    const plan = planOf({
+      returnColumns: ['id(a)'],
+      createNodes: [{ alias: 'a', label: 'Person', props: null }],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect((rows[0] as Node)['id(a)']).toBeDefined()
+  })
+})
+
+describe('_buildDmlRows — _applyWithFilters operator variants', () => {
+  it('plain-property NEQ filter', () => {
+    const nodes: Node[] = [
+      { _label: 'Node', _alias: 'n', num: 5 },
+      { _label: 'Node', _alias: 'n', num: 3 },
+    ]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: null, props: { num: 0 } }],
+      returnAliasMap: { num: 'n.num' },
+      with: { filters: [{ property: 'num', operator: 'NEQ', value: 3 }] },
+    })
+    const rows = _buildDmlRows(plan, nodes)
+    // NEQ 3 → keeps num=5 only
+    expect(rows).toHaveLength(1)
+    expect(rows[0].num).toBe(5)
+  })
+
+  it('expression filter that throws drops the row (catch → return false)', () => {
+    const nodes: Node[] = [
+      { _label: 'Node', _alias: 'n', num: 5 },
+      { _label: 'Node', _alias: 'n', num: 7 },
+    ]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: null, props: { num: 0 } }],
+      returnAliasMap: { num: 'n.num' },
+      with: { filters: [{ expression: 'nosuchfn(n.num)', operator: 'EQ', value: 0 }] },
+    })
+    const rows = _buildDmlRows(plan, nodes)
+    // unknown function → _evaluateExpression throws → catch → return false → dropped
+    expect(rows).toHaveLength(0)
+  })
+
+  it('unknown operator defaults to no-match (default switch)', () => {
+    const nodes: Node[] = [
+      { _label: 'Node', _alias: 'n', num: 5 },
+      { _label: 'Node', _alias: 'n', num: 5 },
+    ]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: null, props: { num: 0 } }],
+      returnAliasMap: { num: 'n.num' },
+      with: { filters: [{ property: 'num', operator: 'LIKE', value: 5 }] },
+    })
+    const rows = _buildDmlRows(plan, nodes)
+    expect(rows).toHaveLength(0)
+  })
+})
+
+describe('_buildDmlRows — _applyEdgeWithFilters operator variants', () => {
+  it('negative-filter early continue when no expression (guard)', () => {
+    const edges: Node[] = [{ props: { num: 5 } }, { props: { num: 8 } }]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      returnAliasMap: { num: 'r.num' },
+      with: { filters: [{ operator: 'EQ', value: 5 }] },
+    })
+    const nodes = [{}] as Node[]
+    ;(nodes as any).__createEdges = edges
+    const rows = _buildDmlRows(plan, nodes)
+    // No expression → the filter is skipped (continue), so all rows survive.
+    expect(rows).toHaveLength(2)
+  })
+
+  it('NEQ/LT/LTE comparison operators', () => {
+    const mk = (operator: string, value: number, nums: number[]) => {
+      const edges: Node[] = nums.map(num => ({ props: { num } }))
+      const plan = planOf({
+        returnColumns: ['num'],
+        unwind: { list: nums, name: 'x' },
+        returnAliasMap: { num: 'r.num' },
+        with: { filters: [{ expression: 'r.num', operator, value }] },
+      })
+      const nodes = [{}] as Node[]
+      ;(nodes as any).__createEdges = edges
+      return _buildDmlRows(plan, nodes)
+    }
+    // NEQ 3 keeps 5 (and drops 3)
+    expect(mk('NEQ', 3, [5, 3])).toHaveLength(1)
+    // LT 5 keeps 3 (drops 5, 8)
+    expect(mk('LT', 5, [3, 5, 8])).toHaveLength(1)
+    // LTE 5 keeps 5 (drops 8)
+    expect(mk('LTE', 5, [5, 8])).toHaveLength(1)
+    // unknown operator → matched=false → dropped
+    expect(mk('BOGUS', 5, [5, 8])).toHaveLength(0)
+  })
+
+  it('negated edge filter inverts the keep decision', () => {
+    const edges: Node[] = [{ props: { num: 5 } }, { props: { num: 9 } }]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      returnAliasMap: { num: 'r.num' },
+      with: { filters: [{ expression: 'r.num', operator: 'EQ', value: 5, negated: true }] },
+    })
+    const nodes = [{}] as Node[]
+    ;(nodes as any).__createEdges = edges
+    // negated + matched(5==5) → dropped; 9 != 5 → kept
+    const rows = _buildDmlRows(plan, nodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].num).toBe(9)
+  })
+})
+
+describe('_buildDmlRows — edge aggregate default / no-prop variants (createEdges)', () => {
+  it('_withAggRel sum variant', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['s'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { aggregate: { function: 'sum', field: 'r.num', alias: 's' } },
+    })
+    expect(_buildDmlRows(plan, allNodes)).toEqual([{ s: 30 }])
+  })
+
+  it('_withAggRel avg variant', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['a'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { aggregate: { function: 'avg', field: 'r.num', alias: 'a' } },
+    })
+    expect(_buildDmlRows(plan, allNodes)).toEqual([{ a: 15 }])
+  })
+
+  it('_withAggRel default (unknown fn) variant', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { aggregate: { function: 'bogus', field: 'r.num', alias: 'x' } },
+    })
+    expect(_buildDmlRows(plan, allNodes)).toEqual([{ x: 0 }])
+  })
+
+  it('_withAggRel no-prop (empty field) variant', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { aggregate: { function: 'sum', field: '', alias: 'x' } },
+    })
+    expect(_buildDmlRows(plan, allNodes)).toEqual([{ x: 0 }])
+  })
+
+  it('plan.aggregate avg variant', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['a'],
+      unwind: { list: [1, 2], name: 'x' },
+      aggregate: { function: 'avg', field: 'r.num', alias: 'a', column: 'avg(r.num)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['avg(r.num)']).toBe(15)
+  })
+
+  it('plan.aggregate default (unknown fn) variant', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      aggregate: { function: 'bogus', field: 'r.num', alias: 'x', column: 'bogus(r.num)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['bogus(r.num)']).toBe(0)
+  })
+
+  it('plan.aggregate no-prop (empty field) variant', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      aggregate: { function: 'sum', field: '', alias: 'x', column: 'sum(*)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['sum(*)']).toBe(0)
+  })
+
+  it('plan.aggregate sum variant (createEdges)', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['s'],
+      unwind: { list: [1, 2], name: 'x' },
+      aggregate: { function: 'sum', field: 'r.num', alias: 's', column: 'sum(r.num)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['sum(r.num)']).toBe(30)
+  })
+
+  it('plan.aggregate min variant (createEdges)', () => {
+    const edges = [{ props: { num: 10 } }, { props: { num: 20 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['m'],
+      unwind: { list: [1, 2], name: 'x' },
+      aggregate: { function: 'min', field: 'r.num', alias: 'm', column: 'min(r.num)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['min(r.num)']).toBe(10)
+  })
+})
+
+describe('_buildDmlRows — single-row projection stage internals', () => {
+  it('skips empty return-column entries across all fan-out paths (if !rc continue)', () => {
+    // A falsy '' return column fires the `if (!rc) continue` guard in the
+    // __relVarList, __matchRows, __matchVar, unwoundNodes, and single-row loops.
+    const allNodes: Node[] = []
+    ;(allNodes as any).__relVarList = [{ _type: 'R' }, { _type: 'R' }]
+    ;(allNodes as any).__matchRows = [{ x: 1 }, { x: 2 }]
+    const plan = planOf({ returnColumns: ['', 'x'] })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows.length).toBeGreaterThan(0)
+  })
+
+  it('stage-1 rescans rc in node top-level and node.props', () => {
+    // rc directly on a node top-level (not via aliasMap) → stage-1 first branch.
+    const allNodes: Node[] = [{ name: 'Alice' }]
+    const plan = planOf({ returnColumns: ['name'] })
+    expect(_buildDmlRows(plan, allNodes)).toEqual([{ name: 'Alice' }])
+
+    // rc inside node.props (not top-level) → stage-1 second branch.
+    const allNodes2: Node[] = [{ props: { age: 30 } }]
+    expect(_buildDmlRows(planOf({ returnColumns: ['age'] }), allNodes2)).toEqual([{ age: 30 }])
+  })
+
+  it('target-node v2n binding-table resolution', () => {
+    // _targetNodeFor prefers the v2n binding table over the _alias tag scan.
+    const binding = { _label: 'Person', name: 'Bound' }
+    const allNodes: Node[] = [{ _alias: 'a', _label: 'Other', name: 'Tagged' }]
+    ;(allNodes as any).__varToNodeMap = new Map([['a', binding]])
+    const plan = planOf({
+      returnColumns: ['name'],
+      returnAliasMap: { name: 'a.name' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].name).toBe('Bound')
+  })
+
+  it('bound-variable alias resolves via _alias tag when v2n misses', () => {
+    // Stage-2 bound-variable fallback: v2n has no entry, so the `_alias` scan
+    // finds the tagged node.
+    const allNodes: Node[] = [{ _alias: 'a', _label: 'Person', name: 'Tagged' }]
+    const plan = planOf({
+      returnColumns: ['a'],
+      createNodes: [{ alias: 'a', label: null, props: {} }],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect((rows[0].a as Node).name).toBe('Tagged')
+  })
+
+  it('dynamic expression binds created node template via clean builder (no live node)', () => {
+    // No live _alias-tagged node exists → varCtx falls back to the clean
+    // template (props with `value` unwrap + label). A non-dotted expression
+    // (`id(a)`) enters the dynamic block, hitting lines 555-560.
+    const allNodes: Node[] = [{ unrelated: true }]
+    const plan = planOf({
+      returnColumns: ['out'],
+      returnAliasMap: { out: 'id(a)' },
+      createNodes: [{ alias: 'a', label: 'Person', props: { name: { value: 'Templated' } } }],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    // id(a) resolves the clean template node (id → a stable synthetic value).
+    expect(rows[0].out).not.toBeNull()
+  })
+
+  it('dynamic expression binds parameters from plan.parameters', () => {
+    const allNodes: Node[] = []
+    const plan = planOf({
+      returnColumns: ['out'],
+      returnAliasMap: { out: 'p' },
+      parameters: { p: 42 },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].out).toBe(42)
+  })
+
+  it('alias property split falls back to scanning node.props', () => {
+    // The final property-split scan (lines 580-584) resolves `a.age` from a node's
+    // props when no live node/varCtx/v2n matches the alias.
+    const allNodes: Node[] = [{ props: { age: 55 } }]
+    const plan = planOf({
+      returnColumns: ['age'],
+      returnAliasMap: { age: 'a.age' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].age).toBe(55)
+  })
+
+  it('fnCall builds clean template when no live node and no v2n entry', () => {
+    // fnCall block (lines 620-623): no _alias-tagged live node AND no v2n entry
+    // → clean template from cn.props + cn.label.
+    const allNodes: Node[] = []
+    const plan = planOf({
+      returnColumns: ['labels(a)'],
+      createNodes: [{ alias: 'a', label: 'Person', props: { name: 'x' } }],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(Array.isArray(rows[0]['labels(a)'])).toBe(true)
+    expect(rows[0]['labels(a)']).toContain('Person')
+  })
+
+  it('_resolveColumn returns null for an unresolvable non-match alias', () => {
+    // In the MATCH fan-out path (hasMatch + fanOutCount > 1), a column
+    // referencing an alias with no binding-table entry, no _alias tag, and no
+    // matching property → `!target return null`.
+    const allNodes: Node[] = [
+      { _label: 'Person', name: 'Alice' },
+      { _label: 'Person', name: 'Bob' },
+    ]
+    ;(allNodes as any).__varToNodeMap = new Map()
+    const plan = planOf({
+      hasMatch: true,
+      matchVar: 'person',
+      scanLabel: 'Person',
+      returnColumns: ['ghost.prop'],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]['ghost.prop']).toBe(null)
+    expect(rows[1]['ghost.prop']).toBe(null)
+  })
+
+  it('_resolveColumn resolves non-match alias via v2n binding table', () => {
+    const binding = { _label: 'Node', name: 'Bound' }
+    const allNodes: Node[] = [
+      { _label: 'Person', name: 'Alice' },
+      { _label: 'Person', name: 'Bob' },
+    ]
+    ;(allNodes as any).__varToNodeMap = new Map([['x', binding]])
+    const plan = planOf({
+      hasMatch: true,
+      matchVar: 'person',
+      scanLabel: 'Person',
+      returnColumns: ['x.name'],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]['x.name']).toBe('Bound')
+  })
+
+  it('_resolveColumn returns null when target prop is undefined (v===undefined→null)', () => {
+    const binding = { _label: 'Node' } // no `name` property
+    const allNodes: Node[] = [
+      { _label: 'Person', name: 'Alice' },
+      { _label: 'Person', name: 'Bob' },
+    ]
+    ;(allNodes as any).__varToNodeMap = new Map([['x', binding]])
+    const plan = planOf({
+      hasMatch: true,
+      matchVar: 'person',
+      scanLabel: 'Person',
+      returnColumns: ['x.missing'],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(2)
+    expect(rows[0]['x.missing']).toBe(null)
+  })
+
+  it('__matchRows fan-out skips empty return-column entries', () => {
+    const allNodes: Node[] = [{ x: 1, y: 2 }]
+    ;(allNodes as any).__matchRows = [{ x: 1, y: 2 }, { x: 3, y: 4 }]
+    const plan = planOf({ returnColumns: ['', 'x'] })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(2)
+  })
+
+  it('unwoundNodes per-node projection scans nodeProps and propPart fallback', () => {
+    // rc resolved via dot-property returnAliasMap → nodeProps scan (line 274),
+    // and propPart directly on the node (line 275).
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', props: { age: 30 } },
+      { _label: 'N', _alias: 'n', age: 40 },
+    ]
+    const plan = planOf({
+      returnColumns: ['a', 'b'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { age: 0 } }],
+      returnAliasMap: { a: 'n.age', b: 'n.age' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(2)
+  })
+
+  it('single-row projection skips empty return-column and nulls unresolvable', () => {
+    // `if (!rc) continue` (line 440) plus final `row[rc] = null` (line 635).
+    const allNodes: Node[] = [{ name: 'x' }]
+    const plan = planOf({ returnColumns: ['', 'nosuchcol'] })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toEqual([{ nosuchcol: null }])
+  })
+})
+
+describe('_buildDmlRows — filter catch/negated guards', () => {
+  it('_applyWithFilters expression catch returns false (line 703)', () => {
+    // A filter whose expression evaluation throws hits the `catch` → return false
+    // branch in _applyWithFilters (only reachable via the unwoundNodes path).
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 1 },
+      { _label: 'N', _alias: 'n', num: 2 },
+    ]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { num: 0 } }],
+      returnAliasMap: { num: 'n.num' },
+      with: { filters: [{ expression: 'throw_expr(n.num)', operator: 'EQ', value: 1 }] },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    // Any throwing expression → each row drops via catch → return false.
+    expect(rows).toHaveLength(0)
+  })
+})
+
+describe('_buildDmlRows — unwoundNodes aggregate count/sum/default variants', () => {
+  it('unwoundNodes count via plan.aggregate', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 10 },
+      { _label: 'N', _alias: 'n', num: 20 },
+    ]
+    const plan = planOf({
+      returnColumns: ['c'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { num: 0 } }],
+      aggregate: { function: 'count', field: 'n', alias: '', column: 'count(n)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].c ?? rows[0]['count(n)']).toBe(2)
+  })
+
+  it('unwoundNodes sum via plan.aggregate', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 10 },
+      { _label: 'N', _alias: 'n', num: 20 },
+    ]
+    const plan = planOf({
+      returnColumns: ['s'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { num: 0 } }],
+      aggregate: { function: 'sum', field: 'n.num', alias: '', column: 'sum(n.num)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].s ?? rows[0]['sum(n.num)']).toBe(30)
+  })
+
+  it('unwoundNodes default (unknown fn) via plan.aggregate', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 10 },
+      { _label: 'N', _alias: 'n', num: 20 },
+    ]
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { num: 0 } }],
+      aggregate: { function: 'bogus', field: 'n.num', alias: 'x', column: 'bogus(n.num)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['bogus(n.num)']).toBe(0)
+  })
+
+  it('unwoundNodes no-prop (empty field) via plan.aggregate', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 10 },
+      { _label: 'N', _alias: 'n', num: 20 },
+    ]
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { num: 0 } }],
+      aggregate: { function: 'sum', field: '', alias: 'x', column: 'sum(*)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['sum(*)']).toBe(0)
+  })
+
+  it('unwoundNodes _withAgg avg variant', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 10 },
+      { _label: 'N', _alias: 'n', num: 20 },
+    ]
+    const plan = planOf({
+      returnColumns: ['a'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { num: 0 } }],
+      with: { aggregate: { function: 'avg', field: 'n.num', alias: 'a' } },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].a).toBe(15)
+  })
+
+  it('unwoundNodes _withAgg default (unknown fn) variant', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 10 },
+      { _label: 'N', _alias: 'n', num: 20 },
+    ]
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { num: 0 } }],
+      with: { aggregate: { function: 'bogus', field: 'n.num', alias: 'x' } },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].x).toBe(0)
+  })
+
+  it('unwoundNodes _withAgg no-prop (empty field) variant', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 10 },
+      { _label: 'N', _alias: 'n', num: 20 },
+    ]
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N', props: { num: 0 } }],
+      with: { aggregate: { function: 'sum', field: '', alias: 'x' } },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].x).toBe(0)
+  })
 })
