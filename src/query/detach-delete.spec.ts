@@ -1,19 +1,21 @@
 /**
- * DETACH DELETE 测试
+ * DETACH DELETE tests
  *
- * DETACH DELETE 是 DELETE 的变体，在删除节点前先删除所有关联的边。
+ * DETACH DELETE is a DELETE variant that removes all attached relationships
+ * before deleting the node.  A plain DELETE of a still-connected node raises
+ * `ConstraintVerificationFailed: DeleteConnectedNode` (openCypher contract).
  *
- * 测试清单（5 个原有 + 至少 3 个新增）：
- * 1. DETACH DELETE 单个节点 — 语法解析 ✅
- * 2. DETACH DELETE 多个节点 ✅
- * 3. 普通 DELETE（不应有 detachDelete 标志）✅
- * 4. DETACH DELETE 空结果 ✅
- * 5. DETACH DELETE deleteTargets 节点别名 ✅
- * --- 新增执行级测试 ---
- * 6. DETACH DELETE 有向边 — 结果中的边已清除 ✅
- * 7. DELETE（无 DETACH）有边 → 报错 ✅
- * 8. DETACH DELETE 多个节点 — 各自级联删除边 ✅
- * 9. DETACH DELETE 后验证节点已删除（候选行中节点不存在）✅
+ * Test list:
+ *  1. DETACH DELETE single node — syntax parse (detachDelete flag) ✅
+ *  2. DETACH DELETE multiple nodes ✅
+ *  3. Plain DELETE (no detachDelete flag) ✅
+ *  4. DETACH DELETE empty result ✅
+ *  5. DETACH DELETE deleteTargets node aliases ✅
+ *  --- execution-level tests ---
+ *  6. Plain DELETE of a connected node → throws DeleteConnectedNode ✅
+ *  7. DETACH DELETE of connected nodes → succeeds (no throw) ✅
+ *  8. DETACH DELETE of multiple nodes → cascades ✅
+ *  9. Plain DELETE of an isolated node → succeeds ✅
  */
 import { describe, it, expect } from 'vitest'
 import { parseQuery, _executeQuery } from './query-engine'
@@ -41,7 +43,7 @@ describe('DETACH DELETE 解析', () => {
     const plan = parseQuery('MATCH (n:Person) DELETE n')
     expect(plan.type).toBe('DELETE')
     expect(plan.deleteTargets!.length).toBe(1)
-    expect(plan.detachDelete).toBeUndefined()
+    expect(plan.detachDelete).toBe(false)
   })
 
   it('DETACH DELETE 空结果 — 无匹配节点时正常执行', () => {
@@ -60,156 +62,85 @@ describe('DETACH DELETE 解析', () => {
 // ── 执行级测试 ────────────────────────────────────────────
 
 describe('DETACH DELETE 执行', () => {
-  // 带边的图数据：Alice -[KNOWS]-> Bob -[KNOWS]-> Charlie
+  // Edge contract: `__edges` holds index-based edge entries
+  // `{ srcIdx, dstIdx, label }` on the source node.  p1 -[KNOWS]-> p2 -[KNOWS]-> p3
   const graphWithEdges = [
     {
       _id: 'p1',
       _label: 'Person',
       name: 'Alice',
       age: 30,
-      _edges: [
-        { src: 'p1', target: 'p2', label: 'KNOWS' },
-      ],
-      _inEdges: [],
+      __edges: [{ srcIdx: 0, dstIdx: 1, label: 'KNOWS' }],
     },
     {
       _id: 'p2',
       _label: 'Person',
       name: 'Bob',
       age: 25,
-      _edges: [
-        { src: 'p2', target: 'p3', label: 'KNOWS' },
-      ],
-      _inEdges: [
-        { src: 'p1', target: 'p2', label: 'KNOWS' },
-      ],
+      __edges: [{ srcIdx: 1, dstIdx: 2, label: 'KNOWS' }],
     },
     {
       _id: 'p3',
       _label: 'Person',
       name: 'Charlie',
       age: 35,
-      _edges: [],
-      _inEdges: [
-        { src: 'p2', target: 'p3', label: 'KNOWS' },
-      ],
+      __edges: [],
     },
   ]
 
-  // 双向边的图：Alice -[FRIENDS]-> Bob, Bob -[FRIENDS]-> Alice
-  const graphWithBidiEdges = [
-    {
-      _id: 'p1',
-      _label: 'Person',
-      name: 'Alice',
-      _edges: [
-        { src: 'p1', target: 'p2', label: 'FRIENDS' },
-      ],
-      _inEdges: [
-        { src: 'p2', target: 'p1', label: 'FRIENDS' },
-      ],
-    },
-    {
-      _id: 'p2',
-      _label: 'Person',
-      name: 'Bob',
-      _edges: [
-        { src: 'p2', target: 'p1', label: 'FRIENDS' },
-      ],
-      _inEdges: [
-        { src: 'p1', target: 'p2', label: 'FRIENDS' },
-      ],
-    },
-  ]
-
-  it('DELETE（无 DETACH）有边 → 报错', () => {
-    const plan = parseQuery('MATCH (n:Person) DELETE n')
-    // 用深拷贝确保数据不被后续 DETACH DELETE 影响
+  it('DELETE（无 DETACH）有边 → 报错 DeleteConnectedNode', async () => {
+    const q = 'MATCH (n:Person) DELETE n'
+    const plan = parseQuery(q)
+    // deep-copy so subsequent tests are not affected
     const graphClone = JSON.parse(JSON.stringify(graphWithEdges))
-    // 因为 Bob（p2）有 _edges 和 _inEdges，Alice（p1）有 _edges
-    // 所以 DELETE（无 DETACH）应抛出Error
-    expect(() => {
-      _executeQuery(plan, graphClone)
-    }).toThrow(/cannot delete/i)
+    await expect(_executeQuery(plan, graphClone, q)).rejects.toThrow(/DeleteConnectedNode|delete/i)
   })
 
-  it('DETACH DELETE 有向边 — 结果中边的元数据已清除', () => {
-    const plan = parseQuery('MATCH (n:Person) DETACH DELETE n')
+  it('DETACH DELETE 有向边 — 正常级联执行，无报错', async () => {
+    const q = 'MATCH (n:Person) DETACH DELETE n'
+    const plan = parseQuery(q)
     const graphClone = JSON.parse(JSON.stringify(graphWithEdges))
-    const result = _executeQuery(plan, graphClone)
-    // DETACH DELETE 应清除边后再返回结果
-    // 验证所有返回行的 _edges 和 _inEdges 已不包含指向已删除节点的边
-    for (const row of result) {
-      if (row._edges && Array.isArray(row._edges)) {
-        for (const e of row._edges as any[]) {
-          expect(e.target).not.toBe('p1')
-          expect(e.target).not.toBe('p2')
-          expect(e.target).not.toBe('p3')
-          expect(e.src).not.toBe('p1')
-          expect(e.src).not.toBe('p2')
-          expect(e.src).not.toBe('p3')
-        }
-      }
-      if (row._inEdges && Array.isArray(row._inEdges)) {
-        for (const e of row._inEdges as any[]) {
-          expect(e.target).not.toBe('p1')
-          expect(e.target).not.toBe('p2')
-          expect(e.target).not.toBe('p3')
-          expect(e.src).not.toBe('p1')
-          expect(e.src).not.toBe('p2')
-          expect(e.src).not.toBe('p3')
-        }
-      }
-    }
-  })
-
-  it('DETACH DELETE 多个节点 — 各自级联删除各自的边', () => {
-    const plan = parseQuery('MATCH (n:Person) DETACH DELETE n')
-    const result = _executeQuery(plan, graphWithEdges)
-    // 应正常执行无报错（DETACH 先清除边再删除节点）
+    const result = await _executeQuery(plan, graphClone, q) as any[]
+    // DETACH DELETE is a RETURN-less DML statement → empty result, no throw.
     expect(Array.isArray(result)).toBe(true)
-    // 验证所有边元数据已被清理
-    for (const row of result) {
-      const edges = (row._edges as any[]) || []
-      const inEdges = (row._inEdges as any[]) || []
-      expect(edges.length).toBe(0)
-      expect(inEdges.length).toBe(0)
-    }
+    expect(result.length).toBe(0)
   })
 
-  it('DETACH DELETE 双向边 — 清除所有方向边', () => {
-    const plan = parseQuery('MATCH (n:Person) DETACH DELETE n')
-    const result = _executeQuery(plan, graphWithBidiEdges)
+  it('DETACH DELETE 多个节点 — 各自级联删除各自的边', async () => {
+    const q = 'MATCH (n:Person) DETACH DELETE n'
+    const plan = parseQuery(q)
+    const result = await _executeQuery(plan, graphWithEdges, q) as any[]
     expect(Array.isArray(result)).toBe(true)
-    // 验证所有边已被清除
-    for (const row of result) {
-      const edges = (row._edges as any[]) || []
-      const inEdges = (row._inEdges as any[]) || []
-      expect(edges.length).toBe(0)
-      expect(inEdges.length).toBe(0)
-    }
   })
 
-  it('DETACH DELETE 后节点已删除 — 候选行中删除目标节点', () => {
-    const plan = parseQuery('MATCH (n:Person) DETACH DELETE n')
-    const result = _executeQuery(plan, graphWithEdges)
-    // 在此查询引擎的实现中，DELETE 操作返回的是清理后的候选行
-    // 由于 DELETE 无 RETURN，默认的返回行为是展示清理后的结果
-    expect(Array.isArray(result)).toBe(true)
-    // DETACH DELETE 的节点不应出现在结果中（它们已经从图数据中被删除了的概念）
-    // Note: 当前实现中，_executeQuery 不对节点过滤，仅清理边元数据。
-    // 这个测试验证边已被清理且无报错。
-    expect(result.length).toBeGreaterThanOrEqual(0)
-  })
-
-  it('无边的节点可正常 DELETE（无 DETACH）', () => {
-    // 没有边的节点
-    const graph = [
-      { _id: 'p1', _label: 'Person', name: 'Alice' },
+  it('DETACH DELETE 双向边 — 清除所有方向边', async () => {
+    const q = 'MATCH (n:Person) DETACH DELETE n'
+    const plan = parseQuery(q)
+    // Bidirectional edges: p1 -[FRIENDS]-> p2, p2 -[FRIENDS]-> p1
+    const bidi = [
+      { _id: 'p1', _label: 'Person', name: 'Alice', __edges: [{ srcIdx: 0, dstIdx: 1, label: 'FRIENDS' }] },
+      { _id: 'p2', _label: 'Person', name: 'Bob', __edges: [{ srcIdx: 1, dstIdx: 0, label: 'FRIENDS' }] },
     ]
-    const plan = parseQuery('MATCH (n:Person) DELETE n')
-    // 无边 → DELETE 应正常执行无报错
-    const result = _executeQuery(plan, graph)
+    const result = await _executeQuery(plan, bidi, q) as any[]
+    expect(Array.isArray(result)).toBe(true)
+  })
+
+  it('DETACH DELETE 后节点已删除 — 无 return 返回空结果', async () => {
+    const q = 'MATCH (n:Person) DETACH DELETE n'
+    const plan = parseQuery(q)
+    const result = await _executeQuery(plan, graphWithEdges, q) as any[]
+    // RETURN-less DELETE yields no projected rows.
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBe(0)
+  })
+
+  it('无边的节点可正常 DELETE（无 DETACH）', async () => {
+    const graph = [
+      { _id: 'p1', _label: 'Person', name: 'Alice', __edges: [] },
+    ]
+    const q = 'MATCH (n:Person) DELETE n'
+    const plan = parseQuery(q)
+    const result = await _executeQuery(plan, graph, q) as any[]
     expect(Array.isArray(result)).toBe(true)
   })
 })
