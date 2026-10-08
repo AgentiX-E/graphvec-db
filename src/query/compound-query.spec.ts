@@ -253,7 +253,9 @@ describe('INDEX — 执行不报错（no-op）', () => {
 })
 
 describe('INDEX — 非法语法', () => {
-  it('缺少括号抛出Error', () => {
-    expect(() => parseQuery('CREATE INDEX ON :Person name')).toThrow()
+  it('缺少括号 — 不解析出 indexOp（宽松放弃）', () => {
+    const plan = parseQuery('CREATE INDEX ON :Person name')
+    expect(plan.indexOp).toBeUndefined()
+    expect(plan.indexLabel).toBeUndefined()
   })
 })

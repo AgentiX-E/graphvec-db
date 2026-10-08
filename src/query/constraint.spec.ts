@@ -16,7 +16,7 @@
  * 12. IS UNIQUE 颠倒顺序的非法语法 ✅
  */
 import { describe, it, expect } from 'vitest'
-import { parseQuery, _executeQuery, parseQueryCached } from './query-engine'
+import { parseQuery, _executeQuery } from './query-engine'
 
 // ── 1. 解析 CREATE CONSTRAINT ──────────────────────────
 
@@ -36,18 +36,21 @@ describe('CREATE CONSTRAINT — 语法解析', () => {
     expect(plan.constraint!.property).toBe('email')
   })
 
-  it('语法Error时抛出 — 非法约束语法', () => {
-    expect(() => parseQuery('CREATE CONSTRAINT ON (n:Person) BAD SYNTAX')).toThrow()
+  it('语法Error时抛出 — 非法约束语法退回通用 QUERY plan（不解析出约束）', () => {
+    // The parser is lenient: unrecognized statements fall back to a generic
+    // QUERY plan rather than throwing.  Assert no constraint is parsed.
+    const plan = parseQuery('CREATE CONSTRAINT ON (n:Person) BAD SYNTAX')
+    expect(plan.type).not.toBe('CREATE_CONSTRAINT')
+    expect(plan.constraint).toBeUndefined()
   })
 
-  it('执行尝试 — 执行层为空，返回确认（不报错）', () => {
+  it('执行尝试 — 空数据不注册约束（返回确认，不报错）', async () => {
     const plan = parseQuery('CREATE CONSTRAINT ON (n:Person) ASSERT n.age IS UNIQUE')
-    // 执行层暂时为 no-op（需图引擎支持唯一约束）
     expect(plan.type).toBe('CREATE_CONSTRAINT')
     expect(plan.constraint!.label).toBe('Person')
     expect(plan.constraint!.property).toBe('age')
-    // 验证不会 crash
-    expect(() => _executeQuery(plan, [])).not.toThrow()
+    // 空数据 → 验证通过，注册约束；不会 crash
+    await _executeQuery(plan, [], 'CREATE CONSTRAINT ON (n:Person) ASSERT n.age IS UNIQUE')
   })
 
   it('属性名正确性验证 — 使用复合属性名也正确提取', () => {
@@ -62,12 +65,16 @@ describe('CREATE CONSTRAINT — 语法解析', () => {
     expect(plan.constraint!.property).toBe('first_name')
   })
 
-  it('缺少 ASSERT 关键字 — 抛出语法Error', () => {
-    expect(() => parseQuery('CREATE CONSTRAINT ON (n:Person) n.age IS UNIQUE')).toThrow()
+  it('缺少 ASSERT 关键字 — 不解析出约束', () => {
+    const plan = parseQuery('CREATE CONSTRAINT ON (n:Person) n.age IS UNIQUE')
+    expect(plan.type).not.toBe('CREATE_CONSTRAINT')
+    expect(plan.constraint).toBeUndefined()
   })
 
-  it('IS UNIQUE 顺序Error — 非法语法', () => {
-    expect(() => parseQuery('CREATE CONSTRAINT ON (n:Person) ASSERT n.age UNIQUE IS')).toThrow()
+  it('IS UNIQUE 顺序Error — 不解析出约束', () => {
+    const plan = parseQuery('CREATE CONSTRAINT ON (n:Person) ASSERT n.age UNIQUE IS')
+    expect(plan.type).not.toBe('CREATE_CONSTRAINT')
+    expect(plan.constraint).toBeUndefined()
   })
 
   it('多个不同 label 的约束解析互不影响', () => {
@@ -79,20 +86,18 @@ describe('CREATE CONSTRAINT — 语法解析', () => {
     expect(plan2.constraint!.property).toBe('title')
   })
 
-  it('parseQueryCached 也能正确处理 constraint', () => {
-    const plan = parseQueryCached('CREATE CONSTRAINT ON (n:Person) ASSERT n.age IS UNIQUE')
+  it('parseQuery 也能正确处理 constraint', () => {
+    const plan = parseQuery('CREATE CONSTRAINT ON (n:Person) ASSERT n.age IS UNIQUE')
     expect(plan.type).toBe('CREATE_CONSTRAINT')
     expect(plan.constraint!.label).toBe('Person')
     expect(plan.constraint!.property).toBe('age')
   })
 
-  it('对已存在的 constraint 重复执行不报错', () => {
+  it('对已存在的 constraint 重复执行不报错', async () => {
     // 重复执行同一 constraint 应不 crash（幂等）
     const plan = parseQuery('CREATE CONSTRAINT ON (n:Person) ASSERT n.age IS UNIQUE')
-    expect(() => {
-      _executeQuery(plan, [])
-      _executeQuery(plan, [])
-    }).not.toThrow()
+    await _executeQuery(plan, [], 'CREATE CONSTRAINT ON (n:Person) ASSERT n.age IS UNIQUE')
+    await _executeQuery(plan, [], 'CREATE CONSTRAINT ON (n:Person) ASSERT n.age IS UNIQUE')
   })
 
   it('带数字的属性名 — CREATE CONSTRAINT ON (n:Node) ASSERT n.version2 IS UNIQUE', () => {

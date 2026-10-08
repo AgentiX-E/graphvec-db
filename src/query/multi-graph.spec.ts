@@ -10,7 +10,7 @@
  * 6. USE 执行后的数据传递
  */
 
-import { parseQuery, _executeQuery, QueryPlan } from './query-engine'
+import { parseQuery, _executeQuery } from './query-engine'
 
 describe('parseQuery — USE 语句解析', () => {
   // TC-1: USE 简单图名
@@ -62,50 +62,47 @@ describe('parseQuery — USE 语句解析', () => {
     expect(matchPlan.returnColumns).toEqual(['name'])
   })
 
-  // TC-6: 非法 USE 语法
-  it('非法 USE 语法 — USE 后缺少名称', () => {
-    expect(() => parseQuery('USE')).toThrow()
+  // TC-6: 空 USE（无图名）— 解析器宽松，退回通用 QUERY plan
+  it('空 USE（无图名）退回通用 QUERY plan', () => {
+    const plan = parseQuery('USE')
+    expect(plan.type).not.toBe('USE')
+    expect(plan.useGraph).toBeUndefined()
   })
 
-  // TC-7: 非法标识符 — USE 后跟数字（不是标识符开头）
-  it('非法标识符 — USE 后跟纯数字', () => {
-    expect(() => parseQuery('USE 123graph')).toThrow()
+  // TC-7: 图名以数字开头 — \w+ 允许数字，仍解析为 USE
+  it('图名以数字开头仍解析为 USE（\\w+ 匹配）', () => {
+    const plan = parseQuery('USE 123graph')
+    expect(plan.type).toBe('USE')
+    expect(plan.useGraph).toBe('123graph')
   })
 })
 
 describe('_executeUse — USE 执行测试', () => {
-  // TC-8: USE 执行返回当前数据
-  it('USE 执行 — 返回当前数据（上下文切换确认）', () => {
-    const plan: QueryPlan = {
-      type: 'USE',
-      useGraph: 'mygraph',
-      scanLabel: null,
-      labelExpr: null,
-      steps: [],
-      filters: [],
-      returnColumns: [],
-      orderBy: [],
-    }
+  // TC-8: USE 执行 — 切换活动数据库，返回确认行
+  it('USE 执行 — 切换活动数据库并返回确认行', async () => {
+    const plan = parseQuery('USE mygraph')
     const testData: Array<Record<string, unknown>> = [
       { id: 1, name: 'Alice' },
       { id: 2, name: 'Bob' },
     ]
-    const result = _executeQuery(plan, testData)
-    // 应该返回相同的测试数据作为上下文切换确认
+    const result = await _executeQuery(plan, testData, 'USE mygraph') as any[]
+    // USE switches the active database namespace and returns a confirmation
+    // row, not the input data.
     expect(Array.isArray(result)).toBe(true)
-    expect(result.length).toBe(2)
-    expect(result[0].name).toBe('Alice')
-    expect(result[1].name).toBe('Bob')
+    expect(result.length).toBe(1)
+    expect(result[0].database).toBe('mygraph')
+    expect(result[0].switched).toBe(true)
   })
 
-  // TC-9: USE 空图
-  it('USE 空图名不应产生正确 plan', () => {
-    // 空图名不是合法标识符，应报错
-    expect(() => parseQuery('USE ')).toThrow()
+  // TC-9: 空 USE 图名 — 退回通用 QUERY plan
+  it('USE 空图名退回通用 QUERY plan', () => {
+    const plan = parseQuery('USE ')
+    expect(plan.type).not.toBe('USE')
+    expect(plan.useGraph).toBeUndefined()
   })
 
   // TC-10: USE 后加 MATCH 分开执行（模拟执行器串联）
-  it('USE 后加 MATCH 分别执行 — 数据可传递', () => {
+  it('USE 后加 MATCH 分别执行 — 数据可传递', async () => {
     const testData: Array<Record<string, unknown>> = [
       { id: 1, name: 'Alice', age: 30, _label: 'Person' },
       { id: 2, name: 'Bob', age: 25, _label: 'Person' },
@@ -113,25 +110,14 @@ describe('_executeUse — USE 执行测试', () => {
     ]
 
     // 先执行 USE
-    const usePlan: QueryPlan = {
-      type: 'USE',
-      useGraph: 'people',
-      scanLabel: null,
-      labelExpr: null,
-      steps: [],
-      filters: [],
-      returnColumns: [],
-      orderBy: [],
-    }
-    const afterUse = _executeQuery(usePlan, testData)
-    expect(afterUse.length).toBe(3)
+    const usePlan = parseQuery('USE people')
+    await _executeQuery(usePlan, testData, 'USE people')
 
     // 再执行 MATCH (n:Person) RETURN n
     const matchPlan = parseQuery('MATCH (n:Person) WHERE n.age > 18 RETURN n.name')
     expect(matchPlan.scanLabel).toBe('Person')
 
-    // Use afterUse as data for the MATCH
-    const result = _executeQuery(matchPlan, afterUse as Array<Record<string, unknown>>)
+    const result = await _executeQuery(matchPlan, testData, 'MATCH (n:Person) WHERE n.age > 18 RETURN n.name') as any[]
     expect(result.length).toBe(2)
     // Expect filtered to Person only with age > 18
     expect(result.some(r => r.name === 'Alice')).toBe(true)
