@@ -13,6 +13,7 @@ export default defineConfig({
     },
     environment: 'node',
     include: ['src/**/*.spec.ts', 'src/**/*.bench.ts'],
+    setupFiles: ['./vitest.setup.ts'],
     exclude: ['**/node_modules/**'],
     testTimeout: 1200000,
     hookTimeout: 1200000,
