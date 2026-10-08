@@ -12,3 +12,8 @@ test-data/
 !test/fixtures/*.js
 !*.config.js
 !*.eslintrc.js
+
+# Scratch / investigation debris
+temp/
+coverage/
+!scripts/coverage/
