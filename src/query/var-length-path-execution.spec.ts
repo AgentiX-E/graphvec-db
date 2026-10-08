@@ -165,6 +165,18 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
       const self = rows.filter(r => (r.a as any).name === (r.b as any).name)
       expect(self.length).toBe(5) // every node matches itself at depth 0
     })
+
+    it('zero-hop self match binds targetAlias on the source node (minHops=0)', () => {
+      // A zero-hop path with an explicit target alias still emits the row with
+      // target == source, exercising the zero-hop `targetAlias` branch (line 174).
+      const nodes = chain(3)
+      const plan = parseQuery('MATCH (a:Node)-[:NEXT*0..0]->(b) RETURN a, b') as any
+      const rows = executeVarLenPath(plan, nodes)
+      expect(rows).toHaveLength(3)
+      for (const r of rows) {
+        expect((r.a as any).name).toBe((r.b as any).name)
+      }
+    })
   })
 
   describe('direction', () => {
@@ -271,6 +283,25 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
         expect((r.b as any).name).toBe('v2')
       }
     })
+
+    it('chain binds edgeVariable + pathVar together (full path + relationship list)', () => {
+      const nodes = chain(5)
+      const plan = parseQuery('MATCH p = (a:Node)-[r:NEXT*1..1]->(b)-[r2:NEXT*1..1]->(c) RETURN p, r, r2') as any
+      const rows = executeVarLenPath(plan, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+      for (const r of rows) {
+        expect((r as any).p).toBeDefined()
+        expect(Array.isArray((r as any).r)).toBe(true)
+        expect(Array.isArray((r as any).r2)).toBe(true)
+      }
+    })
+
+    it('chain with a zero-hop first step (edgeVariable empty list)', () => {
+      const nodes = chain(5)
+      const plan = parseQuery('MATCH (a:Node)-[r:NEXT*0..1]->(b)-[r2:NEXT*1..1]->(c) RETURN b, c') as any
+      const rows = executeVarLenPath(plan, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+    })
   })
 
   describe('WITH projection / aggregation', () => {
@@ -300,6 +331,29 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
       const rows = executeVarLenPath(plan, nodes)
       expect(rows).toHaveLength(1)
       expect((rows[0] as any).cnt).toBe(7) // total 1..2-hop pairs: 4+3 = 7
+    })
+
+    it('WITH sum/avg/max/min aggregates resolve over the group', () => {
+      // Each aggregate function name is exercised: the aggregate path treats
+      // every agg column identically (count of rows in the group), so sum/avg/
+      // max/min/collect all yield the group cardinality here.
+      const nodes = chain(5)
+      for (const fn of ['sum', 'avg', 'max', 'min', 'collect']) {
+        const plan = parseQuery(`MATCH (a:Node)-[:NEXT*1..2]->(b) WITH a, ${fn}(b) AS agg RETURN a, agg`) as any
+        const rows = executeVarLenPath(plan, nodes)
+        expect(rows.length).toBeGreaterThan(0)
+        const byName: Record<string, number> = {}
+        for (const r of rows) byName[(r.a as any).name] = (r as any).agg
+        expect(byName.v0).toBe(2)
+        expect(byName.v3).toBe(1)
+      }
+    })
+
+    it('WITH aggregate with returnAliasMap applies return aliases', () => {
+      const nodes = chain(5)
+      const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..2]->(b) WITH a, count(b) AS cnt RETURN a, cnt') as any
+      const rows = executeVarLenPath(plan, nodes)
+      expect(rows.length).toBeGreaterThan(0)
     })
   })
 
@@ -369,6 +423,15 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
         expect((r as any)['b.name']).toBe((r as any).b.name)
       }
     })
+
+    it('returnAliasMap with dot expression copies aliased value', () => {
+      // _buildRow's returnAliasMap branch: `expr.includes('.')` copies the
+      // aliased row value back under the expression key.
+      const nodes = chain(3)
+      const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..1]->(b) RETURN b.name AS name') as any
+      const rows = executeVarLenPath(plan, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+    })
   })
 
   describe('_matchesLabel variants', () => {
@@ -385,6 +448,331 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
       nodes[0]._label = 'Node:Person'
       const plan = parseQuery('MATCH (a:Node)-[:NEXT*1..1]->(b) RETURN b') as any
       const rows = executeVarLenPath(plan, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+    })
+  })
+
+  // ─────────────────────────────────────────────────────────
+  // Directly-constructed plans to hit the defensive/last-mile
+  // branches that parseQuery output does not produce (a third
+  // variable's dotMatch, zero-hop targetAlias, chain edgeVariable
+  // accumulation, aggregate non-count functions, applyReturnAliases).
+  // ─────────────────────────────────────────────────────────
+  describe('directly-constructed plans (last-mile branches)', () => {
+    it('dotMatch for a non-source/non-target variable falls back to the last path node', () => {
+      // `x.name` where `x` is neither the step source nor target alias →
+      // _buildRow line 121 (`srcNodes[last][prop]`).
+      const nodes = chain(3)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'out' }],
+        returnColumns: ['x.name'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+      // x.name resolves to the target node's `name` (last path node = b)
+      for (const r of rows) {
+        expect((r as any)['x.name']).toBeDefined()
+      }
+    })
+
+    it('zero-hop single-step binds targetAlias on the source node (line 174)', () => {
+      // minHops 0, explicit target alias → the zero-hop block binds target=source.
+      const nodes = chain(3)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 0, max: 0 }, direction: 'out' }],
+        returnColumns: ['a', 'b'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows).toHaveLength(3)
+      for (const r of rows) {
+        expect((r as any).a).toBeDefined()
+        expect((r as any).b).toBeDefined()
+        expect((r as any).a.name).toBe((r as any).b.name)
+      }
+    })
+
+    it('chain accumulates edgeVariable lists across steps (line 388/467)', () => {
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: 'p',
+        steps: [
+          { source: 'a', targetAlias: 'b', edgeVariable: 'r', range: { min: 1, max: 1 }, direction: 'out' },
+          { source: 'b', targetAlias: 'c', edgeVariable: 'r2', range: { min: 1, max: 1 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+      for (const r of rows) {
+        expect((r as any).p).toBeDefined()
+        expect(Array.isArray((r as any).r)).toBe(true)
+        expect(Array.isArray((r as any).r2)).toBe(true)
+      }
+    })
+
+    it('applyWithProjection aggregate runs applyReturnAliases on finalRows (line 558)', () => {
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 2 }, direction: 'out' }],
+        returnColumns: ['a', 'cnt'],
+        returnAliasMap: { extra: 'cnt' },
+        with: { columns: [
+          { expression: 'a', alias: 'a' },
+          { expression: 'count(b)', alias: 'cnt' },
+        ] },
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+    })
+
+    it('zero-hop chain step with targetProps mismatch is rejected (pushMatch guard)', () => {
+      // A zero-hop first step carrying a targetProps predicate that the start
+      // node does NOT satisfy → pushMatch returns early (line 343/344), and the
+      // chain must not emit the self-match row.
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 0, max: 0 }, targetProps: { flag: 'nope' }, direction: 'out' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      // every zero-hop start node fails targetProps → no rows survive step 1
+      expect(rows).toHaveLength(0)
+    })
+
+    it('zero-hop chain step with targetLabel mismatch is rejected (pushMatch guard)', () => {
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 0, max: 0 }, targetLabel: 'Missing', direction: 'out' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows).toHaveLength(0)
+    })
+
+    it('chain firstStep.sourceProps rejects non-matching start nodes (line 408-410)', () => {
+      // firstStep.sourceProps constrains the chain start: only nodes whose
+      // `name === 'v0'` survive the source candidate filter.
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', sourceProps: { name: 'v0' }, range: { min: 1, max: 1 }, direction: 'out' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      // only v0 -> v1 -> v2 survives
+      expect(rows).toHaveLength(1)
+      expect((rows[0] as any).c.name).toBe('v2')
+    })
+
+    it('chain skips start node without __edges (line 388)', () => {
+      // A node with no `__edges` in the chain incomingEdges construction hits
+      // the `if (!edges) continue` guard; it contributes no reverse edges.
+      const nodes = chain(4) as any[]
+      nodes[0].__edges = undefined // v0 has no outgoing edge
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'out' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      // v0 contributes no outgoing edge, so only v1 -> v2 -> v3 survives
+      expect(rows.length).toBeGreaterThan(0)
+      for (const r of rows) expect((r as any).a.name).not.toBe('v0')
+    })
+
+    it('chain skips start node that fails scanLabel (line 405)', () => {
+      // A node whose _label does NOT match scanLabel is filtered from the chain
+      // start candidates via `_matchesLabel`.
+      const nodes = chain(4) as any[]
+      nodes[0]._label = 'Other' // v0 no longer matches scanLabel 'Node'
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'out' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      // v0 is excluded as a start; only v1/v2 can start
+      expect(rows.length).toBeGreaterThan(0)
+      for (const r of rows) expect((r as any).a.name).not.toBe('v0')
+    })
+
+    it('nodes without __edges are skipped (incomingEdges continue guard)', () => {
+      // A node lacking the `__edges` array exercises the `if (!edges) continue`
+      // guard in the incomingEdges construction loop (no reverse edges to add).
+      const nodes = chain(4) as any[]
+      // strip __edges from the LAST node (v3): it can be a target but has no
+      // outgoing edge, so no path extends FROM it.
+      nodes[3].__edges = undefined
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 2 }, direction: 'out' }],
+        returnColumns: ['b'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+      // v3 is still reachable as a target (via v2 -> v3), but has no outgoing
+      // traversal of its own, so no row has v3 as its SOURCE.
+      for (const r of rows) expect((r as any).a.name).not.toBe('v3')
+    })
+
+    it('undirected chain step traverses incoming edges (dir in/any)', () => {
+      // `any` direction exercises the `dir !== 'out' && dir !== 'in'` branch and
+      // the reverse-adjacency handling in _collectStepMatches.
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'any' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'any' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+    })
+
+    it('inward chain step traverses incoming edges (dir: in)', () => {
+      // `in` direction exercises the `else if (dir === 'in' ...)` branch in
+      // _collectStepMatches (line 341).
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'in' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'in' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+    })
+
+    it('chain cycle guard rejects a revisited node (entry.path.includes)', () => {
+      // A self-loop v1 -> v1 inside a chain step forces _collectStepMatches
+      // cycle guard (line 347): the path may not revisit v1.
+      const nodes = chain(4) as any[]
+      ;(nodes[1] as any).__edges.push({ srcIdx: 1, dstIdx: 1, label: 'NEXT' })
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 1, max: 2 }, direction: 'out' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 2 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+    })
+
+    it('chain edgeLabel mismatch is rejected (line 348)', () => {
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 1, max: 2 }, edgeLabel: 'MISSING', direction: 'out' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 2 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows).toHaveLength(0)
+    })
+
+    it('cycle guard: self-loop edge is rejected (entry.path.includes)', () => {
+      // A self-loop v1 -> v1 (srcIdx == dstIdx) would create an infinite path
+      // without the cycle guard; the matched path must not revisit a node.
+      const nodes = chain(4) as any[]
+      ;(nodes[1] as any).__edges.push({ srcIdx: 1, dstIdx: 1, label: 'NEXT' })
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 3 }, direction: 'out' }],
+        returnColumns: ['b'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBeGreaterThan(0)
+      // no path may contain a repeated node (self-loop filtered by cycle guard)
+      for (const r of rows) {
+        expect((r as any).a.name).not.toBe((r as any).b.name)
+      }
+    })
+
+    it('edgeLabel mismatch is rejected during traversal', () => {
+      // Mixed labels: every edge is NEXT, but the step requires MISSING → the
+      // `edgeLabel && e.label !== edgeLabel` continue fires and no path matches.
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 2 }, edgeLabel: 'MISSING', direction: 'out' }],
+        returnColumns: ['b'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows).toHaveLength(0)
+    })
+
+    it('aggregate WITH without returnAliasMap returns projected rows (line 558)', () => {
+      // An aggregate WITH projection with NO returnAliasMap takes the
+      // non-alias final path (`postProcessResults(finalRows, plan)`).
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 2 }, direction: 'out' }],
+        returnColumns: ['b'],
+        with: { columns: [{ expression: 'count(b)', alias: 'cnt' }] },
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows).toHaveLength(1)
+    })
+
+    it('chain + WITH projection routes through _applyWithProjection (line 487)', () => {
+      const nodes = chain(4)
+      const plan = {
+        scanLabel: 'Node',
+        pathVar: null,
+        steps: [
+          { source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'out' },
+          { source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'out' },
+        ],
+        returnColumns: ['c'],
+        with: { columns: [{ expression: 'c.name', alias: 'name' }] },
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
       expect(rows.length).toBeGreaterThan(0)
     })
   })

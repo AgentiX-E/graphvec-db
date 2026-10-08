@@ -10,16 +10,6 @@ import { _evaluateExpression, _postProcessResults } from './expression-engine'
 type QueryRow = Record<string, unknown>
 type QueryResult = QueryRow[]
 
-// 直接引用表达式引擎函数
-let _evaluateExpr: any = _evaluateExpression
-let _postProcess: any = _postProcessResults
-
-function _ensureDeps(): void {
-  if (_evaluateExpr !== undefined && _postProcess !== undefined) return
-  _evaluateExpr = _evaluateExpression
-  _postProcess = _postProcessResults
-}
-
 interface BfsEntry { nIdx: number; path: number[] }
 
 /** Dedupe an edge list by (srcIdx, dstIdx).  Edges may be present twice — once
