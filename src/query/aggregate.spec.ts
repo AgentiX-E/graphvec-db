@@ -6,7 +6,7 @@
  * and complex queries with OPTIONAL MATCH + WITH aggregation.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import {
   _parseAggregate,
   _extractAggColumns,
@@ -19,6 +19,8 @@ import {
 import {
   _executeQuery,
   parseQuery,
+  _clearGeInstances,
+  _clearDatabases,
 } from './query-engine'
 
 // ── _parseAggregate ──
@@ -296,6 +298,14 @@ describe('_executeAggregation — Core aggregation logic', () => {
 // ── _executeQuery (standalone execution) ──
 
 describe('_executeQuery — Standalone query execution with aggregation', () => {
+  // Reset the shared GraphEngine pool and database registry before each test.
+  // The pool persists an on-disk WAL under /tmp/tckge-pool across spec files,
+  // and label tokens from a prior test's data otherwise leak into the next
+  // GraphEngine.open(), raising "corrupt WAL: node label token conflict".
+  beforeEach(() => {
+    _clearGeInstances()
+    _clearDatabases()
+  })
 
   // Helper: create 10 test nodes
   function createNodes(): Array<Record<string, unknown>> {

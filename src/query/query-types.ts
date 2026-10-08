@@ -368,12 +368,6 @@ export interface QueryPlan {
     hasHeaders: boolean
     delimiter: string
   }
-  /** 窗口函数 */
-  windowFunctions?: Array<{
-    function: string
-    partitionBy: string[]
-    orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }>
-  }>
   /** SHOW 元数据查询 */
   show?: string
   /** SEARCH 向量搜索子句（ANN / approximate最近邻） */

@@ -103,7 +103,6 @@ export interface QueryPlan {
   forEach?: ForEachClause
   reduce?: { accumulator: string; initial: unknown; variable: string; list: unknown[]; isVarRef: boolean; expression: string }
   loadCsv?: { url: string; rowVariable: string; hasHeaders: boolean; delimiter: string }
-  windowFunctions?: Array<{ function: string; partitionBy: string[]; orderBy: Array<{ column: string; direction: 'ASC' | 'DESC' }> }>
   show?: string
   /** CATALOG 操作（多图命名空间） */
   catalogOp?: 'CREATE_DATABASE' | 'DROP_DATABASE' | 'SHOW_DATABASES'

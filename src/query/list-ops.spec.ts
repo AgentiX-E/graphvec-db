@@ -1,73 +1,71 @@
 /**
  * list-ops.spec.ts — List literal, subscript, slice, and concatenation tests
+ *
+ * Migrated from the legacy `cypher-lite-parser` + `planFromAST` API to the
+ * current async `parseQuery` + `_executeQuery(plan, nodes, query)` facade.
  */
 
 import { describe, it, expect } from 'vitest'
-import { _executeQuery, planFromAST } from '../query/query-engine'
-import { parser } from './cypher-lite-parser'
+import { _executeQuery, parseQuery } from './query-engine'
 
-function execQuery(query: string, nodes: any[] = []): any[] {
-  const ast = parser.parse(query)
-  const plan = planFromAST(ast)
-  if (plan.orderBy) {
-    plan.orderBy = plan.orderBy.filter((ob: any) => ob.property !== undefined)
-  }
-  const result = _executeQuery(plan, nodes)
+async function execQuery(query: string, nodes: any[] = []): Promise<any[]> {
+  const plan = parseQuery(query)
+  const result = await _executeQuery(plan, nodes, query)
   return Array.isArray(result) ? result : []
 }
 
 describe('List Operations', () => {
 
-  it('should evaluate list literal [1,2,3]', () => {
-    const rows = execQuery('RETURN [1,2,3] as mylist')
+  it('should evaluate list literal [1,2,3]', async () => {
+    const rows = await execQuery('RETURN [1,2,3] as mylist')
     expect(rows).toHaveLength(1)
     expect(rows[0].mylist).toEqual([1, 2, 3])
   })
 
-  it('should evaluate empty list []', () => {
-    const rows = execQuery('RETURN [] as empty')
+  it('should evaluate empty list []', async () => {
+    const rows = await execQuery('RETURN [] as empty')
     expect(rows).toHaveLength(1)
     expect(rows[0].empty).toEqual([])
   })
 
-  it('should concatenate two lists with +', () => {
-    const rows = execQuery('RETURN [1,2] + [3,4] as combined')
+  it('should concatenate two lists with +', async () => {
+    const rows = await execQuery('RETURN [1,2] + [3,4] as combined')
     expect(rows).toHaveLength(1)
     expect(rows[0].combined).toEqual([1, 2, 3, 4])
   })
 
-  it('should handle list literal as RETURN column (no alias)', () => {
-    const rows = execQuery('RETURN [1,2,3]')
+  it('should handle list literal as RETURN column (no alias)', async () => {
+    const rows = await execQuery('RETURN [1,2,3]')
     expect(rows).toHaveLength(1)
     const keys = Object.keys(rows[0])
     expect(keys.length).toBeGreaterThanOrEqual(1)
     expect(rows[0][keys[0]]).toEqual([1, 2, 3])
   })
 
-  it('should evaluate subscript n.items[0]', () => {
-    const node = { name: 'test', items: ['a', 'b', 'c'] }
-    const rows = execQuery('MATCH (n) RETURN n.items[0] as first', [node])
+  it('should evaluate subscript n.items[0]', async () => {
+    const node = { _label: 'Person', name: 'test', items: ['a', 'b', 'c'] }
+    const rows = await execQuery('MATCH (n:Person) RETURN n.items[0] as first', [node])
     expect(rows).toHaveLength(1)
     expect(rows[0].first).toBe('a')
   })
 
-  it('should evaluate slice n.items[1..3]', () => {
-    const node = { name: 'test', items: ['a', 'b', 'c', 'd', 'e'] }
-    const rows = execQuery('MATCH (n) RETURN n.items[1..3] as slice', [node])
+  it('should evaluate slice n.items[1..3]', async () => {
+    const node = { _label: 'Person', name: 'test', items: ['a', 'b', 'c', 'd', 'e'] }
+    const rows = await execQuery('MATCH (n:Person) RETURN n.items[1..3] as slice', [node])
     expect(rows).toHaveLength(1)
     expect(rows[0].slice).toEqual(['b', 'c'])
   })
 
-  it('should handle subscript out of bounds', () => {
-    const node = { name: 'test', items: ['a', 'b', 'c'] }
-    const rows = execQuery('MATCH (n) RETURN n.items[99] as out', [node])
+  it('should handle subscript out of bounds', async () => {
+    const node = { _label: 'Person', name: 'test', items: ['a', 'b', 'c'] }
+    const rows = await execQuery('MATCH (n:Person) RETURN n.items[99] as out', [node])
     expect(rows).toHaveLength(1)
     expect(rows[0].out).toBeNull()
   })
 
-  it('should handle slice past end of array', () => {
-    const node = { name: 'test', items: [1, 2, 3] }
-    const rows = execQuery('MATCH (n) RETURN n.items[2..10] as tail', [node])
+  it('should handle slice past end of array', async () => {
+    const node = { _label: 'Person', name: 'test', items: [1, 2, 3] }
+    const rows = await execQuery('MATCH (n:Person) RETURN n.items[2..10] as tail', [node])
     expect(rows).toHaveLength(1)
     expect(rows[0].tail).toEqual([3])
   })
