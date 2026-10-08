@@ -132,8 +132,12 @@ describe('TCK — PATH 路径遍历', () => {
 
   it('[TCK-PATH-24] 路径返回多属性', async () => {
     const plan = parseQuery('MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, a.age, b.name')
-    expect(plan.returnColumns).toContain('name')
+    // Collision-aware return columns: `name` is projected from two variables
+    // (a and b), so both are kept qualified (`a.name`, `b.name`); `age` is
+    // unique so it is stored bare.
+    expect(plan.returnColumns).toContain('a.name')
     expect(plan.returnColumns).toContain('age')
+    expect(plan.returnColumns).toContain('b.name')
   })
 
   it('[TCK-PATH-25] 路径带别名', async () => {
