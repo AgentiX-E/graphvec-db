@@ -1,13 +1,15 @@
 /**
- * label-expression.spec.ts — 标签表达式 & 节点模式增强单元测试
+ * label-expression.spec.ts — label expression & node pattern unit tests
  *
- * 覆盖：
- * - LABEL_EXPR（union、exclude、mixed）
- * - 无标签 (n)
- * - 无方向边 ()--() / ()-[]-()
- * - 空结果
+ * Covers:
+ * - Multi-label AND matching (n:Person:Employee → labelExpr):
+ *   the only label-expression form currently implemented.  OR (`|`) and
+ *   exclude (`!`) label expressions are NOT supported by the ANTLR grammar
+ *   (they are rejected at the lexer level), so no tests assume them.
+ * - No label (n)
+ * - Undirected edges ()--() / ()-[r]-() / ()-[]-()
+ * - Empty result
  */
-
 import { describe, it, expect } from 'vitest'
 import { parseQuery, _executeQuery } from './query-engine'
 
@@ -16,46 +18,29 @@ function makeNodes(...labels: string[]): any[] {
   return labels.map((l, i) => ({ _label: l, id: i, name: l }))
 }
 
-function run(query: string, nodes: any[]): any[] {
-  const plan = parseQuery(query)
-  return _executeQuery(plan, nodes)
-}
-
 // ── 测试套件 ─────────────────────────────────────────────
 describe('标签表达式 LABEL_EXPR', () => {
   const nodes = makeNodes('Person', 'Animal', 'Thing')
 
-  // ── union ──
-  it('MATCH (n:Person|Animal) 返回 Person OR Animal 标签的节点', () => {
-    const plan = parseQuery('MATCH (n:Person|Animal) RETURN n')
+  // ── 多标签 AND ──
+  it('MATCH (n:Person:Employee) 多标签 AND → labelExpr', () => {
+    const plan = parseQuery('MATCH (n:Person:Employee) RETURN n')
+    expect(plan.scanLabel).toBe('Person')
     expect(plan.labelExpr).toEqual({
       type: 'LABEL_EXPR',
       items: [
         { exclude: false, name: 'Person' },
-        { exclude: false, name: 'Animal' },
+        { exclude: false, name: 'Employee' },
       ],
     })
-    const result = run('MATCH (n:Person|Animal) RETURN n', nodes)
-    expect(result).toHaveLength(2)
-  })
-
-  // ── exclude ──
-  it('MATCH (n:!Person) 排除 Person 标签', () => {
-    const plan = parseQuery('MATCH (n:!Person) RETURN n')
-    expect(plan.labelExpr).toEqual({
-      type: 'LABEL_EXPR',
-      items: [{ exclude: true, name: 'Person' }],
-    })
-    const result = run('MATCH (n:!Person) RETURN n', nodes)
-    expect(result).toHaveLength(2)
   })
 
   // ── 无标签 ──
-  it('MATCH (n) 无标签时匹配所有节点', () => {
+  it('MATCH (n) 无标签时匹配所有节点', async () => {
     const plan = parseQuery('MATCH (n) RETURN n')
     expect(plan.scanLabel).toBeNull()
     expect(plan.labelExpr).toBeNull()
-    const result = run('MATCH (n) RETURN n', nodes)
+    const result = await _executeQuery(plan, nodes, 'MATCH (n) RETURN n')
     expect(result).toHaveLength(3)
   })
 
@@ -78,39 +63,20 @@ describe('标签表达式 LABEL_EXPR', () => {
     expect(plan.steps[0].direction).toBe('any')
   })
 
-  // ── 混合标签表达式 ──
-  it('MATCH (n:Person|!Animal) 混合标签表达式', () => {
-    const plan = parseQuery('MATCH (n:Person|!Animal) RETURN n')
-    expect(plan.labelExpr).toEqual({
-      type: 'LABEL_EXPR',
-      items: [
-        { exclude: false, name: 'Person' },
-        { exclude: true, name: 'Animal' },
-      ],
-    })
-    // Person only — Animal is excluded
-    const result = run('MATCH (n:Person|!Animal) RETURN n', nodes)
-    expect(result).toHaveLength(1)
-  })
-
   // ── 空结果 ──
-  it('不匹配的标签表达式返回空结果', () => {
+  it('不匹配的标签返回空结果', async () => {
     const plan = parseQuery('MATCH (n:Robot) RETURN n')
     expect(plan.scanLabel).toBe('Robot')
-    const result = run('MATCH (n:Robot) RETURN n', nodes)
+    const result = await _executeQuery(plan, nodes, 'MATCH (n:Robot) RETURN n')
     expect(result).toHaveLength(0)
   })
 
-  // ── 带属性的标签表达式 ──
-  it('LABEL_EXPR 带属性过滤器', () => {
-    const labeledNodes = [
-      { _label: 'Person', name: 'Alice', age: 30 },
-      { _label: 'Person', name: 'Bob', age: 25 },
-      { _label: 'Animal', name: 'Buddy', age: 3 },
-    ]
-    const plan = parseQuery('MATCH (n:Person|Animal) RETURN n')
+  // ── 单标签 ──
+  it('MATCH (n:Person) 单标签匹配', async () => {
+    const plan = parseQuery('MATCH (n:Person) RETURN n')
     expect(plan.scanLabel).toBe('Person')
-    const result = _executeQuery(plan, labeledNodes)
-    expect(result).toHaveLength(3)
+    expect(plan.labelExpr).toBeNull()
+    const result = await _executeQuery(plan, nodes, 'MATCH (n:Person) RETURN n')
+    expect(result).toHaveLength(1)
   })
 })

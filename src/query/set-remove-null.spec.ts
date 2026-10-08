@@ -50,9 +50,9 @@ describe('SET — 多重赋值', () => {
     const plan = parseQuery("MATCH (n) SET n.title = 'Developer', n.years = 5, n.active = true")
     expect(plan.type).toBe('SET')
     expect(plan.setClauses!.length).toBe(3)
-    expect(plan.setClauses![0]).toEqual({ property: 'title', value: 'Developer' })
-    expect(plan.setClauses![1]).toEqual({ property: 'years', value: 5 })
-    expect(plan.setClauses![2]).toEqual({ property: 'active', value: true })
+    expect(plan.setClauses![0]).toEqual({ kind: 'PROP', alias: 'n', property: 'title', value: 'Developer' })
+    expect(plan.setClauses![1]).toEqual({ kind: 'PROP', alias: 'n', property: 'years', value: 5 })
+    expect(plan.setClauses![2]).toEqual({ kind: 'PROP', alias: 'n', property: 'active', value: true })
   })
 })
 
@@ -98,7 +98,8 @@ describe('REMOVE — 属性/标签', () => {
 
   it('SET + REMOVE 在同一查询', () => {
     const plan = parseQuery("MATCH (n) SET n.name = 'Bob' REMOVE n.age")
-    expect(plan.type).toBe('SET')
+    // SET + REMOVE 混合 ⇒ MATCH_MODIFY（非单纯 SET）
+    expect(plan.type).toBe('MATCH_MODIFY')
     expect(plan.setClauses).toBeDefined()
     expect(plan.setClauses!.length).toBe(1)
     expect(plan.setClauses![0].property).toBe('name')
