@@ -84,23 +84,21 @@ describe('CALL { ... } IN TRANSACTIONS — 解析', () => {
 // ── 2. 执行 IN TRANSACTIONS ──────────────────────────────
 
 describe('CALL { ... } IN TRANSACTIONS — 执行', () => {
-  it('小数据（< batch size）— 单批提交，结果正确', () => {
-    const plan = parseQuery(
-      `CALL { MATCH (n:Person) RETURN n.name AS name } IN TRANSACTIONS RETURN name`
-    )
-    const result = _executeQuery(plan, testGraph)
+  it('小数据（< batch size）— 单批提交，结果正确', async () => {
+    const query = `CALL { MATCH (n:Person) RETURN n.name AS name } IN TRANSACTIONS RETURN name`
+    const plan = parseQuery(query)
+    const result = await _executeQuery(plan, testGraph, query) as any[]
     expect(result.length).toBe(3)
     const names = result.map(r => r.name).sort()
     expect(names).toEqual(['Alice', 'Bob', 'Charlie'])
   })
 
-  it('大数据（> batch size = 2）— 多批提交，结果正确', () => {
+  it('大数据（> batch size = 2）— 多批提交，结果正确', async () => {
     // 使用 5 节点的图数据
     const graph = makeLargeGraph(5)
-    const plan = parseQuery(
-      `CALL { MATCH (n:Item) RETURN n.name AS name, n.index AS idx } IN TRANSACTIONS OF 2 ROWS RETURN name ORDER BY name ASC`
-    )
-    const result = _executeQuery(plan, graph)
+    const query = `CALL { MATCH (n:Item) RETURN n.name AS name, n.index AS idx } IN TRANSACTIONS OF 2 ROWS RETURN name ORDER BY name ASC`
+    const plan = parseQuery(query)
+    const result = await _executeQuery(plan, graph, query) as any[]
     expect(result.length).toBe(5)
     expect(result[0].name).toBe('item-0')
     expect(result[1].name).toBe('item-1')
@@ -109,13 +107,12 @@ describe('CALL { ... } IN TRANSACTIONS — 执行', () => {
     expect(result[4].name).toBe('item-4')
   })
 
-  it('非常大数据（> batch size = 3）— 确认分批边界', () => {
+  it('非常大数据（> batch size = 3）— 确认分批边界', async () => {
     // 100 个节点，batch size = 30，预期分成 4 批（30+30+30+10）
     const graph = makeLargeGraph(100)
-    const plan = parseQuery(
-      `CALL { MATCH (n:Item) RETURN n.name AS name, n.index AS idx } IN TRANSACTIONS OF 30 ROWS RETURN name, idx ORDER BY name ASC`
-    )
-    const result = _executeQuery(plan, graph)
+    const query = `CALL { MATCH (n:Item) RETURN n.name AS name, n.index AS idx } IN TRANSACTIONS OF 30 ROWS RETURN name, idx ORDER BY name ASC`
+    const plan = parseQuery(query)
+    const result = await _executeQuery(plan, graph, query) as any[]
     expect(result.length).toBe(100)
     // 验证所有节点都在结果中
     const names = result.map(r => r.name).sort()
@@ -123,23 +120,20 @@ describe('CALL { ... } IN TRANSACTIONS — 执行', () => {
     expect(names[99]).toBe('item-99')
   })
 
-  it('IN TRANSACTIONS 空结果 — 无匹配时正常执行', () => {
-    const plan = parseQuery(
-      `CALL { MATCH (n:Robot) RETURN n.name AS name } IN TRANSACTIONS RETURN name`
-    )
-    const result = _executeQuery(plan, testGraph)
+  it('IN TRANSACTIONS 空结果 — 无匹配时正常执行', async () => {
+    const query = `CALL { MATCH (n:Robot) RETURN n.name AS name } IN TRANSACTIONS RETURN name`
+    const plan = parseQuery(query)
+    const result = await _executeQuery(plan, testGraph, query) as any[]
     expect(result.length).toBe(0)
   })
 
-  it('IN TRANSACTIONS 与普通 CALL 结果一致 — 语义等价', () => {
-    const planNormal = parseQuery(
-      `CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name ORDER BY name ASC`
-    )
-    const planTx = parseQuery(
-      `CALL { MATCH (n:Person) RETURN n.name AS name } IN TRANSACTIONS RETURN name ORDER BY name ASC`
-    )
-    const resultNormal = _executeQuery(planNormal, testGraph)
-    const resultTx = _executeQuery(planTx, testGraph)
+  it('IN TRANSACTIONS 与普通 CALL 结果一致 — 语义等价', async () => {
+    const queryNormal = `CALL { MATCH (n:Person) RETURN n.name AS name } RETURN name ORDER BY name ASC`
+    const queryTx = `CALL { MATCH (n:Person) RETURN n.name AS name } IN TRANSACTIONS RETURN name ORDER BY name ASC`
+    const planNormal = parseQuery(queryNormal)
+    const planTx = parseQuery(queryTx)
+    const resultNormal = await _executeQuery(planNormal, testGraph, queryNormal) as any[]
+    const resultTx = await _executeQuery(planTx, testGraph, queryTx) as any[]
     expect(resultNormal.length).toBe(resultTx.length)
     for (let i = 0; i < resultNormal.length; i++) {
       expect(resultNormal[i].name).toBe(resultTx[i].name)
