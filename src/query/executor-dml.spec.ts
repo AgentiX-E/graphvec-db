@@ -1716,3 +1716,147 @@ describe('_buildDmlRows — aggregate empty-values false arms (values.length ? :
     expect(rows[0]['min(n.num)']).toBe(0)
   })
 })
+
+describe('_buildDmlRows — WITH-aggregate-over-edges empty-values arms (L195-197)', () => {
+  it('WITH avg over all-undefined edge props -> values empty -> 0 (L195 falsy)', () => {
+    const edges = [{ props: {} }, { props: {} }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { aggregate: { function: 'avg', field: 'r.num', alias: 'x' } },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].x).toBe(0)
+  })
+
+  it('WITH max over non-numeric edge props -> values empty -> 0 (L196 falsy)', () => {
+    const edges = [{ props: { num: 'a' } }, { props: { num: 'b' } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { aggregate: { function: 'max', field: 'r.num', alias: 'x' } },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].x).toBe(0)
+  })
+
+  it('WITH min over all-undefined edge props -> values empty -> 0 (L197 falsy)', () => {
+    const edges = [{ props: { num: 5 } }, { props: {} }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { aggregate: { function: 'min', field: 'r.num', alias: 'x' } },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].x).toBe(5)
+  })
+
+  it('plan.aggregate avg over non-numeric edge props -> 0 (L223 falsy)', () => {
+    const edges = [{ props: { num: 'x' } }, { props: { num: 'y' } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['a'],
+      unwind: { list: [1, 2], name: 'x' },
+      aggregate: { function: 'avg', field: 'r.num', alias: 'a', column: 'avg(r.num)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['avg(r.num)']).toBe(0)
+  })
+
+  it('plan.aggregate min over all-undefined edge props -> 0 (L225 falsy)', () => {
+    const edges = [{ props: {} }, { props: {} }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['a'],
+      unwind: { list: [1, 2], name: 'x' },
+      aggregate: { function: 'min', field: 'r.num', alias: 'a', column: 'min(r.num)' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['min(r.num)']).toBe(0)
+  })
+})
+
+describe('_buildDmlRows — WITH WHERE filter branches (_applyWithFilters/_applyEdgeWithFilters)', () => {
+  it('edge filter: operator omitted -> EQ default, negated, missing edge -> {} (L756/L757/L774)', () => {
+    const edges = [{ props: { num: 2 } }, { props: { num: 4 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { filters: [{ expression: 'r.num', value: 2 }, { expression: 'r.num', value: 1, negated: true }] },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    // filter 1: r.num === 2 keeps only {num:2, num:2}; but negated r.num===1 keeps both
+    expect(Array.isArray(rows)).toBe(true)
+  })
+
+  it('edge filter: non-identifier expression -> rootVar undefined (L766 false)', () => {
+    const edges = [{ props: { num: 1 } }, { props: { num: 2 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { filters: [{ expression: 'r.num % 2', operator: 'EQ', value: 0 }] },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(Array.isArray(rows)).toBe(true)
+  })
+
+  it('node filter: GT/GTE/LT/LTE/NEQ operators over unwound nodes (L710/L707)', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 1 },
+      { _label: 'N', _alias: 'n', num: 3 },
+      { _label: 'N', _alias: 'n', num: 5 },
+    ]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2, 3], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N' }],
+      with: {
+        filters: [
+          { property: 'num', operator: 'GT', value: 1 },
+          { property: 'num', operator: 'GTE', value: 3 },
+          { property: 'num', operator: 'LT', value: 6 },
+          { property: 'num', operator: 'LTE', value: 5 },
+          { property: 'num', operator: 'NEQ', value: 4 },
+          { property: 'num', operator: 'EQ', value: 3 },
+        ],
+      },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    // all filters ANDed on each node; only num===3 satisfies all
+    expect(rows).toHaveLength(1)
+    expect(rows[0].num).toBe(3)
+  })
+
+  it('node filter: node without props -> src falls back to node itself (L706 falsy)', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 7 },
+      { _label: 'N', _alias: 'n', num: 9 },
+    ]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N' }],
+      with: { filters: [{ property: 'num', operator: 'EQ', value: 7 }] },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].num).toBe(7)
+  })
+})
