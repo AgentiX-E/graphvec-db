@@ -330,10 +330,16 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
     }
     // 去掉反引号标识符：`name` → 'name'（使反引号内的标识符不作为裸变量被提取）
     cleanedBeforeAs = cleanedBeforeAs.replace(/`[^`]*`/g, "''")
+    // Strip parameter references (`$param`) BEFORE bare-variable extraction: the
+    // `$` is a non-word char so `\b([a-zA-Z_]\w*)\b` would otherwise match its
+    // trailing identifier `param` as an unbound bare variable (a parameter is
+    // defined by the calling context and must not raise UndefinedVariable).
+    cleanedBeforeAs = cleanedBeforeAs.replace(/\$\w+/g, ' ')
     const bareVars = [...cleanedBeforeAs.matchAll(/\b([a-zA-Z_]\w*)\b/g)].map(m => m[1])
     for (const v of bareVars) {
-      // 排除数字、关键字、函数名
-      if (/^\d/.test(v)) continue
+      // Exclude keyword/function names. (A numeric-leading guard is unnecessary:
+      // the `\b([a-zA-Z_]\w*)\b` matcher above can never yield a digit-leading
+      // identifier, so `/^\d/` would be provably dead.)
       if (_TCK_KEYWORDS.has(v.toUpperCase())) continue
       // 排除 AS 别名
       const aliasNames = [...beforeAs.matchAll(/\bAS\s+(\w+)/gi)].map(m => m[1])
@@ -410,7 +416,6 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
   for (const v of idents) {
     const vu = v.toUpperCase()
     if (_TCK_KEYWORDS.has(vu)) continue
-    if (/^\d/.test(v)) continue
     if (!definedVars.includes(v) && !definedVars.includes(vu)) {
       throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
     }
@@ -820,7 +825,6 @@ function _extractOrderByVars(text: string): Set<string> {
   const idents = s.match(/[A-Za-z_]\w*/g) || []
   for (const id of idents) {
     if (_ORDERBY_NONVAR.has(id.toUpperCase())) continue
-    if (/^\d/.test(id)) continue
     vars.add(id)
   }
   return vars
@@ -1031,9 +1035,7 @@ export function _validateSetOperands(query: string, plan?: any): void {
       const bare = rhs.match(/^([a-zA-Z_]\w*)$/)
       if (!bare) continue
       const name = bare[1]
-      if (/^\d/.test(name)) continue
       if (_TCK_KEYWORDS.has(name.toUpperCase())) continue
-      if (name.startsWith('$')) continue
       if (defined.has(name)) continue
       throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
     }
