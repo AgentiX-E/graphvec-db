@@ -723,7 +723,10 @@ function _applyWithFilters(
 
   const result: QueryRow[] = []
   for (let i = 0; i < rows.length; i++) {
-    const node = backingNodes[i] || {}
+    // `rows` is built via `backingNodes.map(...)` (caller at L346), so
+    // rows.length === backingNodes.length and `backingNodes[i]` is always
+    // defined; the `|| {}` fallback is provably dead and removed.
+    const node = backingNodes[i]
     let keep = true
     for (const f of filters) {
       if (!matches(rows[i], node, f)) { keep = false; break }
@@ -753,7 +756,10 @@ function _applyEdgeWithFilters(
 
   const result: QueryRow[] = []
   for (let i = 0; i < rows.length; i++) {
-    const edge = edges[i] || {}
+    // `rows` is built via `createEdges.map(...)` (caller at L245), so
+    // rows.length === edges.length and `edges[i]` is always defined; the
+    // `|| {}` fallback is provably dead and removed.
+    const edge = edges[i]
     const edgeProps = edge.props || {}
     let keep = true
     for (const f of filters) {

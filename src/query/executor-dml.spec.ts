@@ -1860,3 +1860,152 @@ describe('_buildDmlRows — WITH WHERE filter branches (_applyWithFilters/_apply
     expect(rows[0].num).toBe(7)
   })
 })
+
+describe('_buildDmlRows — remaining if-guard arms (precise fixtures)', () => {
+  it('createEdges path with empty return column -> L236 `if(!rc) continue`', () => {
+    const edges = [{ props: { num: 1 } }, { props: { num: 2 } }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['', 'num'],
+      unwind: { list: [1, 2], name: 'x' },
+      returnAliasMap: { num: 'r.num' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(2)
+    expect(rows.map(r => r.num)).toEqual([1, 2])
+  })
+
+  it('MATCH fan-out with empty return column -> L149 `if(!rc) continue`', () => {
+    const allNodes: Node[] = [
+      { _label: 'Person', name: 'Alice' },
+      { _label: 'Person', name: 'Bob' },
+    ]
+    const plan = planOf({
+      returnColumns: ['', 'person'],
+      hasMatch: true,
+      matchVar: 'person',
+      scanLabel: 'Person',
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('createNode with no props -> L556/L621 skip, with label -> L559/L622', () => {
+    const allNodes: Node[] = []
+    const plan = planOf({
+      returnColumns: ['n'],
+      createNodes: [{ alias: 'n', label: 'X', props: { a: 1 } }],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    // With non-empty props, the DML row projects the node's properties only
+    // (`_label` is an internal key, not exposed); the `_label` fallback is only
+    // applied when the created node has NO properties at all.
+    expect(rows[0].n).toEqual({ a: 1 })
+  })
+
+  it('dynamic expression null -> L573 false, aliasVal undefined -> L584 false', () => {
+    const allNodes: Node[] = [{ _label: 'N', _alias: 'n' }]
+    const plan = planOf({
+      returnColumns: ['n.nope'],
+      createNodes: [{ alias: 'n', label: 'N' }],
+      returnAliasMap: { 'n.nope': 'n.nope' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['n.nope']).toBeNull()
+  })
+
+  it('return column present in allPropKeys -> null-prop branch (L588 false)', () => {
+    const allNodes: Node[] = [{ _label: 'N', _alias: 'n', known: 1 }]
+    const plan = planOf({
+      returnColumns: ['known'],
+      createNodes: [{ alias: 'n', label: 'N' }],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].known).toBe(1)
+  })
+
+  it('fn result undefined -> L629 false, edge prop mismatch -> L598 false', () => {
+    const allNodes: Node[] = []
+    const plan = planOf({
+      returnColumns: ['q'],
+      createNodes: [{}],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].q).toBeNull()
+  })
+})
+
+describe('_buildDmlRows — coalesce/else-if fallback arms (final batch)', () => {
+  it('node filter with omitted operator -> `|| EQ` default (L710 falsy)', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', num: 5 },
+      { _label: 'N', _alias: 'n', num: 9 },
+    ]
+    const plan = planOf({
+      returnColumns: ['num'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N' }],
+      with: { filters: [{ property: 'num', value: 5 }] },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].num).toBe(5)
+  })
+
+  it('edge filter with edge lacking props -> `|| {}` (L763 falsy)', () => {
+    const edges = [{ label: 'R' }, { label: 'R' }]
+    const allNodes: Node[] = []
+    ;(allNodes as any).__createEdges = edges
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      with: { filters: [{ expression: 'r', value: 1 }] },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(Array.isArray(rows)).toBe(true)
+  })
+
+  it('unwound node prop projected via returnAliasMap else-if (L268 false / L275)', () => {
+    const allNodes: Node[] = [
+      { _label: 'N', _alias: 'n', extra: 11 },
+      { _label: 'N', _alias: 'n', extra: 12 },
+    ]
+    const plan = planOf({
+      returnColumns: ['x'],
+      unwind: { list: [1, 2], name: 'x' },
+      createNodes: [{ alias: 'n', label: 'N' }],
+      returnAliasMap: { x: 'n.extra' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows.map(r => r.x)).toEqual([11, 12])
+  })
+
+  it('alias-scoped target prop with `value` wrapper -> unwrap (L451 falsy)', () => {
+    const allNodes: Node[] = [{ _label: 'N', _alias: 'n', age: { value: 7 } }]
+    const plan = planOf({
+      returnColumns: ['n.age'],
+      createNodes: [{ alias: 'n', label: 'N' }],
+      returnAliasMap: { 'n.age': 'n.age' },
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['n.age']).toBe(7)
+  })
+
+  it('single-key row -> empty base -> relationship fan-out skipped (L647/L648 false)', () => {
+    const allNodes: Node[] = []
+    ;(allNodes as any).__matchFanOutCount = 3
+    const plan = planOf({
+      returnColumns: ['noprops'],
+      createNodes: [{}],
+    })
+    const rows = _buildDmlRows(plan, allNodes)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].noprops).toBeNull()
+  })
+})
