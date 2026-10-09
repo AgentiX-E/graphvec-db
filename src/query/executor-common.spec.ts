@@ -834,3 +834,114 @@ describe('_formatResultRow — edge rendering node-alias scan with createNodes/s
     expect(row.n).toBeDefined()
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────
+// Iteration 8d — literal/binary/guard branch pass
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('_formatResultRow — isLiteralExpr variants', () => {
+  it('evaluates a negative-number literal alias', () => {
+    const r: any = { props: { _label: 'A', num: 42 } }
+    const p = plan({ returnColumns: ['num'], expressionColumns: [{ alias: 'num', expression: '-5' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.num).toBe(-5)
+  })
+  it('evaluates a null literal alias (null result discarded, falls to raw value)', () => {
+    // `_evaluateExpression('null')` returns null, but the `evalResult !== null`
+    // guard rejects null, so it falls through to the raw pre-computed rowVal.
+    const r: any = { props: { _label: 'A', x: 1 } }
+    const p = plan({ returnColumns: ['x'], expressionColumns: [{ alias: 'x', expression: 'null' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.x).toBe(1)
+  })
+  it('evaluates a false boolean literal alias', () => {
+    const r: any = { props: { _label: 'A', x: true } }
+    const p = plan({ returnColumns: ['x'], expressionColumns: [{ alias: 'x', expression: 'false' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.x).toBe(false)
+  })
+  it('evaluates a double-quoted string literal alias', () => {
+    const r: any = { props: { _label: 'A', x: 'old' } }
+    const p = plan({ returnColumns: ['x'], expressionColumns: [{ alias: 'x', expression: '"hello"' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.x).toBe('hello')
+  })
+})
+
+describe('_formatResultRow — needsEval via null/edge-string rowVal', () => {
+  it('re-evaluates when the pre-computed row value is null', () => {
+    const r: any = { props: { _label: 'A', x: null }, __crossVarRows: { n: { x: 3 } } }
+    const p = plan({ returnColumns: ['x'], expressionColumns: [{ alias: 'x', expression: 'n.x' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.x).toBe(3)
+  })
+  it('re-evaluates when the pre-computed row value is an edge-format string', () => {
+    const r: any = { props: { _label: 'A', x: '[:R]' }, __crossVarRows: { n: { x: 9 } } }
+    const p = plan({ returnColumns: ['x'], expressionColumns: [{ alias: 'x', expression: 'n.x' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.x).toBe(9)
+  })
+})
+
+describe('_formatResultRow — prop-access guard (does not shortcut)', () => {
+  it('resolves a bare prop-access expression via crossVarRows (not the row shortcut)', () => {
+    const r: any = { props: { _label: 'A', name: 'srcName' }, __crossVarRows: { out: { name: 'dstName' } } }
+    const p = plan({ returnColumns: ['result'], expressionColumns: [{ alias: 'result', expression: 'out.name' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.result).toBe('dstName')
+  })
+})
+
+describe('_formatResultRow — edge prop access from __edgeProps', () => {
+  it('reads an edge property via __edgeProps (r.weight)', () => {
+    const r: any = { props: {}, __edgeProps: { weight: 12 } }
+    const p = plan({ returnColumns: ['r.weight'] })
+    const row = _formatResultRow(r, p)
+    expect(row['r.weight']).toBe(12)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// Iteration 8e — RETURN * crossVarRows node/path/edge enumeration
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('_formatResultRow — RETURN * crossVarRows node unwrapping', () => {
+  it('unwraps a node var with a props wrapper, dropping internal keys', () => {
+    const r: any = { __crossVarRows: { a: { props: { _label: 'A', name: 'n', __internal: 1, _alias: 'x' } } } }
+    const p = plan({ returnColumns: [] })
+    const row = _formatResultRow(r, p)
+    expect(row.a).toEqual({ _label: 'A', name: 'n' })
+  })
+
+  it('keeps a crossVarRows node without a props wrapper (src = node itself)', () => {
+    const r: any = { __crossVarRows: { a: { _label: 'A', __y: 1, _alias: 'x', name: 'n' } } }
+    const p = plan({ returnColumns: [] })
+    const row = _formatResultRow(r, p)
+    expect(row.a).toEqual({ _label: 'A', name: 'n' })
+  })
+
+  it('skips crossVarRows edge var markers and surfaces pathVar', () => {
+    const r: any = {
+      __crossVarRows: { e: { __edgeLabel: 'R1', _type: 'R1' } },
+      props: { p: { __path: [1, 2], __pathEdges: [] } },
+    }
+    const p = plan({ returnColumns: [], pathVar: 'p' })
+    const row = _formatResultRow(r, p)
+    expect(row.e).toEqual({ __edgeLabel: 'R1', _type: 'R1' })
+    expect(row.p).toEqual({ __path: [1, 2], __pathEdges: [] })
+  })
+
+  it('formats a __targetPropsMap node entry as (:Label)', () => {
+    const r: any = { __targetPropsMap: { a: { _label: 'Person' } } }
+    const p = plan({ returnColumns: [] })
+    const row = _formatResultRow(r, p)
+    expect(row.a).toBe('(:Person)')
+  })
+
+  it('keeps a __targetPropsMap edge entry verbatim', () => {
+    const r: any = { __targetPropsMap: { e: { __edgeLabel: 'R1' } } }
+    const p = plan({ returnColumns: [] })
+    const row = _formatResultRow(r, p)
+    expect(row.e).toEqual({ __edgeLabel: 'R1' })
+  })
+})
