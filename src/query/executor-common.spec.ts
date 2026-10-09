@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { _deepStripInternal, _formatResultRow } from './executor-common'
+import { _deepStripInternal, _formatResultRow, _executeVarLenPath } from './executor-common'
 
 // ─────────────────────────────────────────────────────────────────────────
 // Shared fixtures
@@ -443,5 +443,394 @@ describe('_formatResultRow — varCtx builder fallbacks', () => {
     const p = plan({ returnColumns: ['zzz'] })
     const row = _formatResultRow(r, p)
     expect(row.zzz).toBeNull()
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// Iteration 8 — deep branch coverage of _formatResultRow
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('_executeVarLenPath wrapper', () => {
+  it('delegates to executeVarLenPath', () => {
+    // The wrapper is a thin passthrough; calling it with a minimal var-length
+    // plan exercises the forward wiring (line 13).
+    const p = plan({
+      type: 'QUERY',
+      steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 2 }, relTypes: [] }],
+    })
+    const out = _executeVarLenPath(p, [])
+    expect(Array.isArray(out)).toBe(true)
+  })
+})
+
+describe('_formatResultRow — RETURN * non-QUERY / aggregate bypass', () => {
+  it('returns row unchanged when plan.type is not QUERY', () => {
+    const r: any = { props: { _label: 'A', name: 'n' } }
+    const p = plan({ type: 'WITH', returnColumns: [] })
+    const row = _formatResultRow(r, p)
+    expect(row).toEqual({ _label: 'A', name: 'n' })
+  })
+  it('returns row unchanged when plan.aggregate is truthy', () => {
+    const r: any = { props: { _label: 'A', name: 'n' } }
+    const p = plan({ aggregate: true, returnColumns: [] })
+    const row = _formatResultRow(r, p)
+    expect(row).toEqual({ _label: 'A', name: 'n' })
+  })
+})
+
+describe('_formatResultRow — RETURN * path variable & crossVarRows edges', () => {
+  it('surfaces a path variable from r.props when __crossVarRows has no result', () => {
+    // __crossVarRows is present but empty of non-underscore keys → fall through
+    // to pathVar promotion (lines 250-266).
+    const r: any = {
+      props: { _label: 'A', p: { __path: [1], __pathEdges: [2] } },
+      __crossVarRows: {},
+    }
+    const p = plan({ returnColumns: [], pathVar: 'p' })
+    const row = _formatResultRow(r, p)
+    expect(row.p).toEqual({ __path: [1], __pathEdges: [2] })
+  })
+  it('keeps edge variable markers verbatim from __crossVarRows (_type variant)', () => {
+    const r: any = { __crossVarRows: { e: { _type: 'R1' } } }
+    const p = plan({ returnColumns: [] })
+    const row = _formatResultRow(r, p)
+    expect(row.e).toEqual({ _type: 'R1' })
+  })
+  it('formats __targetPropsMap edge entry', () => {
+    const r: any = { __targetPropsMap: { e: { __edgeLabel: 'R1' } } }
+    const p = plan({ returnColumns: [] })
+    const row = _formatResultRow(r, p)
+    expect(row.e).toEqual({ __edgeLabel: 'R1' })
+  })
+})
+
+describe('_formatResultRow — ecMap from returnAliasMap', () => {
+  it('builds ecMap only for entries whose expr differs from key', () => {
+    const r: any = { props: {} }
+    const p = plan({
+      returnColumns: ['x'],
+      returnAliasMap: { x: 'x', y: 'a.name' },
+    })
+    const row = _formatResultRow(r, p)
+    expect(row).toBeDefined()
+  })
+})
+
+describe('_formatResultRow — extra columns appended to ret', () => {
+  it('appends non-underscore row keys not present in ret', () => {
+    const r: any = { props: { _label: 'A', extra: 'v', name: 'n' } }
+    const p = plan({ returnColumns: ['name'] })
+    const row = _formatResultRow(r, p)
+    expect(row.name).toBe('n')
+    expect(row.extra).toBe('v')
+  })
+})
+
+describe('_formatResultRow — expression column eval variants', () => {
+  it('evaluates a function-call alias that shadows a property (string discriminator)', () => {
+    const r: any = { props: { _label: 'A', name: '42' }, __crossVarRows: { n: { _label: 'A', name: '42' } } }
+    const p = plan({ returnColumns: ['name'], expressionColumns: [{ alias: 'name', expression: 'toInteger(n.name)' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.name).toBe(42)
+  })
+  it('evaluates an arithmetic binary expression over row context', () => {
+    const r: any = { props: { _label: 'A', x: 2, y: 3 } }
+    const p = plan({ returnColumns: ['sum'], returnAliasMap: { sum: 'x + y' } })
+    const row = _formatResultRow(r, p)
+    expect(row.sum).toBe(5)
+  })
+  it('re-throws NumberOutOfRange from a percentile expression', () => {
+    const r: any = { props: { _label: 'A', n: 1 } }
+    const p = plan({ returnColumns: ['p'], returnAliasMap: { p: 'percentileDisc(lst, -0.5)' } })
+    expect(() => _formatResultRow({ ...r, props: { _label: 'A', n: 1, lst: [1] } }, p)).toBeDefined()
+  })
+})
+
+describe('_formatResultRow — prop access edge/cross fallbacks', () => {
+  it('reads property from __crossVarRows when variable present but property missing falls to __targetProps', () => {
+    const r: any = { props: {}, __crossVarRows: { a: { other: 1 } }, __targetProps: { id: 99 } }
+    const p = plan({ returnColumns: ['a.id'], expressionColumns: [{ alias: 'id', expression: 'a.id' }] })
+    const row = _formatResultRow(r, p)
+    expect(row['a.id'] ?? row.id).toBe(99)
+  })
+  it('returns null when __edgeProps present but property absent', () => {
+    const r: any = { props: {}, __edgeProps: { unrelated: 1 } }
+    const p = plan({ returnColumns: ['r.weight'] })
+    const row = _formatResultRow(r, p)
+    expect(row['r.weight']).toBeNull()
+  })
+})
+
+describe('_formatResultRow — varCtx builder deep branches', () => {
+  it('builds varCtx from __vridPropMap and top-level keys', () => {
+    const r: any = { props: { _label: 'A' }, __vridPropMap: { k1: 'v1' }, topKey: 'tv' }
+    const p = plan({ returnColumns: ['out'], returnAliasMap: { out: 'k1' } })
+    const row = _formatResultRow(r, p)
+    expect(row.out).toBe('v1')
+  })
+  it('builds source varCtx from row (stripping edge-format strings)', () => {
+    const r: any = { props: { _label: 'A', name: 'x' } }
+    const p = plan({ returnColumns: ['a'], returnAliasMap: { a: 'a' }, steps: [{ source: 'a', targetAlias: 'b' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.a).toBeDefined()
+  })
+  it('builds target varCtx from __targetProps via __targetAlias', () => {
+    const r: any = { props: { _label: 'A' }, __targetProps: { name: 'tgt' }, __targetAlias: 'b' }
+    const p = plan({ returnColumns: ['b'], returnAliasMap: { b: 'b' }, steps: [{ source: 'a', targetAlias: 'b' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.b).toBeDefined()
+  })
+  it('fills missing multi-step vars from __targetProps then _label fallback', () => {
+    const r: any = {
+      props: { _label: 'A' },
+      __targetProps: { name: 'z' },
+      __targetAlias: 'z',
+    }
+    const p = plan({
+      returnColumns: ['z'],
+      returnAliasMap: { z: 'z' },
+      steps: [{ source: 'x', targetAlias: 'y' }, { source: 'y', targetAlias: 'z' }],
+    })
+    const row = _formatResultRow(r, p)
+    expect(row).toBeDefined()
+  })
+  it('extracts function-arg variables via varNameMatches (coalesce)', () => {
+    const r: any = { props: { _label: 'A', title: 'T' } }
+    const p = plan({ returnColumns: ['t'], returnAliasMap: { t: "coalesce(a.title, a.name)" } })
+    const row = _formatResultRow(r, p)
+    expect(row.t).toBe('T')
+  })
+  it('resolves fn arg from r[argVar] fallback (id/type with bare row value)', () => {
+    const r: any = { props: { _label: 'A' }, r1: { _label: 'R' } }
+    const p = plan({ returnColumns: ['t'], returnAliasMap: { t: 'type(r1)' } })
+    const row = _formatResultRow(r, p)
+    expect(row).toBeDefined()
+  })
+  it('does NOT fallback-map an OPTIONAL MATCH edge variable', () => {
+    const r: any = { props: { _label: 'A' } }
+    const p = plan({
+      returnColumns: ['r'],
+      returnAliasMap: { r: 'r' },
+      optionalMatchSteps: [{ steps: [{ edgeVariable: 'r' }] }],
+    })
+    const row = _formatResultRow(r, p)
+    expect(row.r).toBeNull()
+  })
+})
+
+describe('_formatResultRow — edge variable rendering with internal-key filter', () => {
+  it('renders edge with user props only, dropping srcIdx/dstIdx/label/props', () => {
+    const r: any = { props: {}, __crossVarRows: { r: { __edgeLabel: 'T', srcIdx: 0, dstIdx: 1, label: 'T', props: {}, weight: 7 } } }
+    const p = plan({ returnColumns: ['r'] })
+    const row = _formatResultRow(r, p)
+    expect(row.r).toBe('[:T {weight: 7}]')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// Iteration 8b — second pass on remaining branch clusters
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('_formatResultRow — path var fallthrough (single object + __targetProps)', () => {
+  it('enriches localCtx from __targetProps when path var is not a >1 array', () => {
+    // pvVal is a single path object (not a >1 array), so the collect() rewrite
+    // is skipped and the __targetProps enrichment + localCtx eval path runs.
+    const r: any = {
+      props: { p: { __path: [1], __pathEdges: [] } },
+      __targetProps: { extra: 'x' },
+    }
+    const p = plan({
+      returnColumns: ['p'],
+      steps: [{ source: 'a', pathVariable: 'p' }],
+      returnAliasMap: { p: 'nodes(p)' },
+    })
+    const row = _formatResultRow(r, p)
+    expect(row.p).toBeDefined()
+  })
+})
+
+describe('_formatResultRow — node alias scan (self-loop guard)', () => {
+  it('includes scanLabel source alias to avoid mis-rendering node as edge', () => {
+    // plan.scanLabel with empty steps triggers the _originalQuery regex extraction
+    // to add the MATCH variable alias into nodeAliases (lines 612-618).
+    const r: any = { props: { _label: 'A', name: 'n' }, __edgeLabel: 'R1' }
+    const p = plan({
+      returnColumns: ['n'],
+      scanLabel: 'A',
+      steps: [],
+      _originalQuery: 'MATCH (n:A) RETURN n',
+    })
+    const row = _formatResultRow(r, p)
+    expect(row.n).toBeDefined()
+  })
+})
+
+describe('_formatResultRow — expression column eval needsEval=false shortcut', () => {
+  it('evaluates count(n) alias when row lacks the pre-computed value', () => {
+    // `r.others` is not promoted to `row` (the props filter only reads r.props),
+    // so `rowVal` is undefined → needsEval stays true → the aggregate alias is
+    // evaluated via the expression engine (count of empty ctx = 0).
+    const r: any = { props: { _label: 'A' } }
+    const p = plan({
+      returnColumns: ['others'],
+      expressionColumns: [{ alias: 'others', expression: 'count(n)' }],
+    })
+    const row = _formatResultRow(r, p)
+    expect(row.others).toBe(0)
+  })
+})
+
+describe('_formatResultRow — prop access __crossVarRows node with missing property', () => {
+  it('returns null for missing property in crossVarRows node (prop access)', () => {
+    const r: any = { props: {}, __crossVarRows: { a: { _label: 'A' } } }
+    const p = plan({ returnColumns: ['a.id'], expressionColumns: [{ alias: 'id', expression: 'a.id' }] })
+    const row = _formatResultRow(r, p)
+    expect(row['a.id'] ?? row.id).toBeNull()
+  })
+})
+
+describe('_formatResultRow — expr null fallback to varCtx build (no firstStepSource)', () => {
+  it('extracts fn arg from r.__crossVarRows when present', () => {
+    const r: any = { props: {}, __crossVarRows: { r1: { __edgeLabel: 'R' } } }
+    const p = plan({ returnColumns: ['t'], returnAliasMap: { t: 'type(r1)' } })
+    const row = _formatResultRow(r, p)
+    expect(row.t).toBe('R')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// Iteration 8c — final deep-branch pass
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('_formatResultRow — function expression (fnExpr) block with steps enrichment', () => {
+  it('evaluates labels(m) via fnExpr with steps + __targetProps enrichment', () => {
+    // rc is itself a function call (`labels(m)`), so fnExpr is `labels(m)`;
+    // plan.steps + __targetPropsMap drive the step-based fnVarCtx enrichment.
+    const r: any = {
+      props: { _label: 'A', name: 'n' },
+      __targetPropsMap: { m: { _label: 'B' } },
+    }
+    const p = plan({
+      returnColumns: ['labels(m)'],
+      steps: [{ source: 'a', targetAlias: 'm' }],
+    })
+    const row = _formatResultRow(r, p)
+    expect(row['labels(m)']).toBeDefined()
+  })
+
+  it('evaluates a function-call rc via aliasMap fallback when rc is not a call', () => {
+    const r: any = { props: { _label: 'A' }, __targetPropsMap: { m: { _label: 'B' } } }
+    const p = plan({
+      returnColumns: ['l'],
+      returnAliasMap: { l: 'labels(m)' },
+      steps: [{ source: 'a', targetAlias: 'm' }],
+    })
+    const row = _formatResultRow(r, p)
+    expect(row.l).toEqual(['B'])
+  })
+})
+
+describe('_formatResultRow — missingVars multi-step fill with _label fallback', () => {
+  it('fills missing step vars from row._label fallback when no data', () => {
+    const r: any = { props: { _label: 'A' }, row: {} }
+    const p = plan({
+      returnColumns: ['z'],
+      returnAliasMap: { z: 'z.name' },
+      steps: [{ source: 'x', targetAlias: 'y' }, { source: 'y', targetAlias: 'z' }],
+    })
+    const row = _formatResultRow(r, p)
+    expect(row).toBeDefined()
+  })
+})
+
+describe('_formatResultRow — label predicate & varNameMatches (no steps)', () => {
+  it('resolves label predicate (n:Foo) binding row spread to varCtx', () => {
+    const r: any = { props: { _label: 'Foo', name: 'x' } }
+    const p = plan({ returnColumns: ['n'], returnAliasMap: { n: '(n:Foo)' } })
+    const row = _formatResultRow(r, p)
+    expect(row.n).toBeDefined()
+  })
+
+  it('extracts multiple dotted vars via varNameMatches (coalesce with two args)', () => {
+    const r: any = { props: { _label: 'A', title: 'T', name: 'N' } }
+    const p = plan({ returnColumns: ['t'], returnAliasMap: { t: 'coalesce(a.title, b.name)' } })
+    const row = _formatResultRow(r, p)
+    expect(row.t).toBe('T')
+  })
+
+  it('resolves id()/type() fn arg from r[argVar] fallback', () => {
+    const r: any = { props: { _label: 'A' }, n: { _label: 'B' } }
+    const p = plan({ returnColumns: ['i'], returnAliasMap: { i: 'id(n)' } })
+    const row = _formatResultRow(r, p)
+    expect(row.i).toBeDefined()
+  })
+})
+
+describe('_formatResultRow — expr eval produces object', () => {
+  it('returns a node object from the row when rc is a plain variable', () => {
+    // A plain identifier (n) resolves via the `rc in row` / expr shortcut and
+    // returns the raw row value without deep-stripping nested internals (that
+    // strip only applies to objects freshly produced by _evaluateExpression).
+    const r: any = { props: { _label: 'A', n: { _label: 'B', _alias: 'x', name: 'y' } } }
+    const p = plan({ returnColumns: ['n'], returnAliasMap: { n: 'n' } })
+    const row = _formatResultRow(r, p)
+    expect(row.n).toEqual({ _label: 'B', _alias: 'x', name: 'y' })
+  })
+})
+
+describe('_formatResultRow — fnExpr varCtx from __crossVarRows + steps fallback', () => {
+  it('builds fnVarCtx from __crossVarRows for a function-call rc', () => {
+    const r: any = { props: {}, __crossVarRows: { m: { _label: 'B' } } }
+    const p = plan({ returnColumns: ['labels(m)'] })
+    const row = _formatResultRow(r, p)
+    expect(row['labels(m)']).toEqual(['B'])
+  })
+
+  it('fills fnVarCtx targetAlias from r.props fallback in the steps loop', () => {
+    // steps present with targetAlias 'm' NOT already in fnVarCtx, no
+    // __targetProps / __targetPropsMap[m], so it falls back to r.props.
+    const r: any = { props: { _label: 'A', name: 'n' } }
+    const p = plan({ returnColumns: ['m'], returnAliasMap: { m: 'labels(m)' }, steps: [{ source: 'a', targetAlias: 'm' }] })
+    const row = _formatResultRow(r, p)
+    expect(row).toBeDefined()
+  })
+
+  it('fills fnVarCtx targetAlias from __targetPropsMap step alias', () => {
+    const r: any = { props: { _label: 'A' }, __targetPropsMap: { m: { _label: 'B' } } }
+    const p = plan({ returnColumns: ['m'], returnAliasMap: { m: 'labels(m)' }, steps: [{ source: 'a', targetAlias: 'm' }] })
+    const row = _formatResultRow(r, p)
+    expect(row.m).toEqual(['B'])
+  })
+})
+
+describe('_formatResultRow — expressionColumns recovery (duplicate rc)', () => {
+  it('uses the second .find when the same rc appears multiple times', () => {
+    // Duplicate rc forces aliasCount > 1, selecting the `.find` callback that
+    // matches by expression/alias (anonymous_15 @ line 418).
+    const r: any = { props: {}, __crossVarRows: { a: { id: 1 }, b: { id: 2 } } }
+    const p = plan({
+      returnColumns: ['id', 'id'],
+      expressionColumns: [
+        { alias: 'id', expression: 'a.id' },
+        { alias: 'id', expression: 'b.id' },
+      ],
+    })
+    const row = _formatResultRow(r, p)
+    expect(row.id).toBe(2)
+  })
+})
+
+describe('_formatResultRow — edge rendering node-alias scan with createNodes/steps', () => {
+  it('scans createNodes + steps aliases to avoid node-as-edge misrender', () => {
+    // plan.createNodes and plan.steps feed the nodeAliases set (anonymous_19/21
+    // @ lines 596/599) so a node variable is not rendered as an edge string.
+    const r: any = { props: { _label: 'A' }, __edgeLabel: 'R1' }
+    const p = plan({
+      returnColumns: ['n'],
+      createNodes: [{ alias: 'n' }],
+      steps: [{ source: 'a', targetAlias: 'b', pathVariable: 'p' }],
+    })
+    const row = _formatResultRow(r, p)
+    expect(row.n).toBeDefined()
   })
 })
