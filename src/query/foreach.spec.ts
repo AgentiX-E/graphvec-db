@@ -13,7 +13,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { parseQuery, _executeQuery, QueryPlan } from './query-engine'
-import { executeForeachInlineTop, evalForeachCondTop } from './foreach-exec'
+import { executeForeachInlineTop, evalForeachCondTop, applyForeachOpTop } from './foreach-exec'
 
 // The runtime foreach structure uses { variable, list, isVarRef, operation },
 // which the legacy `ForEachClause` interface (still exposing `updates`) does not
@@ -698,5 +698,141 @@ describe('evalForeachCondTop 单元测试', () => {
 
   it('x IN [1,2]: 字符串 IN 匹配', () => {
     expect(evalForeachCondTop('x IN [1,2]', 'x', '1')).toBe(true)
+  })
+})
+
+// =============================================================
+// evalForeachCondTop / applyForeachOpTop — branch completion
+// =============================================================
+
+describe('evalForeachCondTop — non-IN fallthrough & string operands', () => {
+  it('returns true for an unrecognized condition (final fallthrough)', () => {
+    expect(evalForeachCondTop('', 'x', 1)).toBe(true)
+    expect(evalForeachCondTop('some literal text', 'x', 1)).toBe(true)
+  })
+
+  it('compares string operands for = and != (non-numeric fallback branch)', () => {
+    expect(evalForeachCondTop('x = hello', 'x', 'hello')).toBe(true)
+    expect(evalForeachCondTop('x = hello', 'x', 'world')).toBe(false)
+    expect(evalForeachCondTop('x != hello', 'x', 'world')).toBe(true)
+  })
+
+  it('compares numeric rhs via Number() when both operands are numeric', () => {
+    expect(evalForeachCondTop('x = 5', 'x', 5)).toBe(true)
+    expect(evalForeachCondTop('x > 2', 'x', '3')).toBe(true)
+    expect(evalForeachCondTop('x < 2', 'x', '3')).toBe(false)
+  })
+})
+
+describe('applyForeachOpTop — null op / dotted props / DELETE alias', () => {
+  it('returns a copy when op is null or undefined', () => {
+    expect(applyForeachOpTop({ a: 1 }, null as any, 'x')).toEqual({ a: 1 })
+    expect(applyForeachOpTop({ a: 1 }, undefined as any, 'x')).toEqual({ a: 1 })
+  })
+
+  it('SET with a dotted property strips the prefix', () => {
+    const r = applyForeachOpTop({ name: 'A' }, { type: 'SET', setClauses: [{ property: 'n.flag', value: 1 }] } as any, 'x')
+    expect(r).toEqual({ name: 'A', flag: 1 })
+  })
+
+  it('DELETE returns null when row alias matches a target', () => {
+    const r = applyForeachOpTop({ _alias: 'n', name: 'A' }, { type: 'DELETE', targets: ['n'] } as any, 'x')
+    expect(r).toBeNull()
+  })
+
+  it('DELETE keeps the row when alias does not match any target', () => {
+    const r = applyForeachOpTop({ _alias: 'm', name: 'B' }, { type: 'DELETE', targets: ['n'] } as any, 'x')
+    expect(r).toEqual({ _alias: 'm', name: 'B' })
+  })
+
+  it('REMOVE with a dotted property deletes only the trailing key', () => {
+    const r = applyForeachOpTop({ name: 'A', flag: true }, { type: 'REMOVE', targets: ['n.flag'] } as any, 'x')
+    expect(r).toEqual({ name: 'A' })
+    expect(r).not.toHaveProperty('flag')
+  })
+
+  it('FOREACH op without a nested foreach object returns the row unchanged', () => {
+    const r = applyForeachOpTop({ a: 1 }, { type: 'FOREACH' } as any, 'x')
+    expect(r).toEqual({ a: 1 })
+  })
+
+  it('MULTI op without operations returns the row unchanged', () => {
+    const r = applyForeachOpTop({ a: 1 }, { type: 'MULTI' } as any, 'x')
+    expect(r).toEqual({ a: 1 })
+  })
+
+  it('MULTI op whose sub-operations yield zero rows returns null', () => {
+    // DELETE removes the only row, so the inner MULTI collapses to empty -> null
+    const r = applyForeachOpTop(
+      { _alias: 'n' },
+      { type: 'MULTI', operations: [{ type: 'DELETE', targets: ['n'] }] } as any,
+      'x',
+    )
+    expect(r).toBeNull()
+  })
+
+  it('unknown op type returns a copy of the row', () => {
+    const r = applyForeachOpTop({ a: 1 }, { type: 'WHATEVER' } as any, 'x')
+    expect(r).toEqual({ a: 1 })
+  })
+})
+
+describe('executeForeachInlineTop — varRef scalar reference', () => {
+  it('wraps a scalar varRef value into a single-item list', () => {
+    const fe = { variable: 'x', list: ['v'], isVarRef: true, operation: { type: 'CREATE' } }
+    const result = executeForeachInlineTop([{ v: 42 }], fe as any)
+    expect(result).toHaveLength(1)
+    expect(result[0].x).toBe(42)
+  })
+
+  it('uses the literal list when the referenced var is absent from the row', () => {
+    const fe = { variable: 'x', list: ['v'], isVarRef: true, operation: { type: 'CREATE' } }
+    const result = executeForeachInlineTop([{}], fe as any)
+    // candidates[0][v] is undefined -> falls back to literal list ['v']
+    expect(result).toHaveLength(1)
+    expect(result[0].x).toBe('v')
+  })
+})
+
+describe('applyForeachOpTop — false-arm fixtures (SET/DELETE/REMOVE without sub-structures)', () => {
+  it('SET op without setClauses keeps the row copy', () => {
+    const r = applyForeachOpTop({ name: 'A' }, { type: 'SET' } as any, 'x')
+    expect(r).toEqual({ name: 'A' })
+  })
+
+  it('SET with a non-dotted property writes directly', () => {
+    const r = applyForeachOpTop({ name: 'A' }, { type: 'SET', setClauses: [{ property: 'flag', value: 1 }] } as any, 'x')
+    expect(r).toEqual({ name: 'A', flag: 1 })
+  })
+
+  it('SET with a non-string value bypasses the \$ref lookup', () => {
+    const r = applyForeachOpTop({ name: 'A' }, { type: 'SET', setClauses: [{ property: 'flag', value: 42 }] } as any, 'x')
+    expect(r).toEqual({ name: 'A', flag: 42 })
+  })
+
+  it('SET with a \$ref value absent from the row keeps the literal', () => {
+    // val starts with '$' but row[val.slice(1)] is undefined -> keep '$missing'
+    const r = applyForeachOpTop({ name: 'A' }, { type: 'SET', setClauses: [{ property: 'flag', value: '$missing' }] } as any, 'x')
+    expect(r).toEqual({ name: 'A', flag: '$missing' })
+  })
+
+  it('DELETE op without targets keeps the row', () => {
+    const r = applyForeachOpTop({ _alias: 'n', name: 'A' }, { type: 'DELETE' } as any, 'x')
+    expect(r).toEqual({ _alias: 'n', name: 'A' })
+  })
+
+  it('REMOVE with a non-dotted target deletes that key', () => {
+    const r = applyForeachOpTop({ name: 'A', flag: true }, { type: 'REMOVE', targets: ['flag'] } as any, 'x')
+    expect(r).toEqual({ name: 'A' })
+  })
+
+  it('MULTI op that collapses to a single surviving row returns that row', () => {
+    // CREATE then DELETE one alias: result has exactly 1 row -> short-circuits
+    const r = applyForeachOpTop(
+      { _alias: 'm', name: 'B' },
+      { type: 'MULTI', operations: [{ type: 'CREATE' }, { type: 'DELETE', targets: ['n'] }] } as any,
+      'x',
+    )
+    expect(r).toEqual({ _alias: 'm', name: 'B' })
   })
 })
