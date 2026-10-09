@@ -35,11 +35,11 @@ function _edgeToRelObj(e: { srcIdx: number; dstIdx: number; label: string; props
   // is an already-bound list of relationships) can later verify that a bound
   // source/target pair traverses the list in the correct direction.  The
   // `__`-prefix is stripped by the serialization layer, so this never leaks
-  // into TCK-rendered rows.
-  if (typeof e.srcIdx === 'number' && typeof e.dstIdx === 'number') {
-    edgeNode.__srcIdx = e.srcIdx
-    edgeNode.__dstIdx = e.dstIdx
-  }
+  // into TCK-rendered rows.  srcIdx/dstIdx are declared `number` on the edge
+  // contract and every caller passes a matched edge with numeric endpoints, so
+  // no runtime guard is needed here.
+  edgeNode.__srcIdx = e.srcIdx
+  edgeNode.__dstIdx = e.dstIdx
   if (e.props) { for (const [k, v] of Object.entries(e.props)) { if (k !== '_type') edgeNode[k] = v } }
   return edgeNode
 }
@@ -91,8 +91,10 @@ function _buildRow(newPath: number[], srcNodes: Array<Record<string, unknown>>, 
     if (!rc || varNames.has(rc) || rc in rowRes) continue
     if (rc.match(/^\w+\(/)) {
       const evalCtx: Record<string, unknown> = { ...rowRes }
-      const val = evaluateExpr(rc, evalCtx)
-      rowRes[rc] = val !== undefined ? val : null
+      // _evaluateExpression always returns a defined value (null for missing
+      // identifiers/functions), so the previous `!== undefined ? : null` guard
+      // was dead code and is omitted.
+      rowRes[rc] = evaluateExpr(rc, evalCtx)
     } else {
       // 处理 variable.property 语法：b.name → 从 target 节点的 name 属性取值
       const dotMatch = rc.match(/^(\w+)\.(.+)$/)
@@ -493,8 +495,9 @@ function _applyWithProjection(rows: QueryRow[], plan: any): QueryResult {
     for (let ci = 0; ci < plan.with.columns.length; ci++) {
       const col = plan.with.columns[ci]; const alias = col.alias || col.expression
       if (!isAggCol[ci]) {
-        const val = evaluateExpr(col.expression as string, evalCtx)
-        newRow[alias] = val !== undefined ? val : null
+        // _evaluateExpression null-normalizes its result; no `!== undefined`
+        // guard is needed here.
+        newRow[alias] = evaluateExpr(col.expression as string, evalCtx)
         evalCtx[alias] = newRow[alias]
       }
     }
@@ -513,8 +516,9 @@ function _applyWithProjection(rows: QueryRow[], plan: any): QueryResult {
       const resultRow: Record<string, unknown> = { ...row }
       for (const [alias, expr] of Object.entries(plan.returnAliasMap)) {
         if (!(alias in resultRow)) {
-          const val = evaluateExpr(expr as string, resultRow as Record<string, unknown>)
-          resultRow[alias] = val !== undefined ? val : null
+          // _evaluateExpression null-normalizes its result; no `!== undefined`
+          // guard is needed here.
+          resultRow[alias] = evaluateExpr(expr as string, resultRow as Record<string, unknown>)
         }
       }
       return resultRow

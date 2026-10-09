@@ -1113,5 +1113,91 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
       const rows = executeVarLenPath(plan as any, nodes)
       expect(rows.length).toBeGreaterThan(0)
     })
+
+    it('_edgeToRelObj skips a prop literally named "_type" (L43 k !== "_type" false arm)', () => {
+      const nodes: Array<Record<string, unknown>> = [
+        { _label: 'Node', name: 'a', __edges: [] },
+        { _label: 'Node', name: 'b', __edges: [] },
+      ]
+      // Edge whose props include a reserved `_type` key: _edgeToRelObj copies
+      // other props but MUST skip `_type` (it is derived from `e.label`).
+      const edge = { srcIdx: 0, dstIdx: 1, label: 'NEXT', props: { _type: 'META', w: 9 } }
+      ;(nodes[0] as any).__edges.push(edge)
+      ;(nodes[1] as any).__edges.push(edge)
+      const plan = {
+        scanLabel: null, pathVar: 'p',
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'out' }],
+        returnColumns: ['p'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      const edgeObj = rows[0].p.__pathEdges[0] as any
+      // `_type` reflects the edge LABEL (NEXT), not the prop; prop `w` survives.
+      expect(edgeObj._type).toBe('NEXT')
+      expect(edgeObj.w).toBe(9)
+      expect(edgeObj.META).toBeUndefined()
+    })
+
+    it('node with __edges explicitly undefined drives the `|| []` fallback (L52/L214)', () => {
+      const nodes: Array<Record<string, unknown>> = [
+        { _label: 'Node', name: 'a', __edges: undefined },  // not [] — forces || []
+        { _label: 'Node', name: 'b', __edges: [{ srcIdx: 0, dstIdx: 1, label: 'NEXT' }] },
+      ]
+      const plan = {
+        scanLabel: null, pathVar: 'p',
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'out' }],
+        returnColumns: ['p'],
+      }
+      // Start node `a` has __edges === undefined, so the `|| []` fallback yields
+      // an empty edge array -> no out-traversal -> 0 matches.
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBe(0)
+    })
+
+    it('undirected reverse-adjacency else-if (e.dstIdx === entry.nIdx) (L222)', () => {
+      // Edge stored such that the current node is the DESTINATION (e.dstIdx),
+      // requiring the reverse `else if (e.dstIdx === entry.nIdx)` arm in an
+      // undirected (direction: "any") walk.
+      const nodes: Array<Record<string, unknown>> = [
+        { _label: 'Node', name: 'a', __edges: [] },
+        { _label: 'Node', name: 'b', __edges: [{ srcIdx: 0, dstIdx: 1, label: 'NEXT' }] },
+      ]
+      const plan = {
+        scanLabel: null, pathVar: 'p',
+        steps: [{ source: 'b', targetAlias: 'c', range: { min: 1, max: 1 }, direction: 'any' }],
+        returnColumns: ['p'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      // Starting at b (index 1), undirected reverse finds a (index 0).
+      expect(rows.length).toBe(1)
+      expect(rows[0].p.__path[0].name).toBe('b')
+      expect(rows[0].p.__path[1].name).toBe('a')
+    })
+
+    it('edge inline prop predicate mismatch skips traversal (L336 edgePropsPred)', () => {
+      const nodes = chain(3)
+      // Require year:1988 but chain edges carry no props -> every step rejected.
+      const plan = {
+        scanLabel: null, pathVar: 'p',
+        steps: [{ source: 'a', targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'out', edgeProps: { year: 1988 } }],
+        returnColumns: ['p'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBe(0)
+    })
+
+    it('pathVar set but step.source absent skips the inner source binding (L76)', () => {
+      const nodes = chain(2)
+      const plan = {
+        scanLabel: null, pathVar: 'p',
+        // NO `source` on the step: `if (step.source)` inside the pathVar block
+        // is false, so only `p` is bound (a/b derive from targetAlias/path).
+        steps: [{ targetAlias: 'b', range: { min: 1, max: 1 }, direction: 'out' }],
+        returnColumns: ['p'],
+      }
+      const rows = executeVarLenPath(plan as any, nodes)
+      expect(rows.length).toBe(1)
+      expect(rows[0].p.__path).toHaveLength(2)
+      expect(rows[0].b.name).toBe('v1')
+    })
   })
 })
