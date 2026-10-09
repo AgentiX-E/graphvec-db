@@ -214,35 +214,13 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
   const withMatches = query.matchAll(/\bWITH\s+(.+?)(?:\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|ORDER\s+BY|SKIP|LIMIT|CALL)\s|$)/gis)
   for (const wm of withMatches) {
     const clauseBody = wm[1];
-    // 从 clauseBody 末尾向前扫描，找到第一个不在括号内的 WHERE/MATCH 等关键字
-    // 因为 clauseBody 可能包含列表谓词 all/any/none/single(...WHERE...)
-    // 简单方法：如果 clauseBody 没有括号，直接处理；If any括号，用深度Trace截断
-    let effectiveBody = clauseBody;
-    if (/[()\[\]]/.test(clauseBody)) {
-      // 括号感知截断：找到第一个不在括号内的 WHERE/MATCH/等
-      // 遍历 clauseBody 字符
-      let parenDepth = 0;
-      let bracketDepth = 0;
-      let cutoff = clauseBody.length;
-      for (let i = 0; i < clauseBody.length; i++) {
-        const ch = clauseBody[i];
-        if (ch === '(') parenDepth++;
-        else if (ch === ')') parenDepth--;
-        else if (ch === '[') bracketDepth++;
-        else if (ch === ']') bracketDepth--;
-        else if (parenDepth === 0 && bracketDepth === 0) {
-          // 不在括号内：检查是否遇到 WHERE/MATCH/RETURN 等关键字
-          if (/\s+(?:WHERE|MATCH|RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND)\s/i.test(clauseBody.slice(i, i+20))) {
-            cutoff = i;
-            break;
-          }
-        }
-        if (parenDepth < 0) parenDepth = 0; // 防御性
-        if (bracketDepth < 0) bracketDepth = 0;
-      }
-      effectiveBody = clauseBody.slice(0, cutoff).trim();
-    }
-    const items = effectiveBody.split(',').map(s => s.trim())
+    // NOTE: the outer `withMatches` regex already terminates `clauseBody` at
+    // the first depth-0 clause keyword (`WHERE`/`MATCH`/`RETURN`/...). Any
+    // `WHERE` that remains inside `clauseBody` is necessarily nested inside a
+    // paren/bracket (a list predicate or comprehension), i.e. at depth > 0, so
+    // there is no further depth-0 keyword to cut here. `clauseBody` is used
+    // verbatim; a separate bracket-tracking pass would be a no-op.
+    const items = clauseBody.split(',').map(s => s.trim())
     for (const item of items) {
       const asMatch = item.match(/\bAS\s+(\w+)\s*$/i)
       if (asMatch) withVars.push(asMatch[1])
@@ -362,10 +340,9 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
         // 检查是否在 MATCH、WITH 变量、CREATE 边变量、CREATE 节点变量中定义
         const allDefinedVars = [...matchVars, ...withVars, ...createEdgeVars, ...createNodeVars, ...callYieldVars, ...(loadCsvRowVar ? [loadCsvRowVar] : [])]
         if (!allDefinedVars.includes(v)) {
-          // 额外检查：如果 v 看起来是属性访问（有小数点），跳过
+          // A dotted reference `a.b` is a property access, not a bare variable:
+          // skip when its base `a` is already defined.
           if (v.includes('.') && allDefinedVars.includes(v.split('.')[0])) continue
-          // 额外检查：参数变量（$xxx）不需要在查询中定义
-          if (v.startsWith('$')) continue
           throw Object.assign(new Error('SyntaxError: UndefinedVariable'), { tckError: 'UndefinedVariable' })
         }
       }

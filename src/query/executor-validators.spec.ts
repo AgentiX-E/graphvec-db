@@ -927,3 +927,111 @@ describe('_validateExistsSubqueryClauses — no exists{} (L554 false)', () => {
     expect(() => _validateExistsSubqueryClauses('MATCH (n) RETURN n')).not.toThrow()
   })
 })
+
+describe('_validatePatternPosition — nested comprehension brackets (L68 false)', () => {
+  it('allows a pattern inside nested list comprehension (nested brackets)', () => {
+    expect(() => _validatePatternPosition('RETURN [[a IN [1,2] | (n)-->(m)]]')).not.toThrow()
+  })
+})
+
+describe('_validatePatternPosition — SET RHS without equals (L110 false)', () => {
+  it('skips SET body when there is no `=` operator', () => {
+    expect(() => _validatePatternPosition('MATCH (n) SET n.x RETURN n')).not.toThrow()
+  })
+})
+
+describe('_validateUndefinedVariables — CALL YIELD bare/vs AS (L207)', () => {
+  it('binds a bare YIELD column (no AS) as a defined var', () => {
+    expect(() => _validateUndefinedVariables('MATCH (n) CALL db.labels() YIELD label RETURN label')).not.toThrow()
+  })
+  it('binds a YIELD column with AS alias', () => {
+    expect(() => _validateUndefinedVariables('MATCH (n) CALL db.labels() YIELD label AS l RETURN l')).not.toThrow()
+  })
+})
+
+describe('_validateUnknownFunctions — builtin fn name guard (L602)', () => {
+  it('recognizes count() as builtin and does not throw', () => {
+    expect(() => _validateUnknownFunctions('MATCH (n) RETURN count(n)')).not.toThrow()
+  })
+  it('throws UnknownFunction for an unknown function name', () => {
+    expect(() => _validateUnknownFunctions('MATCH (n) RETURN frobnicate(n)')).toThrow(/UnknownFunction/)
+  })
+  it('skips a dot-prefixed method call (beforeFn === ".")', () => {
+    expect(() => _validateUnknownFunctions('RETURN datetime.truncate("day", datetime())')).not.toThrow()
+  })
+})
+
+describe('_validateSetOperands — trailing comma empty body (L1024)', () => {
+  it('skips empty body produced by a trailing comma', () => {
+    expect(() => _validateSetOperands('MATCH (a) SET a.x = 1,')).not.toThrow()
+  })
+})
+
+describe('_validateOrderByScope — projection with bare prop alias (L885-L886)', () => {
+  it('binds a bare projection column as an alias var', () => {
+    expect(() => _validateOrderByScope('MATCH (n) RETURN n.name ORDER BY name')).not.toThrow()
+  })
+})
+
+describe('_validateOrderByScope — DISTINCT / backtick / backslash (L770-L919)', () => {
+  it('handles WITH DISTINCT with ORDER BY', () => {
+    expect(() => _validateOrderByScope('MATCH (n) WITH DISTINCT n AS x ORDER BY x RETURN x')).not.toThrow()
+  })
+  it('handles RETURN DISTINCT restricting ORDER BY to aliases', () => {
+    expect(() => _validateOrderByScope('MATCH (n) RETURN DISTINCT n.name AS name ORDER BY name')).not.toThrow()
+  })
+  it('rejects ORDER BY on a non-aliased var under RETURN DISTINCT', () => {
+    expect(() => _validateOrderByScope('MATCH (n) RETURN DISTINCT n.name AS name ORDER BY n.age')).toThrow(/UndefinedVariable/)
+  })
+  it('handles a single-word backtick-quoted alias in projection', () => {
+    expect(() => _validateOrderByScope('MATCH (n) RETURN n AS `x` ORDER BY `x`')).not.toThrow()
+  })
+  it('does not resolve a multi-word backtick alias (real regex limit)', () => {
+    // The alias regex `\bAS\s+(\`?\w+\`?)` only matches single-word (`\w+`)
+    // backtick identifiers; `the node` (space) is not parsed as an alias, so
+    // ORDER BY `the node` raises UndefinedVariable.
+    expect(() => _validateOrderByScope('MATCH (n) RETURN n AS `the node` ORDER BY `the node`')).toThrow(/UndefinedVariable/)
+  })
+  it('handles a backslash-escaped quote inside a string literal', () => {
+    expect(() => _validateOrderByScope('RETURN "say \\\"hi\\\"" AS x ORDER BY x')).not.toThrow()
+  })
+})
+
+describe('_validateSetOperands — comma inside list/map (L1066-L1067)', () => {
+  it('respects nested lists/maps when splitting SET RHS', () => {
+    expect(() => _validateSetOperands('MATCH (a) SET a.x = [1,2,3], a.y = {k: 1}')).not.toThrow()
+  })
+  it('handles a function call with comma in SET RHS', () => {
+    expect(() => _validateSetOperands('MATCH (a) SET a.x = coalesce(a.y, 0)')).not.toThrow()
+  })
+})
+
+describe('_validateSetOperands — LHS bracket/call before `=` (L1044-L1045)', () => {
+  it('tracks depth when the LHS has a list index before `=`', () => {
+    expect(() => _validateSetOperands('MATCH (a) SET a[0] = 1')).not.toThrow()
+  })
+  it('tracks depth when the LHS has a function call before `=`', () => {
+    expect(() => _validateSetOperands('MATCH (a) SET a.fn(1) = 2')).not.toThrow()
+  })
+  it('skips an empty SET body', () => {
+    expect(() => _validateSetOperands('MATCH (a) SET')).not.toThrow()
+  })
+})
+
+describe('_validateOrderByScope — backslash at end of string (L748 inner)', () => {
+  it('handles a string literal ending with an escaped backslash', () => {
+    expect(() => _validateOrderByScope('RETURN "trailing\\\\" AS x ORDER BY x')).not.toThrow()
+  })
+  it('handles a keyword token preceded by a letter (no false boundary)', () => {
+    expect(() => _validateOrderByScope('MATCH (n) RETURN n.name AS xMATCH ORDER BY xMATCH')).not.toThrow()
+  })
+})
+
+describe('_validateUndefinedVariables — YIELD projection non-identifier (L207)', () => {
+  it('binds a bare YIELD column (inner ternary true arm)', () => {
+    expect(() => _validateUndefinedVariables('MATCH (n) CALL db.labels() YIELD label RETURN label')).not.toThrow()
+  })
+  it('drops a non-identifier YIELD item to empty (inner ternary false arm)', () => {
+    expect(() => _validateUndefinedVariables('MATCH (n) CALL p() YIELD x.y RETURN x')).not.toThrow()
+  })
+})
