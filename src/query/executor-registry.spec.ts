@@ -26,6 +26,7 @@ import {
   _getAllDatabases,
   _clearDatabases,
   _clearGeInstances,
+  _loadStoreFromDisk,
   _geInstanceRegistry,
   _gePool,
   _geDirRegistry,
@@ -160,20 +161,22 @@ describe('persistence (_saveStore) and GE clear — filesystem branches', () => 
     }
   })
 
-  it('rmSyncs an existing GE pool dir during _clearGeInstances (L132)', () => {
+  it('clears in-memory GE instances without deleting the disk dir (race-free isolation)', () => {
     const fs = require('fs')
     const probe = '/tmp/tckge-pool'
     fs.mkdirSync(probe, { recursive: true })
     _clearGeInstances()
-    expect(fs.existsSync(probe)).toBe(false)
+    // The pool dir MUST survive: deleting it races with the next ge.open() and
+    // causes "I/O error: os error 2". Isolation is instead provided by
+    // query-executor's per-seed ge.clearAllData().
+    expect(fs.existsSync(probe)).toBe(true)
   })
 })
 
 describe('startup persistence load (top-level try block)', () => {
-  it('loads persisted indexes and constraints when the store file exists at import', async () => {
+  it('loads persisted indexes and constraints when the store file exists', () => {
     const fs = require('fs')
     const path = require('path')
-    const { vi } = await import('vitest')
     const dir = path.resolve('.opengraph')
     fs.mkdirSync(dir, { recursive: true })
     const store = path.join(dir, 'index-constraint-store.json')
@@ -182,59 +185,55 @@ describe('startup persistence load (top-level try block)', () => {
       constraints: [{ name: 'c_person_name', label: 'Person', property: 'name', type: 'UNIQUE' }],
     }), 'utf8')
 
-    vi.resetModules()
-    // Re-import: the top-level try now sees the store file and loads it.
-    const fresh = await import('./executor-registry')
-    expect(fresh._getIndex('Person', 'name')).toEqual({ label: 'Person', property: 'name' })
-    expect(fresh._getAllConstraints()).toContainEqual({ name: 'c_person_name', label: 'Person', property: 'name', type: 'UNIQUE' })
-
-    // Cleanup: remove the store + reset in-memory state for other tests.
-    fresh._clearIndexes()
-    fresh._clearConstraints()
-    if (fs.existsSync(store)) fs.rmSync(store, { force: true })
-    vi.resetModules()
+    try {
+      _loadStoreFromDisk()
+      expect(_getIndex('Person', 'name')).toEqual({ label: 'Person', property: 'name' })
+      expect(_getAllConstraints()).toContainEqual({ name: 'c_person_name', label: 'Person', property: 'name', type: 'UNIQUE' })
+    } finally {
+      _clearIndexes()
+      _clearConstraints()
+      if (fs.existsSync(store)) fs.rmSync(store, { force: true })
+    }
   })
 })
 
 describe('startup persistence load — absent keys (L74/L75 false arms)', () => {
-  it('loads nothing when the store file lacks indexes/constraints keys', async () => {
+  it('loads nothing when the store file lacks indexes/constraints keys', () => {
     const fs = require('fs')
     const path = require('path')
-    const { vi } = await import('vitest')
     const dir = path.resolve('.opengraph')
     fs.mkdirSync(dir, { recursive: true })
     const store = path.join(dir, 'index-constraint-store.json')
     // Store exists but has NO indexes / constraints keys -> both load guards false.
     fs.writeFileSync(store, JSON.stringify({ foo: 1 }), 'utf8')
 
-    vi.resetModules()
-    const fresh = await import('./executor-registry')
-    expect(fresh._getAllIndexes()).toHaveLength(0)
-    expect(fresh._getAllConstraints()).toHaveLength(0)
-
-    if (fs.existsSync(store)) fs.rmSync(store, { force: true })
-    fresh._clearIndexes()
-    fresh._clearConstraints()
-    vi.resetModules()
+    try {
+      _loadStoreFromDisk()
+      expect(_getAllIndexes()).toHaveLength(0)
+      expect(_getAllConstraints()).toHaveLength(0)
+    } finally {
+      if (fs.existsSync(store)) fs.rmSync(store, { force: true })
+      _clearIndexes()
+      _clearConstraints()
+    }
   })
 })
 
 describe('startup persistence load — store file absent (L71 false arm)', () => {
-  it('skips loading cleanly when no store file exists at import', async () => {
+  it('skips loading cleanly when no store file exists', () => {
     const fs = require('fs')
     const path = require('path')
-    const { vi } = await import('vitest')
     const store = path.resolve('.opengraph/index-constraint-store.json')
     // Ensure the store file is absent so fs.existsSync(_storePath) is false.
     if (fs.existsSync(store)) fs.rmSync(store, { force: true })
 
-    vi.resetModules()
-    const fresh = await import('./executor-registry')
-    expect(fresh._getAllIndexes()).toHaveLength(0)
-    expect(fresh._getAllConstraints()).toHaveLength(0)
-
-    fresh._clearIndexes()
-    fresh._clearConstraints()
-    vi.resetModules()
+    try {
+      _loadStoreFromDisk()
+      expect(_getAllIndexes()).toHaveLength(0)
+      expect(_getAllConstraints()).toHaveLength(0)
+    } finally {
+      _clearIndexes()
+      _clearConstraints()
+    }
   })
 })

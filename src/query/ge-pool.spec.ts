@@ -130,11 +130,12 @@ describe('GEPool — default-config creation', () => {
 })
 
 describe('GEPool — config with falsy path (L226 || null)', () => {
-  it('falls back to null poolDir then surfaces the underlying GE open error', () => {
+  it('falls back to a default pid dir when config path is falsy', () => {
     GEPool.destroyInstanceWithCleanup()
     const pool = GEPool.getInstance({ config: { path: '' } as any })
-    // _createGE sets _poolDir = ('' || null) = null, then GraphEngine.open() throws.
-    expect(() => pool.getConnection()).toThrow()
+    // _createGE now derives a valid pid-based dir from a falsy path (no throw).
+    expect(() => pool.getConnection()).not.toThrow()
+    expect(pool.totalCount).toBe(1)
   })
 })
 

@@ -224,8 +224,16 @@ export class GEPool {
 
   private _createGE(): GraphEngine {
     if (this._config) {
-      this._poolDir = this._config.path || null
-      const ge = new GraphEngine(this._config)
+      // 每个池连接使用独立的磁盘子目录，避免多个 GE 实例共享同一 LMDB
+      // 目录导致的写冲突（"corrupt record: segment manifest"）与节点累积。
+      // 基础路径仍为 config.path（如 /tmp/tckge-pool），每个连接在其下创建
+      // 唯一子目录 /tmp/tckge-pool/conn-<n>-<random>。
+      const baseDir = this._config.path || path.join('/tmp', 'ge-pool-' + process.pid)
+      fs.mkdirSync(baseDir, { recursive: true })
+      this._poolDir = path.join(baseDir, `conn-${this._instances.length}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+      fs.mkdirSync(this._poolDir, { recursive: true })
+      const instanceConfig: OverGraphConfig = { ...this._config, path: this._poolDir }
+      const ge = new GraphEngine(instanceConfig)
       ge.open()
       return ge
     }
@@ -244,8 +252,8 @@ export class GEPool {
       const warmDir = '/tmp/tckge-pool'
       if (fs.existsSync(warmDir)) {
         try {
-          const ge = new GraphEngine({ path: warmDir, denseVector: { dimension: 384 } })
-          ge.open()
+          // 预热的 GE 也走 _createGE 的独立子目录逻辑，避免与主连接共享 LMDB。
+          const ge = this._createGE()
           this._instances.push({
             ge,
             lastUsed: Date.now(),

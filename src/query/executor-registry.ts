@@ -21,6 +21,7 @@ import { _walkMultiSteps, _pathEndIndices, _stepMatchConstraint, _resolveUnwindL
 import { evalForeachCondTop, applyForeachOpTop, executeForeachInlineTop } from './foreach-exec'
 import type { QueryPlan, FilterClause, TraverseStep, AggregateClause } from './query-types'
 import { parseQuery } from './query-parser'
+import { GEPool } from './ge-pool'
 
 // ── 内存索引注册表（CREATE INDEX / DROP INDEX）━━━━━━━━━━━━━━━
 
@@ -67,14 +68,23 @@ export function _getAllConstraints(): ConstraintEntry[] {
 export function _clearConstraints(): void { _constraintRegistry.clear(); _saveStore() }
 
 // ── 启动时自动加载持久化索引/约束 ──
-try {
-  if (fs.existsSync(_storePath)) {
-    const raw = fs.readFileSync(_storePath, 'utf8')
-    const data = JSON.parse(raw)
-    if (data.indexes) for (const idx of data.indexes) { _indexRegistry.set(idx.label+':'+idx.property, idx) }
-    if (data.constraints) for (const c of data.constraints) { _constraintRegistry.set(c.name, c) }
-  }
-} catch { /* 启动恢复失败不阻塞 */ }
+/**
+ * 从持久化 store 文件加载索引/约束到内存注册表。
+ * 抽为可导出函数：既供模块顶层启动调用，也供测试直接验证加载分支，
+ * 避免测试依赖 `vi.resetModules()` 重载模块（会 fork 出第二份单例注册表，
+ * 破坏跨文件隔离并制造 flaky 失败）。
+ */
+export function _loadStoreFromDisk(): void {
+  try {
+    if (fs.existsSync(_storePath)) {
+      const raw = fs.readFileSync(_storePath, 'utf8')
+      const data = JSON.parse(raw)
+      if (data.indexes) for (const idx of data.indexes) { _indexRegistry.set(idx.label+':'+idx.property, idx) }
+      if (data.constraints) for (const c of data.constraints) { _constraintRegistry.set(c.name, c) }
+    }
+  } catch { /* 启动恢复失败不阻塞 */ }
+}
+_loadStoreFromDisk()
 
 // ── 数据库注册表（CATALOG 多图命名空间） ──
 // 默认数据库（neo4j）始终存在
@@ -119,6 +129,8 @@ const _gePool: { value: GraphEngine | null } = { value: null }
 const _geDirRegistry = new Map<string, string>()
 
 export function _clearGeInstances(): void {
+  // 关闭 database-specific GE 实例（CATALOG 多图隔离），但不删除其磁盘目录，
+  // 以免与后续 ge.open() 产生 "No such file or directory (os error 2)" 竞态。
   for (const [, ge] of _geInstanceRegistry) {
     try { ge.close() } catch {}
   }
@@ -126,14 +138,12 @@ export function _clearGeInstances(): void {
   _geDirRegistry.clear()
   // 清除 pool 中的 GE 实例引用
   _gePool.value = null
-  // 清理 GE Pool 磁盘存储（避免旧数据影响后续查询）
-  for (const dir of ['/tmp/tckge-pool', '/tmp/ge-pool-' + process.pid]) {
-    try {
-      if (fs.existsSync(dir)) {
-        fs.rmSync(dir, { recursive: true, force: true })
-      }
-    } catch { /* 静默 */ }
-  }
+  // 关闭弹性连接池单例（GEPool）但不删除磁盘目录：清空 in-memory 实例即可。
+  // 数据隔离由 query-executor.seed 前的 ge.clearAllData() 负责（见
+  // _executeViaGraphEngine），删除 /tmp/tckge-pool 目录会与池重建的
+  // mkdirSync+open 产生竞态，导致 count(*) 聚合返回陈旧的超额节点或
+  // "I/O error: os error 2" 这类 flaky 失败。
+  GEPool.destroyInstance()
 }
 
 export const DEFAULT_LIMIT = 1000

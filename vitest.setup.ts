@@ -8,9 +8,10 @@
  * registered by e.g. constraint.spec.ts leaks into subsequent MERGE/CREATE specs and
  * raises `ConstraintValidationFailed: Node(...) already exists ...`.
  *
- * This setup runs once before each spec file and clears all four registries, giving
- * every spec file a clean slate. It is intentionally coarse-grained (per-file, not
- * per-test) to avoid disturbing specs that build up state across their own tests.
+ * This setup runs once before each spec file and clears all four registries plus the
+ * in-flight pool, giving every spec file a clean slate. It is intentionally
+ * coarse-grained (per-file, not per-test) to avoid disturbing specs that build up
+ * state across their own tests.
  */
 
 import { beforeAll } from 'vitest'
