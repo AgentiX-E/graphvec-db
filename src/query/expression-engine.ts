@@ -3991,7 +3991,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
           if (Array.isArray(val)) {
             if (idx == null) { val = null }
             else if (typeof idx !== 'number' || !Number.isInteger(idx)) throw Object.assign(new Error('TypeError: List index must be an integer'), { tckError: 'TypeError' })
-            else val = val[Number(idx)] ?? null
+            else { let i = Number(idx); if (i < 0) i = val.length + i; val = val[i] ?? null }
           } else if (val && typeof val === 'object' && !Array.isArray(val)) {
             if (idx == null) { val = null }
             else if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
@@ -4130,7 +4130,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
             if (Array.isArray(val)) {
               if (idx == null) { val = null }
               else if (typeof idx !== 'number' || !Number.isInteger(idx)) throw Object.assign(new Error('TypeError: List index must be an integer'), { tckError: 'TypeError' })
-              else val = val[Number(idx)] ?? null
+              else { let i = Number(idx); if (i < 0) i = val.length + i; val = val[i] ?? null }
             } else if (val && typeof val === 'object' && !Array.isArray(val)) {
               // map 下标：null → null；非字符串 → TypeError
               if (idx == null) { val = null }
@@ -4174,7 +4174,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     if (Array.isArray(obj)) {
       if (idx == null) return null
       if (typeof idx !== 'number' || !Number.isInteger(idx)) throw Object.assign(new Error('TypeError: List index must be an integer'), { tckError: 'TypeError' })
-      return obj[Number(idx)] ?? null
+      let i = Number(idx); if (i < 0) i = obj.length + i; return obj[i] ?? null
     }
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
       // map 类型下标：null → null；非字符串 → TypeError
