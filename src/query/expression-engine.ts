@@ -1989,6 +1989,14 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof v === "string") {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
+      // ISO 8601 allows a leading sign on the whole duration (`-P2D` ≡ `P-2D`).
+      // Normalize it by moving the sign onto the first component so the
+      // `^P` parser below handles it; without this, `duration('-P2D')` falls
+      // through to the `"PT" + str + "S"` fallback and yields garbage.
+      const leadingSign = str.match(/^([+-])\s*P/i)
+      if (leadingSign) {
+        str = str.replace(/^([+-])\s*P/i, 'P' + (leadingSign[1] === '-' ? '-' : ''))
+      }
       if (/^P/i.test(str)) {
         // 解析并重新格式化，确保分数展开 + 归一化
         // 兜底：如果解析失败，返回原字符串
@@ -2431,10 +2439,13 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       } catch { return null }
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
-    const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    // 支持每个组件的负号（ISO 8601 `P-2D` / 整体负号 `-P2D`）：
+    // 组件的 `-` 必须被捕获，否则 P-2D 的 -2 被当成 0。
+    const cleaned = v.replace(/['"]/g, "").replace(/^[+-](?=P)/i, '')
+    const m = cleaned.match(/^P(?:(-?\d+(?:\.\d+)?)Y)?(?:(-?\d+(?:\.\d+)?)M)?(?:(-?\d+(?:\.\d+)?)D)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?[\d.]+)S)?)?/i);
     if (!m) return null;
-    const sign = v.replace(/['"]/g,"").startsWith('-') || v.replace(/['"]/g,"").indexOf('P-') >= 0 ? -1 : 1;
-    const d = Number(m[3]||0), h = Number(m[4]||0), mi = Number(m[5]||0), s = Number(m[6]||0);
+    const sign = cleaned.startsWith('-') || cleaned.indexOf('P-') >= 0 ? -1 : 1;
+    const d = Math.abs(Number(m[3]||0)), h = Number(m[4]||0), mi = Number(m[5]||0), s = Number(m[6]||0);
     if (sign < 0) return -(d + h/24 + mi/1440 + s/86400);
     return d + h/24 + mi/1440 + s/86400;
   },
@@ -2459,10 +2470,11 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       return result;
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
-    const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    const cleaned = v.replace(/['"]/g, "").replace(/^[+-](?=P)/i, '')
+    const m = cleaned.match(/^P(?:(-?\d+(?:\.\d+)?)Y)?(?:(-?\d+(?:\.\d+)?)M)?(?:(-?\d+(?:\.\d+)?)D)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?[\d.]+)S)?)?/i);
     if (!m) return null;
-    const sign = v.replace(/['"]/g,"").startsWith('-') || v.replace(/['"]/g,"").indexOf('P-') >= 0 ? -1 : 1;
-    const y = Number(m[1]||0), mo = Number(m[2]||0), d = Number(m[3]||0);
+    const sign = cleaned.startsWith('-') || cleaned.indexOf('P-') >= 0 ? -1 : 1;
+    const y = Math.abs(Number(m[1]||0)), mo = Math.abs(Number(m[2]||0)), d = Number(m[3]||0);
     const h = Number(m[4]||0), mi = Number(m[5]||0), s = Number(m[6]||0);
     if (sign < 0) return -(y*12 + mo + d/30.436875 + h/730.485 + mi/43829.1);
     return y*12 + mo + d/30.436875 + h/730.485 + mi/43829.1;
