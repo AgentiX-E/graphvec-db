@@ -69,10 +69,8 @@ export class GEPool {
     // 启动空闲回收定时器（每 30s 检查一次）
     const interval = Math.min(this._idleTimeoutMs, 30000)
     this._cleanupTimer = setInterval(() => this._reclaimIdle(), interval)
-    // 允许 Node.js 在空闲时退出
-    if (this._cleanupTimer && typeof this._cleanupTimer === 'object') {
-      (this._cleanupTimer as unknown as { unref?: () => void }).unref?.()
-    }
+    // 允许 Node.js 在空闲时退出（setInterval 始终返回带 unref 的对象）
+    this._cleanupTimer?.unref?.()
   }
 
   /**
@@ -110,10 +108,11 @@ export class GEPool {
       GEPool._instance.clear()
       GEPool._instance = null
       GEPool._epoch++  // 递增 epoch，下一次 getInstance 创建新池
+      _defaultPool = null  // 使默认池缓存失效，避免返回已销毁实例
       // 清除磁盘上的存储文件
       const dirsToClean = new Set<string>()
       if (poolDir) dirsToClean.add(poolDir)
-      if (configPath && configPath !== poolDir) dirsToClean.add(configPath)
+      if (configPath) dirsToClean.add(configPath)
       for (const dir of dirsToClean) {
         if (fs.existsSync(dir)) {
           try {
@@ -178,20 +177,10 @@ export class GEPool {
       return ge
     }
 
-    // 3. 达到 maxSize → 等待最近最少使用的写连接（fallback: 获取最早的空闲实例）
-    // 当前实现：如果所有实例都在使用，获取最近最少使用的实例并复用
+    // 3. 所有实例都在使用 → 复用最近最少使用的（可能冲突）
     // Note: 这可能导致并发冲突。生产环境应该增加 maxSize 或使用队列。
-    const oldestIdle = this._instances
-      .filter(i => !i.inUse)
-      .sort((a, b) => a.lastUsed - b.lastUsed)[0]
-
-    if (oldestIdle) {
-      oldestIdle.inUse = true
-      oldestIdle.lastUsed = Date.now()
-      return oldestIdle.ge
-    }
-
-    // 4. 所有实例都在使用 → 复用最近最少使用的（可能冲突）
+    // （旧的 “最早空闲实例” 回退已移除：_findIdle 已返回任意空闲实例，
+    //   走到这里必然没有空闲实例，原步骤 3 的 oldestIdle 恒为 undefined。）
     const lru = this._instances.sort((a, b) => a.lastUsed - b.lastUsed)[0]
     lru.inUse = true
     lru.lastUsed = Date.now()
@@ -269,16 +258,20 @@ export class GEPool {
     }
   }
 
-  /** 回收超时空闲实例 */
+  /** 回收超时空闲实例（始终保留至少一个空闲实例） */
   private _reclaimIdle(): void {
     const now = Date.now()
+    const idleCount = this._instances.filter(x => !x.inUse).length
+    if (idleCount <= 1) return
     const toRemove: number[] = []
+    let remaining = idleCount
     for (let i = 0; i < this._instances.length; i++) {
       const inst = this._instances[i]
       if (!inst.inUse && (now - inst.lastUsed) > this._idleTimeoutMs) {
         // 保留至少一个空闲实例（避免频繁创建/销毁）
-        if (this._instances.filter(x => !x.inUse).length > 1) {
+        if (remaining > 1) {
           toRemove.push(i)
+          remaining--
         }
       }
     }
