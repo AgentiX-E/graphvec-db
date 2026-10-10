@@ -649,10 +649,11 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
   if (days >= 0) { while (seconds < 0) { minutes--; seconds += 60 } }
   while (minutes >= 60) { hours++; minutes -= 60 }
   if (!(hours <= 0 && minutes < 0)) { while (minutes < 0) { hours--; minutes += 60 } }
-  if (days > 0 && hours > 0) {
-    while (hours < days) { days -= 1; hours += 24; if (days <= 0) break; }
-    if (hours / days > 1.5) { days -= 1; hours += 24 }
-  }
+  // Days and hours are distinct ISO 8601 components and must not be merged.
+  // A previous block here collapsed day+hour combinations (e.g. `P1DT2H`
+  // into `PT26H`) via a bogus `hours/days > 1.5` heuristic, destroying the day
+  // component.  We only normalize hours into days when hours overflow 24.
+  while (hours >= 24) { days += Math.floor(hours / 24); hours = hours % 24 }
   if (months >= 12) { years += Math.floor(months / 12); months = months % 12 }
   if (months > 0 && months % 1 !== 0) { days += (months - Math.floor(months)) * 30.436875; months = Math.floor(months); }
   if (days > 0 && days % 1 !== 0) { hours += (days - Math.floor(days)) * 24; days = Math.floor(days); }
