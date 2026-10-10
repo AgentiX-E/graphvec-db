@@ -312,11 +312,6 @@ export function _extractTimeMap(map: Record<string, unknown>): { hour: number; m
     case 'month': return month
     case 'week': return correctedWeek
     case 'weekYear': return weekYear
-    case 'year': return year
-    case 'quarter': return quarter
-    case 'month': return month
-    case 'week': return week
-    case 'weekYear': return weekYear
     case 'day': return day
     case 'ordinalDay': return ordinalDay
     case 'weekDay': return isoDow
@@ -457,8 +452,10 @@ function _normalizeDateStr(s: string): string {
 function _normalizeTimeStr(s: string): string {
   // 已标准化的 HH:MM 或 HH:MM:SS[.sss]，时区可能是 ±HH:MM（冒号格式），也可能是 ±HHMM 或 ±HH（无冒号格式）
   if (/^\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[+-]\d{2}:\d{2}(?:\[[^\]]+\])?|Z|[+-]\d{2,4}(?:\[[^\]]+\])?)?$/.test(s)) {
-    // 即使时间部分已标准，仍需归一化时区（如 +0100 → +01:00, -00:00 → Z）
-    const tzMatch = s.match(/([+-]\d{2,4}(?:\.[^Z\[\]]+)?(?:\[[^\]]+\])?|Z)$/)
+    // 即使时间部分已标准，仍需归一化时区（如 +0100 → +01:00, -00:00 → Z）。
+    // tzMatch 必须同时接受冒号格式（±HH:MM）和无冒号格式（±HHMM/±HH），否则
+    // 已带冒号时区的 -00:00 无法归一化为 Z（RFC 3339「未知本地偏移」语义）。
+    const tzMatch = s.match(/([+-]\d{2}:\d{2}(?:\[[^\]]+\])?|[+-]\d{2,4}(?:\.[^Z\[\]]+)?(?:\[[^\]]+\])?|Z)$/)
     if (tzMatch) {
       const beforeTz = s.slice(0, tzMatch.index)
       const normalizedTz = _normalizeTz(tzMatch[1])
@@ -4177,7 +4174,9 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     return null
   }
   // 属性访问 a.b
-  const dotIdx = t.indexOf('.')
+  // dotIdx 必须跳过字符串字面量内的 `.`（例如 duration('PT0.5S').seconds，
+  // 其中 PT0.5S 的小数点不应被当成属性分隔符）以及括号/方括号内的点。
+  const dotIdx = _findTopLevelDot(t)
   if (dotIdx > 0 && !t.startsWith('.')) {
     const obj = _evalAtom(t.slice(0, dotIdx), row)
     const propRaw = t.slice(dotIdx + 1)
@@ -4740,6 +4739,27 @@ export function _inBrackets(s: string, idx: number): boolean {
   let depth = 0
   for (let i = 0; i < idx; i++) { if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth++; if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth-- }
   return depth > 0
+}
+
+/** Find the first `.` at bracket depth 0 and outside any string literal.
+ *  This is the quote/bracket-aware counterpart to a naive `indexOf('.')`; it
+ *  prevents a fractional `.` inside a string literal (e.g. 'PT0.5S') or a `.`
+ *  inside a nested call/collection from being mistaken for a property accessor. */
+export function _findTopLevelDot(s: string): number {
+  let inStr = false, strChar = '', depth = 0
+  for (let i = 0; i < s.length; i++) {
+    if (inStr) {
+      if (s[i] === '\\') { i++; continue }
+      if (s[i] === strChar) inStr = false
+      continue
+    }
+    const c = s[i]
+    if (c === "'" || c === '"') { inStr = true; strChar = c; continue }
+    if (c === '(' || c === '[' || c === '{') { depth++; continue }
+    if (c === ')' || c === ']' || c === '}') { depth--; continue }
+    if (c === '.' && depth === 0) return i
+  }
+  return -1
 }
 
 /** 检查字符串中 idx 位置是否在字符串字面量内（引号内） */
