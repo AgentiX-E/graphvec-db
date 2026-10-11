@@ -4083,16 +4083,26 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
   if (t.startsWith("'") || t.startsWith('"') || t.startsWith('[') || t.startsWith('{') || /^-?\d/.test(t) || t.startsWith('.') || t.toLowerCase() === 'null' || t.toLowerCase() === 'true' || t.toLowerCase() === 'false') {
     // 如果以字面量开头但后面有下标后缀 [[1]][0][0] 或 'hello'[0] 或 {name:'a'}[123]
     if ((t.startsWith('[') || t.startsWith("'") || t.startsWith('"') || t.startsWith('{')) && t.endsWith(']')) {
-      // 从最外层找到第一个匹配的 close（支持 [] 和 {}），右侧剩余都是后缀下标
+      // Locate the end of the outermost literal:
+      //   - quoted string: its closing quote (a following [n] is a subscript
+      //     suffix, e.g. 'hello'[0])
+      //   - [ ] / { } literal: the first balanced closing bracket
       let closePos = -1, depth = 0
-      for (let i = 0; i < t.length; i++) {
-        if (t[i] === "'" || t[i] === '"') {
-          const q = t[i]; i++
-          while (i < t.length && t[i] !== q) { if (t[i] === '\\') i++; i++ }
-          continue
+      if (t[0] === "'" || t[0] === '"') {
+        const q = t[0]
+        let i = 1
+        while (i < t.length && t[i] !== q) { if (t[i] === '\\') i++; i++ }
+        closePos = i
+      } else {
+        for (let i = 0; i < t.length; i++) {
+          if (t[i] === "'" || t[i] === '"') {
+            const q = t[i]; i++
+            while (i < t.length && t[i] !== q) { if (t[i] === '\\') i++; i++ }
+            continue
+          }
+          if (t[i] === '(' || t[i] === '[' || t[i] === '{') depth++
+          if (t[i] === ')' || t[i] === ']' || t[i] === '}') { depth--; if (depth === 0) { closePos = i; break } }
         }
-        if (t[i] === '(' || t[i] === '[' || t[i] === '{') depth++
-        if (t[i] === ')' || t[i] === ']' || t[i] === '}') { depth--; if (depth === 0) { closePos = i; break } }
       }
       if (closePos === t.length - 1) return _evalLiteral(t, row) // 纯字面量，无后缀
       if (closePos > 0) {
@@ -4137,7 +4147,12 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
               else if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
               else val = (val as Record<string, unknown>)[idx] ?? null
             }
-            else { val = null }
+            else {
+              // Strings and other scalars are not subscriptable: raise the same
+              // TypeError as the variable-subscript path (Cypher does not index
+              // strings — see TCK List1 "Fail when indexing a non-list: string").
+              throw Object.assign(new Error('TypeError: Cannot index into non-map/non-list type'), { tckError: 'TypeError' })
+            }
           }
           pos = endBracket + 1
         }
