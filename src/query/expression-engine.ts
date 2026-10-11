@@ -2751,10 +2751,13 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       return null;
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
-    const m = v.replace(/['"]/g,"").match(/-?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?)?/);
+    // Accept a per-component sign (ISO 8601 `P-1D`) as well as a leading sign
+    // (`-P1D`); the overall sign is tracked separately, so each component is
+    // read as its absolute magnitude (mirrors duration.inDays / inMonths).
+    const m = v.replace(/['"]/g,"").match(/-?P(?:(-?\d+)Y)?(?:(-?\d+)M)?(?:(-?\d+)D)?(?:T(?:(-?\d+)H)?(?:(-?\d+)M)?(?:(-?[\d.]+)S)?)?/);
     if (!m) return null;
-    const sign = v.replace(/['"]/g,"").startsWith('-') || v.replace(/['"]/g,"").indexOf('P-') >= 0 ? -1 : 1;
-    const y = BigInt(m[1]||0), mo = BigInt(m[2]||0), d = BigInt(m[3]||0), h = BigInt(m[4]||0), mi = BigInt(m[5]||0), sRaw = m[6]||'0';
+    const sign = v.replace(/['"]/g,"").startsWith('-') || /P-|T-/.test(v.replace(/['"]/g,"")) ? -1 : 1;
+    const y = BigInt((m[1]||'0').replace('-','')), mo = BigInt((m[2]||'0').replace('-','')), d = BigInt((m[3]||'0').replace('-','')), h = BigInt((m[4]||'0').replace('-','')), mi = BigInt((m[5]||'0').replace('-','')), sRaw = (m[6]||'0').replace('-','');
     // 纯 BigInt 运算，避免大 duration 溢出
     const isNeg = sign < 0;
     const YS = 31557600n, MS = 2628000n, DS = 86400n, HS = 3600n, MIS = 60n;
