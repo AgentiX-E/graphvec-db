@@ -367,8 +367,10 @@ export function _extractTimeProp(s: string, prop: string): number | undefined {
 }
 
 export function _extractDurationProp(durStr: string, prop: string): number | null {
-  // 尝试标准格式：P...T...（组件前可能带 - 符号）
-  const m = durStr.match(/^([-])?P(?:(\d+(?:\.\d+)?)Y)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?\d+(?:\.\d+)?)S)?)?$/)
+  // Standard format P...T...; a leading sign may precede P (ISO 8601 `-P2D`)
+  // or each component (e.g. `P-2D` as normalised by duration()). The Y/M/D
+  // groups therefore accept a per-component sign, matching the H/M/S groups.
+  const m = durStr.match(/^([-])?P(?:(-?\d+(?:\.\d+)?)Y)?(?:(-?\d+(?:\.\d+)?)M)?(?:(-?\d+(?:\.\d+)?)D)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?\d+(?:\.\d+)?)S)?)?$/)
   if (!m) return null
   const [, signStr, years, months, days, hours, minutes, seconds] = m
   const sign = signStr === '-' ? -1 : 1
