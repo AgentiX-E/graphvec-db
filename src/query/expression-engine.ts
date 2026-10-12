@@ -1607,9 +1607,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
       // datetime 字符串传入 localtime → 提取 T 后的时间部分
       if (str.includes('T')) str = str.slice(str.indexOf('T') + 1)
-      // localtime 不含时区 → strip [+-]HH:MM 或 [IANA] 后缀
+      // localtime 不含时区 → strip IANA / offset [+-]HH:MM / [+-]HHMM / Z 后缀
       str = str.replace(/\[[^\]]+\]$/, '')  // strip [Europe/Stockholm]
-      str = str.replace(/[+-]\d{2}:\d{2}(:\d{2})?$/, '')  // strip +01:00
+      str = str.replace(/(?:[+-]\d{2}(?::\d{2})?|[+-]\d{4}|Z)$/, '')  // strip +01:00 / +0100 / Z
       return _normalizeTimeStr(str);
     }
     if (v && typeof v === "object") {
