@@ -3776,13 +3776,18 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
       if (!varName) return null  // (:Foo) without variable → null
       const nodeRef = row?.[varName] as Record<string, unknown> | undefined
       if (nodeRef && typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
+        // Labels may live on the node envelope itself (query-executor uses
+        // `node._label || node.props._label`) or inside `props`; check the
+        // envelope first, then fall back to `props`.
         const props = (nodeRef as any).props
-        const target = props && typeof props === 'object' ? props : nodeRef
-        const fullLabel = (target as any).__fullLabel || (target as any)._fullLabel
-        if (typeof fullLabel === 'string') {
+        const labelOnNode = (nodeRef as any)._label ?? (nodeRef as any).__fullLabel ?? (nodeRef as any)._fullLabel
+        const labelOnProps = props && typeof props === 'object' ? ((props as any)._label ?? (props as any).__fullLabel ?? (props as any)._fullLabel) : undefined
+        const fullLabel = (nodeRef as any).__fullLabel || (nodeRef as any)._fullLabel || (props as any)?.__fullLabel || (props as any)?._fullLabel
+        if (typeof fullLabel === 'string' && fullLabel !== '') {
           return fullLabel.split(':').includes(labelName)
         }
-        if (target._label) return target._label === labelName
+        if (labelOnNode != null && labelOnNode !== '') return String(labelOnNode) === labelName
+        if (labelOnProps != null && labelOnProps !== '') return String(labelOnProps) === labelName
       }
       if (row && typeof row === 'object' && '_label' in row) {
         const label = (row as any)._label
@@ -3811,18 +3816,23 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     const nodeRef = row?.[varName] as Record<string, unknown> | undefined
     if (nodeRef && typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
       const props = (nodeRef as any).props
-      const target = props && typeof props === 'object' ? props : nodeRef
       // Relationship objects carry their type in `__edgeLabel`/`_type` (not
       // `_label`), so a label test on a relationship (`r:T2`) must check those.
-      const edgeType = (target as any).__edgeLabel ?? (target as any)._type
+      // A node's label markers may sit on the envelope or inside `props`
+      // (query-executor reads `node._label || node.props._label`), so check
+      // both locations for each marker.
+      const edgeType = (nodeRef as any).__edgeLabel ?? (nodeRef as any)._type ?? (props as any)?.__edgeLabel ?? (props as any)?._type
       if (typeof edgeType === 'string' && edgeType !== '') {
         return edgeType === labelName
       }
-      const fullLabel = (target as any).__fullLabel || (target as any)._fullLabel
-      if (typeof fullLabel === 'string') {
+      const envFull = (nodeRef as any).__fullLabel || (nodeRef as any)._fullLabel
+      const propsFull = (props as any)?.__fullLabel || (props as any)?._fullLabel
+      const fullLabel = envFull || propsFull
+      if (typeof fullLabel === 'string' && fullLabel !== '') {
         return fullLabel.split(':').includes(labelName)
       }
-      if (target._label) return target._label === labelName
+      if ((nodeRef as any)._label != null && (nodeRef as any)._label !== '') return (nodeRef as any)._label === labelName
+      if ((props as any)?._label != null && (props as any)?._label !== '') return (props as any)._label === labelName
     }
     if (row && typeof row === 'object' && '_label' in row) {
       const label = (row as any)._label
@@ -3851,15 +3861,15 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     let fullLabel = ''
     if (nodeRef && typeof nodeRef === 'object' && !Array.isArray(nodeRef)) {
       const props = (nodeRef as any).props
-      const target = props && typeof props === 'object' ? props : nodeRef
       // Relationships expose a single type via `__edgeLabel`/`_type`; a
       // multi-label conjunction on a relationship can only be satisfied when
-      // the single label is the only conjunction term.
-      const edgeType = (target as any).__edgeLabel ?? (target as any)._type
+      // the single label is the only conjunction term. These markers live on
+      // the node/relationship envelope, with `props` as a fallback.
+      const edgeType = (nodeRef as any).__edgeLabel ?? (nodeRef as any)._type ?? (props as any)?.__edgeLabel ?? (props as any)?._type
       if (typeof edgeType === 'string' && edgeType !== '') {
         fullLabel = edgeType
       } else {
-        fullLabel = String((target as any).__fullLabel || (target as any)._fullLabel || (target as any)._label || '')
+        fullLabel = String((nodeRef as any).__fullLabel || (nodeRef as any)._fullLabel || (nodeRef as any)._label || (props as any)?.__fullLabel || (props as any)?._fullLabel || (props as any)?._label || '')
       }
     } else if (row && typeof row === 'object') {
       fullLabel = String((row as any).__edgeLabel ?? (row as any).__fullLabel ?? (row as any)._fullLabel ?? (row as any)._label ?? '')
