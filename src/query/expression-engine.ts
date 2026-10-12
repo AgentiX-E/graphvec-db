@@ -1918,7 +1918,18 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       // through to the `"PT" + str + "S"` fallback and yields garbage.
       const leadingSign = str.match(/^([+-])\s*P/i)
       if (leadingSign) {
-        str = str.replace(/^([+-])\s*P/i, 'P' + (leadingSign[1] === '-' ? '-' : ''))
+        const neg = leadingSign[1] === '-'
+        // Move the leading sign onto the first component. For a pure-time
+        // duration (`PT…`) there is no calendar slot to carry the sign, so it
+        // must land *after* `PT` (`-PT30S` → `PT-30S`); for a calendar duration
+        // it lands after `P` (`-P2D` → `P-2D`). Placing it directly after `P`
+        // would produce the malformed `P-T30S`, which _parseDuration rejects.
+        const rest = str.slice(leadingSign[0].length)
+        if (rest.startsWith('T') || rest.startsWith('t')) {
+          str = 'PT' + (neg ? '-' : '') + rest.slice(1)
+        } else {
+          str = 'P' + (neg ? '-' : '') + rest
+        }
       }
       if (/^P/i.test(str)) {
         // 解析并重新格式化，确保分数展开 + 归一化
@@ -2688,8 +2699,12 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     const nsStr = (secParts[1]||'').padEnd(9, '0').slice(0,9);
     const nsNum = BigInt(nsStr || '0');
     // 总纳秒 = 秒部分 * 1e9 + 小数纳秒，纯 BigInt
+    // Components are read as absolute magnitudes above (their `-` signs were
+    // stripped), so totalNsBig is a non-negative magnitude. Track the overall
+    // sign via isNeg and keep absNsBig as the positive magnitude for the
+    // H/M/S decomposition below; the sign is re-applied at formatting time.
     const totalNsBig = (secBigInt + secNum) * 1000000000n + nsNum;
-    const absNsBig = isNeg ? -totalNsBig : totalNsBig;
+    const absNsBig = totalNsBig;
     const hourNs = 3600n * 1000000000n;
     const minNs = 60n * 1000000000n;
     const oneSecNs = 1000000000n;
@@ -2708,9 +2723,13 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     let rr = 'PT';
     if (totalH) rr += (isNeg ? '-' : '') + String(Math.abs(totalH)) + 'H';
     if (totalM) rr += (isNeg ? '-' : '') + String(Math.abs(totalM)) + 'M';
-    const nss = totalNs > 0 ? '.' + String(totalNs).padStart(9,'0').replace(/0+$/,'') : '';
-    if (totalS || totalNs > 0) {
-      if (totalS === 0 && totalNs > 0 && isNeg) rr += '-0' + nss + 'S';
+    // Fractional seconds: totalNs was negated in the isNeg block above, so use
+    // its absolute magnitude for the fractional part; otherwise negative
+    // sub-second durations lose their fraction (e.g. -PT45.5S -> PT-45S).
+    const absNs = totalNs < 0 ? -totalNs : totalNs;
+    const nss = absNs > 0 ? '.' + String(absNs).padStart(9,'0').replace(/0+$/,'') : '';
+    if (totalS || absNs > 0) {
+      if (totalS === 0 && absNs > 0 && isNeg) rr += '-0' + nss + 'S';
       else rr += (isNeg ? '-' : '') + String(Math.abs(totalS)) + nss + 'S';
     }
     if (rr === 'PT') rr = 'PT0S';
