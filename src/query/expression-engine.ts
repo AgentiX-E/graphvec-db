@@ -562,86 +562,6 @@ function _adjustTz(hour: number, minute: number, srcTz: string, dstTz: string, d
   return { hour: Math.floor(adjustedMinutes / 60), minute: Math.round(adjustedMinutes % 60), dayDelta };
 }
 
-/** 归一化 duration ISO 字符串：分解分数值、进位溢出、处理非标准格式 */
-function _normalizeDurationStr(str: string): string {
-  const upper = str.toUpperCase()
-  // 处理非标准格式 P2012-02-02T14:37:21.545 → parse date/time
-  const dateForm = upper.match(/^P(\d{4})-(\d{2})-(\d{2})T(.+)$/)
-  if (dateForm) {
-    const years = parseInt(dateForm[1], 10)
-    const months = parseInt(dateForm[2], 10)
-    const days = parseInt(dateForm[3], 10)
-    // parse time part
-    const timeStr = dateForm[4]
-    const timeParts = timeStr.match(/^(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)$/)
-    if (timeParts) {
-      const hours = parseInt(timeParts[1], 10)
-      const minutes = parseInt(timeParts[2], 10)
-      let seconds = parseFloat(timeParts[3])
-      return _formatDuration(years, months, 0, days, hours, minutes, seconds, 0)
-    }
-  }
-  // 标准或非标准化 ISO 持续期间格式
-  // P[n]Y[n]M[n]DT[n]H[n]M[n]S 或 P[n]W 等
-  let years = 0, months = 0, weeks = 0, days = 0
-  let hours = 0, minutes = 0, seconds = 0
-  const AVG_DAYS_PER_MONTH = 30.436875
-
-  // 分离日期部分和时间部分
-  const tIdx = upper.indexOf('T')
-  const datePart = tIdx >= 0 ? str.slice(1, tIdx) : str.slice(1)
-  const timePart = tIdx >= 0 ? str.slice(tIdx + 1) : ''
-
-  // 解析日期部分（支持负值）
-  const yearMatch = datePart.match(/(-?[\d.]+)Y/i)
-  if (yearMatch) years = parseFloat(yearMatch[1])
-  const monthMatch = datePart.match(/(-?[\d.]+)M/i)
-  if (monthMatch) months = parseFloat(monthMatch[1])
-  const weekMatch = datePart.match(/(-?[\d.]+)W/i)
-  if (weekMatch) weeks = parseFloat(weekMatch[1])
-  const dayMatch = datePart.match(/(-?[\d.]+)D/i)
-  if (dayMatch) days = parseFloat(dayMatch[1])
-
-  // 解析时间部分（支持负值）
-  const hourMatch = timePart.match(/(-?[\d.]+)H/i)
-  if (hourMatch) hours = parseFloat(hourMatch[1])
-  const minMatch = timePart.match(/(-?[\d.]+)M(?!S)/i)
-  if (minMatch) minutes = parseFloat(minMatch[1])
-  const secMatch = timePart.match(/(-?[\d.]+)S/i)
-  if (secMatch) seconds = parseFloat(secMatch[1])
-
-  // weeks → days
-  if (weeks) { days += weeks * 7; weeks = 0 }
-
-  // 分数分解
-  if (years % 1 !== 0) { months += (years - Math.floor(years)) * 12; years = Math.floor(years) }
-  if (months % 1 !== 0) { days += (months - Math.floor(months)) * AVG_DAYS_PER_MONTH; months = Math.floor(months) }
-  if (days % 1 !== 0) { hours += (days - Math.floor(days)) * 24; days = Math.floor(days) }
-  if (hours % 1 !== 0) { minutes += (hours - Math.floor(hours)) * 60; hours = Math.floor(hours) }
-  if (minutes % 1 !== 0) { seconds += (minutes - Math.floor(minutes)) * 60; minutes = Math.floor(minutes) }
-  // 秒的分数 → 保留为秒的小数部分（不剥离）
-  // 如果 seconds 有小数，不做 floor，让 _formatDuration 保留其小数形式
-  let nanos = 0
-
-  // 进位（注意 seconds 可能有小数，进位前取整）
-  // 向零取整（trunc），避免 -0.001 → floor → -1 的问题
-  let secInt = seconds >= 0 ? Math.floor(seconds) : Math.ceil(seconds)
-  const secFrac = seconds - secInt
-  // 处理负值跨组件借位：负秒从分钟借，负分钟从小时借，负小时从天数借
-  while (secInt < 0 && minutes > 0) { minutes--; secInt += 60 }
-  while (minutes < 0 && hours > 0) { hours--; minutes += 60 }
-  while (hours < 0 && days > 0) { days--; hours += 24 }
-  // 常规正进位
-  while (secInt >= 60) { minutes += Math.floor(secInt / 60); secInt = secInt % 60 }
-  while (minutes >= 60) { hours += Math.floor(minutes / 60); minutes = minutes % 60 }
-  while (hours >= 24) { days += Math.floor(hours / 24); hours = hours % 24 }
-  // 恢复小数部分（精度修整：最多保留 9 位小数，去除尾零）
-  seconds = secInt + Math.round(secFrac * 1e9) / 1e9
-
-  return _formatDuration(Math.floor(years), Math.floor(months), 0, Math.floor(days),
-    Math.floor(hours), Math.floor(minutes), seconds, 0)
-}
-
 /** 格式化 duration 组件为标准字符串 */
 function _formatDuration(years: number, months: number, _weeks: number, days: number,
   hours: number, minutes: number, seconds: number, nanos: number): string {
@@ -1834,9 +1754,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         }
         // 检查 rest 末尾是否有 [IANA] only（无 offset/Z 后缀）— 兜底
         const ianaOnly2 = rest.match(/^(.+)\[([a-zA-Z0-9_/+.-]+)\]$/)
-        if (ianaOnly) {
-          const timePart = ianaOnly[1]
-          const ianaName = ianaOnly[2]
+        if (ianaOnly2) {
+          const timePart = ianaOnly2[1]
+          const ianaName = ianaOnly2[2]
           // 从日期中解析年份
           let y = 1984, m = 1, d = 1
           const dp = datePart.match(/^(\d{4})/)
