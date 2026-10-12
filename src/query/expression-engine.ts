@@ -3032,8 +3032,11 @@ export function _evalComparison(s: string, row?: Record<string, unknown>): ExprV
     if (!hasTopLevelCmp) {
       const l = _evalAddSub(leftPart, row)
       const r = _evalAddSub(t.slice(inOp + 4), row)
-      // Cypher: null IN null = null, null IN [] = false
-      if (!Array.isArray(r)) return l == null ? null : false
+      // Cypher: x IN null = null (membership against a null RHS is unknown,
+      // regardless of the LHS value); null IN [] = false is the empty-list
+      // deterministic case handled separately below.
+      if (r === null || r === undefined) return null
+      if (!Array.isArray(r)) return false
       // Cypher: 左操作数 null → 空列表返回 false（确定性），非空列表返回 null（未知）
       if (l == null) return r.length === 0 ? false : null
       let hasMatch = false
