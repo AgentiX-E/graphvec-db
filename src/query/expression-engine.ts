@@ -2011,6 +2011,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       }
       // 纳秒正数归一化（所有正纳秒 ≥ 1e9）
       if (nanos >= 1e9) { seconds += Math.floor(nanos / 1e9); nanos = nanos % 1e9 }
+      // 纳秒负数归一化（所有负纳秒 ≤ -1e9）：对称地借位到秒，避免 -1000000000ns 被
+      // 错误格式化为 "-0.1S"（应为 "-1S"）。Math.ceil 确保 -1.5e9ns 进位为 -1s + -0.5s。
+      else if (nanos <= -1e9) { seconds += Math.ceil(nanos / 1e9); nanos = nanos % 1e9 }
       // 秒进位/借位到分钟
       if (seconds >= 60) { minutes += Math.floor(seconds / 60); seconds = seconds % 60 }
       if (seconds <= -60) { minutes += Math.ceil(seconds / 60); seconds = seconds % 60; if (seconds > 0) { minutes++; seconds -= 60 } }
