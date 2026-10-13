@@ -568,7 +568,7 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
   while (nanos >= 1e9) { seconds++; nanos -= 1e9 }
   while (nanos < 0) { seconds--; nanos += 1e9 }
   while (seconds >= 60) { minutes++; seconds -= 60 }
-  if (days >= 0) { while (seconds < 0) { minutes--; seconds += 60 } }
+  if (days >= 0) { while (seconds <= -60) { minutes--; seconds += 60 } }
   while (minutes >= 60) { hours++; minutes -= 60 }
   if (!(hours <= 0 && minutes < 0)) { while (minutes < 0) { hours--; minutes += 60 } }
   // Days and hours are distinct ISO 8601 components and must not be merged.
@@ -582,7 +582,7 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
   if (hours > 0 && hours % 1 !== 0) { minutes += (hours - Math.floor(hours)) * 60; hours = Math.floor(hours); }
   if (minutes > 0 && minutes % 1 !== 0) { seconds += (minutes - Math.floor(minutes)) * 60; minutes = Math.floor(minutes); }
   while (seconds >= 60) { minutes++; seconds -= 60 }
-  if (days >= 0) { while (seconds < 0) { minutes--; seconds += 60 } }
+  if (days >= 0) { while (seconds <= -60) { minutes--; seconds += 60 } }
   while (minutes >= 60) { hours++; minutes -= 60 }
   if (!(hours <= 0 && minutes < 0)) { while (minutes < 0) { hours--; minutes += 60 } }
   if (!Number.isInteger(seconds)) {
@@ -3461,7 +3461,15 @@ function _durationSub(a: string, b: string): string {  const p1 = _parseDuration
   let h = p1.h - b1.h, min = p1.min - b1.min, s = p1.s - b1.s, ns = p1.ns - b1.ns
   while (ns >= 1e9) { s++; ns -= 1e9 }
   while (ns < 0) { s--; ns += 1e9 }
-  if ((d < 0 && (h > 0 || min > 0 || s > 0 || ns > 0)) || (d > 0 && (h < 0 || min < 0 || s < 0))) {
+  // A single-sign canonical duration (ISO `P-1Y-8M`) requires every non-zero
+  // component to share one sign. Component-wise subtraction can yield mixed
+  // signs (e.g. PT1M30S - PT2M -> minutes=-1, seconds=30); route those through
+  // the BigInt normalization so the result is decomposed with one leading sign.
+  const anyTimePos = (h > 0 || min > 0 || s > 0 || ns > 0)
+  const anyTimeNeg = (h < 0 || min < 0 || s < 0 || ns < 0)
+  const hasMixedTime = anyTimePos && anyTimeNeg
+  const hasMixedDayTime = (d > 0 && anyTimeNeg) || (d < 0 && anyTimePos)
+  if (hasMixedTime || hasMixedDayTime) {
     const BN = 1000000000
     const intSec = d * 86400 + h * 3600 + min * 60 + s
     const totalNs = BigInt(intSec) * BigInt(BN) + BigInt(ns)
@@ -3485,17 +3493,20 @@ function _durationSub(a: string, b: string): string {  const p1 = _parseDuration
       if (h) bigIntResult += h + 'H'
       if (min) bigIntResult += min + 'M'
       if (s || ns) {
+        // The magnitude is decomposed with `dSign` on each time component, but
+        // `s` and `ns` are both set from the positive remainder, so a pure
+        // sub-second negative result (absSec === 0) has no sign anywhere.
+        // Reapply `dSign` via the sign of the original `totalNs`.
+        const negTotal = totalNs < 0n
         let secStr: string
-        if (s === 0 && ns > 0 && d < 0) {
-          secStr = '-0'
-        } else if (s === 0 && ns < 0 && d === 0 && h === 0 && min === 0) {
+        if (s === 0 && (negTotal || ns < 0)) {
           secStr = '-0'
         } else {
           secStr = String(s)
         }
         bigIntResult += secStr
         if (ns) {
-          let nsStr = String(ns).padStart(9, '0').replace(/0+$/, '')
+          let nsStr = String(Math.abs(ns)).padStart(9, '0').replace(/0+$/, '')
           bigIntResult += '.' + nsStr
         }
         bigIntResult += 'S'
