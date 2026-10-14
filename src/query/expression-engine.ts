@@ -5546,7 +5546,12 @@ export function _compareOrderByValue(a: unknown, b: unknown): number {
  *  or `null` when the value should fall back to the default textual comparison. */
 function _temporalSortKey(v: unknown): string | null {
   if (typeof v !== 'string') return null
-  const s = v.trim()
+  let s = v.trim()
+  // A trailing `[IANA]` tag (e.g. `-05:00[America/New_York]`) is informational:
+  // the numeric offset to its left already reflects the DST-resolved instant.
+  // Strip it before matching so offset-bearing values that carry an IANA tag
+  // normalize to the same UTC key as their bare-offset equivalent.
+  s = s.replace(/\[[^\]]+\]$/, '')
   // `datetime` / `localdatetime` carry a `T`; `time` does not. The offset suffix
   // (`Z`, `+HH:MM`, `-HH:MM`) signals an offset-bearing value. A `time` may omit
   // seconds entirely (`10:35-08:00`), so the seconds/nanos group is optional.
