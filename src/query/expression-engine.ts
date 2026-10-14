@@ -1762,26 +1762,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           const finalTz = _normalizeTz(tzPart)
           return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(timePart) + finalTz
         }
-        // 检查 rest 末尾是否有 [IANA] only（无 offset/Z 后缀）— 兜底
-        const ianaOnly2 = rest.match(/^(.+)\[([a-zA-Z0-9_/+.-]+)\]$/)
-        if (ianaOnly2) {
-          const timePart = ianaOnly2[1]
-          const ianaName = ianaOnly2[2]
-          // 从日期中解析年份
-          let y = 1984, m = 1, d = 1
-          const dp = datePart.match(/^(\d{4})/)
-          if (dp) y = parseInt(dp[1], 10)
-          const dp2 = datePart.match(/^\d{4}-(\d{2})/)
-          if (dp2) m = parseInt(dp2[1], 10)
-          const dp3 = datePart.match(/^\d{4}-\d{2}-(\d{2})/)
-          if (dp3) d = parseInt(dp3[1], 10)
-          // 从 timePart 提取小时/分钟用于 DST 解析
-          const tp = timePart.match(/^(\d{2}):(\d{2})/)
-          const hh = tp ? parseInt(tp[1], 10) : 12
-          const mm = tp ? parseInt(tp[2], 10) : 0
-          const resolvedTz = _formatTimezone(_resolveNamedTimezone(ianaName, y, m, d, hh, mm))
-          return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(timePart) + resolvedTz + '[' + ianaName + ']'
-        }
+        // A trailing `[IANA]` suffix always matches the `\[[^\]]+\]$` alternative
+        // of the tzMatch regex above (handled by the ianaZ / ianaOnly branches), so
+        // no separate bare-`[IANA]` fallback can be reached here.
         // 无 tz 匹配，所有内容都是 timePart，交给 _normalizeTimeStr 处理
         return _normalizeDateStr(datePart) + 'T' + _normalizeTimeStr(rest)
       }
