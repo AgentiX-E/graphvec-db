@@ -3986,51 +3986,10 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
       return val
     }
   }
-  // 列表谓词（必须在 fnMatch 之前，因为 all/any/none/single 的 WHERE 子句与普通函数语法冲突）
-  const listPredMatch = t.match(/^(all|any|none|single)\s*\((.+?)\s+IN\s+(.+?)\s+WHERE\s+(.+)\)$/is)
-  if (listPredMatch) {
-    const pred = listPredMatch[1].toLowerCase()
-    const varName = listPredMatch[2].trim()
-    const listExpr = listPredMatch[3].trim()
-    const condExpr = listPredMatch[4].trim()
-    const list = _evaluateExpression(listExpr, row)
-    if (!Array.isArray(list)) return null
-    let count = 0
-    let hasNull = false
-    let hasFalse = false
-    const listLen = list.length
-    for (const item of list) {
-      const evalCtx: Record<string, unknown> = { ...row as any, [varName]: item }
-      const val = _evaluateExpression(condExpr, evalCtx)
-      // Cypher 的 all() 全称量化：如果元素为 null，则视为"不在论域"，
-      // 跳过该元素（不评估 predicate）。这与 none/any/single 不同，
-      // none/any/single 需要区分"null 元素导致 predicate 未知"。
-      // 跳过条件：predicate 是纯变量引用且引用的值为 null。
-      if (val === null && condExpr === varName) continue
-      if (val === true) {
-        count++
-        if (pred === 'any') return true
-        if (pred === 'none') return false
-        if (pred === 'single' && count > 1) return false
-      } else if (val === false) {
-        hasFalse = true
-        if (pred === 'all' && hasFalse) return false
-      } else if (val == null) {
-        hasNull = true
-      }
-    }
-    if (pred === 'all') {
-      if (listLen === 0) return true
-      if (hasFalse) return false
-      // 有未跳过的 null 元素 → null（三值逻辑不确定）
-      if (hasNull) return null
-      // 所有元素都匹配
-      return true
-    }
-    if (pred === 'any') return hasNull ? null : false
-    if (pred === 'none') return hasNull ? null : true
-    if (pred === 'single') return (hasNull && count <= 1) ? null : count === 1
-  }
+  // The list predicates all/any/none/single are handled exclusively by the
+  // registered-function path (_evalListPredicate), dispatched from _evalBinary's
+  // _tryFnCall before _evalAtom is ever reached on a bare `all(...)` string.
+  // This point is no longer valid for an inline list-predicate handler.
   // 函数调用（必须在 dot 之前）
   // datetime.fromepoch(x) 需要 [\w.]+ 匹配带点的函数名
   // 使用括号深度感知匹配支持嵌套函数调用 duration.inDays(duration({...}))
