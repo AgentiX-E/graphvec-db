@@ -1581,6 +1581,16 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
       // datetime 字符串传入 time → 提取 T 后的时间部分
       if (str.includes('T')) str = str.slice(str.indexOf('T') + 1)
+      // Resolve an IANA timezone tag (e.g. `12:00:00[America/New_York]`) to its
+      // actual offset, mirroring the `datetime` string constructor. A bare IANA
+      // name has no date, so DST resolution falls back to the fixed 1984-07-01
+      // reference date used throughout the time path.
+      const ianaTag = str.match(/\[([^\]]+)\]$/)
+      if (ianaTag && !/[Z+-]/.test(str.slice(0, str.lastIndexOf('[')).replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))) {
+        const bareTime = str.slice(0, str.lastIndexOf('['))
+        const resolved = _formatTimezone(_resolveNamedTimezone(ianaTag[1]))
+        return _normalizeTimeStr(bareTime) + resolved
+      }
       // strip IANA tag 但保留 offset（如 +01:00）
       str = str.replace(/\[[^\]]+\]$/, '')
       // time 始终有时区后缀（默认 Z）
