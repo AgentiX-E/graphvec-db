@@ -3258,9 +3258,21 @@ export function _compareValues(a: unknown, b: unknown, op: string): boolean | nu
         const tB = BigInt(pb.h) * 3600n * BigInt(BN) + BigInt(pb.min) * 60n * BigInt(BN) + BigInt(pb.s) * BigInt(BN) + BigInt(pb.ns)
         return tA === tB
       }
+      // Offset-bearing temporal equality: two datetime/time values that denote
+      // the same UTC instant must compare equal even when their offset suffixes
+      // differ (e.g. `10:00:00+08:00` vs `02:00:00Z`). Normalize via the same
+      // UTC key used by the ordering comparisons so `=` agrees with `<`/`>`.
+      if (typeof a === 'string' && typeof b === 'string' && _temporalCompareStrings(a, b) === 0) return true
       const __eq = _deepEqWithNull(a, b); return __eq.hasNull ? null : __eq.match
     }
-    case '<>': return !_deepEq(a, b)
+    case '<>': {
+      // `<>` is the negation of `=` for offset-bearing temporal values.
+      if (typeof a === 'string' && typeof b === 'string') {
+        const c = _temporalCompareStrings(a, b)
+        if (c !== undefined) return c !== 0
+      }
+      return !_deepEq(a, b)
+    }
     case '<': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
