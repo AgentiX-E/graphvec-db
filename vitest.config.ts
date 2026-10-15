@@ -14,7 +14,17 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.spec.ts', 'src/**/*.bench.ts'],
     setupFiles: ['./vitest.setup.ts'],
-    exclude: ['**/node_modules/**'],
+    exclude: [
+      '**/node_modules/**',
+      // Benchmark/stress suites are not functional regression tests: the
+      // stability/scalability/latency/throughput suites run for hours, the
+      // LDBC SNB suite needs an external dataset, and even the lighter
+      // micro-benchmarks assert wall-clock performance bounds (e.g. `<=1000ms`
+      // on 100K-node scans) that are inherently flaky on shared CI runners.
+      // Exclude the whole benchmark tree so `vitest run --root .` stays a
+      // bounded, deterministic functional run.
+      'src/benchmark/**',
+    ],
     testTimeout: 1200000,
     hookTimeout: 1200000,
     globals: true,
