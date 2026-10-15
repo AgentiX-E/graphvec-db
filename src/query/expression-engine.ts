@@ -1931,18 +1931,30 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           const p = _parseDuration(str)
           if (p || str !== 'P') {
             let { y, mo, d, h, min, s, ns } = p
-            // 分数展开：小数天→小时，小数月→天
-            if (mo > 0 && mo % 1 !== 0) { d += (mo - Math.floor(mo)) * 30.436875; mo = Math.floor(mo) }
-            if (d > 0 && d % 1 !== 0) { h += (d - Math.floor(d)) * 24; d = Math.floor(d) }
-            if (h > 0 && h % 1 !== 0) { min += (h - Math.floor(h)) * 60; h = Math.floor(h) }
-            if (min > 0 && min % 1 !== 0) { s += (min - Math.floor(min)) * 60; min = Math.floor(min); ns = 0 } // 重置 ns 因为秒小数已更新
-            // 秒可能有小数，纳秒在此之外已被解析
-            const secInt = Math.floor(s)
-            if (!Number.isInteger(s)) { ns += Math.round((s - secInt) * 1e9); s = secInt }
-            // 归一化：H→D, Min→H, S→Min
-            while (h >= 24) { d += Math.floor(h / 24); h = h % 24 }
-            while (min >= 60) { h += Math.floor(min / 60); min = min % 60 }
+            // Fractional expansion (symmetric across signs): fractional month ->
+            // days via AVG_DAYS_PER_MONTH, day -> hours, hour -> minutes, minute
+            // -> seconds. The `> 0` / `% 1` guards previously only handled
+            // positive fractions, leaving negative fractional components (e.g.
+            // a fractional day in a negative duration) unnormalized.
+            if (mo % 1 !== 0) { d += (mo - Math.floor(mo)) * 30.436875; mo = Math.floor(mo) }
+            if (d % 1 !== 0) { h += (d - Math.floor(d)) * 24; d = Math.floor(d) }
+            if (h % 1 !== 0) { min += (h - Math.floor(h)) * 60; h = Math.floor(h) }
+            if (min % 1 !== 0) { s += (min - Math.floor(min)) * 60; min = Math.floor(min); ns = 0 }
+            // Split fractional seconds into whole seconds + nanoseconds. Use
+            // ceil for negative values so the nanosecond residue stays positive.
+            const secInt = s >= 0 ? Math.floor(s) : Math.ceil(s)
+            if (!Number.isInteger(s)) { ns += Math.round(Math.abs(s - secInt) * 1e9); s = secInt }
+            // Carry/borrow normalization (mirror the map path): propagate
+            // out-of-range components to the next-larger unit on BOTH signs, so
+            // `PT-90S` -> `PT-1M-30S` and `PT90S` -> `PT1M30S`.
+            while (ns >= 1e9) { s++; ns -= 1e9 }
+            while (ns <= -1e9) { s--; ns += 1e9 }
             while (s >= 60) { min += Math.floor(s / 60); s = s % 60 }
+            while (s <= -60) { min += Math.ceil(s / 60); s = s % 60; if (s > 0) { min++; s -= 60 } }
+            while (min >= 60) { h += Math.floor(min / 60); min = min % 60 }
+            while (min <= -60) { h += Math.ceil(min / 60); min = min % 60; if (min > 0) { h++; min -= 60 } }
+            while (h >= 24) { d += Math.floor(h / 24); h = h % 24 }
+            while (h <= -24) { d += Math.ceil(h / 24); h = h % 24; if (h > 0) { d++; h -= 24 } }
             // 直接格式化，不经过 _formatDuration（避免 D→H 反向借位）
             let result = "P"
             if (y) result += y + "Y"
@@ -3326,25 +3338,6 @@ function _temporalCompareStrings(a: string, b: string): number | undefined {
   if (ka === null || kb === null) return undefined
   if (ka === kb) return 0
   return ka < kb ? -1 : 1
-}
-
-export /** 将 time/datetime 字符串解析为 UTC 毫秒值，用于时态比较 */
-function _temporalToMs(s: string): number | undefined {
-  try {
-    if (/^\d{1,2}:\d{2}/.test(s)) {
-      const d = new Date('1970-01-01T' + (s.includes('T') ? s.slice(s.indexOf('T') + 1) : s))
-      return isNaN(d.getTime()) ? undefined : d.getTime()
-    }
-    if (/^\d{4}-\d{2}-\d{2}T/.test(s) || /^\d{4}-\d{2}-\d{2}$/.test(s)) {
-      const d = new Date(s)
-      return isNaN(d.getTime()) ? undefined : d.getTime()
-    }
-    return undefined
-  } catch { return undefined }
-}
-
-function _isNaN(v: unknown): boolean {
-  return typeof v === 'number' && isNaN(v)
 }
 
 /** Cypher 深度相等：支持 List、Map 递归比较，符合三值逻辑（null 元素 = → null） */
