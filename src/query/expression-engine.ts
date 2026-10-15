@@ -566,7 +566,7 @@ function _adjustTz(hour: number, minute: number, srcTz: string, dstTz: string, d
 function _formatDuration(years: number, months: number, _weeks: number, days: number,
   hours: number, minutes: number, seconds: number, nanos: number): string {
   while (nanos >= 1e9) { seconds++; nanos -= 1e9 }
-  while (nanos < 0) { seconds--; nanos += 1e9 }
+  while (nanos <= -1e9) { seconds--; nanos += 1e9 }
   while (seconds >= 60) { minutes++; seconds -= 60 }
   if (days >= 0) { while (seconds <= -60) { minutes--; seconds += 60 } }
   while (minutes >= 60) { hours++; minutes -= 60 }
@@ -1971,6 +1971,13 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
                 if (ns > 0) {
                   let nsStr = String(ns).padStart(9, "0").replace(/0+$/, "")
                   secStr = String(s) + "." + nsStr
+                } else if (ns < 0) {
+                  // Negative nanosecond: attach the fraction as its magnitude;
+                  // the sign is already carried by the whole second (`-45s` +
+                  // `-0.5s` -> `-45.5S`), or by an explicit `-0` for a pure
+                  // sub-second value (`-0.5S`).
+                  let nsStr = String(Math.abs(ns)).padStart(9, "0").replace(/0+$/, "")
+                  secStr = (s === 0 ? "-0" : String(s)) + "." + nsStr
                 } else {
                   secStr = String(s)
                 }
@@ -3458,8 +3465,14 @@ function _parseDuration(v: string): { y: number, mo: number, d: number, h: numbe
   const h = parseFloat(hStr||'0'), min = parseFloat(minStr||'0')
   // 分离秒的小数部分到纳秒
   const secVal = parseFloat(sStr||'0')
+  // Split the second into an integer part and a signed sub-second remainder.
+  // For a negative second the integer part is the ceiling (closer to zero) so
+  // the remainder keeps a negative sign (`-45.5s` -> `s=-45, ns=-0.5s`). The
+  // previous `Math.abs` dropped the sign, turning `PT-45.5S` into
+  // `{s:-45, ns:+0.5s}` which made `PT45.5S + PT-45.5S` carry into `PT1S`
+  // instead of `PT0S`.
   const secInt = secVal >= 0 ? Math.floor(secVal) : Math.ceil(secVal)
-  const ns = Math.round(Math.abs(secVal - secInt) * 1e9) || 0
+  const ns = Math.round((secVal - secInt) * 1e9) || 0
   return { y, mo, d, h, min, s: secInt, ns }
 }
 /** duration 加法：组件相加 */
