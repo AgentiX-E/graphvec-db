@@ -19,16 +19,16 @@ describe('duration() constructor — leading sign normalization', () => {
     expect(_evaluateExpression("duration('-PT30S')", {})).toBe('PT-30S')
   })
   it('negative pure-time duration with H and S', () => {
-    expect(_evaluateExpression("duration('-PT1H30S')", {})).toBe('PT-1H30S')
+    expect(_evaluateExpression("duration('-PT1H30S')", {})).toBe('PT-1H-30S')
   })
   it('negative calendar duration', () => {
     expect(_evaluateExpression("duration('-P2D')", {})).toBe('P-2D')
   })
   it('negative calendar + time duration', () => {
-    expect(_evaluateExpression("duration('-P1DT2H')", {})).toBe('P-1DT2H')
+    expect(_evaluateExpression("duration('-P1DT2H')", {})).toBe('P-1DT-2H')
   })
   it('negative calendar with year+month', () => {
-    expect(_evaluateExpression("duration('-P1Y2M')", {})).toBe('P-1Y2M')
+    expect(_evaluateExpression("duration('-P1Y2M')", {})).toBe('P-1Y-2M')
   })
   it('positive duration unchanged', () => {
     expect(_evaluateExpression("duration('PT30S')", {})).toBe('PT30S')

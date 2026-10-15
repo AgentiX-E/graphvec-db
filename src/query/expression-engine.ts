@@ -1906,23 +1906,25 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       let str = v;
       if (str.startsWith("'") || str.startsWith('"')) str = str.slice(1, -1);
       // ISO 8601 allows a leading sign on the whole duration (`-P2D` ≡ `P-2D`).
-      // Normalize it by moving the sign onto the first component so the
-      // `^P` parser below handles it; without this, `duration('-P2D')` falls
-      // through to the `"PT" + str + "S"` fallback and yields garbage.
+      // The sign applies to the *entire* duration, so every component must be
+      // negated. The previous approach moved the sign onto only the first
+      // component (`-PT1M30S` -> `PT-1M30S`), leaving later components positive
+      // and producing `-1m +30s` instead of `-1m -30s`. Rewrite the sign into
+      // per-component negative form (`-PT45.5S` -> `PT-45.5S`) and let the
+      // inline parser below normalize it (which correctly handles the negative
+      // fractional second that `_formatDuration`'s borrow loop would corrupt).
+      // A leading `+` is a no-op.
       const leadingSign = str.match(/^([+-])\s*P/i)
       if (leadingSign) {
         const neg = leadingSign[1] === '-'
-        // Move the leading sign onto the first component. For a pure-time
-        // duration (`PT…`) there is no calendar slot to carry the sign, so it
-        // must land *after* `PT` (`-PT30S` → `PT-30S`); for a calendar duration
-        // it lands after `P` (`-P2D` → `P-2D`). Placing it directly after `P`
-        // would produce the malformed `P-T30S`, which _parseDuration rejects.
-        const rest = str.slice(leadingSign[0].length)
-        if (rest.startsWith('T') || rest.startsWith('t')) {
-          str = 'PT' + (neg ? '-' : '') + rest.slice(1)
-        } else {
-          str = 'P' + (neg ? '-' : '') + rest
+        let rest = str.slice(leadingSign[0].length).trim()
+        if (neg) {
+          // Prefix a `-` before every unsigned component value (digits followed
+          // by a duration designator Y/M/W/D/H/M/S). Already-negative components
+          // are left untouched (leading sign + component sign = positive).
+          rest = rest.replace(/(^|[^-\d.])(\d+(?:\.\d+)?)(?=[YMWDHMS])/g, '$1-$2')
         }
+        str = 'P' + rest
       }
       if (/^P/i.test(str)) {
         // 解析并重新格式化，确保分数展开 + 归一化
