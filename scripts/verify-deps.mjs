@@ -49,6 +49,17 @@ try {
 const currentHash = createHash('sha256').update(lockRaw).digest('hex')
 console.log(`📋 Current lock file SHA-256: ${currentHash.substring(0, 16)}...`)
 
+// `--update-hash` rewrites `.lock-hash` with the current lock file hash, then
+// exits. This is the documented way to bless an intentional dependency update
+// (the help text referenced it but the flag was never actually implemented,
+// which silently left `.lock-hash` stale after a lock file change).
+import { writeFileSync } from 'fs'
+if (process.argv.includes('--update-hash')) {
+  writeFileSync(STORED_HASH_FILE, currentHash + '\n')
+  console.log(`✅ Stored package-lock.json hash: ${currentHash}`)
+  process.exit(0)
+}
+
 if (existsSync(STORED_HASH_FILE)) {
   const storedHash = readFileSync(STORED_HASH_FILE, 'utf-8').trim()
 
