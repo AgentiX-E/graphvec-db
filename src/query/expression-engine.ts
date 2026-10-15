@@ -2308,7 +2308,14 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         if (hDiff) result += maybeSignS(hDiff) + "H";
         if (minDiff) result += maybeSignS(minDiff) + "M";
         const nsStr = nsDiff > 0 ? "." + String(nsDiff).padStart(9,'0').replace(/0+$/,'') : "";
-        if (secDiff || nsDiff > 0) result += maybeSignS(secDiff) + nsStr + "S";
+        if (secDiff || nsDiff > 0) {
+          // Pure sub-second negative difference: secDiff is zero but the sign is
+          // negative, so `maybeSignS(0)` would drop the sign and yield `PT0.5S`
+          // where `PT-0.5S` is required. Emit the explicit `-0` prefix, mirroring
+          // the millisecond fallback path below.
+          if (secDiff === 0 && nsDiff > 0 && sign < 0) result += "-0" + nsStr + "S";
+          else result += maybeSignS(secDiff) + nsStr + "S";
+        }
       }
       if (result === 'P') return 'PT0S';
       return result;
@@ -2322,10 +2329,14 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (isNaN(da) || isNaN(db)) return null
     const diff = db - da;
     const absDiff = Math.abs(diff);
-    const totalSec = Math.floor((absDiff + 999) / 1000); // ceil division for negative durations
-    // 纳秒部分：ceil 后的余量（正数），单位 ns
-    const nsMs = totalSec * 1000 - absDiff; // 毫秒级别（可能负）
-    const ns = Math.abs(nsMs) * 1000000;
+    // Whole seconds via floor division; the fractional millisecond remainder
+    // (always non-negative) becomes the nanosecond part. The previous
+    // `Math.floor((absDiff + 999) / 1000)` "ceil" rounded every sub-second
+    // difference up by a full second (500ms -> 1s+500ms), corrupting both the
+    // magnitude and sign of fractional-second durations.
+    const totalSec = Math.floor(absDiff / 1000);
+    const nsMs = absDiff - totalSec * 1000; // sub-second millisecond remainder
+    const ns = nsMs * 1000000;
     const nss = ns > 0 ? "." + String(ns).padStart(9,"0").replace(/0+$/,"") : "";
     // ISO 8601 格式：PT22H 或 PT-22H（所有组件加负号前缀）
     const sign = diff < 0;
