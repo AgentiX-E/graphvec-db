@@ -19,6 +19,10 @@ concurrency:
 
 env:
   NODE_OPTIONS: --max-old-space-size=6144
+  # onnxruntime-node postinstall downloads CUDA GPU binaries from nuget.org,
+  # which is a network-fragile step on shared CI runners (ETIMEDOUT/ENETUNREACH).
+  # Tests only need the bundled CPU binaries, so skip the CUDA download.
+  ONNXRUNTIME_NODE_INSTALL: skip
 
 jobs:
   # ============================================================
