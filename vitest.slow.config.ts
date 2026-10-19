@@ -7,8 +7,8 @@ import path from 'path'
  * These files spawn child processes with ZMQ sockets and cannot run
  * in parallel with each other without port conflicts.
  *
- * Fast tests are handled by the main vitest.config.ts (which excludes
- * these files and runs with fileParallelism: true).
+ * Fast unit tests are handled by the main vitest.config.ts (which excludes
+ * these files and runs serially).
  */
 export default defineConfig({
   test: {
@@ -33,13 +33,12 @@ export default defineConfig({
     hookTimeout: 300000,
     globals: true,
     pool: 'threads',
-    poolOptions: {
-      threads: {
-        singleThread: true,
-        minThreads: 1,
-        maxThreads: 1,
-      },
-    },
+    // Serial execution: only one worker, no file-level parallelism, so only
+    // one process spawns ZMQ child processes at a time (Vitest 4 exposes
+    // `fileParallelism` and `maxWorkers` at the top level — `poolOptions`
+    // was removed in v4).
+    fileParallelism: false,
+    maxWorkers: 1,
     server: {
       deps: {
         exclude: ['raft-logic'],
