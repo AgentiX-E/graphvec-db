@@ -1180,7 +1180,7 @@ async function _executeMultiMatchCrossJoin(
   // Each pattern also records its source node variable (e.g. `a`) so that
   // patterns sharing a variable name (e.g. `MATCH (a:A) MATCH (a)-[:R]->(c)`)
   // are joined on that bound node rather than Cartesian-producted.
-  const patterns: Array<{ scanLabel: string | null; steps: TraverseStep[]; variable?: string }> = [
+  const patterns: Array<{ scanLabel: string | null; steps: TraverseStep[]; variable?: string; sourceProps?: Record<string, unknown> }> = [
     { scanLabel: plan.scanLabel ?? null, steps: plan.steps || [], variable: (plan as any).matchVar, sourceProps: (plan as any).matchSourceProps },
     ...(mm || []).map(p => ({ scanLabel: p.scanLabel ?? null, steps: p.steps || [], variable: p.variable, sourceProps: (p as any).sourceProps })),
   ]
@@ -3447,8 +3447,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         }
       }
 
-      for (let ci = 0; ci < effectiveCreateNodes.length; ci++) {
-        const cn = effectiveCreateNodes[ci]
+      for (let ci = 0; ci < (effectiveCreateNodes?.length ?? 0); ci++) {
+        const cn = effectiveCreateNodes![ci]
         // Resolve WITH/UNWIND variable references in MERGE/CREATE node props to
         // their scalar values BEFORE match-or-create (`MERGE (a:A {num: p})` must
         // match on `num: 42`, not the literal string "p").  Mutates the typed
@@ -3579,7 +3579,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         }
         target[propName] = val
       }
-      for (const cn of effectiveCreateNodes) {
+      for (const cn of (effectiveCreateNodes || [])) {
         const mn = cn as any
         if (!mn._isMerge) continue
         const target = mn._matchedIdx != null ? allNodes[mn._matchedIdx] : null
@@ -3917,8 +3917,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             // 内联属性过滤 `(n {name:'A'})`：不要用 skipNodeIndices 跳过不匹配节点，
             // 这会把 target 节点（B、C）也跳过。
             // 改为注入 stepSourceFilters，让 _walkMultiSteps 在遍历时正确约束。
-            // 先清空现有同 variable 的 source 过滤（避免重复过滤）
-            if (!stepSourceFilters) stepSourceFilters = []
+            // stepSourceFilters is a non-empty const array (filter() result), so
+            // inline predicates are appended directly.
             for (const pred of inlinePredicates) {
               stepSourceFilters.push({
                 source: inlineVar,
@@ -4510,7 +4510,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         labelCounts.set(label, (labelCounts.get(label) || 0) + 1)
       }
       // 分类 WHERE 谓词
-      const eqFilters = (plan.filters || []).filter(f => f.operator === 'EQ' && !edgeFilters.includesf)
+      const eqFilters = (plan.filters || []).filter(f => f.operator === 'EQ' && !(edgeFilters as any[]).includes(f))
       const rangeFilters = (plan.filters || []).filter(f => ['GT', 'GTE', 'LT', 'LTE'].includes(f.operator || ''))
       const indexEntries = Array.from(_indexRegistry.values())
       const hasIndexedEq = eqFilters.some(f => f.source && indexEntries.some(idx =>
@@ -4765,11 +4765,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             }
           }
         }
-        const retVar = retVars.findLast(rc => {
-          if (!rc) return false
+        // findLast semantics (last bound var that is a step target but not the
+        // first source), rewritable without ES2023 lib: iterate backwards.
+        let retVar: string | undefined
+        for (let ri = retVars.length - 1; ri >= 0; ri--) {
+          const rc = retVars[ri]
+          if (!rc) continue
           const firstSrc = plan.steps?.[0]?.source
-          return rc !== firstSrc && plan.steps?.some(s => s.targetAlias === rc)
-        })
+          if (rc !== firstSrc && plan.steps?.some(s => s.targetAlias === rc)) {
+            retVar = rc
+            break
+          }
+        }
         // 对于多步，改用最后一个 targetAlias 变量（降级安全）
         const lastTargetVar = plan.steps?.[plan.steps.length - 1]?.targetAlias
         const effectiveRetVar = (lastTargetVar && (plan.returnColumns || []).map(rc => rc?.split('.')[0]).includes(lastTargetVar))
@@ -4880,8 +4887,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                       const midAlias = plan.steps[psi]?.targetAlias
                       if (midAlias && midNode) {
                         allVars[midAlias] = { _label: midNode._label || 'Default' }
+                        const midVars = allVars[midAlias] as Record<string, unknown>
                         for (const k of Object.keys(midNode)) {
-                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[midAlias][k] = midNode[k]
+                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) midVars[k] = midNode[k]
                         }
                       }
                     }
@@ -4918,8 +4926,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                         const nidx = matchingPath[psiMinus1]
                         if (nidx !== undefined && allNodes[nidx]) {
                           allVars[_s.source] = { _label: allNodes[nidx]._label || 'Default' }
+                          const srcVars = allVars[_s.source] as Record<string, unknown>
                           for (const k of Object.keys(allNodes[nidx])) {
-                            if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[_s.source][k] = allNodes[nidx][k]
+                            if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) srcVars[k] = allNodes[nidx][k]
                           }
                         }
                       }
@@ -4929,8 +4938,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                       const nidx = psi < matchingPath.length - 1 ? matchingPath[psi + 1] : -1
                       if (nidx >= 0 && allNodes[nidx]) {
                         allVars[_s.targetAlias] = { _label: allNodes[nidx]._label || 'Default' }
+                        const tgtVars = allVars[_s.targetAlias] as Record<string, unknown>
                         for (const k of Object.keys(allNodes[nidx])) {
-                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) allVars[_s.targetAlias][k] = allNodes[nidx][k]
+                          if (k !== '__edges' && k !== 'props' && !k.startsWith('__')) tgtVars[k] = allNodes[nidx][k]
                         }
                       }
                     }
@@ -7504,7 +7514,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
       const exprCols = plan.expressionColumns || []
       for (const ec of exprCols) {
-        const expr = ec.expression || ''
+        const expr: string = ec.expression || ''
         // Match size([(...)--... | 1]) pattern — degree computation
         // Supports: -->, --, <--, -[:T]->, -[:T|S]->, <-[:T]-, etc.
         const pcMatch = expr.match(
@@ -8156,7 +8166,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 // 也检查其他节点的 __edges 中引用此节点的边
                 if (!existsVal) {
                   for (const other of allNodes) {
-                    if (other.__edges) {
+                    if (other.__edges && Array.isArray(other.__edges)) {
                       for (const e of other.__edges) {
                         if (e.srcIdx === anodeIdx || e.dstIdx === anodeIdx) {
                           if (edgeLabel && e.label !== edgeLabel) continue
@@ -9244,7 +9254,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
       if (optMatchVarNames.size && (plan.expressionColumns?.length || plan.returnAliasMap)) {
         const aliasToExpr: Record<string, string> = {}
-        for (const ec of plan.expressionColumns) {
+        for (const ec of (plan.expressionColumns || [])) {
           const ecObj = ec as { alias?: string; expression?: any }
           const alias = (typeof ec === 'string' ? ec : ecObj.alias ?? ecObj.expression ?? String(ec))
           const expr = (typeof ec === 'object' && ecObj.expression) ? String(ecObj.expression) : alias
@@ -9542,7 +9552,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                     }
                     if (!existsVal2) {
                       for (const other of allNodes) {
-                        if (other.__edges) {
+                        if (other.__edges && Array.isArray(other.__edges)) {
                           for (const e of other.__edges) {
                             if (e.srcIdx === anodeIdx2 || e.dstIdx === anodeIdx2) {
                               if (edgeLabel2 && e.label !== edgeLabel2) continue
@@ -9581,7 +9591,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
   } finally {
     // DML 持久化：将 _executeViaGraphEngine 中创建的节点写回外部 nodes 数组，
     // 确保后续查询（MATCH）能看到前面 CREATE/MERGE 的节点。
-    if ((plan.type === 'CREATE' || plan.type === 'MERGE' || plan.type === 'MATCH_MODIFY' || plan.type === 'SET' || plan.type === 'DELETE') && nodes) {
+    if ((plan.type === 'CREATE' || plan.type === 'MERGE' || plan.type === 'MATCH_MODIFY' || plan.type === 'SET' || plan.type === 'REMOVE' || plan.type === 'DELETE') && nodes) {
       // SET/REMOVE mutate existing nodes in-place; `allNodes` is a shallow clone
       // (allNodes = nodes.map(n => ({...n}))), so mutating allNodes[i] does not
       // reach nodes[i].  Copy the mutated properties of every original node back

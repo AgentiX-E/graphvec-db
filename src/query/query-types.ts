@@ -452,6 +452,13 @@ export interface QueryPlan {
     nodeCount?: number
     edgeCount?: number
     cacheKey?: string
+    /** Per-label node counts computed during plan annotation. */
+    labelCounts?: Record<string, number>
+    eqFilterCount?: number
+    rangeFilterCount?: number
+    hasIndexedEq?: boolean
+    totalSeedNodes?: number
+    edgeFilterCount?: number
   }
   /** 标签过滤器条目（list label filter） */
   labelFilterItems?: Array<{
