@@ -37,7 +37,7 @@ import { _getActivePatternNodes } from './pattern-comprehension-state'
 const _rawDurationCache = new Map<string, Array<{ y: number; mo: number; d: number; h: number; min: number; s: number; ns: number }>>()
 const MAX_CACHE_SIZE = 64
 
-export type ExprValue = string | number | boolean | null | bigint | unknown[] | Record<string, unknown>
+export type ExprValue = string | number | boolean | null | bigint | ExprValue[] | Record<string, unknown>
 
 export type QueryRow = Record<string, unknown>
 
@@ -122,7 +122,7 @@ export function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Rec
           return _evalBinary('[' + item.value + ']', _row || {})
         }
       }
-      return items.map((item: unknown) => {
+      return items.map((item: unknown): ExprValue => {
         if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type) {
           const typed = item as Record<string, unknown>
           // STRING 类型但值以 { 开头 → map 字面量，用 _evalBinary 解析
@@ -131,7 +131,7 @@ export function _evalStructuredLiteral(expr: Record<string, unknown>, _row?: Rec
           }
           return _evalStructuredLiteral(typed, _row)
         }
-        return item
+        return item as ExprValue
       })
     }
     case 'MAP': return Object.fromEntries(
@@ -240,7 +240,7 @@ export function _parseCommaList(s: string): string[] {
   return result
 }
 
-type _BuiltinFn = (args: string[], row?: Record<string, unknown>) => unknown
+type _BuiltinFn = (args: string[], row?: Record<string, unknown>) => ExprValue
 
 /** Resolve nanoseconds from map combining millisecond, microsecond, nanosecond */
 export function _resolveNanoseconds(map: Record<string, unknown>): number {
@@ -1203,7 +1203,7 @@ function _evalListPredicate(
   listExpr: string,
   whereClause: string,
   row?: Record<string, unknown>
-): unknown {
+): boolean | null {
   const list = _evalBinary(listExpr, row)
   if (!Array.isArray(list)) return null
 
@@ -1346,9 +1346,9 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
   toboolean: ([a], r) => { const v = _evalBinary(a, r); if (v == null) return null; if (v === true || v === false) return v; if (typeof v === 'number') _throwInvalidArgumentValue(); if (_isCompositeCypherValue(v)) _throwInvalidArgumentValue(); if (typeof v === 'string') { const lv = v.toLowerCase().trim(); if (lv === 'true') return true; if (lv === 'false') return false; } return null },
   isnan: ([a], r) => isNaN(Number(_evalBinary(a, r))),
   labels: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || v === null) throw Object.assign(new Error('TypeError: Invalid argument type for labels()'), { tckError: 'TypeError' }); if (typeof v === 'object' && Object.keys(v).length === 0) return []; const unwrapped = _unwrapRecord(v); const raw = unwrapped.__fullLabel || unwrapped._fullLabel || unwrapped._label; if (!raw || raw === 'Default') return []; return String(raw).split(':').filter(Boolean) },
-  type: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const edgeLabel = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return edgeLabel },
-  startnode: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for startNode()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); return uw._startNode ?? uw._src ?? null },
-  endnode: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for endNode()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); return uw._endNode ?? uw._dst ?? null },
+  type: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for type()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const raw = uw.__edgeLabel ?? uw.__edgeLabelStr ?? uw._type ?? ''; return typeof raw === 'string' ? raw : '' },
+  startnode: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for startNode()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); return (uw._startNode ?? uw._src ?? null) as ExprValue },
+  endnode: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for endNode()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); return (uw._endNode ?? uw._dst ?? null) as ExprValue },
   properties: ([a], r) => { const v = _unwrapFloatForType(typeof a === 'string' ? _evalBinary(a, r) : a); if (v == null) return null; if (typeof v !== 'object' || Array.isArray(v)) throw Object.assign(new Error('TypeError: Invalid argument type for properties()'), { tckError: 'TypeError' }); const uw = _unwrapRecord(v); const o: Record<string, unknown> = {}; for (const [k, vv] of Object.entries(uw)) if (!k.startsWith('_') && ['id', 'type'].indexOf(k) === -1) o[k] = vv; return o },
   keys: ([a], r) => { const v = typeof a === 'string' ? _evalBinary(a, r) : a; if (v == null) return null; if (typeof v === 'object') { const uw = _unwrapRecord(v); const isNodeOrRel = '_label' in uw || '__fullLabel' in uw || '__edgeLabel' in uw || '_type' in uw; return Object.keys(uw).filter(k => !k.startsWith('_') && ['id', 'type'].indexOf(k) === -1 && (!isNodeOrRel || uw[k] != null)); } return [] },
   id: ([a], r) => { const v = _evalBinary(a, r); if (v && typeof v === 'object') { const uw = _unwrapRecord(v); const uid = '_id' in uw ? uw._id : ('id' in uw && typeof uw.id === 'number' ? uw.id : 0); return typeof uid === 'number' ? uid : 0; } return 0 },
@@ -2803,9 +2803,9 @@ export function _evalBinary(s: string, row?: Record<string, unknown>): ExprValue
 // Expression cache: Map<exprString, pure constant value>
 // caches only side-effect-free constant expressions (1+2, 'hello', true)
 // to avoid re-parsing on every call
-const _exprCache = new Map<string, unknown>()
+const _exprCache = new Map<string, ExprValue>()
 
-function _evalAndCache(t: string, row: Record<string, unknown> | undefined, key: string): unknown {
+function _evalAndCache(t: string, row: Record<string, unknown> | undefined, key: string): ExprValue {
   if (row === undefined) return _evalComparison(t, row)
   const result = _evalComparison(t, row)
 
@@ -4532,7 +4532,7 @@ export function _evalPatternComprehension(inner: string, row?: Record<string, un
     }
   }
 
-  const result: unknown[] = []
+  const result: ExprValue[] = []
   for (const match of matches) {
     const evalCtx: Record<string, unknown> = { ...(row || {}), ...match.extraCtx }
     result.push(_evaluateExpression(projExpr, evalCtx))
@@ -4617,7 +4617,7 @@ export function _evalLiteral(s: string, row?: Record<string, unknown>): ExprValu
       const retExpr = lcMatch[4]?.trim()
       const list = _evaluateExpression(listExpr, row)
       if (!Array.isArray(list)) return null
-      const result: unknown[] = []
+      const result: ExprValue[] = []
       for (const item of list) {
         const evalCtx: Record<string, unknown> = { ...row as any, [varName]: item }
         if (condExpr) {
@@ -4668,7 +4668,7 @@ export function _evalLiteral(s: string, row?: Record<string, unknown>): ExprValu
       if (!srcNode || typeof srcNode !== 'object') return null
       const edges: Array<{ srcIdx: number; dstIdx: number; label?: string }> =
         (srcNode as any).__edges || []
-      const result: unknown[] = []
+      const result: ExprValue[] = []
       for (const e of edges) {
         if (edgeLabel && e.label && e.label !== edgeLabel) continue
         result.push(_evaluateExpression(retExpr, row as any))
