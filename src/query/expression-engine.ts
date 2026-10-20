@@ -1498,7 +1498,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (str.includes('T')) str = str.slice(0, str.indexOf('T'))
       return _normalizeDateStr(str);
     }
-    if (v && typeof v === "object") {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
       const map = v;
       // map.date 字符串穿透 + 覆盖字段合并
       if (map.date != null && typeof map.date === 'string') {
@@ -1532,7 +1532,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       str = str.replace(/(?:[+-]\d{2}(?::\d{2})?|[+-]\d{4}|Z)$/, '')  // strip +01:00 / +0100 / Z
       return _normalizeTimeStr(str);
     }
-    if (v && typeof v === "object") {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
       const map = v;
       // 优先：如果 map.time 是完整字符串（localtime({time: other}) → '12:31:14.645876123'）
       if (map.time != null && typeof map.time === 'string') {
@@ -1597,7 +1597,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (!/[Z+-]/.test(str.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))) str += 'Z'
       return _normalizeTimeStr(str);
     }
-    if (v && typeof v === "object") {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
       const map = v;
       // 优先：如果 map.time 是完整字符串（time({time: other})）
       if (map.time != null && typeof map.time === 'string') {
@@ -1664,7 +1664,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       }
       return _normalizeTimeStr(str);
     }
-    if (v && typeof v === "object") {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
       const map = v;
       // 如果 map.date 是完整字符串，穿透
       if (map.date != null && typeof map.date === 'string' && (map.date.includes('T') || map.time == null)) {
@@ -1770,7 +1770,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       }
       return _normalizeDateStr(str) + 'T00:00:00Z';
     }
-    if (v && typeof v === "object") {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
       const map = v;
       // 如果 map.date 是完整字符串，穿透
       if (map.date != null && typeof map.date === 'string' && (map.date.includes('T') || map.time == null)) {
@@ -1990,7 +1990,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       }
       return "PT" + str + "S";
     }
-    if (v && typeof v === "object") {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
       const map = v;
       const AVG_DAYS_PER_MONTH = 30.436875;
       const _num = (k) => { const x = map[k]; return x != null ? Number(x) : 0; };
