@@ -37,7 +37,7 @@ import { _getActivePatternNodes } from './pattern-comprehension-state'
 const _rawDurationCache = new Map<string, Array<{ y: number; mo: number; d: number; h: number; min: number; s: number; ns: number }>>()
 const MAX_CACHE_SIZE = 64
 
-export type ExprValue = string | number | boolean | null | bigint | ExprValue[] | { [key: string]: ExprValue }
+export type ExprValue = string | number | boolean | null | bigint | unknown[] | Record<string, unknown>
 
 export type QueryRow = Record<string, unknown>
 
@@ -319,7 +319,7 @@ export function _extractTimeMap(map: Record<string, unknown>): { hour: number; m
   }
   return undefined
 }
-export function _extractTimeProp(s: string, prop: string): number | undefined {
+export function _extractTimeProp(s: string, prop: string): string | number | null | undefined {
   const cleanS = s.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$|\[[^\]]+\]$/, '')
   const parts = cleanS.match(/^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/)
   if (!parts) return undefined
@@ -1305,31 +1305,6 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (typeof v === 'string') return v.length;
     // 列表长度
     if (Array.isArray(v)) return v.length;
-    return null;
-  },
-  type: ([a], r) => {
-    const v = _evalBinary(a, r);
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      // 边对象形如 { _type: 'REL', props: {...} }
-      if ((v as any)._type) return (v as any)._type;
-      if ((v as any).label) return (v as any).label;
-    }
-    // 字符串直接返回
-    if (typeof v === 'string') return v;
-    return null;
-  },
-  nodes: ([a], r) => {
-    const v = _evalBinary(a, r);
-    if (v && typeof v === 'object' && !Array.isArray(v) && (v as any).__path) {
-      return (v as any).__path;
-    }
-    return null;
-  },
-  relationships: ([a], r) => {
-    const v = _evalBinary(a, r);
-    if (v && typeof v === 'object' && !Array.isArray(v) && (v as any).__pathEdges) {
-      return (v as any).__pathEdges;
-    }
     return null;
   },
   abs: ([a], r) => Math.abs(_num(_evalBinary(a, r))),
@@ -2781,7 +2756,7 @@ export function _callFunction(name: string, args: string[], row?: Record<string,
 
 export function _evalBinary(s: string, row?: Record<string, unknown>): ExprValue {
   // 先尝试函数匹配（需在 fast path 之前，否则会跳到 _evalComparison 错过新函数匹配）
-  const _tryFnCall = (t: string): unknown => {
+  const _tryFnCall = (t: string): ExprValue | undefined => {
     const fnParenIdx = t.indexOf('(')
     // Backtick-quoted function names are allowed so keyword-colliding functions
     // like `replace` (a Cypher reserved word) can still be invoked.  The parser
@@ -3739,9 +3714,9 @@ function _isIntOperand(v: ExprValue): boolean {
 // literal is a number in Cypher, so a `{ __float: n }` marker must be treated as
 // a numeric (non-node) argument — unwrapping it to a plain number lets the
 // `typeof v !== 'object'` guard reject it instead of mistaking it for a node.
-function _unwrapFloatForType(v: unknown): unknown {
+function _unwrapFloatForType(v: ExprValue): ExprValue {
   if (v && typeof v === 'object' && !Array.isArray(v) && '__float' in (v as Record<string, unknown>)) {
-    return (v as Record<string, unknown>).__float
+    return (v as Record<string, unknown>).__float as ExprValue
   }
   return v
 }
