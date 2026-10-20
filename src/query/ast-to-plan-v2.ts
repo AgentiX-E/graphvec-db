@@ -375,7 +375,7 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
  * due to error recovery dropping unrecognized tokens.
  */
 function rebuildReturnColumns(plan: QueryPlan, items: string[]): void {
-  const newColumns: Array<{ expression: string; alias: string | null }> = []
+  const newColumns: Array<{ expression: string; alias: string }> = []
   const newAliasMap: Record<string, string> = {}
   const newReturnCols: string[] = []
 
@@ -739,16 +739,16 @@ function buildQueryPlan(query: string): QueryPlan {
         const matchPattern = trimmed.match(/MATCH\s*\(\s*(\w+)\s*(?::\s*(\w+))?/)
         if (matchPattern) {
           const matchVar = matchPattern[1]
-          const matchLabel = matchPattern[2] || undefined
+          const matchLabel = matchPattern[2] ?? null
           plan.hasMatch = true
           plan.scanLabel = matchLabel
           if (matchLabel) {
-            plan.labelExpr = matchLabel
+            plan.labelExpr = { type: 'LABEL_EXPR', items: [{ exclude: false, name: matchLabel }] }
           }
           // Set matchAlias for the MATCH variable
           plan.matchAlias = matchVar
           // Scan mode for single-step MATCH
-          plan.steps = undefined
+          plan.steps = []
         }
       }
       const feVar = feMatch2[1]
