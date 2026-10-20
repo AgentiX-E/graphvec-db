@@ -204,7 +204,12 @@ describe('Admin UI Graph Editor (GAP-66)', () => {
       expect(res.ok).toBe(true)
       const data = await res.json()
       expect(data).toHaveProperty('elements')
-      expect(data.elements).toBeInstanceOf(Array)
+      // Use Array.isArray rather than instanceof Array: the response body is
+      // parsed by the fetch/undici worker realm, whose Array constructor is a
+      // different realm from the test file's Array, so instanceof fails even
+      // though the value is a genuine array. Array.isArray checks the internal
+      // [[ArrayData]] slot and is realm-agnostic.
+      expect(Array.isArray(data.elements)).toBe(true)
       expect(data.elements.length).toBeGreaterThan(0)
     })
   })
