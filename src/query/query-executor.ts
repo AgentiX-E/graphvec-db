@@ -2875,10 +2875,11 @@ function _groupAggregateWithRows(
       props: { ...out },
       __crossVarRows: { ...out },
     }
+    const recCross = rec.__crossVarRows as Record<string, unknown>
     for (const [fk, fv] of Object.entries(firstFlat)) {
-      if (fk in rec.__crossVarRows) continue
+      if (fk in recCross) continue
       if (fv && typeof fv === 'object' && !Array.isArray(fv)) {
-        (rec.__crossVarRows as Record<string, unknown>)[fk] = fv
+        recCross[fk] = fv
       }
     }
     for (const [ok, ov] of Object.entries(out)) rec[ok] = ov
@@ -6983,9 +6984,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   for (const [ek, ev] of Object.entries(evaluated as Record<string, unknown>)) {
                     if (ek !== '__edges' && ek !== 'props' && !ek.startsWith('__')) cleanVal[ek] = ev
                   }
-                  rawRow.props[alias] = cleanVal
+                  (rawRow.props as Record<string, unknown>)[alias] = cleanVal
                 } else {
-                  rawRow.props[alias] = evaluated
+                  (rawRow.props as Record<string, unknown>)[alias] = evaluated
                 }
               } catch {
                 // Fallback: keep GE's value
@@ -7739,18 +7740,20 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         const _folded: any[] = []
         for (const [, rows] of _groups) {
           const first = rows[0]
-          const _foldedRow: any = { ...first, props: { ...(first.props || {}) } }
+          const firstProps = (first.props || {}) as Record<string, unknown>
+          const firstCross = (first.__crossVarRows || {}) as Record<string, unknown>
+          const _foldedRow: any = { ...first, props: { ...firstProps } }
           // Materialise each grouping key onto the folded row using the same
           // evaluation order as the key computation (RETURN expression alias
           // first, then the raw binding).  `first` may carry a stale value under
           // the alias (a stray relationship from the variable-length walk), so
           // re-evaluate `length(p)` rather than copying `first` verbatim.
           for (const gb of _gbCols) {
-            const _ctx: Record<string, unknown> = { ...(first.__crossVarRows || {}), ...(first.props || {}) }
+            const _ctx: Record<string, unknown> = { ...firstCross, ...firstProps }
             const _gexpr = _exprByAlias.get(gb)
             let _gval: unknown
             if (_gexpr) { try { _gval = _evalBinary(_gexpr, _ctx) } catch { _gval = null } }
-            else { _gval = first.__crossVarRows?.[gb] ?? (gb in (first.props || {}) ? first.props[gb] : null) }
+            else { _gval = firstCross[gb] ?? (gb in firstProps ? firstProps[gb] : null) }
             _foldedRow.props[gb] = _gval
             if (_foldedRow.__crossVarRows) _foldedRow.__crossVarRows[gb] = _gval
           }
@@ -8538,10 +8541,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           switch (f.operator) {
             case 'EQ':   baseFilterResult = String(actualVal) === String(fv); break
             case 'NEQ':  baseFilterResult = String(actualVal) !== String(fv); break
-            case 'GT':   baseFilterResult = actualVal > fv; break
-            case 'GTE':  baseFilterResult = actualVal >= fv; break
-            case 'LT':   baseFilterResult = actualVal < fv; break
-            case 'LTE':  baseFilterResult = actualVal <= fv; break
+            case 'GT':   baseFilterResult = _compareValues(actualVal, fv, '>') === true; break
+            case 'GTE':  baseFilterResult = _compareValues(actualVal, fv, '>=') === true; break
+            case 'LT':   baseFilterResult = _compareValues(actualVal, fv, '<') === true; break
+            case 'LTE':  baseFilterResult = _compareValues(actualVal, fv, '<=') === true; break
             case 'IS_NULL':     baseFilterResult = actualVal == null; break
             case 'IS_NOT_NULL': baseFilterResult = actualVal != null; break
             case 'STARTS_WITH': baseFilterResult = typeof actualVal === 'string' && typeof fv === 'string' && actualVal.startsWith(fv); break

@@ -252,6 +252,8 @@ export interface QueryPlan {
   skip: number | undefined
   /** 是否来自 MATCH 扫描（用于区分无标签 MATCH 和纯 WITH/UNWIND） */
   hasMatch?: boolean
+  /** Path-assignment variable name (`MATCH p = (a)-[*]->(b)` → `p`). */
+  pathVar?: string | null
   /** 聚合子句（如 count, sum, avg, max, min） */
   aggregate?: AggregateClause
   /** All aggregate clauses (supports multiple aggregates in a single RETURN,
