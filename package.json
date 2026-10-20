@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "license": "Apache-2.0",
-  "description": "AgentiX GraphVec \u2014 Globally distributed, multi-active graph database for AI Agent era",
+  "description": "AgentiX GraphVec — Globally distributed, multi-active graph database for AI Agent era",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "engines": {
@@ -79,7 +79,7 @@
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "acme-client": "^5.4.0",
     "alasql": "^4.17.3",
-    "archiver": "^8.0.0",
+    "archiver": "7.0.1",
     "async-mutex": "^0.5.0",
     "check-disk-space": "^3.4.0",
     "chokidar": "^5.0.0",
