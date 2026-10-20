@@ -6928,12 +6928,14 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       const _applyWithProjections = (rows: Array<Record<string, unknown>>, segments: any[]): Array<Record<string, unknown>> => {
         if (!segments.length) return rows
         for (const rawRow of rows) {
+          const rawCross = rawRow.__crossVarRows as Record<string, unknown> | undefined
+          const rawProps = rawRow.props as Record<string, unknown> | undefined
           // Snapshot node variables that alias rawRow.props before writing WITH
           // projection aliases back into props (see matching comment below).
-          if (rawRow.__crossVarRows && rawRow.props && typeof rawRow.props === 'object') {
-            for (const vn of Object.keys(rawRow.__crossVarRows)) {
-              if (rawRow.__crossVarRows[vn] === rawRow.props) {
-                rawRow.__crossVarRows[vn] = { ...rawRow.props }
+          if (rawCross && rawProps && typeof rawProps === 'object') {
+            for (const vn of Object.keys(rawCross)) {
+              if (rawCross[vn] === rawProps) {
+                rawCross[vn] = { ...rawProps }
               }
             }
           }
@@ -7768,8 +7770,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             const collected: unknown[] = []
             const _field = _gbAgg.field && _gbAgg.field !== '*' ? _gbAgg.field : null
             for (const r of rows) {
-              const cvr = r.__crossVarRows || {}
-              const props = r.props || {}
+              const cvr = (r.__crossVarRows || {}) as Record<string, unknown>
+              const props = (r.props || {}) as Record<string, unknown>
               let cv: unknown
               if (_field) {
                 const dotIdx = _field.indexOf('.')
@@ -8136,7 +8138,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           let existsVal = false
           if (srcMatch && allNodes?.length) {
             const srcVar = srcMatch[1]
-            const srcNodeRef = ctx[srcVar]
+            const srcNodeRef = ctx[srcVar] as Record<string, any> | undefined
             if (srcNodeRef) {
               const srcLabel = (srcNodeRef.props || srcNodeRef)._label || ''
               const labelMatch = ebody.match(/[:(w+)]/)
@@ -9524,7 +9526,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               let existsVal2 = false
               if (srcMatch2 && allNodes?.length) {
                 const srcVar2 = srcMatch2[1]
-                const srcNodeRef2 = ctx[srcVar2]
+                const srcNodeRef2 = ctx[srcVar2] as Record<string, any> | undefined
                 if (srcNodeRef2) {
                   const srcLabel2 = (srcNodeRef2.props || srcNodeRef2)._label || ''
                   const labelMatch2 = ebody2.match(/[:(w+)]/)
