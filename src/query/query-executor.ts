@@ -27,6 +27,9 @@ import { _isPatternPredicate, _validateUndefinedVariables, _validateUnknownFunct
 import { _validatePlan } from './executor-validate-plan'
 import { _execNonGePaths } from './executor-non-ge'
 
+/** A query result is a list of rows, each a flat variable -> value map. */
+type QueryResult = QueryRow[]
+
 /** 判断值是否为 typed-format 对象 { type: 'STRING', value: '...' } */
 
 /**
@@ -9551,7 +9554,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
               evalVal = existsVal2
             } else {
-              evalVal = _evaluateExpression(whereBodyExpr || plan.whereBody, ctx)
+              evalVal = _evaluateExpression(plan.whereBody!, ctx)
             }
             if (evalVal === true) {
               filtered.push(row)
