@@ -473,6 +473,10 @@ export interface TraverseStep {
   range?: { min: number; max: number | null }
   /** MATCH p = (n)-->() 路径变量名 */
   pathVariable?: string | null
+  /** relationship variable from `MATCH ()-[a]->()` */
+  edgeVariable?: string | null
+  /** alternate relationship variable binding used by OPTIONAL MATCH */
+  edgeAlias?: string | null
 }
 
 export interface FilterClause {

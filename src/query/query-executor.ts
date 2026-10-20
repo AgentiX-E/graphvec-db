@@ -3923,7 +3923,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     }
     const nodeGeIds: number[] = []
 
-    let edgesPayload: Array<{ srcIdx: number; dstIdx: number; label: string }> = []
+    let edgesPayload: Array<{ srcIdx: number; dstIdx: number; label: string; props?: Record<string, unknown> | null }> = []
     if (allNodes.length) {
       for (let i = 0; i < allNodes.length; i++) {
         // WHERE 预过滤：跳过不匹配的起始节点
@@ -3981,19 +3981,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             nodeEdgeMap[ep.srcIdx].push({dstIdx: ep.dstIdx, srcIdx: ep.srcIdx, label: ep.label, props: ep.props || undefined})
           }
         }
-        // 为每行分配 __edges（如果还没有），同时构建邻接索引
-        const adjIdx = new Map<number, Array<{dstIdx: number; srcIdx: number; label: string; props?: any}>>()
+        // 为每行分配 __edges（如果还没有）
         for (let ni = 0; ni < allNodes.length; ni++) {
           if (!(allNodes[ni] as any).__edges || !(allNodes[ni] as any).__edges.length) {
             (allNodes[ni] as any).__edges = nodeEdgeMap[ni]
           }
-          if (nodeEdgeMap[ni].length > 1) {
-            adjIdx.set(ni, nodeEdgeMap[ni])
-          }
         }
-        // 把邻接索引挂在 allNodes 上供 _walkMultiSteps 使用
-        // 把邻接索引挂在 allNodes 上供 _walkMultiSteps 使用
-        (allNodes as Array<Record<string, unknown> & { __adjIdx?: number[][] }>).__adjIdx = adjIdx
       }
   
       if (edgesPayload.length) {
