@@ -4618,7 +4618,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (pathResults.length > 0) {
                 const _sgCrossPassed = []
                 for (const p of pathResults) {
-                  const _sgVmap = {}
+                  const _sgVmap: Record<string, number> = {}
                   _sgVmap[_sgGroup0[0].source] = i
                   for (let si = 0; si < _sgGroup0.length && si < p.length - 1; si++) {
                     if (_sgGroup0[si] && _sgGroup0[si].targetAlias) _sgVmap[_sgGroup0[si].targetAlias] = p[si + 1]
@@ -4683,7 +4683,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 pathResults = _sgCrossPassed
                 if (pathResults.length > 0) {
                   for (const _sgP of pathResults) {
-                    const _sgVmap = {}
+                    const _sgVmap: Record<string, number> = {}
                     _sgVmap[_sgGroup0[0].source] = i
                     for (let si = 0; si < _sgGroup0.length && si < _sgP.length - 1; si++) {
                       if (_sgGroup0[si] && _sgGroup0[si].targetAlias) _sgVmap[_sgGroup0[si].targetAlias] = _sgP[si + 1]
@@ -4695,18 +4695,18 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                       if (!_rcName || _sgVmap[_rcName] === undefined) continue
                       const _nIdx = _sgVmap[_rcName]
                       const _nGeId = nodeGeIds[_nIdx] || (_nIdx + 1)
-                      const _sgAllVars = {}
+                      const _sgAllVars: Record<string, unknown> = {}
                       for (const [vn, vi] of Object.entries(_sgVmap)) {
                         const raw = allNodes[vi]
                         if (raw) {
-                          const clean = { _label: raw._label || "Default" }
+                          const clean: Record<string, unknown> = { _label: raw._label || "Default" }
                           for (const k of Object.keys(raw)) {
                             if (k[0] !== "_" || (k !== "_label" && k !== "_alias" && k !== "props")) clean[k] = raw[k]
                           }
                           _sgAllVars[vn] = clean
                         }
                       }
-                      const _sgNodeProps = { _label: (allNodes[_nIdx] && allNodes[_nIdx]._label) || "Default" }
+                      const _sgNodeProps: Record<string, unknown> = { _label: (allNodes[_nIdx] && allNodes[_nIdx]._label) || "Default" }
                       if (allNodes[_nIdx]) {
                         for (const k of Object.keys(allNodes[_nIdx])) {
                           if (k[0] !== "_" || (k !== "_label" && k !== "props")) _sgNodeProps[k] = allNodes[_nIdx][k]
@@ -5160,8 +5160,11 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                       i, plan.steps.slice(0, nrvStepIdx + 1),
                       allNodes, undefined, plan.filters, stepSourceFilters
                     )
-                    if (interTargets.length) {
-                      const interNode = allNodes[interTargets[0]]
+                    if (interTargets.length && interTargets[0]?.length) {
+                      // Take the endpoint node of the first matched path (the
+                      // intermediate target reached by the nrv step), not the
+                      // whole path array, as the allNodes index.
+                      const interNode = allNodes[interTargets[0][interTargets[0].length - 1]]
                       if (interNode) {
                         targetPropsMap[nrv] = { ...interNode }
                         // 去除内部属性（_alias, _label 等），TCK 兼容
@@ -7163,7 +7166,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // Pre-process path variables: replace edge placeholder strings with path
     // objects containing __path arrays so list comprehensions like
     // [x IN collect(p) | head(nodes(x))] can resolve correctly.
-    const pathVars = new Set((plan.steps || []).map(s => s.pathVariable).filter(Boolean))
+    const pathVars = new Set<string>(
+      (plan.steps || []).map(s => s.pathVariable).filter((v): v is string => typeof v === 'string')
+    )
     // Normalize a raw seed edge into the relationship object the serializer
     // `_toPathNotation` expects (`__edgeLabel`/`_type`/`_label`) plus a `_dir`
     // marker.  `_dir` is 'out' when the hop walks the edge in its natural
@@ -8562,8 +8567,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // the current rows into one row per node (so a later `collect(f.num)`
         // folds over every f), rather than binding only the first match.  When
         // there is no match the variable becomes null on the existing row.
+        const varName = opt.variableName || ''
         const _singleNodeOptional =
-          optSteps.length === 0 && !opt.variableName.startsWith('__')
+          optSteps.length === 0 && varName !== '' && !varName.startsWith('__')
         if (_singleNodeOptional) {
           const _mkProps = (n: any): Record<string, unknown> => {
             const p: Record<string, unknown> = {}
@@ -8585,15 +8591,15 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // MATCH (a)-->(b)`), a null binding cannot traverse any
               // relationship, so the whole row is dropped — matching Cypher's
               // "matching from null nodes returns no results" semantics.
-              const isLaterTraversalSource = (plan.steps || []).some((s: any) => s.source === opt.variableName)
+              const isLaterTraversalSource = (plan.steps || []).some((s: any) => s.source === varName)
               if (isLaterTraversalSource) continue
               const r2: Record<string, unknown> = { ...row }
-              r2[opt.variableName] = null
+              r2[varName] = null
               expanded.push(r2)
             } else {
               for (const m of matches) {
                 const r2: Record<string, unknown> = { ...row }
-                r2[opt.variableName] = _mkProps(m as any)
+                r2[varName] = _mkProps(m as any)
                 expanded.push(r2)
               }
             }
