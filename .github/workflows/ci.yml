@@ -26,10 +26,15 @@ env:
 
 jobs:
   # ============================================================
-  # Job 1: Test — Vitest 全量单元测试
+  # Job 1: Test (Unit) — 功能性单元测试（串行、无重负载）
   # ============================================================
-  test:
-    name: Test (Node ${{ matrix.node-version }})
+  # The suite is partitioned into three tiers so each job stays bounded and
+  # deterministic on shared CI runners:
+  #   - Unit:  default config (vmThreads, serial), excludes benchmark/ZMQ/fs/onnx
+  #   - Slow:  ZMQ-heavy specs that spawn child processes (must run serially)
+  #   - Data:  filesystem-bound specs that contend over ./test-data/ (serial)
+  test-unit:
+    name: Test Unit (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -58,11 +63,59 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.node-version }}
+          name: test-unit-results-${{ matrix.node-version }}
           path: |
             test-results/
             **/__snapshots__/
           retention-days: 7
+
+  # ============================================================
+  # Job 1b: Test (Slow) — ZMQ-heavy 串行测试
+  # ============================================================
+  test-slow:
+    name: Test Slow (ZMQ)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ZMQ-heavy tests (serial)
+        run: npx vitest run --config vitest.slow.config.ts --root .
+
+  # ============================================================
+  # Job 1c: Test (Data) — filesystem-bound 串行测试
+  # ============================================================
+  test-data:
+    name: Test Data (filesystem)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run filesystem-bound tests (serial)
+        run: npx vitest run --config vitest.data.config.ts --root .
 
   # ============================================================
   # Job 2: Lint — ESLint 代码风格检查
