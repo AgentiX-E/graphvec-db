@@ -133,7 +133,7 @@ describe('Composite Index — 纯逻辑层（不依赖 OverGraph DB）', () => {
 
     // 同一个邮箱给不同节点 → 应抛出
     expect(() => {
-      ;(storage as any)._addToCompositeIndex('idx_email', { email: 'alice@test.com' }, 102)
+      (storage as any)._addToCompositeIndex('idx_email', { email: 'alice@test.com' }, 102)
     }).toThrow(/Unique constraint violation/)
   })
 
@@ -142,7 +142,7 @@ describe('Composite Index — 纯逻辑层（不依赖 OverGraph DB）', () => {
     ;(storage as any)._addToCompositeIndex('idx_email', { email: 'alice@test.com' }, 101)
     // 同一个节点再次添加 → 不应抛出
     expect(() => {
-      ;(storage as any)._addToCompositeIndex('idx_email', { email: 'alice@test.com' }, 101)
+      (storage as any)._addToCompositeIndex('idx_email', { email: 'alice@test.com' }, 101)
     }).not.toThrow()
   })
 
@@ -151,11 +151,11 @@ describe('Composite Index — 纯逻辑层（不依赖 OverGraph DB）', () => {
     ;(storage as any)._addToCompositeIndex('idx_unique', { typeId: 1, name: 'alice' }, 101)
     // 相同复合键 → 应抛出
     expect(() => {
-      ;(storage as any)._addToCompositeIndex('idx_unique', { typeId: 1, name: 'alice' }, 102)
+      (storage as any)._addToCompositeIndex('idx_unique', { typeId: 1, name: 'alice' }, 102)
     }).toThrow(/Unique constraint violation/)
     // 不同复合键 → 应允许
     expect(() => {
-      ;(storage as any)._addToCompositeIndex('idx_unique', { typeId: 1, name: 'bob' }, 103)
+      (storage as any)._addToCompositeIndex('idx_unique', { typeId: 1, name: 'bob' }, 103)
     }).not.toThrow()
   })
 

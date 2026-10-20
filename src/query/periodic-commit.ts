@@ -112,7 +112,7 @@ export class PeriodicCommitProcedure {
     const normalizedQuery = this._normalizeQuery(query)
 
     // 迭代执行
-    let batchQuery = normalizedQuery
+    const batchQuery = normalizedQuery
     let currentSkip = 0
     const batchSize = config.batchSize
 

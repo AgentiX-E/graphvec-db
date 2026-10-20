@@ -122,7 +122,7 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
     }
 
     // 强制触发一次同步
-    ;(node1.bus as any)._syncPeerDealers()
+    (node1.bus as any)._syncPeerDealers()
 
     // 只等待 dealer 连接+同步完成，不硬性要求精确 5 个 peer
     //（因为部分 peer 未实际启动，ZMQ dealer 可能连接挂起）

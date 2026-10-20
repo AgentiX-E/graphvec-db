@@ -238,7 +238,7 @@ describe('Batch Delete (GAP-22)', () => {
     })
 
     it('空列表返回 0', async () => {
-      ;(engine as any)._isOpen = true
+      (engine as any)._isOpen = true
       const deleted = await engine.batchDeleteNodes([])
       expect(deleted).toBe(0)
     })
@@ -279,7 +279,7 @@ describe('Batch Delete (GAP-22)', () => {
     })
 
     it('空列表返回 0', async () => {
-      ;(engine as any)._isOpen = true
+      (engine as any)._isOpen = true
       const deleted = await engine.batchDeleteEdges([])
       expect(deleted).toBe(0)
     })

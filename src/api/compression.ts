@@ -173,7 +173,7 @@ export class CompressionMiddleware {
     let deferredReason: string | undefined
     let deferredHeaders: Record<string, string | number | string[]> | undefined
     let compressionApplied = false
-    let responseBodyChunks: Buffer[] = []
+    const responseBodyChunks: Buffer[] = []
 
     // 缓存 write 调用的数据
     res.write = function (chunk: any, _encodingOrCb?: any, _cb?: any): boolean {

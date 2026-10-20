@@ -447,7 +447,7 @@ function _parseQueryImpl(query: string): QueryPlan {
   if (plan.type === 'MERGE' && plan.mergeNodes?.length) {
     if (!plan.createNodes) plan.createNodes = []
     for (const mn of plan.mergeNodes) {
-      ;(mn as any)._isMerge = true
+      (mn as any)._isMerge = true
       plan.createNodes.push(mn)
     }
   }
@@ -1877,7 +1877,7 @@ function _applyYieldAliases(
 // 同一个查询字符串的高频重复场景（benchmark / 批量请求）可跳过 ANTLR 解析 + Plan 适配
 const _parseCache = new Map<string, QueryPlan>()  // CLEARED 2026-07-04
 const _PARSE_CACHE_MAX = 100
-let _parseCacheSalt = ''
+const _parseCacheSalt = ''
 function _cachedParseQuery(query: string): QueryPlan {
   const cacheKey = query + _parseCacheSalt
   const cached = _parseCache.get(cacheKey)
@@ -1908,10 +1908,10 @@ const FP_TRIES = 3  // 扩容次数
 function _fastDedup(rows: QueryRow[]): QueryRow[] {
   const _sig = new Map<string, number[]>()
   const out: QueryRow[] = []
-  let _fp = 256
+  const _fp = 256
   for (const row of rows) {
     const key = _makeUniqueKey(row)
-    let id = _fp
+    const id = _fp
     let hashId = 0
     // 用数组模拟 HashSet
     let existing = _sig.get(key)

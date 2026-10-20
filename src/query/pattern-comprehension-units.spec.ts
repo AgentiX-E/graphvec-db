@@ -25,7 +25,7 @@ function node(label: string, extra?: Record<string, unknown>): Record<string, un
 }
 
 function edge(nodes: Record<string, unknown>[], from: number, to: number, label = 'T'): void {
-  ;(nodes[from].__edges as any[]).push({ srcIdx: from, dstIdx: to, label, props: null })
+  (nodes[from].__edges as any[]).push({ srcIdx: from, dstIdx: to, label, props: null })
 }
 
 describe('_parsePatternNodeTok', () => {

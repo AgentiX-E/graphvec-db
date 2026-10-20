@@ -872,7 +872,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
     if (typeof (this._node as any).onSnapshot === 'function') {
       this.logger.info('[RaftConsensus] Also registering WASM onSnapshot callback (dual-path)')
       try {
-        ;(this._node as any).onSnapshot(async (snapshotBase64: string) => {
+        (this._node as any).onSnapshot(async (snapshotBase64: string) => {
           const startTime = Date.now()
           this.logger.info('[RaftConsensus] WASM onSnapshot received')
           try {

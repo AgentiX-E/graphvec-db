@@ -703,7 +703,7 @@ function buildQueryPlan(query: string): QueryPlan {
   try {
     tree = parser.cypher()
   } finally {
-    ;(process.stderr as unknown as { write: (...args: unknown[]) => boolean }).write = origStderrWrite
+    (process.stderr as unknown as { write: (...args: unknown[]) => boolean }).write = origStderrWrite
   }
   const clauses = collectClauses(tree)
 
@@ -719,7 +719,7 @@ function buildQueryPlan(query: string): QueryPlan {
     // Also attach the first path variable to the first traverse step so the
     // executor can bind `p1` to a real path object.
     if (plan.steps.length && !(plan.steps[0] as any).pathVariable) {
-      ;(plan.steps[0] as any).pathVariable = pathVar
+      (plan.steps[0] as any).pathVariable = pathVar
     }
   }
 
@@ -915,7 +915,7 @@ function buildQueryPlan(query: string): QueryPlan {
 
   // ── 附加 USING INDEX 提示 ──
   if (usingIndexHint) {
-    ;(plan as any)._indexHint = usingIndexHint
+    (plan as any)._indexHint = usingIndexHint
   }
 
   return plan
@@ -1015,7 +1015,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           // so the executor can bind p1/p2 to real path objects
           // (`MATCH p1 = (:A)-->() MATCH p2 = (:A)<--()`).
           if (pathAssignMatch && parsed.edges.length) {
-            ;(parsed.edges[0] as any).pathVariable = pathAssignMatch[1]
+            (parsed.edges[0] as any).pathVariable = pathAssignMatch[1]
           }
           if (!plan.scanLabel && plan.steps.length === 0) {
             plan.scanLabel = parsed.label ?? plan.scanLabel
@@ -1034,14 +1034,14 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
             // `MATCH (a {name:'A'})-[*]->(x)`) so the variable-length executor can
             // constrain the BFS start node to matching properties.
             if (parsed.properties && plan.steps.length) {
-              ;(plan.steps[0] as any).sourceProps = parsed.properties
+              (plan.steps[0] as any).sourceProps = parsed.properties
             }
             // When the first MATCH is a bare node with an inline property
             // predicate but no label (e.g. `MATCH (a {name:'A'}), (c {name:'C'})
             // ...`), there is no traverse step to carry sourceProps, so keep it on
             // the plan for the cross-join bare-node binding.
             if (parsed.properties && !plan.steps.length) {
-              ;(plan as any).matchSourceProps = parsed.properties
+              (plan as any).matchSourceProps = parsed.properties
             }
             // Stage the remaining comma-separated parts (beyond the first) as
             // independent patterns.
@@ -1447,7 +1447,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         // node for WITH, so fall back to the raw clause text.
         const withText = clause.ctx ? getTextRecursive(clause.ctx) : ''
         if (/^\s*WITH\s+DISTINCT\b/i.test(withText)) {
-          ;(w as any).distinct = true
+          (w as any).distinct = true
         }
         plan.with = w
         if (!plan.withChain) plan.withChain = []
@@ -1485,7 +1485,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         const ev = (st as any).edgeVariable as string | undefined
         const len = ev ? withListLengths.get(ev) : undefined
         if (ev && len !== undefined && (st as any).range) {
-          ;(st as any).range = { min: len, max: len }
+          (st as any).range = { min: len, max: len }
         }
       }
     }
@@ -2076,9 +2076,9 @@ function parseWhereClause(text: string): FilterClause[] {
  */
 function splitByTopLevelAndOr(text: string): string[] {
   const parts: string[] = []
-  let depth = 0
-  let inString = false
-  let stringChar = ''
+  const depth = 0
+  const inString = false
+  const stringChar = ''
   let current = ''
 
   const tokens = text.split(/\b(AND|OR)\b/i)
@@ -2322,7 +2322,7 @@ function parseSingleCondition(text: string): FilterClause | null {
 
 function extractReturn(returnCtx: any): ParsedReturn {
   const columns: Array<{ expression: string; alias: string | null }> = []
-  let orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }> = []
+  const orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }> = []
   let limit: number | undefined
   let skip: number | undefined
   let aggregate: AggregateClause | undefined
@@ -2572,7 +2572,7 @@ function extractMerge(mergeCtx: any): { nodes: QueryPlan['mergeNodes']; edges: Q
     // property value, not the node variable.  Restrict the search to direct
     // children of the node pattern to leave such anonymous nodes alias-less.
     const directVar = (np?.children ?? []).find((c: any) => (c.constructor?.name ?? '') === 'VariableContext')
-    let variable = directVar ? findSymbolicName(directVar) ?? '' : ''
+    const variable = directVar ? findSymbolicName(directVar) ?? '' : ''
     const labelCtx = findChild(np, 'NodeLabelContext')
     const label = labelCtx ? extractLabel(labelCtx) : null
     nodes.push({ alias: variable, label, props: extractMapLiteral(findChild(np, 'PropertiesContext')) ?? null })
@@ -2646,7 +2646,7 @@ function _parseMapLiteral(text: string): Record<string, unknown> {
     const eq = entry.indexOf(':')
     if (eq < 0) continue
     let key = entry.slice(0, eq).trim()
-    let valText = entry.slice(eq + 1).trim()
+    const valText = entry.slice(eq + 1).trim()
     if ((key.startsWith("'") && key.endsWith("'")) || (key.startsWith('"') && key.endsWith('"'))) {
       key = key.slice(1, -1)
     }
@@ -2922,7 +2922,7 @@ function extractCall(callCtx: any): {
 function extractWith(withCtx: any): QueryPlan['with'] {
   const columns: Array<{ expression: string; alias: string | null }> = []
   const filters: FilterClause[] = []
-  let orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }> = []
+  const orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }> = []
   let limit: number | undefined
   let skip: number | undefined
   let aggregate: AggregateClause | undefined
@@ -3210,7 +3210,7 @@ function parseForeachBody(body: string): any {
   if (nestedMatch) {
     // Find matching paren
     let depth = 0
-    let start = nestedMatch.index! + nestedMatch[0].length - 1 // position of '('
+    const start = nestedMatch.index! + nestedMatch[0].length - 1 // position of '('
     for (let i = 0; i < body.length; i++) {
       if (body[i] === '(') { if (i >= start) depth++ }
       else if (body[i] === ')' && i >= start) {

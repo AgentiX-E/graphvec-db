@@ -342,7 +342,7 @@ test('CR-10: 重复 close 调用幂等', async () => {
   const cfg = makeConfig('double-close')
   const engine = new GraphEngine(cfg)
   engine.open()
-  let savedId = await engine.upsertNode(1, 'dummy', { props: {} })
+  const savedId = await engine.upsertNode(1, 'dummy', { props: {} })
   engine.close()
   // 第二次 close 不应抛出异常
   engine.close()
@@ -735,7 +735,7 @@ test('CR-23: 三轮 close+reopen 链式写入和更新', async () => {
 // ── Test 24: 写入边后 close→reopen→验证邻居关系 ──
 test('CR-24: 边持久化后 reopen 邻居关系不变', async () => {
   const cfg = makeConfig('edge-rel-persist')
-  let ids: number[] = []
+  const ids: number[] = []
   let e = new GraphEngine(cfg)
   e.open()
   try {
@@ -971,7 +971,7 @@ test('CR-33: create→upsert→reopen 验证最新值', async () => {
 // ── Test 34: close 后立刻 open 再 close 再 open，不报错 ──
 test('CR-34: close→open→close→open 两次稳定', async () => {
   const cfg = makeConfig('close-open-close-open')
-  let e = new GraphEngine(cfg)
+  const e = new GraphEngine(cfg)
   e.open()
   const id = await e.upsertNode(1, 'stable', { props: {} })
   e.close()
@@ -1556,11 +1556,11 @@ test('CR-60: 双向边持久化', async () => {
 // ── Test 61: engine 在 open 时多 engine 同路径Conflict detection ──
 test('CR-61: 同一路径两个 engine 先后 open/close', async () => {
   const cfg = makeConfig('same-path-two')
-  let e1 = new GraphEngine(cfg)
+  const e1 = new GraphEngine(cfg)
   e1.open()
   const id = await e1.upsertNode(1, 'only', { props: {} })
   e1.close()
-  let e2 = new GraphEngine(cfg)
+  const e2 = new GraphEngine(cfg)
   e2.open()
   try {
     const node = e2.getNode(id)
@@ -1720,7 +1720,7 @@ test('CR-68: reopen 后 autoid 递增', async () => {
 test('CR-69: 两 engine 各写 5 节点后 reopen', async () => {
   const cfg1 = makeConfig('two-e-a')
   const cfg2 = makeConfig('two-e-b')
-  let ids1: number[] = [], ids2: number[] = []
+  const ids1: number[] = [], ids2: number[] = []
   let e1 = new GraphEngine(cfg1), e2 = new GraphEngine(cfg2)
   e1.open(); e2.open()
   try {

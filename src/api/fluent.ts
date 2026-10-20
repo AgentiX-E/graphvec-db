@@ -185,7 +185,7 @@ export class GraphQuery {
     if (!this.hasFilters_['$has']) {
       this.hasFilters_['$has'] = {}
     }
-    ;(this.hasFilters_['$has'] as Record<string, unknown>)[key] = value
+    (this.hasFilters_['$has'] as Record<string, unknown>)[key] = value
     // 添加一个 function predicate 来应用此过滤
     this.predicates.push((node: NodeRecord) => {
       const fieldVal = this.resolveField(node, key)
@@ -872,7 +872,7 @@ export class SubtractQuery {
       this.queries[1].return(),
     ])
     const bIds = new Set(bResults.map(n => n.id))
-    let result = aResults.filter(n => !bIds.has(n.id))
+    const result = aResults.filter(n => !bIds.has(n.id))
     if (this.skip_ > 0) result.splice(0, this.skip_)
     if (this.limit_ !== null) result.splice(this.limit_)
     return result

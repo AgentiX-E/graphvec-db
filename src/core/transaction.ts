@@ -67,7 +67,7 @@ export class TransactionManager {
     const txn = new Transaction(this, snapshot, isolation)
     // 跨分片 awareness: 如果指定了多个 range，启用 2PC
     if (opts?.rangeIds && opts.rangeIds.length > 1) {
-      ;(txn as any)._use2PC = true
+      (txn as any)._use2PC = true
       ;(txn as any)._rangeIds = [...opts.rangeIds]
     }
     return txn

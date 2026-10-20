@@ -73,8 +73,8 @@ function _stripCypherComments(q: string): string {
 
 Before(function () {
   st.nodes = []; st.q = ''; st.res = []; st.err = null; st.params = {}
-  if (st.pGe) { try { st.pGe.close() } catch {}; st.pGe = undefined }
-  if (st.pDir) { try { fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}; st.pDir = undefined }
+  if (st.pGe) { try { st.pGe.close() } catch {} st.pGe = undefined }
+  if (st.pDir) { try { fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {} st.pDir = undefined }
   _clearGeInstances()
   // 清除 procedure registry（除了内置 proc），确保场景间隔离
   // 内置 proc（db.labels, dbms.security.createUser 等）在 registerBuiltins 中注册，需要保留
@@ -1234,7 +1234,7 @@ Given('having executed:', async function (query: string) {
                   if (mi >= 0) localAliasToGlobal[mv] = mi
                 }
                 for (const cn of specNodes) {
-                  let props: Record<string, unknown> = {}
+                  const props: Record<string, unknown> = {}
                   if (cn.props) {
                     for (const [k, v] of Object.entries(cn.props)) {
                       let raw = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type) ? (v as any).value : v
@@ -1558,7 +1558,7 @@ Given('having executed:', async function (query: string) {
               if (mi >= 0) localAliasToGlobal[mv] = mi
             }
             for (const cn of specNodes) {
-              let props: Record<string, unknown> = {}
+              const props: Record<string, unknown> = {}
               if (cn.props) {
                 for (const [k, v] of Object.entries(cn.props)) {
                   let raw = (v && typeof v === 'object' && 'value' in (v as any) && (v as any).type) ? (v as any).value : v
@@ -1729,7 +1729,7 @@ Given('having executed:', async function (query: string) {
               rebuilt.push({ ...e, srcIdx: realSrcIdx, dstIdx: realDstIdx })
             }
           }
-          ;(n as any).__edges = rebuilt
+          (n as any).__edges = rebuilt
         }
       }
       
@@ -1988,7 +1988,7 @@ Given(/^there exists a procedure (.*)$/, function (this: any, procDesc: string, 
   const returnsSig = match[3].trim()
 
   // 获取 data table（If any）
-  let dataTable: any[] = []
+  const dataTable: any[] = []
   if (dt && typeof dt.rows === 'function') {
     const rawRows = dt.raw()
     // 第一行是表头（参数列名）

@@ -207,7 +207,7 @@ describe('HotMigrator', () => {
   describe('rollback', () => {
     it('should rollback before atomic switch successfully', async () => {
       // simulate: migration started but not yet switched
-      ;(shardManager as any).ranges.set('range-b', createMockRange('range-b'))
+      (shardManager as any).ranges.set('range-b', createMockRange('range-b'))
 
       await migrator.rollback(split)
 

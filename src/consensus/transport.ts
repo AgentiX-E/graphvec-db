@@ -337,7 +337,7 @@ interface TcpFrame {
 /** 全局 TCP 端口注册表（用于测试和集群管理等场景） */
 /** 全局 TCP 端口 Map（按命名空间隔离，Test only随机 ns 避免并行冲突） */
 const globalTcpPorts: Map<string, number> = new Map()
-let _portNamespace = 'default'
+const _portNamespace = 'default'
 
 /**
  * TcpTransport — 生产环境 TCP 传输层

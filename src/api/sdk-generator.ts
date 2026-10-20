@@ -75,7 +75,7 @@ export function generateSdk(options: SdkGeneratorOptions): SdkGenerationResult {
 
     // 准备 OpenAPI spec 文件
     let specPath: string
-    let cleanupPaths: string[] = []
+    const cleanupPaths: string[] = []
     const doc = options.document || generateOpenAPIDocument()
 
     if (options.input) {
@@ -163,7 +163,7 @@ function generateCustomSdk(doc: OpenAPIDocument, options: SdkGeneratorOptions): 
  */
 function generatePythonSdk(doc: OpenAPIDocument, outputDir: string, options: SdkGeneratorOptions): void {
   const baseUrl = options.baseUrl || 'http://localhost:3000'
-  let lines: string[] = [
+  const lines: string[] = [
     '"""',
     'AgentiX GraphVec Python SDK — Auto-generated from OpenAPI spec',
     `Base URL: ${baseUrl}`,

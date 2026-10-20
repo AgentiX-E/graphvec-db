@@ -254,7 +254,7 @@ export function _resolveNanoseconds(map: Record<string, unknown>): number {
 export function _formatTime(hour: number, minute: number, second: number, nanosecond: number): string {
   const base = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
   if (nanosecond > 0) {
-    let nsStr = String(nanosecond).padStart(9, '0').replace(/0+$/, '')
+    const nsStr = String(nanosecond).padStart(9, '0').replace(/0+$/, '')
     return `${base}:${String(second).padStart(2, '0')}.${nsStr}`
   }
   if (second > 0) return `${base}:${String(second).padStart(2, '0')}`
@@ -598,12 +598,12 @@ function _formatDuration(years: number, months: number, _weeks: number, days: nu
     if (Number.isInteger(seconds)) {
       secStr = String(seconds)
       if (nanos > 0) {
-        let nsStr = String(nanos).padStart(9, '0').replace(/0+$/, '')
+        const nsStr = String(nanos).padStart(9, '0').replace(/0+$/, '')
         if (seconds === 0 && days < 0) { secStr = '-0.' + nsStr }
         else { secStr += '.' + nsStr }
       } else if (nanos < 0) {
         // 负纳秒：纳秒以正数小数形式附加（负号已在秒上）
-        let nsStr = String(Math.abs(nanos)).padStart(9, '0').replace(/0+$/, '')
+        const nsStr = String(Math.abs(nanos)).padStart(9, '0').replace(/0+$/, '')
         if (seconds === 0) {
           secStr = '-0.' + nsStr
         } else {
@@ -914,10 +914,10 @@ function _applyTruncateConfig(result: string, configArg: string, r: Record<strin
     return result;
   }
   // 处理时间覆盖字段（hour/minute/second/nanosecond/microsecond/millisecond）
-  let currentTime = result.includes('T') ? result.slice(result.indexOf('T')) : result.includes(':') ? 'T' + result.split(/[+-]/)[0].trim() : '';
+  const currentTime = result.includes('T') ? result.slice(result.indexOf('T')) : result.includes(':') ? 'T' + result.split(/[+-]/)[0].trim() : '';
   // 如果结果不包含时间部分（纯日期），不要添加时间部分
   const isDateOnly = !result.includes('T') && !result.includes(':');
-  let currentOriginTz = result.replace(/^[^T]*T/, '').match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/);
+  const currentOriginTz = result.replace(/^[^T]*T/, '').match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/);
   let currentTz = currentOriginTz ? currentOriginTz[0] : '';
   let cleanTimePart = currentTime;
   if (currentTime) {
@@ -929,7 +929,7 @@ function _applyTruncateConfig(result: string, configArg: string, r: Record<strin
     if (timeParts.length < 2) timeParts.push('00', '00');
     let hh = timeParts[0] || '00';
     let mm = timeParts[1] || '00';
-    let ssRaw = timeParts.slice(2).join(':') || '00';
+    const ssRaw = timeParts.slice(2).join(':') || '00';
     let ss = ssRaw, nanos = '';
     if (ssRaw.includes('.')) { ss = ssRaw.split('.')[0]; nanos = ssRaw.split('.')[1]; }
     // Apply overrides
@@ -1139,7 +1139,7 @@ export function _resolveDateFromMap(map: Record<string, unknown>): Date {
     return adj
   }
   let month = map.month != null ? Number(map.month) : 1
-  let day = map.day != null ? Number(map.day) : 1
+  const day = map.day != null ? Number(map.day) : 1
   if (map.quarter != null) {
     month = (Number(map.quarter) - 1) * 3 + 1
     if (map.dayOfQuarter != null) {
@@ -1726,7 +1726,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         const tzMatch = rest.match(/(?:\[[^\]]+\])?Z$|(?:\[[^\]]+\])?[+-]\d{2}:\d{2}(?:\.\d+)?(?:\[[^\]]+\])?$|(?:\[[^\]]+\])?[+-]\d{4}(?:\.\d+)?(?:\[[^\]]+\])?$|(?:\[[^\]]+\])?[+-]\d{2}(?:\.\d+)?(?:\[[^\]]+\])?$|Z(?:\[[^\]]+\])?$|\[[^\]]+\]$/)
         if (tzMatch) {
           const timePart = rest.slice(0, tzMatch.index)
-          let tzPart = tzMatch[0]
+          const tzPart = tzMatch[0]
           // 处理 [IANA]Z → 根据 IANA 解析真实 offset（不是硬编码 +00:00）
           const ianaZ = tzPart.match(/^\[([^\]]+)\]Z$/)
           if (ianaZ) {
@@ -1777,14 +1777,14 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         let dateStr = map.date.includes('T') ? map.date.slice(0, map.date.indexOf('T')) : map.date
         dateStr = _mergeDateStr(dateStr, map)
         if (map.time != null && typeof map.time === 'string') {
-          let timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+          const timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
           // timePart 是否已包含时区（+HH:MM/Z）
           const hasOwnTz = /[Z+-]/.test(timePart.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))
           const timeTz = hasOwnTz ? (timePart.match(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$|Z$/) || [''])[0] : ''
           if (map.timezone != null) {
             const dstTz = _formatTimezone(_resolveNamedTimezone(String(map.timezone), Number(dateStr.slice(0,4)), Number(dateStr.slice(5,7)), Number(dateStr.slice(8,10))))
             const cleanTimePartForMerge = timePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '');
-            let merged = _mergeTimeStr(cleanTimePartForMerge, map)
+            const merged = _mergeTimeStr(cleanTimePartForMerge, map)
             // If any原时区且目标时区不同，做一个简单的时区转换（只调小时分钟，不跨日）
             if (timeTz) {
               // 从 timePart 提取基准时间做时区转换
@@ -1820,7 +1820,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       }
       // map.time 是完整时间字符串但没有 map.date → 用 year/month/day 构造日期
       if (map.time != null && typeof map.time === 'string') {
-        let timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
+        const timePart = map.time.includes('T') ? map.time.slice(map.time.indexOf('T') + 1) : map.time
         const d = _resolveDateFromMap(map);
         const dateStr = _fmtUtcDate(d);
         const hasOwnTz = /[Z+-]/.test(timePart.replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))
@@ -1829,7 +1829,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           const dstTz = _formatTimezone(_resolveNamedTimezone(String(map.timezone), d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()))
           // 传给 _mergeTimeStr 的 timePart 应去掉时区，避免被包含在 merged 中
           const cleanTimePartForMerge = timePart.replace(/[+-]\d{2}:\d{2}(?:\[[^\]]+\])?$/, '').replace('Z', '');
-          let merged = _mergeTimeStr(cleanTimePartForMerge, map)
+          const merged = _mergeTimeStr(cleanTimePartForMerge, map)
           if (timeTz) {
             // 从 timePart（原始值）提取基准时间做时区转换，再应用覆盖
             const tpParts = timePart.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?/);
@@ -1969,14 +1969,14 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
               if (s || ns) {
                 let secStr = ""
                 if (ns > 0) {
-                  let nsStr = String(ns).padStart(9, "0").replace(/0+$/, "")
+                  const nsStr = String(ns).padStart(9, "0").replace(/0+$/, "")
                   secStr = String(s) + "." + nsStr
                 } else if (ns < 0) {
                   // Negative nanosecond: attach the fraction as its magnitude;
                   // the sign is already carried by the whole second (`-45s` +
                   // `-0.5s` -> `-45.5S`), or by an explicit `-0` for a pure
                   // sub-second value (`-0.5S`).
-                  let nsStr = String(Math.abs(ns)).padStart(9, "0").replace(/0+$/, "")
+                  const nsStr = String(Math.abs(ns)).padStart(9, "0").replace(/0+$/, "")
                   secStr = (s === 0 ? "-0" : String(s)) + "." + nsStr
                 } else {
                   secStr = String(s)
@@ -2037,10 +2037,10 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       if (hours <= -24) { days += Math.ceil(hours / 24); hours = hours % 24; if (hours > 0) { days++; hours -= 24 } }
       let nanosFormatted = "";
       if (nanos > 0) {
-        let nsStr = String(nanos).padStart(9, "0").replace(/0+$/, "");
+        const nsStr = String(nanos).padStart(9, "0").replace(/0+$/, "");
         nanosFormatted = "." + nsStr;
       } else if (nanos < 0) {
-        let nsStr = String(Math.abs(nanos)).padStart(9, "0").replace(/0+$/, "");
+        const nsStr = String(Math.abs(nanos)).padStart(9, "0").replace(/0+$/, "");
         nanosFormatted = "." + nsStr;  // 负号由秒部分或 "-0" 提供，这里只加小数点
       }
       let result = "P";
@@ -2053,7 +2053,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         if (minutes) result += minutes + "M";
         if (seconds || nanos) {
           // 当秒为 0 且纳秒为负时，秒部分设为 "-0"
-                  let secStr = (seconds === 0 && nanos < 0) ? "-0" : String(seconds);
+                  const secStr = (seconds === 0 && nanos < 0) ? "-0" : String(seconds);
           result += secStr + nanosFormatted + "S";
         }
       }
@@ -2262,7 +2262,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           const secStr = timeRe[3];
           if (secStr.includes('.')) {
             sec = parseInt(secStr.split('.')[0],10);
-            let frac = secStr.split('.')[1];
+            const frac = secStr.split('.')[1];
             ns = parseInt(frac.padEnd(9,'0').slice(0,9),10);
           } else { sec = parseInt(secStr,10); }
         }
@@ -2911,12 +2911,12 @@ export function _evalNot(s: string, row?: Record<string, unknown>): ExprValue {
   if (t.startsWith('NOT ')) {
     const inner = _evalBinary(t.slice(4), row)
     _assertBool(inner, '')
-    return inner === null ? null : !Boolean(inner)
+    return inner === null ? null : !inner
   }
   if (t.startsWith('NOT(') && t.endsWith(')')) {
     const inner = _evalBinary(t.slice(4, -1), row)
     _assertBool(inner, '')
-    return inner === null ? null : !Boolean(inner)
+    return inner === null ? null : !inner
   }
   return _evalComparison(s, row)
 }
@@ -3533,7 +3533,7 @@ function _durationSub(a: string, b: string): string {  const p1 = _parseDuration
         }
         bigIntResult += secStr
         if (ns) {
-          let nsStr = String(Math.abs(ns)).padStart(9, '0').replace(/0+$/, '')
+          const nsStr = String(Math.abs(ns)).padStart(9, '0').replace(/0+$/, '')
           bigIntResult += '.' + nsStr
         }
         bigIntResult += 'S'
@@ -3599,7 +3599,7 @@ function _timeAddDuration(timeStr: string, durStr: string): string {
   const tzSuffix = timeStr.slice(parts[0].length)
   let result = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0')
   if (ns > 0) {
-    let nsStr = String(ns).padStart(9, '0').replace(/0+$/, '')
+    const nsStr = String(ns).padStart(9, '0').replace(/0+$/, '')
     result += '.' + nsStr
   }
   return result + tzSuffix
@@ -3645,7 +3645,7 @@ function _dateTimeAddDuration(dtStr: string, durStr: string): string {
   const resY = String(y), resMo = String(mo).padStart(2, '0'), resD = String(d).padStart(2, '0')
   let result = resY + '-' + resMo + '-' + resD + 'T' + String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0') + ':' + String(s).padStart(2, '0')
   if (ns > 0) {
-    let nsStr = String(ns).padStart(9, '0').replace(/0+$/, '')
+    const nsStr = String(ns).padStart(9, '0').replace(/0+$/, '')
     result += '.' + nsStr
   }
   return result + tzSuffix
@@ -3972,8 +3972,8 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
           const startStr = inner.slice(0, rangeIdx).trim()
           const endStr = inner.slice(rangeIdx + 2).trim()
           const len = Array.isArray(val) ? val.length : (typeof val === 'string' ? val.length : 0)
-          let startVal = startStr ? _evalBinary(startStr, row) : 0
-          let endVal = endStr ? _evalBinary(endStr, row) : len
+          const startVal = startStr ? _evalBinary(startStr, row) : 0
+          const endVal = endStr ? _evalBinary(endStr, row) : len
           if (startVal == null || endVal == null) { val = null; break }
           let sliceStart = Number(startVal), sliceEnd = Number(endVal)
           if (isNaN(sliceStart)) sliceStart = 0
@@ -4076,8 +4076,8 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
             const endStr = inner.slice(rangeIdx + 2).trim()
             const len = Array.isArray(val) ? val.length : (typeof val === 'string' ? val.length : 0)
             // 如果 start 或 end 值为 null，整个切片返回 null
-            let startVal = startStr ? _evalBinary(startStr, row) : 0
-            let endVal = endStr ? _evalBinary(endStr, row) : len
+            const startVal = startStr ? _evalBinary(startStr, row) : 0
+            const endVal = endStr ? _evalBinary(endStr, row) : len
             if (startVal == null || endVal == null) { val = null; break }
             let sliceStart = Number(startVal)
             let sliceEnd = Number(endVal)
@@ -4126,8 +4126,8 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
       const startStr = inner.slice(0, rangeIdx).trim()
       const endStr = inner.slice(rangeIdx + 2).trim()
       const len = Array.isArray(obj) ? obj.length : (typeof obj === 'string' ? obj.length : 0)
-      let startVal = startStr ? _evalBinary(startStr, row) : 0
-      let endVal = endStr ? _evalBinary(endStr, row) : len
+      const startVal = startStr ? _evalBinary(startStr, row) : 0
+      const endVal = endStr ? _evalBinary(endStr, row) : len
       if (startVal == null || endVal == null) return null
       let sliceStart = Number(startVal)
       let sliceEnd = Number(endVal)
@@ -5121,7 +5121,7 @@ export function _isPureLiteralExpr(s: string): boolean {
   if (s.startsWith('[') && /\s*\(\w*(?::\w+)?\)\s*(?:<-\s*\[[^\]]*\]\s*-|-\s*\[[^\]]*\]\s*(?:->|-)|-\s*->|--)/.test(s)) return false
   let depth = 0, inStr = false, strChar = ''
   for (let i = 0; i < s.length; i++) {
-    if (inStr) { if (s[i] === '\\') { i++; continue }; if (s[i] === strChar) inStr = false; continue }
+    if (inStr) { if (s[i] === '\\') { i++; continue } if (s[i] === strChar) inStr = false; continue }
     if (s[i] === "'" || s[i] === '"') { inStr = true; strChar = s[i]; continue }
     if (s[i] === '(' || s[i] === '[' || s[i] === '{') { depth++; continue }
     if (s[i] === ')' || s[i] === ']' || s[i] === '}') { depth--; continue }

@@ -319,7 +319,7 @@ describe('MembershipManager — Stress/Partition', { timeout: 30000 }, () => {
     for (let i = 0; i < 5; i++) {
       const nodeId = `node-${10 + i}`
       // add
-      let p = mm.proposeChange('add', nodeId)
+      const p = mm.proposeChange('add', nodeId)
       transport.inject('node-2', { type: 'ack', seq })
       transport.inject('node-3', { type: 'ack', seq })
       transport.inject('node-4', { type: 'ack', seq })

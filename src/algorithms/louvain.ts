@@ -232,7 +232,7 @@ export function louvainCommunity(
 
   let currentVertices = vertices
   let currentAdj = adj
-  let currentTotalWeight = totalWeight
+  const currentTotalWeight = totalWeight
   let overallModularity = 0
 
   // 递归执行 Phase 1 + Phase 2

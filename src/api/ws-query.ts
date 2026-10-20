@@ -186,7 +186,7 @@ export class WsQueryServer {
   // ── Connection handling ─────────────────────────────────
 
   private _handleConnection(ws: WebSocket): void {
-    let bufferSize = 0
+    const bufferSize = 0
     const clientQueries = new Set<string>()
 
     ws.on('message', (raw: Buffer) => {

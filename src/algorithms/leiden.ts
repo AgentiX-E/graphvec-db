@@ -320,7 +320,7 @@ function computeModularity(
   edges: LeidenEdge[],
   communities: Map<number, number>,
 ): number {
-  let totalWeight = edges.reduce((s, e) => s + e.weight, 0) * 2
+  const totalWeight = edges.reduce((s, e) => s + e.weight, 0) * 2
   const m = totalWeight / 2
   if (m === 0) return 0
 

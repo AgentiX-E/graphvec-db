@@ -57,7 +57,7 @@ describe('Health', () => {
 
   test('should report healthy when all shards have leader', () => {
     // Override mock to return shards with leader
-    ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+    (shardManager.getShardStatus as vi.Mock).mockReturnValue([
       { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       { rangeId: 'r2', raftRole: 'follower', nodeCount: 100 },
     ])
@@ -69,7 +69,7 @@ describe('Health', () => {
   })
 
   test('should report degraded when some shards are unhealthy', () => {
-    ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+    (shardManager.getShardStatus as vi.Mock).mockReturnValue([
       { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       { rangeId: 'r2', raftRole: 'candidate', nodeCount: 50 },
     ])
@@ -80,7 +80,7 @@ describe('Health', () => {
   })
 
   test('should report unhealthy when no leader', () => {
-    ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+    (shardManager.getShardStatus as vi.Mock).mockReturnValue([
       { rangeId: 'r1', raftRole: 'candidate', nodeCount: 100 },
       { rangeId: 'r2', raftRole: 'follower', nodeCount: 100 },
     ])
@@ -90,7 +90,7 @@ describe('Health', () => {
   })
 
   test('should return summary string', () => {
-    ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+    (shardManager.getShardStatus as vi.Mock).mockReturnValue([
       { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
     ])
 
@@ -102,7 +102,7 @@ describe('Health', () => {
 
   describe('check() — engine probe', () => {
     test('should detect healthy engine', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
 
@@ -112,7 +112,7 @@ describe('Health', () => {
     })
 
     test('should detect engine failure', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
 
@@ -148,7 +148,7 @@ describe('Health', () => {
     })
 
     test('readiness should return ready when all conditions met', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
       const result = await health.readiness()
@@ -156,7 +156,7 @@ describe('Health', () => {
     })
 
     test('readiness should return not ready when no leader', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'candidate', nodeCount: 100 },
       ])
       const result = await health.readiness()
@@ -165,7 +165,7 @@ describe('Health', () => {
     })
 
     test('startup should return started after successful probe', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
       const result = await health.startup()
@@ -190,7 +190,7 @@ describe('Health', () => {
     })
 
     test('should return cached startup result on subsequent calls', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
       const result1 = await health.startup()
@@ -240,7 +240,7 @@ describe('D-09 — K8s 三探针', () => {
 
   describe('startup probe', () => {
     test('返回 started=true 当引擎和分片都已初始化', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
       const result = await health.startup()
@@ -249,7 +249,7 @@ describe('D-09 — K8s 三探针', () => {
     })
 
     test('返回 started=false 当分片未初始化', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([])
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([])
       const result = await health.startup()
       expect(result.started).toBe(false)
       expect(result.error).toContain('no shards')
@@ -273,7 +273,7 @@ describe('D-09 — K8s 三探针', () => {
 
   describe('readiness probe', () => {
     test('返回 ready=true 当所有条件满足', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
       ])
       const result = await health.readiness()
@@ -286,7 +286,7 @@ describe('D-09 — K8s 三探针', () => {
     })
 
     test('返回 ready=false 当无 Raft Leader', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'candidate', nodeCount: 100 },
       ])
       const result = await health.readiness()
@@ -295,7 +295,7 @@ describe('D-09 — K8s 三探针', () => {
     })
 
     test('返回 ready=false 当有分片不健康', async () => {
-      ;(shardManager.getShardStatus as vi.Mock).mockReturnValue([
+      (shardManager.getShardStatus as vi.Mock).mockReturnValue([
         { rangeId: 'r1', raftRole: 'leader', nodeCount: 100 },
         { rangeId: 'r2', raftRole: 'candidate', nodeCount: 50 },
       ])

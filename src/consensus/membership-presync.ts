@@ -215,7 +215,7 @@ export class PreSyncManager {
           return
         }
         // 替换 Promise
-        ;(state as any)._resolve = resolve
+        (state as any)._resolve = resolve
       })
 
     } catch (err: any) {

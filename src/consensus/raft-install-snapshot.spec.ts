@@ -163,7 +163,7 @@ describe('Raft InstallSnapshot (R04)', () => {
         peers: ['1'],
       }
 
-      let appliedData: string[] = []
+      const appliedData: string[] = []
       consensus = new RaftLogicConsensus(config, mockModule)
 
       consensus.setApply(async (data: Uint8Array) => {

@@ -168,7 +168,7 @@ describe('Network Partition — Simulation', () => {
       } finally { cleanup(e1, null) }
       // cleanup e2 explicitly
       e2.close(); try { fs.rmSync(e2._path || '', { recursive: true, force: true }) } catch {}
-    } finally { try { if (e2.isOpen) e2.close() } catch {}; cleanupC(c2) }
+    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(c2) }
   }, 15000)
 
   test('3 engines close middle one', async () => {
@@ -304,7 +304,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e1b.open(); e2b.open()
         expect(e1b.scanAllNodes().length).toBe(1)
         expect(e2b.scanAllNodes().length).toBe(1)
-      } finally { try { if (e1b.isOpen) e1b.close() } catch {}; try { if (e2b.isOpen) e2b.close() } catch {} }
+      } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
 
@@ -333,7 +333,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
         const n2 = e2b.scanAllNodes().find((n: any) => n.name === 'conflict')
         expect(n1.props.origin).toBe('l')
         expect(n2.props.origin).toBe('f')
-      } finally { try { if (e1b.isOpen) e1b.close() } catch {}; try { if (e2b.isOpen) e2b.close() } catch {} }
+      } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
 
@@ -351,7 +351,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e1b.open(); e2b.open()
         expect(e1b.getEdge(la, lb, 10)).not.toBeNull()
         expect(e2b.getEdge(la, lb, 10)).toBeNull()
-      } finally { try { if (e1b.isOpen) e1b.close() } catch {}; try { if (e2b.isOpen) e2b.close() } catch {} }
+      } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
 
@@ -369,7 +369,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e.open()
         expect(e.scanAllNodes().length).toBe(5)
         for (const n of e.scanAllNodes()) expect(n.name).toContain(`s${i}`)
-      } finally { try { if (e.isOpen) e.close() } catch {}; cleanupC(cfgs[i]) }
+      } finally { try { if (e.isOpen) e.close() } catch {} cleanupC(cfgs[i]) }
     }
   }, 30000)
 
@@ -384,7 +384,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
         expect(e1b.scanAllNodes().length).toBe(1); expect(e2b.scanAllNodes().length).toBe(1)
         await e1b.upsertNode(1, 'f1b'); await e2b.upsertNode(1, 'f2b')
         expect(e1b.scanAllNodes().length).toBe(2); expect(e2b.scanAllNodes().length).toBe(2)
-      } finally { try { if (e1b.isOpen) e1b.close() } catch {}; try { if (e2b.isOpen) e2b.close() } catch {} }
+      } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
 
@@ -538,7 +538,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e.open()
         expect(e.scanAllNodes().length).toBe(5)
         for (const n of e.scanAllNodes()) expect(n.name).toContain(`e${i}`)
-      } finally { try { if (e.isOpen) e.close() } catch {}; cleanupC(cfgs[i]) }
+      } finally { try { if (e.isOpen) e.close() } catch {} cleanupC(cfgs[i]) }
     }
   }, 30000)
 

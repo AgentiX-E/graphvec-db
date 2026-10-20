@@ -2528,11 +2528,11 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      let r1 = await engine.pauseWrites()
+      const r1 = await engine.pauseWrites()
       await expect(engine.upsertNode(1, 'a', { props: {} })).rejects.toThrow()
       r1()
       const id = await engine.upsertNode(1, 'first', { props: { phase: 1 } })
-      let r2 = await engine.pauseWrites()
+      const r2 = await engine.pauseWrites()
       await expect(engine.upsertNode(1, 'b', { props: {} })).rejects.toThrow()
       r2()
       const id2 = await engine.upsertNode(1, 'second', { props: { phase: 2 } })
@@ -3416,7 +3416,7 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     engine.open()
     try {
       for (let round = 0; round < 10; round++) {
-        let id = await engine.upsertNode(1, 'toggle', { props: { round, ts: Date.now() } })
+        const id = await engine.upsertNode(1, 'toggle', { props: { round, ts: Date.now() } })
         expect(engine.getNode(id)).not.toBeNull()
         await engine.deleteNode(id)
         expect(engine.getNode(id)).toBeNull()

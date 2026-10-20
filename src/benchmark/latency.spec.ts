@@ -595,12 +595,12 @@ describe('Latency Benchmarks', () => {
       try {
         for (let i = 0; i < 10; i++) await engine.upsertNode(1, `lt-scan-${i}`, { props: {} })
         let t0 = performance.now()
-        let r1 = engine.scanAllNodes().length
-        let t1 = performance.now() - t0
+        const r1 = engine.scanAllNodes().length
+        const t1 = performance.now() - t0
         for (let i = 10; i < 60; i++) await engine.upsertNode(1, `lt-scan-${i}`, { props: {} })
         t0 = performance.now()
-        let r2 = engine.scanAllNodes().length
-        let t2 = performance.now() - t0
+        const r2 = engine.scanAllNodes().length
+        const t2 = performance.now() - t0
         console.log(`[BENCH][latency] scanAllNodes: 10nodes=${t1.toFixed(3)}ms count=${r1}, 60nodes=${t2.toFixed(3)}ms count=${r2}`)
         expect(r1).toBe(10)
         expect(r2).toBe(60)

@@ -416,7 +416,7 @@ export function _stripExistsSubqueryBlocks(whereBody: string): string {
       const rest = whereBody.slice(i)
       const m = rest.match(/^exists\s*\{/i)
       if (m) {
-        let j = i + m[0].length - 1 // index of '{'
+        const j = i + m[0].length - 1 // index of '{'
         let depth = 1
         let k = j + 1
         let inStr = false
@@ -945,10 +945,10 @@ export function _validateUnionComposition(plan: any, query: string): void {
     const aliasKeys = p?.returnAliasMap ? Object.keys(p.returnAliasMap) : []
     return aliasKeys.length ? aliasKeys : cols
   }
-  let leftCols: string[] = plan?.unionType && plan?.rightPlan
+  const leftCols: string[] = plan?.unionType && plan?.rightPlan
     ? _resultColumnNames(plan)
     : []
-  let rightCols: string[] = plan?.unionType && plan?.rightPlan
+  const rightCols: string[] = plan?.unionType && plan?.rightPlan
     ? _resultColumnNames(plan.rightPlan)
     : []
   if (leftCols.length || rightCols.length) {

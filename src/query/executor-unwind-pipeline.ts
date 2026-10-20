@@ -586,7 +586,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         if (targetUnwindIdx < 0) continue
         const unwindPos = targetUnwindIdx
         const nextUnwindSearch = query.slice(unwindPos + 1)
-        let nextUnwindPos = nextUnwindSearch.search(/\bUNWIND\s+/i)
+        const nextUnwindPos = nextUnwindSearch.search(/\bUNWIND\s+/i)
         let section: string
         if (nextUnwindPos >= 0) {
           section = query.slice(unwindPos, nextUnwindPos + 1)  // 从当前 UNWIND 到下一个 UNWIND
@@ -773,7 +773,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         const targetVar = plan.unwind?.name || ''
         const target = row[targetVar]
         if (target && typeof target === 'object') {
-          ;(target as Record<string, unknown>)[sc.property] = parsedVal
+          (target as Record<string, unknown>)[sc.property] = parsedVal
         }
       }
     }
@@ -1065,7 +1065,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       if (rc) matchVar = rc
     }
     const candidateNodes: any[] = (_nodes?.length ? _nodes : [])
-    let matchedRows: Array<Record<string, unknown>> = []
+    const matchedRows: Array<Record<string, unknown>> = []
     for (const row of rows) {
       const evalCtxBase: Record<string, unknown> = { ...varCtx, ...row }
       if (candidateNodes.length === 0) continue
@@ -1161,7 +1161,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         const dir = (o.direction || '').trim().toUpperCase()
         const va = _evaluateExpression(expr, { ...varCtx, ...ra })
         const vb = _evaluateExpression(expr, { ...varCtx, ...rb })
-        let cmp = _compareOrderByValue(va, vb)
+        const cmp = _compareOrderByValue(va, vb)
         if (cmp !== 0) return dir === 'DESC' ? -cmp : cmp
       }
       return 0
@@ -1195,7 +1195,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   // `plan.skip/limit`, with no `plan.with.skip/limit`) is left untouched for
   // `_postProcessResults`.
   if (plan.with?.skip !== undefined || plan.with?.limit !== undefined) {
-    ;(plan as { skip?: number; limit?: number }).skip = undefined
+    (plan as { skip?: number; limit?: number }).skip = undefined
     ;(plan as { skip?: number; limit?: number }).limit = undefined
   }
 

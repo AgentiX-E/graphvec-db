@@ -28,7 +28,7 @@ const TEST_DIR = path.join(os.tmpdir(), `raft-integration-${Date.now()}`)
 function startNodes(count: number): Promise<RaftNodeProc[]> {
   const nodes: RaftNodeProc[] = []
   return new Promise((resolve, reject) => {
-    let started = 0
+    const started = 0
     let hadError = false
 
     for (let i = 0; i < count; i++) {

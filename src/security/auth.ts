@@ -1395,7 +1395,7 @@ export interface RefreshTokenResult {
  * @param role 用户角色
  * @param expiresInSec 过期时间（秒），默认 86400 (24h)
  */
-;(JwtManager as any).prototype.signRefreshToken = function (
+(JwtManager as any).prototype.signRefreshToken = function (
   this: JwtManager,
   userId: string,
   role: Role,

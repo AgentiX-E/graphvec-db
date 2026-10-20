@@ -421,7 +421,7 @@ export class DocumentStore {
           `Encryption key must be 32 bytes (64 hex chars), got ${keyBuffer.length} bytes`,
         )
       }
-      ;(lmdbOptions as any).encryptionKey = keyBuffer
+      (lmdbOptions as any).encryptionKey = keyBuffer
     }
 
     this.env = lmdb.open(lmdbOptions as any)

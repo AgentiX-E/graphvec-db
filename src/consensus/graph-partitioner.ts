@@ -335,7 +335,7 @@ export class GraphPartitioner {
     _balanceFactor: number,
   ): Array<{ commId: number; nodes: NodeId[] }> {
     // 按大小排序
-    let comms = communities.map((c) => ({
+    const comms = communities.map((c) => ({
       ...c,
       size: c.nodes.length,
     }))

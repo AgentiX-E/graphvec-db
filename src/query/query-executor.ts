@@ -70,7 +70,7 @@ function _evalChainExists(
   const rels: Array<{ left: string; right: string; type: string | null }> = []
   const nodeRe = /\((\w*)(?::([\w]+))?\)/y
   const relRe = /(<-|-)(\[[^\]]*\])?(->|-)/y
-  let i = 0
+  const i = 0
   const tokens: Array<{ kind: 'node' | 'rel'; value: string }> = []
   // Manual scan: alternate node, rel, node, rel, node, ...
   const n = t.length
@@ -757,7 +757,7 @@ function _resolveWherePatternPredicates(
       // The source node text is `(src[:Label])`.
       const srcText = expr.slice(i, srcEnd + 1)
       // Find end of the full pattern: scan forward from srcEnd+1 for target group.
-      let k = srcEnd + 1
+      const k = srcEnd + 1
       // Skip the relationship arrow/bracket section until we meet the target '('.
       // Relationship pattern: optional whitespace, `<-` or `-`, optional `[...]`, `->` or `-`.
       let patText = srcText
@@ -1752,7 +1752,7 @@ async function _executeMultiMatchCrossJoin(
       // expression evaluation — the expression engine cannot parse relationship
       // patterns, so `_resolveWherePatternPredicates` substitutes true/false and
       // lets it evaluate the surrounding AND/OR/NOT structure.
-      let whereExpr = _resolveWherePatternPredicates(plan.whereBody, { ...row }, allNodes)
+      const whereExpr = _resolveWherePatternPredicates(plan.whereBody, { ...row }, allNodes)
       const val = _evaluateExpression(whereExpr, { ...row })
       if (val === true) filtered.push(row)
     }
@@ -1964,7 +1964,7 @@ async function _executeMultiMatchCrossJoin(
   if (_whereRefsOptionalVar && plan.whereBody) {
     const _wf: Array<Record<string, unknown>> = []
     for (const row of filtered) {
-      let whereExpr = _resolveWherePatternPredicates(plan.whereBody, { ...row }, allNodes)
+      const whereExpr = _resolveWherePatternPredicates(plan.whereBody, { ...row }, allNodes)
       const val = _evaluateExpression(whereExpr, { ...row })
       if (val === true) _wf.push(row)
     }
@@ -2179,7 +2179,7 @@ async function _executeMultiMatchCrossJoin(
       if (obj == null || typeof obj !== 'object') return -1
       // Rows bind node variables to the concrete node objects referenced by
       // `allNodes` (the index→object resolution above), so identity lookup works.
-      let i = allNodes.indexOf(obj as any)
+      const i = allNodes.indexOf(obj as any)
       if (i >= 0) return i
       // Fall back: match by label + top-level identity properties.
       const lbl = String((obj as any)?._label || '')
@@ -2214,7 +2214,7 @@ async function _executeMultiMatchCrossJoin(
     // property predicate narrows the match to edges carrying those values and
     // otherwise creates one.  Each merge edge therefore expands its input row into
     // one output row per matched/created edge so `count(r)` reflects the result.
-    let mergedRows: Array<Record<string, unknown>> = []
+    const mergedRows: Array<Record<string, unknown>> = []
     for (const row of filtered) {
       // Resolve the first merge edge's endpoints; a chain of multiple merge edges
       // would need a fan-out, but the current executor handles one relationship
@@ -2265,7 +2265,7 @@ async function _executeMultiMatchCrossJoin(
         const onMatch = (plan as any).mergeOnMatch as Array<{ kind?: string; property?: string; value?: unknown; alias?: string; fromAlias?: string; map?: Record<string, unknown> }> | undefined
         for (const ex of matching) {
           if (onMatch && ev) {
-            let mp = (ex.props ?? {}) as Record<string, unknown>
+            const mp = (ex.props ?? {}) as Record<string, unknown>
             for (const om of onMatch) {
               if (om.alias !== ev) continue
               if (om.kind === 'PROP' && om.property) {
@@ -2328,7 +2328,7 @@ async function _executeMultiMatchCrossJoin(
         // subsequent control query (`MATCH ()-[r:TYPE]->()`) cannot observe the
         // relationships that MERGE just created.
         if (nodes && nodes[edgeSrc] && nodes[edgeDst]) {
-          ;(nodes[edgeSrc] as any).__edges = (nodes[edgeSrc] as any).__edges || []
+          (nodes[edgeSrc] as any).__edges = (nodes[edgeSrc] as any).__edges || []
           ;(nodes[edgeDst] as any).__edges = (nodes[edgeDst] as any).__edges || []
           ;(nodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
           ;(nodes[edgeDst] as any).__edges.push({ ...edgeRecord })
@@ -2870,7 +2870,7 @@ function _groupAggregateWithRows(
     for (const [fk, fv] of Object.entries(firstFlat)) {
       if (fk in rec.__crossVarRows) continue
       if (fv && typeof fv === 'object' && !Array.isArray(fv)) {
-        ;(rec.__crossVarRows as Record<string, unknown>)[fk] = fv
+        (rec.__crossVarRows as Record<string, unknown>)[fk] = fv
       }
     }
     for (const [ok, ov] of Object.entries(out)) rec[ok] = ov
@@ -3014,7 +3014,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     allNodes = (nodes || []).map((n: Record<string, unknown>) => {
       const clone: Record<string, unknown> = { ...n }
       if (Array.isArray((n as any).__edges)) {
-        ;(clone as any).__edges = [...(n as any).__edges]
+        (clone as any).__edges = [...(n as any).__edges]
       }
       return clone
     })
@@ -3150,7 +3150,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 seen.add(`${e.srcIdx}|${e.dstIdx}|${e.label}|${pn}`)
               }
             }
-            ;(n as any).__edges = edges.filter((e: any) => e?.label !== delLabel)
+            (n as any).__edges = edges.filter((e: any) => e?.label !== delLabel)
           }
           if (seen.size > 1) (allNodes as any).__matchFanOutCount = seen.size
         } else if (plan.scanLabel) {
@@ -3481,7 +3481,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             continue
           }
           // No match → fall through to creation below (ON CREATE branch).
-          ;(cn as any)._matched = false
+          (cn as any)._matched = false
         }
         // 跳过仅引用已绑定节点的 createNode（无 label 无 props，且变量名已绑定：
         // 要么是 MATCH 变量，要么已作为前一条语句的节点出现在 allNodes 中）。
@@ -3585,7 +3585,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // `RETURN r.num` projection can emit one row per freshly-created relationship
     // (with its unwound property values) rather than a single `{num:'x'}` row.
     if (effectiveCreateEdges?.length) {
-      ;(allNodes as any).__createEdges = effectiveCreateEdges
+      (allNodes as any).__createEdges = effectiveCreateEdges
     }
 
     // ── CREATE ... SET ... chains ──
@@ -3652,7 +3652,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
 
-    let edgeLabelFromTypeFilter = false  // flag: 从 WHERE type(r) 设置了边类型过滤
+    const edgeLabelFromTypeFilter = false  // flag: 从 WHERE type(r) 设置了边类型过滤
     // ── WHERE 预过滤：确定哪些 seed 节点需要跳过 ──
     // GE 的 _executeQueryPlan 在 steps 遍历后才对结果节点应用 filter，
     // 且 _matchFilter 忽略 filter.source。对于 WHERE n.name = 'Bob'
@@ -4297,7 +4297,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           ;(allNodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
           ;(allNodes[edgeDst] as any).__edges.push({ ...edgeRecord })
           if (nodes && nodes[edgeSrc] && nodes[edgeDst]) {
-            ;(nodes[edgeSrc] as any).__edges = (nodes[edgeSrc] as any).__edges || []
+            (nodes[edgeSrc] as any).__edges = (nodes[edgeSrc] as any).__edges || []
             ;(nodes[edgeDst] as any).__edges = (nodes[edgeDst] as any).__edges || []
             ;(nodes[edgeSrc] as any).__edges.push({ ...edgeRecord })
             ;(nodes[edgeDst] as any).__edges.push({ ...edgeRecord })
@@ -5771,7 +5771,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 if (node._label === 'Default') delete (node as any).__fullLabel
                 else (node as any).__fullLabel = node._label
                 if (r.props && typeof r.props === 'object') {
-                  ;(r.props as Record<string, unknown>)._label = node._label
+                  (r.props as Record<string, unknown>)._label = node._label
                   if (node._label === 'Default') delete (r.props as Record<string, unknown>).__fullLabel
                   else (r.props as Record<string, unknown>).__fullLabel = node._label
                 }
@@ -5863,7 +5863,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               }
               node._label = cur.join(':') || 'Default'
               if (r.props && typeof r.props === 'object') {
-                ;(r.props as Record<string,unknown>)._label = node._label
+                (r.props as Record<string,unknown>)._label = node._label
               }
               continue
             }
@@ -6043,10 +6043,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (node._label === 'Default') {
                 delete (node as any).__fullLabel
               } else {
-                ;(node as any).__fullLabel = node._label
+                (node as any).__fullLabel = node._label
               }
               if (r.props && typeof r.props === 'object') {
-                ;(r.props as Record<string, unknown>)._label = node._label
+                (r.props as Record<string, unknown>)._label = node._label
                 if (node._label === 'Default') delete (r.props as Record<string, unknown>).__fullLabel
                 else (r.props as Record<string, unknown>).__fullLabel = node._label
               }
@@ -6359,7 +6359,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     if (!crossVarFilters.length && !plan.steps?.length && plan.hasMatch && !_geFoldedAggRow && (filteredRecords?.length || allNodes?.length)) {
       let hasMultiMatch = false
       const varLabelMap2: Record<string, string> = {}
-      let inlineFilters: Array<{ source: string; property: string; operator: string; value: unknown; negated?: boolean }> = []
+      const inlineFilters: Array<{ source: string; property: string; operator: string; value: unknown; negated?: boolean }> = []
       if (query) {
         // Match the primary MATCH clause only.  A leading `OPTIONAL MATCH`
         // must not be mistaken for the primary MATCH: `OPTIONAL MATCH
@@ -7403,7 +7403,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   }
                 }
               }
-              ;(r as any).props[pv] = { __path: pathNodes, __pathEdges: pathEdges }
+              (r as any).props[pv] = { __path: pathNodes, __pathEdges: pathEdges }
             }
           }
         }
@@ -7432,12 +7432,12 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         const synthetic: any = JSON.parse(JSON.stringify(rawWithEdges[0]))
         for (const pv of pathVars) {
           if (collectedPaths[pv].length) {
-            ;(synthetic as any).props[pv] = collectedPaths[pv]
+            (synthetic as any).props[pv] = collectedPaths[pv]
           }
         }
         // Ensure count alias value is set on synthetic row.
         if (plan.with?.columns?.length) {
-          ;(synthetic as any).props.c = collectedBeforeAgg
+          (synthetic as any).props.c = collectedBeforeAgg
           // Also ensure 'c' appears in returnColumns
           if (!plan.returnColumns?.includes('c')) {
             const rcs = plan.returnColumns || []
@@ -7487,7 +7487,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         if (rawRow.__crossVarRows && rawRow.props && typeof rawRow.props === 'object' && !Array.isArray(rawRow.props)) {
           for (const vn of Object.keys(rawRow.__crossVarRows)) {
             if ((rawRow.__crossVarRows as any)[vn] === rawRow.props) {
-              ;(rawRow.__crossVarRows as any)[vn] = { ...rawRow.props }
+              (rawRow.__crossVarRows as any)[vn] = { ...rawRow.props }
             }
           }
         }
@@ -7588,7 +7588,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             try {
               const val = _evaluateExpression(simplifiedExpr, varCtx)
               if (val !== null && val !== undefined) {
-                ;(rawWithEdges[ri] as any).props[alias] = val
+                (rawWithEdges[ri] as any).props[alias] = val
               }
             } catch (_e: any) { /* fall through */ }
           }
@@ -7643,13 +7643,13 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // The bare-node MATCH binds the node to `matchVar` (its value lives in
         // `__crossVarRows[mv]`, or `props` carries the node fields directly when
         // `mv` is absent).  Wrap that node in a zero-length path object.
-        let nodeVal: unknown =
+        const nodeVal: unknown =
           (mv && (r as any)?.__crossVarRows?.[mv]) ||
           (r as any)?.props?.[pv] ||
           (r as any)?.[pv] ||
           (r as any)?.props
         if (nodeVal && typeof nodeVal === 'object' && !('__path' in (nodeVal as any))) {
-          ;(r as any).props = { ...((r as any).props || {}), [pv]: { __path: [nodeVal], __pathEdges: [] } }
+          (r as any).props = { ...((r as any).props || {}), [pv]: { __path: [nodeVal], __pathEdges: [] } }
         }
       }
     }
@@ -7825,9 +7825,9 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               for (const step of (plan.steps || [])) {
                 const tAlias = step.targetAlias
                 if (tAlias && rawResult[ri][tAlias]) {
-                  ;(rawResult[ri][tAlias] as any)._label = dstLabel
+                  (rawResult[ri][tAlias] as any)._label = dstLabel
                   if ((rawResult[ri][tAlias] as any).props) {
-                    ;(rawResult[ri][tAlias] as any).props._label = dstLabel
+                    (rawResult[ri][tAlias] as any).props._label = dstLabel
                   }
                 }
               }
@@ -8809,7 +8809,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               if (foundDst >= 0) {
                 // Bind the target endpoint directly so bindPath's targetAlias
                 // slot resolves to it rather than the leaked node.
-                ;(row as any)[targetVar] = foundDst
+                (row as any)[targetVar] = foundDst
               }
             }
           }
@@ -9606,7 +9606,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // discard); without this reset the seeded nodes leak into the next
         // pooled execution and inflate results (e.g. `MATCH (n) RETURN count(n)`
         // counting stale nodes from an earlier run).
-        ;(ge as any).clearAllData?.()
+        (ge as any).clearAllData?.()
         const pool = GEPool.getInstance()
         pool.releaseConnection(ge)
       } catch { /* 池尚未初始化或已销毁 */ }

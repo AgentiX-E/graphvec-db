@@ -282,7 +282,7 @@ describe('Transaction — scenario tests', () => {
     const mgr = new TransactionManager()
 
     const result = await engine.withTransaction(async (txn: Transaction) => {
-      ;(txn as any)._engine = engine
+      (txn as any)._engine = engine
       txn.upsertNode(1, 'withtxn-node', { key: 'value' })
       return 'done'
     }, mgr)
