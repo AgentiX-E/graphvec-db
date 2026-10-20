@@ -200,7 +200,7 @@ export interface AggregateClause {
 
 export interface QueryPlan {
   /** 操作类型 */
-  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT' | 'BEGIN' | 'COMMIT' | 'ROLLBACK'
+  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'REMOVE' | 'MATCH_MODIFY' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT' | 'BEGIN' | 'COMMIT' | 'ROLLBACK'
   /** USE 的图名称（用于 multi-graph 命名空间切换） */
   useGraph?: string
   /** CATALOG 操作（多图命名空间） */

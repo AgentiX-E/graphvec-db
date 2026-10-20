@@ -53,7 +53,7 @@ function _splitListItems(s: string): string[] {
 // ═══════════════════════════════════════════════════════════════
 
 export interface QueryPlan {
-  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT' | 'BEGIN' | 'COMMIT' | 'ROLLBACK'
+  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'REMOVE' | 'MATCH_MODIFY' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT' | 'BEGIN' | 'COMMIT' | 'ROLLBACK'
   useGraph?: string
   explain?: boolean
   profile?: boolean

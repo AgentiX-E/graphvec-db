@@ -672,6 +672,7 @@ function _enumPatternBindings(
   const m = pattern.trim().match(/^\((\w+)(?::[\w]+)?\)\s*(<-|-)\s*(\[[^\]]*\])?\s*(->|-)\s*\((\w*)(?::([\w]+))?\)$/)
   if (!m) return []
   const srcVar = m[1]
+  const leftArrow = m[2] // '<-' (inbound) or '-' (undirected)
   const edgeSpec = m[3] || ''
   const rightArrow = m[4]
   const tgtVar = m[5] || null
@@ -705,7 +706,7 @@ function _enumPatternBindings(
     return lbl === label || full.split(':').includes(label)
   }
 
-  const direction: 'out' | 'in' | 'any' = rightArrow === '->' ? 'out' : (rightArrow === '-' ? 'any' : 'out')
+  const direction: 'out' | 'in' | 'any' = leftArrow === '<-' ? 'in' : (rightArrow === '->' ? 'out' : 'any')
 
   const out: Array<Record<string, unknown>> = []
   const edges: any[] = (allNodes[srcIdx] as any)?.__edges || []
