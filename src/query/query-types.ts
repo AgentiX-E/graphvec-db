@@ -6,8 +6,6 @@
  * 零依赖：不引用任何运行时模块。
  */
 
-import type { ForEachClause } from './ast-to-plan-v2'
-
 // ── AST 类型 ─────────────────────────────────────────────────
 
 export interface QueryAST {
@@ -190,10 +188,35 @@ export interface OrderColumnAST {
 // ── 聚合子句 ─────────────────────────────────────────────────
 
 export interface AggregateClause {
-  type: 'count' | 'sum' | 'avg' | 'max' | 'min' | 'collect'
-  field?: string  // 如 n.age
+  // Both naming schemes coexist in the codebase. `function`/`column` are the
+  // parser-emitted names (extractReturn); `type`/`field` are legacy aliases
+  // consumed by the executor as fallbacks (`agg.function || agg.type`). Keep
+  // all four optional so every producer/consumer type-checks without `as any`.
+  function?: string
+  column?: string
+  type?: 'count' | 'sum' | 'avg' | 'max' | 'min' | 'collect' | string
+  field?: string
   alias?: string  // AS alias
   distinct?: boolean  // DISTINCT modifier (for COLLECT, COUNT)
+}
+
+/**
+ * FOREACH 子句（列表迭代执行子查询）。
+ * 新格式（variable + operation）：parser 填充，executor 消费。
+ * `operation` 为 parseForeachBody 产生的递归操作描述（CREATE/SET/REMOVE/
+ * DELETE/MERGE/嵌套 FOREACH/WHERE），executor 通过 foreach-exec.ts 求值。
+ */
+export interface ForEachClause {
+  /** 迭代变量名（如 `x` in `FOREACH (x IN list | ...)`） */
+  variable: string
+  /** 变量别名（旧字段，向后兼容保留） */
+  name: string
+  /** 迭代列表（数组，或 isVarRef 时单元素变量引用） */
+  list: unknown[]
+  /** list 是否为变量引用（非字面量数组） */
+  isVarRef: boolean
+  /** 循环体操作描述（递归结构，交给 foreach-exec.ts 求值） */
+  operation: any
 }
 
 // ── Query Plan ─────────────────────────────────────────────────
@@ -245,13 +268,27 @@ export interface QueryPlan {
     value: unknown
   }>
   /** ORDER BY */
-  orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
+  orderBy: Array<{ property: string; direction: 'ASC' | 'DESC'; expression?: string }>
   /** LIMIT */
   limit: number | undefined
   /** SKIP */
   skip: number | undefined
   /** 是否来自 MATCH 扫描（用于区分无标签 MATCH 和纯 WITH/UNWIND） */
   hasMatch?: boolean
+  /** Primary MATCH variable name (`MATCH (a:Label)` → `a`). */
+  matchVar?: string
+  /** Alias for the primary MATCH variable (set during FOREACH text fallback). */
+  matchAlias?: string
+  /** Source-node property constraints carried on the primary MATCH pattern. */
+  matchSourceProps?: Record<string, unknown>
+  /** Additional matched patterns beyond the primary MATCH (comma-separated
+   *  `MATCH (a),(b)` or multi-step variants), joined on shared variables. */
+  multiMatch?: Array<{
+    scanLabel: string | null
+    steps: TraverseStep[]
+    variable?: string
+    sourceProps?: Record<string, unknown>
+  }>
   /** Path-assignment variable name (`MATCH p = (a)-[*]->(b)` → `p`). */
   pathVar?: string | null
   /** 聚合子句（如 count, sum, avg, max, min） */
@@ -278,9 +315,10 @@ export interface QueryPlan {
       alias: string | null
     }>
     filters: FilterClause[]
-    orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
+    orderBy: Array<{ property: string; direction: 'ASC' | 'DESC'; expression?: string }>
     limit: number | undefined
     skip: number | undefined
+    distinct?: boolean
     aggregate?: AggregateClause
     /** All aggregate clauses in this WITH projection (supports several
      *  aggregates, e.g. `WITH count(DISTINCT r1) AS H1, count(DISTINCT r2) AS H2`).
@@ -294,9 +332,10 @@ export interface QueryPlan {
       alias: string | null
     }>
     filters: FilterClause[]
-    orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
+    orderBy: Array<{ property: string; direction: 'ASC' | 'DESC'; expression?: string }>
     limit: number | undefined
     skip: number | undefined
+    distinct?: boolean
     aggregate?: AggregateClause
     aggregates?: AggregateClause[]
   }>
@@ -317,7 +356,7 @@ export interface QueryPlan {
     var?: string
   }
   /** 多级 UNWIND 数组（支持 N 级，由 ast-to-plan-v2.ts 收集） */
-  unwinds?: Array<{ list: any[]; name: string }>
+  unwinds?: Array<{ list: any[]; name: string; var?: string }>
   /** CASE 表达式列（需要运行时求值的复杂表达式） */
   caseColumns?: Array<{
     expression: any  // CASE AST 节点
@@ -426,15 +465,10 @@ export interface QueryPlan {
     props?: Record<string, unknown> | null
   }>
   /** MERGE ON CREATE 子句 */
-  mergeOnCreate?: Array<{
-    property: string
-    value: unknown
-  }>
+  /** MERGE ON CREATE 子句（与 setClauses 同构，支持 MAP/LABEL 等 kind） */
+  mergeOnCreate?: SetClause[]
   /** MERGE ON MATCH 子句 */
-  mergeOnMatch?: Array<{
-    property: string
-    value: unknown
-  }>
+  mergeOnMatch?: SetClause[]
   /** USING INDEX n:Label(prop) 查询提示 — 指定使用哪个索引加速 */
   _indexHint?: { var: string; label: string; property: string }
   /** USING PERIODIC COMMIT 提示 — 分批提交批次大小 */
@@ -507,22 +541,27 @@ export interface HavingClause {
   value: unknown
 }
 
-export type { ForEachClause }
-
 // ── DML 子句类型 ────────────────────────────────────────────
 
 /** SET 子句：property=value 赋值，Optional alias 指定目标变量 */
 export interface SetClause {
   /** SET operation kind: 'PROP' assigns a property, 'LABEL' appends labels
-   *  (e.g. `SET n:Foo:Bar`), 'MAP' replaces the whole property map, and
-   *  'MAP_APPEND' merges properties (`SET n += {…}`). Defaults to 'PROP'. */
-  kind?: 'PROP' | 'LABEL' | 'MAP' | 'MAP_APPEND'
+   *  (e.g. `SET n:Foo:Bar`), 'MAP' replaces the whole property map,
+   *  'MAP_APPEND' merges properties (`SET n += {…}`), and 'COPY' clones one
+   *  node's properties onto another (`SET a = b`). Defaults to 'PROP'. */
+  kind?: 'PROP' | 'LABEL' | 'MAP' | 'MAP_APPEND' | 'COPY'
   /** Labels to append when kind === 'LABEL' (e.g. `SET n:Foo:Bar` → ['Foo','Bar']). */
   labels?: string[]
   /** Property sub-map used by 'MAP' / 'MAP_APPEND' kinds. */
   props?: Record<string, unknown>
-  property: string
-  value: unknown
+  /** Property sub-map alias used by the 'COPY' kind. */
+  map?: Record<string, unknown>
+  /** Property name for kind === 'PROP' (absent for MAP/LABEL kinds). */
+  property?: string
+  /** Property value for kind === 'PROP' (absent for MAP/LABEL kinds). */
+  value?: unknown
+  /** Source alias for kind === 'COPY' (`SET a = b` → fromAlias='b'). */
+  fromAlias?: string
   /** 目标变量名（如 SET n.name='x' → alias='n'） */
   alias?: string
   /** 表达式字符串（原始 AST 文本） */

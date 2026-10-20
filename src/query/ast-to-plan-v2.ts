@@ -12,6 +12,15 @@ import {
   CypherListener,
 } from '@neo4j-cypher/antlr4'
 import { _parseNestedAggregate, _evaluateExpression } from './expression-engine'
+import type {
+  QueryPlan,
+  TraverseStep,
+  FilterClause,
+  ForEachClause,
+  AggregateClause,
+  HavingClause,
+  SetClause,
+} from './query-types'
 
 /**
  * Splits a comma-separated list of values, handling nested brackets.
@@ -46,132 +55,6 @@ function _splitListItems(s: string): string[] {
   }
   if (current.trim()) items.push(current.trim())
   return items
-}
-
-// ═══════════════════════════════════════════════════════════════
-// QueryPlan 类型定义（与 query-engine.ts 接口兼容）
-// ═══════════════════════════════════════════════════════════════
-
-export interface QueryPlan {
-  type?: 'QUERY' | 'CREATE' | 'DELETE' | 'SET' | 'MERGE' | 'REMOVE' | 'MATCH_MODIFY' | 'CALL' | 'USE' | 'CREATE_CONSTRAINT' | 'BEGIN' | 'COMMIT' | 'ROLLBACK'
-  useGraph?: string
-  explain?: boolean
-  profile?: boolean
-  indexOp?: 'CREATE' | 'DROP'
-  indexLabel?: string
-  indexProperty?: string
-  scanLabel: string | null
-  labelExpr: { type: 'LABEL_EXPR'; items: Array<{ exclude: boolean; name: string }> } | null
-  steps: TraverseStep[]
-  filters: FilterClause[]
-  returnColumns: string[]
-  expressionColumns?: Array<{ expression: any; alias: string }>
-  constColumns?: Array<{ alias: string; value: unknown }>
-  orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
-  limit: number | undefined
-  skip: number | undefined
-  hasMatch?: boolean
-  aggregate?: AggregateClause
-  groupBy?: string[]
-  having?: HavingClause[]
-  optionalMatchSteps?: Array<{
-    scanLabel: string | null
-    steps: TraverseStep[]
-    filters: FilterClause[]
-  }>
-  with?: {
-    columns: Array<{ expression: string; alias: string | null }>
-    filters: FilterClause[]
-    orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
-    limit: number | undefined
-    skip: number | undefined
-    aggregate?: AggregateClause
-    aggregates?: AggregateClause[]
-  }
-  unionType?: 'union' | 'union_all' | 'intersect' | 'subtract'
-  rightPlan?: QueryPlan
-  unwind?: { list: any[]; name: string; var?: string }
-  secondUnwind?: { list: any[]; name: string; var?: string }
-  caseColumns?: Array<{ expression: any; alias: string }>
-  comprehensionColumns?: Array<{ expression: any; alias: string }>
-  existsFilters?: Array<{ source: string; edgeLabel: string | null; direction: 'out' | 'in' | 'any'; target: string }>
-  listColumns?: Array<{ expression: any; alias: string }>
-  callQuery?: QueryPlan
-  inTransactions?: boolean
-  inTransactionsBatchSize?: number
-  callProcedure?: { name: string; args: any[]; yieldItems?: Array<{ name: string; alias: string | null }> }
-  forEach?: ForEachClause
-  reduce?: { accumulator: string; initial: unknown; variable: string; list: unknown[]; isVarRef: boolean; expression: string }
-  loadCsv?: { url: string; rowVariable: string; hasHeaders: boolean; delimiter: string }
-  show?: string
-  /** CATALOG 操作（多图命名空间） */
-  catalogOp?: 'CREATE_DATABASE' | 'DROP_DATABASE' | 'SHOW_DATABASES'
-  search?: { targetProperty: string; queryVector: number[]; topK: number }
-  createNodes?: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
-  createEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any'; props?: Record<string, unknown> | null }>
-  deleteTargets?: string[]
-  detachDelete?: boolean
-  setClauses?: Array<{ property?: string; value?: unknown; alias?: string; expression?: string; kind?: 'PROP' | 'LABEL' | 'MAP' | 'MAP_APPEND'; labels?: string[]; props?: Record<string, unknown> }>
-  removeClauses?: Array<{ type: 'REMOVE_PROP' | 'REMOVE_LABEL'; property?: string; ref?: string; label?: string }>
-  mergeNodes?: Array<{ alias: string; label: string | null; props: Record<string, unknown> | null }>
-  mergeEdges?: Array<{ source: string; target: string; label: string | null; direction: 'out' | 'in' | 'any'; variable?: string | null; props?: Record<string, unknown> | null }>
-  mergeOnCreate?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL' | 'COPY' | 'MAP_APPEND'; label?: string; alias?: string; expression?: string; fromAlias?: string; map?: Record<string, unknown> }>
-  mergeOnMatch?: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL' | 'COPY' | 'MAP_APPEND'; label?: string; alias?: string; expression?: string; fromAlias?: string; map?: Record<string, unknown> }>
-  periodicCommit?: { batchSize?: number }
-  constraint?: { label: string; property: string }
-  [key: string]: any
-}
-
-export interface TraverseStep {
-  source: string
-  direction: 'out' | 'in' | 'any'
-  edgeLabel: string | null
-  targetAlias: string
-  targetLabel: string | null
-  targetProps: Record<string, unknown> | null
-  edgeProps?: Record<string, unknown> | null
-  range?: { min: number; max: number | null }
-  pathVariable?: string | null  /** MATCH p = (n)-->() path variable */
-}
-
-export interface FilterClause {
-  source: string
-  property: string
-  operator: 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'IN' | 'STARTS_WITH' | 'ENDS_WITH' | 'CONTAINS' | 'IS_NULL' | 'IS_NOT_NULL'
-  value: unknown
-  negated?: boolean
-  /** 复合表达式（算术/函数）左侧，如 `n.num % 2`。存在时 source/property 为空，执行层用 _evaluateExpression 求值。 */
-  expression?: string
-}
-
-export interface ForEachClause {
-  list: any[]
-  name: string
-  updates: Array<{
-    type: 'CREATE' | 'SET' | 'REMOVE' | 'DELETE' | 'MERGE'
-    alias: string
-    label?: string
-    props?: Record<string, unknown>
-    source?: string
-    target?: string
-    edgeLabel?: string
-    direction?: 'out' | 'in' | 'any'
-    property?: string
-    value?: string
-  }>
-}
-
-interface AggregateClause {
-  function: string  // 'count' | 'sum' | 'avg' | 'max' | 'min' | 'collect'
-  column: string
-  distinct?: boolean
-  alias?: string
-}
-
-interface HavingClause {
-  aggregate: string
-  operator: string
-  value: unknown
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -219,7 +102,7 @@ interface ParsedEdgeStep {
 
 interface ParsedReturn {
   columns: Array<{ expression: string; alias: string | null }>
-  orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }>
+  orderBy: Array<{ property: string; direction: 'ASC' | 'DESC'; expression?: string }>
   limit: number | undefined
   skip: number | undefined
   aggregate: AggregateClause | undefined
@@ -254,6 +137,9 @@ export function parseCypherToPlan(query: string): QueryPlan {
 function postProcessReturnColumns(plan: QueryPlan, query: string): void {
   // Only process plans with expressionColumns (RETURN or WITH)
   if (!plan.expressionColumns?.length) return
+
+  // Guarantee returnAliasMap exists before the mutation pass below.
+  plan.returnAliasMap = plan.returnAliasMap || {}
 
   // A CALL subquery's `returnColumns` are re-derived from the OUTER `RETURN`
   // (the text after the closing brace) in buildQueryPlan, because ANTLR stops
@@ -331,7 +217,7 @@ function postProcessReturnColumns(plan: QueryPlan, query: string): void {
       rawAlias = null
     }
 
-    const antlrExpr = plan.expressionColumns[i].expression
+    const antlrExpr: string = plan.expressionColumns[i]!.expression
     // When the expression is already correct but ANTLR's error recovery lost the
     // `AS alias` (e.g. an octal literal `0o2613152366` tokenizes as `0` + `o...`,
     // and the trailing `AS literal` gets swallowed), the alias is wrongly set to
@@ -697,13 +583,14 @@ function buildQueryPlan(query: string): QueryPlan {
   // Do NOT use removeErrorListeners() — it interferes with ANTLR's internal error recovery
   // and causes parse failures that would otherwise be tolerated/compensated.
   const origStderrWrite = process.stderr.write.bind(process.stderr)
-  // @ts-expect-error - ANTLR stderr redirect (temporarily suppress error output)
-  ;(process.stderr as unknown as { write: (...args: unknown[]) => boolean }).write = () => true
+  // ANTLR stderr redirect (temporarily suppress error output).
+  const stderrProbe = process.stderr as unknown as { write: (...args: unknown[]) => boolean }
+  stderrProbe.write = () => true
   let tree: any
   try {
     tree = parser.cypher()
   } finally {
-    (process.stderr as unknown as { write: (...args: unknown[]) => boolean }).write = origStderrWrite
+    stderrProbe.write = origStderrWrite as unknown as (...args: unknown[]) => boolean
   }
   const clauses = collectClauses(tree)
 
@@ -786,7 +673,7 @@ function buildQueryPlan(query: string): QueryPlan {
   // ANTLR grammar doesn't support CALL { ... } subqueries natively (stops at '{').
   // Detect CALL subqueries from the original query text and fill in details.
   // Use robust brace-matching to handle nested calls.
-  function extractCallSubquery(text) {
+  function extractCallSubquery(text: string) {
     const callMatch = text.match(/^CALL\s*\{/i)
     if (!callMatch) return null
     
@@ -824,7 +711,7 @@ function buildQueryPlan(query: string): QueryPlan {
       // correctly and the subquery body stays inside `callQuery`.
       const outerRet = callInfo.afterQuery.match(/^RETURN\s+((?:(?!\s+(?:ORDER\s+BY|SKIP|LIMIT)).)*)/is)
       if (outerRet) {
-        const outerCols = outerRet[1].trim()
+        const outerCols: string = outerRet[1].trim()
         if (outerCols === '*') {
           plan.returnColumns = []
         } else {
@@ -1322,8 +1209,8 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
           // list.  Re-map each endpoint to the global index via its variable
           // name so the DML layer connects the correct nodes.
           const emitEdges = edges.map((e) => {
-            const gSrc = e.source ? plan.createNodes?.findIndex((n: any) => n.alias === e.source) : -1
-            const gDst = e.target ? plan.createNodes?.findIndex((n: any) => n.alias === e.target) : -1
+            const gSrc = e.source ? (plan.createNodes?.findIndex((n: any) => n.alias === e.source) ?? -1) : -1
+            const gDst = e.target ? (plan.createNodes?.findIndex((n: any) => n.alias === e.target) ?? -1) : -1
             return {
               ...e,
               sourceIdx: gSrc >= 0 ? gSrc : e.sourceIdx,
@@ -1350,7 +1237,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         // node each), not overwrite each other.  `mergeNodes`/`mergeEdges` start
         // undefined and are appended to.
         if (plan.mergeNodes) {
-          plan.mergeNodes = plan.mergeNodes.concat(m.nodes)
+          plan.mergeNodes = plan.mergeNodes.concat(m.nodes ?? [])
         } else {
           plan.mergeNodes = m.nodes
         }
@@ -1447,7 +1334,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
         // node for WITH, so fall back to the raw clause text.
         const withText = clause.ctx ? getTextRecursive(clause.ctx) : ''
         if (/^\s*WITH\s+DISTINCT\b/i.test(withText)) {
-          (w as any).distinct = true
+          w.distinct = true
         }
         plan.with = w
         if (!plan.withChain) plan.withChain = []
@@ -1583,8 +1470,8 @@ function parseHavingClause(text: string): HavingClause[] {
 /**
  * Parse SET clauses from text like "n.created_at = timestamp(), n.foo = bar"
  */
-function parseSetClausesFromText(text: string): Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL' | 'COPY' | 'MAP_APPEND'; label?: string; alias?: string; expression?: string; fromAlias?: string; map?: Record<string, unknown> }> {
-  const results: Array<{ property?: string; value?: unknown; kind?: 'PROP' | 'LABEL' | 'COPY' | 'MAP_APPEND'; label?: string; alias?: string; expression?: string; fromAlias?: string; map?: Record<string, unknown> }> = []
+function parseSetClausesFromText(text: string): SetClause[] {
+  const results: SetClause[] = []
   const items = splitByTopLevelComma(text)
 
   for (const item of items) {
@@ -1597,9 +1484,7 @@ function parseSetClausesFromText(text: string): Array<{ property?: string; value
     if (labelMatch && !trimmed.includes('=')) {
       const alias = labelMatch[1]
       const labels = labelMatch[2].split(':').map(s => s.trim()).filter(Boolean)
-      for (const label of labels) {
-        results.push({ kind: 'LABEL', alias, label })
-      }
+      results.push({ kind: 'LABEL', alias, labels })
       continue
     }
 
@@ -1607,7 +1492,7 @@ function parseSetClausesFromText(text: string): Array<{ property?: string; value
     // relationship) — a bare variable RHS with no `.prop` LHS.
     const copyMatch = trimmed.match(/^\(?(\w+)\)?\s*=\s*(\w+)$/)
     if (copyMatch) {
-      results.push({ kind: 'COPY' as any, alias: copyMatch[1], fromAlias: copyMatch[2] })
+      results.push({ kind: 'COPY', alias: copyMatch[1], fromAlias: copyMatch[2] })
       continue
     }
 
@@ -1615,7 +1500,7 @@ function parseSetClausesFromText(text: string): Array<{ property?: string; value
     // the given map entries on the relationship).
     const mapAppendMatch = trimmed.match(/^\(?(\w+)\)?\s*\+=\s*(\{.*\})$/)
     if (mapAppendMatch) {
-      results.push({ kind: 'MAP_APPEND' as any, alias: mapAppendMatch[1], map: _parseMapLiteral(mapAppendMatch[2]) })
+      results.push({ kind: 'MAP_APPEND', alias: mapAppendMatch[1], map: _parseMapLiteral(mapAppendMatch[2]) })
       continue
     }
 
@@ -2322,7 +2207,7 @@ function parseSingleCondition(text: string): FilterClause | null {
 
 function extractReturn(returnCtx: any): ParsedReturn {
   const columns: Array<{ expression: string; alias: string | null }> = []
-  const orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }> = []
+  const orderBy: Array<{ property: string; direction: 'ASC' | 'DESC'; expression?: string }> = []
   let limit: number | undefined
   let skip: number | undefined
   let aggregate: AggregateClause | undefined
@@ -2457,6 +2342,7 @@ function extractCreateEdges(createCtx: any): Array<{
   const edges: Array<{
     source: string; target: string; sourceIdx?: number; targetIdx?: number;
     label: string | null; direction: 'out' | 'in' | 'any'
+    props?: Record<string, unknown> | null
   }> = []
   // Map each NodePatternContext object to its dedup'd index, matching the
   // order produced by extractCreateNodes: iterate nodes in document order,
@@ -2762,7 +2648,7 @@ function extractRemoveClauses(removeCtx: any): QueryPlan['removeClauses'] {
 // UNWIND 提取
 // ═══════════════════════════════════════════════════════════════
 
-function extractUnwind(unwindCtx: any): QueryPlan['unwind'] {
+function extractUnwind(unwindCtx: any): NonNullable<QueryPlan['unwind']> {
   // The bound variable is the one following `AS`, which is always the LAST
   // VariableContext within the UNWIND clause.  Using findChild (first match)
   // is wrong here: when the list expression itself references a variable —
@@ -2812,45 +2698,6 @@ function extractUnwind(unwindCtx: any): QueryPlan['unwind'] {
   }
 
   return { list, name, var: varRef }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// FOREACH 提取
-// ═══════════════════════════════════════════════════════════════
-
-function extractForEach(foreachCtx: any): ForEachClause {
-  const varCtx = findChild(foreachCtx, 'VariableContext')
-  const name = varCtx ? getTextRecursive(varCtx) : ''
-
-  // List expression
-  const expr = findChild(foreachCtx, 'ExpressionContext')
-  const text = expr ? getTextRecursive(expr) : ''
-  let list: any[] = []
-  if (text.startsWith('[') && text.endsWith(']')) {
-    try { list = JSON.parse(text) } catch { try { list = JSON.parse(text.replace(/'/g, '"')) } catch { list = text as unknown[] } }
-  }
-
-  // Updates: find sub-clauses
-  const updates: ForEachClause['updates'] = []
-  const bodyCtx = findAllChildren(foreachCtx, 'ClauseContext')
-  for (const bc of bodyCtx) {
-    const createCtx = findChild(bc, 'CreateClauseContext')
-    if (createCtx) {
-      const nodes = extractCreateNodes(createCtx)
-      for (const n of nodes) {
-        updates.push({ type: 'CREATE', alias: n.alias, label: n.label ?? undefined, props: n.props ?? undefined })
-      }
-    }
-    const setCtx = findChild(bc, 'SetClauseContext')
-    if (setCtx) {
-      const setClauses = extractSetClauses(setCtx)
-      for (const sc of setClauses) {
-        updates.push({ type: 'SET', alias: '', property: sc.property, value: sc.value as string })
-      }
-    }
-  }
-
-  return { list, name, updates }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2919,10 +2766,10 @@ function extractCall(callCtx: any): {
 // WITH 提取
 // ═══════════════════════════════════════════════════════════════
 
-function extractWith(withCtx: any): QueryPlan['with'] {
+function extractWith(withCtx: any): NonNullable<QueryPlan['with']> {
   const columns: Array<{ expression: string; alias: string | null }> = []
   const filters: FilterClause[] = []
-  const orderBy: Array<{ property: string; direction: 'ASC' | 'DESC' }> = []
+  const orderBy: Array<{ property: string; direction: 'ASC' | 'DESC'; expression?: string }> = []
   let limit: number | undefined
   let skip: number | undefined
   let aggregate: AggregateClause | undefined

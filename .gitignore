@@ -12,6 +12,8 @@ test-data/
 !test/fixtures/*.js
 !*.config.js
 !*.eslintrc.js
+# Hand-written ambient type declarations (not compiler output)
+!src/types/*.d.ts
 
 # Scratch / investigation debris
 temp/
