@@ -45,8 +45,9 @@ async function main() {
       private _peers: number[]
       private _transport: any
       private _apply: any
-      private _status: { role: string; leaderId: string | null; term: number }
+      private _status: { role: string; leaderId: string | null; term: number; commitIndex: number }
       private _leaderStableResolve: (() => void) | null = null
+      private _stateCbs: Array<(snap: unknown) => void> = []
       // 用于 InMemoryTransport 的静态注册表
       static instances: MockRaftNode[] = []
 
@@ -55,8 +56,30 @@ async function main() {
         this._peers = opts.peers || []
         this._transport = opts.transport
         this._apply = opts.apply
-        this._status = { role: 'follower', leaderId: null, term: 0 }
+        this._status = { role: 'follower', leaderId: null, term: 0, commitIndex: 0 }
         MockRaftNode.instances.push(this)
+      }
+
+      // Mirror the real raft-logic API: onStateChange subscribes to state deltas
+      // and returns an unsubscribe function. The snapshot uses the same `lead`
+      // field name as the real package so consumers (RaftLogicConsensus) stay
+      // contract-identical across mock and production.
+      onStateChange(cb: (snap: unknown) => void): () => void {
+        this._stateCbs.push(cb)
+        // Emit the current snapshot immediately so a subscriber that attaches
+        // after startup still receives the latest cached state.
+        cb({ role: this._status.role, lead: this._status.leaderId, term: this._status.term, commitIndex: this._status.commitIndex })
+        return () => {
+          const i = this._stateCbs.indexOf(cb)
+          if (i >= 0) this._stateCbs.splice(i, 1)
+        }
+      }
+
+      private _emitState(): void {
+        const snap = { role: this._status.role, lead: this._status.leaderId, term: this._status.term, commitIndex: this._status.commitIndex }
+        for (const cb of this._stateCbs) {
+          try { cb(snap) } catch {}
+        }
       }
 
       async start(): Promise<void> {
@@ -73,14 +96,15 @@ async function main() {
         setTimeout(() => {
           const sorted = [...this._peers, this._id].sort()
           if (this._id === sorted[0]) {
-            this._status = { role: 'leader', leaderId: String(this._id), term: 1 }
+            this._status = { role: 'leader', leaderId: String(this._id), term: 1, commitIndex: this._status.commitIndex }
             if (this._leaderStableResolve) {
               this._leaderStableResolve()
               this._leaderStableResolve = null
             }
           } else {
-            this._status = { role: 'follower', leaderId: String(sorted[0]), term: 1 }
+            this._status = { role: 'follower', leaderId: String(sorted[0]), term: 1, commitIndex: this._status.commitIndex }
           }
+          this._emitState()
         }, 200)
 
         // 连接 peer
@@ -105,6 +129,10 @@ async function main() {
               this._transport.sendTo(String(peerId), Buffer.from(data, 'base64'))
             }
           }
+          // Advance the commit index to mirror a real committed entry, then
+          // broadcast the updated snapshot to onStateChange subscribers.
+          this._status.commitIndex += 1
+          this._emitState()
           return { ok: true }
         }
         return { ok: false }
@@ -165,6 +193,11 @@ async function main() {
         }
         case 'getRole': {
           logOut({ type: 'roleResult', role: consensus.getRole(), leaderId: consensus.getLeaderId(), term: consensus.getTerm() })
+          break
+        }
+        case 'getStatus': {
+          const st = consensus.getStatus()
+          logOut({ type: 'statusResult', nodeId, role: st?.role, leaderId: st?.leaderId ?? null, term: st?.term, commitIndex: st?.commitIndex })
           break
         }
         case 'waitForLeader': {

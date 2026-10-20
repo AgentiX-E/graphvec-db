@@ -54,6 +54,18 @@ export class RaftLogicConsensus implements ConsensusProvider {
   private _majorityCallbacks: Array<(inMajority: boolean) => void> = []
   private _majorityCheckTimer: ReturnType<typeof setInterval> | null = null
 
+  // ── Status cache ──
+  // raft-logic's RaftNode.status() is async and returns fields named `lead` /
+  // `commitIndex` / `lastApplied`. These cached fields mirror that snapshot,
+  // refreshed via the onStateChange subscription, so the synchronous getters
+  // (getRole/getLeaderId/getTerm/getCommitIndex) can return correct values
+  // without an async round-trip to the WASM node.
+  private _cachedRole: ConsensusRole = 'follower'
+  private _cachedTerm = 0
+  private _cachedLeaderId: string | null = null
+  private _cachedCommitIndex = 0
+  private _unsubscribeState: (() => void) | null = null
+
   // ── R10: 成员变更 ──
   private _membershipCallbacks: Array<(members: string[]) => void> = []
 
@@ -238,6 +250,18 @@ export class RaftLogicConsensus implements ConsensusProvider {
 
       this._node = raft
 
+      // Subscribe to state deltas so the synchronous getters (getRole/getLeaderId/
+      // getTerm/getCommitIndex) can return accurate values without an async
+      // round-trip. raft-logic emits `{ role, term, lead, commitIndex, ... }`.
+      if (typeof raft.onStateChange === 'function') {
+        this._unsubscribeState = raft.onStateChange((snap: any) => {
+          if (snap?.role != null) this._cachedRole = snap.role as ConsensusRole
+          if (snap?.term != null) this._cachedTerm = Number(snap.term)
+          this._cachedLeaderId = snap?.lead != null ? String(snap.lead) : null
+          if (snap?.commitIndex != null) this._cachedCommitIndex = Number(snap.commitIndex)
+        })
+      }
+
       // P0-2: Follower crash recovery — 从 persisted snapshot 恢复状态机
       await this._recoverFromSnapshot()
 
@@ -314,6 +338,10 @@ export class RaftLogicConsensus implements ConsensusProvider {
     if (this._majorityCheckTimer) {
       clearInterval(this._majorityCheckTimer)
       this._majorityCheckTimer = null
+    }
+    if (this._unsubscribeState) {
+      try { this._unsubscribeState() } catch {}
+      this._unsubscribeState = null
     }
     // flush 剩余 Pipeline 请求
     if (this._pipelineTimer) {
@@ -476,19 +504,41 @@ export class RaftLogicConsensus implements ConsensusProvider {
 
   getRole(): ConsensusRole {
     if (!this._node) return 'follower'
-    const status = this._node.status()
-    return (status.role as ConsensusRole) || 'follower'
+    return this._cachedRole || 'follower'
   }
 
   getLeaderId(): string | null {
     if (!this._node) return null
-    const status = this._node.status()
-    return status.leaderId
+    return this._cachedLeaderId
   }
 
   getTerm(): number {
     if (!this._node) return 0
-    return this._node.status().term
+    return this._cachedTerm
+  }
+
+  /**
+   * Current commit index from the raft-logic state snapshot.
+   * Returns 0 when the node has not started or has not yet committed any entry.
+   */
+  getCommitIndex(): number {
+    if (!this._node) return 0
+    return this._cachedCommitIndex
+  }
+
+  /**
+   * Consolidated status snapshot. Unlike raft-logic's async `status()`, this is
+   * synchronous and backed by the onStateChange cache. Returns null when the
+   * node has not started.
+   */
+  getStatus(): { role: ConsensusRole; leaderId: string | null; term: number; commitIndex: number } | null {
+    if (!this._node) return null
+    return {
+      role: this.getRole(),
+      leaderId: this.getLeaderId(),
+      term: this.getTerm(),
+      commitIndex: this.getCommitIndex(),
+    }
   }
 
   // ── R9: 网络分区处理 ──
@@ -519,7 +569,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
     const status = this._node.status()
     const leader = status.lead ?? status.leaderId ?? null
     const wasInMajority = this._inMajority
-    // 策略：如果 leader == null 或 0，认为失去 majority
+    // Strategy: a null/empty leader id means the cluster lost quorum.
     this._inMajority = leader !== null && leader !== 0
     if (wasInMajority !== this._inMajority) {
       this.logger.info('[RaftConsensus] Majority status changed', {
@@ -661,7 +711,8 @@ export class RaftLogicConsensus implements ConsensusProvider {
       // 3) 更新 metrics
       this._snapshotCount++
       this._lastSnapshotDurationMs = Date.now() - startTime
-      this._lastSnapshotIndex = this._node.status().applied ?? this._lastSnapshotIndex
+      const snapStatus = await this._node.status()
+      this._lastSnapshotIndex = snapStatus?.lastApplied ?? snapStatus?.applied ?? this._lastSnapshotIndex
 
       this.logger.info('[snapshot] Raft log compacted', {
         count: this._snapshotCount,
@@ -844,9 +895,9 @@ export class RaftLogicConsensus implements ConsensusProvider {
             this._lastSnapshotSize = buf.length
             this._lastSnapshotDurationMs = Date.now() - startTime
             if (this._node) {
-              const status = this._node.status()
-              const applied = status.applied ?? 0
-              const term = status.term ?? 0
+              const status = await this._node.status()
+              const applied = status?.lastApplied ?? status?.applied ?? 0
+              const term = status?.term ?? 0
               if (applied > this._lastSnapshotIndex) {
                 this._lastSnapshotIndex = applied
               }

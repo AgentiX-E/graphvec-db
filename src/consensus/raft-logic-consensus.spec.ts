@@ -221,7 +221,10 @@ describe('RaftLogicConsensus', () => {
         RaftNode: vi.fn().mockImplementation(function() { return {
           start: vi.fn().mockResolvedValue(undefined),
           stop: vi.fn().mockResolvedValue(undefined),
-          status: vi.fn().mockReturnValue({ role: 'leader', leaderId: '1', term: 2 }),
+          onStateChange: vi.fn().mockImplementation(function(cb: (snap: unknown) => void) {
+            cb({ role: 'leader', lead: '1', term: 2, commitIndex: 3 })
+            return () => {}
+          }),
         }}),
         SqliteStorage: vi.fn().mockImplementation(function() { return {
           open: vi.fn().mockResolvedValue(undefined),
@@ -246,12 +249,44 @@ describe('RaftLogicConsensus', () => {
       expect(consensus.getTerm()).toBe(0)
     })
 
+    it('should return 0 commitIndex and null status when not started', () => {
+      const consensus = new RaftLogicConsensus(config)
+      expect(consensus.getCommitIndex()).toBe(0)
+      expect(consensus.getStatus()).toBeNull()
+    })
+
+    it('should return null leaderId when snap.lead is null', async () => {
+      const mockModule = {
+        RaftNode: vi.fn().mockImplementation(function() { return {
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn().mockResolvedValue(undefined),
+          onStateChange: vi.fn().mockImplementation(function(cb: (snap: unknown) => void) {
+            cb({ role: 'follower', lead: null, term: 1, commitIndex: 0 })
+            return () => {}
+          }),
+        }}),
+        SqliteStorage: vi.fn().mockImplementation(function() { return {
+          open: vi.fn().mockResolvedValue(undefined),
+        }}),
+        InMemoryTransport: vi.fn(),
+        ready: Promise.resolve(),
+      }
+      const consensus = new RaftLogicConsensus(config, mockModule)
+      await consensus.start()
+      expect(consensus.getRole()).toBe('follower')
+      expect(consensus.getLeaderId()).toBeNull()
+      expect(consensus.getCommitIndex()).toBe(0)
+    })
+
     it('should return values from status', async () => {
       const mockModule = {
         RaftNode: vi.fn().mockImplementation(function() { return {
           start: vi.fn().mockResolvedValue(undefined),
           stop: vi.fn().mockResolvedValue(undefined),
-          status: vi.fn().mockReturnValue({ role: 'leader', leaderId: '42', term: 7 }),
+          onStateChange: vi.fn().mockImplementation(function(cb: (snap: unknown) => void) {
+            cb({ role: 'leader', lead: '42', term: 7, commitIndex: 9 })
+            return () => {}
+          }),
         }}),
         SqliteStorage: vi.fn().mockImplementation(function() { return {
           open: vi.fn().mockResolvedValue(undefined),
@@ -263,6 +298,8 @@ describe('RaftLogicConsensus', () => {
       await consensus.start()
       expect(consensus.getLeaderId()).toBe('42')
       expect(consensus.getTerm()).toBe(7)
+      expect(consensus.getCommitIndex()).toBe(9)
+      expect(consensus.getStatus()).toEqual({ role: 'leader', leaderId: '42', term: 7, commitIndex: 9 })
     })
   })
 
