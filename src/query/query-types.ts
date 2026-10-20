@@ -394,6 +394,7 @@ export interface QueryPlan {
     targetIdx?: number
     label: string | null
     direction: 'out' | 'in' | 'any'
+    props?: Record<string, unknown> | null
   }>
   /** DELETE 目标 */
   deleteTargets?: string[]
@@ -419,6 +420,8 @@ export interface QueryPlan {
     target: string
     label: string | null
     direction: 'out' | 'in' | 'any'
+    variable?: string | null
+    props?: Record<string, unknown> | null
   }>
   /** MERGE ON CREATE 子句 */
   mergeOnCreate?: Array<{
@@ -465,8 +468,11 @@ export interface TraverseStep {
   targetAlias: string
   targetLabel: string | null
   targetProps: Record<string, unknown> | null
+  edgeProps?: Record<string, unknown> | null
   /** 变长路径范围（如果此步为变长路径） */
   range?: { min: number; max: number | null }
+  /** MATCH p = (n)-->() 路径变量名 */
+  pathVariable?: string | null
 }
 
 export interface FilterClause {
@@ -494,6 +500,14 @@ export type { ForEachClause }
 
 /** SET 子句：property=value 赋值，Optional alias 指定目标变量 */
 export interface SetClause {
+  /** SET operation kind: 'PROP' assigns a property, 'LABEL' appends labels
+   *  (e.g. `SET n:Foo:Bar`), 'MAP' replaces the whole property map, and
+   *  'MAP_APPEND' merges properties (`SET n += {…}`). Defaults to 'PROP'. */
+  kind?: 'PROP' | 'LABEL' | 'MAP' | 'MAP_APPEND'
+  /** Labels to append when kind === 'LABEL' (e.g. `SET n:Foo:Bar` → ['Foo','Bar']). */
+  labels?: string[]
+  /** Property sub-map used by 'MAP' / 'MAP_APPEND' kinds. */
+  props?: Record<string, unknown>
   property: string
   value: unknown
   /** 目标变量名（如 SET n.name='x' → alias='n'） */
