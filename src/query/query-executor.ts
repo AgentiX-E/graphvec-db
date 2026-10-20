@@ -218,8 +218,11 @@ function _evalChainExists(
       // All assigned — check every segment.
       for (let si = 0; si < segCount; si++) {
         const li = nodes[si], ri = nodes[si + 1]
-        const lIdx = li.var ? (isBound(si) ? nodeIdx(nodeForVar(li.var)!) : assign[unboundIdxs.indexOf(si)]) : -1
-        const rIdx = ri.var ? (isBound(si + 1) ? nodeIdx(nodeForVar(ri.var)!) : assign[unboundIdxs.indexOf(si + 1)]) : -1
+        // At this leaf every unbound index has been assigned a concrete node
+        // id, so assign[...] is guaranteed non-null here (null only marks
+        // "unassigned" during backtracking).
+        const lIdx = li.var ? (isBound(si) ? nodeIdx(nodeForVar(li.var)!) : assign[unboundIdxs.indexOf(si)]!) : -1
+        const rIdx = ri.var ? (isBound(si + 1) ? nodeIdx(nodeForVar(ri.var)!) : assign[unboundIdxs.indexOf(si + 1)]!) : -1
         const { outFromLeft, outFromRight } = segDirection(si)
         const type = rels[si].type
         // Resolve concrete/anon endpoints.
@@ -1744,8 +1747,9 @@ async function _executeMultiMatchCrossJoin(
       if ((st as any).pathVariable) _optionalBoundVars.add((st as any).pathVariable)
     }
   }
-  const _whereRefsOptionalVar = !!(plan.whereBody && [..._optionalBoundVars].some(v =>
-    new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(plan.whereBody)))
+  const _whereBody = plan.whereBody || ''
+  const _whereRefsOptionalVar = !!(_whereBody && [..._optionalBoundVars].some(v =>
+    new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(_whereBody)))
   let filtered = _whereRefsOptionalVar ? crossRows : (plan.whereBody ? [] : crossRows)
   if (plan.whereBody && !_whereRefsOptionalVar) {
     for (const row of crossRows) {
@@ -3066,7 +3070,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
       }
     }
     const cnToAllNodeMap = new Map<number, number>()  // createNode index → allNodes index
-    const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query)) : new Set<string>()
+    const matchVars = plan.hasMatch ? new Set(extractMatchVariables(query || '')) : new Set<string>()
     // Variable → node binding table.  A single node may be referenced by many
     // variables (e.g. `MATCH (n) MATCH (m) WITH n AS a, m AS b`), so this is a
     // Map rather than a single `_alias` per node.  Exposed on the allNodes array
@@ -3691,7 +3695,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         if (pk.startsWith('__')) continue
         // Avoid duplicating an existing filter for the same source/property.
         const dup = stepSourceFilters.some(f => f.source === _srcVar && f.property === pk)
-        if (!dup) stepSourceFilters.push({ source: _srcVar, property: pk, value: pv })
+        if (!dup) stepSourceFilters.push({ source: _srcVar, property: pk, operator: 'EQ', value: pv })
       }
     }
     // ── WHERE 标签谓词预过滤 ──
@@ -3817,7 +3821,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // BigInt 精度：ANTLR 截断大整数，用 BigInt 精确比较
               if (typeof val !== typeof target) {
                 if (/^-?\d+$/.test(String(val)) && /^-?\d+$/.test(String(target))) {
-                  try { if (BigInt(val) === BigInt(target)) return true } catch {}
+                  try { if (BigInt(String(val)) === BigInt(String(target))) return true } catch {}
                 }
               }
               // bigint vs bigint 精确比较
@@ -3915,6 +3919,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               stepSourceFilters.push({
                 source: inlineVar,
                 property: pred.key,
+                operator: 'EQ',
                 value: typeof pred.value === 'number' ? pred.value : pred.raw,
               })
             }
