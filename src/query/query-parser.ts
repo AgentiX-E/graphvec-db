@@ -323,7 +323,7 @@ function _parseQueryImpl(query: string): QueryPlan {
     if (subPlan.labelExpr?.items) {
       const validItems = subPlan.labelExpr.items.filter(item => _isValidLabel(item.name))
       subPlan.labelExpr.items = validItems
-      if (validItems.length === 0) subPlan.labelExpr = undefined
+      if (validItems.length === 0) subPlan.labelExpr = null
     }
     if (subPlan.scanLabel && !subPlan.labelExpr) {
       // 清除非法标签（如 ANTLR 从 WITH date({...}) 中误解析的逗号分隔内容）
@@ -429,7 +429,7 @@ function _parseQueryImpl(query: string): QueryPlan {
   if (plan.type === 'MATCH_MODIFY') {
     const hasSet = !!plan.setClauses?.length
     const hasRemove = !!plan.removeClauses?.length
-    const hasDelete = !!plan.deleteClauses?.length || !!plan.deleteTargets?.length
+    const hasDelete = !!plan.deleteTargets?.length
     if (hasSet && !hasRemove && !hasDelete) {
       plan.type = 'SET'
     } else if (hasDelete && !hasSet && !hasRemove) {
@@ -691,12 +691,12 @@ function _parseQueryImpl(query: string): QueryPlan {
           // must fold on `collect` grouped by `l`.
           const AGG_FNS = new Set(['count','sum','avg','max','min','collect','stdev','stdevp'])
           const aggList: any[] = []
-          const rebuiltExprCols: Array<{ expression: string; alias: string | null }> = []
+          const rebuiltExprCols: Array<{ expression: string; alias: string }> = []
           const implicitKeys: string[] = []
           for (const c of cols) {
             const asMatch = c.match(/^(.+?)\s+AS\s+(\w+)\s*$/i)
             const exprText = asMatch ? asMatch[1].trim() : c.trim()
-            const alias = asMatch ? asMatch[2] : null
+            const alias = asMatch ? asMatch[2] : exprText
             rebuiltExprCols.push({ expression: exprText, alias })
             const aggMatch = exprText.match(/^(\w+)\(\s*(.+?)\s*\)$/i)
             if (aggMatch && AGG_FNS.has(aggMatch[1].toLowerCase())) {
@@ -727,7 +727,7 @@ function _parseQueryImpl(query: string): QueryPlan {
 
   // 检测无效查询：parseCypherToPlan 成功返回但查询语法非法（ANTLR Error被吞掉了）
   // 特征: scanLabel=null, steps=[], filters=[], returnColumns=[], hasMatch=false
-  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unwinds?.length && !plan.unionType && !plan.caseColumns?.length && !plan.loadCsv) {
+  if (!plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0 && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.createNodes?.length && !plan.createEdges?.length && !plan.show && !plan.with && !plan.unwind && !plan.unwinds?.length && !plan.unionType && !plan.caseColumns?.length && !plan.loadCsv) {
     // 检查原始查询是否包含有效关键字 — 大多数无效查询没有 MATCH etc.
     if (!/^\s*(MATCH|WITH|UNWIND|RETURN|CREATE|MERGE|SET|DELETE|REMOVE|FOREACH|CALL|SHOW|USE|BEGIN|COMMIT|ROLLBACK|EXPLAIN|PROFILE|LOAD|DROP|START|OPTIONAL|ALTER|GRANT|REVOKE)/i.test(query.trim())) {
       throw new Error(`Query parse error: cannot parse query "${query}"`)
@@ -795,9 +795,10 @@ function _parseQueryImpl(query: string): QueryPlan {
       const e = typeof c.expression === 'string' ? c.expression.trim() : ''
       return e.startsWith('[') && !e.endsWith(']')
     })
-  const shouldRebuildWith = plan.with && Array.isArray(plan.with.columns) &&
-    (plan.with.columns.length === 0 || (_hasListComprehension(query) && _withColumnsTruncated(plan.with.columns)))
-  if (shouldRebuildWith && query) {
+  const withPlan = plan.with
+  const shouldRebuildWith = withPlan != null && Array.isArray(withPlan.columns) &&
+    (withPlan.columns.length === 0 || (_hasListComprehension(query) && _withColumnsTruncated(withPlan.columns)))
+  if (shouldRebuildWith && query && withPlan) {
     const withMatch = query.match(/WITH\s+(.+?)(?:\s+(RETURN|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|FOREACH|CALL|SHOW|WITH|OPTIONAL|MATCH|ORDER|SKIP|LIMIT|WHERE)\s|$)/is)
     if (withMatch) {
       const withBody = withMatch[1].trim()
@@ -806,19 +807,19 @@ function _parseQueryImpl(query: string): QueryPlan {
       const colParts = _splitWithColumns(withBody)
       // Rebuild from scratch only when the ANTLR columns were truncated (or
       // empty); otherwise keep the authoritative ANTLR result.
-      if (plan.with.columns.length === 0 || _withColumnsTruncated(plan.with.columns)) {
-        plan.with.columns.length = 0
+      if (withPlan.columns.length === 0 || _withColumnsTruncated(withPlan.columns)) {
+        withPlan.columns.length = 0
         for (const part of colParts) {
           // AS 别名：tail(nodes(p)) AS nodes → expression="tail(nodes(p))", alias="nodes"
           const asMatch = part.match(/^(.+?)\s+AS\s+(\w+)$/i)
           if (asMatch) {
-            plan.with.columns.push({
+            withPlan.columns.push({
               expression: asMatch[1].trim(),
               alias: asMatch[2],
             })
           } else {
             // 无 AS 别名：直接作为表达式
-            plan.with.columns.push({
+            withPlan.columns.push({
               expression: part,
               alias: null,
             })
