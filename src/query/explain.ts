@@ -14,6 +14,33 @@
  */
 import { QueryPlan, parseQuery, execQuery } from './query-engine'
 
+/** 计算过滤器显示左侧：复合表达式（`expression`）优先，否则退化为 `source.property`。 */
+function filterLeft(f: { source: string; property: string; expression?: string }): string {
+  if (f.expression) return f.expression
+  if (f.source && f.property) return `${f.source}.${f.property}`
+  return f.property
+}
+
+/** 把过滤操作符枚举映射回可读的 Cypher 符号（GT → `>`, STARTS_WITH → `STARTS WITH`）。 */
+const OPERATOR_SYMBOLS: Record<string, string> = {
+  EQ: '=',
+  NEQ: '!=',
+  GT: '>',
+  GTE: '>=',
+  LT: '<',
+  LTE: '<=',
+  IN: 'IN',
+  STARTS_WITH: 'STARTS WITH',
+  ENDS_WITH: 'ENDS WITH',
+  CONTAINS: 'CONTAINS',
+  IS_NULL: 'IS NULL',
+  IS_NOT_NULL: 'IS NOT NULL',
+}
+
+function operatorSymbol(op: string): string {
+  return OPERATOR_SYMBOLS[op] ?? op
+}
+
 // ──────────────────────────────────────────
 // ExplainNode — AST 中的 EXPLAIN 节点
 // ──────────────────────────────────────────
@@ -198,9 +225,9 @@ export class ExplainFormatter {
         if (step.targetLabel) {
           lines.push(`${' '.repeat(indent * 2)}目标标签: :${step.targetLabel}`)
         }
-        if (step.minDepth !== undefined || step.maxDepth !== undefined) {
-          const min = step.minDepth ?? 1
-          const max = step.maxDepth ?? Infinity
+        if (step.range?.min !== undefined || step.range?.max !== undefined) {
+          const min = step.range?.min ?? 1
+          const max = step.range?.max ?? Infinity
           lines.push(`${' '.repeat(indent * 2)}变长路径: ${min}..${max === Infinity ? '∞' : max}`)
         }
       }
@@ -217,7 +244,7 @@ export class ExplainFormatter {
     // 过滤器
     if (plan.filters && plan.filters.length > 0) {
       for (const f of plan.filters) {
-        lines.push(`${space}过滤器: ${f.left} ${f.operator} ${f.right}`)
+        lines.push(`${space}过滤器: ${filterLeft(f)} ${operatorSymbol(f.operator)} ${f.value}`)
       }
     }
 
@@ -278,7 +305,7 @@ export class ExplainFormatter {
     }
     if (plan.createEdges && plan.createEdges.length > 0) {
       for (const ce of plan.createEdges) {
-        lines.push(`${space}创建边: (${ce.from})-[:${ce.label}]->(${ce.to})`)
+        lines.push(`${space}创建边: (${ce.source})-[:${ce.label}]->(${ce.target})`)
       }
     }
 
@@ -319,16 +346,16 @@ export class ExplainFormatter {
         direction: s.direction,
         edgeLabel: s.edgeLabel ?? undefined,
         targetLabel: s.targetLabel ?? undefined,
-        minDepth: s.minDepth,
-        maxDepth: s.maxDepth,
+        minDepth: s.range?.min,
+        maxDepth: s.range?.max,
       }))
     }
 
     if (plan.filters && plan.filters.length > 0) {
       obj.filters = plan.filters.map(f => ({
-        left: f.left,
-        operator: f.operator,
-        right: f.right,
+        left: filterLeft(f),
+        operator: operatorSymbol(f.operator),
+        right: f.value,
       }))
     }
 
@@ -371,9 +398,9 @@ export class ExplainFormatter {
 
     if (plan.createEdges && plan.createEdges.length > 0) {
       obj.createEdges = plan.createEdges.map(e => ({
-        from: e.from,
+        from: e.source,
         label: e.label,
-        to: e.to,
+        to: e.target,
         props: e.props,
       }))
     }
@@ -399,8 +426,8 @@ export class ExplainFormatter {
           const dir2 = step.direction === 'in' ? '--' : '->'
           matchStr += dir1
           if (step.edgeLabel) {
-            const depthStr = (step.minDepth !== undefined || step.maxDepth !== undefined)
-              ? `*${step.minDepth ?? 1}..${step.maxDepth ?? ''}`
+            const depthStr = (step.range?.min !== undefined || step.range?.max !== undefined)
+              ? `*${step.range?.min ?? 1}..${step.range?.max ?? ''}`
               : ''
             matchStr += `[:${step.edgeLabel}${depthStr}]`
           }
@@ -415,7 +442,7 @@ export class ExplainFormatter {
 
     // WHERE
     if (plan.filters && plan.filters.length > 0) {
-      const whereParts = plan.filters.map(f => `${f.left} ${f.operator} ${f.right}`)
+      const whereParts = plan.filters.map(f => `${filterLeft(f)} ${operatorSymbol(f.operator)} ${f.value}`)
       parts.push('WHERE ' + whereParts.join(' AND '))
     }
 

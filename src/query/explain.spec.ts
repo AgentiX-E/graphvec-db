@@ -84,7 +84,7 @@ describe('ExplainFormatter', () => {
         steps: [
           { direction: 'out', edgeLabel: 'KNOWS', targetLabel: 'Person' },
         ],
-        filters: [{ left: 'n.age', operator: '>', right: '30' }],
+        filters: [{ source: 'n', property: 'age', operator: 'GT', value: 30 }],
         returnColumns: ['n.name'],
       }
 
@@ -99,7 +99,7 @@ describe('ExplainFormatter', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
         steps: [
-          { direction: 'out', edgeLabel: 'KNOWS', targetLabel: 'Person', minDepth: 1, maxDepth: 5 },
+          { direction: 'out', edgeLabel: 'KNOWS', targetLabel: 'Person', range: { min: 1, max: 5 } },
         ],
         filters: [],
         returnColumns: ['b.name'],
