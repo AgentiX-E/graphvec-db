@@ -16,7 +16,7 @@ import { GraphEngine } from '../../core/graph-engine'
 import { globalRegistry as _globalProcedureRegistry, type CypherProcedure } from '../procedure-registry'
 import { extractEdgesFromNodes } from '../executor-validators'
 
-interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any; pDir?: string; params?: Record<string, string> }
+interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any; pDir?: string; params?: Record<string, unknown> }
 const st: St = { nodes: [], q: '', res: [], err: null, params: {} }
 
 /**
@@ -253,7 +253,7 @@ function _applySeedWith(body: string, varEnv: Map<string, unknown[]>): void {
       // obtain the indexable list.
       let listVal = varEnv.get(listName)
       if (Array.isArray(listVal) && listVal.length === 1 && Array.isArray(listVal[0])) listVal = listVal[0] as unknown[]
-      const idxVar = (idxExpr.match(/[A-Za-z_]\w*/) || [])[0]
+      const idxVar = (idxExpr.match(/[A-Za-z_]\w*/) || [])[0] ?? ''
       const idxVals = idxVar ? varEnv.get(idxVar) : undefined
       if (Array.isArray(listVal) && Array.isArray(idxVals)) {
         projected.set(alias, idxVals.map((iv: unknown) => {
@@ -992,12 +992,30 @@ function execCreateOnGe(ge: any, q: string): void {
   st.nodes = createdNodes
 }
 
-function seedGe(ge: any, node: Record<string, unknown>): void {
-  const label = String(node['_label'] || 'Default')
+// djb2 string hash mapped onto the stable 1..1000 typeId space used by seedGe.
+function _hashLabel(label: string): number {
   let h = 0
   for (let ci = 0; ci < label.length; ci++) h = ((h << 5) - h + label.charCodeAt(ci)) | 0
+  return Math.abs(h) % 1000 + 1
+}
+
+// Parse a Cypher map literal (e.g. `{name: 'b', count: 42}`) into an object.
+function _parseProps(raw: string): Record<string, unknown> {
+  const cleaned = raw
+    .replace(/'/g, '"')
+    .replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)(\s*:)/g, '$1"$2"$3')
+  try {
+    return JSON.parse(cleaned) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+function seedGe(ge: any, node: Record<string, unknown>): void {
+  const label = String(node['_label'] || 'Default')
+  const h = _hashLabel(label)
   // Use sync storage write since GE.upsertNode is async but storage is synced
-  try { (ge as any).upsertNode(Math.abs(h) % 1000 + 1, 'sn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
+  try { (ge as any).upsertNode(h, 'sn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
 }
 
 /**
@@ -2163,10 +2181,10 @@ Then(/^a ArgumentError should be raised at runtime(?:.*)$/, function () {
 })
 Then(/^a ProcedureError should be raised at compile time: ProcedureNotFound$/, function () {
   // procedure not found – we expect compile-time error
-  assert.ok(st.err || st.compileError, `no ProcedureError\nQuery: ${st.q}`)
+  assert.ok(st.err, `no ProcedureError\nQuery: ${st.q}`)
 })
 Then(/^a ParameterMissing should be raised at compile time: MissingParameter$/, function () {
-  assert.ok(st.err || st.compileError, `no ParameterMissing\nQuery: ${st.q}`)
+  assert.ok(st.err, `no ParameterMissing\nQuery: ${st.q}`)
 })
 Then('no side effects', function () {})
 Then(/^the side effects should be:\s*$/, function (_dt: DataTable) {})
