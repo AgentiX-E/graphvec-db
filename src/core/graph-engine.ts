@@ -24,7 +24,7 @@ import { labelPropagation as labelPropagationAlgo } from '../algorithms/label-pr
 import { degreeCentrality as degreeCentralityAlgo } from '../algorithms/degree-centrality'
 import { astar as astarAlgo, HeuristicFn } from '../algorithms/astar'
 import { closeness } from '../algorithms/closeness'
-import { kCore, coreDecomposition } from '../algorithms/k-core'
+import { kCore } from '../algorithms/k-core'
 import { leidenCommunity } from '../algorithms/leiden'
 import { egoNet } from '../algorithms/ego-net'
 import { LinkPredictor } from '../algorithms/link-prediction'
@@ -36,6 +36,7 @@ import { SchemaDef, ValidationResult } from '../schema/schema-types'
 import { validateNodeType, validateEdgeType } from '../schema/schema-validator'
 
 import { parseQuery, QueryPlan } from '../query/query-engine'
+import { AggregateClause } from '../query/query-types'
 import { FullTextIndex, SearchOptions, SearchResult } from '../search/fulltext'
 import { RLSContext, RowLevelSecurity } from '../security/rls'
 import { QueryPlanner, QuerySpec, buildIRFromSpec, optimizeIR } from '../api/query-planner'
@@ -413,13 +414,13 @@ export class GraphEngine {
       try {
         this._labelIndex.load(this._indexesDir)
       } catch (e) {
-        this.logger.warn('LabelIndex load failed, starting empty:', e)
+        this.logger.warn('LabelIndex load failed, starting empty:', { error: e })
       }
       if (this._fulltext) {
         try {
           this._fulltext.load(this._indexesDir)
         } catch (e) {
-          this.logger.warn('FullTextIndex load failed, starting empty:', e)
+          this.logger.warn('FullTextIndex load failed, starting empty:', { error: e })
         }
       }
     }
@@ -529,13 +530,13 @@ export class GraphEngine {
     try {
       this._labelIndex.save(this._indexesDir)
     } catch (e) {
-      this.logger.warn('LabelIndex save failed:', e)
+      this.logger.warn('LabelIndex save failed:', { error: e })
     }
     if (this._fulltext) {
       try {
         this._fulltext.save(this._indexesDir)
       } catch (e) {
-        this.logger.warn('FullTextIndex save failed:', e)
+        this.logger.warn('FullTextIndex save failed:', { error: e })
       }
     }
   }
@@ -702,9 +703,10 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       createdAt: raw.createdAt,
       degree,
       mvccVersion: this._mvccVersions.get(id),
-    } as NodeRecord & { typeName?: string }
+    } as NodeRecord
     // 从 props._label 填充 typeName（用于 TCK label 匹配）
-    ;(record as any).typeName = (raw.props as any)?._label || ''
+    const rawLabel = (raw.props as NodeProperties)?._label
+    record.typeName = typeof rawLabel === 'string' ? rawLabel : ''
 
     // Populate cache on miss (only when no RLS context)
     if (!ctx) {
@@ -856,12 +858,11 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }>): Float64Array {
     this._ensureOpen()
     if (typeof (this.storage as any).batchUpsertEdges !== 'function') {
-      // fallback: 无批量 API 时逐条插入
-      const ids: number[] = []
+      // fallback: 无批量 API 时逐条插入（upsertEdge 返回 void，无法回传 edge id）
       for (const i of inputs) {
-        ids.push(this.storage.upsertEdge(i.src, i.dst, i.typeId, { props: i.props, weight: i.weight }))
+        this.storage.upsertEdge(i.src, i.dst, i.typeId, { props: i.props, weight: i.weight })
       }
-      return new Float64Array(ids)
+      return new Float64Array(0)
     }
     return (this.storage as any).batchUpsertEdges(inputs)
   }
@@ -1083,7 +1084,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
 
       if (this._mlReplication && !skipReplication && deletedCount > 0) {
         for (const id of ids) {
-          const node = this._nodeCache.get(id) ?? this.storage.getNode(id, false)
+          const node = this.storage.getNode(id, false)
           if (node) {
             await this._mlReplication.replicate('node:deleted', { id, typeId: node.typeId, name: node.key })
           }
@@ -1675,7 +1676,6 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
           maxDepth,
           direction: step.direction,
           ctx,
-          limit: effectiveLimit, // 变长路径遍历也支持早期截断
         })
       } else {
         // 单跳遍历（带早期截断）
@@ -1927,19 +1927,16 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
         const expr = col.expression
         const alias = col.alias
 
-        if (expr === '*') continue
-
-        // Handle expression as AST object (e.g. {type:'LIST', items:[1,2]})
-        if (expr && typeof expr === 'object' && expr.type) {
+        // A list literal (e.g. {type:'LIST', items:[1,2]}) is materialised as an
+        // AST object by the parser; everything else remains raw text.
+        if (typeof expr === 'object' && expr !== null && expr.type === 'LIST') {
           const key = alias ?? 'value'
-          if (expr.type === 'LIST') {
-            // Resolve list items: unwrap NUMBER/STRING/BOOLEAN wrappers
-            props[key] = (expr.items || []).map((item: any) => this._unwrapItem(item))
-          } else {
-            continue
-          }
+          // Resolve list items: unwrap NUMBER/STRING/BOOLEAN wrappers
+          props[key] = (expr.items || []).map((item) => this._unwrapItem(item))
           continue
         }
+        if (typeof expr !== 'string') continue
+        if (expr === '*') continue
 
         // Handle expression like "n.name" → extract property from node
         if (expr.includes('.')) {
@@ -2099,7 +2096,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * Evaluate a CASE expression AST against a data row
    */
-  private _evaluateCaseExpr(expr: any, row: NodeRecord): unknown {
+  private _evaluateCaseExpr(expr: any, row: NodeRecord): NodeProperties[string] | null {
     const caseExpr = expr.caseExpr  // null for search CASE, value for simple CASE
     const whens = expr.whens || []
     const elseExpr = expr.elseExpr
@@ -2179,11 +2176,11 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   /**
    * Resolve a PrimaryAST value from a data row (supports PROP_REF, STRING, NUMBER, BOOLEAN, IDENTIFIER)
    */
-  private _resolvePrimaryExpr(primary: any, row: NodeRecord): unknown {
+  private _resolvePrimaryExpr(primary: any, row: NodeRecord): NodeProperties[string] | null {
     if (!primary) return null
     switch (primary.type) {
       case 'PROP_REF':
-        return row.props?.[primary.property]
+        return row.props?.[primary.property] ?? null
       case 'STRING':
         return primary.value
       case 'NUMBER':
@@ -2236,7 +2233,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    */
   private _execAggregation(
     nodes: NodeRecord[],
-    agg: { type: string; field?: string; alias?: string; distinct?: boolean },
+    agg: AggregateClause,
     groupBy?: string[],
   ): NodeRecord[] {
     // If any GROUP BY 列，执行分组聚合
@@ -2290,11 +2287,11 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     }
 
     // 构造伪节点作为返回值，确保返回结果与现有的 query() 签名兼容
-    const alias = agg.alias ?? (agg.column && agg.column !== agg.type ? agg.column : agg.type)
+    const alias = agg.alias ?? (agg.column && agg.column !== agg.type ? agg.column : agg.type) ?? ''
     return [{
       id: -1,
       name: alias,
-      typeId: 0,
+      type: 0,
       typeName: '',
       props: { [alias]: value },
     } as unknown as NodeRecord]
@@ -2306,7 +2303,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    */
   private _execGroupByAggregation(
     nodes: NodeRecord[],
-    agg: { type: string; field?: string; alias?: string; distinct?: boolean },
+    agg: AggregateClause,
     groupBy: string[],
   ): NodeRecord[] {
     // 按 GROUP BY 列分组
@@ -2359,16 +2356,16 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
       const keyParts = key.split('||')
       const props: Record<string, unknown> = {}
       for (let i = 0; i < groupBy.length; i++) {
-        props[groupBy[i]] = keyParts[i] === '__NULL__' ? null : keyParts[i]
+        props[groupBy[i]!] = keyParts[i] === '__NULL__' ? null : keyParts[i]
       }
-      const alias = agg.alias ?? (agg.column && agg.column !== agg.type ? agg.column : agg.type)
+      const alias = agg.alias ?? (agg.column && agg.column !== agg.type ? agg.column : agg.type) ?? ''
       props[alias] = aggValue
 
       const firstNode = groupNodes[0]
       results.push({
         id: -(idx + 1),
         name: alias,
-        typeId: firstNode?.typeId ?? 0,
+        type: firstNode?.type ?? 0,
         typeName: firstNode?.typeName ?? '',
         props,
       } as unknown as NodeRecord)
@@ -3560,11 +3557,11 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    * @param options - Optional { normalized }
    * @returns Map<nodeId, closenessScore>
    */
-  async closeness(options?: { normalized?: boolean }): Promise<Map<NodeId, number>> {
+  async closeness(options?: { normalize?: boolean }): Promise<Map<NodeId, number>> {
     this._ensureOpen()
     const allNodes = Array.from(this._nodeIds)
     const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
-    return closeness(allNodes, getNeighbors, options)
+    return closeness(getNeighbors, allNodes, options)
   }
 
   /**
@@ -3576,12 +3573,7 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
     this._ensureOpen()
     const allNodes = Array.from(this._nodeIds)
     const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
-    const { shell } = coreDecomposition(allNodes, getNeighbors)
-    const result = new Set<NodeId>()
-    for (const [nodeId, shellNum] of shell) {
-      if (shellNum >= k) result.add(nodeId)
-    }
-    return result
+    return kCore(getNeighbors, allNodes, k)
   }
 
   /**
@@ -3592,9 +3584,21 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   async leidenCommunity(options?: { resolution?: number; seed?: number }): Promise<Map<NodeId, number>> {
     this._ensureOpen()
     const allNodes = Array.from(this._nodeIds)
-    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => ({ target: e.dst }))
-    const result = leidenCommunity(allNodes, getNeighbors, options?.resolution, options?.seed)
-    return result
+    // Build the undirected edge list (deduplicated by src<dst) that the Leiden
+    // implementation expects (LeidenEdge[]), mirroring the wcc/scc projection.
+    const seen = new Set<string>()
+    const edges: Array<{ src: number; dst: number; weight: number }> = []
+    for (const id of allNodes) {
+      for (const e of this.neighbors(id).edges) {
+        const [a, b] = e.src < e.dst ? [e.src, e.dst] : [e.dst, e.src]
+        const key = `${a}:${b}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        edges.push({ src: a, dst: b, weight: 1 })
+      }
+    }
+    const result = leidenCommunity(allNodes, edges)
+    return result.communities
   }
 
   /**
@@ -3603,13 +3607,20 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
    * @param radius - Ego network radius (default: 1 = immediate neighbors)
    */
   async egoNet(center: NodeId, radius: number = 1): Promise<{
-    nodes: Set<NodeId>; edges: Array<{ src: NodeId; dst: NodeId; typeId: number }>
+    nodes: Set<NodeId>; edges: Array<{ src: NodeId; dst: NodeId; type: number }>
   }> {
     this._ensureOpen()
-    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => ({
-      target: e.dst, edge: { src: nid, dst: e.dst, typeId: e.typeId },
+    const getNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => e.dst)
+    // Carry the edge type through the ego-net algorithm's `weight` channel so
+    // the subgraph edges can report their original type back to the caller.
+    const getWeightedNeighbors = (nid: NodeId) => this.neighbors(nid).edges.map(e => ({
+      nodeId: e.dst, weight: e.type,
     }))
-    return egoNet(center, getNeighbors, radius)
+    const result = egoNet(getNeighbors, getWeightedNeighbors, center, { depth: radius })
+    return {
+      nodes: result.nodes,
+      edges: result.edges.map(e => ({ src: e.src, dst: e.dst, type: e.weight ?? 0 })),
+    }
   }
 
   // ── Link Prediction ──

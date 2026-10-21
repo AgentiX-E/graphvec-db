@@ -234,7 +234,7 @@ export async function _execNonGePaths(
             const aggFnPat = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
             const withAggCols = []
             for (const wc of plan.with.columns) {
-              if (aggFnPat.test(wc.expression)) {
+              if (typeof wc.expression === 'string' && aggFnPat.test(wc.expression)) {
                 if (/^\s*count\s*\(\s*\*\s*\)\s*$/i.test(wc.expression)) {
                   withAggCols.push({ alias: wc.alias || wc.expression, val: withRows.length })
                 }
@@ -479,7 +479,7 @@ export async function _execNonGePaths(
     // 注入 WITH 列到 row（expressionColumns 可能引用 WITH 中定义的变量）
     if (plan.with?.columns) {
       for (const wc of plan.with.columns) {
-        if (wc.alias) {
+        if (wc.alias && typeof wc.expression === 'string') {
           row[wc.alias] = _evaluateExpression(wc.expression, row)
         }
       }
@@ -641,7 +641,7 @@ export async function _execNonGePaths(
       varLenResult = varLenResult.map((row: any) => {
         const newRow: Record<string, unknown> = { ...row }
         const evalCtx: Record<string, unknown> = { ...newRow }
-        for (const ec of plan.expressionColumns) {
+        for (const ec of plan.expressionColumns ?? []) {
           if (typeof ec.expression === 'string' && ec.expression in evalCtx) {
             newRow[ec.alias] = evalCtx[ec.expression]
           } else {

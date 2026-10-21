@@ -8078,7 +8078,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // 尝试从 nodes 中获取 pipeline 执行结果
         if (plan.with?.columns?.length && !Array.isArray(nodes?.[0]?.props)) {
           for (const col of plan.with.columns) {
-            const alias = col.alias || col.expression
+            const alias = col.alias || (typeof col.expression === 'string' ? col.expression : '')
             if (!(alias in ctx) && query && nodes?.length) {
               // 对 WITH 表达式求值
               const val = _evaluateExpression(col.expression, ctx)
@@ -9769,7 +9769,7 @@ export async function _executeQuery(
       const row: Record<string, unknown> = {}
       if (plan.with?.columns) {
         for (const wc of plan.with.columns) {
-          const alias = wc.alias || wc.expression
+          const alias = wc.alias || (typeof wc.expression === 'string' ? wc.expression : '')
           const wcExpr = typeof wc.expression === 'string' ? wc.expression : null
           if (wcExpr) {
             const val = _evalBinary(wcExpr, {})

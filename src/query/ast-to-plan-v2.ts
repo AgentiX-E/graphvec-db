@@ -2003,9 +2003,11 @@ function _parseCypherListLiteral(raw: string): unknown[] {
 
   // Normalise single-quoted strings to double quotes so JSON.parse can handle
   // them.  This is safe because Cypher string literals do not nest quotes of
-  // the alternate kind.
+  // the alternate kind.  Re-wrap in brackets before parsing: a single-element
+  // list like `[30]` has body `30`, whose bare `JSON.parse('30')` would yield
+  // the number 30 rather than the array [30].
   try {
-    return JSON.parse(body.replace(/'/g, '"'))
+    return JSON.parse('[' + body.replace(/'/g, '"') + ']')
   } catch {
     // Fall through to manual splitting for identifiers or mixed content.
   }

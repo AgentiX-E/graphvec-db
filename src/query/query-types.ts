@@ -162,6 +162,21 @@ export type PrimaryAST =
   | { type: 'AND' }
   | { type: 'COMPARISON' }
 
+/**
+ * A plain list literal (`[1, 2, 3]`) materialised by the parser into an AST
+ * object. `with.columns[].expression` is `string | ListExpressionAST`: the
+ * parser keeps most columns as raw text but replaces list literals with a
+ * structured node so the executor can unwrap NUMBER/STRING/BOOLEAN wrappers.
+ *
+ * Declared as a type alias (not an interface) so it participates in implicit
+ * index-signature inference and is assignable to `Record<string, unknown>`,
+ * which `_evaluateExpression` accepts.
+ */
+export type ListExpressionAST = {
+  type: 'LIST'
+  items: Array<{ type: string; name?: string; value?: unknown }>
+}
+
 export interface ReturnClauseAST {
   type: 'RETURN'
   columns: ColumnAST[]
@@ -311,7 +326,7 @@ export interface QueryPlan {
   /** WITH 子句：管道中间投影 */
   with?: {
     columns: Array<{
-      expression: string
+      expression: string | ListExpressionAST
       alias: string | null
     }>
     filters: FilterClause[]
@@ -328,7 +343,7 @@ export interface QueryPlan {
   /** 多 WITH 管道：按出现顺序保留的每个 WITH 子句（含 WITH chain） */
   withChain?: Array<{
     columns: Array<{
-      expression: string
+      expression: string | ListExpressionAST
       alias: string | null
     }>
     filters: FilterClause[]

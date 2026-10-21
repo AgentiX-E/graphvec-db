@@ -247,14 +247,16 @@ function _injectParamsToPlan(plan: QueryPlan, resolve: (name: string) => unknown
     }
   }
 
-  // 替换 with.columns 中的 $param 占位符
+  // 替换 with.columns 中的 $param 占位符（参数以字面量文本形式注入，
+  // 交给表达式引擎求值；非字符串参数统一序列化为字符串以保持 expression 的
+  // string 契约，例如 `$age = 30` 注入为 "30" 再由 _evalBinary 解析为数字）。
   if (plan.with?.columns) {
     for (const wc of plan.with.columns) {
       if (typeof wc.expression === 'string' && wc.expression.startsWith('$')) {
         const paramName = wc.expression.slice(1)
         const provided = resolve(paramName)
-        if (provided !== undefined) {
-          wc.expression = provided
+        if (provided !== undefined && provided !== null) {
+          wc.expression = String(provided)
         }
       }
     }

@@ -193,6 +193,11 @@ export interface StorageProvider {
    */
   batchDeleteEdges?(keys: Array<{ src: NodeId; dst: NodeId; typeId: number }>): number
 
+  /**
+   * 清除边缓存（可选）。实现有边缓存时用于 `clearAllData` 兜底清理。
+   */
+  clearEdgeCache?(): void
+
   // ── 复合索引 ──────────────────────────────
 
   /**

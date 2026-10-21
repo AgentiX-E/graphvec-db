@@ -863,13 +863,15 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
   // Step 3: 应用 WITH 投影——逐行计算非聚合列，收集聚合列的值
   if (plan.with?.columns?.length) {
     // 判断哪些列是聚合函数
+    const withColumns = plan.with.columns
     const aggFnPattern = /^\s*(collect|count|sum|avg|max|min)\s*\(/i
-    const isAggCol: boolean[] = plan.with.columns.map(col => {
-      const alias = col.alias || col.expression
+    const isAggCol: boolean[] = withColumns.map(col => {
+      const expr = typeof col.expression === 'string' ? col.expression : ''
+      const alias = col.alias || expr
       // A middle-WITH aggregate already folded by the UNWIND loop must not be
       // re-folded here (its value is already the collapsed list on each row).
       if (_middleWithAggAliases.has(alias)) return false
-      return typeof col.expression === 'string' ? aggFnPattern.test(col.expression) : false
+      return aggFnPattern.test(expr)
     })
     const hasAgg = isAggCol.some(Boolean)
     const aggCols: Array<{ alias: string; fn: string; rows: unknown[] }> = []
@@ -884,18 +886,18 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     const groupKeyAliases: string[] = []
     const scalarExprCols: Array<{ alias: string; expr: string }> = []
     if (hasAgg) {
-      for (let i = 0; i < plan.with.columns.length; i++) {
+      for (let i = 0; i < withColumns.length; i++) {
+        const col = withColumns[i]
+        const colExpr = typeof col.expression === 'string' ? col.expression : ''
+        const alias = col.alias || colExpr
         if (isAggCol[i]) {
-          const colExpr = typeof plan.with.columns[i].expression === 'string' ? plan.with.columns[i].expression : ''
           const fnMatch = colExpr.match(/^\s*(collect|count|sum|avg|max|min)\s*\(/i)
           aggCols.push({
-            alias: plan.with.columns[i].alias || plan.with.columns[i].expression,
+            alias,
             fn: fnMatch ? fnMatch[1].toLowerCase() : 'collect',
             rows: [],
           })
         } else {
-          const alias = plan.with.columns[i].alias || plan.with.columns[i].expression
-          const colExpr = typeof plan.with.columns[i].expression === 'string' ? plan.with.columns[i].expression : ''
           // A bare identifier / property reference is a grouping key; anything
           // else (function call, arithmetic, CASE, etc.) is a scalar projection
           // evaluated after the fold.
@@ -921,9 +923,9 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
         return v && typeof v === 'object' ? JSON.stringify(v) : String(v ?? '__NULL__')
       }).join('\u0000') : ''
       let aggIdx = 0
-      for (let i = 0; i < plan.with.columns.length; i++) {
-        const col = plan.with.columns[i]
-        const alias = col.alias || col.expression
+      for (let i = 0; i < withColumns.length; i++) {
+        const col = withColumns[i]
+        const alias = col.alias || (typeof col.expression === 'string' ? col.expression : '')
         // Skip re-evaluation of columns that were pre-processed by
         // _preProcessAggregateWith (e.g., list comprehensions in WITH chains).
         // These have already been snapshotted before UNWIND/SET mutations.
@@ -970,21 +972,17 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
               }
             }
             // WITH 列总是需要求值（coalesce、函数、字面量等），不能跳过
-            const val = typeof col.expression === 'string'
-              ? _evaluateExpression(col.expression, evalCtx)
-              : _evaluateExpression(col.expression, evalCtx)
+            const val = _evaluateExpression(col.expression, evalCtx)
             newRow[alias] = val !== undefined ? val : null
             continue
           }
-          if (col.alias === null && col.expression in evalCtx) {
+          if (col.alias === null && typeof col.expression === 'string' && col.expression in evalCtx) {
             newRow[col.expression] = evalCtx[col.expression]
             continue
           }
           // 非字符串表达式的结构化字面量（如 {type:"LIST",...}）：直接求值
-          const val = typeof col.expression === 'string'
-            ? _evaluateExpression(col.expression, evalCtx)
-            : _evaluateExpression(col.expression, evalCtx)
-          const key = col.alias || col.expression
+          const val = _evaluateExpression(col.expression, evalCtx)
+          const key = col.alias || (typeof col.expression === 'string' ? col.expression : '')
           newRow[key] = val !== undefined ? val : null
           // 同一 WITH 中后面的列可能依赖前面列的结果，更新 evalCtx
           if (key in newRow) {

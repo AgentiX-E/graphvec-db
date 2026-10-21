@@ -70,6 +70,11 @@ export interface NodeRecord {
   degree?: number
   /** MVCC 版本号（由事务系统设置，用于快照可见性检查） */
   mvccVersion?: number
+  /**
+   * Label 字符串（由 `props._label` 派生，用于 Cypher TCK 的 label 匹配）。
+   * 仅 GraphEngine.getNode 填充；外部构造的 NodeRecord 通常无此字段。
+   */
+  typeName?: string
 }
 
 export interface EdgeRecord {
