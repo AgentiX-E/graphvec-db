@@ -13,7 +13,7 @@ import * as path from 'path'
 import { OverGraph } from 'overgraph'
 import { StorageProvider, StorageConfig, StorageStats, NeighborsOptions, NeighborEntry } from './storage-provider'
 import {
-  NodeId, UpsertNodeOptions, UpsertEdgeOptions,
+  NodeId, NodeProperties, UpsertNodeOptions, UpsertEdgeOptions,
 } from '../types'
 import { encode, decode } from 'msgpackr'
 import { GeoIndex } from './geo-index'
@@ -216,10 +216,11 @@ export async function writeSnapshotStreamToFile(
       ws.write(chunk)
     }
     await new Promise<void>((resolve, reject) => {
-      ws.end((err) => (err ? reject(err) : resolve()))
+      ws.on('error', reject)
+      ws.end(() => resolve())
     })
     await fsp.rename(tmpPath, snapPath)
-  } catch (err) {
+  } catch (err: unknown) {
     try { await fsp.unlink(tmpPath) } catch { /* ignore */ }
     throw err
   }
@@ -350,20 +351,20 @@ function _serializeProps(props: Record<string, unknown> | undefined): Record<str
  * Deserialize a props object. Detects the `__c` msgpack blob form and decodes
  * it back to the original (order-preserved) object; otherwise returns as-is.
  */
-function _deserializeProps(data: unknown): Record<string, unknown> | undefined {
+function _deserializeProps(data: unknown): NodeProperties | undefined {
   if (data === undefined || data === null) return undefined
   if (typeof data === 'object' && !Array.isArray(data) && data !== null) {
-    const obj = data as Record<string, unknown>
+    const obj = data as NodeProperties
     const raw = obj[PROPS_COMPRESSED_KEY]
-    if (raw !== undefined && Array.isArray(raw)) {
+    if (raw !== undefined && Array.isArray(raw) && raw.every(v => typeof v === 'number')) {
       // Decode from number[] → Buffer → msgpack
-      return decode(Buffer.from(raw)) as Record<string, unknown>
+      return decode(Buffer.from(raw)) as NodeProperties
     }
     // Plain object — already deserialized by OverGraph's JSON deserialization
     return obj
   }
   // Unexpected format
-  return data as Record<string, unknown>
+  return data as NodeProperties
 }
 
 /**
@@ -500,9 +501,7 @@ export class OverGraphStorage implements StorageProvider {
       : rawProps
     const id = this._db!.upsertNode(String(typeId), name, {
       props,
-      denseVector: opts?.denseVector instanceof Float32Array
-        ? opts.denseVector
-        : opts?.denseVector ? new Float32Array(opts.denseVector) : undefined,
+      denseVector: opts?.denseVector ? Array.from(opts.denseVector) : undefined,
     })
     // 更新复合索引
     if (this._compositeIndexes.size > 0 && rawProps) {
@@ -545,9 +544,8 @@ export class OverGraphStorage implements StorageProvider {
       this._colIndex.deleteNodeIndexes(id)
     }
     // 清理复合索引
-    for (const [, def] of this._compositeIndexes) {
-      const key = `${def.name}:${id}`
-      this._compositeIndexStore?.delete(key)
+    for (const [name] of this._compositeIndexes) {
+      this._removeFromCompositeIndex(name, id)
     }
     this._db!.deleteNode(id)
     return true
@@ -710,25 +708,23 @@ export class OverGraphStorage implements StorageProvider {
   }
 
   getAllNodeIds(): number[] {
-    // OverGraph 0.11 不提供全局 node ID 列表，
-    // 使用 stats 获取 nodeCount 后用 findNodesPaged 分批读取
+    // OverGraph 0.11 不提供全局 node ID 列表，使用 queryNodeIds 的
+    // full-scan 模式按 nodeId 升序分页遍历全部节点。
     const ids: number[] = []
-    try {
-      // findNodes 不带 filter 返回全部节点
-      const nodes = this._db!.findNodes({})
-      if (nodes && Array.isArray(nodes.pageItems)) {
-        for (const n of nodes.pageItems) {
-          if (typeof n.nodeId === 'number') ids.push(n.nodeId)
-        }
-      }
-    } catch {
-      // fallback: 遍历 node IDs 尝试读取（适用于小图）
-      const s = this._db!.stats()
-      const count = s.nodeCount || s.segmentCount || 0
-      for (let i = 1; i <= count + 1000; i++) {
-        const n = this._db!.getNode(i)
-        if (n) ids.push(i)
-      }
+    const PAGE_SIZE = 1000
+    let after: number | undefined
+    while (true) {
+      const page = this._db!.queryNodeIds({
+        allowFullScan: true,
+        orderBy: 'nodeIdAsc',
+        limit: PAGE_SIZE,
+        ...(after !== undefined ? { after } : {}),
+      })
+      const items = page.items
+      if (!items || items.length === 0) break
+      for (const id of items) ids.push(id)
+      if (page.nextCursor === undefined || items.length < PAGE_SIZE) break
+      after = page.nextCursor
     }
     return ids
   }
@@ -752,7 +748,26 @@ export class OverGraphStorage implements StorageProvider {
   // ── 搜索 ──────────────────────────────────
 
   vectorSearch(searchQuery: string): Array<{ id: NodeId; score: number; distance: number }> {
-    return this._db!.vectorSearch(searchQuery)
+    const q = JSON.parse(searchQuery) as {
+      denseQuery?: number[]
+      sparseQuery?: Record<number, number>
+      k?: number
+      hybrid?: boolean | object
+      scope?: { startNodeId: number; maxDepth: number; edgeTypeFilter?: number[] }
+      minScore?: number
+    }
+    const mode = q.hybrid ? 'hybrid' : q.denseQuery ? 'dense' : 'sparse'
+    const hits = this._db!.vectorSearch(mode, {
+      k: q.k ?? 10,
+      denseQuery: q.denseQuery,
+      sparseQuery: q.sparseQuery
+        ? Object.entries(q.sparseQuery).map(([dim, value]) => ({ dimension: Number(dim), value }))
+        : undefined,
+      scope: q.scope
+        ? { startNodeId: q.scope.startNodeId, maxDepth: q.scope.maxDepth }
+        : undefined,
+    })
+    return hits.map(h => ({ id: h.nodeId, score: h.score, distance: 1 - h.score }))
   }
 
   // ── 图算法 ────────────────────────────────
@@ -808,7 +823,6 @@ export class OverGraphStorage implements StorageProvider {
       const trav = this._db!.traverse(opts.sourceNodeId, opts.depth, {
         direction: 'out',
         edgeLabelFilter: opts.edgeTypeFilter?.flat().map(t => String(t)),
-        maxDepth: opts.depth,
         limit: opts.limit,
       })
       return trav.items.map(hit => {
@@ -927,8 +941,8 @@ export class OverGraphStorage implements StorageProvider {
 
     const snapshot = decode(Buffer.from(raw)) as {
       rangeId?: string
-      nodes?: Array<{ id: number; typeId: number; name: string; props?: Record<string, unknown> }>
-      edges?: Array<{ src: number; dst: number; typeId: number; props?: Record<string, unknown> }>
+      nodes?: Array<{ id: number; typeId: number; name: string; props?: NodeProperties }>
+      edges?: Array<{ src: number; dst: number; typeId: number; props?: NodeProperties }>
     }
 
     if (snapshot.nodes && snapshot.nodes.length > 0) {
@@ -1008,7 +1022,7 @@ export class OverGraphStorage implements StorageProvider {
     if (!this._db) return
     const allNodeIds = this._collectAllNodeIds()
     for (const id of allNodeIds) {
-      const node = this._db!.getNode(id, true)
+      const node = this._db!.getNode(id)
       if (node && node.props) {
         const values: Record<string, unknown> = {}
         let hasAllFields = true
