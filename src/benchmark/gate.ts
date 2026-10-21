@@ -89,18 +89,18 @@ async function main() {
     console.log(report)
     const rows = compareResults(current, previous, opts.threshold)
     if (hasCriticalRegression(rows)) {
-      const criticals = rows.filter(r => r.regression === 'critical' && r.percentChange >= opts.threshold)
-      const warnings = rows.filter(r => r.regression === 'critical' && r.percentChange < opts.threshold)
+      const criticals = rows.filter(r => r.regression === 'critical' && r.changePercent >= opts.threshold)
+      const warnings = rows.filter(r => r.regression === 'critical' && r.changePercent < opts.threshold)
       if (criticals.length > 0) {
         console.log(`\n❌ FULL GATE FAILED: ${criticals.length} critical regressions (≥${opts.threshold}%)`)
         for (const r of criticals) {
-          console.log(`   🔴 ${r.name}: ${r.percentChange.toFixed(1)}% (${r.old.toLocaleString()} → ${r.current.toLocaleString()} ops/s)`)
+          console.log(`   🔴 ${r.name}: ${r.changePercent.toFixed(1)}% (${r.previousOps.toLocaleString()} → ${r.currentOps.toLocaleString()} ops/s)`)
         }
       }
       if (warnings.length > 0) {
         console.log(`\n⚠️  WARNINGS (${warnings.length} minor regressions below threshold):`)
         for (const r of warnings) {
-          console.log(`   🟡 ${r.name}: ${r.percentChange.toFixed(1)}% (${r.old.toLocaleString()} → ${r.current.toLocaleString()} ops/s)`)
+          console.log(`   🟡 ${r.name}: ${r.changePercent.toFixed(1)}% (${r.previousOps.toLocaleString()} → ${r.currentOps.toLocaleString()} ops/s)`)
         }
       }
       if (opts.save) saveFullBaseline(current)
@@ -142,17 +142,17 @@ async function main() {
 
   if (hasCriticalRegression(rows)) {
     // 分级输出：>threshold% → FAIL (red), >threshold/2% → WARN (yellow)
-    const criticals = rows.filter(r => r.regression === 'critical' && r.percentChange >= opts.threshold)
-    const warnings = rows.filter(r => r.regression === 'critical' && r.percentChange < opts.threshold)
+    const criticals = rows.filter(r => r.regression === 'critical' && r.changePercent >= opts.threshold)
+    const warnings = rows.filter(r => r.regression === 'critical' && r.changePercent < opts.threshold)
     if (criticals.length > 0) {
       console.log(`\n❌ GATE FAILED: ${criticals.length} critical regressions (≥${opts.threshold}%)`)
       for (const r of criticals) {
-        console.log(`   🔴 ${r.name}: ${r.percentChange.toFixed(1)}% (${r.old.toLocaleString()} → ${r.current.toLocaleString()} ops/s)`)
+        console.log(`   🔴 ${r.name}: ${r.changePercent.toFixed(1)}% (${r.previousOps.toLocaleString()} → ${r.currentOps.toLocaleString()} ops/s)`)
       }
       if (warnings.length > 0) {
         console.log(`\n⚠️  WARNINGS (${warnings.length} regressions below threshold):`)
         for (const r of warnings) {
-          console.log(`   🟡 ${r.name}: ${r.percentChange.toFixed(1)}% (${r.old.toLocaleString()} → ${r.current.toLocaleString()} ops/s)`)
+          console.log(`   🟡 ${r.name}: ${r.changePercent.toFixed(1)}% (${r.previousOps.toLocaleString()} → ${r.currentOps.toLocaleString()} ops/s)`)
         }
       }
     } else if (warnings.length > 0) {
