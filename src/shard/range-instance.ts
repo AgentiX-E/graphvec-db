@@ -61,6 +61,7 @@ export class RangeInstance {
     const cp = consensus ?? new StandaloneConsensus({
       nodeId: config.raftConfig.nodeId,
       mode: 'standalone',
+      peers: [],
     })
     cp.setApply!(async (data: Uint8Array) => {
       try {
@@ -272,13 +273,25 @@ export class RangeInstance {
 
   /** 获取状态 */
   getStatus() {
+    const cache = this.engine.getNodeCacheStats()
+    const storage = this.engine.stats()
     return {
       raft: {
         role: this.consensus.getRole?.(),
         leaderId: this.consensus.getLeaderId?.(),
         term: this.consensus.getTerm?.(),
       },
-      storage: this.engine.stats(),
+      storage: {
+        ...storage,
+        sizeBytes: storage.diskSizeBytes,
+      },
+      cache: {
+        nodeCacheSize: cache.nodeSize,
+        edgeCacheSize: cache.edgeSize,
+        hitCount: cache.nodeHits + cache.edgeHits,
+        missCount: cache.nodeMisses + cache.edgeMisses,
+      },
+      isStable: this.isHealthy(),
     }
   }
 

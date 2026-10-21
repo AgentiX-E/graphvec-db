@@ -21,7 +21,6 @@ import { QuerySlowLog } from '../ops/query-slow-log'
 import { GnnInferenceEngine } from '../algorithms/gnn-engine'
 import { enrichNodeLinks, enrichEdgeLinks, enrichListLinks, enrichQueryLinks, type EnrichedResponse } from './hypermedia'
 import { getDefaultTenantManager } from '../security/tenant-manager'
-import type { ShardHealth } from '../shard/shard-manager' // for shard health info in admin endpoints
 
 // ──────────────────────────────────────────
 // 类型定义

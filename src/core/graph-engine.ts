@@ -3354,14 +3354,23 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   // ── Node/Edge cache API (Gap 12) ──
 
   /**
-   * Get node/edge cache hit/miss statistics.
+   * Get node/edge cache hit/miss statistics plus current cache sizes.
    */
-  getNodeCacheStats(): { nodeHits: number; nodeMisses: number; edgeHits: number; edgeMisses: number } {
+  getNodeCacheStats(): {
+    nodeHits: number
+    nodeMisses: number
+    edgeHits: number
+    edgeMisses: number
+    nodeSize: number
+    edgeSize: number
+  } {
     return {
       nodeHits: this._nodeCacheHits,
       nodeMisses: this._nodeCacheMisses,
       edgeHits: this._edgeCacheHits,
       edgeMisses: this._edgeCacheMisses,
+      nodeSize: this._nodeCache.size,
+      edgeSize: this._edgeCache.size,
     }
   }
 
