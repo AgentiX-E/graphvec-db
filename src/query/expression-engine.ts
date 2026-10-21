@@ -169,11 +169,11 @@ export function _evalCase(s: string, row?: Record<string, unknown>): ExprValue {
   }
 
   // 拆分 WHEN ... THEN ... WHEN ... THEN ... [ELSE ...]
-  let result: unknown = null
+  let result: ExprValue = null
   let hasMatch = false
 
   const parts = remainder.split(/\bWHEN\s+/i)
-  let elseVal: unknown = null
+  let elseVal: ExprValue = null
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i].trim()
     if (!part) continue
@@ -196,7 +196,7 @@ export function _evalCase(s: string, row?: Record<string, unknown>): ExprValue {
       thenResult = thenResult.slice(0, elseIdx).trim()
     }
     if (hasMatch) continue  // 已匹配，跳过剩余
-    let condResult: boolean
+    let condResult: boolean | null
     if (!searched) {
       condResult = _compareValues(baseValue, cond, '=')
     } else {
@@ -1968,7 +1968,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
     if (v && typeof v === "object" && !Array.isArray(v)) {
       const map = v;
       const AVG_DAYS_PER_MONTH = 30.436875;
-      const _num = (k) => { const x = map[k]; return x != null ? Number(x) : 0; };
+      const _num = (k: string) => { const x = map[k]; return x != null ? Number(x) : 0; };
       let years = _num("years") || _num("year");
       let months = _num("months") || _num("month");
       let weeks = _num("weeks") || _num("week");
@@ -2836,7 +2836,7 @@ export function _evalOr(s: string, row?: Record<string, unknown>): ExprValue {
       throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
     }
   }
-  let result: unknown = false
+  let result: boolean | null = false
   for (const v of values) {
     if (v === true) return true
     if (v == null || v === undefined) result = null
@@ -2872,7 +2872,7 @@ export function _evalAnd(s: string, row?: Record<string, unknown>): ExprValue {
       throw Object.assign(new Error('SyntaxError: UnexpectedSyntax'), { tckError: 'UnexpectedSyntax' })
     }
   }
-  let result: unknown = true
+  let result: boolean | null = true
   for (const v of values) {
     _assertBool(v, '')
     if (v === false) return false
@@ -2954,7 +2954,7 @@ export function _evalComparison(s: string, row?: Record<string, unknown>): ExprV
     }
     return s2.trim()
   }
-  const _completeBoolean = (leftVal: unknown, after: string, row2?: Record<string, unknown>): unknown => {
+  const _completeBoolean = (leftVal: boolean, after: string, row2?: Record<string, unknown>): ExprValue => {
     const m = after.match(/^(AND|OR|XOR)\b/i)
     if (!m) return _evalBinary(`${leftVal} ${after}`, row2)
     const op = m[1].toLowerCase()
@@ -3061,7 +3061,7 @@ export function _evalComparison(s: string, row?: Record<string, unknown>): ExprV
   if (chainOps.length >= 2) {
     // Cypher 链式语义：expr OP1 expr2 OP2 expr3 = (expr OP1 expr2) AND (expr2 OP2 expr3)
     // 从左到右依次计算每对操作符
-    let result: unknown = true
+    let result: boolean | null = true
     for (let i = 0; i < chainOps.length; i++) {
       const { left: l, op: cop, right: r } = chainOps[i]
       const leftVal = _resolveIsNull(l.trim())
@@ -3079,7 +3079,7 @@ export function _evalComparison(s: string, row?: Record<string, unknown>): ExprV
     if (op === '=' || op === '<>' || op === '>=' || op === '<=' || op === '>' || op === '<') {
       const parts = _splitTopLevel(t, op)
       if (parts.length >= 3) {
-        let result: unknown = true
+        let result: boolean | null = true
         for (let i = 0; i < parts.length - 1; i++) {
           const left = _resolveIsNull(parts[i].trim())
           const right = _resolveIsNull(parts[i + 1].trim())
@@ -3276,36 +3276,36 @@ export function _compareValues(a: unknown, b: unknown, op: string): boolean | nu
     case '<': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
-        const c = _temporalCompareStrings(a, b)
+        const c = _temporalCompareStrings(a, b as string)
         if (c !== undefined) return c < 0
-        return a < b  // 字典序（naive temporal / 普通字符串，保留精度）
+        return a < (b as string)  // 字典序（naive temporal / 普通字符串，保留精度）
       }
       return Number(a) < Number(b)
     }
     case '>': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
-        const c = _temporalCompareStrings(a, b)
+        const c = _temporalCompareStrings(a, b as string)
         if (c !== undefined) return c > 0
-        return a > b
+        return a > (b as string)
       }
       return Number(a) > Number(b)
     }
     case '<=': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
-        const c = _temporalCompareStrings(a, b)
+        const c = _temporalCompareStrings(a, b as string)
         if (c !== undefined) return c <= 0
-        return a <= b
+        return a <= (b as string)
       }
       return Number(a) <= Number(b)
     }
     case '>=': {
       if (!_comparableTypes(a, b)) return null
       if (typeof a === 'string') {
-        const c = _temporalCompareStrings(a, b)
+        const c = _temporalCompareStrings(a, b as string)
         if (c !== undefined) return c >= 0
-        return a >= b
+        return a >= (b as string)
       }
       return Number(a) >= Number(b)
     }
@@ -3676,7 +3676,7 @@ export function _evalAddSub(s: string, row?: Record<string, unknown>): ExprValue
       if (left == null || right == null) { return null }
       // Manual type checks for date/duration subtraction
       const _isDateStrDirect = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)
-      const _isDurationStrDirect = (v: unknown): v is string => typeof v === "string" && /^P(-?\d+(?:\.\d+)?Y)?(-?\d+(?:\.\d+)?M)?(-?\d+(?:\.\d+)?D)?(T(-?\d+(?:\.\d+)?H)?(-?\d+(?:\.\d+)?M(?!S))?(-?\d+(?:\.\d+)?S)?)?$/.test(v) || /^P-?\d+(?:\.\d+)?W$/.test(v)
+      const _isDurationStrDirect = (v: unknown): v is string => typeof v === "string" && (/^P(-?\d+(?:\.\d+)?Y)?(-?\d+(?:\.\d+)?M)?(-?\d+(?:\.\d+)?D)?(T(-?\d+(?:\.\d+)?H)?(-?\d+(?:\.\d+)?M(?!S))?(-?\d+(?:\.\d+)?S)?)?$/.test(v) || /^P-?\d+(?:\.\d+)?W$/.test(v))
       const _isTimeStrDirect = (v: unknown): v is string => typeof v === "string" && /^\d{2}:\d{2}:\d{2}/.test(v)
       const _isDateTimeStrDirect = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v)
       // duration - duration
@@ -3933,7 +3933,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
             // 数组上的 .prop — 数组不支持属性访问
             return null
           }
-          return (val as Record<string, unknown>)[propName] ?? null
+          return ((val as Record<string, unknown>)[propName] ?? null) as ExprValue
         }
         if (suffix) return _evalBinary(`${val} ${suffix}`, row)
         return val
@@ -3965,7 +3965,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
           } else if (val && typeof val === 'object' && !Array.isArray(val)) {
             if (idx == null) { val = null }
             else if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
-            else val = (val as Record<string, unknown>)[idx] ?? null
+            else val = ((val as Record<string, unknown>)[idx] ?? null) as ExprValue
           } else { val = null }
         }
         pos = endBracket + 1
@@ -4074,7 +4074,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
               // map 下标：null → null；非字符串 → TypeError
               if (idx == null) { val = null }
               else if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
-              else val = (val as Record<string, unknown>)[idx] ?? null
+              else val = ((val as Record<string, unknown>)[idx] ?? null) as ExprValue
             }
             else {
               // Strings and other scalars are not subscriptable: raise the same
@@ -4124,7 +4124,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
       // map 类型下标：null → null；非字符串 → TypeError
       if (idx == null) return null
       if (typeof idx !== 'string') throw Object.assign(new Error('TypeError: Map index must be a string'), { tckError: 'TypeError' })
-      return (obj as Record<string, unknown>)[idx] ?? null
+      return ((obj as Record<string, unknown>)[idx] ?? null) as ExprValue
     }
     // 非 map/非 list 的基本类型下标抛 TypeError
     if (obj != null) throw Object.assign(new Error('TypeError: Cannot index into non-map/non-list type'), { tckError: 'TypeError' })
@@ -4153,11 +4153,11 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
         const firstVal = (obj as Record<string, unknown>)[firstSeg] ?? null
         if (firstVal == null) return null
         if (firstVal && typeof firstVal === 'object' && !Array.isArray(firstVal)) {
-          return (firstVal as Record<string, unknown>)[restSeg] ?? null
+          return ((firstVal as Record<string, unknown>)[restSeg] ?? null) as ExprValue
         }
         return null
       }
-      return (obj as Record<string, unknown>)[prop] ?? null
+      return ((obj as Record<string, unknown>)[prop] ?? null) as ExprValue
     }
     // 持续时间 ISO 字符串属性访问：dur.days / dur.hours 等
     if (typeof obj === 'string' && /^P/i.test(obj)) return _extractDurationProp(obj, prop)
@@ -4195,7 +4195,7 @@ export function _evalAtom(s: string, row?: Record<string, unknown>): ExprValue {
     throw Object.assign(new Error('TypeError: Property access on non-map type'), { tckError: 'TypeError' })
   }
   // 变量引用
-  if (t in (row || {})) return row![t]
+  if (t in (row || {})) return row![t] as ExprValue
   if (row?._alias === t) return row
   return _evalLiteral(t, row)
 }
@@ -4664,7 +4664,7 @@ export function _evalLiteral(s: string, row?: Record<string, unknown>): ExprValu
       const srcVar = pcMatch[1]
       const edgeLabel = pcMatch[2] || pcMatch[3] || null
       const retExpr = pcMatch[5]
-      const srcNode = row[srcVar]
+      const srcNode = row?.[srcVar]
       if (!srcNode || typeof srcNode !== 'object') return null
       const edges: Array<{ srcIdx: number; dstIdx: number; label?: string }> =
         (srcNode as any).__edges || []
@@ -5313,7 +5313,7 @@ export function _executeAggregation(rows: QueryRow[], aggCols: AggColumnInfo[], 
 }
 
 /** 计算单个聚合值，包含 AVG 精度修复 */
-export function _computeAggregate(fn: string, values: unknown[], pctArg?: string | null): number | null {
+export function _computeAggregate(fn: string, values: unknown[], pctArg?: string | null): number | null | unknown[] {
   // AVG and the percentiles are "no valid numeric value" aggregates: an empty
   // (or all-null) input yields NULL, not 0.  COUNT/SUM fall back to 0.
   if (!values.length) return (fn === 'AVG' || fn === 'PERCENTILEDISC' || fn === 'PERCENTILECONT') ? null : 0
@@ -5628,7 +5628,7 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
       for (let i = 0; i < orderBy.length; i++) {
         const o = orderBy[i]
         const field = _orderByField(o)
-        const dir = (o.direction || '').trim().toUpperCase()
+        const dir = String(o.direction || '').trim().toUpperCase()
         // When the sort item is a composite expression (e.g.
         // `NOT (a.bool AND a.bool2)` or `a.num + a.num2`), evaluate it against
         // the row instead of looking up a single column. A bare identifier
@@ -5716,9 +5716,9 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
     for (const h of p.having) {
       let aggKey: string | null = null
       const sampleKeys = Object.keys(processed[0])
-      const aggStripped = h.aggregate.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
+      const aggStripped = (h.aggregate ?? '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
       for (const key of sampleKeys) {
-        if (key.toLowerCase() === h.aggregate.toLowerCase() ||
+        if (key.toLowerCase() === (h.aggregate ?? '').toLowerCase() ||
             key.toLowerCase() === aggStripped ||
             key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === aggStripped) { aggKey = key; break }
       }
@@ -5729,12 +5729,12 @@ export function _postProcessResults(result: QueryRow[], plan: PostProcessPlan): 
       const op = h.operator, val = h.value
       processed = processed.filter(row => {
         const rowVal = aggKey ? row[aggKey] : undefined
-        if (rowVal === undefined) return true
+        if (rowVal === undefined || rowVal === null) return false
         switch (op) {
-          case 'GT': return rowVal > val
-          case 'GTE': return rowVal >= val
-          case 'LT': return rowVal < val
-          case 'LTE': return rowVal <= val
+          case 'GT': return Number(rowVal) > Number(val)
+          case 'GTE': return Number(rowVal) >= Number(val)
+          case 'LT': return Number(rowVal) < Number(val)
+          case 'LTE': return Number(rowVal) <= Number(val)
           case 'EQ': return rowVal === val
           case 'NEQ': return rowVal !== val
           default: return true
