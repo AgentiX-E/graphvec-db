@@ -15,7 +15,8 @@
 
 import { Logger } from '../ops/logger'
 import { RangeInstance } from '../shard/range-instance'
-import { ReshardSplit, ShardMap, RangeConfig, HlcClock } from '../types'
+import { ReshardSplit, ShardMap, RangeConfig } from '../types'
+import { HlcClock } from '../replication/hlc-clock'
 import { ShardManager } from '../shard/shard-manager'
 
 // ── Types ────────────────────────────────────────────────────
@@ -119,7 +120,7 @@ export class HotMigrator {
       progress.completedAt = Date.now()
     } catch (err) {
       const msg = (err as Error).message
-      this.logger.error({ error: msg, rangeId: split.sourceRangeId }, 'Hot migration failed')
+      this.logger.error('Hot migration failed', err as Error, { rangeId: split.sourceRangeId })
       progress.phase = 'failed'
       progress.error = msg
       // Attempt rollback (disable dual write)
@@ -139,7 +140,7 @@ export class HotMigrator {
       throw new Error('Cannot rollback after atomic switch — migration already committed')
     }
 
-    this.logger.info({ rangeId: split.sourceRangeId }, 'Rolling back hot migration')
+    this.logger.info('Rolling back hot migration', { rangeId: split.sourceRangeId })
     this.shardManager.disableDualWrite()
 
     try {
@@ -182,8 +183,8 @@ export class HotMigrator {
     )
 
     this.logger.info(
-      { sourceRegion: sourceGeo.region, targetRegion: targetGeo.region, distanceKm: Math.round(dist) },
       'Cross-region migration selected',
+      { sourceRegion: sourceGeo.region, targetRegion: targetGeo.region, distanceKm: Math.round(dist) },
     )
 
     return {
@@ -202,14 +203,14 @@ export class HotMigrator {
     progress.phase = 'preparing_target'
     progress.progressPercent = 5
     this.logger.info(
-      { targetRangeId: split.targetRangeId, targetDataDir: split.targetDataDir },
       'Preparing target range for hot migration',
+      { targetRangeId: split.targetRangeId, targetDataDir: split.targetDataDir },
     )
 
     const targetInstance = new RangeInstance(targetRangeConfig, this.clock)
     await targetInstance.start()
     this.shardManager.addRange(split.targetRangeId, targetInstance)
-    this.logger.info({ targetRangeId: split.targetRangeId }, 'Target range started')
+    this.logger.info('Target range started', { targetRangeId: split.targetRangeId })
   }
 
   private async _enableDualWrite(
@@ -218,7 +219,7 @@ export class HotMigrator {
   ): Promise<void> {
     progress.phase = 'dual_write'
     progress.progressPercent = 10
-    this.logger.info({ sourceRangeId: split.sourceRangeId, targetRangeId: split.targetRangeId }, 'Enabling dual write')
+    this.logger.info('Enabling dual write', { sourceRangeId: split.sourceRangeId, targetRangeId: split.targetRangeId })
 
     this.shardManager.enableDualWrite([split])
 
@@ -239,7 +240,7 @@ export class HotMigrator {
       payload: { id: testId, cascade: false },
     }).catch(() => {})
 
-    this.logger.info({ sourceRangeId: split.sourceRangeId }, 'Dual write verified and active')
+    this.logger.info('Dual write verified and active', { sourceRangeId: split.sourceRangeId })
   }
 
   private async _snapshotSync(
@@ -248,7 +249,7 @@ export class HotMigrator {
   ): Promise<void> {
     progress.phase = 'snapshot_sync'
     progress.progressPercent = 20
-    this.logger.info({ sourceRangeId: split.sourceRangeId }, 'Starting snapshot sync for hot migration')
+    this.logger.info('Starting snapshot sync for hot migration', { sourceRangeId: split.sourceRangeId })
 
     const sourceRange = this.shardManager.getRange(split.sourceRangeId)
     const targetRange = this.shardManager.getRange(split.targetRangeId)
@@ -280,8 +281,8 @@ export class HotMigrator {
     }
 
     this.logger.info(
-      { nodeCount: targetStats.nodeCount, edgeCount: targetStats.edgeCount },
       'Snapshot sync completed',
+      { nodeCount: targetStats.nodeCount, edgeCount: targetStats.edgeCount },
     )
   }
 
@@ -295,7 +296,7 @@ export class HotMigrator {
     // Under dual write, all incremental writes between snapshot export and installation
     // have already been written to the target Range via _writeWithDualWrite (guaranteed by Step 2).
     // Nevertheless, a final consistency check is good practice.
-    this.logger.info({ sourceRangeId: split.sourceRangeId }, 'Verifying dual-write catch-up...')
+    this.logger.info('Verifying dual-write catch-up...', { sourceRangeId: split.sourceRangeId })
 
     const sourceRange = this.shardManager.getRange(split.sourceRangeId)
     const targetRange = this.shardManager.getRange(split.targetRangeId)
@@ -309,8 +310,8 @@ export class HotMigrator {
     // Dual-write guarantee: target count >= source count (dual writes already persisted to target)
     // In practice, target may have extra data (e.g. temporary data from independent auto-increment) exceeding source
     this.logger.info(
-      { sourceTotal, targetTotal, diff: Math.abs(sourceTotal - targetTotal) },
       'Catch-up verification',
+      { sourceTotal, targetTotal, diff: Math.abs(sourceTotal - targetTotal) },
     )
 
     progress.progressPercent = 80
@@ -324,8 +325,8 @@ export class HotMigrator {
     progress.progressPercent = 85
 
     this.logger.info(
-      { sourceRangeId: split.sourceRangeId, targetRangeId: split.targetRangeId },
       'Performing atomic route switch',
+      { sourceRangeId: split.sourceRangeId, targetRangeId: split.targetRangeId },
     )
 
     // 1. Build new ShardMap replacing source Range with target Range (keep hashRing unchanged)
@@ -355,8 +356,8 @@ export class HotMigrator {
 
     progress.progressPercent = 95
     this.logger.info(
-      { targetRangeId: split.targetRangeId },
       'Atomic route switch completed — all traffic now goes to target',
+      { targetRangeId: split.targetRangeId },
     )
   }
 
@@ -371,11 +372,11 @@ export class HotMigrator {
       const sourceRange = this.shardManager.getRange(split.sourceRangeId)
       await sourceRange.stop()
     } catch (err) {
-      this.logger.warn({ error: (err as Error).message }, 'Failed to stop source range during cleanup')
+      this.logger.warn('Failed to stop source range during cleanup', { error: (err as Error).message })
     }
 
     this.shardManager.removeRange(split.sourceRangeId)
-    this.logger.info({ sourceRangeId: split.sourceRangeId }, 'Source range cleaned up')
+    this.logger.info('Source range cleaned up', { sourceRangeId: split.sourceRangeId })
   }
 
   // ── Haversine Distance Formula (Spherical Distance Calculation) ──
