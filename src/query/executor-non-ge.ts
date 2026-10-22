@@ -8,8 +8,9 @@
 
 import fs from 'fs'
 import path from 'path'
-import type { QueryPlan, QueryRow, QueryResult } from './query-types'
+import type { QueryPlan } from './query-types'
 import { _evaluateExpression, _postProcessResults } from './expression-engine'
+import type { QueryRow } from './expression-engine'
 import { parseCsvContent } from './executor-common'
 import { _executeVarLenPath } from './executor-common'
 import { _executeWithUnwindPipeline } from './executor-unwind-pipeline'
@@ -30,7 +31,7 @@ export async function _execNonGePaths(
   plan: QueryPlan,
   nodes: Array<Record<string, unknown>>,
   query?: string,
-): Promise<QueryResult | null> {
+): Promise<QueryRow[] | null> {
   if (plan.loadCsv) {
     const csv = plan.loadCsv
     let filePath = csv.url
@@ -532,7 +533,7 @@ export async function _execNonGePaths(
         if (Array.isArray(fe.list)) {
           listItems = fe.list
         } else if (typeof fe.list === 'string') {
-          const listStr = fe.list as string
+          const listStr = fe.list
           if (listStr.startsWith('[') && listStr.endsWith(']')) {
             // 尝试 JSON.parse，如果失败（如单引号），将单引号替换为双引号
             try { listItems = JSON.parse(listStr) } catch {
@@ -544,7 +545,7 @@ export async function _execNonGePaths(
       if (listItems.length === 0 && Object.keys(row).length) return [row]
       const rows: QueryRow[] = []
       for (const item of listItems) {
-        for (const update of fe.updates) {
+        for (const update of fe.updates ?? []) {
           if (update.type === 'CREATE') {
             const props: Record<string, unknown> = { _label: update.label || 'Default' }
             if (update.props) {
@@ -614,9 +615,9 @@ export async function _execNonGePaths(
       return []
     }
     // DELETE/SET/REMOVE 可以直接返回空（不创建节点/边）
-    if (plan.type !== 'CREATE' && plan.type !== 'MERGE') {
-      return []
-    }
+    // NOTE: CREATE/MERGE already returned null above, so this point is only
+    // reached by non-node-producing DML (DELETE/SET/REMOVE/MATCH_MODIFY).
+    return []
   }
 
   // ── 变量长度路径：直接 BFS 并返回，不依赖 GE ──

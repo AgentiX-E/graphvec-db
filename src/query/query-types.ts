@@ -221,17 +221,29 @@ export interface AggregateClause {
  * `operation` 为 parseForeachBody 产生的递归操作描述（CREATE/SET/REMOVE/
  * DELETE/MERGE/嵌套 FOREACH/WHERE），executor 通过 foreach-exec.ts 求值。
  */
+/** 旧格式 FOREACH 循环体单条更新操作（updates 列表元素）。 */
+export interface ForEachUpdate {
+  type: 'CREATE' | 'SET' | string
+  label?: string
+  props?: Record<string, unknown>
+  alias?: string
+  property?: string
+  value?: unknown
+}
+
 export interface ForEachClause {
   /** 迭代变量名（如 `x` in `FOREACH (x IN list | ...)`） */
   variable: string
   /** 变量别名（旧字段，向后兼容保留） */
   name: string
-  /** 迭代列表（数组，或 isVarRef 时单元素变量引用） */
-  list: unknown[]
+  /** 迭代列表（数组，或 isVarRef 时单元素变量引用；旧格式可能为字符串 JSON） */
+  list: unknown[] | string
   /** list 是否为变量引用（非字面量数组） */
   isVarRef: boolean
   /** 循环体操作描述（递归结构，交给 foreach-exec.ts 求值） */
   operation: any
+  /** 旧格式循环体更新列表（向后兼容保留，与新格式 operation 二选一） */
+  updates?: ForEachUpdate[]
 }
 
 // ── Query Plan ─────────────────────────────────────────────────
