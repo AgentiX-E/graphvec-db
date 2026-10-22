@@ -123,14 +123,6 @@ export class WAL {
     })
   }
 
-  // ── Group Commit（B-03） ──
-  /** 待提交的批量写入 */
-  private _pendingBatch: Array<{ term: number; data: Uint8Array; resolve: (entry: LogEntry) => void }> = []
-  /** 是否已有 flush 定时器 */
-  private _batchTimer: ReturnType<typeof setTimeout> | null = null
-  /** 是否启用 Group Commit（默认启用） */
-  private _groupCommitEnabled = true
-
   /** 启用或禁用 Group Commit */
   setGroupCommit(enabled: boolean): void {
     this._groupCommitEnabled = enabled
@@ -198,14 +190,6 @@ export class WAL {
 
     this.entries.push(entry)
     return entry
-  }
-
-  /** 启用或禁用 Group Commit */
-  setGroupCommit(enabled: boolean): void {
-    this._groupCommitEnabled = enabled
-    if (!enabled) {
-      this._flushBatchSync()
-    }
   }
 
   /**
