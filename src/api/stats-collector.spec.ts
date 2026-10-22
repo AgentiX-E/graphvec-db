@@ -25,25 +25,25 @@ describe('StatsCollector', () => {
   })
 
   test('constructor creates instance', () => {
-    collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
+    collector = new StatsCollector(mockEngine, 60000)
     expect(collector).toBeDefined()
   })
 
   test('collectNow returns StatsSnapshot', async () => {
-    collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
+    collector = new StatsCollector(mockEngine, 60000)
     const s = await collector.collectNow()
     expect(s.totalNodes).toBe(100)
     expect(s.totalEdges).toBe(250)
   })
 
   test('collectNow includes type distribution', async () => {
-    collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
+    collector = new StatsCollector(mockEngine, 60000)
     const s = await collector.collectNow()
     expect(s.typeStats).toBeDefined()
   })
 
   test('collectNow includes timestamp (collectedAt)', async () => {
-    collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
+    collector = new StatsCollector(mockEngine, 60000)
     const s = await collector.collectNow()
     expect(s.collectedAt).toBeGreaterThan(0)
   })
@@ -51,29 +51,29 @@ describe('StatsCollector', () => {
   test('collectNow handles engine errors gracefully', async () => {
     mockEngine.stats = vi.fn().mockReturnValue({ nodeCount: 0, edgeCount: 0 })
     mockEngine.getAllNodes = vi.fn().mockRejectedValue(new Error('scan failed'))
-    collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
+    collector = new StatsCollector(mockEngine, 60000)
     const s = await collector.collectNow()
     expect(s.totalNodes).toBe(0)
     expect(s.totalEdges).toBe(0)
   })
 
   test('start/stop periodic collection', () => {
-    collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
+    collector = new StatsCollector(mockEngine, 60000)
     collector.startPeriodicCollection()
     collector.stopPeriodicCollection()
     collector.stopPeriodicCollection() // safe to call twice
   })
 
   test('estimateSelectivity returns number between 0 and 1', async () => {
-    collector = new StatsCollector(mockEngine, { intervalMs: 60000 })
+    collector = new StatsCollector(mockEngine, 60000)
     await collector.collectNow()
-    const sel = collector.estimateSelectivity(1, { field: 'age', op: 'eq' })
+    const sel = collector.estimateSelectivity(1, { field: 'age', op: 'eq', value: 30 })
     expect(sel).toBeGreaterThanOrEqual(0)
     expect(sel).toBeLessThanOrEqual(1)
   })
 
   test('constructor with null engine', () => {
-    collector = new StatsCollector(null as any, { intervalMs: 60000 })
+    collector = new StatsCollector(null as any, 60000)
     expect(collector).toBeDefined()
   })
 })
