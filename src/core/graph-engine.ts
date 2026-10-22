@@ -2947,6 +2947,23 @@ private _invalidateQueryCache(typeId?: number, nodeId?: number): void {
   }
 
   /**
+   * 按节点类型 ID 与名称精确查找单个节点
+   *
+   * @param typeId - 节点类型 ID
+   * @param name - 节点名称（upsertNode 时传入的 name）
+   * @returns 匹配的节点记录，未找到时返回 null
+   */
+  getNodeByLabel(typeId: number, name: string): NodeRecord | null {
+    this._ensureOpen()
+    const typeNodes = this._labelIndex.getNodeIds(typeId)
+    for (const id of typeNodes) {
+      const node = this.getNode(id)
+      if (node && node.name === name) return node
+    }
+    return null
+  }
+
+  /**
    * 执行存储引擎压缩
    */
   compact(): void {

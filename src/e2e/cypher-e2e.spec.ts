@@ -8,6 +8,7 @@
 import { GraphEngine } from '../core/graph-engine'
 import { execQuery } from '../query/query-engine'
 import { makeEngine } from '../test-utils/make-engine'
+import type { NodeProperties } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -88,8 +89,8 @@ describe('Cypher E2E — 全链路集成测试', () => {
       await engine.upsertNode(3, 'Person', { props: { name: 'Charlie' } })
 
       // Alice → Bob, Bob → Charlie
-      engine.upsertEdge(1, 2, 1, { type: 'KNOWS' })
-      engine.upsertEdge(2, 3, 1, { type: 'KNOWS' })
+      engine.upsertEdge(1, 2, 1)
+      engine.upsertEdge(2, 3, 1)
 
       // Alice's neighbors
       const aliceNB = engine.neighbors(1)
@@ -114,7 +115,7 @@ describe('Cypher E2E — 全链路集成测试', () => {
       await engine.upsertNode(1, 'Person', { props: { name: 'Alice' } })
       await engine.upsertNode(2, 'Person', { props: { name: 'Bob' } })
 
-      engine.upsertEdge(1, 2, 5, { type: 'KNOWS', since: 2020, relation: 'friend' })
+      engine.upsertEdge(1, 2, 5, { props: { since: 2020, relation: 'friend' } })
 
       const aNB = engine.neighbors(1)
       expect(aNB.edges.length).toBe(1)
@@ -222,7 +223,7 @@ describe('Cypher E2E — 全链路集成测试', () => {
       // Create 200 edges
       for (let i = 0; i < 100; i++) {
         if (i < 99) {
-          engine.upsertEdge(ids[i], ids[i + 1], 1, { type: 'NEXT' })
+          engine.upsertEdge(ids[i], ids[i + 1], 1)
         }
       }
     } finally {
@@ -575,8 +576,8 @@ describe('Cypher E2E — 全链路集成测试', () => {
     try {
       const id = await engine.upsertNode(1, 'Nested', {
         props: {
-          address: { street: '123 Main', city: 'NYC', zip: 10001 },
-          metadata: { created: '2024-01-01', tags: ['a', 'b'] },
+          address: '123 Main, NYC, 10001',
+          metadata: 'created=2024-01-01, tags=a,b',
         },
       })
 
@@ -760,7 +761,7 @@ describe('Cypher E2E — 全链路集成测试', () => {
       const a = await engine.upsertNode(1, 'A')
       const b = await engine.upsertNode(1, 'B')
 
-      const props: Record<string, unknown> = { base: true }
+      const props: NodeProperties = { base: true }
       for (let i = 0; i < 20; i++) {
         props[`prop_${i}`] = i * 7
       }
@@ -3176,7 +3177,7 @@ afterAll(() => {
         await engine.upsertNode(1, `n${i}`, { props: { age: i } })
       }
       const all = engine.scanAllNodes()
-      const filtered = all.filter(n => n.props.age < 5)
+      const filtered = all.filter(n => (n.props.age as number) < 5)
       expect(filtered.length).toBe(5)
     } finally { engine.close() }
   }, 30000)
@@ -3189,7 +3190,7 @@ afterAll(() => {
         await engine.upsertNode(1, `n${i}`, { props: { age: i } })
       }
       const all = engine.scanAllNodes()
-      const filtered = all.filter(n => n.props.age > 5)
+      const filtered = all.filter(n => (n.props.age as number) > 5)
       expect(filtered.length).toBe(4)
     } finally { engine.close() }
   }, 30000)
@@ -3202,7 +3203,7 @@ afterAll(() => {
         await engine.upsertNode(1, `n${i}`, { props: { age: i } })
       }
       const all = engine.scanAllNodes()
-      const filtered = all.filter(n => n.props.age <= 5)
+      const filtered = all.filter(n => (n.props.age as number) <= 5)
       expect(filtered.length).toBe(6)
     } finally { engine.close() }
   }, 30000)
@@ -3215,7 +3216,7 @@ afterAll(() => {
         await engine.upsertNode(1, `n${i}`, { props: { age: i } })
       }
       const all = engine.scanAllNodes()
-      const filtered = all.filter(n => n.props.age >= 5)
+      const filtered = all.filter(n => (n.props.age as number) >= 5)
       expect(filtered.length).toBe(5)
     } finally { engine.close() }
   }, 30000)
@@ -3228,7 +3229,7 @@ afterAll(() => {
         await engine.upsertNode(1, `n${i}`, { props: { age: i, name: `user${i}` } })
       }
       const all = engine.scanAllNodes()
-      const filtered = all.filter(n => n.props.age > 3 && n.props.name.startsWith('user'))
+      const filtered = all.filter(n => (n.props.age as number) > 3 && (n.props.name as string).startsWith('user'))
       expect(filtered.length).toBe(6)
     } finally { engine.close() }
   }, 30000)
@@ -3388,7 +3389,7 @@ afterAll(() => {
       for (let i = 0; i < 5; i++) {
         await engine.upsertNode(1, `n${i}`, { props: { age: 5 - i } })
       }
-      const all = engine.scanAllNodes().sort((a, b) => a.props.age - b.props.age)
+      const all = engine.scanAllNodes().sort((a, b) => (a.props.age as number) - (b.props.age as number))
       expect(all[0].props.age).toBe(1)
       expect(all[4].props.age).toBe(5)
     } finally { engine.close() }
@@ -3401,7 +3402,7 @@ afterAll(() => {
       for (let i = 0; i < 5; i++) {
         await engine.upsertNode(1, `n${i}`, { props: { age: i } })
       }
-      const all = engine.scanAllNodes().sort((a, b) => b.props.age - a.props.age)
+      const all = engine.scanAllNodes().sort((a, b) => (b.props.age as number) - (a.props.age as number))
       expect(all[0].props.age).toBe(4)
     } finally { engine.close() }
   }, 30000)
@@ -3413,7 +3414,7 @@ afterAll(() => {
       for (let i = 0; i < 10; i++) {
         await engine.upsertNode(1, `n${i}`, { props: { age: i } })
       }
-      const all = engine.scanAllNodes().sort((a, b) => a.props.age - b.props.age).slice(0, 3)
+      const all = engine.scanAllNodes().sort((a, b) => (a.props.age as number) - (b.props.age as number)).slice(0, 3)
       expect(all.length).toBe(3)
     } finally { engine.close() }
   }, 30000)
@@ -3425,7 +3426,7 @@ afterAll(() => {
       for (let i = 0; i < 10; i++) {
         await engine.upsertNode(1, `n${i}`, { props: { age: i } })
       }
-      const all = engine.scanAllNodes().sort((a, b) => a.props.age - b.props.age).slice(5)
+      const all = engine.scanAllNodes().sort((a, b) => (a.props.age as number) - (b.props.age as number)).slice(5)
       expect(all.length).toBe(5)
       expect(all[0].props.age).toBe(5)
     } finally { engine.close() }
@@ -3450,7 +3451,7 @@ afterAll(() => {
         await engine.upsertNode(1, `n${i}`, { props: { val: i } })
         sum += i
       }
-      const total = engine.scanAllNodes().reduce((s, n) => s + n.props.val, 0)
+      const total = engine.scanAllNodes().reduce((s, n) => s + (n.props.val as number), 0)
       expect(total).toBe(sum)
     } finally { engine.close() }
   }, 30000)
@@ -3463,7 +3464,7 @@ afterAll(() => {
         await engine.upsertNode(1, `n${i}`, { props: { val: i } })
       }
       const all = engine.scanAllNodes()
-      const avg = all.reduce((s, n) => s + n.props.val, 0) / all.length
+      const avg = all.reduce((s, n) => s + (n.props.val as number), 0) / all.length
       expect(avg).toBe(3)
     } finally { engine.close() }
   }, 30000)
@@ -3476,7 +3477,7 @@ afterAll(() => {
       for (let i = 0; i < ages.length; i++) {
         await engine.upsertNode(1, `n${i}`, { props: { age: ages[i] } })
       }
-      const min = Math.min(...engine.scanAllNodes().map(n => n.props.age))
+      const min = Math.min(...engine.scanAllNodes().map(n => (n.props.age as number)))
       expect(min).toBe(1)
     } finally { engine.close() }
   }, 30000)
@@ -3489,7 +3490,7 @@ afterAll(() => {
       for (let i = 0; i < ages.length; i++) {
         await engine.upsertNode(1, `n${i}`, { props: { age: ages[i] } })
       }
-      const max = Math.max(...engine.scanAllNodes().map(n => n.props.age))
+      const max = Math.max(...engine.scanAllNodes().map(n => (n.props.age as number)))
       expect(max).toBe(9)
     } finally { engine.close() }
   }, 30000)
@@ -3503,7 +3504,7 @@ afterAll(() => {
       }
       const active = engine.scanAllNodes().filter(n => n.props.active)
       expect(active.length).toBe(5)
-      const ages = active.map(n => n.props.age).sort((a, b) => a - b)
+      const ages = active.map(n => (n.props.age as number)).sort((a, b) => a - b)
       expect(ages[0]).toBe(0)
     } finally { engine.close() }
   }, 30000)
@@ -3523,7 +3524,7 @@ afterAll(() => {
     await engine.open()
     try {
       for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
-      const all = engine.scanAllNodes().sort((a, b) => a.props.seq - b.props.seq)
+      const all = engine.scanAllNodes().sort((a, b) => (a.props.seq as number) - (b.props.seq as number))
       const paged = all.slice(2, 5)
       expect(paged.length).toBe(3)
     } finally { engine.close() }
@@ -3534,7 +3535,7 @@ afterAll(() => {
     await engine.open()
     try {
       for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { age: 10 - i } })
-      const top3 = engine.scanAllNodes().sort((a, b) => a.props.age - b.props.age).slice(0, 3)
+      const top3 = engine.scanAllNodes().sort((a, b) => (a.props.age as number) - (b.props.age as number)).slice(0, 3)
       expect(top3.length).toBe(3)
       expect(top3[0].props.age).toBe(1)
     } finally { engine.close() }
@@ -3546,7 +3547,7 @@ afterAll(() => {
     try {
       for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { age: i, active: i >= 5 } })
       const activeNodes = engine.scanAllNodes().filter(n => n.props.active)
-      const youngActive = activeNodes.filter(n => n.props.age < 8)
+      const youngActive = activeNodes.filter(n => (n.props.age as number) < 8)
       expect(youngActive.length).toBe(3)
     } finally { engine.close() }
   }, 30000)
@@ -3556,7 +3557,7 @@ afterAll(() => {
     await engine.open()
     try {
       for (let i = 1; i <= 5; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
-      const sum = engine.scanAllNodes().reduce((s, n) => s + n.props.val, 0)
+      const sum = engine.scanAllNodes().reduce((s, n) => s + (n.props.val as number), 0)
       expect(sum).toBe(15)
     } finally { engine.close() }
   }, 30000)
@@ -3643,7 +3644,7 @@ afterAll(() => {
     await engine.open()
     try {
       for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { age: i } })
-      const sorted = engine.scanAllNodes().sort((a, b) => b.props.age - a.props.age).slice(0, 3)
+      const sorted = engine.scanAllNodes().sort((a, b) => (b.props.age as number) - (a.props.age as number)).slice(0, 3)
       expect(sorted.length).toBe(3)
       expect(sorted[0].props.age).toBe(9)
     } finally { engine.close() }
@@ -3705,8 +3706,8 @@ afterAll(() => {
       await engine.upsertEdge(b, c, 1, { props: {} })
       // Chain: a->b->c
       const bNbs = engine.neighbors(a)
-      if (bNbs !== undefined && bNbs.length > 0) {
-        const cNbs = engine.neighbors(bNbs[0])
+      if (bNbs !== undefined && bNbs.nodes.length > 0) {
+        const cNbs = engine.neighbors(bNbs.nodes[0].id)
         expect(cNbs).toBeDefined()
       }
     } finally { engine.close() }
@@ -3719,7 +3720,7 @@ afterAll(() => {
       for (let i = 0; i < 10; i++) {
         await engine.upsertNode(1, `n${i}`, { props: { age: i, active: i % 2 === 0, score: i * 10 } })
       }
-      const filtered = engine.scanAllNodes().filter(n => n.props.age >= 3 && n.props.active && n.props.score > 30)
+      const filtered = engine.scanAllNodes().filter(n => (n.props.age as number) >= 3 && n.props.active && (n.props.score as number) > 30)
       expect(filtered.length).toBe(3) // 4,6,8
     } finally { engine.close() }
   }, 30000)
@@ -3729,7 +3730,7 @@ afterAll(() => {
     await engine.open()
     try {
       for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { x: i } })
-      const filtered = engine.scanAllNodes().filter(n => n.props.x < 2 || n.props.x > 7)
+      const filtered = engine.scanAllNodes().filter(n => (n.props.x as number) < 2 || (n.props.x as number) > 7)
       expect(filtered.length).toBe(4) // 0,1,8,9
     } finally { engine.close() }
   }, 30000)
@@ -3740,7 +3741,7 @@ afterAll(() => {
     try {
       for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
       const exclude = [0, 4, 9]
-      const filtered = engine.scanAllNodes().filter(n => !exclude.includes(n.props.val))
+      const filtered = engine.scanAllNodes().filter(n => !exclude.includes(n.props.val as number))
       expect(filtered.length).toBe(7)
     } finally { engine.close() }
   }, 30000)
@@ -3751,7 +3752,7 @@ afterAll(() => {
     try {
       for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
       const include = [1, 3, 5]
-      const filtered = engine.scanAllNodes().filter(n => include.includes(n.props.val))
+      const filtered = engine.scanAllNodes().filter(n => include.includes(n.props.val as number))
       expect(filtered.length).toBe(3)
     } finally { engine.close() }
   }, 30000)
@@ -3784,9 +3785,9 @@ afterAll(() => {
     const engine = new GraphEngine({ path: '/tmp/cy-v37-10' })
     await engine.open()
     try {
-      await engine.upsertNode(1, 'deep', { props: { meta: { addr: { city: 'NYC' } } } })
+      await engine.upsertNode(1, 'deep', { props: { meta: { addr: { city: 'NYC' } } } as unknown as NodeProperties })
       const node = engine.scanAllNodes().find(n => n.name === 'deep')
-      expect(node?.props?.meta?.addr?.city).toBe('NYC')
+      expect((node?.props?.meta as any)?.addr?.city).toBe('NYC')
     } finally { engine.close() }
   }, 30000)
 
@@ -3844,8 +3845,8 @@ afterAll(() => {
       await engine.upsertNode(1, 'b', { props: { group: 1, seq: 1 } })
       await engine.upsertNode(1, 'c', { props: { group: 2, seq: 3 } })
       const sorted = engine.scanAllNodes().sort((a, b) => {
-        if (a.props.group !== b.props.group) return a.props.group - b.props.group
-        return a.props.seq - b.props.seq
+        if (a.props.group !== b.props.group) return (a.props.group as number) - (b.props.group as number)
+        return (a.props.seq as number) - (b.props.seq as number)
       })
       expect(sorted[0].name).toBe('b')
       expect(sorted[1].name).toBe('a')
@@ -3887,7 +3888,7 @@ afterAll(() => {
     await engine.open()
     try {
       for (let i = 0; i < 20; i++) await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
-      const all = engine.scanAllNodes().sort((a, b) => a.props.seq - b.props.seq)
+      const all = engine.scanAllNodes().sort((a, b) => (a.props.seq as number) - (b.props.seq as number))
       const page2 = all.slice(5, 10)
       expect(page2.length).toBe(5)
       expect(page2[0].props.seq).toBe(5)
@@ -3902,9 +3903,9 @@ afterAll(() => {
       // level1: filter active
       const active = engine.scanAllNodes().filter(n => n.props.active)
       // level2: filter age > 5
-      const older = active.filter(n => n.props.age > 5)
+      const older = active.filter(n => (n.props.age as number) > 5)
       // level3: sort
-      const sorted = older.sort((a, b) => a.props.age - b.props.age)
+      const sorted = older.sort((a, b) => (a.props.age as number) - (b.props.age as number))
       expect(sorted.length).toBe(7) // 6,8,10,12,14,16,18
       expect(sorted[0].props.age).toBe(6)
     } finally { engine.close() }
@@ -3915,7 +3916,7 @@ afterAll(() => {
     await engine.open()
     try {
       for (let i = 1; i <= 10; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
-      const sum = engine.scanAllNodes().reduce((s, n) => s + n.props.val, 0)
+      const sum = engine.scanAllNodes().reduce((s, n) => s + (n.props.val as number), 0)
       const avg = sum / engine.scanAllNodes().length
       expect(sum).toBe(55)
       expect(avg).toBe(5.5)
@@ -3928,7 +3929,7 @@ afterAll(() => {
     try {
       for (let i = 0; i < 10; i++) await engine.upsertNode(1, `n${i}`, { props: { val: i } })
       // simulate sub-query: find count where val > 5
-      const subResult = engine.scanAllNodes().filter(n => n.props.val > 5)
+      const subResult = engine.scanAllNodes().filter(n => (n.props.val as number) > 5)
       expect(subResult.length).toBe(4)
     } finally { engine.close() }
   }, 30000)
@@ -3984,7 +3985,7 @@ afterAll(() => {
     const engine = new GraphEngine({ path: '/tmp/v38-tck-4' })
     await engine.open()
     try {
-      const id = await engine.upsertNode(1, 'arrs', { props: { arr: [1, 2, 3], empty: [], mixed: [1, 'a', true] } })
+      const id = await engine.upsertNode(1, 'arrs', { props: { arr: [1, 2, 3], empty: [], mixed: [1, 'a', true] } as unknown as NodeProperties })
       const node = engine.getNode(id)
       expect(Array.isArray(node?.props?.arr)).toBe(true)
     } finally { engine.close() }
@@ -4020,7 +4021,7 @@ afterAll(() => {
     try {
       const vals = [9, 3, 7, 1, 5]
       for (let i = 0; i < vals.length; i++) await engine.upsertNode(1, `n${i}`, { props: { v: vals[i] } })
-      const sorted = engine.scanAllNodes().sort((a, b) => a.props.v - b.props.v)
+      const sorted = engine.scanAllNodes().sort((a, b) => (a.props.v as number) - (b.props.v as number))
       expect(sorted[0].props.v).toBe(1)
       expect(sorted[sorted.length-1].props.v).toBe(9)
     } finally { engine.close() }
@@ -4031,7 +4032,7 @@ afterAll(() => {
     await engine.open()
     try {
       for (let i = 0; i < 30; i++) await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
-      const sorted = engine.scanAllNodes().sort((a, b) => a.props.seq - b.props.seq)
+      const sorted = engine.scanAllNodes().sort((a, b) => (a.props.seq as number) - (b.props.seq as number))
       expect(sorted.slice(10, 15).length).toBe(5)
       expect(sorted.slice(10, 15)[0].props.seq).toBe(10)
       expect(sorted.slice(20, 25).length).toBe(5)
@@ -4067,7 +4068,7 @@ afterAll(() => {
     await e.open()
     try {
       for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
-      const gt5 = e.scanAllNodes().filter(n => n.props.v > 5)
+      const gt5 = e.scanAllNodes().filter(n => (n.props.v as number) > 5)
       expect(gt5.length).toBe(4) // 6,7,8,9
     } finally { e.close() }
   }, 30000)
@@ -4077,7 +4078,7 @@ afterAll(() => {
     await e.open()
     try {
       for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
-      const range = e.scanAllNodes().filter(n => n.props.v >= 3 && n.props.v <= 7)
+      const range = e.scanAllNodes().filter(n => (n.props.v as number) >= 3 && (n.props.v as number) <= 7)
       expect(range.length).toBe(5)
     } finally { e.close() }
   }, 30000)
@@ -4131,7 +4132,7 @@ afterAll(() => {
     try {
       const vals = [5, 2, 9, 1, 7]
       for (let i = 0; i < vals.length; i++) await e.upsertNode(1, `n${i}`, { props: { v: vals[i] } })
-      const sorted = e.scanAllNodes().sort((a, b) => b.props.v - a.props.v)
+      const sorted = e.scanAllNodes().sort((a, b) => (b.props.v as number) - (a.props.v as number))
       expect(sorted[0].props.v).toBe(9)
       expect(sorted[sorted.length - 1].props.v).toBe(1)
     } finally { e.close() }
@@ -4201,7 +4202,7 @@ afterAll(() => {
     await e.open()
     try {
       for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
-      const sorted = e.scanAllNodes().sort((a, b) => a.props.v - b.props.v)
+      const sorted = e.scanAllNodes().sort((a, b) => (a.props.v as number) - (b.props.v as number))
       expect(sorted.slice(3).length).toBe(7)
       expect(sorted.slice(3)[0].props.v).toBe(3)
     } finally { e.close() }
@@ -4212,7 +4213,7 @@ afterAll(() => {
     await e.open()
     try {
       for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
-      const sorted = e.scanAllNodes().sort((a, b) => a.props.v - b.props.v)
+      const sorted = e.scanAllNodes().sort((a, b) => (a.props.v as number) - (b.props.v as number))
       expect(sorted.slice(0, 5).length).toBe(5)
       expect(sorted.slice(5, 10).length).toBe(5)
       expect(sorted.slice(10, 15).length).toBe(5)
@@ -4235,7 +4236,7 @@ afterAll(() => {
     try {
       const vals = [1.5, 2.7, 3.14, 0.5, 9.9]
       for (let i = 0; i < vals.length; i++) await e.upsertNode(1, `n${i}`, { props: { v: vals[i] } })
-      const gt2 = e.scanAllNodes().filter(n => n.props.v > 2)
+      const gt2 = e.scanAllNodes().filter(n => (n.props.v as number) > 2)
       expect(gt2.length).toBe(3)
     } finally { e.close() }
   }, 30000)
@@ -4254,9 +4255,9 @@ afterAll(() => {
     const e = new GraphEngine({ path: '/tmp/v40-t9' })
     await e.open()
     try {
-      const id = await e.upsertNode(1, 'nested', { props: { meta: { color: 'red', size: 10 } } })
+      const id = await e.upsertNode(1, 'nested', { props: { meta: { color: 'red', size: 10 } } as unknown as NodeProperties })
       const n = e.getNode(id)
-      expect(n?.props?.meta?.color).toBe('red')
+      expect((n?.props?.meta as any)?.color).toBe('red')
     } finally { e.close() }
   }, 30000)
 
@@ -4277,7 +4278,7 @@ afterAll(() => {
     await e.open()
     try {
       for (let i = -5; i <= 5; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
-      const neg = e.scanAllNodes().filter(n => n.props.v < 0)
+      const neg = e.scanAllNodes().filter(n => (n.props.v as number) < 0)
       expect(neg.length).toBe(5)
     } finally { e.close() }
   }, 30000)
@@ -4308,7 +4309,7 @@ afterAll(() => {
     await e.open()
     try {
       for (let i = 0; i < 10; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
-      e.scanAllNodes().filter(n => n.props.v >= 3 && n.props.v <= 6).forEach(n => e.deleteNode(n.id))
+      e.scanAllNodes().filter(n => (n.props.v as number) >= 3 && (n.props.v as number) <= 6).forEach(n => e.deleteNode(n.id))
       expect(e.scanAllNodes().length).toBe(6)
     } finally { e.close() }
   }, 30000)
@@ -4333,8 +4334,8 @@ afterAll(() => {
       await e.upsertNode(1, 'c', { props: { g: 2, s: 3 } })
       await e.upsertNode(1, 'd', { props: { g: 2, s: 0 } })
       const sorted = e.scanAllNodes().sort((a, b) => {
-        if (a.props.g !== b.props.g) return a.props.g - b.props.g
-        return a.props.s - b.props.s
+        if (a.props.g !== b.props.g) return (a.props.g as number) - (b.props.g as number)
+        return (a.props.s as number) - (b.props.s as number)
       })
       expect(sorted[0].name).toBe('b')
       expect(sorted[sorted.length - 1].name).toBe('c')
@@ -4451,7 +4452,7 @@ afterAll(() => {
     await e.open()
     try {
       for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { v: i } })
-      const r = e.scanAllNodes().filter(n => (n.props.v < 3 || n.props.v > 16))
+      const r = e.scanAllNodes().filter(n => ((n.props.v as number) < 3 || (n.props.v as number) > 16))
       expect(r.length).toBe(6)
     } finally { e.close() }
   }, 30000)
@@ -4656,7 +4657,7 @@ afterAll(() => {
   it('V57-e2e: CREATE node with nested props', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-nested-prop'))
     await e.open(); try {
-      const id = await e.upsertNode(1, 'obj', { props: { data: { x: 1, y: 2 }, tags: ['a', 'b'] } })
+      const id = await e.upsertNode(1, 'obj', { props: { data: { x: 1, y: 2 }, tags: ['a', 'b'] } as unknown as NodeProperties })
       const n = e.getNode(id)
       expect(n?.props.data).toBeDefined()
     } finally { e.close() }
@@ -4821,16 +4822,16 @@ afterAll(() => {
   it('V57-e2e: Boolean array property', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-bool-arr'))
     await e.open(); try {
-      await e.upsertNode(1, 'arr', { props: { flags: [true, false, true] } })
+      await e.upsertNode(1, 'arr', { props: { flags: [true, false, true] } as unknown as NodeProperties })
       const n = e.getNodeByLabel(1, 'arr')
       expect(Array.isArray(n?.props.flags)).toBe(true)
-      expect((n?.props.flags as boolean[]).length).toBe(3)
+      expect((n?.props.flags as unknown as boolean[]).length).toBe(3)
     } finally { e.close() }
   }, 30000)
   it('V57-e2e: Mixed type array property', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-mixed-arr'))
     await e.open(); try {
-      await e.upsertNode(1, 'mix', { props: { data: [1, 'two', true] } })
+      await e.upsertNode(1, 'mix', { props: { data: [1, 'two', true] } as unknown as NodeProperties })
       const n = e.getNodeByLabel(1, 'mix')
       expect(Array.isArray(n?.props.data)).toBe(true)
     } finally { e.close() }
@@ -4838,7 +4839,7 @@ afterAll(() => {
   it('V57-e2e: Deep nested object property', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-deep-prop'))
     await e.open(); try {
-      await e.upsertNode(1, 'deep', { props: { a: { b: { c: 42 } } } })
+      await e.upsertNode(1, 'deep', { props: { a: { b: { c: 42 } } } as unknown as NodeProperties })
       const n = e.getNodeByLabel(1, 'deep')
       expect(n?.props.a).toBeDefined()
     } finally { e.close() }
@@ -5861,7 +5862,7 @@ afterAll(() => {
     await e.open(); try {
       await e.upsertNode(1, 'a', { props: { v: null } })
       await e.upsertNode(1, 'b', { props: { v: 1 } })
-      const sorted = e.scanAllNodes().sort((a, b) => (a.props.v ?? -1) as number - (b.props.v ?? -1) as number)
+      const sorted = e.scanAllNodes().sort((a, b) => (a.props.v as number) - (b.props.v as number))
       expect(sorted.length).toBe(2)
     } finally { e.close() }
   }, 30000)
@@ -6066,7 +6067,7 @@ afterAll(() => {
       await e.upsertNode(1, 'n1', { props: { v: 1 } })
       await e.upsertNode(1, 'nn', { props: { v: null } })
       await e.upsertNode(1, 'n2', { props: { v: 2 } })
-      const sorted = e.scanAllNodes().sort((a, b) => (b.props.v ?? -1) as number - (a.props.v ?? -1) as number)
+      const sorted = e.scanAllNodes().sort((a, b) => (b.props.v as number) - (a.props.v as number))
       expect(sorted[0].props.v).toBe(2)
     } finally { e.close() }
   }, 30000)
@@ -6209,7 +6210,7 @@ afterAll(() => {
   it('V57-e2e: Node with nested object property', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-nested-obj'))
     await e.open(); try {
-      await e.upsertNode(1, 'n', { props: { addr: { street: 'Main', zip: 10001 } } })
+      await e.upsertNode(1, 'n', { props: { addr: { street: 'Main', zip: 10001 } } as unknown as NodeProperties })
       const n = e.getNode(1)
       expect((n?.props.addr as any).street).toBe('Main')
       expect((n?.props.addr as any).zip).toBe(10001)
@@ -6989,7 +6990,7 @@ afterAll(() => {
   it('V57-e2e: property object merge', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-obj-merge'))
     await e.open(); try {
-      await e.upsertNode(1, 'n', { props: { x: 1, y: { z: 2 } } })
+      await e.upsertNode(1, 'n', { props: { x: 1, y: { z: 2 } } as unknown as NodeProperties })
       const n = e.getNodeByLabel(1, 'n')
       expect(n?.props.x).toBe(1)
     } finally { e.close() }
@@ -7159,7 +7160,7 @@ afterAll(() => {
   it('V57-e2e: null array element', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-null-arr'))
     await e.open(); try {
-      await e.upsertNode(1, 'n', { props: { arr: [1, null, 3] } })
+      await e.upsertNode(1, 'n', { props: { arr: [1, null, 3] } as unknown as NodeProperties })
       const n = e.getNodeByLabel(1, 'n')
       expect((n?.props.arr as unknown[]).length).toBe(3)
     } finally { e.close() }
@@ -7568,7 +7569,7 @@ afterAll(() => {
   it('V57-e2e: large deep nested property', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-deep-nest'))
     await e.open(); try {
-      await e.upsertNode(1, 'deep', { props: { a: { b: { c: { d: { e: 5 } } } } } })
+      await e.upsertNode(1, 'deep', { props: { a: { b: { c: { d: { e: 5 } } } } } as unknown as NodeProperties })
       const n = e.getNodeByLabel(1, 'deep')
       expect(n).not.toBeNull()
     } finally { e.close() }
@@ -7579,7 +7580,7 @@ afterAll(() => {
       const a = await e.upsertNode(1, 'a', { props: { w: 10 } })
       const b = await e.upsertNode(1, 'b', { props: { w: 20 } })
       await e.upsertEdge(a, b, 1, { props: { w: 30 } })
-      expect(e.getNode(a)?.props.w as number + e.getNode(b)?.props.w as number).toBe(30)
+      expect((e.getNode(a)?.props.w as number) + (e.getNode(b)?.props.w as number)).toBe(30)
     } finally { e.close() }
   }, 30000)
   it('V57-e2e: push to 500 final', async () => {
@@ -8529,19 +8530,19 @@ afterAll(() => {
   it('V57-e2e: property mixed array', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-prop-mix-arr'))
     await e.open(); try {
-      await e.upsertNode(1, 'a', { props: { arr: [1, 'two', true, null] } })
+      await e.upsertNode(1, 'a', { props: { arr: [1, 'two', true, null] } as unknown as NodeProperties })
       const n = e.scanAllNodes()[0]
       expect(Array.isArray(n.props.arr)).toBe(true)
-      expect(n.props.arr.length).toBe(4)
+      expect((n.props.arr as number[]).length).toBe(4)
     } finally { e.close() }
   }, 30000)
   it('V57-e2e: property deeply nested objects', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-prop-deep'))
     await e.open(); try {
-      await e.upsertNode(1, 'a', { props: { deep: { l1: { l2: { l3: 'bottom' }, val: 42 }, arr: [1, [2, [3]]] } } })
+      await e.upsertNode(1, 'a', { props: { deep: { l1: { l2: { l3: 'bottom' }, val: 42 }, arr: [1, [2, [3]]] } } as unknown as NodeProperties })
       const n = e.scanAllNodes()[0]
-      expect(n.props.deep.l1.l2.l3).toBe('bottom')
-      expect(n.props.deep.l1.val).toBe(42)
+      expect((n.props.deep as any).l1.l2.l3).toBe('bottom')
+      expect((n.props.deep as any).l1.val).toBe(42)
     } finally { e.close() }
   }, 30000)
   it('V57-e2e: property with space in key', async () => {
@@ -8789,14 +8790,14 @@ afterAll(() => {
   it('V57-e2e: property mixed array', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-mixed-arr'))
     await e.open(); try {
-      await e.upsertNode(1, 'n', { props: { arr: [1, 'two', true, null] } })
+      await e.upsertNode(1, 'n', { props: { arr: [1, 'two', true, null] } as unknown as NodeProperties })
       expect(e.getNodeByLabel(1, 'n')).not.toBeNull()
     } finally { e.close() }
   }, 30000)
   it('V57-e2e: property deep nesting 5 levels', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-deep5'))
     await e.open(); try {
-      await e.upsertNode(1, 'n', { props: { a: { b: { c: { d: { e: 1 } } } } } })
+      await e.upsertNode(1, 'n', { props: { a: { b: { c: { d: { e: 1 } } } } } as unknown as NodeProperties })
       const n = e.getNodeByLabel(1, 'n')
       expect(n).not.toBeNull()
     } finally { e.close() }
@@ -11888,7 +11889,7 @@ afterAll(() => {
       const bigStr = 'x'.repeat(10000)
       const id = await e.upsertNode(1, 'big-str', { props: { data: bigStr } })
       const node = e.getNode(id)
-      expect(node.props.data).toBe(bigStr)
+      expect(node!.props.data).toBe(bigStr)
     } finally { e.close() }
   }, 15000)
 
@@ -11898,16 +11899,16 @@ afterAll(() => {
       const big = 42_000_000_000
       const id = await e.upsertNode(1, 'big-int', { props: { val: big } })
       const node = e.getNode(id)
-      expect(node.props.val).toBe(big)
+      expect(node!.props.val).toBe(big)
     } finally { e.close() }
   }, 15000)
 
   it('V57-e2e: nested props', async () => {
     const e = new GraphEngine(makeConfig('v57-e2e-np'))
     await e.open(); try {
-      const id = await e.upsertNode(1, 'nest', { props: { name: 'x', meta: { ver: 2, tags: ['a', 'b'] } } })
+      const id = await e.upsertNode(1, 'nest', { props: { name: 'x', meta: { ver: 2, tags: ['a', 'b'] } } as unknown as NodeProperties })
       const node = e.getNode(id)
-      expect(node.props.name).toBe('x')
+      expect(node!.props.name).toBe('x')
     } finally { e.close() }
   }, 15000)
 
@@ -12024,7 +12025,7 @@ afterAll(() => {
       const id2 = await e.upsertNode(1, 'phoenix', { props: { v: 2 } })
       expect(id2).toBeGreaterThan(0)
       const node2 = e.getNode(id2)
-      expect(node2.props.v).toBe(2)
+      expect(node2!.props.v).toBe(2)
     } finally { e.close() }
   }, 15000)
 
@@ -12070,7 +12071,7 @@ afterAll(() => {
     await e.open(); try {
       const id = await e.upsertNode(1, 'biggy', { props: { name: 'x'.repeat(500), vals: Array.from({length:100}, (_,i)=>i) } })
       const node = e.getNode(id)
-      expect(node.props.name.length).toBe(500)
+      expect((node!.props.name as string).length).toBe(500)
       e.deleteNode(id)
       expect(e.scanAllNodes()).toHaveLength(0)
     } finally { e.close() }
@@ -12217,9 +12218,9 @@ afterAll(() => {
       const id = await e.upsertNode(1, 'integ', { props: { keep: 'this', change: 'old', extra: 'stay' } })
       await e.upsertNode(1, 'integ', { props: { change: 'new' } })
       const node = e.getNode(id)
-      expect(node.props.keep).toBe('this')
-      expect(node.props.change).toBe('new')
-      expect(node.props.extra).toBe('stay')
+      expect(node!.props.keep).toBe('this')
+      expect(node!.props.change).toBe('new')
+      expect(node!.props.extra).toBe('stay')
     } finally { e.close() }
   }, 15000)
 
@@ -12537,7 +12538,7 @@ afterAll(() => {
     await e.open(); try {
       const id = await e.upsertNode(1, 'null-prop', { props: { v: null } })
       const node = e.getNode(id)
-      expect(node.props.v).toBeNull()
+      expect(node!.props.v).toBeNull()
     } finally { e.close() }
   }, 15000)
 
@@ -12568,7 +12569,7 @@ afterAll(() => {
     const ef = new GraphEngine(cfg)
     await ef.open(); try {
       const node = ef.getNode(id!)
-      expect(node.props.round).toBe(4)
+      expect(node!.props.round).toBe(4)
     } finally { ef.close() }
   }, 30000)
 
