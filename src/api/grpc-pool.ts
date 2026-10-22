@@ -49,7 +49,7 @@ interface PoolEntry {
 export class GrpcClientPool {
   private readonly pools = new Map<string, PoolEntry[]>()
   private readonly options: Required<GrpcPoolOptions>
-  private readonly logger: Required<GrpcPoolOptions['logger']>
+  private readonly logger: NonNullable<GrpcPoolOptions['logger']>
   private idleTimer: ReturnType<typeof setInterval> | null = null
   private healthTimer: ReturnType<typeof setInterval> | null = null
   private closed = false
@@ -60,6 +60,7 @@ export class GrpcClientPool {
       idleTimeoutMs: options.idleTimeoutMs ?? 300_000,
       healthCheckIntervalMs: options.healthCheckIntervalMs ?? 60_000,
       maxHealthCheckFailures: options.maxHealthCheckFailures ?? 3,
+      logger: options.logger ?? console,
     }
     this.logger = options.logger ?? console
 
