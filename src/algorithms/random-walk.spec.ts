@@ -45,7 +45,7 @@ describe('randomWalk', () => {
   })
 
   it('孤立节点返回 [node]', () => {
-    const single = new Map([[42, new Set()]])
+    const single = new Map<number, Set<number>>([[42, new Set()]])
     const path = randomWalk(single, 42, 10)
     expect(path).toEqual([42])
   })
@@ -99,7 +99,7 @@ describe('randomWalks', () => {
   })
 
   it('两个节点无边 — randomWalk 停在起始点', () => {
-    const empty = new Map([[5, new Set()]])
+    const empty = new Map<number, Set<number>>([[5, new Set()]])
     const path = randomWalk(empty, 5, 10)
     expect(path).toEqual([5])
   })

@@ -94,7 +94,7 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
   // ── predictLink — 全 1 ───────────────
 
   it('predictLink: all-1 features → prob ≈ sigmoid(sigmoid(1)) = 0.675', async () => {
-    const result = await engineAll1.predictLink('A', 'B')
+    const result = await engineAll1.predictLink(1, 2)
     // ONNX 输出 sigmoid(1) ≈ 0.731，引擎当作 logit 再次 sigmoid → 0.675
     expect(result.probability).toBeGreaterThan(0.5)
     expect(result.probability).toBeLessThan(0.8)
@@ -105,7 +105,7 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
   // ── predictLink — 全 0 ───────────────
 
   it('predictLink: all-0 features → prob ≈ sigmoid(sigmoid(0)) = 0.622', async () => {
-    const result = await engineAll0.predictLink('X', 'Y')
+    const result = await engineAll0.predictLink(1, 2)
     // ONNX 输出 sigmoid(0) = 0.5，引擎当作 logit 再次 sigmoid → 0.622
     expect(result.probability).toBeCloseTo(PROB_ALL0, 3)
     expect(result.probability).toBeGreaterThan(0.5)
@@ -116,7 +116,7 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
   // ── predictLink — 全 -10 ─────────────
 
   it('predictLink: all-(-10) features → prob ≈ sigmoid(sigmoid(-10)) ≈ 0.5', async () => {
-    const result = await engineNeg10.predictLink('M', 'N')
+    const result = await engineNeg10.predictLink(1, 2)
     // ONNX 输出 sigmoid(-10) ≈ 4.5e-5，引擎当作 logit → sigmoid(~0) ≈ 0.5
     // 所以概率接近 0.5（非 0！），这正好揭示了 engine 对已用 sigmoid 的输出重复归一化的问题
     expect(result.probability).toBeGreaterThan(0.4)
@@ -128,10 +128,10 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
   // ── predictLinksBatch — 多对输入 ────
 
   it('predictLinksBatch: returns correct results for multiple pairs', async () => {
-    const pairs: Array<[string, string]> = [
-      ['A', 'B'],
-      ['C', 'D'],
-      ['E', 'F'],
+    const pairs: Array<[number, number]> = [
+      [1, 2],
+      [3, 4],
+      [5, 6],
     ]
     const results = await engineAll1.predictLinksBatch(pairs)
 
@@ -145,11 +145,11 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
 
   it('recommend: returns sorted results (higher encoder value → higher prob)', async () => {
     // 创建编码器：不同节点不同特征值
-    const encoder: FeatureEncoder = (nodeId: string) => {
+    const encoder: FeatureEncoder = (nodeId: number) => {
       const arr = new Float32Array(featureDim)
       // 节点 'B' 给更高特征值
-      if (nodeId === 'B') arr.fill(5)
-      else if (nodeId === 'C') arr.fill(3)
+      if (nodeId === 2) arr.fill(5)
+      else if (nodeId === 3) arr.fill(3)
       else arr.fill(1) // 'A', 'D', 'E', 'F'...
       return arr
     }
@@ -160,11 +160,11 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
     )
     await engine.loadModel(MODEL_PATH)
 
-    const result = await engine.recommend('A', ['B', 'C', 'D'], 2)
+    const result = await engine.recommend(1, [2, 3, 4], 2)
 
     expect(result).toHaveLength(2)
     // B (特征=5) 应该排在 C (特征=3) 前面
-    expect(result[0].nodeId).toBe('B')
+    expect(result[0].nodeId).toBe(2)
     expect(result[0].score).toBeGreaterThan(result[1].score)
   })
 
@@ -178,7 +178,7 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
     )
     await engine.loadModel(MODEL_PATH)
 
-    const embedding = await engine.computeEmbedding('N1')
+    const embedding = await engine.computeEmbedding(1)
 
     expect(embedding).toBeInstanceOf(Float32Array)
     expect(embedding.length).toBe(128) // 默认 embeddingDimension
@@ -188,14 +188,14 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
 
   it('predictLink: throws when model not loaded', async () => {
     const engine = new GnnInferenceEngine({ featureDimension: 16 })
-    await expect(engine.predictLink('A', 'B')).rejects.toThrow(
+    await expect(engine.predictLink(1, 2)).rejects.toThrow(
       'GNN model not loaded',
     )
   })
 
   it('computeEmbedding: throws when model not loaded', async () => {
     const engine = new GnnInferenceEngine({ featureDimension: 16 })
-    await expect(engine.computeEmbedding('A')).rejects.toThrow(
+    await expect(engine.computeEmbedding(1)).rejects.toThrow(
       'GNN model not loaded',
     )
   })
@@ -203,13 +203,13 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
   it('predictLinksBatch: throws when model not loaded', async () => {
     const engine = new GnnInferenceEngine({ featureDimension: 16 })
     await expect(
-      engine.predictLinksBatch([['A', 'B']]),
+      engine.predictLinksBatch([[1, 2]]),
     ).rejects.toThrow('GNN model not loaded')
   })
 
   it('recommend: throws when model not loaded (non-empty candidates)', async () => {
     const engine = new GnnInferenceEngine({ featureDimension: 16 })
-    await expect(engine.recommend('A', ['B'])).rejects.toThrow(
+    await expect(engine.recommend(1, [2])).rejects.toThrow(
       'GNN model not loaded',
     )
   })
@@ -223,9 +223,9 @@ describe('GnnInferenceEngine — real ONNX integration', () => {
     )
     await engine.loadModel(MODEL_PATH)
 
-    const r1 = await engine.predictLink('A', 'B')
-    const r2 = await engine.predictLink('A', 'B')
-    const r3 = await engine.predictLink('A', 'B')
+    const r1 = await engine.predictLink(1, 2)
+    const r2 = await engine.predictLink(1, 2)
+    const r3 = await engine.predictLink(1, 2)
 
     expect(r1.probability).toBe(r2.probability)
     expect(r2.probability).toBe(r3.probability)

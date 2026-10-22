@@ -1,7 +1,7 @@
 /**
  * leiden.spec.ts — Leiden 社区发现算法测试
  */
-import { leidenCommunity } from './leiden'
+import { leidenCommunity, type LeidenEdge } from './leiden'
 
 describe('leidenCommunity', () => {
   test('should return empty result for empty graph', () => {
@@ -13,7 +13,7 @@ describe('leidenCommunity', () => {
 
   test('should put all nodes in isolated communities for disconnected graph', () => {
     const vertices = [1, 2, 3]
-    const edges = []
+    const edges: LeidenEdge[] = []
     const result = leidenCommunity(vertices, edges)
     expect(result.communities.size).toBe(3)
     expect(result.levels).toBeGreaterThanOrEqual(1)

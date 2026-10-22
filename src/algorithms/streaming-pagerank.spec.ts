@@ -93,7 +93,7 @@ describe('StreamingPageRank', () => {
     // Non-streaming pagerank
     const allNodes = projection.getNodes()
     const getNeighbors = (nid: number) => projection.neighbors(nid)
-    const expectedResult = pagerank(getNeighbors, allNodes, {
+    const expectedResult = await pagerank(getNeighbors, allNodes, {
       dampingFactor: 0.85,
       maxIterations: 100,
       convergenceThreshold: 1e-8,
@@ -119,7 +119,7 @@ describe('StreamingPageRank', () => {
 
     const allNodes = projection.getNodes()
     const getNeighbors = (nid: number) => projection.neighbors(nid)
-    const expectedResult = pagerank(getNeighbors, allNodes, {
+    const expectedResult = await pagerank(getNeighbors, allNodes, {
       dampingFactor: 0.85,
       maxIterations: 100,
       convergenceThreshold: 1e-8,

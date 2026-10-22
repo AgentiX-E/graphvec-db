@@ -81,14 +81,14 @@ describe('maxFlow', () => {
     // S → A,B → C → T
     // But simpler: S→X, S→Y, X→T, Y→T
     const r = maxFlow(
-      ['S', 'X', 'Y', 'T'],
+      [1, 2, 3, 4],
       [
-        { src: 'S', dst: 'X', capacity: 7 },
-        { src: 'S', dst: 'Y', capacity: 5 },
-        { src: 'X', dst: 'T', capacity: 6 },
-        { src: 'Y', dst: 'T', capacity: 5 },
-      ] as any,
-      'S', 'T',
+        { src: 1, dst: 2, capacity: 7 },
+        { src: 1, dst: 3, capacity: 5 },
+        { src: 2, dst: 4, capacity: 6 },
+        { src: 3, dst: 4, capacity: 5 },
+      ],
+      1, 4,
     )
     // S→X→T: min(7,6)=6, S→Y→T: min(5,5)=5. Total=11
     expect(r.maxFlow).toBe(11)

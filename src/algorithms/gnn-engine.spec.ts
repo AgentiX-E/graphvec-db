@@ -152,7 +152,7 @@ describe('GnnInferenceEngine', () => {
   describe('predictLink without model', () => {
     it('should throw if model not loaded', async () => {
       const engine = new GnnInferenceEngine({ featureDimension: featureDim })
-      await expect(engine.predictLink('A', 'B')).rejects.toThrow(
+      await expect(engine.predictLink(1, 2)).rejects.toThrow(
         'GNN model not loaded',
       )
     })
@@ -161,7 +161,7 @@ describe('GnnInferenceEngine', () => {
   describe('computeEmbedding without model', () => {
     it('should throw if model not loaded', async () => {
       const engine = new GnnInferenceEngine({ featureDimension: featureDim })
-      await expect(engine.computeEmbedding('A')).rejects.toThrow(
+      await expect(engine.computeEmbedding(1)).rejects.toThrow(
         'GNN model not loaded',
       )
     })
@@ -170,7 +170,7 @@ describe('GnnInferenceEngine', () => {
   describe('recommend without model', () => {
     it('should throw if model not loaded (non-empty candidates)', async () => {
       const engine = new GnnInferenceEngine({ featureDimension: featureDim })
-      await expect(engine.recommend('A', ['B', 'C'])).rejects.toThrow(
+      await expect(engine.recommend(1, [2, 3])).rejects.toThrow(
         'GNN model not loaded',
       )
     })
@@ -180,7 +180,7 @@ describe('GnnInferenceEngine', () => {
     it('should return numeric probability and logit', async () => {
       const engine = new GnnInferenceEngine({ featureDimension: featureDim })
       await engine.loadModel('/fake/model.onnx')
-      const result = await engine.predictLink('A', 'B')
+      const result = await engine.predictLink(1, 2)
       expect(result).toHaveProperty('probability')
       expect(result).toHaveProperty('logit')
       expect(typeof result.probability).toBe('number')
@@ -197,7 +197,7 @@ describe('GnnInferenceEngine', () => {
         embeddingDimension: 64,
       })
       await engine.loadModel('/fake/model.onnx')
-      const emb = await engine.computeEmbedding('A')
+      const emb = await engine.computeEmbedding(1)
       expect(emb).toBeInstanceOf(Float32Array)
       expect(emb.length).toBe(64)
     })
@@ -208,9 +208,9 @@ describe('GnnInferenceEngine', () => {
       const engine = new GnnInferenceEngine({ featureDimension: featureDim })
       await engine.loadModel('/fake/model.onnx')
       const results = await engine.predictLinksBatch([
-        ['A', 'B'],
-        ['C', 'D'],
-        ['E', 'F'],
+        [1, 2],
+        [3, 4],
+        [5, 6],
       ])
       expect(results).toHaveLength(3)
       for (const r of results) {
@@ -224,7 +224,7 @@ describe('GnnInferenceEngine', () => {
     it('should return scored candidates sorted by score', async () => {
       const engine = new GnnInferenceEngine({ featureDimension: featureDim })
       await engine.loadModel('/fake/model.onnx')
-      const results = await engine.recommend('A', ['B', 'C', 'D'], 2)
+      const results = await engine.recommend(1, [2, 3, 4], 2)
       expect(results).toHaveLength(2)
       for (const r of results) {
         expect(r).toHaveProperty('nodeId')
@@ -236,7 +236,7 @@ describe('GnnInferenceEngine', () => {
   describe('recommend with empty candidates', () => {
     it('should return empty array (no model needed)', async () => {
       const engine = new GnnInferenceEngine({ featureDimension: featureDim })
-      const result = await engine.recommend('A', [])
+      const result = await engine.recommend(1, [])
       expect(result).toEqual([])
     })
   })
@@ -245,8 +245,8 @@ describe('GnnInferenceEngine', () => {
     it('should create engine with custom encoder', () => {
       const encoder: FeatureEncoder = (nodeId: NodeId) => {
         const arr = new Float32Array(featureDim)
-        if (nodeId === 'A') arr[0] = 1.0
-        else if (nodeId === 'B') arr[0] = 0.5
+        if (nodeId === 1) arr[0] = 1.0
+        else if (nodeId === 2) arr[0] = 0.5
         return arr
       }
       const engine = new GnnInferenceEngine(
@@ -268,8 +268,8 @@ describe('GnnInferenceEngine', () => {
       const engine = new GnnInferenceEngine({ featureDimension: featureDim })
       await expect(
         engine.predictLinksBatch([
-          ['A', 'B'],
-          ['C', 'D'],
+          [1, 2],
+          [3, 4],
         ]),
       ).rejects.toThrow('GNN model not loaded')
     })
@@ -327,7 +327,7 @@ describe('GnnInferenceEngine', () => {
         encoder,
       )
       await engine.loadModel('/fake/model.onnx')
-      const result = await engine.predictLink('A', 'B')
+      const result = await engine.predictLink(1, 2)
       expect(result.probability).toBeGreaterThanOrEqual(0)
       expect(result.probability).toBeLessThanOrEqual(1)
     })

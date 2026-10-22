@@ -120,7 +120,7 @@ export class LinkPredictor {
     train: EdgeTuple[],
     test: EdgeTuple[],
     negTest: EdgeTuple[],
-    inferenceFn: (edges: EdgeTuple[]) => Float64Array | number[],
+    inferenceFn: (edges: EdgeTuple[]) => Float64Array | number[] | Promise<Float64Array | number[]>,
   ): Promise<LPResult> {
     const posScores = Array.from(await inferenceFn(test))
     const negScores = Array.from(await inferenceFn(negTest))

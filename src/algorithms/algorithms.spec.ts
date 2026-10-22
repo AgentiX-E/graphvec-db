@@ -166,9 +166,9 @@ describe('dfs', () => {
 // ──────────────────────────────────────────
 
 describe('pagerank', () => {
-  test('should produce valid probability distribution', () => {
+  test('should produce valid probability distribution', async () => {
     const { getNeighbors, allNodes } = createTestGraph()
-    const result = pagerank(getNeighbors, allNodes)
+    const result = await pagerank(getNeighbors, allNodes)
     let sum = 0
     for (const [, rank] of result) {
       sum += rank
@@ -177,32 +177,32 @@ describe('pagerank', () => {
     expect(sum).toBeCloseTo(1, 1)
   })
 
-  test('all nodes should have a score', () => {
+  test('all nodes should have a score', async () => {
     const { getNeighbors, allNodes } = createTestGraph()
-    const result = pagerank(getNeighbors, allNodes)
+    const result = await pagerank(getNeighbors, allNodes)
     for (const node of allNodes) {
       expect(result.has(node)).toBe(true)
       expect(result.get(node)!).toBeGreaterThan(0)
     }
   })
 
-  test('single node returns 1.0', () => {
-    const result = pagerank(() => [], [42 as NodeId])
+  test('single node returns 1.0', async () => {
+    const result = await pagerank(() => [], [42 as NodeId])
     expect(result.get(42 as NodeId)).toBeCloseTo(1, 5)
   })
 
-  test('empty graph returns empty map', () => {
-    const result = pagerank(() => [], [])
+  test('empty graph returns empty map', async () => {
+    const result = await pagerank(() => [], [])
     expect(result.size).toBe(0)
   })
 
-  test('should produce correct ranking on chain graph (5 nodes)', () => {
+  test('should produce correct ranking on chain graph (5 nodes)', async () => {
     // Chain: 0 → 1 → 2 → 3 → 4
     const neighbors: Record<number, number[]> = {
       0: [1], 1: [2], 2: [3], 3: [4], 4: [],
     }
     const allNodes: NodeId[] = [0, 1, 2, 3, 4]
-    const result = pagerank(
+    const result = await pagerank(
       (nid: NodeId) => neighbors[nid] ?? [],
       allNodes,
       { dampingFactor: 0.85, maxIterations: 100, convergenceThreshold: 1e-8 },
@@ -222,13 +222,13 @@ describe('pagerank', () => {
     expect(result.get(4 as NodeId)!).toBeGreaterThan(0)
   })
 
-  test('should produce correct ranking on cycle graph (4 nodes)', () => {
+  test('should produce correct ranking on cycle graph (4 nodes)', async () => {
     // Cycle: 0 → 1 → 2 → 3 → 0
     const neighbors: Record<number, number[]> = {
       0: [1], 1: [2], 2: [3], 3: [0],
     }
     const allNodes: NodeId[] = [0, 1, 2, 3]
-    const result = pagerank(
+    const result = await pagerank(
       (nid: NodeId) => neighbors[nid] ?? [],
       allNodes,
       { dampingFactor: 0.85, maxIterations: 100, convergenceThreshold: 1e-8 },
@@ -248,7 +248,7 @@ describe('pagerank', () => {
     expect(sum).toBeCloseTo(1.0, 4)
   })
 
-  test('should be fast on 10k chain graph (O(V+E) not O(V²))', () => {
+  test('should be fast on 10k chain graph (O(V+E) not O(V²))', async () => {
     const nodeCount = 10000
     const allNodes: NodeId[] = Array.from({ length: nodeCount }, (_, i) => i)
     const neighbors = new Map<NodeId, NodeId[]>()
@@ -258,7 +258,7 @@ describe('pagerank', () => {
     const getNeighbors = (nid: NodeId) => neighbors.get(nid) ?? []
 
     const start = Date.now()
-    const result = pagerank(getNeighbors, allNodes, {
+    const result = await pagerank(getNeighbors, allNodes, {
       dampingFactor: 0.85,
       maxIterations: 20,
       convergenceThreshold: 1e-6,
@@ -381,7 +381,7 @@ describe('pagerankStream', () => {
     const { getNeighbors, allNodes } = createTestGraph()
 
     // 全内存 PageRank
-    const expected = pagerank(getNeighbors, allNodes)
+    const expected = await pagerank(getNeighbors, allNodes)
 
     // 流式 PageRank：分 2 批
     const batches = iterableBatches([
@@ -411,7 +411,7 @@ describe('pagerankStream', () => {
     const { getNeighbors, allNodes } = createLargeGraph(nodeCount)
 
     // 全内存 PageRank（降低迭代次数和阈值以控制时间）
-    const expected = pagerank(getNeighbors, allNodes, {
+    const expected = await pagerank(getNeighbors, allNodes, {
       maxIterations: 20,
       convergenceThreshold: 1e-4,
     })
@@ -444,7 +444,7 @@ describe('pagerankStream', () => {
 
   test('should handle single batch same as full memory', async () => {
     const { getNeighbors, allNodes } = createTestGraph()
-    const expected = pagerank(getNeighbors, allNodes)
+    const expected = await pagerank(getNeighbors, allNodes)
 
     const batches = iterableBatches([toNodeRecords(allNodes)])
     const result = await pagerankStream(getNeighbors, batches)
