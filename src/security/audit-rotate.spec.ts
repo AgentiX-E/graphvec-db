@@ -1,8 +1,3 @@
-/**
- * C-13: 审计日志过滤/旋转 — 测试
- *
- * 验证文件轮转 + 过滤查询 API
- */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { AuditLogger } from './audit'
