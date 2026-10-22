@@ -2,6 +2,7 @@ import { Rebalancer, RebalancerOptions, RebalancerStats } from './rebalancer'
 import { ShardManager } from './shard-manager'
 import { HlcClock } from '../replication/hlc-clock'
 import { ShardMap } from '../types'
+import type { RangeInstance } from './range-instance'
 
 vi.setConfig({ testTimeout: 30000 })
 import * as fs from 'fs'
