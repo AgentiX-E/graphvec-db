@@ -6,7 +6,7 @@
 // - API Key 供自动化/CI 场景使用
 // ============================================================
 
-import { RBAC as RbacAcl } from './rbac'
+import { RBAC as RbacAcl, AclEntry } from './rbac'
 export { AclEntry, AclResourceType, AclAction } from './rbac'
 
 import * as http from 'http'
@@ -334,7 +334,7 @@ export class RBAC {
 
   /** Add an ACL entry */
   static addAcl(entry: { role: string; resource: string; resourceId?: string; actions: string[] }): void {
-    return RbacAcl.addAcl(entry)
+    return RbacAcl.addAcl(entry as AclEntry)
   }
 
   /** Remove ACL entries matching the given criteria */
@@ -983,7 +983,7 @@ export class LdapAuthenticator {
   constructor(config: LdapConfig) {
     this.config = config
     this.logger = new Logger('LdapAuthenticator')
-    this.logger.info({ url: config.url, baseDn: config.baseDn }, 'LdapAuthenticator initialized')
+    this.logger.info('LdapAuthenticator initialized', { url: config.url, baseDn: config.baseDn })
   }
 
   /**
@@ -1062,7 +1062,7 @@ export class LdapAuthenticator {
         // Step 4: 确定角色
         const role = this.config.defaultRole ?? Role.READER
 
-        this.logger.info({ user: username, role }, 'LDAP authentication successful')
+        this.logger.info('LDAP authentication successful', { user: username, role })
         return { user: username, role }
       } finally {
         try { client.unbind() } catch {}
@@ -1368,109 +1368,6 @@ export class AuthenticatorChain {
    */
   list(): AuthenticatorEntry[] {
     return [...this.authenticators]
-  }
-}
-
-// ──────────────────────────────────────────
-// JWT Refresh Token 扩展
-// ──────────────────────────────────────────
-
-export interface RefreshTokenResult {
-  accessToken: string
-  expiresIn: number
-}
-
-/**
- * JWT Manager — Refresh Token 方法
- */
-/**
- * signRefreshToken — 签发 Refresh Token（更长的有效期）
- * @param userId 用户标识
- * @param role 用户角色
- * @param expiresInSec 过期时间（秒），默认 86400 (24h)
- */
-/**
- * signRefreshToken — 签发 Refresh Token（更长的有效期）
- * @param userId 用户标识
- * @param role 用户角色
- * @param expiresInSec 过期时间（秒），默认 86400 (24h)
- */
-(JwtManager as any).prototype.signRefreshToken = function (
-  this: JwtManager,
-  userId: string,
-  role: Role,
-  expiresInSec: number = 86400,
-): string {
-  // Add _rt marker to differentiate from access tokens.
-  // Build the JWT manually with the extra claim in payload.
-  const headerStr = JSON.stringify({ alg: 'HS256', typ: 'JWT' })
-  const now = Math.floor(Date.now() / 1000)
-  const payloadObj = {
-    userId,
-    role,
-    _rt: true,
-    exp: now + expiresInSec,
-    iat: now,
-  }
-  const headerB64 = Buffer.from(headerStr).toString('base64url')
-  const payloadB64 = Buffer.from(JSON.stringify(payloadObj)).toString('base64url')
-  const data = `${headerB64}.${payloadB64}`
-
-  // Use the same HMAC-SHA256 signing logic
-  const hmac = crypto.createHmac('sha256', this.secret)
-  hmac.update(data)
-  const sig = hmac.digest().toString('base64url')
-
-  return `${headerB64}.${payloadB64}.${sig}`
-}
-
-/**
- * refreshAccessToken — 使用 Refresh Token 换取新的 Access Token
- * @param refreshToken Refresh Token
- * @returns 新的 access token Info
- * @throws AuthError 如果 token 无效或过期
- */
-;(JwtManager as any).prototype.refreshAccessToken = function (
-  this: JwtManager,
-  refreshToken: string,
-): RefreshTokenResult {
-  // Decode the token header to verify format first
-  const parts = refreshToken.split('.')
-  if (parts.length !== 3) {
-    throw new AuthError('Invalid token format', 401)
-  }
-
-  // Verify the refresh token via the manager's verifyToken
-  const payload = this.verifyToken(refreshToken)
-
-  // Decode the raw payload to check for refresh token marker
-  // (verifyToken strips unknown fields, so we decode raw)
-  let rawPayload: any
-  try {
-    rawPayload = JSON.parse(
-      Buffer.from(parts[1], 'base64url').toString('utf-8'),
-    )
-  } catch {
-    throw new AuthError('Invalid token payload', 401)
-  }
-
-  // Check for refresh token marker
-  if (rawPayload._rt !== true) {
-    throw new AuthError('Not a refresh token', 401)
-  }
-
-  // Check expiration
-  const now = Math.floor(Date.now() / 1000)
-  if (rawPayload.exp && rawPayload.exp <= now) {
-    throw new AuthError('Refresh token has expired', 401)
-  }
-
-  // Issue a new access token (1 hour)
-  const accessToken = this.signToken(payload.userId, payload.role, 3600)
-
-  return {
-    accessToken,
-    expiresIn: 3600,
   }
 }
 
