@@ -24,7 +24,7 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
 
   // TC1: 文件轮转
   it('file rotation with rotating-file-stream', async () => {
-    logger = new AuditLogger(undefined, undefined, tmpDir, { maxSize: '1M', maxFiles: 3 })
+    logger = new AuditLogger(undefined, undefined, tmpDir)
 
     // Write several entries
     for (let i = 0; i < 10; i++) {
@@ -33,7 +33,7 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
         user: 'test-user',
         role: Role.ADMIN,
         resource: `res-${i}`,
-        result: 'allowed',
+        result: 'success',
       })
     }
 
@@ -63,9 +63,9 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
   it('query by user', () => {
     logger = new AuditLogger()
 
-    logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'allowed' })
-    logger.log({ operation: 'write', user: 'bob', role: Role.WRITER, resource: 'db1', result: 'allowed' })
-    logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db2', result: 'allowed' })
+    logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'success' })
+    logger.log({ operation: 'write', user: 'bob', role: Role.WRITER, resource: 'db1', result: 'success' })
+    logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db2', result: 'success' })
     logger.log({ operation: 'delete', user: 'charlie', role: Role.ADMIN, resource: 'db1', result: 'denied' })
 
     const aliceEntries = logger.query({ user: 'alice' })
@@ -79,10 +79,10 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
   // TC3: 按操作过滤
   it('query by operation', () => {
     logger = new AuditLogger()
-    logger.log({ operation: 'read', user: 'u1', role: Role.READER, resource: 'r1', result: 'allowed' })
-    logger.log({ operation: 'write', user: 'u2', role: Role.WRITER, resource: 'r1', result: 'allowed' })
+    logger.log({ operation: 'read', user: 'u1', role: Role.READER, resource: 'r1', result: 'success' })
+    logger.log({ operation: 'write', user: 'u2', role: Role.WRITER, resource: 'r1', result: 'success' })
     logger.log({ operation: 'delete', user: 'u3', role: Role.ADMIN, resource: 'r1', result: 'denied' })
-    logger.log({ operation: 'compact', user: 'u4', role: Role.OPERATOR, resource: 'r1', result: 'allowed' })
+    logger.log({ operation: 'compact', user: 'u4', role: Role.OPERATOR, resource: 'r1', result: 'success' })
 
     const reads = logger.query({ operation: 'read' })
     expect(reads.length).toBe(1)
@@ -94,14 +94,14 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
   // TC4: 按结果过滤
   it('query by result', () => {
     logger = new AuditLogger()
-    logger.log({ operation: 'read', user: 'u1', role: Role.READER, resource: 'r1', result: 'allowed' })
+    logger.log({ operation: 'read', user: 'u1', role: Role.READER, resource: 'r1', result: 'success' })
     logger.log({ operation: 'write', user: 'u2', role: Role.WRITER, resource: 'r1', result: 'denied' })
-    logger.log({ operation: 'read', user: 'u1', role: Role.READER, resource: 'r2', result: 'allowed' })
+    logger.log({ operation: 'read', user: 'u1', role: Role.READER, resource: 'r2', result: 'success' })
 
     const denied = logger.query({ result: 'denied' })
     expect(denied.length).toBe(1)
 
-    const allowed = logger.query({ result: 'allowed' })
+    const allowed = logger.query({ result: 'success' })
     expect(allowed.length).toBe(2)
   })
 
@@ -110,7 +110,7 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
     logger = new AuditLogger()
 
     // Log with explicit time control
-    logger.log({ operation: 'early', user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'allowed' })
+    logger.log({ operation: 'early', user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'success' })
 
     // Wait a bit
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -119,8 +119,8 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
 
     // Log a couple more
     await new Promise(resolve => setTimeout(resolve, 10))
-    logger.log({ operation: 'mid1', user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'allowed' })
-    logger.log({ operation: 'mid2', user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'allowed' })
+    logger.log({ operation: 'mid1', user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'success' })
+    logger.log({ operation: 'mid2', user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'success' })
 
     // Query with since filter
     const sinceEntries = logger.query({ since: midTime })
@@ -133,15 +133,15 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
   // TC6: 组合过滤
   it('combined filters', () => {
     logger = new AuditLogger()
-    logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'allowed' })
+    logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'success' })
     logger.log({ operation: 'write', user: 'alice', role: Role.WRITER, resource: 'db1', result: 'denied' })
-    logger.log({ operation: 'read', user: 'bob', role: Role.READER, resource: 'db1', result: 'allowed' })
-    logger.log({ operation: 'write', user: 'bob', role: Role.WRITER, resource: 'db1', result: 'allowed' })
+    logger.log({ operation: 'read', user: 'bob', role: Role.READER, resource: 'db1', result: 'success' })
+    logger.log({ operation: 'write', user: 'bob', role: Role.WRITER, resource: 'db1', result: 'success' })
 
     // alice's read operations
     const aliceReads = logger.query({ user: 'alice', operation: 'read' })
     expect(aliceReads.length).toBe(1)
-    expect(aliceReads[0].result).toBe('allowed')
+    expect(aliceReads[0].result).toBe('success')
 
     // denied operations
     const deniedWrites = logger.query({ result: 'denied', operation: 'write' })
@@ -152,7 +152,7 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
   it('query with limit', () => {
     logger = new AuditLogger()
     for (let i = 0; i < 20; i++) {
-      logger.log({ operation: `op-${i}`, user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'allowed' })
+      logger.log({ operation: `op-${i}`, user: 'u1', role: Role.ADMIN, resource: 'r1', result: 'success' })
     }
 
     const limited = logger.query({ limit: 5 })
@@ -165,7 +165,7 @@ describe('C-13: Audit Log Rotation & Filtering', () => {
   // TC8: 空结果过滤
   it('query returns empty for non-matching filters', () => {
     logger = new AuditLogger()
-    logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'allowed' })
+    logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'success' })
 
     const result = logger.query({ user: 'nonexistent' })
     expect(result.length).toBe(0)
