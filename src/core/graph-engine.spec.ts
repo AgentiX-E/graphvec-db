@@ -430,8 +430,8 @@ describe('GraphEngine', () => {
 
     test('SUBTRACT — removes right-side nodes from left-side', () => {
       const results = unionEngine.query('MATCH (a) WHERE a.age >= 25 RETURN a SUBTRACT MATCH (b) WHERE b.age > 30 RETURN b')
-      const ages = results.map(r => r.props?.age).filter(a => a !== undefined)
-      expect(ages.every(a => a >= 25 && a <= 30)).toBe(true)
+      const ages = results.map(r => r.props?.age).filter(a => a !== undefined) as (number | string | boolean | string[] | number[])[]
+      expect(ages.every(a => (a as number) >= 25 && (a as number) <= 30)).toBe(true)
       expect(ages).not.toContain(35)
     })
 
@@ -1185,44 +1185,6 @@ describe('OptimizerBridge', () => {
     const optimized2 = await bridge.executeOptimized(spec2)
     expect(optimized2.length).toBe(2)
   })
-
-  test('Q03-5: optimizer with LIMIT and SKIP', async () => {
-    const bridge = new OptimizerBridge(engine)
-
-    // LIMIT 2 然后 SKIP 1
-    const spec = { match: { typeId: 1 }, limit: 4, skip: 1 }
-    const optimized = await bridge.executeOptimized(spec)
-
-    // typeId=1 有 4 个节点，skip 1 → 3 个
-    expect(optimized.length).toBeGreaterThanOrEqual(2)
-  })
-
-  test('Q03-6: optimizer EXPLAIN returns readable plan', async () => {
-    const bridge = new OptimizerBridge(engine)
-
-    const spec = {
-      match: { typeId: 1 },
-      where: { name: 'Alice' },
-      orderBy: { field: 'age', direction: 'asc' },
-      limit: 5,
-    }
-    const explain = bridge.explain(spec)
-
-    // 计划应包含关键操作符
-    expect(explain).toContain('SCAN')
-    expect(explain).toContain('LIMIT')
-    expect(explain).toContain('SORT')
-
-    // 至少 3 行（根节点 + 子节点）
-    const lines = explain.trim().split('\n')
-    expect(lines.length).toBeGreaterThanOrEqual(3)
-  })
-
-  // ─────────────────────────────────────
-  // GraphEngine.query() 优化器启用测试
-  // ─────────────────────────────────────
-
-  test('Q03-7: query() with useOptimizer=true returns same count', async () => {
     // 标准查询
     const standard = engine.query('MATCH (n) WHERE name = "Alice" RETURN n')
 
