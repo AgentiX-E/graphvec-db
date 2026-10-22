@@ -13,6 +13,7 @@
 import { describe, test, expect, vi } from 'vitest'
 import { ExplainFormatter, ExplainNode, parseExplainNode, formatExplainNode, AnalyzeTiming } from './explain'
 import { parseQuery } from './query-engine'
+import type { QueryPlan } from './query-types'
 
 describe('ExplainFormatter', () => {
   describe('GAP-30: isExplainQuery', () => {
@@ -66,6 +67,9 @@ describe('ExplainFormatter', () => {
     test('should format simple query plan as text', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: ['n.name'],
@@ -81,8 +85,12 @@ describe('ExplainFormatter', () => {
     test('should format query with traversal steps', () => {
       const plan: QueryPlan = {
         scanLabel: null,
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [
-          { direction: 'out', edgeLabel: 'KNOWS', targetLabel: 'Person' },
+          { source: 'n', direction: 'out', edgeLabel: 'KNOWS', targetAlias: 'm', targetLabel: 'Person', targetProps: null },
         ],
         filters: [{ source: 'n', property: 'age', operator: 'GT', value: 30 }],
         returnColumns: ['n.name'],
@@ -98,8 +106,12 @@ describe('ExplainFormatter', () => {
     test('should format variable-length path', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [
-          { direction: 'out', edgeLabel: 'KNOWS', targetLabel: 'Person', range: { min: 1, max: 5 } },
+          { source: 'n', direction: 'out', edgeLabel: 'KNOWS', targetAlias: 'm', targetLabel: 'Person', targetProps: null, range: { min: 1, max: 5 } },
         ],
         filters: [],
         returnColumns: ['b.name'],
@@ -115,6 +127,10 @@ describe('ExplainFormatter', () => {
       const plan: QueryPlan = {
         type: 'CREATE',
         scanLabel: null,
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: [],
@@ -130,6 +146,9 @@ describe('ExplainFormatter', () => {
     test('should format query with ORDER BY', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        limit: undefined,
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: ['n.name'],
@@ -144,6 +163,10 @@ describe('ExplainFormatter', () => {
     test('should format query with aggregate', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: ['count(n)'],
@@ -159,6 +182,9 @@ describe('ExplainFormatter', () => {
     test('should format query plan as JSON', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: ['n.name'],
@@ -177,7 +203,11 @@ describe('ExplainFormatter', () => {
     test('should include steps in JSON output', () => {
       const plan: QueryPlan = {
         scanLabel: null,
-        steps: [{ direction: 'out', edgeLabel: 'KNOWS' }],
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
+        steps: [{ source: 'n', direction: 'out', edgeLabel: 'KNOWS', targetAlias: 'm', targetLabel: null, targetProps: null }],
         filters: [],
         returnColumns: [],
       }
@@ -191,8 +221,12 @@ describe('ExplainFormatter', () => {
     test('should include filters in JSON output', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [],
-        filters: [{ left: 'n.age', operator: '>', right: '30' }],
+        filters: [{ source: 'n', property: 'age', operator: 'GT', value: 30 }],
         returnColumns: [],
       }
 
@@ -205,8 +239,9 @@ describe('ExplainFormatter', () => {
     test('should create proper JSON output for complete plan', () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
-        steps: [{ direction: 'out', edgeLabel: 'KNOWS', targetLabel: 'Friend' }],
-        filters: [{ left: 'n.name', operator: '=', right: '"Alice"' }],
+        labelExpr: null,
+        steps: [{ source: 'n', direction: 'out', edgeLabel: 'KNOWS', targetAlias: 'm', targetLabel: 'Friend', targetProps: null }],
+        filters: [{ source: 'n', property: 'name', operator: 'EQ', value: 'Alice' }],
         returnColumns: ['n.name', 'b.name'],
         orderBy: [{ property: 'n.name', direction: 'ASC' }],
         limit: 5,
@@ -225,6 +260,10 @@ describe('ExplainFormatter', () => {
     test('analyze should return timings', async () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: ['n.name'],
@@ -244,6 +283,10 @@ describe('ExplainFormatter', () => {
     test('analyze should handle execution failure', async () => {
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: ['n.name'],
@@ -280,6 +323,10 @@ describe('ExplainFormatter', () => {
       const node: ExplainNode = { type: 'EXPLAIN', mode: 'text', innerQuery: 'MATCH (n:Person) RETURN n.name' }
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: ['n.name'],
@@ -294,6 +341,10 @@ describe('ExplainFormatter', () => {
       const node: ExplainNode = { type: 'EXPLAIN', mode: 'analyze', innerQuery: 'MATCH (n:Person) RETURN n.name' }
       const plan: QueryPlan = {
         scanLabel: 'Person',
+        labelExpr: null,
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
         steps: [],
         filters: [],
         returnColumns: ['n.name'],
