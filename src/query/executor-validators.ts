@@ -5,7 +5,8 @@
  */
 
 import { parseQuery } from './query-parser'
-import type { QueryPlan, QueryRow } from './query-types'
+import type { QueryPlan } from './query-types'
+import type { QueryRow } from './expression-engine'
 
 // TCK 验证用：内置函数白名单（不在正常执行路径中，仅用于 _validateUnknownFunctions）
 const BUILTIN_FN_NAMES = new Set([
@@ -671,9 +672,9 @@ export function extractVariablesFromClause(clause: string): string[] {
 export function _isInvalidPlan(plan: QueryPlan): boolean {
   return !plan.scanLabel && plan.steps?.length === 0 && plan.filters?.length === 0
     && plan.returnColumns?.length === 0 && !plan.hasMatch && !plan.createNodes?.length
-    && !plan.create && !plan.show && !plan.with && !plan.unwind && !plan.unwinds?.length && !plan.unionType
-    && !plan.caseColumns?.length && !plan.createConstraint && !plan.deleteEntities?.length
-    && !plan.setItems?.length && !plan.removeItems?.length && !plan.mergeItems?.length
+    && !plan.createEdges?.length && !plan.show && !plan.with && !plan.unwind && !plan.unwinds?.length && !plan.unionType
+    && !plan.caseColumns?.length && !plan.constraint && !plan.deleteTargets?.length
+    && !plan.setClauses?.length && !plan.removeClauses?.length && !plan.mergeNodes?.length && !plan.mergeEdges?.length
 }
 
 /**
