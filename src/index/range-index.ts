@@ -43,14 +43,14 @@ interface SortedBTree<V> {
  * 内部有序映射：基于 BTree 实现，保证 O(log n) 操作。
  */
 class SortedMap<V> {
-  private _tree: SortedBTree<{ value: V; keys: Set<number>[] }>
+  private _tree: SortedBTree<V>
 
   constructor() {
     this._tree = createBTree()
   }
 
   set(key: number, value: V): void {
-    this._tree.set(key, value as any)
+    this._tree.set(key, value)
   }
 
   get(key: number): V | undefined {
@@ -88,7 +88,7 @@ class SortedMap<V> {
   entriesFrom(key: number): Array<[number, V]> {
     const result: Array<[number, V]> = []
     for (const [k, v] of this._tree.entries(key)) {
-      result.push([k, v as V])
+      result.push([k, v])
     }
     return result
   }
@@ -97,7 +97,7 @@ class SortedMap<V> {
     const result: Array<[number, V]> = []
     for (const [k, v] of this._tree.entries()) {
       if (k > key) break
-      result.push([k, v as V])
+      result.push([k, v])
     }
     return result
   }
@@ -105,7 +105,7 @@ class SortedMap<V> {
   entriesGreaterThan(key: number): Array<[number, V]> {
     const result: Array<[number, V]> = []
     for (const [k, v] of this._tree.entries()) {
-      if (k > key) result.push([k, v as V])
+      if (k > key) result.push([k, v])
     }
     return result
   }

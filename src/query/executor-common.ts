@@ -5,7 +5,8 @@
  */
 
 import { executeVarLenPath } from './var-length-path'
-import type { QueryPlan, QueryRow } from './query-types'
+import type { QueryPlan } from './query-types'
+import type { QueryRow } from './expression-engine'
 import { _makeUniqueKey } from './query-parser'
 import { _evaluateExpression, _extractDurationProp } from './expression-engine'
 

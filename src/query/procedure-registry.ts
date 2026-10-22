@@ -126,13 +126,13 @@ const globalRegistry = getGlobalRegistry()
 function _resolveLabels(ctx: ProcedureContext): string[] {
   if (typeof ctx.getLabels === 'function') return ctx.getLabels() as string[]
   if (typeof ctx.getAllNodes === 'function') {
-    const nodes = ctx.getAllNodes()
+    const nodes = ctx.getAllNodes() as any[]
     const typeIds = new Set<number>()
     for (const n of nodes) typeIds.add(n.type)
     if (typeof ctx.getTypeNameById === 'function') {
       const names: string[] = []
       for (const tid of typeIds) {
-        const name = ctx.getTypeNameById(tid)
+        const name = ctx.getTypeNameById(tid) as string | undefined
         if (name) names.push(name)
       }
       return names.sort()
@@ -145,7 +145,7 @@ function _resolveLabels(ctx: ProcedureContext): string[] {
 function _resolvePropertyKeys(ctx: ProcedureContext): string[] {
   if (typeof ctx.getPropertyKeys === 'function') return ctx.getPropertyKeys() as string[]
   if (typeof ctx.getAllNodes === 'function') {
-    const nodes = ctx.getAllNodes()
+    const nodes = ctx.getAllNodes() as any[]
     const keys = new Set<string>()
     for (const n of nodes) {
       if (n.props) {

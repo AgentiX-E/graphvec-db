@@ -112,24 +112,12 @@ export class TransactionManager {
    * 记录事务提交时的写入（用于 SSI 读集Conflict detection）
    * 会记录 writeSet 中的 name 和 deleteSet 中的 nodeId
    */
-  _recordCommitWrite(snapshotId: number, writeSet: Map<string, UpsertOpData>, deleteSet: Set<NodeId>, engine?: GraphEngine): void {
+  _recordCommitWrite(snapshotId: number, writeSet: Map<string, UpsertOpData>, deleteSet: Set<NodeId>): void {
     const now = Date.now()
     for (const [name, data] of writeSet) {
       // 如果不是边操作，按 name 记录
       if (!name.startsWith('edge:')) {
         this._committedWrites.set(`name:${name}`, now)
-        // 如果引擎可用，尝试通过 name 查询 nodeId 并记录 nodeId 键
-        // 这样读集冲突可以通过 nodeId 直接匹配
-        if (engine) {
-          try {
-            const node = engine.findNodeByName(name)
-            if (node !== null && node !== undefined) {
-              this._committedWrites.set(String((node as any).id ?? node), now)
-            }
-          } catch {
-            // 查询可能因 flush 后的 engine 状态变化失败，静默处理
-          }
-        }
       }
     }
     for (const nodeId of deleteSet) {
@@ -575,7 +563,7 @@ export class Transaction {
 
       // 记录已提交的写入（用于 SSI 读集Conflict detection）
       if (this._mgr) {
-        this._mgr._recordCommitWrite(this.snapshotId, this.writeSet, this.deleteSet, this._engine)
+        this._mgr._recordCommitWrite(this.snapshotId, this.writeSet, this.deleteSet)
       }
 
       // Phase 4: 释放锁

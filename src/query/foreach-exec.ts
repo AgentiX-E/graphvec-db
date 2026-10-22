@@ -14,13 +14,13 @@ export function evalForeachCondTop(cond: string, varName: string, val: any): boo
     let list: any[]; try { list = JSON.parse(`[${inM[1]}]`); } catch { return false }
     return list.some(it => typeof it === 'number' && typeof val === 'string' ? String(it) === val : it === val)
   }
-  const ops = [
-    { op: '>=', fn: (a: number, b: number) => a >= b },
-    { op: '<=', fn: (a: number, b: number) => a <= b },
-    { op: '!=', fn: (a: any, b: any) => a != b },
-    { op: '=',  fn: (a: any, b: any) => a == b },
-    { op: '>',  fn: (a: number, b: number) => a > b },
-    { op: '<',  fn: (a: number, b: number) => a < b },
+  const ops: Array<{ op: string; fn: (a: any, b: any) => boolean }> = [
+    { op: '>=', fn: (a, b) => a >= b },
+    { op: '<=', fn: (a, b) => a <= b },
+    { op: '!=', fn: (a, b) => a != b },
+    { op: '=',  fn: (a, b) => a == b },
+    { op: '>',  fn: (a, b) => a > b },
+    { op: '<',  fn: (a, b) => a < b },
   ]
   for (const { op, fn } of ops) {
     const p = new RegExp(`^\\s*${varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*${op.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(.+)$`, 'i')

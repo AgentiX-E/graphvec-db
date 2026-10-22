@@ -121,7 +121,7 @@ export class QueryTimeoutManager {
 
     // 按查询类型选择超时时间
     const timeoutMs =
-      (options?.queryType && this.config.perTypeTimeoutMs[options.queryType]) ??
+      (options?.queryType ? this.config.perTypeTimeoutMs[options.queryType] : undefined) ??
       this.config.defaultTimeoutMs
 
     try {

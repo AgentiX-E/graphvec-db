@@ -118,7 +118,7 @@ function _buildRow(newPath: number[], srcNodes: Array<Record<string, unknown>>, 
     }
   }
   if (plan.returnAliasMap) {
-    for (const [alias, expr] of Object.entries(plan.returnAliasMap)) {
+    for (const [alias, expr] of Object.entries(plan.returnAliasMap as Record<string, string>)) {
       if (expr.includes('.')) rowRes[expr] = rowRes[alias] ?? null
     }
   }

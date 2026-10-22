@@ -53,11 +53,11 @@ export interface StorageConfig {
    * 地理索引配置
    * geoSpatial: 启用地理空间 R-tree 索引
    * geoLatField: 纬度属性名（默认 '_lat'）
-   * geoLatField: 经度属性名（默认 '_lng'）
+   * geoLngField: 经度属性名（默认 '_lng'）
    */
   geoSpatial?: boolean
   geoLatField?: string
-  geoLatField?: string
+  geoLngField?: string
 
   /**
    * LMDB 静态加密密钥

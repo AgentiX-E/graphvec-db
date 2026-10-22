@@ -16,7 +16,7 @@ import type { IncomingMessage, ServerResponse } from 'http'
 
 // ── 类型定义 ──────────────────────────────────────────────
 
-export type CompressionAlgorithm = 'gzip' | 'brotli' | 'none'
+export type CompressionAlgorithm = 'gzip' | 'brotli' | 'none' | 'auto'
 export type CompressionLevel = 'fast' | 'balanced' | 'max'
 
 export interface CompressionOptions {
@@ -154,7 +154,7 @@ export class CompressionMiddleware {
    */
   wrapResponse(req: IncomingMessage, res: ServerResponse): void {
     const encoding = negotiateEncoding(req.headers['accept-encoding'])
-    if (!encoding || encoding === 'none') return
+    if (!encoding) return
 
     const algorithm = this.options.algorithm === 'auto' ? encoding : this.options.algorithm
     if (algorithm === 'none') return

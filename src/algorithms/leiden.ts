@@ -114,7 +114,7 @@ export function leidenCommunity(
 
   // Only return level 1 communities (maps to original vertices)
   const firstLevelComms = allLevels[0]
-  const firstLevelMod = bestResult.modularity
+  const firstLevelMod = bestResult!.modularity
   return {
     communities: new Map(firstLevelComms),
     modularity: firstLevelMod,

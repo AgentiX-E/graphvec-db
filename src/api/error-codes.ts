@@ -52,5 +52,12 @@ export function inferErrorCode(statusCode: number): ErrorCode {
  * 如果无法识别则回退到 statusCode 推断。
  */
 export function errorToCode(err: unknown, statusCode?: number): ErrorCode {
-  // ...(保留或删除)
+  const msg = err instanceof Error ? err.message : String(err ?? '')
+  const lower = msg.toLowerCase()
+  if (lower.includes('not found') || lower.includes('not exist')) return ErrorCode.NODE_NOT_FOUND
+  if (lower.includes('invalid') || lower.includes('syntax')) return ErrorCode.INVALID_QUERY
+  if (lower.includes('duplicate') || lower.includes('already exists')) return ErrorCode.DUPLICATE_ENTRY
+  if (lower.includes('permission') || lower.includes('unauthorized') || lower.includes('forbidden')) return ErrorCode.PERMISSION_DENIED
+  if (lower.includes('rate limit') || lower.includes('too many')) return ErrorCode.RATE_LIMITED
+  return inferErrorCode(statusCode ?? 500)
 }
