@@ -75,7 +75,7 @@ class MemoryAclStore implements AclStore {
       const matching = this.acls.filter((e) => {
         if (e.role !== role) return false
         if (e.resource === resource || resource === undefined) return true
-        if (e.resource === '*' || resource === '*') return true
+        if ((e.resource as string) === '*' || resource === '*') return true
         return false
       })
 

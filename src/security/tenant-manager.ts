@@ -9,6 +9,7 @@
 // ============================================================
 
 import { RBAC } from '../security/auth'
+import type { Role } from '../types'
 
 // ──────────────────────────────────────────
 // Types
@@ -207,7 +208,7 @@ export class TenantManager {
    * Get RBAC subgraph permission checker
    */
   checkPermission(role: string, subgraph: string, action: string): void {
-    RBAC.checkSubgraphPermission(role, subgraph, action)
+    RBAC.checkSubgraphPermission(role as Role, subgraph, action)
   }
 
   /**

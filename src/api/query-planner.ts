@@ -1451,7 +1451,7 @@ async function executeNode(
           }
         }
         return projected
-      })
+      }) as unknown as NodeRecord[]
     }
 
     case PlanNodeType.SORT: {

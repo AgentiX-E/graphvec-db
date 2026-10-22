@@ -249,7 +249,7 @@ export class LdbcSnbBenchmark {
           },
         })
         .on('cycle', (event: Benchmark.Event) => {
-          const bench = event.target as Benchmark
+          const bench = event.target as unknown as Benchmark
           if (!bench.error) {
             ops = bench.hz!
             rme = bench.stats?.rme ?? 0

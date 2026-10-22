@@ -102,7 +102,7 @@ async function main() {
 
   if (role === 'sender') {
     // ── 发送者：启动后立即发送 ──
-    const sendCount = parseInt(process.env.EBTN_COUNT!, '10') || 100
+    const sendCount = parseInt(process.env.EBTN_COUNT!, 10) || 100
 
     // 额外等 500ms 确保对端 ready
     await new Promise((r) => setTimeout(r, 1000))

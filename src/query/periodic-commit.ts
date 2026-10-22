@@ -297,7 +297,5 @@ export function registerPeriodicCommit(
 
       return [result as unknown as Record<string, unknown>]
     },
-    'Periodic batch commit. ' +
-    'Usage: CALL periodic.commit(query, {batchSize: 1000, params: {}, failOnError: false})',
   )
 }

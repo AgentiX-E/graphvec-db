@@ -122,7 +122,7 @@ export class GlobalScheduler {
     this._getResources = getResources
     this._onSuggestion = onSuggestion
     this._config = { ...DEFAULT_CONFIG, ...config }
-    this._logger = new Logger({ name: 'GlobalScheduler' })
+    this._logger = new Logger('GlobalScheduler')
   }
 
   get running(): boolean {

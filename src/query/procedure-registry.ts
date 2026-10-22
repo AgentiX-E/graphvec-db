@@ -42,7 +42,7 @@ export interface ProcedureContext {
 export interface CypherProcedure {
   name: string
   signature: string
-  execute(context: ProcedureContext, args: any[]): any[]
+  execute(context: ProcedureContext, args: any[]): any[] | Promise<any[]>
 }
 
 /**
@@ -58,14 +58,14 @@ export class ProcedureRegistry {
   /** @deprecated Use register() instead */
   registerProcedure(
     name: string,
-    handlerOrProc: ((args: any[], ctx: ProcedureContext) => any[]) | CypherProcedure,
+    handlerOrProc: ((args: any[], ctx: ProcedureContext) => any[] | Promise<any[]>) | CypherProcedure,
   ): void {
     if (typeof handlerOrProc === 'function') {
       this.register({
         name,
         signature: '',
         execute(_ctx: ProcedureContext, args: any[]) {
-          const handler = handlerOrProc as (args: any[], ctx: ProcedureContext) => any[]
+          const handler = handlerOrProc as (args: any[], ctx: ProcedureContext) => any[] | Promise<any[]>
           return handler(args, _ctx)
         },
       })

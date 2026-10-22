@@ -136,7 +136,6 @@ export class OptimizerBridge {
       // ── 扫描 ──
       case PlanNodeType.SCAN: {
         const typeId = details['typeId'] as number | null | undefined
-        const specTypeIds = spec.typeIds as number[] | undefined
         const pushedFilters = details['pushedFilters'] as
           | Array<{ field: string; op: string; value: unknown }>
           | undefined
@@ -145,12 +144,9 @@ export class OptimizerBridge {
         // 使用 GraphEngine 获取所有节点
         let nodes = this._scanAllNodes()
 
-        // 按 typeId 过滤（兼容 details 和 spec.typeIds 两种来源）
+        // 按 typeId 过滤
         if (typeId !== null && typeId !== undefined) {
           nodes = nodes.filter(n => n.type === typeId)
-        }
-        if (specTypeIds && specTypeIds.length > 0) {
-          nodes = nodes.filter(n => specTypeIds.includes(n.type))
         }
 
         // 应用下推的过滤条件

@@ -488,7 +488,7 @@ export function _validatePlan(plan: QueryPlan, query?: string): void {
   // is legal — only an *expression* (an aggregate call, or anything beyond a
   // single variable/property) requires an alias.
   if (query && (plan.with?.columns || []).length) {
-    for (const col of plan.with.columns as Array<{ expression: unknown; alias?: string | null }>) {
+    for (const col of plan.with!.columns as Array<{ expression: unknown; alias?: string | null }>) {
       const expr = typeof col.expression === 'string' ? col.expression.trim() : ''
       if (!expr) continue
       if (col.alias) continue

@@ -5,7 +5,7 @@ import { HlcClock } from '../replication/hlc-clock'
 import { RaftNodeConfig, RaftOperation, RaftStatus } from '../types'
 import { v4 as uuid } from 'uuid'
 import { Logger } from '../ops/logger'
-import { TimerProvider } from './mock-timer'
+import { TimerProvider } from './raft-core'
 import { Telemetry } from '../ops/otel'
 import { MetricsCollector } from '../ops/otel-metrics'
 

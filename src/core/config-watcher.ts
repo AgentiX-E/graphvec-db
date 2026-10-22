@@ -61,7 +61,7 @@ export class ConfigWatcher<T extends AnyRecord = AnyRecord> {
   private currentConfig: T
   private handlers = new Map<string, Set<ConfigChangeHandler>>()
   private anyHandlers = new Set<ConfigChangeHandler>()
-  private watcher: ReturnType<typeof chokidar['watch']> | null = null
+  private watcher: import('chokidar').FSWatcher | null = null
   private watcherInitialized = false
   private _isWatching = false
 
@@ -167,9 +167,10 @@ export class ConfigWatcher<T extends AnyRecord = AnyRecord> {
       await this.reload()
     })
 
-    this.watcher.on('error', (err: Error) => {
+    this.watcher.on('error', (err: unknown) => {
       // 文件变更失败时静默处理（避免崩溃）
-      console.error(`[ConfigWatcher] File watch error: ${err.message}`)
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[ConfigWatcher] File watch error: ${message}`)
     })
 
     this.watcherInitialized = true

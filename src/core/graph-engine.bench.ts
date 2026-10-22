@@ -17,7 +17,7 @@ describe('GraphEngine Benchmark [100K nodes]', () => {
       g.upsertNode(1, 'n' + i, { props: { _label: 'Node', name: 'node-' + i } })
     }
     for (let i = 0; i < 49; i++) {
-      g.upsertEdge(i + 1, { _type: 'NEXT' }, i + 2)
+      g.upsertEdge(i + 1, i + 2, 1)
     }
     // BFS 从 node 1 遍历深度 1
     const n1 = g.neighbors(1, { maxDepth: 1 })

@@ -13,7 +13,8 @@
  *   const result = await runner.run()
  */
 
-import { GraphEngine, NodeId } from '../core/graph-engine'
+import { GraphEngine } from '../core/graph-engine'
+import type { NodeId } from '../types'
 
 // ── 类型定义 ───────────────────────────────────────────────
 

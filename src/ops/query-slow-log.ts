@@ -92,7 +92,7 @@ export class QuerySlowLog {
    * 强制将缓冲数据写入磁盘（用于测试或优雅关闭）
    */
   async flush(): Promise<void> {
-    if (this.rotateStream && typeof this.rotateStream._writableState !== 'undefined') {
+    if (this.rotateStream) {
       return new Promise(resolve => {
         this.rotateStream!.on('drain', () => resolve())
         this.rotateStream!.on('finish', () => resolve())

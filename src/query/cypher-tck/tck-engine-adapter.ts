@@ -10,6 +10,7 @@
 
 import { GraphEngine } from '../../core/graph-engine'
 import { parseQuery } from '../query-engine'
+import type { NodeProperties } from '../../types'
 import { randomBytes } from 'crypto'
 import * as fs from 'fs'
 
@@ -54,7 +55,7 @@ export async function injectNodes(
       if (k !== '_label') props[k] = v
     props._label = label
 
-    const id = await engine.upsertNode(typeId, name, { props })
+    const id = await engine.upsertNode(typeId, name, { props: props as NodeProperties })
     ids.push(id)
   }
   return ids

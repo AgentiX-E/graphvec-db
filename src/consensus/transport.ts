@@ -908,7 +908,7 @@ export class TcpTransport {
 
     if (isTls) {
       // TLS: tls.connect 本身会连接
-      socket = tls.connect(port, host, this._tlsOptions)
+      socket = tls.connect(port, host, this._tlsOptions as tls.ConnectionOptions)
     } else {
       socket = new net.Socket()
       socket.connect(port, host)

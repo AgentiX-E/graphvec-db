@@ -48,6 +48,8 @@ export class GEPool {
   private static _instance: GEPool | null = null
   /** 标记：_clearGeInstances 被调用过，强制下次 getInstance 重建池（跳过复用） */
   private static _needsRebuild = false
+  /** 池销毁计数：每次 reset 递增，用于失效缓存 */
+  private static _epoch = 0
 
   private _instances: PoolInstance[] = []
   private _maxSize: number

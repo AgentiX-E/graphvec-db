@@ -77,8 +77,8 @@ export class ReshardWorker {
     }
 
     this.logger.info(
+      'Snapshot migration completed',
       { nodeCount: sourceStats.nodeCount, edgeCount: sourceStats.edgeCount },
-      'Snapshot migration completed'
     )
     this._progress = 100
   }

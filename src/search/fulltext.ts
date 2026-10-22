@@ -313,6 +313,10 @@ export class FullTextIndex {
       defaultFieldWeight: options?.defaultFieldWeight ?? 1.0,
       fieldWeights: options?.fieldWeights ?? { name: 2.0, title: 2.0, description: 1.0, content: 1.0 },
       analyzer: options?.analyzer ?? 'simple',
+      baseDir: options?.baseDir ?? './fulltext-index',
+      snapshotThreshold: options?.snapshotThreshold ?? 10000,
+      snapshotIntervalSec: options?.snapshotIntervalSec ?? 300,
+      maxOldWals: options?.maxOldWals ?? 3,
     }
 
     const fields = Object.keys(this.options.fieldWeights)

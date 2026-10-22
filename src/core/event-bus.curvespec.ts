@@ -21,7 +21,7 @@ function nextPorts(): { pub: number; sub: number } {
 }
 
 describe('EventBus CURVE 跨节点通信', () => {
-  vi.setTimeout(30000)
+  vi.setConfig({ testTimeout: 30000 })
 
   it('两个节点通过 CURVE 加密双向 PUB/SUB 通信', async () => {
     const { pub: pubPortA, sub: subPortA } = nextPorts()

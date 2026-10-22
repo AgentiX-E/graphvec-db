@@ -400,7 +400,7 @@ export class DocumentCollection<T = DocumentBody> {
  * 所有 collection 共享同一个 LMDB 环境（加密、事务）。
  */
 export class DocumentStore {
-  private env: lmdb.Database<any, any>
+  private env: lmdb.RootDatabase<any>
   private collections: Map<string, DocumentCollection> = new Map()
   private _path: string
   private _closed = false

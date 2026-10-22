@@ -357,7 +357,7 @@ export class CdcServer {
         const client = this.wsClients.get(clientId)
         if (client) {
           client.filter = msg.filter
-          this.logger.info(`WebSocket client ${clientId} subscribed with filter:`, msg.filter)
+          this.logger.info(`WebSocket client ${clientId} subscribed with filter:`, { filter: msg.filter })
         }
       }
     } catch {

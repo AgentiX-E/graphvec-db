@@ -103,7 +103,7 @@ export interface ConsensusProvider {
 export type ConsensusRole = 'leader' | 'follower' | 'candidate' | 'standalone'
 
 export interface ConsensusConfig {
-  mode: 'standalone' | 'simulated-raft' | 'raft-logic'
+  mode: 'standalone' | 'simulated-raft' | 'raft-logic' | 'db-cluster'
   nodeId: string
   peers: string[]
   electionTimeoutMs?: number

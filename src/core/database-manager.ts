@@ -520,6 +520,7 @@ export class DatabaseManager {
       this.logger.info(`[Restore] Found database '${dbName}' at ${config.dataDir}`)
 
       await this.createDatabase(dbName, {
+        dataDir: config.dataDir,
         shards: config.shards,
         peers: config.peers,
         raftPort: config.raftPort,
