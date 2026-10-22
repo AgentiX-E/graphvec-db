@@ -375,7 +375,7 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
   test('[RC01] read-set conflict: T1 reads X, T2 writes X → T1 commit fails in serializable mode', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(10, 'conflict-node', { value: 100 })
+    await engine.upsertNode(10, 'conflict-node', { props: { value: 100 } })
 
     const mgr = new TransactionManager()
 
@@ -388,10 +388,11 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
     // This will record in mgr._committedWrites via _recordCommitWrite
     const txn2 = mgr.begin()
     ;(txn2 as any)._engine = engine
-    await engine.upsertNode(10, 'conflict-node', { value: 200 })
+    await engine.upsertNode(10, 'conflict-node', { props: { value: 200 } })
     // Record the write in mgr's committedWrites both by nodeId and name
-    mgr._committedWrites.set(String(10), Date.now())
-    mgr._committedWrites.set('name:conflict-node', Date.now())
+    const committed = (mgr as unknown as { _committedWrites: Map<string, number> })._committedWrites
+    committed.set(String(10), Date.now())
+    committed.set('name:conflict-node', Date.now())
     await txn2.commit()
 
     // T1 commit fails because node 10 was modified after txn1 snapshot
@@ -406,7 +407,7 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
   test('[RC02] read-set no conflict when no concurrent modification', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(20, 'stable-node', { value: 50 })
+    await engine.upsertNode(20, 'stable-node', { props: { value: 50 } })
 
     const mgr = new TransactionManager()
     const txn = mgr.begin({ isolation: 'serializable' })
@@ -422,7 +423,7 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
   test('[RC03] read-set: own write in writeSet does not count as conflict', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(30, 'own-write-node', { value: 10 })
+    await engine.upsertNode(30, 'own-write-node', { props: { value: 10 } })
 
     const mgr = new TransactionManager()
     const txn = mgr.begin({ isolation: 'serializable' })
@@ -443,8 +444,8 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
   test('[RC04] SSI write-skew: concurrent read of disjoint nodes with conditional write', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(40, 'account-a', { balance: 100 })
-    await engine.upsertNode(50, 'account-b', { balance: 100 })
+    await engine.upsertNode(40, 'account-a', { props: { balance: 100 } })
+    await engine.upsertNode(50, 'account-b', { props: { balance: 100 } })
 
     const mgr = new TransactionManager()
 
@@ -459,10 +460,11 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
     ;(txn2 as any)._engine = engine
     await txn2.readNode(40)
     await txn2.readNode(50)
-    await engine.upsertNode(50, 'account-b', { balance: 50 })
+    await engine.upsertNode(50, 'account-b', { props: { balance: 50 } })
     // Record in committedWrites for SSI detection
-    mgr._committedWrites.set(String(50), Date.now())
-    mgr._committedWrites.set('name:account-b', Date.now())
+    const committed = (mgr as unknown as { _committedWrites: Map<string, number> })._committedWrites
+    committed.set(String(50), Date.now())
+    committed.set('name:account-b', Date.now())
     await txn2.commit()
 
     // T1 tries to commit with write to A (40) — write-skew on B (50)
@@ -478,7 +480,7 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
   test('[RC05] serializable commit rejects when read-set conflict found by committed writes', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(60, 'read-node', { value: 1 })
+    await engine.upsertNode(60, 'read-node', { props: { value: 1 } })
 
     const mgr = new TransactionManager()
 
@@ -489,10 +491,11 @@ describe('P0-1 ACID — Serialized Snapshot Isolation (SSI)', () => {
     // Another transaction writes the same node via engine, record in mgr
     const txnOther = mgr.begin()
     ;(txnOther as any)._engine = engine
-    await engine.upsertNode(60, 'read-node', { value: 2 })
+    await engine.upsertNode(60, 'read-node', { props: { value: 2 } })
     // Register the write in mgr for conflict detection
-    mgr._committedWrites.set(String(60), Date.now())
-    mgr._committedWrites.set('name:read-node', Date.now())
+    const committed = (mgr as unknown as { _committedWrites: Map<string, number> })._committedWrites
+    committed.set(String(60), Date.now())
+    committed.set('name:read-node', Date.now())
     await txnOther.commit()
 
     // txn.commit() throws because read-set node 60 was modified after snapshot
@@ -619,7 +622,7 @@ describe('P0-1 ACID — Version Chain', () => {
   test('[VC04] readNodeVersioned reads snapshot-time value via engine', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(1, 'versioned-node', { value: 42 })
+    await engine.upsertNode(1, 'versioned-node', { props: { value: 42 } })
 
     const mgr = new TransactionManager()
     const txn = mgr.begin({ isolation: 'snapshot' })
@@ -656,7 +659,7 @@ describe('P0-1 ACID — Isolation Levels', () => {
   test('[IL04] snapshot isolation commit succeeds without conflict', async () => {
     const engine = createTempEngine()
     engine.open()
-    await engine.upsertNode(1, 'snapshot-test', { value: 10 })
+    await engine.upsertNode(1, 'snapshot-test', { props: { value: 10 } })
 
     const mgr = new TransactionManager()
     const txn = mgr.begin({ isolation: 'snapshot' })
@@ -808,18 +811,18 @@ describe('MVCC — GraphEngine Integration', () => {
     const mgr = new TransactionManager()
 
     // T1 writes node type 1 (returns nodeId from storage)
-    const id1 = await engine.upsertNode(1, 'visible-1', { v: 1 })
+    const id1 = await engine.upsertNode(1, 'visible-1', { props: { v: 1 } })
     // Set MVCC version manually to simulate T1 writing with version 1
     ;(engine as any)._mvccVersions.set(id1, 1)
 
-    const id3 = await engine.upsertNode(3, 'visible-3', { v: 3 })
+    const id3 = await engine.upsertNode(3, 'visible-3', { props: { v: 3 } })
     ;(engine as any)._mvccVersions.set(id3, 1)
 
     // T2 starts snapshot (snapshotId increments)
     const txn2 = mgr.begin()
 
     // T3 writes node type 2 (post-snapshot)
-    const id2 = await engine.upsertNode(2, 'hidden-2', { v: 2 })
+    const id2 = await engine.upsertNode(2, 'hidden-2', { props: { v: 2 } })
     ;(engine as any)._mvccVersions.set(id2, txn2.snapshotId + 1)
 
     // T2 reads nodes — only id1 and id3 (version 1) should be visible
@@ -919,7 +922,7 @@ describe('MVCC — GraphEngine Integration', () => {
     expect(version2).toBeGreaterThan(version1!)
 
     // Non-MVCC write should not set version
-    await engine.upsertNode(1, 'versioned', { tag: 'non-mvcc' })
+    await engine.upsertNode(1, 'versioned', { props: { tag: 'non-mvcc' } })
     const version3 = engine.getNodeVersion(1)
     // _mvccVersions still has the previous value since non-MVCC writes don't pass _mvccVersion
     expect(version3).toBe(txn2.snapshotId)
@@ -1069,7 +1072,7 @@ describe('Transaction — deep test: timeout and auto-rollback', () => {
       // upsertNode with same typeId (1) but different names — returns auto-assigned IDs
       const ids: number[] = []
       for (let i = 0; i < 20; i++) {
-        const id = await engine.upsertNode(1, `parallel-${i}`, { idx: i })
+        const id = await engine.upsertNode(1, `parallel-${i}`, { props: { idx: i } })
         ids.push(id)
       }
 
@@ -1091,7 +1094,7 @@ describe('Transaction — deep test: timeout and auto-rollback', () => {
       const mgr = new TransactionManager()
 
       // Write initial data
-      await engine.upsertNode(1, 'base-node', { val: 1 })
+      await engine.upsertNode(1, 'base-node', { props: { val: 1 } })
 
       // T1 starts and reads
       const txn1 = mgr.begin()
@@ -1126,7 +1129,7 @@ describe('Transaction — deep test: timeout and auto-rollback', () => {
       // Direct writes for all 50 IDs (non-transactional)
       const ids: number[] = []
       for (let i = 0; i < 50; i++) {
-        const id = await engine.upsertNode(1, `concurrent-${i}`, { idx: i })
+        const id = await engine.upsertNode(1, `concurrent-${i}`, { props: { idx: i } })
         ids.push(id)
       }
 
@@ -1449,7 +1452,7 @@ describe('Core 深度扩展 — 简单事务', () => {
   test('CORE-TXN-004: transaction 嵌套只读事务', async () => {
     const engine = makeEngine('core-txn-004')
     try {
-      const outerId = await engine.upsertNode(1, 'outer-node', { data: 'outer' })
+      const outerId = await engine.upsertNode(1, 'outer-node', { props: { data: 'outer' } })
       const result = await engine.withTransaction(async (outerTxn) => {
         outerTxn.readNode(outerId)
         // Inner (nested) read-only txn via manager
