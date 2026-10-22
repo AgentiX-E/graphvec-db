@@ -1185,6 +1185,8 @@ describe('OptimizerBridge', () => {
     const optimized2 = await bridge.executeOptimized(spec2)
     expect(optimized2.length).toBe(2)
   })
+
+  test('Q03-5: optimizer results consistent with standard query', async () => {
     // 标准查询
     const standard = engine.query('MATCH (n) WHERE name = "Alice" RETURN n')
 
