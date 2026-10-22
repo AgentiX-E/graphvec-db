@@ -30,7 +30,6 @@ function benchmark(label: string, fn: () => unknown, iterations = 10000): string
   return `  ${label.padEnd(48)} ${ops} ops/s  (${iterations}x in ${elapsed.toFixed(1)}ms)`
 }
 
-const _ctx = {} as any
 const _row: Record<string, unknown> = {}
 
 const LARGE_MAP: Record<string, unknown> = Object.fromEntries(
@@ -52,42 +51,42 @@ describe('Expression Engine Benchmark', () => {
 
     // ── Literals ──
     results.push('\n── Literals ──')
-    results.push(benchmark("literal string 'hello'",     () => _evaluateExpression("'hello world'", _row, _ctx), R))
-    results.push(benchmark("literal number 42",            () => _evaluateExpression('42', _row, _ctx), R))
-    results.push(benchmark("literal float 3.14",           () => _evaluateExpression('3.14', _row, _ctx), R))
-    results.push(benchmark("literal boolean true",         () => _evaluateExpression('true', _row, _ctx), R))
-    results.push(benchmark("literal null",                 () => _evaluateExpression('null', _row, _ctx), R))
+    results.push(benchmark("literal string 'hello'",     () => _evaluateExpression("'hello world'", _row), R))
+    results.push(benchmark("literal number 42",            () => _evaluateExpression('42', _row), R))
+    results.push(benchmark("literal float 3.14",           () => _evaluateExpression('3.14', _row), R))
+    results.push(benchmark("literal boolean true",         () => _evaluateExpression('true', _row), R))
+    results.push(benchmark("literal null",                 () => _evaluateExpression('null', _row), R))
 
     // ── Arithmetic ──
     results.push('\n── Arithmetic ──')
-    results.push(benchmark("1 + 2",                        () => _evaluateExpression('1 + 2', _row, _ctx), R))
-    results.push(benchmark("x + 1 (row)",                  () => _evaluateExpression('x + 1', { x: 5 }, _ctx), R))
-    results.push(benchmark("(a + b) * c",                  () => _evaluateExpression('(1 + 2) * 3', _row, _ctx), R))
+    results.push(benchmark("1 + 2",                        () => _evaluateExpression('1 + 2', _row), R))
+    results.push(benchmark("x + 1 (row)",                  () => _evaluateExpression('x + 1', { x: 5 }), R))
+    results.push(benchmark("(a + b) * c",                  () => _evaluateExpression('(1 + 2) * 3', _row), R))
 
     // ── Comparison ──
     results.push('\n── Comparison ──')
-    results.push(benchmark("1 = 1",                        () => _evaluateExpression('1 = 1', _row, _ctx), R))
-    results.push(benchmark("1 < 2",                        () => _evaluateExpression('1 < 2', _row, _ctx), R))
+    results.push(benchmark("1 = 1",                        () => _evaluateExpression('1 = 1', _row), R))
+    results.push(benchmark("1 < 2",                        () => _evaluateExpression('1 < 2', _row), R))
     results.push(benchmark("deepEqWithNull (primitive)",   () => _deepEqWithNull(42, 42), R))
     results.push(benchmark("deepEqWithNull (nested map)",  () => _deepEqWithNull(NESTED, NESTED), S))
 
     // ── Boolean ──
     results.push('\n── Boolean ──')
-    results.push(benchmark("true AND true",                () => _evaluateExpression('true AND true', _row, _ctx), R))
-    results.push(benchmark("true OR false",                () => _evaluateExpression('true OR false', _row, _ctx), R))
-    results.push(benchmark("NOT true",                     () => _evaluateExpression('NOT true', _row, _ctx), R))
+    results.push(benchmark("true AND true",                () => _evaluateExpression('true AND true', _row), R))
+    results.push(benchmark("true OR false",                () => _evaluateExpression('true OR false', _row), R))
+    results.push(benchmark("NOT true",                     () => _evaluateExpression('NOT true', _row), R))
 
     // ── String ──
     results.push('\n── String ──')
-    results.push(benchmark("'hello' + ' world'",           () => _evaluateExpression("'hello ' + 'world'", _row, _ctx), R))
-    results.push(benchmark("string STARTS WITH",           () => _evaluateExpression("'hello' STARTS WITH 'he'", _row, _ctx), R))
-    results.push(benchmark("string CONTAINS",              () => _evaluateExpression("'hello' CONTAINS 'ell'", _row, _ctx), R))
+    results.push(benchmark("'hello' + ' world'",           () => _evaluateExpression("'hello ' + 'world'", _row), R))
+    results.push(benchmark("string STARTS WITH",           () => _evaluateExpression("'hello' STARTS WITH 'he'", _row), R))
+    results.push(benchmark("string CONTAINS",              () => _evaluateExpression("'hello' CONTAINS 'ell'", _row), R))
 
     // ── List & Map ──
     results.push('\n── List / Map ──')
-    results.push(benchmark("[1, 2, 3, 4, 5]",             () => _evaluateExpression('[1, 2, 3, 4, 5]', _row, _ctx), R))
-    results.push(benchmark("{a: 1, b: 2}",                () => _evaluateExpression('{a: 1, b: 2}', _row, _ctx), R))
-    results.push(benchmark("list[0] on [1,2,3]",           () => _evaluateExpression('[1,2,3][0]', _row, _ctx), R))
+    results.push(benchmark("[1, 2, 3, 4, 5]",             () => _evaluateExpression('[1, 2, 3, 4, 5]', _row), R))
+    results.push(benchmark("{a: 1, b: 2}",                () => _evaluateExpression('{a: 1, b: 2}', _row), R))
+    results.push(benchmark("list[0] on [1,2,3]",           () => _evaluateExpression('[1,2,3][0]', _row), R))
 
     // ── CASE ──
     results.push('\n── CASE ──')
