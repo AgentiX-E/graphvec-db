@@ -45,7 +45,7 @@ export interface GraphEngineOps {
   [key: string]: unknown
 }
 
-export interface PermissionGuardian extends GraphEngineOps {
+export interface PermissionGuardian extends Omit<GraphEngineOps, 'upsertNode' | 'deleteNode' | 'upsertEdge' | 'deleteEdge' | 'query'>, Required<Pick<GraphEngineOps, 'upsertNode' | 'deleteNode' | 'upsertEdge' | 'deleteEdge' | 'query'>> {
   /** 底层引擎引用 */
   _engine: GraphEngineOps
   /** 权限解析器引用 */
