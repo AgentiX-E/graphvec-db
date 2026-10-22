@@ -4,8 +4,9 @@
  * 从 query-executor.ts 拆分。
  */
 
-import type { QueryPlan, QueryRow } from './query-types'
+import type { QueryPlan } from './query-types'
 import { _evaluateExpression, _compareOrderByValue } from './expression-engine'
+import type { QueryRow } from './expression-engine'
 import { _resolveUnwindList, _splitWithColumns, _findWhereOutsideBrackets } from './query-parser'
 
 /**
@@ -177,7 +178,7 @@ function _computeAggregate(fn: string, rows: unknown[]): unknown {
     case 'avg': {
       const nums = rows.filter((v): v is number | bigint => typeof v === 'number' || typeof v === 'bigint')
       if (!nums.length) return 0
-      return nums.reduce((a, b) => (a as any) + (b as any), 0) / nums.length
+      return nums.reduce<number>((a, b) => Number(a) + Number(b), 0) / nums.length
     }
     case 'max':
     case 'min': {
@@ -378,7 +379,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       }
     } else {
       // Try to get the variable name from plan.steps, then fall back to query regex
-      let stepSrc = plan.steps?.[0]?.source
+      let stepSrc: string | undefined = plan.steps?.[0]?.source
       if (!stepSrc && query) {
         const matchMatch = query.match(/MATCH\s*\((\w+)\b/i)
         stepSrc = matchMatch?.[1]
@@ -746,7 +747,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       }
     } else {
       // 单 UNWIND
-      rows = resolvedList1.map((item: unknown) => ({ [plan.unwind.name!]: item }))
+      rows = resolvedList1.map((item: unknown) => ({ [plan.unwind!.name!]: item }))
     }
   } else {
     rows = [{}]
@@ -1086,7 +1087,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
     rows = rows.map(row => {
       const newRow: Record<string, unknown> = { ...row }
       const evalCtx: Record<string, unknown> = { ...varCtx, ...row }
-      for (const ec of plan.expressionColumns) {
+      for (const ec of plan.expressionColumns ?? []) {
         if (typeof ec.expression === 'string' && ec.expression in evalCtx) {
           newRow[ec.alias] = evalCtx[ec.expression]
         } else {
