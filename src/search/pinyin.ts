@@ -573,7 +573,7 @@ const PINYIN_MAP: Record<string, string> = {
 '诅':'zu','阻':'zu','组':'zu','钻':'zuan','纂':'zuan','嘴':'zui','醉':'zui','最':'zui',
 '罪':'zui','尊':'zun','遵':'zun','昨':'zuo','左':'zuo','佐':'zuo','柞':'zuo','做':'zuo',
 '作':'zuo','坐':'zuo','座':'zuo',
-  '我':'wo','上':'shang','清':'qing','华':'hua','大':'da','学':'xue','北':'bei','京':'jing','哈':'ha','佛':'fo','海':'hai'
+  '我':'wo','上':'shang','清':'qing'
 }
 
 // ── 核心函数 ─────────────────────────────────────────
