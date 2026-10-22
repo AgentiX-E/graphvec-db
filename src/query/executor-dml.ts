@@ -4,7 +4,8 @@
  * 从 query-executor.ts 拆分。
  */
 
-import type { QueryPlan, QueryRow } from './query-types'
+import type { QueryPlan } from './query-types'
+import type { QueryRow } from './expression-engine'
 import { _evaluateExpression } from './expression-engine'
 
 /**
@@ -257,9 +258,10 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
     : []
   if (unwoundNodes.length > 1) {
     const rows: QueryRow[] = []
-    for (const nn of unwoundNodes) {
+    for (const nn of unwoundNodes as Array<Record<string, unknown>>) {
       const row: QueryRow = {}
-      const nodeProps = (nn as any).props && typeof nn.props === 'object' ? nn.props : nn
+      const rawProps = (nn as any).props
+      const nodeProps: Record<string, unknown> = rawProps && typeof rawProps === 'object' ? rawProps : nn
       for (const rc of plan.returnColumns) {
         if (!rc) continue
         // Property projection (`n.num AS num`) reads from the node's props.

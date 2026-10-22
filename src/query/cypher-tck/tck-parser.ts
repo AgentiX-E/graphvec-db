@@ -53,7 +53,7 @@ export interface TCKScenario {
   name: string
   steps: TCKParseStep[]
   tags: string[]
-  examples?: Record<string, string[]>[]
+  examples?: Record<string, string>[]
 }
 
 /** 解析后的步骤 */
@@ -80,7 +80,7 @@ export function parseFeatureFile(content: string): TCKFeature[] {
   let dataTable: string[][] | null = null
   let inDataTable = false
   let inExamples = false
-  let currentExamples: Record<string, string[]>[] = []
+  let currentExamples: Record<string, string>[] = []
   let examplesHeaders: string[] = []
   let currentTags: string[] = []
 
@@ -111,7 +111,7 @@ export function parseFeatureFile(content: string): TCKFeature[] {
         inDocString = false
         // 将 docString 关联到最后一步
         if (currentSteps.length > 0) {
-          currentSteps[currentSteps.length - 1].docString = docString
+          currentSteps[currentSteps.length - 1].docString = docString ?? undefined
         }
         docString = null
         continue
