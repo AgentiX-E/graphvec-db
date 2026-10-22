@@ -208,7 +208,7 @@ export class Importer {
 
   private async _importCSVStream(
     stream: NodeJS.ReadableStream,
-    options: Required<Omit<ImporterStreamOptions & { delimiter: string }, never>>,
+    options: Required<Omit<ImporterStreamOptions & { delimiter: string }, 'onProgress'>>,
     progress: ImportProgress,
     onProgress?: ProgressCallback,
   ): Promise<void> {
@@ -338,7 +338,7 @@ export class Importer {
 
   private async _importNDJSONStream(
     stream: NodeJS.ReadableStream,
-    options: Required<Omit<ImporterStreamOptions, never>>,
+    options: Required<Omit<ImporterStreamOptions, 'onProgress'>>,
     progress: ImportProgress,
     onProgress?: ProgressCallback,
   ): Promise<void> {
@@ -505,8 +505,6 @@ export class Importer {
     txnOptions?: ImporterTransactionOptions,
     streamOptions: ImporterStreamOptions = {},
   ): Promise<ImportProgress> {
-    const timeout = txnOptions?.timeoutMs ?? 30000
-
     return this.engine.withTransaction(async (txn) => {
       // 创建一个绑定到当前事务的新 Importer
       const txnImporter = new Importer(this.engine)
@@ -533,7 +531,7 @@ export class Importer {
         await txn.rollback()
         throw err
       }
-    }, timeout)
+    })
   }
 
   /**
@@ -550,8 +548,6 @@ export class Importer {
     txnOptions?: ImporterTransactionOptions,
     streamOptions: ImporterStreamOptions & { delimiter?: string } = {},
   ): Promise<ImportProgress> {
-    const timeout = txnOptions?.timeoutMs ?? 30000
-
     return this.engine.withTransaction(async (txn) => {
       const txnImporter = new Importer(this.engine)
       const progress = await txnImporter.importStream(readableStream, format, streamOptions)
@@ -562,7 +558,7 @@ export class Importer {
       }
 
       return progress
-    }, timeout)
+    })
   }
 
   // ──────────────────────────────────────────

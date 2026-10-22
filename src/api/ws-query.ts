@@ -213,12 +213,14 @@ export class WsQueryServer {
           // cursor-based pagination: resume an existing query
           this._handleNext(ws, msg, clientQueries)
           break
-        default:
+        default: {
+          const unknown = msg as { type: string; id?: string }
           this._send(ws, {
             type: 'error',
-            id: msg.id || 'unknown',
-            message: `Unknown message type: ${(msg as any).type}`,
+            id: unknown.id || 'unknown',
+            message: `Unknown message type: ${unknown.type}`,
           })
+        }
       }
     })
 

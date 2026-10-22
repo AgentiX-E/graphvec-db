@@ -483,7 +483,7 @@ class GremlinSession {
       const result = this.executeQuery(
         {
           sourceInstructions: [['g', 'graph']],
-          stepInstructions: [['V', []], ['has', ['__id', gremlinStr]]],
+          stepInstructions: [['V'], ['has', '__id', gremlinStr]],
         },
         aliases,
       )

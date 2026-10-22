@@ -807,8 +807,8 @@ export async function startAdminUI(
   app.get('/api/admin/procedures', async (req: FastifyRequest, reply: FastifyReply) => {
     // Try to import procedure registry dynamically (avoids hard dependency)
     try {
-      const { procedureRegistry } = await import('../query/procedure-registry')
-      return procedureRegistry.listProcedures()
+      const { globalRegistry } = await import('../query/procedure-registry')
+      return globalRegistry.listProcedures()
     } catch {
       return [{ name: 'N/A', description: 'Procedure registry not available' }]
     }

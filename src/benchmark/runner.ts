@@ -108,7 +108,7 @@ export async function perf(): Promise<BenchmarkBaseline> {
 
   // ── 正式测量：多次运行取 trimmed mean ──
   const RUNS = 3
-  const allRunMaps: Map<string, BenchmarkResult[]>[] = []
+  const allRunMaps: Map<string, BenchmarkResult>[] = []
 
   for (let run = 0; run < RUNS; run++) {
     const cmd = `npx vitest run ${files} --no-coverage 2>&1`
