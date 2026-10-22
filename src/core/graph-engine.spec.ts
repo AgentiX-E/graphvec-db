@@ -3,6 +3,7 @@ import { FullTextIndex } from '../search/fulltext'
 import { cleanTestData, testEngineConfig } from '../../test/fixtures/test-graph'
 import { OptimizerBridge } from '../query/planner-bridge'
 import { RowLevelSecurity } from '../security/rls'
+import { Role, NodeProperties } from '../types'
 import { makeEngine, seedNodes, seedChain, seedComplete } from '../test-utils/make-engine'
 
 describe('GraphEngine', () => {
@@ -638,7 +639,7 @@ describe('GraphEngine', () => {
       engine.open()
 
       const id = await engine.upsertNode(1, `${rlsPrefix}match-user`, { props: { user_id: 'user_x', data: 'secret' } })
-      const ctx = { userId: 'user_x', role: 0 }
+      const ctx = { userId: 'user_x', role: Role.READER }
       const node = engine.getNode(id, ctx)
       expect(node).not.toBeNull()
       expect(node!.name).toBe(`${rlsPrefix}match-user`)
@@ -693,7 +694,7 @@ describe('GraphEngine', () => {
 
       const id = await engine.upsertNode(1, `${rlsPrefix}filtered`, { props: { user_id: 'user_z', data: 'hidden' } })
       // Context for a different user → RLS should filter this out
-      const ctx = { userId: 'other_user', role: 0 }
+      const ctx = { userId: 'other_user', role: Role.READER }
       const node = engine.getNode(id, ctx)
       expect(node).toBeNull()
 
@@ -721,11 +722,11 @@ describe('GraphEngine', () => {
       const id = await engine.upsertNode(1, `${rlsPrefix}remove-policy`, { props: { user_id: 'user_w', data: 'after-remove' } })
 
       // Before remove: policy active, non-matching ctx → null
-      expect(engine.getNode(id, { userId: 'other', role: 0 })).toBeNull()
+      expect(engine.getNode(id, { userId: 'other', role: Role.READER })).toBeNull()
       // After remove: policy gone, should return node
       rls.removePolicy('temp-isolation')
-      expect(engine.getNode(id, { userId: 'other', role: 0 })).not.toBeNull()
-      expect(engine.getNode(id, { userId: 'other', role: 0 })!.name).toBe(`${rlsPrefix}remove-policy`)
+      expect(engine.getNode(id, { userId: 'other', role: Role.READER })).not.toBeNull()
+      expect(engine.getNode(id, { userId: 'other', role: Role.READER })!.name).toBe(`${rlsPrefix}remove-policy`)
 
       engine.close()
     })
@@ -755,7 +756,7 @@ describe('GraphEngine', () => {
       await engine.upsertEdge(center, n2, 10)
 
       // Alice should see only n1
-      const result = engine.neighbors(center, undefined, { userId: 'alice', role: 0 })
+      const result = engine.neighbors(center, undefined, { userId: 'alice', role: Role.READER })
       expect(result.nodes.length).toBe(1)
       expect(result.nodes[0].name).toBe(`${rlsPrefix}n1`)
 
@@ -785,7 +786,7 @@ describe('GraphEngine', () => {
       await engine.upsertNode(1, `${rlsPrefix}q-tenant-b-1`, { props: { tenant_id: 'tenant_b', data: 'tb1' } })
 
       // Tenant A should see only its own nodes
-      const results = engine.query('MATCH (n) RETURN n', { userId: 'test', role: 0, tenantId: 'tenant_a' })
+      const results = engine.query('MATCH (n) RETURN n', { userId: 'test', role: Role.READER, tenantId: 'tenant_a' })
       expect(results.length).toBe(2)
       const names = results.map(r => r.name).sort()
       expect(names).toEqual([`${rlsPrefix}q-tenant-a-1`, `${rlsPrefix}q-tenant-a-2`])
@@ -954,19 +955,22 @@ describe('Item 1: upsertNode recursion protection', () => {
     // 2. 递归深度超过 MAX_RECURSION_DEPTH(=10) 时抛出异常
     // 3. 异常后标志位被重置
     const engineInternal = engine as any
+    // MAX_RECURSION_DEPTH is a private static constant; access it via a precise
+    // type assertion for the recursion-protection check under test.
+    const maxDepth = (GraphEngine as unknown as { MAX_RECURSION_DEPTH: number }).MAX_RECURSION_DEPTH
 
     // 模拟深度超限：set _recursionDepth=11，applyHandler 入口会检查
     engineInternal._applyingRemote = true
-    engineInternal._recursionDepth = GraphEngine.MAX_RECURSION_DEPTH + 1
+    engineInternal._recursionDepth = maxDepth + 1
 
     // 触发 applyHandler 内部的深度检查逻辑
     let caughtError: Error | null = null
     try {
       // 模拟 applyHandler 中的深度检查
-      if (engineInternal._recursionDepth > GraphEngine.MAX_RECURSION_DEPTH) {
+      if (engineInternal._recursionDepth > maxDepth) {
         engineInternal._recursionDepth = 0
         engineInternal._applyingRemote = false
-        throw new Error(`递归深度超过上限 (${GraphEngine.MAX_RECURSION_DEPTH})，已重置保护`)
+        throw new Error(`递归深度超过上限 (${maxDepth})，已重置保护`)
       }
     } catch (e: any) {
       caughtError = e
@@ -2347,6 +2351,8 @@ describe('GraphEngine — deep test: node props operations', () => {
     try {
       engine.open()
       const id = await engine.upsertNode(1, 'typed-prop', {
+        // `nested` intentionally exceeds the NodeProperties index signature
+        // (which forbids nested objects) to verify runtime storage tolerates it.
         props: {
           str: 'hello',
           num: 42,
@@ -2355,7 +2361,7 @@ describe('GraphEngine — deep test: node props operations', () => {
           nested: { a: 1 },
           nullVal: null,
           float: 3.14,
-        },
+        } as unknown as NodeProperties,
       })
       const n = engine.getNode(id)
       expect(n).not.toBeNull()
@@ -3237,9 +3243,7 @@ describe('Core 深度扩展 — Delete', () => {
       expect(engine.getNode(id)).not.toBeNull()
       await engine.deleteNode(id)
       expect(engine.getNode(id)).toBeNull()
-      // Close and reopen to verify deletion is persisted
-      const dbPath = engine['_enginePath'] || (engine as any).config?.path
-      // Just verify the node is gone after close+reopen using the same engine
+      // Close and reopen (same engine instance) to verify deletion is persisted
       engine.close()
       engine.open()
       expect(engine.getNode(id)).toBeNull()
