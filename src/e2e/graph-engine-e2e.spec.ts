@@ -6,6 +6,7 @@
  */
 import { GraphEngine } from '../core/graph-engine'
 import { DatabaseManager } from '../core/database-manager'
+import type { NodeProperties } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -228,7 +229,7 @@ describe('GraphEngine E2E — 完整生命周期', () => {
 
     try {
       const id = await engine.upsertNode(1, 'props-node', {
-        props: { str: 'hello', num: 42, bool: true, nullVal: null, arr: [1, 'two', false] },
+        props: ({ str: 'hello', num: 42, bool: true, nullVal: null, arr: [1, 'two', false] } as unknown as NodeProperties),
       })
 
       const node = engine.getNode(id)
@@ -1175,7 +1176,7 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     engine.open()
 
     try {
-      const props: Record<string, unknown> = {}
+      const props: NodeProperties = {}
       for (let i = 0; i < 50; i++) {
         props[`field_${i}`] = `value_${i}_${i * i}`
       }
@@ -1413,7 +1414,7 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     engine.open()
 
     try {
-      const props: Record<string, unknown> = {}
+      const props: NodeProperties = {}
       for (let i = 0; i < 100; i++) {
         props[`key_${i}_${i * 2}`] = `value_${i}`
       }
@@ -2616,10 +2617,10 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     engine.open()
     try {
       const largeObj = { data: 'x'.repeat(102400), meta: { ts: Date.now(), ver: 1, ok: true } }
-      const id = await engine.upsertNode(1, 'json-big', { props: largeObj })
+      const id = await engine.upsertNode(1, 'json-big', { props: largeObj as unknown as NodeProperties })
       const node = engine.getNode(id)
       expect((node!.props.data as string).length).toBe(102400)
-      expect(node!.props.meta.ver).toBe(1)
+      expect((node!.props.meta as any).ver).toBe(1)
     } finally { engine.close() }
   }, 15000)
 
@@ -2759,8 +2760,8 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
-      const db = await dbMgr.createDatabase({ name: 'testdb', meta: { ver: 1 } })
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
+      const db = await dbMgr.createDatabase('testdb', { shards: 1 })
       expect(db).not.toBeNull()
       const dbs = await dbMgr.listDatabases()
       expect(dbs.length).toBeGreaterThanOrEqual(1)
@@ -2772,9 +2773,9 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
-      const db = await dbMgr.createDatabase({ name: 'db-122', meta: {} })
-      const id = await engine.upsertNode(1, 'db-node', { props: { db: db.name } })
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
+      const db = await dbMgr.createDatabase('db-122', { shards: 1 })
+      const id = await engine.upsertNode(1, 'db-node', { props: { db: db.config.name } })
       expect(engine.getNode(id)).not.toBeNull()
     } finally { engine.close() }
   }, 15000)
@@ -2784,10 +2785,10 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
-      await dbMgr.createDatabase({ name: 'A', meta: {} })
-      await dbMgr.createDatabase({ name: 'B', meta: {} })
-      await dbMgr.createDatabase({ name: 'C', meta: {} })
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
+      await dbMgr.createDatabase('A', { shards: 1 })
+      await dbMgr.createDatabase('B', { shards: 1 })
+      await dbMgr.createDatabase('C', { shards: 1 })
       const dbs = await dbMgr.listDatabases()
       expect(Array.isArray(dbs)).toBe(true)
     } finally { engine.close() }
@@ -2798,9 +2799,9 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
-      await dbMgr.createDatabase({ name: 'dup', meta: {} })
-      try { await dbMgr.createDatabase({ name: 'dup', meta: {} }) }
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
+      await dbMgr.createDatabase('dup', { shards: 1 })
+      try { await dbMgr.createDatabase('dup', { shards: 1 }) }
       catch { /* duplicate allowed or rejected — either is fine */ }
     } finally { engine.close() }
   }, 15000)
@@ -2810,8 +2811,8 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
-      const dbInfo = await dbMgr.createDatabase({ name: 'mixed', meta: { active: true } })
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
+      const dbInfo = await dbMgr.createDatabase('mixed', { shards: 1 })
       expect(dbInfo).toBeDefined()
       for (let i = 0; i < 10; i++) {
         await engine.upsertNode(1, `n-${i}`, { props: { db: 'mixed', idx: i } })
@@ -2825,7 +2826,7 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
       const dbs = await dbMgr.listDatabases()
       expect(Array.isArray(dbs)).toBe(true)
     } finally { engine.close() }
@@ -2836,8 +2837,8 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
-      await dbMgr.createDatabase({ name: 'edge-db', meta: {} })
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
+      await dbMgr.createDatabase('edge-db', { shards: 1 })
       const a = await engine.upsertNode(1, 'A')
       const b = await engine.upsertNode(1, 'B')
       await engine.upsertEdge(a, b, 10, { props: { db: 'edge-db' } })
@@ -2850,10 +2851,10 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
-      await dbMgr.createDatabase({ name: 'db1', meta: { owner: 'alice' } })
-      await dbMgr.createDatabase({ name: 'db2', meta: { owner: 'bob' } })
-      await dbMgr.createDatabase({ name: 'db3', meta: { owner: 'charlie' } })
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
+      await dbMgr.createDatabase('db1', { shards: 1 })
+      await dbMgr.createDatabase('db2', { shards: 1 })
+      await dbMgr.createDatabase('db3', { shards: 1 })
       const dbs = await dbMgr.listDatabases()
       expect(dbs.length).toBeGreaterThanOrEqual(3)
     } finally { engine.close() }
@@ -2864,15 +2865,15 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
-      await dbMgr.createDatabase({ name: 'persist-db', meta: { v: 1 } })
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
+      await dbMgr.createDatabase('persist-db', { shards: 1 })
       await engine.upsertNode(1, 'test', { props: {} })
     } finally { engine.close() }
 
     const re = new GraphEngine(cfg)
     re.open()
     try {
-      const dbMgr2 = new DatabaseManager(re)
+      const dbMgr2 = new DatabaseManager({ baseDir: cfg.path })
       const dbs = await dbMgr2.listDatabases()
       expect(Array.isArray(dbs)).toBe(true)
       expect(re.scanAllNodes().length).toBe(1)
@@ -2884,12 +2885,12 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     const engine = new GraphEngine(cfg)
     engine.open()
     try {
-      const dbMgr = new DatabaseManager(engine)
+      const dbMgr = new DatabaseManager({ baseDir: cfg.path })
       const names: string[] = []
       for (let i = 0; i < 20; i++) {
         const name = `auto-db-${i}`
         names.push(name)
-        await dbMgr.createDatabase({ name, meta: { idx: i } })
+        await dbMgr.createDatabase(name, { shards: 1 })
       }
       const dbs = await dbMgr.listDatabases()
       expect(dbs.length).toBeGreaterThanOrEqual(20)
@@ -2903,7 +2904,7 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     engine.open()
     try {
       for (let i = 0; i < 100; i++) {
-        const props: Record<string, unknown> = {}
+        const props: NodeProperties = {}
         for (let p = 0; p < 30; p++) props[`p${p}`] = `v${i}-${p}`
         await engine.upsertNode(1, `heavy-${i}`, { props })
       }
@@ -3037,7 +3038,7 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     engine.open()
     try {
       const id = await engine.upsertNode(1, 'types', {
-        props: { boolT: true, boolF: false, nullVal: null, undef: undefined },
+        props: { boolT: true, boolF: false, nullVal: null },
       })
       const node = engine.getNode(id)
       expect(node!.props.boolT).toBe(true)
@@ -3086,12 +3087,12 @@ describe('GraphEngine E2E — 完整生命周期', () => {
     engine.open()
     try {
       const id = await engine.upsertNode(1, 'nested', {
-        props: { outer: { inner: 'deep', arr: [1, 2, 3] } },
+        props: ({ outer: { inner: 'deep', arr: [1, 2, 3] } } as unknown as NodeProperties),
       })
       const node = engine.getNode(id)
       expect(node).not.toBeNull()
       if (typeof node!.props.outer === 'object') {
-        expect((node!.props.outer as Record<string, unknown>).inner).toBe('deep')
+        expect((node!.props.outer as unknown as Record<string, unknown>).inner).toBe('deep')
       }
     } finally { engine.close() }
   }, 15000)

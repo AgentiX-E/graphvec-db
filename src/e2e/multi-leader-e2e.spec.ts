@@ -6,6 +6,7 @@
  * 覆盖：创建多个独立节点、写入、一致性验证
  */
 import { GraphEngine } from '../core/graph-engine'
+import type { NodeProperties } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -62,13 +63,13 @@ describe('Multi-Leader E2E — 多 Leader 集成测试', () => {
     try {
       // Write complex data
       const id = await engine.upsertNode(1, 'complex-node', {
-        props: {
+        props: ({
           name: 'Test',
           count: 42,
           active: true,
           tags: ['a', 'b', 'c'],
           metadata: { version: 1, owner: 'e2e' },
-        },
+        } as unknown as NodeProperties),
       })
 
       // Read back and verify
@@ -223,7 +224,7 @@ describe('Multi-Leader E2E — 多 Leader 集成测试', () => {
     engine.open()
 
     try {
-      const props: Record<string, unknown> = {}
+      const props: NodeProperties = {}
       for (let i = 0; i < 30; i++) {
         props[`prop_${i}`] = `value_${i}`
       }
@@ -438,7 +439,7 @@ describe('Multi-Leader E2E — 多 Leader 集成测试', () => {
 
     try {
       const propsList = engines.map((_, i) => {
-        const p: Record<string, unknown> = {}
+        const p: NodeProperties = {}
         for (let j = 0; j < 20; j++) {
           p[`prop_${j}`] = `engine${i}_val${j}`
         }

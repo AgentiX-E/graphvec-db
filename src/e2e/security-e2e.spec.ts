@@ -6,7 +6,7 @@
  */
 import { JwtManager, RBAC } from '../security/auth'
 import { AuditLogger } from '../security/audit'
-import { Role, AuthError } from '../types'
+import { Role, AuthError, type AuditEntry } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -470,7 +470,7 @@ describe('Security E2E — 安全集成测试', () => {
     const dir = makeDir('sec-19')
     const auditLog = new AuditLogger(undefined, undefined, dir)
 
-    const entry = { operation: 'CREATE', user: 'alice', role: Role.ADMIN, resource: 'node', result: 'success' }
+    const entry: Omit<AuditEntry, 'timestamp'> = { operation: 'CREATE', user: 'alice', role: Role.ADMIN, resource: 'node', result: 'success' }
     auditLog.log(entry)
     auditLog.log({ ...entry, operation: 'UPDATE', user: 'bob', role: Role.WRITER, result: 'success' })
 

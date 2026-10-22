@@ -6,6 +6,7 @@
  */
 import { GraphEngine } from '../core/graph-engine'
 import { TransactionManager, Transaction } from '../core/transaction'
+import type { NodeProperties } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -470,7 +471,7 @@ describe('API E2E — 集成测试', () => {
 
     try {
       const id = await engine.upsertNode(1, 'B', {
-        props: { a: null, b: undefined, c: '', d: 0, e: false },
+        props: { a: null, c: '', d: 0, e: false },
       })
 
       const node = engine.getNode(id)
@@ -891,7 +892,7 @@ describe('API E2E — 集成测试', () => {
     engine.open()
 
     try {
-      const props: Record<string, unknown> = {}
+      const props: NodeProperties = {}
       for (let i = 0; i < 100; i++) {
         props[`k${i}`] = `v${i}-${i * 3}`
       }
@@ -921,9 +922,9 @@ describe('API E2E — 集成测试', () => {
       const b = await engine.upsertNode(1, 'B')
 
       await engine.upsertEdge(a, b, 10, {
-        props: {
+        props: ({
           metadata: { type: 'connection', level: 1, tags: ['important'] },
-        },
+        } as unknown as NodeProperties),
       })
 
       const n = engine.neighbors(a)
@@ -1303,7 +1304,7 @@ describe('API E2E — 集成测试', () => {
       }
       const all = engine.scanAllNodes()
       expect(all.length).toBe(10)
-      const indices = all.map(n => n.props.index).sort((a, b) => a - b)
+      const indices = all.map(n => (n.props.index as number)).sort((a, b) => a - b)
       expect(indices).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
     } finally {
       engine.close()
@@ -1393,7 +1394,7 @@ describe('API E2E — 集成测试', () => {
 
     try {
       const id = await engine.upsertNode(1, 'full', {
-        props: { str: 'hello', num: 42, bool: true, arr: [1, 2, 3], obj: { k: 'v' } },
+        props: ({ str: 'hello', num: 42, bool: true, arr: [1, 2, 3], obj: { k: 'v' } } as unknown as NodeProperties),
       })
       const node = engine.getNode(id)
       expect(node!.props.str).toBe('hello')
@@ -1601,7 +1602,7 @@ describe('API E2E — 集成测试', () => {
     engine.open()
 
     try {
-      const props: Record<string, unknown> = {}
+      const props: NodeProperties = {}
       for (let i = 0; i < 50; i++) props[`k${i}`] = `v${i}`
       const id = await engine.upsertNode(1, 'many-keys', { props })
       const node = engine.getNode(id)
@@ -2106,7 +2107,7 @@ describe('API E2E — 集成测试', () => {
 
     try {
       const id = await engine.upsertNode(1, 'bool-node', {
-        props: { flag1: true, flag2: false, nested: { enabled: true } },
+        props: ({ flag1: true, flag2: false, nested: { enabled: true } } as unknown as NodeProperties),
       })
       const node = engine.getNode(id)
       expect(node!.props.flag1).toBe(true)
@@ -3023,7 +3024,7 @@ describe('API E2E — 集成测试', () => {
       const a = await engine.upsertNode(1, 'A', { props: {} })
       const b = await engine.upsertNode(2, 'B', { props: {} })
       await engine.upsertEdge(a, b, 10, {
-        props: { w: 42, tag: 'edge', metadata: { created: 'today', ver: 1 } },
+        props: ({ w: 42, tag: 'edge', metadata: { created: 'today', ver: 1 } } as unknown as NodeProperties),
       })
 
       const n = engine.neighbors(a)

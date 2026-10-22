@@ -137,7 +137,7 @@ export class DatabaseManager {
    * @param config Database config
    * @returns DatabaseInstance
    */
-  async createDatabase(name: string, config: Omit<DatabaseConfig, 'name'>): Promise<DatabaseInstance> {
+  async createDatabase(name: string, config: Omit<DatabaseConfig, 'name' | 'dataDir'> & { dataDir?: string }): Promise<DatabaseInstance> {
     if (this.databases.has(name)) {
       throw new Error(`Database '${name}' already exists`)
     }
@@ -520,7 +520,6 @@ export class DatabaseManager {
       this.logger.info(`[Restore] Found database '${dbName}' at ${config.dataDir}`)
 
       await this.createDatabase(dbName, {
-        dataDir: config.dataDir,
         shards: config.shards,
         peers: config.peers,
         raftPort: config.raftPort,
