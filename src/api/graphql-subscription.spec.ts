@@ -9,7 +9,10 @@ import { GraphQLSubscription, type SubscriptionEvent } from './graphql-subscript
 // ── Mock EventBus ───────────────────────────────────────
 
 function createMockBus(): {
-  bus: ReturnType<typeof vi.fn>
+  bus: {
+    on: ReturnType<typeof vi.fn>
+    off: ReturnType<typeof vi.fn>
+  }
   emitter: EventEmitter
 } {
   const emitter = new EventEmitter()
