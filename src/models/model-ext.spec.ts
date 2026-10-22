@@ -98,7 +98,7 @@ describe('NodeRecord — Construction Patterns', () => {
   })
 
   it('GAP-14-4: deep copy via JSON round-trip', () => {
-    const original = makeNode(1, 2, 'deep', { nested: { key: 'value', arr: [1, 2, 3] } }, {
+    const original = makeNode(1, 2, 'deep', { nested: { key: 'value', arr: [1, 2, 3] } } as unknown as NodeProperties, {
       createdAt: 500,
       degree: 10,
     })
@@ -106,8 +106,9 @@ describe('NodeRecord — Construction Patterns', () => {
     expect(compareNode(original, copy)).toBe(true)
 
     // Modify copy — original should be unchanged
-    copy.props.nested.key = 'changed'
-    expect(original.props.nested.key).toBe('value')
+    const nestedCopy = copy.props.nested as unknown as Record<string, any>
+    nestedCopy.key = 'changed'
+    expect((original.props.nested as unknown as Record<string, any>).key).toBe('value')
   })
 
   it('GAP-14-5: multiple nodes with shared structure', () => {
@@ -143,9 +144,9 @@ describe('NodeRecord — Property Combinations', () => {
         flag: true,
       },
       simple: 'value',
-    })
-    expect(node.props.level1.level2.level3).toBe('deep')
-    expect(node.props.level1.level2.numbers[1]).toBe(2)
+    } as unknown as NodeProperties)
+    expect((node.props.level1 as unknown as any).level2.level3).toBe('deep')
+    expect((node.props.level1 as unknown as any).level2.numbers[1]).toBe(2)
   })
 
   it('GAP-14-9: node with array properties', () => {
@@ -153,10 +154,10 @@ describe('NodeRecord — Property Combinations', () => {
       tags: ['important', 'urgent', 'new'],
       scores: [98.5, 76.3, 88.1],
       matrix: [[1, 0], [0, 1]],
-    })
+    } as unknown as NodeProperties)
     expect(node.props.tags).toHaveLength(3)
-    expect(node.props.scores[0]).toBe(98.5)
-    expect(node.props.matrix[1][0]).toBe(0)
+    expect((node.props.scores as number[])[0]).toBe(98.5)
+    expect((node.props.matrix as unknown as number[][])[1][0]).toBe(0)
   })
 
   it('GAP-14-10: node with numeric properties including zero and negative', () => {
@@ -190,7 +191,7 @@ describe('NodeRecord — Property Combinations', () => {
       nil: null,
       arr: [1, 'two', true, null],
       obj: { a: 1 },
-    })
+    } as unknown as NodeProperties)
     expect(typeof node.props.str).toBe('string')
     expect(typeof node.props.num).toBe('number')
     expect(typeof node.props.bool).toBe('boolean')
@@ -278,12 +279,13 @@ describe('EdgeRecord — Construction Patterns', () => {
   })
 
   it('GAP-14-25: deep copy of EdgeRecord via JSON', () => {
-    const original = makeEdge(1, 2, 10, { meta: { source: 'test' } }, 500)
+    const original = makeEdge(1, 2, 10, { meta: { source: 'test' } } as unknown as NodeProperties, 500)
     const copy = cloneEdge(original)
     expect(compareEdge(original, copy)).toBe(true)
 
-    copy.props.meta.source = 'modified'
-    expect(original.props.meta.source).toBe('test')
+    const metaCopy = copy.props.meta as unknown as Record<string, any>
+    metaCopy.source = 'modified'
+    expect((original.props.meta as unknown as Record<string, any>).source).toBe('test')
   })
 })
 
@@ -321,7 +323,7 @@ describe('EdgeRecord — Source/Destination Variations', () => {
       directed: true,
       label: 'follows',
       metadata: { created: '2024-01-01', source: 'import' },
-    })
+    } as unknown as NodeProperties)
     expect(edge.props.directed).toBe(true)
     expect(edge.props.weight).toBe(0.85)
   })
@@ -465,17 +467,17 @@ describe('NodeProperties — Special Values', () => {
   })
 
   it('GAP-14-51: properties with mixed depth', () => {
-    const props: NodeProperties = {
+    const props: Record<string, unknown> = {
       shallow: 'value',
       deep: { deeper: { deepest: 'found' } },
       mixed: [{ a: 1 }, { b: 2 }],
     }
-    expect(props.deep.deeper.deepest).toBe('found')
+    expect((props.deep as unknown as any).deeper.deepest).toBe('found')
     expect((props.mixed as Array<{ a?: number; b?: number }>)[1].b).toBe(2)
   })
 
   it('GAP-14-52: properties with undefined value is valid', () => {
-    const props: NodeProperties = {
+    const props: Record<string, unknown> = {
       defined: 'exists',
       missing: undefined,
     }

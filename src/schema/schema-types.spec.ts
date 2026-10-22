@@ -5,6 +5,7 @@
  * Note: 不测试 schema-validator 的逻辑，仅测试类型定义本身
  */
 import { describe, it, expect } from 'vitest'
+import type { FieldDef, NodeTypeDef, EdgeTypeDef, SchemaDef } from './schema-types'
 
 // ─── 1. FieldType 枚举 — 所有字段类型存在且类型正确 ──────────────────────────
 
