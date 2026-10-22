@@ -68,9 +68,9 @@ export class ShardManager {
       const target = this.ranges.get(split.targetRangeId)
       if (target) {
         this._dualWriteTargets.set(split.sourceRangeId, target)
-        this.logger.info({ sourceRangeId: split.sourceRangeId, targetRangeId: split.targetRangeId }, 'Dual write enabled')
+        this.logger.info('Dual write enabled', { sourceRangeId: split.sourceRangeId, targetRangeId: split.targetRangeId })
       } else {
-        this.logger.warn({ targetRangeId: split.targetRangeId }, 'Dual write target range not found')
+        this.logger.warn('Dual write target range not found', { targetRangeId: split.targetRangeId })
       }
     }
   }
@@ -80,7 +80,7 @@ export class ShardManager {
     const count = this._dualWriteTargets.size
     this._dualWriteTargets.clear()
     if (count > 0) {
-      this.logger.info({ count }, 'Dual write disabled')
+      this.logger.info('Dual write disabled', { count })
     }
   }
 
@@ -95,7 +95,7 @@ export class ShardManager {
       const [result] = await Promise.all([
         fn(range),
         fn(target).catch(err => {
-          this.logger.warn({ err: (err as Error).message }, 'Dual write to target failed, source write unaffected')
+          this.logger.warn('Dual write to target failed, source write unaffected', { err: (err as Error).message })
         }),
       ])
       return result
@@ -405,7 +405,7 @@ export class ShardManager {
           range.write({ type: 'batch_upsert', payload: { inputs: groupInputs } }),
           target.write({ type: 'batch_upsert', payload: { inputs: groupInputs } })
             .catch(err => {
-              this.logger.warn({ err: (err as Error).message }, 'Dual write batch_upsert to target failed')
+              this.logger.warn('Dual write batch_upsert to target failed', { err: (err as Error).message })
             }),
         ]))
       } else {

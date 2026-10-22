@@ -157,7 +157,9 @@ describe('ShardManager', () => {
     })
 
     test('vectorSearch fan-out', async () => {
-      await expect(mgr.vectorSearch({ k: 5, denseQuery: [0.1, 0.2, 0.3] })).rejects.toThrow()
+      // No nodes carry dense vectors in this fixture, so the cross-range
+      // fan-out should resolve to an empty result set rather than throw.
+      await expect(mgr.vectorSearch({ k: 5, denseQuery: [0.1, 0.2, 0.3] })).resolves.toEqual([])
     })
 
     // ── 批量 ──
