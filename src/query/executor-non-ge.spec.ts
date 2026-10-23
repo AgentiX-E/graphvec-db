@@ -18,7 +18,7 @@ import type { QueryPlan } from './query-types'
 
 /** Minimal plan object — fields beyond what a path reads are optional. */
 function planOf(overrides: Record<string, unknown> = {}): QueryPlan {
-  return { returnColumns: [], ...overrides } as QueryPlan
+  return { returnColumns: [], ...overrides } as unknown as QueryPlan
 }
 
 beforeEach(() => {
@@ -488,7 +488,7 @@ describe('_execNonGePaths — UNION', () => {
 
 describe('_execNonGePaths — variable-length path expressionColumns', () => {
   it('maps expressionColumns over VLE result rows', async () => {
-    const nodes = [{ _label: 'A', name: 'a' }, { _label: 'B', name: 'b' }]
+    const nodes: Array<Record<string, unknown>> = [{ _label: 'A', name: 'a' }, { _label: 'B', name: 'b' }]
     // A one-step var-length BFS over a single edge: a-[R*1..1]->b.
     nodes[0].__edges = [{ srcIdx: 0, dstIdx: 1, label: 'R', props: {} }]
     const p = planOf({
