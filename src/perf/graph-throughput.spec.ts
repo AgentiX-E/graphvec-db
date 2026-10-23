@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { GraphEngine } from '../core/graph-engine'
+import type { UpsertNodeOptions } from '../types'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -65,7 +66,7 @@ describe('Graph Throughput Benchmarks', () => {
     const start = performance.now()
 
     for (let b = 0; b < batches; b++) {
-      const inputs: { typeId: number; name: string; opts?: { props?: Record<string, unknown> } }[] = []
+      const inputs: { typeId: number; name: string; opts?: UpsertNodeOptions }[] = []
       for (let i = 0; i < batchSize; i++) {
         const idx = b * batchSize + i
         if (idx >= total) break
@@ -96,7 +97,7 @@ describe('Graph Throughput Benchmarks', () => {
     const start = performance.now()
 
     for (let b = 0; b < batches; b++) {
-      const inputs: { typeId: number; name: string; opts?: { props?: Record<string, unknown> } }[] = []
+      const inputs: { typeId: number; name: string; opts?: UpsertNodeOptions }[] = []
       for (let i = 0; i < batchSize; i++) {
         const idx = b * batchSize + i
         if (idx >= total) break
