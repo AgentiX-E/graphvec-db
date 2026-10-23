@@ -66,8 +66,8 @@ describe('hypermedia (GAP-56)', () => {
       const result = enrichQueryLinks(data, '/api/query')
       expect(result._links.self.href).toBe('/api/query')
       expect(result._links.related).toHaveLength(2)
-      expect(result._links.related.find((l: any) => l.href === '/api/v1/ops/slow-queries')).toBeDefined()
-      expect(result._links.related.find((l: any) => l.href === '/api/status')).toBeDefined()
+      expect(result._links.related!.find((l: any) => l.href === '/api/v1/ops/slow-queries')).toBeDefined()
+      expect(result._links.related!.find((l: any) => l.href === '/api/status')).toBeDefined()
     })
 
     test('should preserve original data', () => {
