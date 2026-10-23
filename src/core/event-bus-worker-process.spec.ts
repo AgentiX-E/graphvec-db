@@ -193,8 +193,8 @@ describe('WorkerProcess logic', () => {
 
     const result = await worker.handleCommand({ type: 'getStats' })
     expect(result.type).toBe('stats')
-    expect(result.stats.dealerCount).toBe(1)
-    expect(result.stats.totalSent).toBe(1)
+    expect(result.stats!.dealerCount).toBe(1)
+    expect(result.stats!.totalSent).toBe(1)
   })
 
   it('handles unknown command type gracefully', async () => {
