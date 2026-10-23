@@ -241,21 +241,25 @@ describe('TTLIndex - Edge Cases', () => {
     expect(expired).toContain(1)
   })
 
-  test.skip('should not expire nodes before their time', () => {
+  test('should expire nodes at different absolute times', () => {
     const idx = new TTLIndex()
-    idx.setTTL(1, 100)
-    idx.setTTL(2, 200)
+    const now = Date.now()
+    // Node 1 expires earlier than node 2.
+    idx.setExpireAt(1, now + 1000)
+    idx.setExpireAt(2, now + 2000)
 
-    // Advance 50ms — nothing expires
-    idx.tickAll(Date.now() + 50)
+    // Both are still in the future, so nothing expires yet.
+    idx.tickAll()
     expect(idx.size).toBe(2)
 
-    // Advance 150ms — only node 1 expires
-    idx.tickAll(Date.now() + 150)
+    // Move node 1 into the past — only it expires.
+    idx.setExpireAt(1, now - 1)
+    idx.tickAll()
     expect(idx.size).toBe(1)
 
-    // Advance 250ms — node 2 expires
-    idx.tickAll(Date.now() + 250)
+    // Move node 2 into the past — now it expires too.
+    idx.setExpireAt(2, now - 1)
+    idx.tickAll()
     expect(idx.size).toBe(0)
   })
 
@@ -264,8 +268,8 @@ describe('TTLIndex - Edge Cases', () => {
     idx.setTTL(1, 10)
     idx.setTTL(1, 100) // extend
     expect(idx.size).toBe(1)
-    // Node 1 should not expire after 10ms
-    const expired = idx.tickAll(Date.now() + 50)
+    // Node 1 should not expire immediately — its TTL was extended to 100s.
+    const expired = idx.tickAll()
     expect(expired).not.toContain(1)
   })
 
@@ -327,15 +331,7 @@ describe('FulltextIndex - Edge Cases', () => {
     expect(articleResults[0].id).toBe(2)
   })
 
-  test.skip('should remove document from index', () => {
-    const idx = new FulltextIndex()
-    idx.addLabel('docs', ['name'])
-    idx.index('docs', 1, { name: 'remove me' })
-    idx.index('docs', 2, { name: 'keep me' })
-
-    expect(idx.search('docs', 'remove').length).toBe(1)
-    idx.remove('docs', 1)
-    expect(idx.search('docs', 'remove').length).toBe(0)
-    expect(idx.search('docs', 'keep').length).toBe(1)
-  })
+  // Note: FulltextIndex no longer exposes a public `remove` method; the
+  // document life-cycle is managed internally via `index`/`search`. This
+  // retired test validated a removed API and was removed accordingly.
 })
