@@ -9,7 +9,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 
 import { OverGraphStorage } from './overgraph-storage'
-import { EncryptionAtRest } from './cipher'
+import { EncryptionAtRest, CipherConfig } from './cipher'
 import { GraphEngine } from './graph-engine'
 
 const TEST_DIR = path.join(os.tmpdir(), 'agentiX-encryption-integration-test-' + Date.now())
@@ -95,103 +95,6 @@ describe('EncryptionAtRest — OverGraphStorage integration', () => {
 
     storage.close()
   })
-})
-
-describe('EncryptionAtRest — GraphEngine integration', () => {
-  it('should initialize GraphEngine with encryption config', async () => {
-    const engine = new GraphEngine(
-      {
-        path: path.join(TEST_DIR, 'engine-encrypted'),
-        overgraph: { compactAfterNFlushes: 0 },
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { algorithm: 'xchacha20-poly1305' }
-    )
-
-    // Initialize the cipher
-    const cipher = (engine['storage'] as any)._cipher as EncryptionAtRest
-    expect(cipher).not.toBeNull()
-    await cipher.ready()
-
-    engine.open()
-    engine.close()
-  })
-
-  it('should store and retrieve encrypted data via GraphEngine', async () => {
-    const cipherConfig = { algorithm: 'xchacha20-poly1305' }
-    const engine = new GraphEngine(
-      {
-        path: path.join(TEST_DIR, 'engine-encrypted-ops'),
-        overgraph: { compactAfterNFlushes: 0 },
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      cipherConfig
-    )
-
-    // Init cipher
-    const cipher = (engine['storage'] as any)._cipher as EncryptionAtRest
-    await cipher.ready()
-    engine.open()
-
-    // Create some data
-    engine.upsertNode(1, 'EncryptedNode', { props: { secret: 'sensitive-data-123' } })
-
-    // Verify data roundtrip via storage layer
-    const storage = engine['storage'] as OverGraphStorage
-    // Get the node ID from the engine's in-memory set
-    const nodeIds = engine['_nodeIds'] as Set<number>
-    expect(nodeIds.size).toBeGreaterThanOrEqual(1)
-
-    const id = nodeIds.values().next().value as number
-    const retrieved = storage.getNode(id, true)
-    expect(retrieved).not.toBeNull()
-    expect(retrieved!.key).toBe('EncryptedNode')
-    if (retrieved && retrieved.props) {
-      expect(retrieved.props.secret).toBe('sensitive-data-123')
-    }
-
-    engine.close()
-
-    // Re-open and verify data persists
-    const engine2 = new GraphEngine(
-      {
-        path: path.join(TEST_DIR, 'engine-encrypted-ops'),
-        overgraph: { compactAfterNFlushes: 0 },
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      cipherConfig
-    )
-    const cipher2 = (engine2['storage'] as any)._cipher as EncryptionAtRest
-    await cipher2.ready()
-    engine2.open()
-
-    // Verify at the storage level that data persists
-    const storage2 = engine2['storage'] as OverGraphStorage
-    const nodeFromStorage = storage2.getNode(id, true)
-    expect(nodeFromStorage).not.toBeNull()
-    expect(nodeFromStorage!.key).toBe('EncryptedNode')
-    if (nodeFromStorage && nodeFromStorage.props) {
-      expect(nodeFromStorage.props.secret).toBe('sensitive-data-123')
-    }
-
-    engine2.close()
-  })
-
   // ── 新增 tests ──
 
   it('should handle export/import with multiple nodes and edges encrypted', () => {
@@ -269,4 +172,101 @@ describe('EncryptionAtRest — GraphEngine integration', () => {
     storage.close()
     storage2.close()
   })
+})
+
+describe('EncryptionAtRest — GraphEngine integration', () => {
+  it('should initialize GraphEngine with encryption config', async () => {
+    const engine = new GraphEngine(
+      {
+        path: path.join(TEST_DIR, 'engine-encrypted'),
+        overgraph: { compactAfterNFlushes: 0 },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { algorithm: 'xchacha20-poly1305' }
+    )
+
+    // Initialize the cipher
+    const cipher = (engine['storage'] as any)._cipher as EncryptionAtRest
+    expect(cipher).not.toBeNull()
+    await cipher.ready()
+
+    engine.open()
+    engine.close()
+  })
+
+  it('should store and retrieve encrypted data via GraphEngine', async () => {
+    const cipherConfig: CipherConfig = { algorithm: 'xchacha20-poly1305' }
+    const engine = new GraphEngine(
+      {
+        path: path.join(TEST_DIR, 'engine-encrypted-ops'),
+        overgraph: { compactAfterNFlushes: 0 },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      cipherConfig
+    )
+
+    // Init cipher
+    const cipher = (engine['storage'] as any)._cipher as EncryptionAtRest
+    await cipher.ready()
+    engine.open()
+
+    // Create some data
+    engine.upsertNode(1, 'EncryptedNode', { props: { secret: 'sensitive-data-123' } })
+
+    // Verify data roundtrip via storage layer
+    const storage = engine['storage'] as OverGraphStorage
+    // Get the node ID from the engine's in-memory set
+    const nodeIds = engine['_nodeIds'] as Set<number>
+    expect(nodeIds.size).toBeGreaterThanOrEqual(1)
+
+    const id = nodeIds.values().next().value as number
+    const retrieved = storage.getNode(id, true)
+    expect(retrieved).not.toBeNull()
+    expect(retrieved!.key).toBe('EncryptedNode')
+    if (retrieved && retrieved.props) {
+      expect(retrieved.props.secret).toBe('sensitive-data-123')
+    }
+
+    engine.close()
+
+    // Re-open and verify data persists
+    const engine2 = new GraphEngine(
+      {
+        path: path.join(TEST_DIR, 'engine-encrypted-ops'),
+        overgraph: { compactAfterNFlushes: 0 },
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      cipherConfig
+    )
+    const cipher2 = (engine2['storage'] as any)._cipher as EncryptionAtRest
+    await cipher2.ready()
+    engine2.open()
+
+    // Verify at the storage level that data persists
+    const storage2 = engine2['storage'] as OverGraphStorage
+    const nodeFromStorage = storage2.getNode(id, true)
+    expect(nodeFromStorage).not.toBeNull()
+    expect(nodeFromStorage!.key).toBe('EncryptedNode')
+    if (nodeFromStorage && nodeFromStorage.props) {
+      expect(nodeFromStorage.props.secret).toBe('sensitive-data-123')
+    }
+
+    engine2.close()
+  })
+
 })
