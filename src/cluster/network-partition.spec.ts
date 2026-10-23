@@ -162,12 +162,12 @@ describe('Network Partition — Simulation', () => {
     try { e2.open()
       for (let i = 0; i < 10; i++) await e2.upsertNode(1, `e2${i}`)
       expect(e2.scanAllNodes().length).toBe(10)
-      const e1 = new GraphEngine(makeConfig('noa'))
+      const c1 = makeConfig('noa'); const e1 = new GraphEngine(c1)
       try { e1.open(); expect(e1.scanAllNodes().length).toBe(0)
         await e1.upsertNode(1, 'first'); expect(e1.scanAllNodes().length).toBe(1)
-      } finally { cleanup(e1, null) }
+      } finally { cleanup(e1, c1) }
       // cleanup e2 explicitly
-      e2.close(); try { fs.rmSync(e2._path || '', { recursive: true, force: true }) } catch {}
+      e2.close(); try { fs.rmSync(c2.path || '', { recursive: true, force: true }) } catch {}
     } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(c2) }
   }, 15000)
 
@@ -277,7 +277,8 @@ describe('Network Partition — Leader-Like Behavior', () => {
     const e2 = new GraphEngine(c)
     try { e2.open()
       const n = e2.getNode(id)
-      expect(n.props.x).toBe(100); expect(n.props.y).toBe('test'); expect(n.props.z).toBe(true)
+      expect(n).not.toBeNull()
+      expect(n!.props.x).toBe(100); expect(n!.props.y).toBe('test'); expect(n!.props.z).toBe(true)
     } finally { cleanupC(c) }
   }, 15000)
 
@@ -331,8 +332,10 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e1b.open(); e2b.open()
         const n1 = e1b.scanAllNodes().find((n: any) => n.name === 'conflict')
         const n2 = e2b.scanAllNodes().find((n: any) => n.name === 'conflict')
-        expect(n1.props.origin).toBe('l')
-        expect(n2.props.origin).toBe('f')
+        expect(n1).toBeDefined()
+        expect(n2).toBeDefined()
+        expect(n1!.props.origin).toBe('l')
+        expect(n2!.props.origin).toBe('f')
       } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
@@ -459,7 +462,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
     const ef = new GraphEngine(c)
     try { ef.open()
       expect(ef.getNode(1)).not.toBeNull()
-      expect(ef.getNode(1).props.cycle).toBe(2)
+      expect(ef.getNode(1)!.props.cycle).toBe(2)
     } finally { cleanupC(c) }
   }, 30000)
 
