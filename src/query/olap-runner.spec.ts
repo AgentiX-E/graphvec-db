@@ -13,7 +13,8 @@
 
 import { describe, it, expect } from 'vitest'
 import { OlapRunner, OlapConfig, OlapResult } from './olap-runner'
-import { GraphEngine, NodeId } from '../core/graph-engine'
+import { GraphEngine } from '../core/graph-engine'
+import type { NodeId } from '../types'
 
 // ── Mock GraphEngine ──────────────────────────────────────
 
@@ -129,11 +130,6 @@ class MockGraphEngine {
 
     return { scores }
   }
-
-  // 暴露 _nodeIds 供 OLAP runner Internal use
-  get _nodeIds(): Set<number> {
-    return this._nodeIds
-  }
 }
 
 // ── Empty Mock GraphEngine ─────────────────────────────────
@@ -213,7 +209,7 @@ describe('OlapRunner', () => {
   describe('unsupported algorithm', () => {
     it('should throw error for unsupported algorithm', async () => {
       const engine = new MockGraphEngine() as unknown as GraphEngine
-      const config = { algo: 'kmeans' } as OlapConfig
+      const config = { algo: 'kmeans' } as unknown as OlapConfig
       const runner = new OlapRunner(engine, config)
 
       await expect(runner.run()).rejects.toThrow(/Unsupported OLAP algorithm/)
