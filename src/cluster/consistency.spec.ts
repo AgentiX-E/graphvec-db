@@ -655,7 +655,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     } finally { if (e.isOpen) e.close() }
     const e2 = new GraphEngine(config)
     try { e2.open()
-      expect(e2.getNode(id).props.x).toBe(42); expect(e2.getNode(id).props.y).toBe('hello')
+      expect(e2.getNode(id)!.props.x).toBe(42); expect(e2.getNode(id)!.props.y).toBe('hello')
     } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
   }, 15000)
 
@@ -710,8 +710,8 @@ describe('Cluster Consistency — Crash Recovery', () => {
     } finally { if (e.isOpen) e.close() }
     const e2 = new GraphEngine(config)
     try { e2.open()
-      expect(e2.getNode(id).name).toBe('survivor')
-      expect(e2.getNode(id).props.a).toBe(1)
+      expect(e2.getNode(id)!.name).toBe('survivor')
+      expect(e2.getNode(id)!.props.a).toBe(1)
     } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
   }, 15000)
 })
