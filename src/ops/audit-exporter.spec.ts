@@ -9,6 +9,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { AuditLogExporter, ExportFormat, ExportFilter } from './audit-exporter'
 import { AuditLog } from './audit-log'
+import { Role } from '../types'
 
 // ── 辅助: 用类型兼容的 AuditEntry 创建测试实例 ──
 // 注意: audit-log.ts 中的 AuditEntry 类型与 types.ts 略有不同，
@@ -29,11 +30,11 @@ interface TestAuditEntry {
 
 function createTestAuditLog(): AuditLog {
   const log = new AuditLog()
-  log.log({ operation: 'upsert_node', user: 'admin', role: 'admin', resource: 'node:1', result: 'success' })
-  log.log({ operation: 'delete_node', user: 'admin', role: 'admin', resource: 'node:2', result: 'success' })
-  log.log({ operation: 'upsert_node', user: 'writer', role: 'writer', resource: 'node:3', result: 'success' })
-  log.log({ operation: 'upsert_edge', user: 'writer', role: 'writer', resource: 'edge:1', result: 'error', details: 'Validation failed' })
-  log.log({ operation: 'delete_node', user: 'operator', role: 'operator', resource: 'node:4', result: 'denied' })
+  log.log({ operation: 'upsert_node', user: 'admin', role: Role.ADMIN, resource: 'node:1', result: 'success' })
+  log.log({ operation: 'delete_node', user: 'admin', role: Role.ADMIN, resource: 'node:2', result: 'success' })
+  log.log({ operation: 'upsert_node', user: 'writer', role: Role.WRITER, resource: 'node:3', result: 'success' })
+  log.log({ operation: 'upsert_edge', user: 'writer', role: Role.WRITER, resource: 'edge:1', result: 'error', details: 'Validation failed' })
+  log.log({ operation: 'delete_node', user: 'operator', role: Role.OPERATOR, resource: 'node:4', result: 'denied' })
   return log
 }
 
@@ -143,7 +144,7 @@ describe('AuditLogExporter', () => {
       log.log({
         operation: 'upsert',
         user: 'admin',
-        role: 'admin',
+        role: Role.ADMIN,
         resource: 'node:1',
         result: 'success',
         details: 'hello, world', // 含逗号
@@ -151,7 +152,7 @@ describe('AuditLogExporter', () => {
       log.log({
         operation: 'upsert',
         user: 'admin',
-        role: 'admin',
+        role: Role.ADMIN,
         resource: 'node:2',
         result: 'success',
         details: 'line1\nline2', // 含换行符
