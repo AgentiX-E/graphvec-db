@@ -14,6 +14,7 @@ import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import { makeEngine } from '../test-utils/make-engine'
+import type { NodeProperties } from '../types'
 
 function randomDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bm-latency-'))
@@ -123,7 +124,7 @@ describe('Latency Benchmarks', () => {
     for (let i = 0; i < runs; i++) {
       const vec = Array.from({ length: 384 }, () => Math.random() - 0.5)
       const t0 = performance.now()
-      await engine.upsertNode(103, `lat-up-vec-${i}`, { props: { seq: i }, vector: new Float32Array(vec) })
+      await engine.upsertNode(103, `lat-up-vec-${i}`, { props: { seq: i }, denseVector: new Float32Array(vec) })
       timings.push(performance.now() - t0)
     }
 
@@ -457,7 +458,7 @@ describe('Latency Benchmarks', () => {
     const timings: number[] = []
 
     for (let b = 0; b < batches; b++) {
-      const inputs: { typeId: number; name: string; opts?: { props?: Record<string, unknown> } }[] = []
+      const inputs: { typeId: number; name: string; opts?: { props?: NodeProperties } }[] = []
       for (let i = 0; i < batchSize; i++) {
         inputs.push({
           typeId: 300,
@@ -2082,7 +2083,7 @@ describe('Latency Benchmarks', () => {
     await e.open(); try {
       for (let i = 0; i < 60; i++) await e.upsertNode(1, `n${i}`, { props: {} })
       const start = performance.now()
-      for (let src = 0; src < 10; src++) for (let dst = 10; dst < 60; dst++) await e.upsertEdge(src, dst, 1, { label: `e${src}-${dst}` })
+      for (let src = 0; src < 10; src++) for (let dst = 10; dst < 60; dst++) await e.upsertEdge(src, dst, 1, { props: { label: `e${src}-${dst}` } })
       console.log(`[BENCH] 10 nodes each with 50 edges: ${(performance.now() - start).toFixed(2)}ms`)
       let total = 0
       for (let src = 0; src < 10; src++) total += e.neighbors(src).edges.length
@@ -2164,7 +2165,7 @@ describe('Latency Benchmarks', () => {
       const b = await e.upsertNode(1, 'b', { props: {} })
       await e.upsertEdge(a, b, 1, {})
       const start = performance.now()
-      for (let i = 0; i < 500; i++) await e.upsertEdge(a, b, 1, { tag: i })
+      for (let i = 0; i < 500; i++) await e.upsertEdge(a, b, 1, { props: { tag: i } })
       console.log(`[BENCH] re-upsert edge 500 times: ${(performance.now() - start).toFixed(2)}ms`)
       expect(e.neighbors(a).edges.length).toBe(1)
     } finally { e.close() }
@@ -2395,7 +2396,7 @@ describe('Latency Benchmarks', () => {
       await e.upsertNode(1, 'hub', { props: {} })
       for (let i = 2; i <= 51; i++) await e.upsertNode(i, `t${i}`, { props: {} })
       const start = performance.now()
-      for (let i = 2; i <= 51; i++) await e.upsertEdge(1, i, 1, { tag: `e${i}` })
+      for (let i = 2; i <= 51; i++) await e.upsertEdge(1, i, 1, { props: { tag: `e${i}` } })
       console.log(`[BENCH] batch upsert 50 edges from same source: ${(performance.now() - start).toFixed(2)}ms`)
       expect(e.neighbors(1).edges.length).toBe(50)
     } finally { e.close() }
@@ -2478,7 +2479,7 @@ describe('Latency Benchmarks', () => {
       await e.upsertNode(1, 'a', { props: {} })
       await e.upsertNode(2, 'b', { props: {} })
       const start = performance.now()
-      for (let i = 0; i < 500; i++) await e.upsertEdge(1, 2, 1, { w: i })
+      for (let i = 0; i < 500; i++) await e.upsertEdge(1, 2, 1, { props: { w: i } })
       console.log(`[BENCH] re-upsert same edge 500 times: ${(performance.now() - start).toFixed(2)}ms`)
       expect(e.neighbors(1).edges.length).toBe(1)
     } finally { e.close() }
