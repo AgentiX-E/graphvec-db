@@ -311,7 +311,7 @@ describe('GremlinServer — Helpers', () => {
   test('toGraphSONNode', () => {
     const r = toGraphSONNode({ id: 1, label: 'Person', properties: { name: 'Alice' } })
     expect(r['@type']).toBe('g:Vertex')
-    expect(r['@value'].id['@value']).toBe(1)
+    expect((r['@value'] as { id: { '@value': number } }).id['@value']).toBe(1)
   })
 
   test('createGraphData', () => {
@@ -458,7 +458,7 @@ describe('GremlinServer — Protocol: GraphBinary Bytecode', () => {
     const ws = await gremlinConnect(port)
     const msgs = collectMessages(ws, 1500)
     await sendGremlinRequest(ws, '00000000-0000-0000-0000-000000000004', 'bytecode', 'traversal',
-      new Map([['gremlin', buildBytecode([['g', 'graph']], [['V'], ['limit', 2]])], ['aliases', { g: 'g' }]]))
+      new Map([['gremlin', buildBytecode([['g', 'graph']], [['V'], ['limit', '2']])], ['aliases', { g: 'g' }]]))
     const received = await msgs
     expect(received.length).toBeGreaterThan(0)
     const parsed = parseStatusFromResponse(received[0])
