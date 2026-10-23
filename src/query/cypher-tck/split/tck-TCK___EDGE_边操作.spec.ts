@@ -71,8 +71,8 @@ describe('TCK — EDGE 边操作', () => {
   it('[TCK-EDGE-13] DELETE 仅节点', async () => {
     const plan = parseQuery('MATCH (n:Person) DELETE n')
     expect(plan.deleteTargets).toBeDefined()
-    expect(plan.deleteTargets.length).toBe(1)
-    expect(plan.deleteTargets[0]).toBe('n')
+    expect(plan.deleteTargets!.length).toBe(1)
+    expect(plan.deleteTargets![0]).toBe('n')
   })
 
   it('[TCK-EDGE-14] 变长边 *1..3', async () => {
