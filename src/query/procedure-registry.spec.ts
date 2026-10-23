@@ -2,7 +2,7 @@
 // procedure-registry.spec.ts — Cypher Procedure Registry Tests
 // ============================================================
 
-import { ProcedureRegistry, globalRegistry, toAsyncIterable } from './procedure-registry'
+import { ProcedureRegistry, globalRegistry } from './procedure-registry'
 import { parseQuery, _executeQuery } from './query-engine'
 
 // ── Test only图数据 ──────────────────────────────────────────
