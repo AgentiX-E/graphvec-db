@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   DocumentCollection,
+  DocumentStore,
   generateKey,
   type DocumentRecord,
 } from './document-store'
@@ -70,9 +71,6 @@ vi.mock('lmdb', () => {
     clearKeptObjects: () => {},
   }
 })
-
-// After mocking, import the real module
-const { DocumentStore } = await import('./document-store')
 
 // ── Tests ─────────────────────────────────
 
