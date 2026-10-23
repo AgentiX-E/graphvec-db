@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { AuditLogger, RemoteAuditSink } from './audit'
-import { Role } from '../types'
+import { Role, type AuditEntry } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -424,7 +424,7 @@ describe('RemoteAuditSink', () => {
       retryIntervalMs: 50000, // Long retry to avoid interference
     })
 
-    const entry = {
+    const entry: AuditEntry = {
       operation: 'TEST',
       user: 'tester',
       role: Role.ADMIN,
@@ -472,7 +472,7 @@ describe('RemoteAuditSink', () => {
       retryIntervalMs: 50000,
     })
 
-    const entries = Array.from({ length: 3 }, (_, i) => ({
+    const entries: AuditEntry[] = Array.from({ length: 3 }, (_, i) => ({
       operation: `BATCH_OP_${i}`,
       user: 'batch',
       role: Role.OPERATOR,
