@@ -14,7 +14,12 @@ import { _executeQuery, QueryPlan, parseQuery } from '../query/query-engine'
 describe('UNWIND executor', () => {
   it('unwinds literal array', async () => {
     const plan: QueryPlan = {
-      match: [],
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      orderBy: [],
+      limit: undefined,
+      skip: undefined,
       filters: [],
       unwind: {
         list: [1, 2, 3],
@@ -34,7 +39,12 @@ describe('UNWIND executor', () => {
     // preserve the empty string / whitespace), so a hand-built plan must
     // match that representation.
     const plan: QueryPlan = {
-      match: [],
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      orderBy: [],
+      limit: undefined,
+      skip: undefined,
       filters: [],
       unwind: {
         list: ["'a'", "'b'", "'c'"],
@@ -51,7 +61,12 @@ describe('UNWIND executor', () => {
 
   it('unwinds object array', async () => {
     const plan: QueryPlan = {
-      match: [],
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      orderBy: [],
+      limit: undefined,
+      skip: undefined,
       filters: [],
       unwind: {
         list: [{ id: 1 }, { id: 2 }],
@@ -67,7 +82,12 @@ describe('UNWIND executor', () => {
 
   it('handles empty array (returns empty)', async () => {
     const plan: QueryPlan = {
-      match: [],
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      orderBy: [],
+      limit: undefined,
+      skip: undefined,
       filters: [],
       unwind: {
         list: [],
@@ -81,7 +101,12 @@ describe('UNWIND executor', () => {
 
   it('handles single element array', async () => {
     const plan: QueryPlan = {
-      match: [],
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      orderBy: [],
+      limit: undefined,
+      skip: undefined,
       filters: [],
       unwind: {
         list: [42],
@@ -113,7 +138,12 @@ describe('UNWIND executor', () => {
 
   it('multiple UNWIND in sequence should be handled as separate queries', async () => {
     const plan1: QueryPlan = {
-      match: [],
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      orderBy: [],
+      limit: undefined,
+      skip: undefined,
       filters: [],
       unwind: {
         list: [1, 2],
@@ -125,7 +155,12 @@ describe('UNWIND executor', () => {
     expect(r1).toHaveLength(2)
 
     const plan2: QueryPlan = {
-      match: [],
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      orderBy: [],
+      limit: undefined,
+      skip: undefined,
       filters: [],
       unwind: {
         list: ["'x'", "'y'"],
@@ -139,19 +174,26 @@ describe('UNWIND executor', () => {
 
   it('UNWIND with WITH chain does not crash', async () => {
     const plan: QueryPlan = {
-      match: [],
+      scanLabel: null,
+      labelExpr: null,
+      steps: [],
+      orderBy: [],
+      limit: undefined,
+      skip: undefined,
       filters: [],
       unwind: {
         list: [1, 2],
         name: 'x',
       },
       with: {
-        type: 'WITH',
         columns: [{
-          type: 'COLUMN',
-          expression: { type: 'PROP_REF', name: 'x', property: '' },
+          expression: 'x',
           alias: 'y',
         }],
+        filters: [],
+        orderBy: [],
+        limit: undefined,
+        skip: undefined,
       },
       returnColumns: [],
     }
