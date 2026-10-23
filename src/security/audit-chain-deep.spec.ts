@@ -208,8 +208,8 @@ describe('Audit Chain Deep — 审计链深度加强', () => {
     it('should export audit log to JSON', () => {
       logger = new AuditLogger()
 
-      logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'allowed' })
-      logger.log({ operation: 'write', user: 'bob', role: Role.WRITER, resource: 'db2', result: 'allowed' })
+      logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'success' })
+      logger.log({ operation: 'write', user: 'bob', role: Role.WRITER, resource: 'db2', result: 'success' })
 
       const all = logger.getAll()
       expect(all.length).toBe(2)
@@ -223,7 +223,7 @@ describe('Audit Chain Deep — 审计链深度加强', () => {
     it('should export and re-import audit log preserving data', () => {
       logger = new AuditLogger()
 
-      logger.log({ operation: 'op-a', user: 'alice', role: Role.READER, resource: 'r1', result: 'allowed' })
+      logger.log({ operation: 'op-a', user: 'alice', role: Role.READER, resource: 'r1', result: 'success' })
       logger.log({ operation: 'op-b', user: 'bob', role: Role.WRITER, resource: 'r2', result: 'denied' })
 
       const exported = logger.getAll()
@@ -261,7 +261,7 @@ describe('Audit Chain Deep — 审计链深度加强', () => {
     it('should persist audit log to NDJSON file', async () => {
       logger = new AuditLogger(undefined, undefined, tmpDir)
 
-      logger.log({ operation: 'login', user: 'alice', role: Role.ADMIN, resource: 'system', result: 'allowed' })
+      logger.log({ operation: 'login', user: 'alice', role: Role.ADMIN, resource: 'system', result: 'success' })
       await logger.flush()
 
       const ndjsonPath = path.join(tmpDir, 'audit-log.ndjson')
@@ -275,8 +275,8 @@ describe('Audit Chain Deep — 审计链深度加强', () => {
     it('should reload audit entries from file on initialization', async () => {
       // First logger: write entries
       const logger1 = new AuditLogger(undefined, undefined, tmpDir)
-      logger1.log({ operation: 'op1', user: 'alice', role: Role.ADMIN, resource: 'r1', result: 'allowed' })
-      logger1.log({ operation: 'op2', user: 'bob', role: Role.WRITER, resource: 'r2', result: 'allowed' })
+      logger1.log({ operation: 'op1', user: 'alice', role: Role.ADMIN, resource: 'r1', result: 'success' })
+      logger1.log({ operation: 'op2', user: 'bob', role: Role.WRITER, resource: 'r2', result: 'success' })
       await logger1.flush()
       await logger1.close()
 
@@ -293,10 +293,10 @@ describe('Audit Chain Deep — 审计链深度加强', () => {
     it('should query audit log with multiple filters combined', () => {
       logger = new AuditLogger()
 
-      logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'allowed' })
+      logger.log({ operation: 'read', user: 'alice', role: Role.READER, resource: 'db1', result: 'success' })
       logger.log({ operation: 'write', user: 'bob', role: Role.WRITER, resource: 'db1', result: 'denied' })
-      logger.log({ operation: 'delete', user: 'alice', role: Role.ADMIN, resource: 'db2', result: 'allowed' })
-      logger.log({ operation: 'read', user: 'bob', role: Role.WRITER, resource: 'db2', result: 'allowed' })
+      logger.log({ operation: 'delete', user: 'alice', role: Role.ADMIN, resource: 'db2', result: 'success' })
+      logger.log({ operation: 'read', user: 'bob', role: Role.WRITER, resource: 'db2', result: 'success' })
 
       // Filter by user + operation
       const aliceReads = logger.query({ user: 'alice', operation: 'read' })
