@@ -4,6 +4,7 @@
 
 import { GraphImporter, ImportOptions, ImportResult } from './graph-import'
 import { GraphEngine } from '../core/graph-engine'
+import { vi, type Mocked } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import os from 'os'
@@ -371,7 +372,7 @@ describe('GraphImporter', () => {
 
   describe('batch write', () => {
     test('_flushBatch calls batchUpsertNodes with node items', async () => {
-      const engine = (importer as any).engine as vi.Mocked<GraphEngine>
+      const engine = (importer as any).engine as Mocked<GraphEngine>
       const batchUpsertNodesSpy = vi.spyOn(engine, 'batchUpsertNodes')
 
       // Access private method via bracket notation
@@ -399,7 +400,7 @@ describe('GraphImporter', () => {
     })
 
     test('_flushBatch calls upsertEdge for edge items', async () => {
-      const engine = (importer as any).engine as vi.Mocked<GraphEngine>
+      const engine = (importer as any).engine as Mocked<GraphEngine>
       const upsertEdgeSpy = vi.spyOn(engine, 'upsertEdge')
 
       const lines = [
@@ -419,7 +420,7 @@ describe('GraphImporter', () => {
     })
 
     test('batchUpsertNodes fallback on failure', async () => {
-      const engine = (importer as any).engine as vi.Mocked<GraphEngine>
+      const engine = (importer as any).engine as Mocked<GraphEngine>
       // Make batchUpsertNodes throw
       const batchUpsertNodesSpy = vi.spyOn(engine, 'batchUpsertNodes')
         .mockImplementationOnce(() => { throw new Error('batch failed') })
