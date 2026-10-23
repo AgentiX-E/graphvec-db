@@ -400,7 +400,7 @@ let engine: GraphEngine
     await e.open()
     try {
       for (let i = 0; i < 20; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i } })
-      e.scanAllNodes().filter(n => n.props.idx < 10).forEach(n => e.deleteNode(n.id))
+      e.scanAllNodes().filter(n => (n.props.idx as number) < 10).forEach(n => e.deleteNode(n.id))
       expect(e.scanAllNodes().length).toBeGreaterThanOrEqual(1)
     } finally { e.close() }
   }, 30000)
