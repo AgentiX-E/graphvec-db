@@ -10,9 +10,9 @@ import {
   addVertex,
   addEdge,
 } from '../api/gremlin-server'
-import type { GremlinQueryExecutor } from '../api/gremlin-server'
+import type { GremlinQueryExecutor, GremlinBytecodeInstruction } from '../api/gremlin-server'
 
-function run(executor: GremlinQueryExecutor, steps: string[][]): unknown[] {
+function run(executor: GremlinQueryExecutor, steps: GremlinBytecodeInstruction[]): unknown[] {
   const result = executor({
     sourceInstructions: [['V', []]],
     stepInstructions: steps,

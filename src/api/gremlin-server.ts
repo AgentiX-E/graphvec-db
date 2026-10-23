@@ -53,9 +53,18 @@ export interface GremlinQueryResult {
   meta: Record<string, unknown>
 }
 
+/**
+ * One Gremlin bytecode step value. Steps such as `repeat`/`until` accept nested
+ * child traversals (e.g. `repeat(out())` → `['repeat', ['out']]`), so values are
+ * not limited to plain strings.
+ */
+export type GremlinBytecodeValue = string | number | boolean | null | GremlinBytecodeValue[]
+/** A single bytecode instruction: `[name, ...values]`. */
+export type GremlinBytecodeInstruction = GremlinBytecodeValue[]
+
 /** Function signature for query execution */
 export type GremlinQueryExecutor = (
-  bytecode: { sourceInstructions: string[][]; stepInstructions: string[][] },
+  bytecode: { sourceInstructions: GremlinBytecodeInstruction[]; stepInstructions: GremlinBytecodeInstruction[] },
   aliases: Record<string, string>,
 ) => GremlinQueryResult
 
@@ -509,8 +518,8 @@ class GremlinSession {
     }
 
     try {
-      let sourceInstructions: string[][] = []
-      let stepInstructions: string[][] = []
+      let sourceInstructions: GremlinBytecodeInstruction[] = []
+      let stepInstructions: GremlinBytecodeInstruction[] = []
 
       if (typeof gremlin === 'object' && gremlin !== null) {
         const g = gremlin as any
@@ -610,16 +619,16 @@ export interface TraversalStep {
  * Parse the Bytecode step and source instructions.
  */
 export function parseBytecode(
-  bytecode: { sourceInstructions: string[][]; stepInstructions: string[][] },
+  bytecode: { sourceInstructions: GremlinBytecodeInstruction[]; stepInstructions: GremlinBytecodeInstruction[] },
 ): TraversalStep[] {
   const steps: TraversalStep[] = []
 
   for (const source of bytecode.sourceInstructions) {
-    steps.push({ name: source[0], values: source.slice(1) })
+    steps.push({ name: String(source[0]), values: source.slice(1) })
   }
 
   for (const step of bytecode.stepInstructions) {
-    steps.push({ name: step[0], values: step.slice(1) })
+    steps.push({ name: String(step[0]), values: step.slice(1) })
   }
 
   return steps
@@ -806,7 +815,7 @@ export function addEdge(
  */
 export function createDefaultExecutor(graph: GraphData): GremlinQueryExecutor {
   return (
-    bytecode: { sourceInstructions: string[][]; stepInstructions: string[][] },
+    bytecode: { sourceInstructions: GremlinBytecodeInstruction[]; stepInstructions: GremlinBytecodeInstruction[] },
     _aliases: Record<string, string>,
   ): GremlinQueryResult => {
     const steps = parseBytecode(bytecode)
