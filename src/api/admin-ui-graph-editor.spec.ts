@@ -12,6 +12,18 @@ import type { FastifyInstance } from 'fastify'
 
 // ── Mock graph ────────────────────────────────────────────
 
+// Response shapes returned by the admin UI endpoints under test.
+interface GraphSaveResponse {
+  success: boolean
+  accepted?: number
+  error?: string
+}
+
+interface GraphLiveResponse {
+  elements: unknown[]
+  total?: number
+}
+
 const MOCK_TOPOLOGY = [
   { group: 'nodes' as const, data: { id: '1', label: 'Node1', typeId: 1 } },
   { group: 'nodes' as const, data: { id: '2', label: 'Node2', typeId: 2 } },
@@ -63,7 +75,7 @@ describe('Admin UI Graph Editor (GAP-66)', () => {
         }),
       })
       expect(res.ok).toBe(true)
-      const data = await res.json()
+      const data = (await res.json()) as GraphSaveResponse
       expect(data.success).toBe(true)
       expect(data.accepted).toBe(3)
     })
@@ -75,7 +87,7 @@ describe('Admin UI Graph Editor (GAP-66)', () => {
         body: JSON.stringify({ elements: [] }),
       })
       expect(res.ok).toBe(true)
-      const data = await res.json()
+      const data = (await res.json()) as GraphSaveResponse
       expect(data.success).toBe(true)
       expect(data.accepted).toBe(0)
     })
@@ -87,7 +99,7 @@ describe('Admin UI Graph Editor (GAP-66)', () => {
         body: JSON.stringify({}),
       })
       // Fastify returns 400 because body validation fails
-      const data = await res.json()
+      const data = (await res.json()) as GraphSaveResponse
       expect(data.success).toBe(false)
       expect(data.error).toBeTruthy()
     })
@@ -98,7 +110,7 @@ describe('Admin UI Graph Editor (GAP-66)', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ elements: 'not-array' }),
       })
-      const data = await res.json()
+      const data = (await res.json()) as GraphSaveResponse
       expect(data.success).toBe(false)
     })
 
@@ -113,7 +125,7 @@ describe('Admin UI Graph Editor (GAP-66)', () => {
         }),
       })
       expect(res.ok).toBe(true)
-      const data = await res.json()
+      const data = (await res.json()) as GraphSaveResponse
       expect(data.success).toBe(true)
       expect(data.accepted).toBe(1)
     })
@@ -129,7 +141,7 @@ describe('Admin UI Graph Editor (GAP-66)', () => {
         }),
       })
       expect(res.ok).toBe(true)
-      const data = await res.json()
+      const data = (await res.json()) as GraphSaveResponse
       expect(data.success).toBe(true)
       expect(data.accepted).toBe(1)
     })
@@ -202,7 +214,7 @@ describe('Admin UI Graph Editor (GAP-66)', () => {
     it('should return topology via graph-live endpoint', async () => {
       const res = await fetch(`${baseUrl}/api/admin/graph-live`)
       expect(res.ok).toBe(true)
-      const data = await res.json()
+      const data = (await res.json()) as GraphLiveResponse
       expect(data).toHaveProperty('elements')
       // Use Array.isArray rather than instanceof Array: the response body is
       // parsed by the fetch/undici worker realm, whose Array constructor is a
