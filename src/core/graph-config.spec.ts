@@ -36,10 +36,10 @@ describe('GraphConfig', () => {
   })
 
   test('should apply partial overrides without losing defaults', () => {
-    const config = new GraphConfig({ path: '/tmp/partial', walEnabled: false })
+    const config = new GraphConfig({ path: '/tmp/partial', nodeCacheSize: 500 })
     const cfg = config.getConfig()
     expect(cfg.path).toBe('/tmp/partial')
-    expect(cfg.walEnabled).toBe(false)
+    expect(cfg.nodeCacheSize).toBe(500)
     // Should still have defaults for unspecified fields
     expect(cfg.denseVector?.dimension).toBe(384)
   })
@@ -50,10 +50,10 @@ describe('GraphConfig', () => {
     expect(cfg.path).toBe(':memory:')
   })
 
-  test('should handle maxNodeCacheSize override', () => {
-    const config = new GraphConfig({ path: '/tmp/cache-test', maxNodeCacheSize: 10000 })
+  test('should handle nodeCacheSize override', () => {
+    const config = new GraphConfig({ path: '/tmp/cache-test', nodeCacheSize: 10000 })
     const cfg = config.getConfig()
-    expect(cfg.maxNodeCacheSize).toBe(10000)
+    expect(cfg.nodeCacheSize).toBe(10000)
   })
 })
 
