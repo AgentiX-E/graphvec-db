@@ -29,6 +29,12 @@ const TYPE_OTHER = 2
 let engine: GraphEngine
 let benchDir: string
 
+// `_scanNodesByLabel` is private in GraphEngine; benchmark instrumentation
+// reaches it through a narrow structural assertion (real behaviour, no mocks).
+function scanNodesByLabel(e: GraphEngine, label: string): unknown[] {
+  return (e as unknown as { _scanNodesByLabel(l: string): unknown[] })._scanNodesByLabel(label)
+}
+
 function dbDir(): string {
   benchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bli-'))
   return path.join(benchDir, 'graph.db')
@@ -62,7 +68,7 @@ describe('_labelStrIndex — 100K 节点基准', () => {
     const times: number[] = []
     for (let r = 0; r < iterations; r++) {
       const t0 = performance.now()
-      const nodes = engine._scanNodesByLabel('Person')
+      const nodes = scanNodesByLabel(engine, 'Person')
       const elapsed = performance.now() - t0
       times.push(elapsed)
       expect(nodes.length).toBe(80000) // 所有 Person 节点被召回
@@ -78,7 +84,7 @@ describe('_labelStrIndex — 100K 节点基准', () => {
     const times: number[] = []
     for (let r = 0; r < iterations; r++) {
       const t0 = performance.now()
-      const nodes = engine._scanNodesByLabel('NonExistent')
+      const nodes = scanNodesByLabel(engine, 'NonExistent')
       const elapsed = performance.now() - t0
       times.push(elapsed)
       expect(nodes.length).toBe(0)
@@ -93,7 +99,7 @@ describe('_labelStrIndex — 100K 节点基准', () => {
     const times: number[] = []
     for (let r = 0; r < iterations; r++) {
       const t0 = performance.now()
-      const nodes = engine._scanNodesByLabel('Other')
+      const nodes = scanNodesByLabel(engine, 'Other')
       const elapsed = performance.now() - t0
       times.push(elapsed)
       expect(nodes.length).toBe(20000)
@@ -121,7 +127,7 @@ describe('_labelStrIndex — 空数据集', () => {
     const times: number[] = []
     for (let r = 0; r < iterations; r++) {
       const t0 = performance.now()
-      const nodes = engine._scanNodesByLabel('Anything')
+      const nodes = scanNodesByLabel(engine, 'Anything')
       const elapsed = performance.now() - t0
       times.push(elapsed)
       expect(nodes.length).toBe(0)
@@ -154,7 +160,7 @@ describe('_labelStrIndex — 混合 Label', () => {
     const times: number[] = []
     for (let r = 0; r < iterations; r++) {
       const t0 = performance.now()
-      const nodes = engine._scanNodesByLabel('Person')
+      const nodes = scanNodesByLabel(engine, 'Person')
       const elapsed = performance.now() - t0
       times.push(elapsed)
       expect(nodes.length).toBe(35000)
