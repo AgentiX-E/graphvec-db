@@ -20,7 +20,7 @@ const silentLogger: Logger = {
   warn: () => {},
   error: () => {},
   debug: () => {},
-}
+} as unknown as Logger
 
 describe('OutboxV2', () => {
   let outbox: OutboxV2
@@ -178,7 +178,7 @@ describe('PerPeerWorker', () => {
       logger: silentLogger,
     }, null as any)
 
-    expect(worker.peerId).toBe('peer-1')
+    expect((worker as unknown as { peerId: string }).peerId).toBe('peer-1')
     expect(worker.isRunning).toBe(false)
     expect(worker.getPendingCount()).toBe(0)
   })
