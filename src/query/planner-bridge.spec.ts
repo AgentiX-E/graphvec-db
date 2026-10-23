@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { OptimizerBridge } from '../query/planner-bridge'
 import { NodeRecord } from '../types'
+import type { QuerySpec } from '../api/query-planner'
 
 /** 创建一个 mock GraphEngine */
 function createMockEngine(nodes: NodeRecord[] = []): any {
@@ -51,7 +52,7 @@ describe('OptimizerBridge', () => {
 
     it('filters by typeId', async () => {
       const result = await bridge.executeOptimized({
-        typeIds: [1],
+        match: { typeId: 1 },
       })
       expect(result).toHaveLength(2)
       expect(result.every(n => n.type === 1)).toBe(true)
@@ -59,7 +60,6 @@ describe('OptimizerBridge', () => {
 
     it('applies predicate filters', async () => {
       const result = await bridge.executeOptimized({
-        typeIds: [1, 2],
         predicates: [
           (n: NodeRecord) => (n.props?.age as number) >= 28,
         ],
@@ -70,21 +70,20 @@ describe('OptimizerBridge', () => {
 
     it('projects specific fields', async () => {
       const result = await bridge.executeOptimized({
-        typeIds: [1],
-        fields: ['name', 'age'],
+        match: { typeId: 1 },
+        return: ['name', 'age'],
       })
       expect(result).toHaveLength(2)
       for (const r of result) {
         // name should be there (we project it)
         expect(r).toHaveProperty('name')
-        // age is in props
-        expect(r.props?.age).toBeDefined()
+        // age is projected to the top level (PROJECT clears props)
+        expect(r).toHaveProperty('age')
       }
     })
 
     it('sorts by numeric field ascending', async () => {
       const result = await bridge.executeOptimized({
-        typeIds: [1, 2],
         orderBy: { field: 'age', direction: 'asc' },
       })
       const ages = result.map(n => n.props?.age as number)
@@ -95,7 +94,6 @@ describe('OptimizerBridge', () => {
 
     it('sorts by string field descending', async () => {
       const result = await bridge.executeOptimized({
-        typeIds: [1, 2, 3],
         orderBy: { field: 'name', direction: 'desc' },
       })
       const names = result.map(n => n.name)
@@ -123,7 +121,6 @@ describe('OptimizerBridge', () => {
 
     it('applies multi-field filter chaining', async () => {
       const result = await bridge.executeOptimized({
-        typeIds: [1, 2, 3],
         predicates: [
           (n: NodeRecord) => (n.props?.age as number) >= 25,
           (n: NodeRecord) => n.props?.city === 'NYC',
@@ -138,7 +135,7 @@ describe('OptimizerBridge', () => {
     it('type + filter + limit produces same result when order varies', async () => {
       // 只有 typeId 过滤 + predicates 对结果集一致
       const spec = {
-        typeIds: [2],
+        match: { typeId: 2 },
         predicates: [
           (n: NodeRecord) => (n.props?.age as number) > 28,
         ],
@@ -170,7 +167,7 @@ describe('OptimizerBridge', () => {
 
   describe('explain', () => {
     it('returns non-empty explain string', () => {
-      const text = bridge.explain({ typeIds: [1] })
+      const text = bridge.explain({ match: { typeId: 1 } })
       expect(text).toBeTruthy()
       expect(typeof text).toBe('string')
     })
@@ -184,7 +181,7 @@ describe('OptimizerBridge', () => {
     })
 
     it('handles non-matching typeId gracefully', async () => {
-      const result = await bridge.executeOptimized({ typeIds: [999] })
+      const result = await bridge.executeOptimized({ match: { typeId: 999 } })
       expect(result).toEqual([])
     })
 
@@ -203,12 +200,11 @@ describe('OptimizerBridge', () => {
 
     it('full pipeline produces correct end result', async () => {
       const result = await pipeBridge.executeOptimized({
-        typeIds: [1, 2],
         predicates: [
           (n: NodeRecord) => (n.props?.salary as number) >= 85,
         ],
         orderBy: { field: 'salary', direction: 'desc' },
-        fields: ['id', 'name', 'salary'],
+        return: ['id', 'name', 'salary'],
       })
       // type=1,2 + salary>=85 = Alice(100), Charlie(120), Diana(90) = 3
       expect(result).toHaveLength(3)
@@ -239,9 +235,7 @@ describe('OptimizerBridge', () => {
     it('deduplicates nodes from both sides', async () => {
       // UNION 在 OptimizerBridge 中通过 PlanNodeType.UNION 实现，
       // 当 plan.children >= 2 时合并左右结果
-      const spec = {
-        typeIds: [1, 2], // 作为 UNION 输入，执行时合并
-      }
+      const spec: QuerySpec = {}
       // 通过 _executeOptimizedIR 直接调用的是 SCAN（单子节点），
       // UNION 需要多子节点，在这里不做集成测试（由 query-engine 覆盖）
       // 此处验证 basic spec 执行路径
