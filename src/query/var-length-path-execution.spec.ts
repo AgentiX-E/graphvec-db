@@ -1059,7 +1059,7 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
       // v1 has no out-edges, so no 2-hop path exists; but 1-hop 0->1 still yields p.
       const rows = executeVarLenPath(plan as any, nodes)
       expect(rows.length).toBe(1)
-      expect(rows[0].p.__path).toHaveLength(2)
+      expect((rows[0].p as any).__path).toHaveLength(2)
     })
 
     it('_buildRow expression resolving to undefined -> null (L95)', () => {
@@ -1130,7 +1130,7 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
         returnColumns: ['p'],
       }
       const rows = executeVarLenPath(plan as any, nodes)
-      const edgeObj = rows[0].p.__pathEdges[0] as any
+      const edgeObj = (rows[0].p as any).__pathEdges[0] as any
       // `_type` reflects the edge LABEL (NEXT), not the prop; prop `w` survives.
       expect(edgeObj._type).toBe('NEXT')
       expect(edgeObj.w).toBe(9)
@@ -1169,8 +1169,8 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
       const rows = executeVarLenPath(plan as any, nodes)
       // Starting at b (index 1), undirected reverse finds a (index 0).
       expect(rows.length).toBe(1)
-      expect(rows[0].p.__path[0].name).toBe('b')
-      expect(rows[0].p.__path[1].name).toBe('a')
+      expect((rows[0].p as any).__path[0].name).toBe('b')
+      expect((rows[0].p as any).__path[1].name).toBe('a')
     })
 
     it('edge inline prop predicate mismatch skips traversal (L336 edgePropsPred)', () => {
@@ -1196,8 +1196,8 @@ describe('executeVarLenPath — real behaviour (no mocks)', () => {
       }
       const rows = executeVarLenPath(plan as any, nodes)
       expect(rows.length).toBe(1)
-      expect(rows[0].p.__path).toHaveLength(2)
-      expect(rows[0].b.name).toBe('v1')
+      expect((rows[0].p as any).__path).toHaveLength(2)
+      expect((rows[0].b as any).name).toBe('v1')
     })
   })
 })
