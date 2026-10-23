@@ -5,8 +5,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { OIDCValidator, AuthenticatorChain, AuthError } from './auth'
-import { AuthResult, Role } from '../types'
+import { OIDCValidator, AuthenticatorChain } from './auth'
+import { AuthResult, Role, AuthError } from '../types'
 import * as http from 'http'
 import * as crypto from 'node:crypto'
 
@@ -70,7 +70,7 @@ describe('C-02: OAuth2/OIDC', () => {
     })
     chain.use('success1', async (_req) => {
       callOrder.push('success1')
-      return { userId: 'oidc-user', role: Role.ADMIN } as AuthResult
+      return { user: 'oidc-user', role: Role.ADMIN } as AuthResult
     })
     chain.use('fail2', async (_req) => {
       callOrder.push('fail2') // should not be reached
@@ -80,7 +80,7 @@ describe('C-02: OAuth2/OIDC', () => {
     const req = { headers: {} } as http.IncomingMessage
     const result = await chain.authenticate(req)
 
-    expect(result.userId).toBe('oidc-user')
+    expect(result.user).toBe('oidc-user')
     expect(result.role).toBe(Role.ADMIN)
     expect(callOrder).toEqual(['fail1', 'success1'])
   })
@@ -112,7 +112,7 @@ describe('C-02: OAuth2/OIDC', () => {
     chain.use('token', async (req) => {
       const auth = req.headers['authorization']
       if (auth === 'Bearer valid-token') {
-        return { userId: 'api-user', role: Role.WRITER } as AuthResult
+        return { user: 'api-user', role: Role.WRITER } as AuthResult
       }
       return null
     })
@@ -120,7 +120,7 @@ describe('C-02: OAuth2/OIDC', () => {
     // Test with valid token
     const req1 = { headers: { authorization: 'Bearer valid-token' } } as unknown as http.IncomingMessage
     const result1 = await chain.authenticate(req1)
-    expect(result1.userId).toBe('api-user')
+    expect(result1.user).toBe('api-user')
     expect(result1.role).toBe(Role.WRITER)
 
     // Test without token
@@ -136,11 +136,11 @@ describe('C-02: OAuth2/OIDC', () => {
       throw new Error('Internal error')
     })
     chain.use('backup', async (_req) => {
-      return { userId: 'backup-user', role: Role.READER } as AuthResult
+      return { user: 'backup-user', role: Role.READER } as AuthResult
     })
 
     const req = { headers: {} } as http.IncomingMessage
     const result = await chain.authenticate(req)
-    expect(result.userId).toBe('backup-user')
+    expect(result.user).toBe('backup-user')
   })
 })
