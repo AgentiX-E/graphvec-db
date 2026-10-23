@@ -7,6 +7,45 @@ import { startAdminUI } from './admin-ui'
 import type { FastifyInstance } from 'fastify'
 import WebSocket from 'ws'
 
+// Response shapes returned by the tested admin UI endpoints.
+interface AdminHealth {
+  alive: boolean
+  status: string
+  uptime: number
+  timestamp: number
+}
+
+interface AdminStats {
+  nodeCount: number
+  edgeCount: number
+  nodeTypeCount?: number
+  shardCount?: number
+  uptime?: number
+  timestamp?: number
+}
+
+interface AdminQueryResult {
+  success: boolean
+  result?: unknown
+}
+
+interface AdminErrorResponse {
+  error: string
+}
+
+type CytoscapeElementData = { id: string; source?: string; target?: string; label?: string; typeId?: number }
+
+interface CytoscapeElement {
+  group: 'nodes' | 'edges'
+  data: CytoscapeElementData
+}
+
+interface AdminGraphLive {
+  elements: CytoscapeElement[]
+  timestamp: number
+}
+
+
 // ── Mock graph ────────────────────────────────────────────
 
 /** Topology elements for testing */
@@ -55,7 +94,7 @@ describe('Admin UI', () => {
   it('GET /api/admin/health returns health status', async () => {
     const res = await fetch(`${baseUrl}/api/admin/health`)
     expect(res.ok).toBe(true)
-    const data = await res.json()
+    const data = (await res.json()) as AdminHealth
     expect(data).toHaveProperty('alive')
     expect(data.alive).toBe(true)
     expect(data).toHaveProperty('status')
@@ -67,7 +106,7 @@ describe('Admin UI', () => {
   it('GET /api/admin/stats returns graph statistics', async () => {
     const res = await fetch(`${baseUrl}/api/admin/stats`)
     expect(res.ok).toBe(true)
-    const data = await res.json()
+    const data = (await res.json()) as AdminStats
     expect(data).toHaveProperty('nodeCount')
     expect(data.nodeCount).toBe(42)
     expect(data).toHaveProperty('edgeCount')
@@ -77,7 +116,7 @@ describe('Admin UI', () => {
   it('GET /api/admin/procedures returns procedure list', async () => {
     const res = await fetch(`${baseUrl}/api/admin/procedures`)
     expect(res.ok).toBe(true)
-    const data = await res.json()
+    const data = (await res.json()) as unknown[]
     expect(Array.isArray(data)).toBe(true)
     // Should include at least one built-in procedure from the registry
     expect(data.length).toBeGreaterThanOrEqual(1)
@@ -91,7 +130,7 @@ describe('Admin UI', () => {
       body: JSON.stringify({ query: 'MATCH (n) RETURN n' }),
     })
     expect(res.ok).toBe(true)
-    const data = await res.json()
+    const data = (await res.json()) as AdminQueryResult
     expect(data).toHaveProperty('success', true)
     expect(data).toHaveProperty('result')
   })
@@ -103,7 +142,7 @@ describe('Admin UI', () => {
       body: JSON.stringify({}),
     })
     expect(res.status).toBe(400)
-    const data = await res.json()
+    const data = (await res.json()) as AdminErrorResponse
     expect(data).toHaveProperty('error')
   })
 
@@ -127,7 +166,7 @@ describe('Admin UI', () => {
   it('GET /api/unknown returns 404 JSON', async () => {
     const res = await fetch(`${baseUrl}/api/unknown`)
     expect(res.status).toBe(404)
-    const data = await res.json()
+    const data = (await res.json()) as AdminErrorResponse
     expect(data).toHaveProperty('error')
     expect(data.error).toContain('not found')
   })
@@ -138,7 +177,7 @@ describe('Admin UI', () => {
     it('GET /api/admin/graph-live returns topology snapshot', async () => {
       const res = await fetch(`${baseUrl}/api/admin/graph-live`)
       expect(res.ok).toBe(true)
-      const data = await res.json()
+      const data = (await res.json()) as AdminGraphLive
       expect(data).toHaveProperty('elements')
       expect(data).toHaveProperty('timestamp')
       expect(Array.isArray(data.elements)).toBe(true)
@@ -152,7 +191,7 @@ describe('Admin UI', () => {
 
     it('GET /api/admin/graph-live returns correctly structured Cytoscape elements', async () => {
       const res = await fetch(`${baseUrl}/api/admin/graph-live`)
-      const data = await res.json()
+      const data = (await res.json()) as AdminGraphLive
       const nodes = data.elements.filter((e: any) => e.group === 'nodes')
       const edges = data.elements.filter((e: any) => e.group === 'edges')
       expect(nodes.length).toBe(3)
@@ -273,7 +312,7 @@ describe('Admin UI', () => {
       const res = await fetch(`${baseUrl}/admin/stats`)
       expect(res.ok).toBe(true)
       expect(res.status).toBe(200)
-      const data = await res.json()
+      const data = (await res.json()) as AdminStats
       expect(data).toHaveProperty('nodeCount')
       expect(data.nodeCount).toBe(42)
       expect(data).toHaveProperty('edgeCount')
