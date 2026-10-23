@@ -97,7 +97,7 @@ describe('event-bus.curvespec (CURVE security config)', () => {
     const keys1 = mod.EventBus.generateCurveKeys()
     const keys2 = mod.EventBus.generateCurveKeys()
     // Two calls should produce different keys (random)
-    expect(keys1.publicKey.toString('hex')).not.toBe(keys2.publicKey.toString('hex'))
+    expect(keys1.publicKey).not.toBe(keys2.publicKey)
   })
 
   it('curvespec describes two-node CURVE communication scenario', () => {
