@@ -703,6 +703,7 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
     // 构造一个无 LIMIT 的 plan，并生成超过 1000 条候选数据
     const plan: import('./query-engine').QueryPlan = {
       scanLabel: 'Test',
+      labelExpr: null,
       steps: [],
       returnColumns: ['name'],
       filters: [],
@@ -711,9 +712,7 @@ describe('ParameterizedQuery — 预编译参数化查询', () => {
       aggregate: undefined,
       skip: undefined,
       with: undefined,
-      optionalMatches: [],
-      subQueries: [],
-      matchPatterns: [],
+      optionalMatchSteps: [],
     }
 
     // 生成 1500 条候选节点
