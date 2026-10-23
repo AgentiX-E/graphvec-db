@@ -1,9 +1,10 @@
 import { SafeReader } from './safe-reader'
 import type { ConsensusProvider } from '../consensus/consensus-provider'
+import { vi, type Mocked } from 'vitest'
 
 describe('SafeReader', () => {
   describe('with consensus provider', () => {
-    let mockProvider: vi.Mocked<ConsensusProvider>
+    let mockProvider: Mocked<ConsensusProvider>
 
     beforeEach(() => {
       mockProvider = {
@@ -12,7 +13,7 @@ describe('SafeReader', () => {
         on: vi.fn(),
         start: vi.fn(),
         stop: vi.fn(),
-      } as unknown as vi.Mocked<ConsensusProvider>
+      } as unknown as Mocked<ConsensusProvider>
     })
 
     test('should call readIndex before read', async () => {
