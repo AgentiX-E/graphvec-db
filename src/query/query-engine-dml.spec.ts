@@ -52,14 +52,14 @@ async function execQ(query: string, seedNodes: Row[] = []): Promise<{ rows: Row[
 
 /** 执行 DML 并让 _executeQuery 直接操作调用方 nodes 数组（共享引用）
  *  用于需要观察 CREATE 新增节点的场景。 */
-async function execQDirect(query: string, nodes: Row[], queryStr?: string): Row[] {
+async function execQDirect(query: string, nodes: Row[], queryStr?: string): Promise<Row[]> {
   const plan = compileCypher(query).execute({}) as QueryPlan
   const raw = await _executeQuery(plan, nodes, queryStr ?? query)
   return raw.map(r => deepUnwrap(r) as Row)
 }
 
 /** MATCH + RETURN 扫描当前 allNodes 状态 */
-async function matchScan(query: string, nodes: Row[]): Row[] {
+async function matchScan(query: string, nodes: Row[]): Promise<Row[]> {
   const plan = compileCypher(query).execute({}) as QueryPlan
   const raw = await _executeQuery(plan, nodes, query)
   return raw.map(r => deepUnwrap(r) as Row)
