@@ -78,7 +78,7 @@ export class OpenAPIRegistry {
    * @param path - 路径模板（如 /api/v1/{db}/node）
    * @param info - 路由Info
    */
-  registerRoute(method: string, path: string, info: RouteInfo): this {
+  registerRoute(method: string, path: string, info: Omit<RouteInfo, 'method' | 'path'>): this {
     const key = `${method.toUpperCase()}:${path}`
 
     const operation: OpenAPIOperation = {
