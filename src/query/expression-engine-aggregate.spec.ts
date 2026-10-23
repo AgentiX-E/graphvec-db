@@ -86,24 +86,24 @@ describe('_executeAggregation', () => {
     { group: 'b', v: 10 },
   ]
   it('no group-by, count', () => {
-    const r = _executeAggregation(rows, [{ fn: 'COUNT', prop: '*', alias: 'c' }], [])
+    const r = _executeAggregation(rows, [{ fn: 'COUNT', field: '*', prop: '*', alias: 'c' }], [])
     expect(r).toEqual([{ c: 3 }])
   })
   it('no group-by, sum', () => {
-    const r = _executeAggregation(rows, [{ fn: 'SUM', prop: 'v', alias: 's' }], [])
+    const r = _executeAggregation(rows, [{ fn: 'SUM', field: 'v', prop: 'v', alias: 's' }], [])
     expect(r).toEqual([{ s: 13 }])
   })
   it('group-by sum', () => {
-    const r = _executeAggregation(rows, [{ fn: 'SUM', prop: 'v', alias: 's' }], ['group'])
+    const r = _executeAggregation(rows, [{ fn: 'SUM', field: 'v', prop: 'v', alias: 's' }], ['group'])
     const byGroup = Object.fromEntries(r.map(x => [x.group, x.s]))
     expect(byGroup).toEqual({ a: 3, b: 10 })
   })
   it('empty rows count -> 0', () => {
-    const r = _executeAggregation([], [{ fn: 'COUNT', prop: '*', alias: 'c' }], [])
+    const r = _executeAggregation([], [{ fn: 'COUNT', field: '*', prop: '*', alias: 'c' }], [])
     expect(r).toEqual([{ c: 0 }])
   })
   it('empty rows avg -> null', () => {
-    const r = _executeAggregation([], [{ fn: 'AVG', prop: 'v', alias: 'a' }], [])
+    const r = _executeAggregation([], [{ fn: 'AVG', field: 'v', prop: 'v', alias: 'a' }], [])
     expect(r).toEqual([{ a: null }])
   })
 })
