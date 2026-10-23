@@ -13,7 +13,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     //   When executing query: """CREATE (n:Person {name: "Alice"})"""
     const plan = parseQuery('CREATE (n:Person {name: "Alice"})')
     expect(plan.createNodes).toBeDefined()
-    expect(plan.createNodes.length).toBeGreaterThan(0)
+    expect(plan.createNodes!.length).toBeGreaterThan(0)
   })
 
   it('[TCK-DML-02] CREATE 关系', async () => {
@@ -43,7 +43,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     const plan = parseQuery('MATCH (n:Person {name: "Alice"}) DELETE n')
     expect(plan).toBeDefined()
     expect(plan.deleteTargets).toBeDefined()
-    expect(plan.deleteTargets.length).toBe(1)
+    expect(plan.deleteTargets!.length).toBe(1)
   })
 
   it('[TCK-DML-05] DETACH DELETE', async () => {
@@ -90,7 +90,7 @@ describe('TCK — DML (CREATE/MERGE/DELETE/SET/REMOVE)', () => {
     const plan = parseQuery('MERGE (n:Person {name: "Alice"})')
     expect(plan).toBeDefined()
     expect(plan.mergeNodes).toBeDefined()
-    expect(plan.mergeNodes.length).toBeGreaterThan(0)
+    expect(plan.mergeNodes!.length).toBeGreaterThan(0)
   })
 
   it('[TCK-DML-10] MERGE ON CREATE SET', async () => {
