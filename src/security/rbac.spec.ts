@@ -157,7 +157,7 @@ describe('RBAC', () => {
     test('checkPermission should throw AuthError with statusCode 403', () => {
       try {
         RBAC.checkPermission(Role.READER, 'write')
-        fail('Should have thrown')
+        throw new Error('Should have thrown')
       } catch (e) {
         expect(e).toBeInstanceOf(AuthError)
         expect((e as AuthError).statusCode).toBe(403)
@@ -169,7 +169,7 @@ describe('RBAC', () => {
     test('checkResourceAccess should throw AuthError with statusCode 403', () => {
       try {
         RBAC.checkResourceAccess(Role.READER, 'write:data')
-        fail('Should have thrown')
+        throw new Error('Should have thrown')
       } catch (e) {
         expect(e).toBeInstanceOf(AuthError)
         expect((e as AuthError).statusCode).toBe(403)
@@ -311,7 +311,7 @@ describe('RBAC', () => {
       // Unauthorized action
       try {
         RBAC.checkAclPermission(Role.READER, 'delete', 'database', 'readonly-db')
-        fail('Should have thrown')
+        throw new Error('Should have thrown')
       } catch (e) {
         expect(e).toBeInstanceOf(AuthError)
         expect((e as AuthError).statusCode).toBe(403)
