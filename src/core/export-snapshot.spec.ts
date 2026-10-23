@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import { OverGraphStorage } from './overgraph-storage'
+import type { NodeProperties } from '../types'
 
 const DB_DIR = path.join(__dirname, '__test_export__')
 
@@ -19,7 +20,6 @@ function createStorage(label?: string): OverGraphStorage {
   const s = new OverGraphStorage()
   s.open({
     path: DB_DIR,
-    dbName: label ?? 'test-export',
     backend: 'classic-level',
   })
   return s
@@ -57,14 +57,14 @@ describe('exportSnapshot / importSnapshot', () => {
     storage2.importSnapshot(buf)
 
     // 验证节点
-    const n1 = await storage2.getNode(id1)
+    const n1 = await storage2.getNode(id1, true)
     expect(n1).not.toBeNull()
     expect(n1!.key).toBe('alice')
     expect(n1!.typeId).toBe(1)
     expect((n1!.props as any)?.age).toBe(30)
     expect((n1!.props as any)?.city).toBe('NYC')
 
-    const n2 = await storage2.getNode(id2)
+    const n2 = await storage2.getNode(id2, true)
     expect(n2).not.toBeNull()
     expect(n2!.typeId).toBe(2)
 
@@ -81,13 +81,13 @@ describe('exportSnapshot / importSnapshot', () => {
   it('exportSnapshot roundtrip preserves all node props', async () => {
     // 创建各种类型节点的数据
     await storage.upsertNode(1, 'deep', {
-      props: { age: 42, active: true, score: 3.14, tags: ['a', 'b'], nested: { x: 1 } },
+      props: { age: 42, active: true, score: 3.14, tags: ['a', 'b'], nested: { x: 1 } as unknown as NodeProperties[string] },
     })
     const buf = storage.exportSnapshot()
     const storage2 = createStorage('snap-round-' + Date.now())
     storage2.importSnapshot(buf)
 
-    const n = await storage2.getNode(1)
+    const n = await storage2.getNode(1, true)
     // exportSnapshot 重建后 ID 不变（overgraph 持久化），但 import 时 ID 可能变
     if (n) {
       expect(n.typeId).toBe(1)
