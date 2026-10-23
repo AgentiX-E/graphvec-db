@@ -294,8 +294,8 @@ describe('Cypher statement validation', () => {
       const b = await engine.upsertNode(1, 'b', { props: {} })
       await engine.upsertEdge(a, b, 1, { props: { weight: 99.5, label: 'knows' } })
       const nbs = engine.neighbors(a)
-      if (nbs !== undefined && nbs.length > 0) {
-        expect(nbs.length).toBeGreaterThan(0)
+      if (nbs !== undefined && nbs.edges.length > 0) {
+        expect(nbs.edges.length).toBeGreaterThan(0)
       }
     } finally { engine.close() }
   }, 30000)
