@@ -9,11 +9,12 @@ import {
   DEFAULT_SUBSCRIPTION_RESOLVERS,
   SubscriptionEventType,
 } from './graphql-adapter'
+import type { NodeRecord, EdgeRecord, NodeProperties } from '../types'
 
 describe('GraphQLAdapter', () => {
   const mockResolvers: ResolverMap = {
     nodes: async ({ label, limit }) => {
-      const allNodes = [
+      const allNodes: NodeRecord[] = [
         { id: 1, type: 1, name: 'Alice', props: { age: 30 } },
         { id: 2, type: 1, name: 'Bob', props: { age: 25 } },
         { id: 3, type: 2, name: 'Graph', props: { nodes: 1000 } },
@@ -28,7 +29,7 @@ describe('GraphQLAdapter', () => {
       return filtered
     },
     edges: async ({ type }) => {
-      const allEdges = [
+      const allEdges: EdgeRecord[] = [
         { src: 1, dst: 2, type: 10, props: {} },
         { src: 2, dst: 3, type: 11, props: { weight: 1.5 } },
         { src: 1, dst: 3, type: 10, props: {} },
@@ -48,13 +49,13 @@ describe('GraphQLAdapter', () => {
 
   const mockMutationResolvers: MutationResolvers = {
     createNode: async ({ name, type, props }) => {
-      return { id: 4, type: type ?? 0, name, props: props ?? {} }
+      return { id: 4, type: type ?? 0, name, props: (props ?? {}) as NodeProperties }
     },
     createEdge: async ({ src, dst, type, props }) => {
-      return { src, dst, type, props: props ?? {} }
+      return { src, dst, type, props: (props ?? {}) as NodeProperties }
     },
     updateNode: async ({ id, name, props }) => {
-      return { id, type: 1, name: name ?? 'Updated', props: props ?? {} }
+      return { id, type: 1, name: name ?? 'Updated', props: (props ?? {}) as NodeProperties }
     },
     deleteNode: async ({ id }) => {
       return true
