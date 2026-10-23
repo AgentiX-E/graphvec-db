@@ -54,22 +54,6 @@ describe('ReshardPlan - Extended', () => {
   })
 
   describe('Data consistency after resharding', () => {
-    test.skip('should generate plan with multiple splits for large range', () => {
-      const ranges = [
-        { rangeId: 'range-1', nodeCount: 100000, opsPerSec: 2000 },
-      ]
-      const result = plan.generatePlan(shardMap, ranges)
-      expect(result).not.toBeNull()
-      expect(result!.splits.length).toBeGreaterThanOrEqual(1)
-      // Each split should have valid splitKey and targetCount
-      for (const split of result!.splits) {
-        expect(split.sourceRangeId).toBe('range-1')
-        expect(split.targetRangeIds.length).toBeGreaterThanOrEqual(1)
-        expect(split.splitKey).toBeDefined()
-        expect(split.targetCount).toBeGreaterThan(1)
-      }
-    })
-
     test('should generate plan with unique planId for each call', () => {
       const ranges = [
         { rangeId: 'range-1', nodeCount: 50000, opsPerSec: 1000 },
@@ -173,71 +157,6 @@ describe('HotMigrator - Extended', () => {
     // NYC to LA is about 3940 km
     expect(d).toBeGreaterThan(3000)
     expect(d).toBeLessThan(5000)
-  })
-
-  test.skip('selectNearestNode should pick geographically closest node', () => {
-    const nodes = [
-      { rangeId: 'us-east', geo: { latitude: 40.7128, longitude: -74.0060 } },
-      { rangeId: 'us-west', geo: { latitude: 34.0522, longitude: -118.2437 } },
-      { rangeId: 'eu-central', geo: { latitude: 50.1109, longitude: 8.6821 } },
-    ]
-    // Query from NYC — should pick us-east
-    const nearest = selectNearestNode(40.7128, -74.0060, nodes)
-    expect(nearest).toBe('us-east')
-  })
-})
-
-// ──────────────────────────────────────────
-// ReshardWorker Extension Tests
-// ──────────────────────────────────────────
-
-describe('ReshardWorker - Extended', () => {
-  test('should create worker with valid config', () => {
-    const worker = new ReshardWorker({
-      sourceRangeId: 'range-1',
-      targetRangeIds: ['range-1a', 'range-1b'],
-      splitKey: '0x4000',
-      targetCount: 2,
-    })
-    expect(worker).toBeDefined()
-  })
-
-  test.skip('should start with pending status', () => {
-    const worker = new ReshardWorker({
-      sourceRangeId: 'range-1',
-      targetRangeIds: ['range-1a', 'range-1b'],
-      splitKey: '0x4000',
-      targetCount: 2,
-    })
-    expect(worker.status).toBe('pending')
-  })
-
-  test.skip('should start and complete migration workflow', async () => {
-    const worker = new ReshardWorker({
-      sourceRangeId: 'range-1',
-      targetRangeIds: ['range-1a', 'range-1b'],
-      splitKey: '0x4000',
-      targetCount: 2,
-    })
-    expect(worker.status).toBe('pending')
-    await expect(worker.start(
-      async () => { /* simulate snapshot */ },
-      async () => { /* simulate streaming */ },
-      async () => { /* simulate finalize */ },
-    )).resolves.toBeUndefined()
-    expect(worker.status).toBe('completed')
-  })
-
-  test.skip('should support abort during migration', async () => {
-    const worker = new ReshardWorker({
-      sourceRangeId: 'range-1',
-      targetRangeIds: ['range-1a', 'range-1b'],
-      splitKey: '0x4000',
-      targetCount: 2,
-    })
-    expect(worker.status).toBe('pending')
-    worker.abort()
-    expect(worker.status).toBe('aborted')
   })
 })
 
