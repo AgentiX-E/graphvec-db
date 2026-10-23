@@ -205,50 +205,6 @@ class MockShardManager {
     return [{ rangeId: 'range-0', raftRole: 'leader', nodeCount: this.allNodes.length }]
   }
 
-  getRange(_rangeId: string): any {
-    return {
-      engine: {
-        stats: () => ({
-          nodeCount: this.allNodes.length,
-          edgeCount: this.edgeStore.size,
-          diskSizeBytes: 0,
-        }),
-        deleteEdge: (src: number, dst: number, typeId: number) => this.deleteEdge(src, dst, typeId),
-      },
-      write: (op: any) => {
-        if (op.type === 'delete_edge') {
-          const { src, dst, typeId } = op.payload
-          return this.deleteEdge(src, dst, typeId)
-        }
-        if (op.type === 'upsert_edge') {
-          const { src, dst, typeId } = op.payload
-          return this.upsertEdge(src, dst, typeId)
-        }
-        if (op.type === 'upsert_node') {
-          const { typeId, name } = op.payload
-          return this.upsertNode(typeId, name)
-        }
-        if (op.type === 'batch_upsert') {
-          const { inputs } = op.payload
-          const ids = this.batchUpsertNodes(inputs)
-          const result: Record<string, number> = {}
-          for (let i = 0; i < inputs.length; i++) {
-            result[inputs[i].name] = ids[i]
-          }
-          return result
-        }
-        if (op.type === 'delete_node') {
-          const { id } = op.payload
-          return this.deleteNode(id)
-        }
-        return undefined
-      },
-      read: (fn: (engine: any) => any) => {
-        return fn(this.getRange('range-0').engine)
-      },
-    }
-  }
-
   getAllRanges(): Map<string, any> {
     const m = new Map()
     m.set('range-0', this.getRange('range-0'))
@@ -266,7 +222,7 @@ class MockShardManager {
         }),
         deleteEdge: (src: number, dst: number, typeId: number) => this.deleteEdge(src, dst, typeId),
       },
-      write: (op: any) => {
+      write: async (op: any) => {
         if (op.type === 'delete_edge') {
           const { src, dst, typeId } = op.payload
           return this.deleteEdge(src, dst, typeId)
@@ -281,7 +237,7 @@ class MockShardManager {
         }
         if (op.type === 'batch_upsert') {
           const { inputs } = op.payload
-          const ids = this.batchUpsertNodes(inputs)
+          const ids = await this.batchUpsertNodes(inputs)
           const result: Record<string, number> = {}
           for (let i = 0; i < inputs.length; i++) {
             result[inputs[i].name] = ids[i]
