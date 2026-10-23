@@ -418,7 +418,7 @@ describe('bodySizeLimitMiddleware', () => {
   function createMockReqRes(method: string, contentLength?: string): {
     req: http.IncomingMessage
     res: http.ServerResponse
-    next: ReturnType<typeof vi.fn>
+    next: () => void
   } {
     const req = new http.IncomingMessage(null as any)
     req.method = method
