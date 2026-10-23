@@ -148,7 +148,7 @@ describe('OverGraphStorage — 分块快照', () => {
     const storage2 = new OverGraphStorage()
     storage2.open({ path: TEST_DIR + '/graph2' })
     try {
-      await storage2.importFromChunks(fs.createReadStream(SNAP_FILE))
+      await storage2.importSnapshotFile(SNAP_FILE)
       // If no error (import may tolerate minor corruption), skip assert
     } catch {
       // Expected
@@ -173,7 +173,7 @@ describe('OverGraphStorage — 分块快照', () => {
       const storage2 = new OverGraphStorage()
       storage2.open({ path: TEST_DIR + '/graph2' })
       try {
-        await storage2.importFromChunks(fs.createReadStream(SNAP_FILE))
+        await storage2.importSnapshotFile(SNAP_FILE)
       } catch {
         // Expected
       }
@@ -201,7 +201,7 @@ describe('OverGraphStorage — 分块快照', () => {
     const storage2 = new OverGraphStorage()
     storage2.open({ path: TEST_DIR + '/graph2' })
     try {
-      await storage2.importFromChunks(fs.createReadStream(SNAP_FILE))
+      await storage2.importSnapshotFile(SNAP_FILE)
     } catch {
       // Expected
     }
@@ -216,7 +216,7 @@ describe('OverGraphStorage — 分块快照', () => {
     const storage2 = new OverGraphStorage()
     storage2.open({ path: TEST_DIR + '/graph2' })
     try {
-      await storage2.importFromChunks(fs.createReadStream(SNAP_FILE))
+      await storage2.importSnapshotFile(SNAP_FILE)
     } catch {
       // Expected
     }
