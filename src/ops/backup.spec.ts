@@ -565,7 +565,7 @@ describe('D-13 — 恢复可观测性（onProgress 回调）', () => {
   const BACKUP_DIR = './test-data/backup-obs-test'
   const DATA_DIR = './test-data/backup-obs-data'
 
-  beforeAll(() => {
+  beforeAll(async () => {
     cleanDir(BACKUP_DIR)
     cleanDir(DATA_DIR)
     process.env.DATA_DIR = DATA_DIR
@@ -575,9 +575,9 @@ describe('D-13 — 恢复可观测性（onProgress 回调）', () => {
     engine.open()
 
     // Write some data
-    const n1 = engine.upsertNode(1, 'obs-a')
-    const n2 = engine.upsertNode(1, 'obs-b')
-    engine.upsertEdge(n1, n2, 5)
+    const n1 = await engine.upsertNode(1, 'obs-a')
+    const n2 = await engine.upsertNode(1, 'obs-b')
+    await engine.upsertEdge(n1, n2, 5)
     engine.close()
     engine.open()
 
@@ -604,8 +604,8 @@ describe('D-13 — 恢复可观测性（onProgress 回调）', () => {
     const engine = new GraphEngine(config)
     const backup = new Backup(engine)
 
-    const progressCalls: { phase: string; percent: number; eta: number }[] = []
-    const onProgress = (phase: string, percent: number, eta: number) => {
+    const progressCalls: { phase: string; percent: number; eta?: number }[] = []
+    const onProgress = (phase: string, percent: number, eta?: number) => {
       progressCalls.push({ phase, percent, eta })
     }
 
@@ -644,7 +644,7 @@ describe('D-13 — 恢复可观测性（onProgress 回调）', () => {
     const backup = new Backup(engine)
 
     const progressCalls: number[] = []
-    const onProgress = (_phase: string, percent: number, _eta: number) => {
+    const onProgress = (_phase: string, percent: number, _eta?: number) => {
       progressCalls.push(percent)
     }
 
@@ -681,7 +681,7 @@ describe('D-13 — 恢复可观测性（onProgress 回调）', () => {
     const backup = new Backup(engine)
 
     let progressCount = 0
-    const onProgress = (phase: string, _percent: number, _eta: number) => {
+    const onProgress = (phase: string, _percent: number, _eta?: number) => {
       progressCount++
     }
 
