@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { GraphEngine } from '../core/graph-engine'
+import type { NodeProperties } from '../types'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -159,7 +160,7 @@ describe('Scalability Benchmarks', () => {
     const start = performance.now()
 
     for (let b = 0; b < batches; b++) {
-      const inputs: { typeId: number; name: string; opts?: { props?: Record<string, unknown> } }[] = []
+      const inputs: { typeId: number; name: string; opts?: { props?: NodeProperties } }[] = []
       for (let i = 0; i < batchSize; i++) {
         const idx = b * batchSize + i
         if (idx >= total) break
@@ -185,7 +186,7 @@ describe('Scalability Benchmarks', () => {
     const start = performance.now()
 
     for (let b = 0; b < batches; b++) {
-      const inputs: { typeId: number; name: string; opts?: { props?: Record<string, unknown> } }[] = []
+      const inputs: { typeId: number; name: string; opts?: { props?: NodeProperties } }[] = []
       for (let i = 0; i < batchSize; i++) {
         const idx = b * batchSize + i
         if (idx >= total) break
@@ -211,7 +212,7 @@ describe('Scalability Benchmarks', () => {
     const start = performance.now()
 
     for (let b = 0; b < batches; b++) {
-      const inputs: { typeId: number; name: string; opts?: { props?: Record<string, unknown> } }[] = []
+      const inputs: { typeId: number; name: string; opts?: { props?: NodeProperties } }[] = []
       for (let i = 0; i < batchSize; i++) {
         const idx = b * batchSize + i
         if (idx >= total) break
@@ -237,7 +238,7 @@ describe('Scalability Benchmarks', () => {
     const start = performance.now()
 
     for (let b = 0; b < batches; b++) {
-      const inputs: { typeId: number; name: string; opts?: { props?: Record<string, unknown> } }[] = []
+      const inputs: { typeId: number; name: string; opts?: { props?: NodeProperties } }[] = []
       for (let i = 0; i < batchSize; i++) {
         const idx = b * batchSize + i
         if (idx >= total) break
@@ -268,7 +269,7 @@ describe('Scalability Benchmarks', () => {
     const start = performance.now()
 
     for (let b = 0; b < batches; b++) {
-      const inputs: Array<{ src: number; dst: number; typeId: number; opts?: { props?: Record<string, unknown> } }> = []
+      const inputs: Array<{ src: number; dst: number; typeId: number; opts?: { props?: NodeProperties } }> = []
       for (let i = 0; i < batchSize; i++) {
         const idx = b * batchSize + i
         if (idx >= total || idx + 2 >= allNodes.length) break
@@ -724,7 +725,7 @@ describe('Scalability Benchmarks', () => {
     try {
       for (let i = 0; i < 100; i++) await engine.upsertNode(1, `n${i}`, { props: { seq: i } })
       const all = engine.scanAllNodes()
-      const half = all.filter(n => n.props.seq % 2 === 0)
+      const half = all.filter(n => (n.props.seq as number) % 2 === 0)
       half.forEach(n => engine.deleteNode(n.id))
       expect(engine.scanAllNodes().length).toBe(50)
     } finally { engine.close() }
@@ -847,7 +848,7 @@ describe('Scalability Benchmarks', () => {
     await e.open()
     try {
       for (let i = 0; i < 200; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i } })
-      e.scanAllNodes().filter(n => n.props.idx % 2 === 0).forEach(n => e.deleteNode(n.id))
+      e.scanAllNodes().filter(n => (n.props.idx as number) % 2 === 0).forEach(n => e.deleteNode(n.id))
       expect(e.scanAllNodes().length).toBe(100)
     } finally { e.close() }
   }, 120000)
@@ -907,7 +908,7 @@ describe('Scalability Benchmarks', () => {
     await e.open()
     try {
       for (let i = 0; i < 80; i++) await e.upsertNode(1, `n${i}`, { props: { idx: i } })
-      const del = e.scanAllNodes().filter(n => n.props.idx < 20)
+      const del = e.scanAllNodes().filter(n => (n.props.idx as number) < 20)
       del.forEach(n => e.deleteNode(n.id))
       expect(e.scanAllNodes().length).toBe(60)
     } finally { e.close() }
@@ -1861,7 +1862,7 @@ describe('Scalability Benchmarks', () => {
     await e.open(); try {
       const batchSize = 500; const total = 3000; const batches = total / batchSize
       for (let b = 0; b < batches; b++) {
-        const inputs: Array<{ typeId: number; name: string; opts?: { props?: Record<string, unknown> } }> = []
+        const inputs: Array<{ typeId: number; name: string; opts?: { props?: NodeProperties } }> = []
         for (let i = 0; i < batchSize; i++) {
           const idx = b * batchSize + i
           inputs.push({ typeId: 1, name: `n${idx}`, opts: { props: { x: Math.random() * 100, y: Math.random() * 100, z: Math.random() } } })
@@ -2187,7 +2188,7 @@ describe('Scalability Benchmarks', () => {
   it('V57 scalability: 6k nodes with complex props', async () => {
     const e = new GraphEngine({ path: '/tmp/v57-s186-' + Date.now() })
     await e.open(); try {
-      for (let i = 0; i < 6000; i++) await e.upsertNode((i % 4) + 1, `cp${i}`, { props: { name: `node-${i}`, val: i * 3.14, flag: i % 2 === 0, tags: ['a', 'b', 'c'], meta: { x: i, y: i * 2 } } })
+      for (let i = 0; i < 6000; i++) await e.upsertNode((i % 4) + 1, `cp${i}`, { props: { name: `node-${i}`, val: i * 3.14, flag: i % 2 === 0, tags: ['a', 'b', 'c'], meta: { x: i, y: i * 2 } as unknown as NodeProperties[string] } })
       expect(e.scanAllNodes().length).toBe(6000)
     } finally { e.close() }
   }, 60000)
