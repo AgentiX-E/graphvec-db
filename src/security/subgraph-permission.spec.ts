@@ -41,7 +41,7 @@ describe('RBAC — Subgraph Permissions', () => {
       })
 
       expect(() =>
-        RBAC.checkSubgraphPermission(Role.READER, 'my-subgraph', 'write'),
+        RBAC.checkSubgraphPermission(Role.READER, 'my-subgraph', 'update'),
       ).toThrow(AuthError)
     })
 
@@ -54,13 +54,13 @@ describe('RBAC — Subgraph Permissions', () => {
       })
 
       try {
-        RBAC.checkSubgraphPermission(Role.READER, 'restricted-subgraph', 'write')
-        fail('Should have thrown')
+        RBAC.checkSubgraphPermission(Role.READER, 'restricted-subgraph', 'update')
+        throw new Error('Should have thrown')
       } catch (e) {
         expect(e).toBeInstanceOf(AuthError)
         expect((e as AuthError).statusCode).toBe(403)
         expect((e as AuthError).message).toContain('restricted-subgraph')
-        expect((e as AuthError).message).toContain('write')
+        expect((e as AuthError).message).toContain('update')
       }
     })
 
@@ -83,7 +83,7 @@ describe('RBAC — Subgraph Permissions', () => {
       ).toThrow(AuthError)
 
       expect(() =>
-        RBAC.checkSubgraphPermission(Role.WRITER, 'unconfigured-subgraph', 'write'),
+        RBAC.checkSubgraphPermission(Role.WRITER, 'unconfigured-subgraph', 'update'),
       ).toThrow(AuthError)
     })
 
@@ -132,7 +132,7 @@ describe('RBAC — Subgraph Permissions', () => {
         RBAC.checkSubgraphPermission('subgraph-operator', 'managed-subgraph', 'read'),
       ).not.toThrow()
       expect(() =>
-        RBAC.checkSubgraphPermission('subgraph-operator', 'managed-subgraph', 'write'),
+        RBAC.checkSubgraphPermission('subgraph-operator', 'managed-subgraph', 'update'),
       ).not.toThrow()
       expect(() =>
         RBAC.checkSubgraphPermission('subgraph-operator', 'managed-subgraph', 'admin'),
@@ -157,7 +157,7 @@ describe('RBAC — Subgraph Permissions', () => {
 
       // But not write (not in ACL actions)
       expect(() =>
-        RBAC.checkSubgraphPermission(Role.READER, 'shared-subgraph', 'write'),
+        RBAC.checkSubgraphPermission(Role.READER, 'shared-subgraph', 'update'),
       ).toThrow(AuthError)
     })
 
@@ -173,7 +173,7 @@ describe('RBAC — Subgraph Permissions', () => {
         role: Role.WRITER,
         resource: 'subgraph',
         resourceId: 'mixed-subgraph',
-        actions: ['read', 'write'],
+        actions: ['read', 'update'],
       })
 
       // Reader can only read
@@ -181,7 +181,7 @@ describe('RBAC — Subgraph Permissions', () => {
         RBAC.checkSubgraphPermission(Role.READER, 'mixed-subgraph', 'read'),
       ).not.toThrow()
       expect(() =>
-        RBAC.checkSubgraphPermission(Role.READER, 'mixed-subgraph', 'write'),
+        RBAC.checkSubgraphPermission(Role.READER, 'mixed-subgraph', 'update'),
       ).toThrow(AuthError)
 
       // Writer can read and write
@@ -189,7 +189,7 @@ describe('RBAC — Subgraph Permissions', () => {
         RBAC.checkSubgraphPermission(Role.WRITER, 'mixed-subgraph', 'read'),
       ).not.toThrow()
       expect(() =>
-        RBAC.checkSubgraphPermission(Role.WRITER, 'mixed-subgraph', 'write'),
+        RBAC.checkSubgraphPermission(Role.WRITER, 'mixed-subgraph', 'update'),
       ).not.toThrow()
     })
   })
@@ -211,7 +211,7 @@ describe('RBAC — Subgraph Permissions', () => {
         role: Role.WRITER,
         resource: 'subgraph',
         resourceId: 'test-subgraph',
-        actions: ['read', 'write'],
+        actions: ['read', 'update'],
       })
       RBAC.addAcl({
         role: Role.READER,
