@@ -46,7 +46,7 @@ describe('TemporalIndex — Basic Operations', () => {
 
   test('GAP-12-3: add multiple events with default timestamp', () => {
     const now = Date.now()
-    index.add({ value: 10 })
+    index.add({ timestamp: now, value: 10 })
     expect(index.size()).toBe(1)
     expect(index.minTimestamp()).toBeGreaterThanOrEqual(now)
   })

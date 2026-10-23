@@ -435,7 +435,7 @@ describe('createGrpcServer 参数传递', () => {
 
     const testErr = new Error('port already in use')
     mockBindAsync.mockImplementation(
-      (_addr: string, _cred: any, cb: (err: Error) => void) => {
+      (_addr: string, _cred: any, cb: (err: Error, port: number) => void) => {
         cb(testErr, 0)
       },
     )

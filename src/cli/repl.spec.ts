@@ -8,7 +8,7 @@
  */
 
 import { GraphEngine } from '../core/graph-engine'
-import { cleanTestData, testEngineConfig } from 'test/fixtures/test-graph'
+import { cleanTestData, testEngineConfig } from '../../test/fixtures/test-graph'
 import {
   executeQuery,
   printResult,

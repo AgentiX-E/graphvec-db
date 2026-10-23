@@ -106,11 +106,14 @@ class MockBatchStorage implements StorageProvider {
     return []
   }
 
-  queryPattern(_opts: any): Array<{ id: NodeId; typeId: number; key: string }> {
+  queryPattern(_opts: any): Array<{ id: NodeId; typeId: number; key: string; props?: Record<string, unknown>; createdAt: number }> {
     return []
   }
 
   compact(): void {}
+  getAllNodeIds(): number[] {
+    return Array.from(this.nodes.keys())
+  }
   stats(): StorageStats {
     return { nodeCount: this.nodes.size, edgeCount: this.edges.size, diskSizeBytes: 0, pendingWalBytes: 0, activeMemtableBytes: 0, immutableMemtableBytes: 0 }
   }

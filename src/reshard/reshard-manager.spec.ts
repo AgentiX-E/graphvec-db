@@ -271,7 +271,7 @@ describe('ReshardManager', () => {
       // We can do this by calling _scheduleCleanup with a very short delay using fake timers
       vi.useFakeTimers()
 
-      // @ts-expect-error accessing private method for testing cleanup behavior
+      // Accessing private method for testing cleanup behavior.
       const scheduleCleanup = (mgr as any)._scheduleCleanup.bind(mgr)
       scheduleCleanup(plan, 100)
 

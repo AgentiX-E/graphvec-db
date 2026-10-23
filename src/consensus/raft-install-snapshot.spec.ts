@@ -344,7 +344,6 @@ describe('Raft InstallSnapshot (R04)', () => {
     let leader: MockTransport
     let follower: MockTransport
     let followerConsensus: RaftLogicConsensus
-    let leaderConsensus: RaftLogicConsensus
     let mockModule: any
 
     beforeAll(() => {
@@ -364,7 +363,6 @@ describe('Raft InstallSnapshot (R04)', () => {
     afterEach(async () => {
       try { await leader?.stop() } catch {}
       try { await follower?.stop() } catch {}
-      try { await leaderConsensus?.stop() } catch {}
       try { await followerConsensus?.stop() } catch {}
       MockTransport.reset()
     })

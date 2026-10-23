@@ -27,7 +27,7 @@ const silentLogger: Logger = {
   warn: (msg: string) => { lastWarn = msg },
   error: () => {},
   debug: () => {},
-}
+} as unknown as Logger
 
 let lastWarn = ''
 let testDir = ''

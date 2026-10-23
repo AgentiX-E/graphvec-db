@@ -13,6 +13,7 @@ import {
   VarlenRange,
 } from './query-engine'
 import { NodeRecord, EdgeRecord } from '../types'
+import type { ShardManager } from '../shard/shard-manager'
 
 // ──────────────────────────────────────────
 // Mock ShardManager
@@ -613,7 +614,7 @@ describe('error handling', () => {
       neighbors: async () => {
         throw new Error('mock error')
       },
-    }
+    } as unknown as ShardManager
 
     const paths = await findVarlenPaths(failingManager, {
       source: 1,

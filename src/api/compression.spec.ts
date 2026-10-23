@@ -16,7 +16,7 @@ function createMockReq(acceptEncoding?: string): IncomingMessage {
 }
 
 function createMockRes(): ServerResponse {
-  return new ServerResponse(new Socket())
+  return new ServerResponse(new IncomingMessage(new Socket()))
 }
 
 describe('negotiateEncoding', () => {

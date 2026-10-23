@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { GraphEngine } from '../core/graph-engine'
+import type { NodeProperties } from '../types'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -1222,7 +1223,7 @@ describe('Stability Benchmarks', () => {
   it('V57-stress9: 6000 upsertNode 2 deep prop types', async () => {
     const e = new GraphEngine({ path: '/tmp/v57-sr88-' + Date.now() })
     await e.open(); try {
-      for (let i = 0; i < 6000; i++) await e.upsertNode(1, `n${i}`, { props: { v: i, nested: { a: i, b: `s${i}` } } })
+      for (let i = 0; i < 6000; i++) await e.upsertNode(1, `n${i}`, { props: { v: i, nested: { a: i, b: `s${i}` } as unknown as NodeProperties[string] } })
       expect(e.scanAllNodes().length).toBe(6000)
     } finally { e.close() }
   }, 300000)

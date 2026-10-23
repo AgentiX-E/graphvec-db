@@ -19,7 +19,7 @@ function planOf(overrides: Record<string, unknown> = {}): QueryPlan {
   return {
     returnColumns: [],
     ...overrides,
-  } as QueryPlan
+  } as unknown as QueryPlan
 }
 
 /** A node seed, optionally with `_alias`/`_label`/`props` and magic `__` slots. */

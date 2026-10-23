@@ -12,6 +12,7 @@ function makePlan(overrides: Partial<QueryPlan> = {}): QueryPlan {
   return {
     type: 'QUERY',
     scanLabel: null,
+    labelExpr: null,
     steps: [],
     filters: [],
     returnColumns: [],

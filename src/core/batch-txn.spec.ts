@@ -61,7 +61,7 @@ describe('C-03: Batch Operations & Transaction', () => {
   // TC2: transaction timeout — stale cleanup
   it('transaction timeout with stale cleanup', async () => {
     // Create a txn manager with very short max age (100ms)
-    const txnMgr = new SimpleTxnManager({ maxTxnAgeMs: 100, ssiEnabled: false })
+    const txnMgr = new SimpleTxnManager({ maxTxnAgeMs: 100, enableSSI: false })
     expect(txnMgr.activeCount).toBe(0)
 
     const txId = txnMgr.begin('timeout-test')

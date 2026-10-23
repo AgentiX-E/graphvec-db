@@ -190,7 +190,7 @@ describe('DbClusterConsensusProvider', () => {
   describe('setApply', () => {
     it('should store apply callback without forwarding to cluster', () => {
       // Reset calls first so the membership_change setup doesn't interfere
-      mockCluster.on.mockClear();
+      vi.mocked(mockCluster.on).mockClear();
       const fn = vi.fn();
       provider.setApply(fn);
       // The callback is stored locally but not forwarded to db-cluster

@@ -105,7 +105,7 @@ describe('AggregationRegistry', () => {
 
     it('重复注册应抛出Error', () => {
       registry.register('my_uda', () => ({ state: 0 } as Accumulator))
-      expect(() => registry.register('my_uda')).toThrow(/already registered/)
+      expect(() => registry.register('my_uda', () => ({ state: 0 } as Accumulator))).toThrow(/already registered/)
     })
 
     it('未注册的聚合函数应抛出Error', () => {

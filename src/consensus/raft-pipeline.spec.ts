@@ -72,7 +72,7 @@ describe('B-01 Raft Pipeline 复制', () => {
 
     // 批量 propose 20 条 entries
     const count = 20
-    const promises: Promise<void>[] = []
+    const promises: Promise<unknown>[] = []
     for (let i = 0; i < count; i++) {
       promises.push(leader!.propose(new TextEncoder().encode(`entry-${i}`)))
     }

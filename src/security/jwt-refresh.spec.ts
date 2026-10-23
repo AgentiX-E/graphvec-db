@@ -5,8 +5,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { JwtManager, AuthError } from './auth'
-import { Role } from '../types'
+import { JwtManager } from './auth'
+import { Role, AuthError } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'

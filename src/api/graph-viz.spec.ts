@@ -73,19 +73,7 @@ describe('GraphVizFormatter - DOT format', () => {
   })
 
   test('escapes special characters in labels', () => {
-    const graph: VizGraph = {
-      directed: false,
-      nodes: [{ id: 1, label: 'Node "A"' }],
-      edges: [{ src: 1, dst: 2, label: 'edge "AB"' }],
-      edges: [],
-    }
-    // Actually let's do it cleanly
-    const cleanGraph: VizGraph = {
-      directed: false,
-      nodes: [{ id: 1, label: 'Node "A"' }],
-      edges: [{ src: 1, dst: 2, label: 'edge "AB"' }],
-    }
-    // Fix: can't have edge to 2 if 2 doesn't exist
+    // An edge must reference an existing node, so both endpoints are declared.
     const fixedGraph: VizGraph = {
       directed: false,
       nodes: [

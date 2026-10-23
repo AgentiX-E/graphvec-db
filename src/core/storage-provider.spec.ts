@@ -79,11 +79,11 @@ describe('NeighborsOptions interface', () => {
 describe('NeighborEntry interface', () => {
   it('can be constructed', () => {
     const entry: NeighborEntry = {
-      nodeId: 'n1',
+      nodeId: 1,
       edgeTypeId: 1,
       validFrom: 1000,
     }
-    expect(entry.nodeId).toBe('n1')
+    expect(entry.nodeId).toBe(1)
     expect(entry.edgeTypeId).toBe(1)
     expect(entry.validFrom).toBe(1000)
   })

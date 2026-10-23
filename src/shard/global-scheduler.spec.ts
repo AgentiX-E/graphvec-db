@@ -15,7 +15,7 @@
  */
 
 import { describe, test, expect, vi } from 'vitest'
-import { GlobalScheduler, SuggestionType, NodeResource, ShardLoad } from './global-scheduler'
+import { GlobalScheduler, SuggestionType, NodeResource, ShardLoad, GlobalSuggestion } from './global-scheduler'
 
 // ── 工厂函数 ──
 

@@ -13,6 +13,7 @@
  */
 import { test, expect } from 'vitest'
 import { GraphEngine } from '../core/graph-engine'
+import type { NodeProperties } from '../types'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -242,7 +243,7 @@ test('CC-08: 100 个 props 的节点', async () => {
   engine.open()
 
   try {
-    const bigProps: Record<string, unknown> = {}
+    const bigProps: NodeProperties = {}
     for (let i = 0; i < 100; i++) {
       bigProps[`key_${i}`] = `value_${i}`
     }

@@ -152,7 +152,6 @@ describe('GraphAdapter — toGraphologyGraph', () => {
 describe('GraphAdapter — compareGraphs', () => {
   let engineA: GraphEngine
   let engineB: GraphEngine
-  let engineC: GraphEngine
   let baseDir: string
 
   beforeAll(() => {
@@ -162,7 +161,6 @@ describe('GraphAdapter — compareGraphs', () => {
   afterAll(() => {
     engineA?.close()
     engineB?.close()
-    engineC?.close()
     try { rmSync(baseDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 

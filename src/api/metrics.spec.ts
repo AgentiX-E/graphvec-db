@@ -39,7 +39,7 @@ function createMockResponse(): {
   }
 
   const socket = new Socket()
-  const res = new ServerResponse(socket) as ServerResponse & { _implicitHeader?: () => void }
+  const res = new ServerResponse(new IncomingMessage(socket)) as ServerResponse & { _implicitHeader?: () => void }
 
   res.writeHead = function (this: ServerResponse, statusCode: number, headers?: Record<string, string | number>) {
     result.statusCode = statusCode

@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 
 // We mock both gRPC modules to avoid loading proto files in tests
 // Using class extends to ensure `new` keyword works
 
-const mockMethods: Record<string, vi.Mock> = {}
+const mockMethods: Record<string, Mock> = {}
 
 class MockGrpcClient {
   close = vi.fn()

@@ -17,6 +17,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { OverGraphStorage } from './overgraph-storage'
+import type { NodeProperties } from '../types'
 import * as fs from 'fs'
 
 const TEST_DIR = '/tmp/og-keyorder-test'
@@ -31,7 +32,7 @@ describe('Property key-order preservation', () => {
     try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch { /* ok */ }
   })
 
-  function writeNode(path: string, props: Record<string, unknown>): number {
+  function writeNode(path: string, props: NodeProperties): number {
     const s = new OverGraphStorage()
     s.open({ path })
     const id = s.upsertNode(1, 'n0', { props })
@@ -97,7 +98,7 @@ describe('Property key-order preservation', () => {
   it('round-trips mixed value types with order intact', () => {
     const path = TEST_DIR + '/order-mixed'
     const nested = { inner: [1, 2, 3] }
-    const props: Record<string, unknown> = {
+    const props = {
       str: 'hello',
       num: 42,
       big: 9007199254740993n,
@@ -105,7 +106,7 @@ describe('Property key-order preservation', () => {
       nil: null,
       arr: [1, 'two', true],
       obj: nested,
-    }
+    } as unknown as NodeProperties
     writeNode(path, props)
 
     const read = readNodeProps(path, 1)

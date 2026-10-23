@@ -551,7 +551,7 @@ describe('_validateOrderByScope — numeric id and backtick identifier', () => {
 
 describe('_validateUnionComposition — empty guard', () => {
   it('returns early on an empty query', () => {
-    expect(() => _validateUnionComposition('')).not.toThrow()
+    expect(() => _validateUnionComposition({}, '')).not.toThrow()
   })
 })
 
