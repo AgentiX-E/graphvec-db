@@ -74,7 +74,7 @@ describe('event-bus-test-node (logic patterns)', () => {
     const bus = new EventBus({} as any)
 
     let msgCount = 0
-    const handler = vi.fn(() => { msgCount++ })
+    const handler = vi.fn((..._args: unknown[]) => { msgCount++ })
     bus.setReceiveHandler(handler)
 
     handler({ type: 'data', srcNodeId: 'peer-1' })
