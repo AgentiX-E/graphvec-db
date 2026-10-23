@@ -2,7 +2,7 @@
  * membership-presync.spec.ts — PreSync 单元测试
  */
 
-import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 import { PreSyncManager, DataSource } from './membership-presync'
 import { MembershipTransport } from './app-membership-manager'
 
@@ -81,8 +81,8 @@ describe('PreSyncManager', () => {
   let followerTransport: MockPresyncTransport
   let leaderManager: PreSyncManager
   let followerManager: PreSyncManager
-  let leaderResult: vi.Mock
-  let followerResult: vi.Mock
+  let leaderResult: Mock<(success: boolean, peerId: string) => void>
+  let followerResult: Mock<(success: boolean, peerId: string) => void>
 
   beforeEach(() => {
     leaderTransport = new MockPresyncTransport([
