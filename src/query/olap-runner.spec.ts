@@ -257,6 +257,97 @@ describe('OlapRunner', () => {
     })
   })
 
+  describe('betweenness', () => {
+    it('should compute betweenness centrality for all nodes', async () => {
+      const engine = new MockGraphEngine() as unknown as GraphEngine
+      const config: OlapConfig = { algo: 'betweenness' }
+      const runner = new OlapRunner(engine, config)
+
+      const result = await runner.run()
+
+      expect(result.algo).toBe('betweenness')
+      expect(result.graphStats.nodeCount).toBe(5)
+
+      const data = result.data as Record<string, number>
+      expect(Object.keys(data).length).toBe(5)
+      // Every node must have a finite numeric score.
+      for (const key of Object.keys(data)) {
+        expect(Number.isFinite(data[key])).toBe(true)
+        expect(data[key]).toBeGreaterThanOrEqual(0)
+      }
+    })
+
+    it('should apply sampling when sample < node count', async () => {
+      const engine = new MockGraphEngine() as unknown as GraphEngine
+      const config: OlapConfig = { algo: 'betweenness', sample: 2 }
+      const runner = new OlapRunner(engine, config)
+
+      const result = await runner.run()
+
+      expect(result.algo).toBe('betweenness')
+      const data = result.data as Record<string, number>
+      // Sampled vertices still produce a result keyed by node id.
+      expect(Object.keys(data).length).toBeGreaterThan(0)
+      for (const key of Object.keys(data)) {
+        expect(Number.isFinite(data[key])).toBe(true)
+      }
+    })
+
+    it('should return empty object for empty graph', async () => {
+      const engine = new EmptyMockGraphEngine() as unknown as GraphEngine
+      const config: OlapConfig = { algo: 'betweenness' }
+      const runner = new OlapRunner(engine, config)
+
+      const result = await runner.run()
+
+      expect(result.algo).toBe('betweenness')
+      expect(result.data).toEqual({})
+    })
+  })
+
+  describe('louvain', () => {
+    it('should discover communities with modularity and levels', async () => {
+      const engine = new MockGraphEngine() as unknown as GraphEngine
+      const config: OlapConfig = { algo: 'louvain' }
+      const runner = new OlapRunner(engine, config)
+
+      const result = await runner.run()
+
+      expect(result.algo).toBe('louvain')
+      expect(result.graphStats.nodeCount).toBe(5)
+
+      const data = result.data as {
+        communities: Record<string, number>
+        modularity: number
+        levels: number
+      }
+      expect(typeof data.modularity).toBe('number')
+      expect(typeof data.levels).toBe('number')
+      // Every node is assigned to some community.
+      expect(Object.keys(data.communities).length).toBe(5)
+      for (const key of Object.keys(data.communities)) {
+        expect(typeof data.communities[key]).toBe('number')
+      }
+    })
+
+    it('should return zeroed result for empty graph', async () => {
+      const engine = new EmptyMockGraphEngine() as unknown as GraphEngine
+      const config: OlapConfig = { algo: 'louvain' }
+      const runner = new OlapRunner(engine, config)
+
+      const result = await runner.run()
+
+      const data = result.data as {
+        communities: Record<string, number>
+        modularity: number
+        levels: number
+      }
+      expect(data.communities).toEqual({})
+      expect(data.modularity).toBe(0)
+      expect(data.levels).toBe(0)
+    })
+  })
+
   // ── 额外: bfs 缺少 startNode ──
   describe('validation', () => {
     it('should require startNode for BFS', async () => {
