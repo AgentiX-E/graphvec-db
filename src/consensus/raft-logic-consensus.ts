@@ -566,17 +566,21 @@ export class RaftLogicConsensus implements ConsensusProvider {
   /** 定期检查 majority 状态，状态变化时触发回调 */
   private _checkMajority(): void {
     if (!this._node) return
-    const status = this._node.status()
-    const leader = status.lead ?? status.leaderId ?? null
+    // Use the synchronous onStateChange cache instead of the async
+    // RaftNode.status() — both to avoid an uncached WASM round-trip inside
+    // a timer, and because status() is not available on lightweight mock
+    // nodes used in tests (it would throw and leave an unhandled rejection).
+    const leader = this.getLeaderId()
     const wasInMajority = this._inMajority
-    // Strategy: a null/empty leader id means the cluster lost quorum.
-    this._inMajority = leader !== null && leader !== 0
+    // Strategy: a null/empty/"0" leader id means the cluster lost quorum.
+    // (lead is stringified in the cache, so a numeric 0 becomes "0".)
+    this._inMajority = leader !== null && leader !== '' && leader !== '0'
     if (wasInMajority !== this._inMajority) {
       this.logger.info('[RaftConsensus] Majority status changed', {
         from: wasInMajority,
         to: this._inMajority,
         leaderId: leader,
-        term: status.term,
+        term: this.getTerm(),
       })
       for (const cb of this._majorityCallbacks) {
         try { cb(this._inMajority) } catch {}
