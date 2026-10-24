@@ -47,17 +47,30 @@ export function triangleCount(
   const idRank = new Map<NodeId, number>()
   sortedIds.forEach((id, idx) => idRank.set(id, idx))
 
+  // Every neighbor in adjSet is guaranteed to be a member of nodeIds (the
+  // adjSet construction filters via `adjSet.has(nid)`), so rank lookups are
+  // total — no need for `?? -1` fallbacks here.
+  const rankOf = (id: NodeId): number => idRank.get(id)!
+
   for (const id of nodeIds) {
     const neighbors = adjSet.get(id)!
-    const nbArray = [...neighbors]
+    // Sort neighbors by rank so the n1 < n2 invariant holds regardless of the
+    // order in which getNeighbors returns neighbors. Without this, an unordered
+    // neighbor list can miss triangles (the i<j position check would skip valid
+    // pairs whose rank order is reversed in the input).
+    const nbArray = [...neighbors].sort(
+      (a, b) => rankOf(a) - rankOf(b),
+    )
     for (let i = 0; i < nbArray.length; i++) {
       const n1 = nbArray[i]
-      if ((idRank.get(n1) ?? -1) <= (idRank.get(id) ?? 0)) continue
+      if (rankOf(n1) <= rankOf(id)) continue
       for (let j = i + 1; j < nbArray.length; j++) {
         const n2 = nbArray[j]
-        if ((idRank.get(n2) ?? -1) <= (idRank.get(n1) ?? 0)) continue
-        // Check if n1 and n2 are neighbors
-        if (adjSet.get(n1)?.has(n2)) {
+        // nbArray is sorted by rank above, so rankOf(n2) > rankOf(n1) is
+        // already guaranteed for all j > i — no redundant rank re-check needed.
+        // Check if n1 and n2 are neighbors. n1 is itself a member of adjSet
+        // (it came from the neighbor list), so the lookup is total.
+        if (adjSet.get(n1)!.has(n2)) {
           triangles.push([id, n1, n2])
         }
       }

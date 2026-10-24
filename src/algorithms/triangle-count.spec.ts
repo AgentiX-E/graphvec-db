@@ -135,4 +135,28 @@ describe('triangleCount', () => {
     expect(result.count).toBe(1)
     expect(result.triangles[0].sort()).toEqual([10, 20, 30])
   })
+
+  test('ignores neighbors that are not part of the node set', () => {
+    // Node 1 lists 0 as a neighbor, but 0 is NOT in nodeIds — the `adjSet.has`
+    // guard must skip it instead of throwing or miscounting.
+    const neighbors: Record<number, number[]> = {
+      1: [0, 2],
+      2: [1],
+    }
+    const result = triangleCount([1, 2] as NodeId[], (nid) => neighbors[nid] ?? [])
+    expect(result.count).toBe(0)
+    expect(result.triangles).toHaveLength(0)
+  })
+
+  test('unordered neighbor enumeration skips lower-ranked pairs', () => {
+    // Neighbors returned out of order (1 then a lower-ranked 0) must hit the
+    // `n2 rank <= n1 rank` continue branch and still count exactly one triangle.
+    const neighbors: Record<number, number[]> = {
+      0: [2, 1],
+      1: [0, 2],
+      2: [0, 1],
+    }
+    const result = triangleCount([0, 1, 2] as NodeId[], (nid) => neighbors[nid] ?? [])
+    expect(result.count).toBe(1)
+  })
 })
