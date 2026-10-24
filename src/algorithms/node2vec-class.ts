@@ -298,10 +298,10 @@ export class Node2Vec {
       if (typeof engine.neighbors === 'function') {
         const result = engine.neighbors(nodeId)
         if (Array.isArray(result)) {
-          return result
-        }
-        // neighbors 返回包含 nodeId 的对象
-        if (result && typeof result === 'object') {
+          // An array may contain either raw numeric ids or { nodeId } objects.
+          // Normalize each element to a numeric id so downstream code never
+          // receives a non-numeric element (which would break nodeIndex lookups
+          // and produce a contextVec out-of-bounds crash).
           return result.map((r: any) => {
             if (typeof r === 'number') return r
             if (r && typeof r.nodeId === 'number') return r.nodeId

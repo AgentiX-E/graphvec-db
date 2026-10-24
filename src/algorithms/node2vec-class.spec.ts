@@ -233,6 +233,106 @@ describe('Node2Vec (class-based)', () => {
       }
     }
   })
+
+  // ── 非默认 p/q 偏置参数训练不崩溃并产生有效嵌入 ──
+  it('trains with non-default p/q bias parameters without crashing', async () => {
+    // Triangle graph (0-1-2-0) guarantees backtracking opportunities so the
+    // p (return) and q (in/out) branches of _biasedRandomWalk are exercised.
+    const adj: Record<number, number[]> = {
+      0: [1, 2],
+      1: [0, 2],
+      2: [0, 1],
+    }
+
+    const engine = createMockEngine(adj)
+    const n2v = new Node2Vec({
+      dimensions: 6,
+      walkLength: 30,
+      numWalks: 4,
+      epochs: 1,
+      seed: 7,
+      p: 2.0,   // high p discourages backtracking
+      q: 0.5,   // low q encourages outward exploration
+    })
+
+    await n2v.fit(engine)
+
+    const all = n2v.getAllEmbeddings()
+    expect(all.size).toBe(3)
+    for (const [, vec] of all) {
+      expect(vec.length).toBe(6)
+      for (let i = 0; i < vec.length; i++) {
+        expect(Number.isFinite(vec[i])).toBe(true)
+      }
+    }
+  })
+
+  // ── getAllNodeIds fallback: engine.nodes Map ──
+  it('falls back to engine.nodes map when getNodeIds is unavailable', async () => {
+    const engine: any = {
+      nodes: new Map([[0, { id: 0 }], [1, { id: 1 }]]),
+      neighbors: (id: number) => (id === 0 ? [1] : [0]),
+      getNode: (id: number) => ({ id, props: {} }),
+    }
+    const n2v = new Node2Vec({ dimensions: 4, walkLength: 5, numWalks: 2, epochs: 1, seed: 42 })
+    await n2v.fit(engine)
+    expect(n2v.getAllEmbeddings().size).toBe(2)
+  })
+
+  // ── _getNeighbors fallback: neighbors returns object array ──
+  it('handles neighbors() returning node objects with nodeId', async () => {
+    const engine: any = {
+      getNodeIds: () => [0, 1],
+      neighbors: (id: number) => (id === 0 ? [{ nodeId: 1, props: {} }] : [{ nodeId: 0, props: {} }]),
+      getNode: (id: number) => ({ id, props: {} }),
+    }
+    const n2v = new Node2Vec({ dimensions: 4, walkLength: 5, numWalks: 2, epochs: 1, seed: 42 })
+    await n2v.fit(engine)
+    expect(n2v.getAllEmbeddings().size).toBe(2)
+  })
+
+  // ── _getNeighbors fallback: getNeighbors returns array ──
+  it('handles getNeighbors() returning a plain array', async () => {
+    const engine: any = {
+      getNodeIds: () => [0, 1],
+      getNeighbors: (id: number) => (id === 0 ? [1] : [0]),
+      getNode: (id: number) => ({ id, props: {} }),
+    }
+    const n2v = new Node2Vec({ dimensions: 4, walkLength: 5, numWalks: 2, epochs: 1, seed: 42 })
+    await n2v.fit(engine)
+    expect(n2v.getAllEmbeddings().size).toBe(2)
+  })
+
+  // ── getAllNodeIds fallback: storage.getAllNodeIds ──
+  it('reads node ids via storage.getAllNodeIds fallback', async () => {
+    const engine: any = {
+      storage: { getAllNodeIds: () => [0, 1] },
+      neighbors: (id: number) => (id === 0 ? [1] : [0]),
+      getNode: (id: number) => ({ id, props: {} }),
+    }
+    const n2v = new Node2Vec({ dimensions: 4, walkLength: 5, numWalks: 2, epochs: 1, seed: 42 })
+    await n2v.fit(engine)
+    expect(n2v.getAllEmbeddings().size).toBe(2)
+  })
+
+  // ── getAllNodeIds fallback: getAllNodeIds method ──
+  it('reads node ids via getAllNodeIds method fallback', async () => {
+    const engine: any = {
+      getAllNodeIds: () => [0, 1, 2],
+      neighbors: (id: number) => [1, 2].filter((n) => n !== id),
+      getNode: (id: number) => ({ id, props: {} }),
+    }
+    const n2v = new Node2Vec({ dimensions: 4, walkLength: 5, numWalks: 2, epochs: 1, seed: 42 })
+    await n2v.fit(engine)
+    expect(n2v.getAllEmbeddings().size).toBe(3)
+  })
+
+  // ── load 不存在的文件 → 抛错 ──
+  it('load throws when the embedding file does not exist', () => {
+    const n2v = new Node2Vec({ dimensions: 4 })
+    const missingPath = `/tmp/node2vec-missing-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
+    expect(() => n2v.load(missingPath)).toThrow(/not found/)
+  })
 })
 
 /**
