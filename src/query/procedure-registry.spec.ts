@@ -221,3 +221,183 @@ describe('其他内置 Procedure', function() {
     expect(result).toEqual([])
   })
 })
+
+// ── 3. ProcedureRegistry 兼容 API（deprecated 方法） ──────
+
+describe('ProcedureRegistry compatibility API', function() {
+  it('registerProcedure with a function handler', function() {
+    const registry = new ProcedureRegistry()
+    registry.registerProcedure('compat.fn', (args: any[]) => [{ got: args }])
+    expect(registry.hasProcedure('compat.fn')).toBe(true)
+    expect(registry.get('compat.fn')).toBeDefined()
+  })
+
+  it('registerProcedure with a procedure object', function() {
+    const registry = new ProcedureRegistry()
+    const proc = { name: 'compat.obj', signature: '', execute: () => [] }
+    registry.registerProcedure('ignored', proc)
+    expect(registry.get('compat.obj')).toBe(proc)
+  })
+
+  it('listProcedures returns all registered procedures', function() {
+    const registry = new ProcedureRegistry()
+    registry.register({ name: 'compat.list', signature: '', execute: () => [] })
+    expect(registry.listProcedures().map(p => p.name)).toContain('compat.list')
+  })
+
+  it('callProcedure executes a registered procedure', async function() {
+    const registry = new ProcedureRegistry()
+    registry.register({
+      name: 'compat.call',
+      signature: '',
+      execute: (ctx: any, args: any[]) => [{ ctxProvided: !!ctx, args }],
+    })
+    const result = await registry.callProcedure('compat.call', [1, 2], { marker: true })
+    expect(result[0].ctxProvided).toBe(true)
+    expect(result[0].args).toEqual([1, 2])
+  })
+
+  it('callProcedure throws for unknown procedure', async function() {
+    const registry = new ProcedureRegistry()
+    await expect(registry.callProcedure('nope', [], {})).rejects.toThrow(
+      /Unknown procedure/,
+    )
+  })
+
+  it('unregister removes a procedure', function() {
+    const registry = new ProcedureRegistry()
+    registry.register({ name: 'compat.rm', signature: '', execute: () => [] })
+    expect(registry.has('compat.rm')).toBe(true)
+    registry.unregister('compat.rm')
+    expect(registry.has('compat.rm')).toBe(false)
+  })
+})
+
+// ── 4. 内置 procedure 的 fallback 分支（通过 ctx 触发） ──────
+
+describe('built-in procedure execute fallback branches', function() {
+  it('db.labels resolves labels via getAllNodes + getTypeNameById', function() {
+    const proc = globalRegistry.get('db.labels')!
+    const ctx = {
+      getAllNodes: () => [
+        { type: 2, props: {} },
+        { type: 2, props: {} },
+        { type: 7, props: {} },
+      ],
+      getTypeNameById: (id: number) => (id === 2 ? 'Person' : id === 7 ? 'Pet' : undefined),
+    }
+    const result = proc.execute(ctx as any, []) as Array<{ label: string }>
+    expect(result.map(r => r.label)).toEqual(['Person', 'Pet'])
+  })
+
+  it('db.labels resolves labels via getAllNodes without getTypeNameById', function() {
+    const proc = globalRegistry.get('db.labels')!
+    const ctx = {
+      getAllNodes: () => [{ type: 2 }, { type: 7 }],
+    }
+    const result = proc.execute(ctx as any, []) as Array<{ label: string }>
+    // Falls back to stringified type ids.
+    expect(result.map(r => r.label).sort()).toEqual(['2', '7'])
+  })
+
+  it('db.relationshipTypes returns configured types', function() {
+    const proc = globalRegistry.get('db.relationshipTypes')!
+    const ctx = { getRelationshipTypes: () => ['KNOWS', 'LIKES'] }
+    const result = proc.execute(ctx as any, []) as Array<{ relationshipType: string }>
+    expect(result.map(r => r.relationshipType)).toEqual(['KNOWS', 'LIKES'])
+  })
+
+  it('db.relationshipTypes returns empty when no resolver present', function() {
+    const proc = globalRegistry.get('db.relationshipTypes')!
+    const result = proc.execute({} as any, []) as Array<{ relationshipType: string }>
+    expect(result).toEqual([])
+  })
+
+  it('db.propertyKeys resolves keys via getAllNodes props (plus id/name)', function() {
+    const proc = globalRegistry.get('db.propertyKeys')!
+    const ctx = {
+      getAllNodes: () => [
+        { props: { age: 30, name: 'Alice' } },
+        { props: { age: 25 } },
+      ],
+    }
+    const result = proc.execute(ctx as any, []) as Array<{ propertyKey: string }>
+    const keys = result.map(r => r.propertyKey)
+    expect(keys).toContain('age')
+    expect(keys).toContain('name')
+    expect(keys).toContain('id')
+  })
+
+  it('db.schema.nodeTypeProperties returns fallback Person row when no labels', function() {
+    const proc = globalRegistry.get('db.schema.nodeTypeProperties')!
+    const result = proc.execute({} as any, []) as any[]
+    expect(result.length).toBe(1)
+    expect(result[0].nodeType).toBe('Person')
+    expect(result[0].propertyName).toBe('name')
+  })
+
+  it('db.schema.nodeTypeProperties enumerates properties per label', function() {
+    const proc = globalRegistry.get('db.schema.nodeTypeProperties')!
+    const ctx = {
+      getLabels: () => ['Person'],
+      getPropertyKeys: () => ['name', 'age'],
+    }
+    const result = proc.execute(ctx as any, []) as any[]
+    expect(result.length).toBe(2)
+    for (const row of result) {
+      expect(row.nodeType).toBe('Person')
+      expect(['name', 'age']).toContain(row.propertyName)
+      expect(row.propertyType).toBe('STRING')
+    }
+  })
+
+  it('db.index.fulltext.queryRelationshipIndexes delegates to ctx', function() {
+    const proc = globalRegistry.get('db.index.fulltext.queryRelationshipIndexes')!
+    const ctx = {
+      fulltextQueryRelationshipIndexes: (idx: string, term: string) => [
+        { relationship: { _id: 'r1' }, score: 0.9 },
+      ],
+    }
+    const result = proc.execute(ctx as any, ['idx', 'term']) as any[]
+    expect(result).toHaveLength(1)
+    expect(result[0].score).toBe(0.9)
+  })
+
+  it('db.index.fulltext.queryNodes delegates to ctx', function() {
+    const proc = globalRegistry.get('db.index.fulltext.queryNodes')!
+    const ctx = {
+      fulltextQueryNodes: (idx: string, term: string) => [{ node: { _id: 'n1' }, score: 0.8 }],
+    }
+    const result = proc.execute(ctx as any, ['idx', 'term']) as any[]
+    expect(result).toHaveLength(1)
+    expect(result[0].score).toBe(0.8)
+  })
+
+  it('dbms.security.createUser returns empty result', function() {
+    const proc = globalRegistry.get('dbms.security.createUser')!
+    const result = proc.execute({} as any, ['u', 'p', true]) as any[]
+    expect(result).toEqual([])
+  })
+
+  it('db.schema.visualization falls back to 0 counts without getNodeCount', function() {
+    const proc = globalRegistry.get('db.schema.visualization')!
+    const result = proc.execute({} as any, []) as any[]
+    expect(result).toHaveLength(1)
+    expect(result[0].nodes).toBe(0)
+    expect(result[0].edges).toBe(0)
+  })
+
+  it('dbms.listConfig enumerates non-empty config entries', function() {
+    const proc = globalRegistry.get('dbms.listConfig')!
+    const ctx = {
+      getConfig: () => ({ 'dbms.memory.heap.size': '512m', 'dbms.pagecache': '128m' }),
+    }
+    const result = proc.execute(ctx as any, []) as any[]
+    expect(result.length).toBe(2)
+    expect(result[0]).toEqual({
+      name: 'dbms.memory.heap.size',
+      description: 'Configuration for dbms.memory.heap.size',
+      value: '512m',
+    })
+  })
+})
