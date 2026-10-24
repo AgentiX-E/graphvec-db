@@ -133,21 +133,17 @@ export class GraphProjection {
    * @returns 压缩后的新 GraphProjection 实例
    */
   compress(): GraphProjection {
-    // 检查 edges 末尾是否有全 0 空洞
-    let lastEdgeIdx = this.edges.length - 1
-    while (lastEdgeIdx >= 0 && this.edges[lastEdgeIdx] === 0) {
-      // 还需要检查这个位置是否被任何 offset 使用
-      let isUsed = false
-      for (let i = 0; i < this.nodeOffsets.length; i++) {
-        if (this.nodeOffsets[i] === lastEdgeIdx || this.nodeOffsets[i] === lastEdgeIdx + 1) {
-          isUsed = true
-          break
-        }
-      }
-      if (isUsed) break
-      lastEdgeIdx--
+    // A CSR edge at index k is "used" when it falls inside some node's
+    // [nodeOffsets[i], nodeOffsets[i+1]) range. The previous implementation
+    // compared offsets against lastEdgeIdx directly, which misclassified a
+    // genuine trailing hole whenever lastEdgeIdx happened to equal a node's
+    // start offset. Compute the true highest used edge index instead.
+    let lastUsedIdx = -1
+    for (let i = 0; i < this.nodeCount; i++) {
+      lastUsedIdx = Math.max(lastUsedIdx, this.nodeOffsets[i + 1] - 1)
     }
-    const compactEdgeLen = lastEdgeIdx + 1
+
+    const compactEdgeLen = lastUsedIdx + 1
 
     if (compactEdgeLen >= this.edges.length) {
       return this // 无空洞

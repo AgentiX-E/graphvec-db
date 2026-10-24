@@ -271,4 +271,131 @@ describe('GraphProjection', () => {
     // Memory estimate should be positive
     expect(proj.stats.estimatedMemoryBytes).toBeGreaterThan(0)
   })
+
+  it('neighbors returns [] for a node not in the projection', async () => {
+    engine = await setupEngine('neighbors_missing')
+    const proj = await GraphProjection.create(engine, { seedNodes: [1] })
+    expect(proj.neighbors(99999)).toEqual([])
+  })
+
+  it('inEdges returns incoming source nodes', async () => {
+    engine = await setupEngine('in_edges')
+    // seed 1..10, chain 1->2->3->4->5 and star 6->7,8,9,10 plus 5->6
+    const proj = await GraphProjection.create(engine, { seedNodes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] })
+
+    // Node 2 has one incoming edge from node 1
+    const inOf2 = proj.inEdges(2)
+    expect(inOf2).toContain(1)
+
+    // Node 6 has one incoming edge from node 5
+    const inOf6 = proj.inEdges(6)
+    expect(inOf6).toContain(5)
+
+    // Node 1 has no incoming edge
+    expect(proj.inEdges(1)).toEqual([])
+  })
+
+  it('inEdges returns [] for a node not in the projection', async () => {
+    engine = await setupEngine('in_edges_missing')
+    const proj = await GraphProjection.create(engine, { seedNodes: [1] })
+    expect(proj.inEdges(99999)).toEqual([])
+  })
+
+  it('streamBatches throws for non-positive batch size', async () => {
+    engine = await setupEngine('stream_batch_invalid')
+    const proj = await GraphProjection.create(engine, { seedNodes: [1, 2, 3] })
+
+    await expect(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ of proj.streamBatches(0)) { /* empty */ }
+    }).rejects.toThrow('batchSize must be > 0')
+
+    await expect(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ of proj.streamBatches(-5)) { /* empty */ }
+    }).rejects.toThrow('batchSize must be > 0')
+  })
+
+  it('streamBatches yields all nodes across exact-boundary batches', async () => {
+    engine = await setupEngine('stream_batch_boundary')
+    // maxDepth 0 keeps only the seed nodes (no BFS expansion).
+    const proj = await GraphProjection.create(engine, { seedNodes: [1, 2, 3, 4, 5], maxDepth: 0 })
+    const nodeSet = new Set<number>()
+    for await (const batch of proj.streamBatches(2)) {
+      expect(batch.length).toBeLessThanOrEqual(2)
+      for (const n of batch) nodeSet.add(n)
+    }
+    expect(nodeSet).toEqual(new Set([1, 2, 3, 4, 5]))
+  })
+
+  it('compress does not drop a trailing edge that points to CSR index 0', () => {
+    // CSR where the last edge legitimately points at projectionNodeIds[0] (idx 0).
+    // The trailing `0` in `edges` must NOT be mistaken for a hole and truncated.
+    const nodeOffsets = new Uint32Array([0, 1, 1])
+    const edges = new Uint32Array([1])
+    const projectionNodeIds = [100, 200]
+    const nodeIndex = new Map<number, number>([[100, 0], [200, 1]])
+    const nodeRecords = [
+      { id: 100, type: 0, name: '', props: {} },
+      { id: 200, type: 0, name: '', props: {} },
+    ]
+    const proj = new GraphProjection(
+      nodeOffsets,
+      edges,
+      projectionNodeIds,
+      nodeIndex,
+      nodeRecords,
+      { nodeCount: 2, edgeCount: 1, constructionTimeMs: 0, estimatedMemoryBytes: 0 },
+    )
+
+    const compressed = proj.compress()
+    // No holes exist, so the returned instance keeps the single edge intact.
+    expect([...compressed.edges]).toEqual([1])
+    expect(compressed.edgeCount).toBe(1)
+  })
+
+  it('compress returns the same instance when edges end in a non-zero value', () => {
+    const nodeOffsets = new Uint32Array([0, 2, 2])
+    const edges = new Uint32Array([0, 1])
+    const projectionNodeIds = [100, 200]
+    const nodeIndex = new Map<number, number>([[100, 0], [200, 1]])
+    const nodeRecords = [
+      { id: 100, type: 0, name: '', props: {} },
+      { id: 200, type: 0, name: '', props: {} },
+    ]
+    const proj = new GraphProjection(
+      nodeOffsets,
+      edges,
+      projectionNodeIds,
+      nodeIndex,
+      nodeRecords,
+      { nodeCount: 2, edgeCount: 2, constructionTimeMs: 0, estimatedMemoryBytes: 0 },
+    )
+    // edges ends with 1 (non-zero) → no hole → same instance returned.
+    expect(proj.compress()).toBe(proj)
+  })
+
+  it('compress truncates genuine trailing zero holes', () => {
+    // A shared-memory style CSR may reserve extra zero slots. Here the last
+    // slot (index 2) is an unused hole: nodeOffsets covers only indices 0..1.
+    const nodeOffsets = new Uint32Array([0, 2, 2])
+    const edges = new Uint32Array([0, 1, 0])
+    const projectionNodeIds = [100, 200]
+    const nodeIndex = new Map<number, number>([[100, 0], [200, 1]])
+    const nodeRecords = [
+      { id: 100, type: 0, name: '', props: {} },
+      { id: 200, type: 0, name: '', props: {} },
+    ]
+    const proj = new GraphProjection(
+      nodeOffsets,
+      edges,
+      projectionNodeIds,
+      nodeIndex,
+      nodeRecords,
+      { nodeCount: 2, edgeCount: 2, constructionTimeMs: 0, estimatedMemoryBytes: 0 },
+    )
+    const compressed = proj.compress()
+    expect([...compressed.edges]).toEqual([0, 1])
+    expect(compressed.edgeCount).toBe(2)
+  })
 })
