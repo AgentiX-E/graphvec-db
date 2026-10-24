@@ -1,54 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-
-// ── Mock zeromq ──────────────────────────────────────────────
-
-function createSocketMock() {
-  return {
-    curveServer: false,
-    curveSecretKey: null,
-    curvePublicKey: '',
-    curveServerKey: null,
-    bind: vi.fn().mockResolvedValue(undefined),
-    connect: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn(),
-    send: vi.fn().mockResolvedValue(undefined),
-    receive: vi.fn(),
-  }
-}
-
-// Use a mutable config that the mock factory reads.
-// This avoids hoisting issues with vi.fn() captured inside mock factory.
-const zmqKeyPairResult = {
-  publicKey: 'default-pub-123456789012345678901234567890',
-  secretKey: 'default-sec-123456789012345678901234567890',
-}
-
-vi.mock('zeromq', () => {
-  const Router = () => createSocketMock()
-  const Dealer = () => createSocketMock()
-  return {
-    curveKeyPair: () => ({ ...zmqKeyPairResult }),
-    Router,
-    Dealer,
-    default: { curveKeyPair: () => ({ ...zmqKeyPairResult }), Router, Dealer },
-  }
-})
-
-// ── Mock fs + path ───────────────────────────────────────────
-vi.mock('node:fs', () => ({
-  default: {
-    readdirSync: vi.fn(),
-    readFileSync: vi.fn(),
-    writeFileSync: vi.fn(),
-    mkdirSync: vi.fn(),
-  },
-  readdirSync: vi.fn(),
-  readFileSync: vi.fn(),
-  writeFileSync: vi.fn(),
-  mkdirSync: vi.fn(),
-}))
-
 import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+// ── zeromq is mocked via a Vite alias (vitest.config.ts) ─────
+// `zeromq` resolves to src/test-utils/__mocks__/zeromq.ts, whose curveKeyPair
+// returns a fixed mock key. The EventBus module under test therefore never
+// touches the native addon. File-system helpers (writePublicKeyToDir,
+// readAllPeerKeys, resolveCurveConfig) are tested against real temporary
+// directories rather than vi.mock('node:fs'), which vitest 4 does not reliably
+// apply to the module under test under the vmThreads pool.
 
 // ── Import AFTER mocks ───────────────────────────────────────
 import {
@@ -322,15 +283,6 @@ describe('TransportMessage 构造', () => {
 describe('EventBus 单例模式', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // Reset resolved curve key pair globally
-    zmqKeyPairResult.publicKey = 'pubkey1234567890123456789012345678901234567890'
-    zmqKeyPairResult.secretKey = 'seckey1234567890123456789012345678901234567890'
-
-    // Default mocks for fs
-    vi.mocked(fs.readdirSync as (dir: string) => string[]).mockReturnValue([])
-    vi.mocked(fs.readFileSync).mockReturnValue('peer.public.key.here')
-    vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
-    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any)
   })
 
   afterEach(async () => {
@@ -419,12 +371,6 @@ describe('EventBus 单例模式', () => {
 describe('CURVE 安全', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    zmqKeyPairResult.publicKey = 'TESTPUBKEY123456789012345678901234567890'
-    zmqKeyPairResult.secretKey = 'TESTSECKEY123456789012345678901234567890'
-    vi.mocked(fs.readdirSync as (dir: string) => string[]).mockReturnValue([])
-    vi.mocked(fs.readFileSync).mockReturnValue('peerkey12345678901234567890')
-    vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
-    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any)
   })
 
   it('CurveSecurityConfig can be properly assembled', () => {
@@ -452,43 +398,52 @@ describe('CURVE 安全', () => {
   })
 
   it('generateCurveKeys calls zmq.curveKeyPair and returns keys', () => {
-    zmqKeyPairResult.publicKey = 'abc123pub'
-    zmqKeyPairResult.secretKey = 'xyz789secret'
-
+    // zeromq is aliased to src/test-utils/__mocks__/zeromq.ts, whose
+    // curveKeyPair returns a fixed mock key.
     const keys = EventBus.generateCurveKeys()
-    expect(keys.publicKey).toBe('abc123pub')
-    expect(keys.secretKey).toBe('xyz789secret')
+    expect(typeof keys.publicKey).toBe('string')
+    expect(keys.publicKey.length).toBeGreaterThan(0)
+    expect(typeof keys.secretKey).toBe('string')
+    expect(keys.secretKey.length).toBeGreaterThan(0)
   })
 
   it('writePublicKeyToDir writes public key to the expected file path', () => {
-    EventBus.writePublicKeyToDir('/keys', 'node-x', 7777, 'public-key-content')
-    expect(fs.mkdirSync).toHaveBeenCalledWith('/keys', { recursive: true })
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      '/keys/node-x_7777.pub',
-      'public-key-content',
-      'utf-8',
-    )
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eventbus-pub-'))
+    try {
+      EventBus.writePublicKeyToDir(dir, 'node-x', 7777, 'public-key-content')
+      const filePath = path.join(dir, 'node-x_7777.pub')
+      expect(fs.existsSync(filePath)).toBe(true)
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe('public-key-content')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('resolveCurveConfig generates keys, writes pubkey, and reads peers', async () => {
-    vi.mocked(fs.readdirSync as (dir: string) => string[]).mockReturnValue(['peer-b_8000.pub', 'self_5555.pub'])
-    vi.mocked(fs.readFileSync).mockReturnValue('some-public-key-value')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eventbus-curve-'))
+    try {
+      // Pre-write a peer key file so waitForPeerKeys finds one peer.
+      fs.writeFileSync(path.join(dir, 'peer-b_8000.pub'), 'some-public-key-value', 'utf-8')
 
-    const result = await EventBus.resolveCurveConfig({
-      curve: {
-        server: true,
-        port: 5555,
-        nodeId: 'self',
-        publicKeyDir: '/nas',
-      },
-    })
+      const result = await EventBus.resolveCurveConfig({
+        curve: {
+          server: true,
+          port: 5555,
+          nodeId: 'self',
+          publicKeyDir: dir,
+        },
+      })
 
-    expect(fs.writeFileSync).toHaveBeenCalled()
-    expect(result.secretKey).toBeTruthy()
-    expect(result.publicKey).toBeTruthy()
-    // peerKeys should be a dict
-    expect(typeof result.peerKeys).toBe('object')
-    expect(result.peerNodeIds).toBeDefined()
+      expect(result.secretKey).toBeTruthy()
+      expect(result.publicKey).toBeTruthy()
+      // peerKeys should be a dict
+      expect(typeof result.peerKeys).toBe('object')
+      expect(result.peerNodeIds).toBeDefined()
+      // self is excluded from peers, so the pre-written peer-b should appear
+      expect(result.peerNodeIds).toContain('peer-b')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -498,10 +453,6 @@ describe('CURVE 安全', () => {
 describe('PeerDescriptor 解析', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(fs.readdirSync as (dir: string) => string[]).mockReturnValue([])
-    vi.mocked(fs.readFileSync).mockReturnValue('pubkeycontent')
-    vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
-    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any)
   })
 
   it('creates a valid PeerDescriptor with all required fields', () => {
@@ -518,53 +469,56 @@ describe('PeerDescriptor 解析', () => {
   })
 
   it('readAllPeerKeys returns descriptors from directory .pub files', () => {
-    vi.mocked(fs.readdirSync as (dir: string) => string[]).mockReturnValue([
-      'alpha_1000.pub',
-      'beta_2000.pub',
-      'gamma.pub', // invalid (no port number)
-      'notes.txt',
-    ])
-    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
-      if (filePath.toString().includes('alpha')) return 'alpha-pub-key'
-      if (filePath.toString().includes('beta')) return 'beta-pub-key'
-      return 'gamma-key'
-    })
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eventbus-peers-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'alpha_1000.pub'), 'alpha-pub-key', 'utf-8')
+      fs.writeFileSync(path.join(dir, 'beta_2000.pub'), 'beta-pub-key', 'utf-8')
+      fs.writeFileSync(path.join(dir, 'gamma.pub'), 'gamma-key', 'utf-8') // invalid (no port number)
+      fs.writeFileSync(path.join(dir, 'notes.txt'), 'not-a-key', 'utf-8')
 
-    const peers = EventBus.readAllPeerKeys('/some/dir')
-    expect(peers).toHaveLength(2)
-    expect(peers[0].nodeId).toBe('alpha')
-    expect(peers[0].port).toBe(1000)
-    expect(peers[0].address).toBe('tcp://127.0.0.1:1000')
-    expect(peers[0].publicKey).toBe('alpha-pub-key')
-    expect(peers[1].nodeId).toBe('beta')
-    expect(peers[1].port).toBe(2000)
-    expect(peers[1].publicKey).toBe('beta-pub-key')
+      const peers = EventBus.readAllPeerKeys(dir)
+      expect(peers).toHaveLength(2)
+      expect(peers[0].nodeId).toBe('alpha')
+      expect(peers[0].port).toBe(1000)
+      expect(peers[0].address).toBe('tcp://127.0.0.1:1000')
+      expect(peers[0].publicKey).toBe('alpha-pub-key')
+      expect(peers[1].nodeId).toBe('beta')
+      expect(peers[1].port).toBe(2000)
+      expect(peers[1].publicKey).toBe('beta-pub-key')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('readAllPeerKeys returns empty array for missing directory', () => {
-    vi.mocked(fs.readdirSync as (dir: string) => string[]).mockImplementation(() => {
-      throw new Error('ENOENT')
-    })
-    const peers = EventBus.readAllPeerKeys('/nonexistent')
+    const peers = EventBus.readAllPeerKeys(path.join(os.tmpdir(), 'eventbus-__nonexistent__'))
     expect(peers).toEqual([])
   })
 
   it('readAllPeerKeys skips unreadable files', () => {
-    vi.mocked(fs.readdirSync as (dir: string) => string[]).mockReturnValue(['good_3000.pub', 'bad_4000.pub'])
-    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
-      if (filePath.toString().includes('bad')) throw new Error('permission denied')
-      return 'good-pub-key'
-    })
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eventbus-unread-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'good_3000.pub'), 'good-pub-key', 'utf-8')
+      // Create a directory with a .pub name so readFileSync throws (EISDIR),
+      // exercising the "skip unreadable files" branch.
+      fs.mkdirSync(path.join(dir, 'bad_4000.pub'))
 
-    const peers = EventBus.readAllPeerKeys('/keys')
-    expect(peers).toHaveLength(1)
-    expect(peers[0].nodeId).toBe('good')
-    expect(peers[0].port).toBe(3000)
+      const peers = EventBus.readAllPeerKeys(dir)
+      expect(peers).toHaveLength(1)
+      expect(peers[0].nodeId).toBe('good')
+      expect(peers[0].port).toBe(3000)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('waitForPeerKeys returns peers even if minPeers not reached (timeout)', async () => {
-    vi.mocked(fs.readdirSync as (dir: string) => string[]).mockReturnValue([])
-    const peers = await EventBus.waitForPeerKeys('/empty', 'self', 5)
-    expect(peers).toEqual([])
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eventbus-empty-'))
+    try {
+      const peers = await EventBus.waitForPeerKeys(dir, 'self', 1)
+      expect(peers).toEqual([])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

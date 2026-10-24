@@ -31,6 +31,10 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { EventBusWorkerPool, type PeerConfig } from './event-bus-worker-pool'
 
+// zeromq is a native CJS addon; `require` yields an untyped module, which is
+// intentional — its socket/curve APIs mutate a plain-object shape that the
+// `ZmqCurveSocket`/`Router`/`Dealer` type aliases describe. The module is
+// aliased to src/test-utils/__mocks__/zeromq.ts in tests (see vitest.config.ts).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const zmq = require('zeromq')
 

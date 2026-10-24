@@ -400,14 +400,15 @@ describe('ClassicLevelStorageProvider', () => {
 // ============================================================
 
 describe('ClassicLevelStorageProvider — deep test: persistence', () => {
-  it('写入后 re-open 验证持久化 (ClassicLevel is in-memory, data lost on close)', () => {
+  it('写入后 re-open 验证持久化 (snapshot-based recovery)', () => {
     const dbPath = randomDir()
+    let nodeId: number = 0
 
     // First session
     const p1 = new ClassicLevelStorageProvider()
     try {
       p1.open({ path: dbPath })
-      const nodeId = p1.upsertNode(1, 'persist', { props: { keep: true, val: 42 } })
+      nodeId = p1.upsertNode(1, 'persist', { props: { keep: true, val: 42 } })
       p1.upsertNode(1, 'another')
       expect(p1.getNode(nodeId, true)!.props!.keep).toBe(true)
       expect(p1.stats().nodeCount).toBe(2)
@@ -415,11 +416,15 @@ describe('ClassicLevelStorageProvider — deep test: persistence', () => {
       if (p1.isOpen) p1.close()
     }
 
-    // Second session — ClassicLevel is in-memory, so data is gone
+    // Second session — ClassicLevel persists via a snapshot written on close()
+    // and restored on open(), so both nodes survive the re-open.
     const p2 = new ClassicLevelStorageProvider()
     try {
       p2.open({ path: dbPath })
-      expect(p2.stats().nodeCount).toBe(0) // in-memory, fresh state
+      expect(p2.stats().nodeCount).toBe(2)
+      const reloaded = p2.getNode(nodeId, true)
+      expect(reloaded).not.toBeNull()
+      expect(reloaded!.props!.keep).toBe(true)
       expect(p2.isOpen).toBe(true)
     } finally {
       if (p2.isOpen) p2.close()
@@ -427,7 +432,7 @@ describe('ClassicLevelStorageProvider — deep test: persistence', () => {
     }
   })
 
-  it('写入边后 re-open 验证 (ClassicLevel in-memory, edge count 0 after restart)', () => {
+  it('写入边后 re-open 验证 (snapshot-based recovery, edges preserved)', () => {
     const dbPath = randomDir()
 
     const p1 = new ClassicLevelStorageProvider()
@@ -442,12 +447,12 @@ describe('ClassicLevelStorageProvider — deep test: persistence', () => {
       if (p1.isOpen) p1.close()
     }
 
-    // Re-open — in-memory, so all data is lost
+    // Re-open — the snapshot preserves nodes and edges.
     const p2 = new ClassicLevelStorageProvider()
     try {
       p2.open({ path: dbPath })
-      expect(p2.stats().nodeCount).toBe(0)
-      expect(p2.stats().edgeCount).toBe(0)
+      expect(p2.stats().nodeCount).toBe(2)
+      expect(p2.stats().edgeCount).toBeGreaterThanOrEqual(1)
       expect(p2.isOpen).toBe(true)
     } finally {
       if (p2.isOpen) p2.close()
@@ -561,7 +566,7 @@ describe('ClassicLevelStorageProvider — deep test: edge cases', () => {
     expect(p.isOpen).toBe(false)
   })
 
-  it('先 close 后 open 可重新工作 (ClassicLevel is in-memory)', () => {
+  it('先 close 后 open 可重新工作 (snapshot recovery)', () => {
     const dbPath = randomDir()
     const p = new ClassicLevelStorageProvider()
     try {
@@ -571,9 +576,10 @@ describe('ClassicLevelStorageProvider — deep test: edge cases', () => {
       expect(p.isOpen).toBe(false)
 
       p.open({ path: dbPath })
-      // In-memory — fresh state, node is gone
+      // Snapshot recovery — the previously written node is still present.
       const n = p.getNode(id, true)
-      expect(n).toBeNull()
+      expect(n).not.toBeNull()
+      expect(n!.key).toBe('first')
       expect(p.isOpen).toBe(true)
       // Can write new data
       const newId = p.upsertNode(1, 'second')

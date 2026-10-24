@@ -217,7 +217,10 @@ jobs:
       - name: Run tests with coverage (vitest)
         run: npx vitest run --config vitest.config.ts --root . --coverage
         env:
-          NODE_OPTIONS: --max-old-space-size=4096
+          # The full suite + v8 coverage exceeds the previous 4 GiB heap cap and
+          # crashed with a JavaScript OOM (exit 134). Raise to 8 GiB so the
+          # coverage pass completes on the shared runner.
+          NODE_OPTIONS: --max-old-space-size=8192
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

@@ -86,6 +86,10 @@ export default defineConfig({
       'test': path.resolve(__dirname, 'test'),
       'graph-crdt': path.resolve(__dirname, 'src/test-utils/__mocks__/graph-crdt.ts'),
       'chokidar': path.resolve(__dirname, 'src/security/__mocks__/chokidar.ts'),
+      // zeromq is a native addon whose CJS exports cannot be reliably
+      // intercepted by vi.mock under the vmThreads pool. Alias it to the
+      // project mock so EventBus and DC-sync resolve to mock sockets in tests.
+      'zeromq': path.resolve(__dirname, 'src/test-utils/__mocks__/zeromq.ts'),
     },
   },
 })
