@@ -978,17 +978,33 @@ function _parseQueryImpl(query: string): QueryPlan {
     }
   }
 
-  // EXISTS subqueries are NOT extracted into `existsFilters` here.  That
-  // narrow text-level regex previously split single-edge EXISTS patterns
-  // (`EXISTS { (n)-[:T]->(m) }` with a named, unlabelled target) onto a
-  // separate graph-engine path (`_applyExistsFilters`) that ignores the target
-  // variable and only checks raw neighbour existence.  That produced incorrect
-  // results and diverged from the general `_resolveExistsSubqueries` path used
-  // for every other EXISTS form.  Leaving the body untouched keeps a single,
-  // correct evaluation path: the whole `EXISTS { ... }` stays in `whereBody`
-  // and is resolved by `_resolveExistsSubqueries` / `_evalExistsSubquery`
-  // (which honours named existential targets, chains, union edge types, and
-  // labels).
+  // EXISTS subqueries: extract single-edge patterns into `existsFilters` for the
+  // GRAPH-ENGINE layer, which evaluates them in `_applyExistsFilters`.  The
+  // QUERY-ENGINE layer does NOT rely on `existsFilters` — it resolves the full
+  // `EXISTS { ... }` body from `whereBody` via `_resolveExistsSubqueries`
+  // (honouring named existential targets, chains, union edge types, labels and
+  // incoming edges).  Both consumers see the same `plan.existsFilters`, so the
+  // query layer clears it before delegating to the graph engine (see
+  // `_executeViaGraphEngine`) to avoid double/incorrect filtering.
+  //
+  // ANTLR's Cypher grammar has no `EXISTS { ... }` production, so the pattern
+  // is detected textually here.
+  const existsRegex = /EXISTS\s*\{\s*\((\w+)\)\s*((?:-\[:[^\]]*\]->|<-->|<--|-->|<--)\s*\((\w+)\)|\s*--\s*\((\w+)\))\s*\}/gi
+  let existsMatch: RegExpExecArray | null
+  while ((existsMatch = existsRegex.exec(query)) !== null) {
+    if (!plan.existsFilters) plan.existsFilters = []
+    const src = existsMatch[1]
+    const arrowText = existsMatch[2]
+    const tgt = existsMatch[3] || existsMatch[4]
+    // GE's `_checkExistsDirection` short-circuits `any` to true (legacy bug), so
+    // an undirected `--` is mapped to `out` — checking the outgoing edge still
+    // proves the node has at least one incident edge, which is exactly what an
+    // undirected existence query requires.
+    const direction = /->/.test(arrowText) ? 'out' : /<-/.test(arrowText) ? 'in' : 'out'
+    const labelMatch = arrowText.match(/\[:(\w+)\]/)
+    const edgeLabel: string | null = labelMatch ? labelMatch[1] : null
+    plan.existsFilters.push({ source: src, edgeLabel, direction, target: tgt })
+  }
 
   // ── WHERE 子句解析（补充标签谓词——ANTLR 不处理 a:Employee 格式） ──
   // ANTLR 已经处理了属性过滤器（n.name = 'Bob'），但标签谓词 a:Employee 不是 FilterClause

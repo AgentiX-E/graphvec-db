@@ -1057,8 +1057,22 @@ function isWriteOp(plan: QueryPlan): boolean {
 /** GE 节点的类型：public API 缺失的类型补充 */
 interface GeNodeInfo { type: number; name: string }
 
-/** 执行 GE 查询计划（封装 _executeQueryPlan Private method） */
+/**
+ * Execute a graph-engine query plan (wrapping the private `_executeQueryPlan`).
+ *
+ * The query engine resolves `EXISTS { ... }` subqueries itself from
+ * `plan.whereBody` via `_resolveExistsSubqueries`, which honours named
+ * existential targets, chains, union edge types, labels and incoming edges.
+ * The graph engine's own `_applyExistsFilters` (driven by `plan.existsFilters`)
+ * uses a narrower neighbour-only check that ignores the target variable and
+ * incoming edges, so it would double-filter and produce wrong rows here.
+ * We therefore blank `plan.existsFilters` before delegating, leaving the
+ * graph engine to evaluate MATCH/WHERE and the query engine to evaluate EXISTS.
+ */
 function _geExecQueryPlan(ge: any, plan: any): any[] {
+  if (plan && plan.existsFilters && plan.existsFilters.length > 0) {
+    plan.existsFilters = []
+  }
   return (ge as any)._executeQueryPlan(plan)
 }
 
