@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { OptimizerBridge } from '../query/planner-bridge'
 import { NodeRecord } from '../types'
 import type { QuerySpec } from '../api/query-planner'
+import { PlanNodeType, PlanNode } from '../api/query-planner'
 
 /** 创建一个 mock GraphEngine */
 function createMockEngine(nodes: NodeRecord[] = []): any {
@@ -249,6 +250,327 @@ describe('OptimizerBridge', () => {
       await expect(
         bridge.executeOptimizedString('MATCH (n) RETURN n'),
       ).rejects.toThrow('Use executeOptimized(QuerySpec)')
+    })
+  })
+})
+
+// ────────────────────────────────────────────────────────────
+// 直接驱动桥接层内部执行，覆盖 optimizeIR 产不出的 PlanNode 分支：
+//   - _applyPredicate 的全部 op（gt/gte/lt/lte/neq/prefix/in/eq）
+//   - SCAN / NEIGHBORS 的 pushedFilters 与 pushedLimit 下推
+//   - _collectNeighbors 的深度递归
+//   - UNION 多子节点合并
+//   - _scanAllNodes 的 fallback，以及 VECTOR_SEARCH/INDEX_LOOKUP/default 兜底
+// ────────────────────────────────────────────────────────────
+describe('OptimizerBridge — plan-node execution branches', () => {
+  let bridge: OptimizerBridge
+
+  beforeEach(() => {
+    bridge = new OptimizerBridge(createMockEngine(MOCK_NODES))
+  })
+
+  /** 构造单节点 plan 并驱动执行 */
+  function runPlan(plan: PlanNode): Promise<NodeRecord[]> {
+    return (bridge as any)._executeOptimizedIR(plan, {})
+  }
+
+  // ── _applyPredicate operator coverage ────────────────────
+  describe('_applyPredicate operators via FILTER node', () => {
+    function filterPlan(op: string, field: string, value: unknown): PlanNode {
+      return {
+        type: PlanNodeType.FILTER,
+        estimatedCost: 1,
+        estimatedRows: 1,
+        children: [
+          {
+            type: PlanNodeType.SCAN,
+            estimatedCost: 1,
+            estimatedRows: 1000,
+            children: [],
+            details: {},
+          },
+        ],
+        details: { predicates: [{ field, op, value }] },
+      }
+    }
+
+    it('eq matches exact value', async () => {
+      const r = await runPlan(filterPlan('eq', 'name', 'Alice'))
+      expect(r.map(n => n.name)).toEqual(['Alice'])
+    })
+
+    it('neq excludes matching value', async () => {
+      const r = await runPlan(filterPlan('neq', 'name', 'Alice'))
+      expect(r.length).toBe(4)
+      expect(r.map(n => n.name)).not.toContain('Alice')
+    })
+
+    it('gt compares numbers', async () => {
+      const r = await runPlan(filterPlan('gt', 'age', 30))
+      expect(r.map(n => n.props?.age)).toEqual([35])
+    })
+
+    it('gte includes the boundary', async () => {
+      const r = await runPlan(filterPlan('gte', 'age', 30))
+      expect(r.map(n => n.props?.age).sort()).toEqual([30, 35])
+    })
+
+    it('lt compares numbers', async () => {
+      const r = await runPlan(filterPlan('lt', 'age', 25))
+      expect(r.map(n => n.props?.age)).toEqual([22])
+    })
+
+    it('lte includes the boundary', async () => {
+      const r = await runPlan(filterPlan('lte', 'age', 25))
+      expect(r.map(n => n.props?.age).sort()).toEqual([22, 25])
+    })
+
+    it('prefix matches string startsWith', async () => {
+      const r = await runPlan(filterPlan('prefix', 'name', 'A'))
+      expect(r.map(n => n.name)).toEqual(['Alice'])
+    })
+
+    it('in matches membership in a list', async () => {
+      const r = await runPlan(filterPlan('in', 'name', ['Alice', 'Bob']))
+      expect(r.map(n => n.name).sort()).toEqual(['Alice', 'Bob'])
+    })
+
+    it('unknown operator passes everything through', async () => {
+      const r = await runPlan(filterPlan('bogus', 'name', 'Alice'))
+      expect(r.length).toBe(5)
+    })
+  })
+
+  // ── SCAN with pushedFilters / pushedLimit ─────────────────
+  describe('SCAN pushedFilters and pushedLimit', () => {
+    it('applies pushed filters on the scan result', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.SCAN,
+        estimatedCost: 100,
+        estimatedRows: 1000,
+        children: [],
+        details: {
+          pushedFilters: [{ field: 'name', op: 'neq', value: 'Alice' }],
+        },
+      }
+      const r = await runPlan(plan)
+      expect(r.length).toBe(4)
+      expect(r.map(n => n.name)).not.toContain('Alice')
+    })
+
+    it('applies pushedLimit to cut the scan early', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.SCAN,
+        estimatedCost: 100,
+        estimatedRows: 1000,
+        children: [],
+        details: { pushedLimit: 2 },
+      }
+      const r = await runPlan(plan)
+      expect(r).toHaveLength(2)
+    })
+
+    it('filters by typeId on the scan node', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.SCAN,
+        estimatedCost: 100,
+        estimatedRows: 1000,
+        children: [],
+        details: { typeId: 2 },
+      }
+      const r = await runPlan(plan)
+      expect(r.length).toBe(2)
+      expect(r.every(n => n.type === 2)).toBe(true)
+    })
+  })
+
+  // ── NEIGHBORS traversal with real edges + recursion ──────
+  describe('NEIGHBORS traversal', () => {
+    it('collects neighbors recursively up to maxDepth', async () => {
+      const neighborEngine = createMockEngine(MOCK_NODES)
+      const adjacency: Record<number, NodeRecord[]> = {
+        1: [MOCK_NODES[1]], // Bob
+        2: [MOCK_NODES[2]], // Charlie (from Bob)
+      }
+      neighborEngine.neighbors = vi.fn().mockImplementation((id: number) => {
+        const nodes = adjacency[id] ?? []
+        return { nodes, edges: [] }
+      })
+      const nbBridge = new OptimizerBridge(neighborEngine)
+
+      const plan: PlanNode = {
+        type: PlanNodeType.NEIGHBORS,
+        estimatedCost: 200,
+        estimatedRows: 1,
+        children: [
+          {
+            type: PlanNodeType.SCAN,
+            estimatedCost: 100,
+            estimatedRows: 1000,
+            children: [],
+            details: { typeId: 1 },
+          },
+        ],
+        details: { maxDepth: 2 },
+      }
+      const r = await (nbBridge as any)._executeOptimizedIR(plan, {})
+      // Traversal preserves path multiplicity: input node 1 (Alice) reaches
+      // Bob (id 2) at depth 1 and Charlie (id 3) at depth 2, while input node
+      // 2 (Bob) also reaches Charlie (id 3) at depth 1. Each path yields one
+      // row, so Charlie appears twice — mirroring Cypher MATCH semantics.
+      const ids = r.map((n: NodeRecord) => n.id).sort()
+      expect(ids).toEqual([2, 3, 3])
+    })
+
+    it('applies pushedFilters on neighbor results', async () => {
+      const neighborEngine = createMockEngine(MOCK_NODES)
+      neighborEngine.neighbors = vi.fn().mockImplementation(() => ({
+        nodes: [MOCK_NODES[1], MOCK_NODES[2]],
+        edges: [],
+      }))
+      const nbBridge = new OptimizerBridge(neighborEngine)
+
+      const plan: PlanNode = {
+        type: PlanNodeType.NEIGHBORS,
+        estimatedCost: 200,
+        estimatedRows: 1,
+        children: [
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+        ],
+        details: {
+          maxDepth: 1,
+          pushedFilters: [{ field: 'name', op: 'eq', value: 'Bob' }],
+        },
+      }
+      const r = await (nbBridge as any)._executeOptimizedIR(plan, {})
+      expect(r.map((n: NodeRecord) => n.name)).toEqual(['Bob'])
+    })
+
+    it('applies pushedLimit on neighbor results', async () => {
+      const neighborEngine = createMockEngine(MOCK_NODES)
+      neighborEngine.neighbors = vi.fn().mockImplementation(() => ({
+        nodes: [MOCK_NODES[1], MOCK_NODES[2], MOCK_NODES[3]],
+        edges: [],
+      }))
+      const nbBridge = new OptimizerBridge(neighborEngine)
+
+      const plan: PlanNode = {
+        type: PlanNodeType.NEIGHBORS,
+        estimatedCost: 200,
+        estimatedRows: 1,
+        children: [
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+        ],
+        details: { maxDepth: 1, pushedLimit: 2 },
+      }
+      const r = await (nbBridge as any)._executeOptimizedIR(plan, {})
+      expect(r).toHaveLength(2)
+    })
+  })
+
+  // ── UNION multi-child merge ──────────────────────────────
+  describe('UNION merge', () => {
+    it('deduplicates nodes across both children', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.UNION,
+        estimatedCost: 1,
+        estimatedRows: 1,
+        children: [
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 2 } },
+        ],
+        details: {},
+      }
+      const r = await runPlan(plan)
+      expect(r.map(n => n.id).sort()).toEqual([1, 2, 3, 4])
+    })
+
+    it('deduplicates overlapping children', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.UNION,
+        estimatedCost: 1,
+        estimatedRows: 1,
+        children: [
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+        ],
+        details: {},
+      }
+      const r = await runPlan(plan)
+      expect(r.map(n => n.id).sort()).toEqual([1, 2])
+    })
+  })
+
+  // ── fallback / no-op node types ──────────────────────────
+  describe('fallback and no-op branches', () => {
+    it('_scanAllNodes returns empty when engine lacks scanAllNodes', async () => {
+      const bareBridge = new OptimizerBridge({} as any)
+      const plan: PlanNode = {
+        type: PlanNodeType.SCAN,
+        estimatedCost: 1,
+        estimatedRows: 1,
+        children: [],
+        details: {},
+      }
+      const r = await (bareBridge as any)._executeOptimizedIR(plan, {})
+      expect(r).toEqual([])
+    })
+
+    it('VECTOR_SEARCH node passes input through', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.VECTOR_SEARCH,
+        estimatedCost: 1,
+        estimatedRows: 1,
+        children: [
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+        ],
+        details: {},
+      }
+      const r = await runPlan(plan)
+      // vector search is a transparent pass-through in this bridge
+      expect(r.length).toBe(2)
+    })
+
+    it('INDEX_LOOKUP node passes input through', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.INDEX_LOOKUP,
+        estimatedCost: 1,
+        estimatedRows: 1,
+        children: [
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+        ],
+        details: {},
+      }
+      const r = await runPlan(plan)
+      expect(r.length).toBe(2)
+    })
+
+    it('UNION with fewer than two children passes input through', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.UNION,
+        estimatedCost: 1,
+        estimatedRows: 1,
+        children: [
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+        ],
+        details: {},
+      }
+      const r = await runPlan(plan)
+      expect(r.map(n => n.id).sort()).toEqual([1, 2])
+    })
+
+    it('unknown plan node type falls through to passthrough', async () => {
+      const plan: PlanNode = {
+        type: PlanNodeType.JOIN,
+        estimatedCost: 1,
+        estimatedRows: 1,
+        children: [
+          { type: PlanNodeType.SCAN, estimatedCost: 1, estimatedRows: 1, children: [], details: { typeId: 1 } },
+        ],
+        details: {},
+      }
+      const r = await runPlan(plan)
+      expect(r.length).toBe(2)
     })
   })
 })
