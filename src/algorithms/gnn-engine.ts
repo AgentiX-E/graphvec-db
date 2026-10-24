@@ -565,12 +565,13 @@ export class GnnInferenceEngine {
    * 释放模型资源
    */
   async dispose(): Promise<void> {
-    if (this.activeSession) {
-      this.activeSession = null
-      this.activeModelName = null
-      this.modelLoaded = false
-      this.sessions.clear()
-    }
+    // Always release every resource: active session state AND the full session
+    // registry. The previous guard (`if (this.activeSession)`) leaked named
+    // sessions that were loaded but never activated (activeSession == null).
+    this.activeSession = null
+    this.activeModelName = null
+    this.modelLoaded = false
+    this.sessions.clear()
   }
 
   // ── Private Helpers ──────────────────────

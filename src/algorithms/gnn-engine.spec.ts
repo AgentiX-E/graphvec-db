@@ -298,6 +298,19 @@ describe('GnnInferenceEngine', () => {
       await engine.dispose()
       expect(engine.getLoadedModels()).toEqual([])
     })
+
+    it('should clear non-active named sessions on dispose', async () => {
+      const engine = new GnnInferenceEngine({ featureDimension: featureDim })
+      // Load a named model but do NOT activate it, so activeSession stays null.
+      await engine.loadNamedModel('dormant', '/fake/dormant.onnx')
+      expect(engine.getLoadedModels()).toEqual(['dormant'])
+      expect(engine.isLoaded).toBe(false)
+
+      await engine.dispose()
+
+      // dispose() must release every loaded session, including non-active ones.
+      expect(engine.getLoadedModels()).toEqual([])
+    })
   })
 
   describe('setEncoder', () => {
@@ -748,6 +761,84 @@ describe('GnnInferenceEngine', () => {
       const encoder = new GraphEngineFeatureEncoder(mockGraph, ['feature'], 1)
       const gnnEngine = new GnnInferenceEngine({ featureDimension: 1 })
       expect(() => gnnEngine.setEncoder(encoder.encode.bind(encoder))).not.toThrow()
+    })
+  })
+
+  // ──────────────────────────────────────────
+  // 多输入 / 多输出模型分支测试
+  // ──────────────────────────────────────────
+
+  describe('computeEmbedding with multi-input/multi-output models', () => {
+    it('handles a model with a named feature input', async () => {
+      setMockCreateFn(async () => ({
+        inputNames: ['x', 'node_features'],
+        outputNames: ['node_embedding'],
+        run: vi.fn().mockResolvedValue({
+          node_embedding: { data: new Float32Array(64).fill(0.5), dims: [1, 64] },
+        }),
+      }))
+      const engine = new GnnInferenceEngine({ featureDimension: 8, embeddingDimension: 64 })
+      await engine.loadModel('/fake/multi-in.onnx')
+      const emb = await engine.computeEmbedding(1)
+      expect(emb).toBeInstanceOf(Float32Array)
+      expect(emb.length).toBe(64)
+    })
+
+    it('falls back to first input when no feature-named input exists', async () => {
+      setMockCreateFn(async () => ({
+        inputNames: ['a', 'b'],
+        outputNames: ['out'],
+        run: vi.fn().mockResolvedValue({
+          out: { data: new Float32Array(16).fill(0.1), dims: [1, 16] },
+        }),
+      }))
+      const engine = new GnnInferenceEngine({ featureDimension: 4, embeddingDimension: 16 })
+      await engine.loadModel('/fake/multi-no-feature.onnx')
+      const emb = await engine.computeEmbedding(1)
+      expect(emb.length).toBe(16)
+    })
+
+    it('throws when the model has no input nodes', async () => {
+      setMockCreateFn(async () => ({
+        inputNames: [],
+        outputNames: ['out'],
+        run: vi.fn(),
+      }))
+      const engine = new GnnInferenceEngine({ featureDimension: 4 })
+      await engine.loadModel('/fake/empty-input.onnx')
+      await expect(engine.computeEmbedding(1)).rejects.toThrow(
+        'Model has no input nodes',
+      )
+    })
+
+    it('throws when expected output is missing from results', async () => {
+      setMockCreateFn(async () => ({
+        inputNames: ['input'],
+        outputNames: ['embedding'],
+        run: vi.fn().mockResolvedValue({}), // empty results → outputTensor undefined
+      }))
+      const engine = new GnnInferenceEngine({ featureDimension: 4, embeddingDimension: 8 })
+      await engine.loadModel('/fake/missing-out.onnx')
+      await expect(engine.computeEmbedding(1)).rejects.toThrow(
+        'not found in model outputs',
+      )
+    })
+  })
+
+  describe('predictLink with multi-input model (separate src/dst features)', () => {
+    it('routes source and target features into separate inputs', async () => {
+      setMockCreateFn(async () => ({
+        inputNames: ['src_features', 'dst_features'],
+        outputNames: ['probability'],
+        run: vi.fn().mockResolvedValue({
+          probability: { data: new Float32Array([0.9]), dims: [1, 1] },
+        }),
+      }))
+      const engine = new GnnInferenceEngine({ featureDimension: 4 })
+      await engine.loadModel('/fake/link-multi.onnx')
+      const result = await engine.predictLink(1, 2)
+      expect(result.probability).toBeGreaterThanOrEqual(0)
+      expect(result.probability).toBeLessThanOrEqual(1)
     })
   })
 })
