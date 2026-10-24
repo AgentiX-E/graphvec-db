@@ -978,22 +978,17 @@ function _parseQueryImpl(query: string): QueryPlan {
     }
   }
 
-  // EXISTS 子查询：从查询文本提取 existsFilters
-  // ANTLR 的 Cypher 语法不支持 EXISTS { ... } 子查询，只能从文本级检测
-  const existsRegex = /EXISTS\s*\{\s*\((\w+)\)\s*((?:-\[:[^\]]*\]->|<-->|<--|-->|<--)\s*\((\w+)\)|\s*--\s*\((\w+)\))\s*\}/gi
-  let existsMatch: RegExpExecArray | null
-  while ((existsMatch = existsRegex.exec(query)) !== null) {
-    if (!plan.existsFilters) plan.existsFilters = []
-    const src = existsMatch[1]
-    const arrowText = existsMatch[2]
-    const tgt = existsMatch[3] || existsMatch[4]
-    // GE 的 _checkExistsDirection 中 direction === 'any' 短路返回 true（bug），
-    // 所以 undirected (--) 映射为 'out'（通过 neighbors() 检查出边是否存在）
-    const direction = /->/.test(arrowText) ? 'out' : /<-/.test(arrowText) ? 'in' : 'out'
-    const labelMatch = arrowText.match(/\[:(\w+)\]/)
-    const edgeLabel: string | null = labelMatch ? labelMatch[1] : null
-    plan.existsFilters.push({ source: src, edgeLabel, direction, target: tgt })
-  }
+  // EXISTS subqueries are NOT extracted into `existsFilters` here.  That
+  // narrow text-level regex previously split single-edge EXISTS patterns
+  // (`EXISTS { (n)-[:T]->(m) }` with a named, unlabelled target) onto a
+  // separate graph-engine path (`_applyExistsFilters`) that ignores the target
+  // variable and only checks raw neighbour existence.  That produced incorrect
+  // results and diverged from the general `_resolveExistsSubqueries` path used
+  // for every other EXISTS form.  Leaving the body untouched keeps a single,
+  // correct evaluation path: the whole `EXISTS { ... }` stays in `whereBody`
+  // and is resolved by `_resolveExistsSubqueries` / `_evalExistsSubquery`
+  // (which honours named existential targets, chains, union edge types, and
+  // labels).
 
   // ── WHERE 子句解析（补充标签谓词——ANTLR 不处理 a:Employee 格式） ──
   // ANTLR 已经处理了属性过滤器（n.name = 'Bob'），但标签谓词 a:Employee 不是 FilterClause

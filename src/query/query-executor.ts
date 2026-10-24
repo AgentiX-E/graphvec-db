@@ -145,24 +145,32 @@ function _evalChainExists(
     return lbl === label || full.split(':').includes(label)
   }
   // Does `srcNode` have a matching edge (type + direction) to `tgtNode`/any?
+  // `type` may be a pipe-separated union (`KNOWS|LIKES`), matching the same
+  // semantics as `_evalPatternPredicate.edgeTypeMatches`.
   const edgeTypeOk = (e: any, type: string | null) => {
     if (!type) return true
-    return e.label === type || (e.label === null && !type)
+    const types = type.split('|').filter(Boolean)
+    return types.length === 0 || types.includes(e.label)
   }
-  // Enumerate neighbors of `idx` satisfying type + direction.
+  // Enumerate neighbors of `idx` satisfying type + direction.  Edges are
+  // stored on their SOURCE node (`__edges: {srcIdx,dstIdx,label}[]`), so an
+  // incoming edge into `idx` lives on some OTHER node's `__edges`.  For `in`
+  // we must therefore scan every node's edge list, not just `allNodes[idx]`.
   const neighbors = (srcIdx: number, direction: 'out' | 'in', type: string | null): number[] => {
     const result: number[] = []
-    const edges: any[] = (allNodes[srcIdx] as any)?.__edges || []
     const seen = new Set<number>()
-    for (const e of edges) {
-      if (!edgeTypeOk(e, type)) continue
-      let nbr = -1
-      if (direction === 'out' && e.srcIdx === srcIdx) nbr = e.dstIdx
-      else if (direction === 'in' && e.dstIdx === srcIdx) nbr = e.srcIdx
-      if (nbr < 0) continue
-      if (seen.has(nbr)) continue
-      seen.add(nbr)
-      result.push(nbr)
+    for (let ni = 0; ni < allNodes.length; ni++) {
+      const edges: any[] = (allNodes[ni] as any)?.__edges || []
+      for (const e of edges) {
+        if (!edgeTypeOk(e, type)) continue
+        let nbr = -1
+        if (direction === 'out' && e.srcIdx === srcIdx) nbr = e.dstIdx
+        else if (direction === 'in' && e.dstIdx === srcIdx) nbr = e.srcIdx
+        if (nbr < 0) continue
+        if (seen.has(nbr)) continue
+        seen.add(nbr)
+        result.push(nbr)
+      }
     }
     return result
   }
@@ -223,9 +231,18 @@ function _evalChainExists(
         const li = nodes[si], ri = nodes[si + 1]
         // At this leaf every unbound index has been assigned a concrete node
         // id, so assign[...] is guaranteed non-null here (null only marks
-        // "unassigned" during backtracking).
-        const lIdx = li.var ? (isBound(si) ? nodeIdx(nodeForVar(li.var)!) : assign[unboundIdxs.indexOf(si)]!) : -1
-        const rIdx = ri.var ? (isBound(si + 1) ? nodeIdx(nodeForVar(ri.var)!) : assign[unboundIdxs.indexOf(si + 1)]!) : -1
+        // "unassigned" during backtracking).  This covers BOTH named-unbound
+        // and anonymous nodes: an anonymous node (`()`) is still an
+        // existential that must resolve to a concrete node in the assignment,
+        // so it must read its slot from `assign` rather than being forced to
+        // -1 (which would wrongly reject chains whose interior is anonymous,
+        // e.g. `(n)-[]->()-[]->()`).
+        const lIdx = li.var
+          ? (isBound(si) ? nodeIdx(nodeForVar(li.var)!) : assign[unboundIdxs.indexOf(si)]!)
+          : assign[unboundIdxs.indexOf(si)]!
+        const rIdx = ri.var
+          ? (isBound(si + 1) ? nodeIdx(nodeForVar(ri.var)!) : assign[unboundIdxs.indexOf(si + 1)]!)
+          : assign[unboundIdxs.indexOf(si + 1)]!
         const { outFromLeft, outFromRight } = segDirection(si)
         const type = rels[si].type
         // Resolve concrete/anon endpoints.
@@ -281,6 +298,7 @@ function _evalPatternPredicate(
   pat: string,
   ctx: Record<string, unknown>,
   allNodes: Array<Record<string, unknown>>,
+  allowUnbound = false,
 ): boolean | null {
   const t = pat.trim()
   // Match: (src[:Label])  <-|-[ [ :EdgeLabel[*] ] ]- ->|-  (tgt[:Label])
@@ -366,12 +384,16 @@ function _evalPatternPredicate(
   }
 
   // Resolve a named endpoint to its index in allNodes (or null if anonymous).
+  // When `allowUnbound` is set (existential-subquery context), a named endpoint
+  // that is not bound in `ctx` is treated as an existential (like an anonymous
+  // endpoint) rather than an error — `EXISTS { (n)-->(m) }` must behave as
+  // "there exists some m" even though `m` is introduced inside the subquery.
   const resolveEndpoint = (varName: string | null, label: string | null): { idx: number | null; ok: boolean } => {
     if (!varName) return { idx: null, ok: true }  // anonymous endpoint: existence check
     const node = resolveNode(ctx[varName])
-    if (!node) return { idx: null, ok: false }  // named but unresolvable → null
+    if (!node) return allowUnbound ? { idx: null, ok: true } : { idx: null, ok: false }
     const idx = nodeIndexOf(node)
-    if (idx < 0) return { idx: null, ok: false }
+    if (idx < 0) return allowUnbound ? { idx: null, ok: true } : { idx: null, ok: false }
     if (!labelMatches(node, label)) return { idx: null, ok: false }
     return { idx, ok: true }
   }
@@ -409,24 +431,29 @@ function _evalPatternPredicate(
     for (let hop = 1; hop <= maxHops; hop++) {
       const next: number[] = []
       for (const cur of frontier) {
-        const edges: any[] = (allNodes[cur] as any)?.__edges || []
-        for (const e of edges) {
-          if (!edgeTypeMatches(e)) continue
-          let nbr = -1
-          if (direction === 'out' && e.srcIdx === cur) nbr = e.dstIdx
-          else if (direction === 'in' && e.dstIdx === cur) nbr = e.srcIdx
-          else if (direction === 'any') {
-            if (e.srcIdx === cur) nbr = e.dstIdx
-            else if (e.dstIdx === cur) nbr = e.srcIdx
+        // Incoming edges are stored on their source node's `__edges`, so scan
+        // every node's edge list (not just `allNodes[cur]`) to honour `in` and
+        // the incoming half of `any`.
+        for (let ni = 0; ni < allNodes.length; ni++) {
+          const edges: any[] = (allNodes[ni] as any)?.__edges || []
+          for (const e of edges) {
+            if (!edgeTypeMatches(e)) continue
+            let nbr = -1
+            if (direction === 'out' && e.srcIdx === cur) nbr = e.dstIdx
+            else if (direction === 'in' && e.dstIdx === cur) nbr = e.srcIdx
+            else if (direction === 'any') {
+              if (e.srcIdx === cur) nbr = e.dstIdx
+              else if (e.dstIdx === cur) nbr = e.srcIdx
+            }
+            if (nbr < 0) continue
+            if (visited.has(nbr)) continue
+            if (accept(nbr)) {
+              // hop must be within [varMin, varMax] for var-length patterns
+              if (!varLength || (hop >= varMin && (varMax === null || hop <= varMax))) return true
+            }
+            visited.add(nbr)
+            next.push(nbr)
           }
-          if (nbr < 0) continue
-          if (visited.has(nbr)) continue
-          if (accept(nbr)) {
-            // hop must be within [varMin, varMax] for var-length patterns
-            if (!varLength || (hop >= varMin && (varMax === null || hop <= varMax))) return true
-          }
-          visited.add(nbr)
-          next.push(nbr)
         }
       }
       if (next.length === 0) break
@@ -442,17 +469,21 @@ function _evalPatternPredicate(
     const start = src.idx
     if (start === null) return null  // both anonymous: undefined (rare, handled upstream)
     if (!varLength) {
-      // Single hop: any matching neighbor in the right direction.
-      const edges: any[] = (allNodes[start] as any)?.__edges || []
-      for (const e of edges) {
-        if (!edgeTypeMatches(e)) continue
-        let nbr = -1
-        if (direction === 'out' && e.srcIdx === start) nbr = e.dstIdx
-        else if (direction === 'in' && e.dstIdx === start) nbr = e.srcIdx
-        else if (direction === 'any' && (e.srcIdx === start || e.dstIdx === start)) nbr = e.srcIdx === start ? e.dstIdx : e.srcIdx
-        if (nbr < 0) continue
-        if (tgtLabel && !labelMatches(allNodes[nbr], tgtLabel)) continue
-        return true
+      // Single hop: any matching neighbor in the right direction.  Incoming
+      // edges (`in` / the incoming half of `any`) are stored on their SOURCE
+      // node's `__edges`, so scan every node rather than only `allNodes[start]`.
+      for (let ni = 0; ni < allNodes.length; ni++) {
+        const edges: any[] = (allNodes[ni] as any)?.__edges || []
+        for (const e of edges) {
+          if (!edgeTypeMatches(e)) continue
+          let nbr = -1
+          if (direction === 'out' && e.srcIdx === start) nbr = e.dstIdx
+          else if (direction === 'in' && e.dstIdx === start) nbr = e.srcIdx
+          else if (direction === 'any' && (e.srcIdx === start || e.dstIdx === start)) nbr = e.srcIdx === start ? e.dstIdx : e.srcIdx
+          if (nbr < 0) continue
+          if (tgtLabel && !labelMatches(allNodes[nbr], tgtLabel)) continue
+          return true
+        }
       }
       return false
     }
@@ -533,10 +564,12 @@ function _evalExistsSubquery(
   }
 
   if (!cond) {
-    // Pure existence check — no binding enumeration required.
+    // Pure existence check — no binding enumeration required.  A named inner
+    // variable (e.g. `m` in `(n)-->(m)`) is existential here, not a reference
+    // to an outer binding, so pass allowUnbound=true.
     const v = _evalChainExists(pattern, ctx, allNodes)
     if (v !== null) return v
-    const pv = _evalPatternPredicate(pattern, ctx, allNodes)
+    const pv = _evalPatternPredicate(pattern, ctx, allNodes, true)
     return pv === true
   }
 
