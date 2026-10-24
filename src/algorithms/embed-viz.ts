@@ -242,13 +242,14 @@ export function forceDirectedLayout(
   nodeCount: number,
   edges: WeightedEdge[],
   iterations: number = 100,
+  rng: () => number = Math.random,
 ): Map<number, [number, number]> {
   // 初始化随机位置
   const positions = new Map<number, [number, number]>()
   const velocities = new Map<number, [number, number]>()
 
   for (let i = 0; i < nodeCount; i++) {
-    positions.set(i, [Math.random() * 100 - 50, Math.random() * 100 - 50])
+    positions.set(i, [rng() * 100 - 50, rng() * 100 - 50])
     velocities.set(i, [0, 0])
   }
 

@@ -187,8 +187,22 @@ describe('reduceWithTSNE', () => {
 })
 
 describe('forceDirectedLayout', () => {
+  // Deterministic PRNG (mulberry32) so force-directed layout tests are not
+  // flaky: a fixed seed removes the random-initial-position variance that
+  // otherwise occasionally defeats the fixed iteration budget.
+  function seededRng(seed: number): () => number {
+    let state = seed | 0
+    return () => {
+      state = (state + 0x6d2b79f5) | 0
+      let t = Math.imul(state ^ (state >>> 15), 1 | state)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+  const rng = seededRng(0x12345678)
+
   it('initializes all nodes with positions', () => {
-    const result = forceDirectedLayout(5, [], 1)
+    const result = forceDirectedLayout(5, [], 1, rng)
     expect(result.size).toBe(5)
     for (let i = 0; i < 5; i++) {
       const pos = result.get(i)
@@ -201,7 +215,7 @@ describe('forceDirectedLayout', () => {
   it('converges nodes with edges closer together', () => {
     // 2 nodes with one edge — should attract toward each other
     const edges = [{ src: 0, dst: 1, weight: 1 }]
-    const result = forceDirectedLayout(2, edges, 50)
+    const result = forceDirectedLayout(2, edges, 50, rng)
 
     const pos0 = result.get(0)!
     const pos1 = result.get(1)!
@@ -215,7 +229,7 @@ describe('forceDirectedLayout', () => {
 
   it('separates unconnected nodes', () => {
     // 2 unconnected nodes — repulsion should push them apart
-    const result = forceDirectedLayout(2, [], 30)
+    const result = forceDirectedLayout(2, [], 30, rng)
     const pos0 = result.get(0)!
     const pos1 = result.get(1)!
     const dist = Math.sqrt(
@@ -227,12 +241,12 @@ describe('forceDirectedLayout', () => {
   })
 
   it('handles zero edges', () => {
-    const result = forceDirectedLayout(10, [], 5)
+    const result = forceDirectedLayout(10, [], 5, rng)
     expect(result.size).toBe(10)
   })
 
   it('handles single node', () => {
-    const result = forceDirectedLayout(1, [], 5)
+    const result = forceDirectedLayout(1, [], 5, rng)
     expect(result.size).toBe(1)
     const pos = result.get(0)!
     expect(Number.isFinite(pos[0])).toBe(true)
@@ -244,7 +258,7 @@ describe('forceDirectedLayout', () => {
     for (let i = 0; i < 20; i++) {
       edges.push({ src: i % 10, dst: (i + 1) % 10, weight: Math.random() })
     }
-    const result = forceDirectedLayout(10, edges, 20)
+    const result = forceDirectedLayout(10, edges, 20, rng)
     expect(result.size).toBe(10)
   })
 
@@ -253,8 +267,8 @@ describe('forceDirectedLayout', () => {
       { src: 0, dst: 1, weight: 1 },
       { src: 1, dst: 2, weight: 1 },
     ]
-    const result5 = forceDirectedLayout(3, edges, 5)
-    const result50 = forceDirectedLayout(3, edges, 50)
+    const result5 = forceDirectedLayout(3, edges, 5, rng)
+    const result50 = forceDirectedLayout(3, edges, 50, rng)
 
     // 更多迭代后节点位移更小（简单稳定性检查）
     const pos50 = result50.get(0)!
