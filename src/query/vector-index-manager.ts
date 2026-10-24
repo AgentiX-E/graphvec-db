@@ -31,11 +31,18 @@ export interface VectorIndexCreateOptions {
   efConstruction?: number
 }
 
-/** 索引标识符：label_property */
+/** 索引标识符：无歧义地拼接 label 与 property */
 type IndexKey = string
 
+/**
+ * 使用 NUL（`\u0000`）作为分隔符，而不是下划线。Cypher 的 label/property
+ * 标识符本身可能包含下划线（例如 `My_Label`），用 `_` 拼接会产生歧义：
+ * `makeKey('My_Label', 'vec')` 与 `makeKey('My', 'Label_vec')` 会碰撞成
+ * 同一个 key `My_Label_vec`，导致两个不同索引互相覆盖。NUL 不出现在任何
+ * 合法标识符中，因此是无歧义的。
+ */
 function makeKey(label: string, property: string): IndexKey {
-  return `${label}_${property}`
+  return `${label}\u0000${property}`
 }
 
 /** 存储每个索引的 HNSW 参数 */
@@ -53,7 +60,7 @@ interface IndexParams {
  */
 export class VectorIndexManager {
   /**
-   * label_property → HNSW 索引的映射
+   * IndexKey (label/property 组合) → HNSW 索引的映射
    *
    * HNSW 索引由 hnswlib-node v3 管理，使用 'l2' 空间。
    */
@@ -64,6 +71,15 @@ export class VectorIndexManager {
 
   /** 存储每个索引的 HNSW 参数 */
   private indexParams: Map<IndexKey, IndexParams> = new Map()
+
+  /**
+   * 存储每个索引的 (label, property) 元信息。
+   *
+   * `rebuildFromGraph` 需要按索引重建。`IndexKey` 虽然用 NUL 分隔符拼接、
+   * 已无歧义，但从 key 反向拆分 label/property 仍显脆弱。因此单独记录
+   * 结构化元信息，直接提供 (label, property)，避免任何解析。
+   */
+  private keyMeta: Map<IndexKey, { label: string; property: string }> = new Map()
 
   /**
    * 为 label.property 创建 HNSW 索引
@@ -124,6 +140,7 @@ export class VectorIndexManager {
     this.indices.set(key, index)
     this.dimensions.set(key, dim)
     this.indexParams.set(key, { dimension: dim, M: m, efConstruction })
+    this.keyMeta.set(key, { label, property: prop })
   }
 
   /**
@@ -220,6 +237,7 @@ export class VectorIndexManager {
     }
     this.indices.delete(key)
     this.dimensions.delete(key)
+    this.keyMeta.delete(key)
   }
 
   /**
@@ -261,15 +279,18 @@ export class VectorIndexManager {
    * 提取向量属性重新添加。
    */
   rebuildFromGraph(engine: { scan: (label: string) => Iterable<{ id: number; props: Record<string, unknown> }> }): void {
-    for (const [key] of this.indices) {
-      const underscoreIdx = key.indexOf('_')
-      if (underscoreIdx === -1) continue
-      const label = key.substring(0, underscoreIdx)
-      const property = key.substring(underscoreIdx + 1)
+    // Snapshot the keys first: we delete and re-create each index below, and
+    // re-inserting the same key while iterating a live Map would cause the
+    // iterator to re-visit it forever (an infinite loop).
+    for (const key of Array.from(this.indices.keys())) {
+      const meta = this.keyMeta.get(key)
+      if (!meta) continue
+      const { label, property } = meta
 
       const dim = this.dimensions.get(key) || 128
       this.indices.delete(key)
       this.dimensions.delete(key)
+      this.keyMeta.delete(key)
 
       let nodeCount = 0
       for (const _node of engine.scan(label)) {

@@ -205,3 +205,61 @@ describe('VectorIndexManager — HNSW Parameters', () => {
     expect(mgr.getDimension('Legacy', 'vec')).toBe(4)
   })
 })
+
+describe('VectorIndexManager — edge branches', () => {
+  let mgr: VectorIndexManager
+
+  beforeEach(() => {
+    mgr = new VectorIndexManager()
+  })
+
+  it('addVector throws when index does not exist', () => {
+    expect(() =>
+      mgr.addVector('Missing', 'vec', 1, new Float32Array([1, 2, 3])),
+    ).toThrow('Vector index not found')
+  })
+
+  it('search returns empty when topK <= 0', () => {
+    mgr.createIndex('K', 'vec', 2)
+    mgr.addVector('K', 'vec', 1, new Float32Array([1, 0]))
+    expect(mgr.search('K', 'vec', new Float32Array([1, 0]), 0)).toEqual([])
+    expect(mgr.search('K', 'vec', new Float32Array([1, 0]), -1)).toEqual([])
+  })
+
+  it('rebuildFromGraph rebuilds an index from graph node vectors', () => {
+    mgr.createIndex('Item', 'embedding', 2)
+    const iterable = {
+      scan: (label: string) => ({
+        *[Symbol.iterator]() {
+          yield { id: 1, props: { embedding: new Float32Array([1, 0]) } }
+          yield { id: 2, props: { embedding: new Float32Array([0, 1]) } }
+          yield { id: 3, props: { embedding: [0, 0] } }
+        },
+      }),
+    }
+    mgr.rebuildFromGraph(iterable as any)
+    expect(mgr.hasIndex('Item', 'embedding')).toBe(true)
+    expect(mgr.getVectorCount('Item', 'embedding')).toBe(3)
+  })
+
+  it('rebuildFromGraph keeps label intact when the label contains underscores', () => {
+    // Regression: rebuildFromGraph split the IndexKey on the FIRST underscore,
+    // so a label like "My_Label" was truncated to "My" and the property became
+    // "Label_vec", producing a bogus rebuilt index under the wrong key.
+    mgr.createIndex('My_Label', 'vec', 2)
+    const iterable = {
+      scan: (label: string) => ({
+        *[Symbol.iterator]() {
+          if (label === 'My_Label') {
+            yield { id: 7, props: { vec: new Float32Array([2, 3]) } }
+          }
+        },
+      }),
+    }
+    mgr.rebuildFromGraph(iterable as any)
+    // The rebuilt index must remain under the original "My_Label.vec" key.
+    expect(mgr.hasIndex('My_Label', 'vec')).toBe(true)
+    expect(mgr.getVectorCount('My_Label', 'vec')).toBe(1)
+    expect(mgr.hasIndex('My', 'Label_vec')).toBe(false)
+  })
+})
