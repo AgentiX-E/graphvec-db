@@ -406,6 +406,7 @@ export class S2Index {
  * Convert lat/lng to S2 cell key (Hilbert quadkey) at given level.
  */
 export function latLngToKey(lat: number, lng: number, level: number): string {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
   const S2Cell = require('s2-geometry').S2.S2Cell
   return S2Cell.latLngToKey(lat, lng, level)
 }
@@ -414,6 +415,7 @@ export function latLngToKey(lat: number, lng: number, level: number): string {
  * Convert S2 cell key to lat/lng (center of cell).
  */
 export function keyToLatLng(cellId: string): [number, number] {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
   const S2Cell = require('s2-geometry').S2.S2Cell
   const result = S2Cell.keyToLatLng(cellId)
   if (result && typeof result.lat === 'number' && typeof result.lng === 'number') {
@@ -437,6 +439,7 @@ export function cellKeyLevel(cellId: string): number {
  * Uses S2Cell.getNeighbors() for true cell adjacency.
  */
 export function neighborKeysForCell(cellId: string, level: number): string[] {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
   const S2Cell = require('s2-geometry').S2.S2Cell
   try {
     const [lat, lng] = keyToLatLng(cellId)

@@ -8,6 +8,8 @@
  */
 
 import { createRequire } from 'module'
+import * as fs from 'fs'
+import * as path from 'path'
 
 const _require = createRequire(typeof __filename !== 'undefined' ? __filename : '/')
 
@@ -107,7 +109,6 @@ export class QuerySlowLog {
   // ── 内部方法 ──
 
   private _initRotateStream(): void {
-    const fs = require('fs')
     try {
       // Try rotating-file-stream first
       const rfs = _require('rotating-file-stream')
@@ -119,7 +120,7 @@ export class QuerySlowLog {
           return `slow-queries.${dateStr}.log`
         },
         {
-          path: require('path').dirname(this.logFilePath),
+          path: path.dirname(this.logFilePath),
           maxFiles: 30,
           maxSize: '10M',
           interval: '1d',
@@ -130,7 +131,7 @@ export class QuerySlowLog {
       // rotating-file-stream not available, fall back to regular file write
       try {
         // Ensure directory exists
-        const dir = require('path').dirname(this.logFilePath)
+        const dir = path.dirname(this.logFilePath)
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true })
         }
@@ -143,8 +144,7 @@ export class QuerySlowLog {
 
   private _recoverFromFile(): void {
     try {
-      const fs = require('fs')
-      if (!fs.existsSync(this.logFilePath)) return
+        if (!fs.existsSync(this.logFilePath)) return
       const content = fs.readFileSync(this.logFilePath, 'utf-8')
       const lines = content.split('\n').filter(Boolean)
       // 只恢复最近 N 条记录，避免内存耗尽
@@ -181,8 +181,7 @@ export class QuerySlowLog {
     // 同步写入（确保数据立即落盘，对可靠性要求高的场景）
     if (this._useSyncWrite) {
       try {
-        const fs = require('fs')
-        const dir = require('path').dirname(this.logFilePath)
+            const dir = path.dirname(this.logFilePath)
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true })
         }

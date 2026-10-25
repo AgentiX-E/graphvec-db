@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import * as fs from 'fs'
 
 // Mock EventBus
 class MockEventBus {
@@ -93,11 +94,10 @@ describe('event-bus-test-node (logic patterns)', () => {
   })
 
   it('checks peer key file existence (new format)', async () => {
-    const fsCjs = require('fs')
-    const existsSyncSpy = vi.spyOn(fsCjs, 'existsSync').mockReturnValue(true)
+    const existsSyncSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true)
 
     const peerKeyFile = '/tmp/curve/peer-1_5501.pub'
-    const keyFound = fsCjs.existsSync(peerKeyFile)
+    const keyFound = fs.existsSync(peerKeyFile)
 
     expect(keyFound).toBe(true)
     expect(existsSyncSpy).toHaveBeenCalledWith(expect.stringContaining('peer-1'))
@@ -105,16 +105,15 @@ describe('event-bus-test-node (logic patterns)', () => {
   })
 
   it('checks old format key file as fallback', async () => {
-    const fsCjs = require('fs')
-    const existsSyncSpy = vi.spyOn(fsCjs, 'existsSync')
+    const existsSyncSpy = vi.spyOn(fs, 'existsSync')
     existsSyncSpy.mockReturnValueOnce(false).mockReturnValueOnce(true)
 
     const newFormat = '/tmp/curve/node-1_5500.pub'
     const oldFormat = '/tmp/curve/node-1.pub'
 
     let keyFound = false
-    if (!fsCjs.existsSync(newFormat)) {
-      if (fsCjs.existsSync(oldFormat)) {
+    if (!fs.existsSync(newFormat)) {
+      if (fs.existsSync(oldFormat)) {
         keyFound = true
       }
     }

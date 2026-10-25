@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import { PassThrough } from 'stream'
 import * as zlib from 'zlib'
 import { GraphEngine } from '../core/graph-engine'
 import { Backup, parseBackupTimestamp } from './backup'
@@ -13,8 +14,7 @@ const _tar = _require('tar')
 // Mock ESM-only modules for CJS compatibility
 vi.mock('archiver', () => {
   function createArchiver() {
-    const { PassThrough } = require('stream')
-    const s = new PassThrough()
+    const s = new PassThrough() as PassThrough & { directory: () => unknown; finalize: () => void }
     s.directory = () => s
     s.finalize = () => { setImmediate(() => s.emit('close')) }
     return s

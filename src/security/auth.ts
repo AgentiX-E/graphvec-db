@@ -13,6 +13,7 @@ import * as http from 'http'
 import { AuthConfig, AuthResult, Role, AuthError } from '../types'
 import { Logger } from '../ops/logger'
 import * as crypto from 'crypto'
+import * as fs from 'fs'
 
 /**
  * mTLS 认证引擎
@@ -63,7 +64,6 @@ export class Authenticator {
     // 从 identitiesFile 加载（覆盖 config.identities）
     if (this.config.identitiesFile) {
       try {
-        const fs = require('fs')
         const raw = fs.readFileSync(this.config.identitiesFile, 'utf-8')
         const data = JSON.parse(raw)
         if (Array.isArray(data.identities)) {
@@ -93,6 +93,7 @@ export class Authenticator {
     if (this._watcher) return
 
     try {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
       const chokidar = require('chokidar')
       const watcher = chokidar.watch(this.config.identitiesFile, {
         persistent: false,
@@ -121,17 +122,17 @@ export class Authenticator {
   private _watchTimer: ReturnType<typeof setInterval> | null = null
 
   private _startStatPolling(): void {
-    if (!this.config.identitiesFile) return
+    const file = this.config.identitiesFile
+    if (!file) return
 
-    const fs = require('fs')
     let lastMtime = 0
     try {
-      lastMtime = fs.statSync(this.config.identitiesFile)?.mtimeMs || 0
+      lastMtime = fs.statSync(file)?.mtimeMs || 0
     } catch { /* 文件还不存在 */ }
 
     this._watchTimer = setInterval(() => {
       try {
-        const stat = fs.statSync(this.config.identitiesFile)
+        const stat = fs.statSync(file)
         if (stat.mtimeMs > lastMtime) {
           this.logger.info('identities file changed (poll), reloading...')
           this._loadIdentities()
@@ -599,7 +600,6 @@ export class JwtManager {
    */
   static loadSecretFromFile(filePath: string): Buffer {
     try {
-      const fs = require('fs')
       const content = fs.readFileSync(filePath, 'utf-8').trim()
       if (content.length === 0) throw new Error('empty secret file')
       return typeof content === 'string' ? Buffer.from(content) : content
@@ -1005,6 +1005,7 @@ export class LdapAuthenticator {
     }
 
     try {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
       const ldap = require('ldapjs')
       const client = ldap.createClient({
         url: this.config.url,
@@ -1378,7 +1379,6 @@ export class AuthenticatorChain {
  * @throws Error 如果文件不存在或为空
  */
 (JwtManager as any).loadSecretFromFile = function (filePath: string): Buffer {
-  const fs = require('fs')
   if (!fs.existsSync(filePath)) {
     throw new Error(`JWT secret file not found: ${filePath}`)
   }

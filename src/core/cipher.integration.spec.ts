@@ -90,6 +90,7 @@ describe('EncryptionAtRest — OverGraphStorage integration', () => {
     // No encryption flag — first byte should NOT be 0x01
     expect(snapshot[0]).not.toBe(0x01)
     // It should be decodable as msgpack (encrypted data would fail)
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
     const { decode } = require('msgpackr')
     expect(() => decode(Buffer.from(snapshot))).not.toThrow()
 

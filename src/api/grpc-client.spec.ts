@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 
+type GrpcCallback = (err: Error | null, res: unknown) => void
+
 // We mock both gRPC modules to avoid loading proto files in tests
 // Using class extends to ensure `new` keyword works
 
@@ -19,7 +21,7 @@ const methodNames = [
   'Query', 'Neighbors', 'BatchNeighbors', 'Health',
 ]
 for (const name of methodNames) {
-  mockMethods[name] = vi.fn((_req: any, cb: Function) => cb(null, {}))
+  mockMethods[name] = vi.fn((_req: any, cb: GrpcCallback) => cb(null, {}))
   ;(mockInstance as any)[name] = mockMethods[name]
 }
 
@@ -75,7 +77,7 @@ describe('grpc-client', () => {
   })
 
   it('getNode calls GetNode with id', async () => {
-    mockMethods.GetNode.mockImplementationOnce((_req: any, cb: Function) => cb(null, { id: 42, name: 'test' }))
+    mockMethods.GetNode.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { id: 42, name: 'test' }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     const result = await client.getNode(42)
@@ -84,7 +86,7 @@ describe('grpc-client', () => {
   })
 
   it('addNode passes typeId, name, and props', async () => {
-    mockMethods.AddNode.mockImplementationOnce((_req: any, cb: Function) => cb(null, { id: 1 }))
+    mockMethods.AddNode.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { id: 1 }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.addNode(1, 'test', { key: 'val' })
@@ -95,7 +97,7 @@ describe('grpc-client', () => {
   })
 
   it('addNode defaults props to empty object', async () => {
-    mockMethods.AddNode.mockImplementationOnce((_req: any, cb: Function) => cb(null, { id: 2 }))
+    mockMethods.AddNode.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { id: 2 }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.addNode(2, 'test')
@@ -106,7 +108,7 @@ describe('grpc-client', () => {
   })
 
   it('updateNode passes id and props', async () => {
-    mockMethods.UpdateNode.mockImplementationOnce((_req: any, cb: Function) => cb(null, {}))
+    mockMethods.UpdateNode.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, {}))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.updateNode(1, { name: 'new' })
@@ -117,7 +119,7 @@ describe('grpc-client', () => {
   })
 
   it('deleteNode passes cascade param', async () => {
-    mockMethods.DeleteNode.mockImplementationOnce((_req: any, cb: Function) => cb(null, { success: true }))
+    mockMethods.DeleteNode.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { success: true }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     const result = await client.deleteNode(1, true)
@@ -129,7 +131,7 @@ describe('grpc-client', () => {
   })
 
   it('deleteNode defaults cascade to false', async () => {
-    mockMethods.DeleteNode.mockImplementationOnce((_req: any, cb: Function) => cb(null, { success: true }))
+    mockMethods.DeleteNode.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { success: true }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.deleteNode(1)
@@ -140,7 +142,7 @@ describe('grpc-client', () => {
   })
 
   it('addEdge passes all params', async () => {
-    mockMethods.AddEdge.mockImplementationOnce((_req: any, cb: Function) => cb(null, { success: true }))
+    mockMethods.AddEdge.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { success: true }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     const result = await client.addEdge(1, 2, 10, { w: '1' }, 0.5)
@@ -152,7 +154,7 @@ describe('grpc-client', () => {
   })
 
   it('addEdge defaults props and weight', async () => {
-    mockMethods.AddEdge.mockImplementationOnce((_req: any, cb: Function) => cb(null, { success: true }))
+    mockMethods.AddEdge.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { success: true }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.addEdge(1, 2, 10)
@@ -163,7 +165,7 @@ describe('grpc-client', () => {
   })
 
   it('query passes query string, limit, and skip', async () => {
-    mockMethods.Query.mockImplementationOnce((_req: any, cb: Function) => cb(null, { results: [], count: 0 }))
+    mockMethods.Query.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { results: [], count: 0 }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.query('MATCH (n) RETURN n', 10, 0)
@@ -174,7 +176,7 @@ describe('grpc-client', () => {
   })
 
   it('query defaults limit and skip', async () => {
-    mockMethods.Query.mockImplementationOnce((_req: any, cb: Function) => cb(null, { results: [], count: 0 }))
+    mockMethods.Query.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { results: [], count: 0 }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.query('MATCH (n) RETURN n')
@@ -185,7 +187,7 @@ describe('grpc-client', () => {
   })
 
   it('neighbors passes maxDepth and edgeTypeFilter', async () => {
-    mockMethods.Neighbors.mockImplementationOnce((_req: any, cb: Function) => cb(null, {}))
+    mockMethods.Neighbors.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, {}))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.neighbors(1, 2, [10, 11])
@@ -196,7 +198,7 @@ describe('grpc-client', () => {
   })
 
   it('neighbors defaults maxDepth and edgeTypeFilter', async () => {
-    mockMethods.Neighbors.mockImplementationOnce((_req: any, cb: Function) => cb(null, {}))
+    mockMethods.Neighbors.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, {}))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.neighbors(1)
@@ -207,7 +209,7 @@ describe('grpc-client', () => {
   })
 
   it('health returns a promise', async () => {
-    mockMethods.Health.mockImplementationOnce((_req: any, cb: Function) => cb(null, { status: 'ok' }))
+    mockMethods.Health.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, { status: 'ok' }))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     const promise = client.health()
@@ -222,7 +224,7 @@ describe('grpc-client', () => {
   })
 
   it('rejects when gRPC GetNode returns error', async () => {
-    mockMethods.GetNode.mockImplementationOnce((_req: any, cb: Function) => {
+    mockMethods.GetNode.mockImplementationOnce((_req: any, cb: GrpcCallback) => {
       const err = new Error('not found') as any
       err.code = 5
       cb(err, null)
@@ -233,7 +235,7 @@ describe('grpc-client', () => {
   })
 
   it('batchNeighbors passes ids, maxDepth, and edgeTypeFilter', async () => {
-    mockMethods.BatchNeighbors.mockImplementationOnce((_req: any, cb: Function) => cb(null, {}))
+    mockMethods.BatchNeighbors.mockImplementationOnce((_req: any, cb: GrpcCallback) => cb(null, {}))
     const mod = await import('./grpc-client')
     const client = mod.createGrpcClient('localhost:50051')
     await client.batchNeighbors([1, 2, 3], 2, [10])

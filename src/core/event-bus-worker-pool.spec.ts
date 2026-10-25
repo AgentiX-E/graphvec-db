@@ -9,7 +9,6 @@
  * 5. Error处理：子进程异常后的降级行为
  * 6. 子进程 ACK 回传：IPC 通道接收 ACK
  */
-const assert = require('node:assert')
 
 // Mock zeromq so the worker pool never touches the native addon.
 vi.mock('zeromq')

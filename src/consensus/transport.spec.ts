@@ -284,7 +284,6 @@ describe('MockTransport', () => {
 describe('TcpTransport - TLS', () => {
   let tcpTls: TcpTransport
   let tcpTlsClient: TcpTransport
-  const _crypto = require('crypto')
 
   beforeEach(() => {
     // 生成自签名 TLS 证书

@@ -79,7 +79,7 @@ function createMockRange(rangeId: string, opts?: {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     write: vi.fn().mockResolvedValue(undefined),
-    read: vi.fn().mockImplementation(async (fn: Function) => {
+    read: vi.fn().mockImplementation(async (fn: (engine: any) => any) => {
       const mockEngine: any = {
         exportSnapshot: vi.fn().mockResolvedValue(
           Buffer.from(JSON.stringify({

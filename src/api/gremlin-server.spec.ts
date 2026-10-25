@@ -45,6 +45,7 @@ function buildGraphBinaryRequest(
   processor: string,
   args: Map<string, unknown>,
 ): Buffer {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
   const gb = require('gremlin/lib/structure/io/binary/GraphBinary')
   const hex = requestId.replace(/-/g, '')
   return Buffer.concat([
@@ -58,6 +59,7 @@ function buildGraphBinaryRequest(
 
 /** Build a Bytecode object */
 function buildBytecode(source: string[][], steps: string[][]): any {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
   const Bytecode = require('gremlin/lib/process/bytecode')
   const bc = new Bytecode()
   for (const s of source) bc.addSource(s[0], s.slice(1))

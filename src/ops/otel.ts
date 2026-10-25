@@ -93,6 +93,7 @@ export class Telemetry {
 
     // 2. OTLP HTTP exporter — 如果配置了 HTTP 端点
     if (config.otlpHttpEndpoint) {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
       const { OTLPTraceExporter: OTLPHttpExporter } = require('@opentelemetry/exporter-trace-otlp-http')
       exporters.push(new OTLPHttpExporter({
         url: config.otlpHttpEndpoint,
@@ -101,6 +102,7 @@ export class Telemetry {
 
     // 3. Jaeger 兼容导出（通过 OTLP HTTP 到 Jaeger Collector）
     if (config.jaegerEndpoint) {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
       const { OTLPTraceExporter: OTLPHttpExporter } = require('@opentelemetry/exporter-trace-otlp-http')
       exporters.push(new OTLPHttpExporter({
         url: config.jaegerEndpoint,
@@ -169,7 +171,9 @@ export class Telemetry {
 
       // If any其他 trace exporters（OTLP HTTP / Jaeger / Zipkin），通过 span processor 注册
       if (traceExporters.length > 1) {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
         const { BatchSpanProcessor } = require('@opentelemetry/sdk-trace-base')
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
         const { SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base')
         const additionalProcessors = traceExporters.slice(1).map(
           (e: any) => new SimpleSpanProcessor(e),
@@ -202,8 +206,11 @@ export class Telemetry {
     if (this._enabled) return // 必须在 init 之前调用
 
     try {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
       const { registerInstrumentations } = require('@opentelemetry/instrumentation')
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
       const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http')
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
       const { FastifyInstrumentation } = require('@opentelemetry/instrumentation-fastify')
 
       registerInstrumentations({

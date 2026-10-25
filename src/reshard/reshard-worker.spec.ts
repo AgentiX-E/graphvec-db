@@ -240,7 +240,7 @@ function createMockRange(rangeId: string, opts?: {
         snapshotCallback(op.payload.snapshotData)
       }
     }),
-    read: vi.fn().mockImplementation(async (reader: Function) => {
+    read: vi.fn().mockImplementation(async (reader: (engine: any) => any) => {
       // Build a mock GraphEngine-like object
       const mockEngine: any = {
         queryPattern: () =>

@@ -539,6 +539,7 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
     const portB = allocPort()
 
     // 预生成密钥——直接使用 zeromq.curveKeyPair() 避免 Jest mock 污染
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
     const zmqModule = require('zeromq')
     const kpA = zmqModule.curveKeyPair()
     const kpB = zmqModule.curveKeyPair()
@@ -549,8 +550,6 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
     pa('node-b', portB, kpB.publicKey)
 
     // 启动子进程 node-b（接收者）
-    const { spawn } = require('node:child_process')
-
     const stressCount = 100
     // Fixed: set a timeout promise that resolves after 60s so the test does not hang
     const MAX_WAIT_MS = 60000

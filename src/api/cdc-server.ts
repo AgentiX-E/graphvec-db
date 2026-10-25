@@ -29,6 +29,7 @@ import * as http from 'http'
 import { CdcAdapter, CdcEvent, CdcFilter } from '../core/cdc-adapter'
 import { Logger } from '../ops/logger'
 import { URL } from 'url'
+import * as crypto from 'crypto'
 
 /** WebSocket 消息类型 */
 interface WsSubscribeMessage {
@@ -376,7 +377,6 @@ export class CdcServer {
    * 生成 WebSocket 握手 accept key。
    */
   private _generateAcceptKey(key: string): string {
-    const crypto = require('crypto')
     const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
     const sha1 = crypto.createHash('sha1').update(key + GUID).digest('base64')
     return sha1

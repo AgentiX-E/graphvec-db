@@ -7,6 +7,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+type GrpcCallback = (err: Error | null, res: unknown) => void
+
 // ── 必须在任何导入前 mock ──
 
 vi.mock('@grpc/grpc-js', () => {
@@ -23,18 +25,18 @@ vi.mock('@grpc/grpc-js', () => {
   // GraphService constructor for client
   // Methods accept (request, callback) pattern — callback immediately
   const mockClient = {
-    GetNode: vi.fn((_req: any, cb: Function) => cb(null, { id: 1 })),
-    AddNode: vi.fn((_req: any, cb: Function) => cb(null, { id: 1 })),
-    UpdateNode: vi.fn((_req: any, cb: Function) => cb(null, { id: 1 })),
-    DeleteNode: vi.fn((_req: any, cb: Function) => cb(null, { success: true })),
-    GetEdge: vi.fn((_req: any, cb: Function) => cb(null, { src: 1, dst: 2 })),
-    AddEdge: vi.fn((_req: any, cb: Function) => cb(null, { success: true })),
-    UpdateEdge: vi.fn((_req: any, cb: Function) => cb(null, { src: 1, dst: 2 })),
-    DeleteEdge: vi.fn((_req: any, cb: Function) => cb(null, { success: true })),
-    Query: vi.fn((_req: any, cb: Function) => cb(null, { results: [], count: 0 })),
-    Neighbors: vi.fn((_req: any, cb: Function) => cb(null, { nodeId: 1, edges: [], nodes: [] })),
-    BatchNeighbors: vi.fn((_req: any, cb: Function) => cb(null, { results: {}, totalCount: 0 })),
-    Health: vi.fn((_req: any, cb: Function) => cb(null, { status: 'ok' })),
+    GetNode: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { id: 1 })),
+    AddNode: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { id: 1 })),
+    UpdateNode: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { id: 1 })),
+    DeleteNode: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { success: true })),
+    GetEdge: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { src: 1, dst: 2 })),
+    AddEdge: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { success: true })),
+    UpdateEdge: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { src: 1, dst: 2 })),
+    DeleteEdge: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { success: true })),
+    Query: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { results: [], count: 0 })),
+    Neighbors: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { nodeId: 1, edges: [], nodes: [] })),
+    BatchNeighbors: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { results: {}, totalCount: 0 })),
+    Health: vi.fn((_req: any, cb: GrpcCallback) => cb(null, { status: 'ok' })),
     close: vi.fn(),
   }
   const mockGraphServiceCtor = vi.fn(function () {

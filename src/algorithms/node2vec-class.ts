@@ -11,6 +11,7 @@
 // 纯 TypeScript 实现，无外部 ML 依赖。
 // ============================================================
 
+import * as fs from 'fs'
 import { NodeId } from '../types'
 
 /**
@@ -238,7 +239,6 @@ export class Node2Vec {
     for (const [nodeId, vec] of this.embeddings) {
       data.embeddings[String(nodeId)] = Array.from(vec)
     }
-    const fs = require('fs')
     fs.writeFileSync(path, JSON.stringify(data), 'utf-8')
   }
 
@@ -247,7 +247,6 @@ export class Node2Vec {
    * @param path — 加载路径
    */
   load(path: string): void {
-    const fs = require('fs')
     if (!fs.existsSync(path)) {
       throw new Error(`Embedding file not found: ${path}`)
     }

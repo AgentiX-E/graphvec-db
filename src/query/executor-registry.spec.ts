@@ -8,6 +8,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import * as fs from 'fs'
+import * as path from 'path'
 import {
   _registerIndex,
   _dropIndex,
@@ -148,8 +150,6 @@ describe('GE instance registry + clear', () => {
 
 describe('persistence (_saveStore) and GE clear — filesystem branches', () => {
   it('mkdirs the store dir when it does not yet exist (L36)', () => {
-    const fs = require('fs')
-    const path = require('path')
     const dir = path.resolve('.opengraph')
     // Force the directory to be absent so _saveStore takes the mkdir branch.
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true })
@@ -162,7 +162,6 @@ describe('persistence (_saveStore) and GE clear — filesystem branches', () => 
   })
 
   it('clears in-memory GE instances without deleting the disk dir (race-free isolation)', () => {
-    const fs = require('fs')
     const probe = '/tmp/tckge-pool'
     fs.mkdirSync(probe, { recursive: true })
     _clearGeInstances()
@@ -175,8 +174,6 @@ describe('persistence (_saveStore) and GE clear — filesystem branches', () => 
 
 describe('startup persistence load (top-level try block)', () => {
   it('loads persisted indexes and constraints when the store file exists', () => {
-    const fs = require('fs')
-    const path = require('path')
     const dir = path.resolve('.opengraph')
     fs.mkdirSync(dir, { recursive: true })
     const store = path.join(dir, 'index-constraint-store.json')
@@ -199,8 +196,6 @@ describe('startup persistence load (top-level try block)', () => {
 
 describe('startup persistence load — absent keys (L74/L75 false arms)', () => {
   it('loads nothing when the store file lacks indexes/constraints keys', () => {
-    const fs = require('fs')
-    const path = require('path')
     const dir = path.resolve('.opengraph')
     fs.mkdirSync(dir, { recursive: true })
     const store = path.join(dir, 'index-constraint-store.json')
@@ -221,8 +216,6 @@ describe('startup persistence load — absent keys (L74/L75 false arms)', () => 
 
 describe('startup persistence load — store file absent (L71 false arm)', () => {
   it('skips loading cleanly when no store file exists', () => {
-    const fs = require('fs')
-    const path = require('path')
     const store = path.resolve('.opengraph/index-constraint-store.json')
     // Ensure the store file is absent so fs.existsSync(_storePath) is false.
     if (fs.existsSync(store)) fs.rmSync(store, { force: true })

@@ -154,6 +154,7 @@ export function reduceWithTSNE(data: number[][], config: TsneConfig = {}): Reduc
 
   // 尝试使用 tsne-js
   try {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
     const TSNE = require('tsne-js')
     const model = new TSNE({
       dim,

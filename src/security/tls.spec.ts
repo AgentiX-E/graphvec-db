@@ -10,6 +10,7 @@ import * as path from 'path'
 import * as os from 'os'
 import * as https from 'https'
 import * as tls from 'tls'
+import * as child_process from 'child_process'
 import { TLSConfig, generateSelfSignedCert, createTlsServer, createTlsConnection } from './tls'
 import { AuthConfig } from '../types'
 
@@ -438,10 +439,8 @@ CN=expired.local
 basicConstraints=CA:FALSE`
       fs.writeFileSync(configPath, cfgContent, 'utf-8')
 
-      const cp = require('child_process')
-
       try {
-        cp.execFileSync('openssl', [
+        child_process.execFileSync('openssl', [
           'req', '-x509', '-newkey', 'rsa:2048',
           '-keyout', keyPath2, '-out', certPath2,
           '-days', '365', '-subj', '/CN=expired.local',
@@ -452,7 +451,7 @@ basicConstraints=CA:FALSE`
         ], { stdio: 'pipe', timeout: 15000 })
       } catch {
         // Fallback: generate normal cert and test with it
-        cp.execFileSync('openssl', [
+        child_process.execFileSync('openssl', [
           'req', '-x509', '-newkey', 'rsa:2048',
           '-keyout', keyPath2, '-out', certPath2,
           '-days', '365', '-subj', '/CN=expired.local',

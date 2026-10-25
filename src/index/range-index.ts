@@ -21,6 +21,7 @@ export type NodeId = number
 // sorted-btree@2.1.0 exports a default BTree class.
 // We import it lazily (via require) to avoid top-level ESM issues.
 function createBTree<V>(): SortedBTree<V> {
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- native/CJS module loaded lazily
   const { default: BTree } = require('sorted-btree') as {
     default: new <K, V>(comparator?: (a: K, b: K) => number) => SortedBTree<V>
   }

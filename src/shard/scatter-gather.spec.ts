@@ -16,7 +16,7 @@ describe('ScatterGather', () => {
   describe('vectorSearch', () => {
     test('should merge results from multiple ranges', async () => {
       const range1 = mockRange({
-        read: async (fn: Function) => fn(mockEngine({
+        read: async (fn: (engine: any) => any) => fn(mockEngine({
           vectorSearch: () => [
             { node: { id: 1, typeId: 1, key: 'a', createdAt: 0 }, score: 0.9, distance: 0.1 },
             { node: { id: 2, typeId: 1, key: 'b', createdAt: 0 }, score: 0.5, distance: 0.5 },
@@ -25,7 +25,7 @@ describe('ScatterGather', () => {
       })
 
       const range2 = mockRange({
-        read: async (fn: Function) => fn(mockEngine({
+        read: async (fn: (engine: any) => any) => fn(mockEngine({
           vectorSearch: () => [
             { node: { id: 3, typeId: 1, key: 'c', createdAt: 0 }, score: 0.8, distance: 0.2 },
           ],
@@ -42,7 +42,7 @@ describe('ScatterGather', () => {
 
     test('should handle empty or failing ranges', async () => {
       const good = mockRange({
-        read: async (fn: Function) => fn(mockEngine({
+        read: async (fn: (engine: any) => any) => fn(mockEngine({
           vectorSearch: () => [{ node: { id: 1, typeId: 1, key: 'x', createdAt: 0 }, score: 0.9, distance: 0.1 }],
         })),
       })
@@ -61,14 +61,14 @@ describe('ScatterGather', () => {
   describe('personalizedPageRank', () => {
     test('should merge PPR scores across ranges', async () => {
       const range1 = mockRange({
-        read: async (fn: Function) => fn(mockEngine({
+        read: async (fn: (engine: any) => any) => fn(mockEngine({
           personalizedPageRank: () => [{ nodeId: 1, score: 0.5 }, { nodeId: 2, score: 0.3 }],
           stats: () => ({ nodeCount: 100, edgeCount: 0, diskSizeBytes: 0 }),
         })),
       })
 
       const range2 = mockRange({
-        read: async (fn: Function) => fn(mockEngine({
+        read: async (fn: (engine: any) => any) => fn(mockEngine({
           personalizedPageRank: () => [{ nodeId: 1, score: 0.4 }, { nodeId: 3, score: 0.2 }],
           stats: () => ({ nodeCount: 100, edgeCount: 0, diskSizeBytes: 0 }),
         })),

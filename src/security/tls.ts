@@ -17,6 +17,9 @@ import * as crypto from 'crypto'
 import * as tls from 'tls'
 import * as fs from 'fs'
 import * as https from 'https'
+import * as os from 'os'
+import * as path from 'path'
+import * as child_process from 'child_process'
 import * as chokidar from 'chokidar'
 import { AuthConfig } from '../types'
 import { Logger } from '../ops/logger'
@@ -227,10 +230,6 @@ export function generateSelfSignedCert(
   const keySize = options?.keySize ?? 2048
 
   // 使用 child_process 临时跑 openssl
-  const cp = require('child_process') as typeof import('child_process')
-  const path = require('path') as typeof import('path')
-  const os = require('os') as typeof import('os')
-
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tls-gen-'))
   const keyPath = path.join(tmpDir, 'key.pem')
   const certPath = path.join(tmpDir, 'cert.pem')
@@ -248,7 +247,7 @@ export function generateSelfSignedCert(
       '-sha256',
     ]
 
-    cp.execFileSync('openssl', args, { stdio: 'pipe' })
+    child_process.execFileSync('openssl', args, { stdio: 'pipe' })
 
     const certPem = fs.readFileSync(certPath, 'utf-8')
     const keyPem = fs.readFileSync(keyPath, 'utf-8')

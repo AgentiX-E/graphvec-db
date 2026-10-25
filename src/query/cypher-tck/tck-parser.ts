@@ -37,6 +37,7 @@
  */
 
 import { TCKTestCase, TCKStep, TCKResult } from './tck-adapter'
+import * as fs from 'fs'
 
 // ── 解析后的结构定义 ─────────────────────────────────────
 
@@ -336,7 +337,6 @@ export function parseTCK(content: string): TCKTestCase[] {
  * 从 .feature 文件路径读取并解析。
  */
 export function parseTCKFile(filePath: string): TCKTestCase[] {
-  const fs = require('fs')
   const content = fs.readFileSync(filePath, 'utf-8')
   return parseTCK(content)
 }
