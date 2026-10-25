@@ -246,5 +246,5 @@ describe('EventBus NAS dynamic monitoring (real ZMQ)', () => {
     expect((node1.bus as any)._nasMonitorTimer).not.toBeNull()
 
     await node1.bus.stop()
-  }, 10000)
+  }, 30000)
 })

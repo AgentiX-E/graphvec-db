@@ -4,7 +4,9 @@ type AsyncIteratorResult<T> = { done: boolean; value?: T }
 
 const createMockSocket = () => ({
   bind: vi.fn().mockResolvedValue(undefined),
+  unbind: vi.fn().mockResolvedValue(undefined),
   connect: vi.fn().mockResolvedValue(undefined),
+  disconnect: vi.fn(),
   subscribe: vi.fn(),
   close: vi.fn(),
   send: vi.fn().mockResolvedValue(undefined),
@@ -43,11 +45,13 @@ export class Subscriber {
 /** Mock Dealer socket — used by EventBus for outbound connections */
 export class Dealer {
   connect: ReturnType<typeof vi.fn>
+  disconnect: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
   send: ReturnType<typeof vi.fn>
   constructor() {
     const mock = createMockSocket()
     this.connect = mock.connect
+    this.disconnect = mock.disconnect
     this.close = mock.close
     this.send = mock.send
   }
@@ -56,11 +60,13 @@ export class Dealer {
 /** Mock Router socket — used by EventBus for inbound connections */
 export class Router {
   bind: ReturnType<typeof vi.fn>
+  unbind: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
   receive: ReturnType<typeof vi.fn>
   constructor() {
     const mock = createMockSocket()
     this.bind = mock.bind
+    this.unbind = mock.unbind
     this.close = mock.close
     this.receive = vi.fn()
   }

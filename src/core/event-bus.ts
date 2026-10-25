@@ -49,7 +49,9 @@ interface ZmqCurveSocket {
   curveServerKey: string | null
   close(): void
   bind(address: string): Promise<void>
+  unbind(address: string): Promise<void>
   connect(address: string): void
+  disconnect(address: string): void
   send(data: Buffer | Buffer[], options?: number): Promise<void>
   receive(): Promise<Buffer[]> | Promise<[Buffer, Buffer]>
 }
@@ -245,6 +247,8 @@ export class EventBus {
   private routerSocket: Router | null = null
   /** 每个远程节点一个 DEALER socket，key = nodeId */
   private dealerSockets = new Map<string, Dealer>()
+  /** peerNodeId → connection address, so `stop()` can `disconnect()` cleanly. */
+  private dealerAddresses = new Map<string, string>()
   /** ROUTER identity → nodeId 映射（收到消息时反向查找来源） */
   private identityToNode = new Map<string, string>()
   /** nodeId → ROUTER identity 映射（发送 ack 时需要 identity 定位 dealer） */
@@ -452,8 +456,9 @@ export class EventBus {
         const serverKey = peerKeys[peerNodeId] || peerKeys[addr] || Object.values(peerKeys).find(k => k !== publicKey)
         if (serverKey) dealer.curveServerKey = serverKey
 
-        await dealer.connect(addr)
+        dealer.connect(addr)
         this.dealerSockets.set(peerNodeId, dealer)
+        this.dealerAddresses.set(peerNodeId, addr)
         this.logger.info(`DEALER connected to ${addr} (peer: ${peerNodeId})`)
       }
     }
@@ -481,13 +486,28 @@ export class EventBus {
       this.workerPool = undefined
     }
     if (this.routerSocket) {
+      // Unbind before close. `close()` is synchronous but the underlying ZMQ
+      // socket lingers (default `linger` is non-zero), so the bound port is not
+      // released immediately. A subsequent `start()` re-binds the same
+      // `publishAddress` and crashes the native addon (Napi::Error) when the
+      // port is still held — so we must explicitly unbind and await the release.
+      try {
+        await this.routerSocket.unbind(this.config.publishAddress!)
+      } catch { /* address may already be unbound */ }
       this.routerSocket.close()
       this.routerSocket = null
     }
-    for (const dealer of this.dealerSockets.values()) {
+    for (const [nodeId, dealer] of this.dealerSockets) {
+      const addr = this.dealerAddresses.get(nodeId)
+      if (addr) {
+        try {
+          dealer.disconnect(addr)
+        } catch { /* ignore disconnect error */ }
+      }
       dealer.close()
     }
     this.dealerSockets.clear()
+    this.dealerAddresses.clear()
     this.identityToNode.clear()
     this.nodeToIdentity.clear()
     this.local.removeAllListeners()
@@ -728,6 +748,7 @@ export class EventBus {
 
           dealer.connect(peer.address)
           this.dealerSockets.set(peerNodeId, dealer)
+          this.dealerAddresses.set(peerNodeId, peer.address)
           this.logger.info(`[NAS] DEALER created for new peer ${peerNodeId} @ ${peer.address}`)
         } catch (err: any) {
           this.logger.warn(`[NAS] failed to create DEALER for ${peerNodeId}: ${err.message}`)
@@ -741,9 +762,14 @@ export class EventBus {
         const dealer = this.dealerSockets.get(peerNodeId)
         if (dealer) {
           try {
+            const addr = this.dealerAddresses.get(peerNodeId)
+            if (addr) dealer.disconnect(addr)
+          } catch { /* ignore disconnect error */ }
+          try {
             dealer.close()
           } catch { /* ignore close error */ }
           this.dealerSockets.delete(peerNodeId)
+          this.dealerAddresses.delete(peerNodeId)
           this.logger.info(`[NAS] DEALER closed for gone peer ${peerNodeId}`)
         }
 
@@ -774,9 +800,14 @@ export class EventBus {
     const oldDealer = this.dealerSockets.get(nodeId)
     if (oldDealer) {
       try {
+        const addr = this.dealerAddresses.get(nodeId)
+        if (addr) oldDealer.disconnect(addr)
+      } catch { /* ignore */ }
+      try {
         oldDealer.close()
       } catch { /* ignore */ }
       this.dealerSockets.delete(nodeId)
+      this.dealerAddresses.delete(nodeId)
     }
 
     // 扫描目录找到该 nodeId 的 peer
@@ -807,8 +838,9 @@ export class EventBus {
         dealer.curveServerKey = peer.publicKey
       }
 
-      await dealer.connect(peer.address)
+      dealer.connect(peer.address)
       this.dealerSockets.set(nodeId, dealer)
+      this.dealerAddresses.set(nodeId, peer.address)
       this.logger.info(`[NAS] DEALER recovered for peer ${nodeId} @ ${peer.address}`)
       return true
     } catch (err: any) {

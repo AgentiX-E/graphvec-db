@@ -55,6 +55,9 @@ vi.mock('../core/graph-engine', () => {
           }
         }),
         stats: vi.fn().mockReturnValue({ nodeCount: nodes.length, edgeCount: 0, diskSizeBytes: 100 }),
+        getNodeCacheStats: vi.fn().mockReturnValue({
+          nodeHits: 0, nodeMisses: 0, edgeHits: 0, edgeMisses: 0, nodeSize: 0, edgeSize: 0,
+        }),
         compact: vi.fn(),
         isOpen: false,
       }
