@@ -993,7 +993,7 @@ describe('_validateOrderByScope — DISTINCT / backtick / backslash (L770-L919)'
     expect(() => _validateOrderByScope('MATCH (n) RETURN n AS `the node` ORDER BY `the node`')).toThrow(/UndefinedVariable/)
   })
   it('handles a backslash-escaped quote inside a string literal', () => {
-    expect(() => _validateOrderByScope('RETURN "say \\\"hi\\\"" AS x ORDER BY x')).not.toThrow()
+    expect(() => _validateOrderByScope('RETURN "say \\"hi\\"" AS x ORDER BY x')).not.toThrow()
   })
 })
 

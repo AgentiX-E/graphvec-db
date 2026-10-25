@@ -457,7 +457,7 @@ function _normalizeTimeStr(s: string): string {
     // 即使时间部分已标准，仍需归一化时区（如 +0100 → +01:00, -00:00 → Z）。
     // tzMatch 必须同时接受冒号格式（±HH:MM）和无冒号格式（±HHMM/±HH），否则
     // 已带冒号时区的 -00:00 无法归一化为 Z（RFC 3339「未知本地偏移」语义）。
-    const tzMatch = s.match(/([+-]\d{2}:\d{2}(?:\[[^\]]+\])?|[+-]\d{2,4}(?:\.[^Z\[\]]+)?(?:\[[^\]]+\])?|Z)$/)
+    const tzMatch = s.match(/([+-]\d{2}:\d{2}(?:\[[^\]]+\])?|[+-]\d{2,4}(?:\.[^Z[\]]+)?(?:\[[^\]]+\])?|Z)$/)
     if (tzMatch) {
       const beforeTz = s.slice(0, tzMatch.index)
       const normalizedTz = _normalizeTz(tzMatch[1])
@@ -995,7 +995,7 @@ export function _resolveNamedTimezone(tz: string, year?: number, month?: number,
       const m = tzPart.value.match(/^GMT([+-]\d{2}:\d{2}(?::\d{2})?)$/)
       if (m) return m[1] + '[' + tz + ']'
     }
-  } catch {}
+  } catch { /* ignore */ }
   return tz
 }
 
@@ -1907,7 +1907,8 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
         try {
           const p = _parseDuration(str)
           if (p || str !== 'P') {
-            let { y, mo, d, h, min, s, ns } = p
+            const { y } = p
+            let { mo, d, h, min, s, ns } = p
             // Fractional expansion (symmetric across signs): fractional month ->
             // days via AVG_DAYS_PER_MONTH, day -> hours, hour -> minutes, minute
             // -> seconds. The `> 0` / `% 1` guards previously only handled
@@ -1961,7 +1962,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
             }
             return result === "P" ? "PT0S" : (result || "PT0S")
           }
-        } catch {}
+        } catch { /* ignore */ }
       }
       return "PT" + str + "S";
     }
@@ -2681,7 +2682,7 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
           if(sI||ns>0){if(sI===0&&ns>0&&sg<0)rr+='-0'+nss+'S';else rr+=msf(sI)+nss+'S';}
           if(rr==='PT')rr='PT0S'; return rr;
         }
-      } catch {}
+      } catch { /* ignore */ }
       return null;
     }
     const v = _evalBinary(a, r); if (typeof v !== "string") return null;
@@ -2811,7 +2812,7 @@ function _evalAndCache(t: string, row: Record<string, unknown> | undefined, key:
 
   // Cache pure constants: no row-dependent variables or quoted strings
   if (t.length <= 100 && !/[({]/.test(t) && !/CASE\b/i.test(t) && !/EXISTS\b/i.test(t)) {
-    const stripped = t.replace(/['"\`][^'"\`]*['"\`]/g, '').replace(/\d+(?:\.\d+)?/g, '')
+    const stripped = t.replace(/['"`][^'"`]*['"`]/g, '').replace(/\d+(?:\.\d+)?/g, '')
     const hasVar = (stripped.match(/[a-zA-Z_]\w*/g) || []).some(v => {
       const kw = ['true','false','null','undefined','NaN','Infinity','length','constructor','prototype','type','id','toLower','toUpper','trim','replace','substring','left','right','size','reverse','toString','keys','head','last','tail','floor','ceil','round','abs','rand','sqrt','sign','sin','cos','tan','log','exp','e','pi']
       return !kw.includes(v.toLowerCase())
@@ -3433,7 +3434,8 @@ function _parseDuration(v: string): { y: number, mo: number, d: number, h: numbe
   const m = v.match(/^P(?:(-?\d+(?:\.\d+)?)Y)?(?:(-?\d+(?:\.\d+)?)M)?(?:(-?\d+(?:\.\d+)?)D)?(?:(-?\d+(?:\.\d+)?)W)?(?:T(?:(-?\d+(?:\.\d+)?)H)?(?:(-?\d+(?:\.\d+)?)M(?!S))?(?:(-?\d+(?:\.\d+)?)S)?)?$/i)
   if (!m) return { y:0, mo:0, d:0, h:0, min:0, s:0, ns:0 }
   const [, yStr, moStr, dStr, wStr, hStr, minStr, sStr] = m
-  let y = parseFloat(yStr||'0'), mo = parseFloat(moStr||'0'), d = parseFloat(dStr||'0')
+  const y = parseFloat(yStr||'0'), mo = parseFloat(moStr||'0')
+  let d = parseFloat(dStr||'0')
   const w = parseFloat(wStr||'0')
   // weeks → days
   if (w) d += w * 7
@@ -3459,7 +3461,8 @@ function _durationAdd(a: string, b: string): string {
 }
 /** duration 减法：组件相减 */
 function _durationSub(a: string, b: string): string {  const p1 = _parseDuration(a), b1 = _parseDuration(b)
-  let y = p1.y - b1.y, mo = p1.mo - b1.mo, d = p1.d - b1.d
+  const y = p1.y - b1.y, mo = p1.mo - b1.mo
+  let d = p1.d - b1.d
   let h = p1.h - b1.h, min = p1.min - b1.min, s = p1.s - b1.s, ns = p1.ns - b1.ns
   while (ns >= 1e9) { s++; ns -= 1e9 }
   while (ns < 0) { s--; ns += 1e9 }
@@ -5072,7 +5075,7 @@ export function _detectMissingCommas(expr: string): boolean {
     if (depth === 0) {
       if (prevEnded) return true
       hadExpr = true
-      while (i + 1 < inner.length && /[a-zA-Z0-9_.\-]/.test(inner[i + 1])) i++
+      while (i + 1 < inner.length && /[a-zA-Z0-9_.-]/.test(inner[i + 1])) i++
       prevEnded = true
     }
     i++

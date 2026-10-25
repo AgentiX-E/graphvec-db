@@ -13,13 +13,13 @@ describe('QueryCachePersister', () => {
 
   beforeEach(() => {
     if (!fs.existsSync(TEST_DIR)) fs.mkdirSync(TEST_DIR, { recursive: true })
-    try { fs.unlinkSync(TEST_WAL) } catch {}
+    try { fs.unlinkSync(TEST_WAL) } catch { /* ignore */ }
     cache = new QueryResultCache({ maxSize: 100, ttlSec: 60 })
   })
 
   afterEach(async () => {
     if (persister) await persister.stop()
-    try { fs.unlinkSync(TEST_WAL) } catch {}
+    try { fs.unlinkSync(TEST_WAL) } catch { /* ignore */ }
   })
 
   test('should create with default config', () => {
@@ -119,7 +119,7 @@ describe('QueryCachePersister', () => {
   })
 
   test('should handle non-existent WAL file', async () => {
-    try { fs.unlinkSync(TEST_WAL) } catch {}
+    try { fs.unlinkSync(TEST_WAL) } catch { /* ignore */ }
     persister = new QueryCachePersister(cache, { persistPath: TEST_WAL, persistInterval: 0 })
     expect(await persister.recover()).toBe(0)
   })

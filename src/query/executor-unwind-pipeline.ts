@@ -1321,7 +1321,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
       .filter((v: number) => !isNaN(v))
 
     switch (aggFn) {
-      case 'collect':
+      case 'collect': {
         // collect(expr): gather all values into a list (DISTINCT de-duplicates).
         // Null elements are filtered out: `collect()` over an unbound variable
         // (e.g. OPTIONAL MATCH with no match) yields `[]`, and `collect(DISTINCT
@@ -1330,6 +1330,7 @@ export function _executeWithUnwindPipeline(plan: QueryPlan, _nodes: Array<Record
           ? [...new Set(rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined).map(v => JSON.stringify(v)))].map(s => JSON.parse(s))
           : rows.map(r => r[field]).filter((v: unknown) => v !== null && v !== undefined)
         return [{ [aggAlias]: collected }]
+      }
       case 'sum':
         return [{ [aggAlias]: values.reduce((a: number, b: number) => a + b, 0) }]
       case 'avg':

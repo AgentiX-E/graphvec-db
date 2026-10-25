@@ -514,7 +514,7 @@ describe('GremlinServer — Protocol: GraphBinary Bytecode', () => {
     for (const msg of received) {
       try {
         if (parseStatusFromResponse(msg).code === 200) foundSuccess = true
-      } catch {}
+      } catch { /* ignore */ }
     }
     expect(foundSuccess).toBe(true)
     ws.close()

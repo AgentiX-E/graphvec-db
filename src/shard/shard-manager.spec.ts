@@ -40,7 +40,7 @@ function ensureDirs(tid: string, rangeCount = 2) {
 describe('ShardManager', () => {
   beforeAll(() => { fs.mkdirSync(TEST_DIR, { recursive: true }) })
   afterAll(() => {
-    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   // ── 构造测试（不 start，只有 2 个 test）──
@@ -49,7 +49,7 @@ describe('ShardManager', () => {
     const _instances: ShardManager[] = []
     afterEach(async () => {
       for (const inst of _instances) {
-        try { await inst.stop() } catch {}
+        try { await inst.stop() } catch { /* ignore */ }
       }
       _instances.length = 0
       if (typeof global.gc === 'function') global.gc()

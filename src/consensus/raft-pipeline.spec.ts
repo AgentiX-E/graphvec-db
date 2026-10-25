@@ -38,7 +38,7 @@ describe('B-01 Raft Pipeline 复制', () => {
   afterEach(() => {
     MockTransport.reset()
     if (tmp) {
-      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
+      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
     }
   })
 

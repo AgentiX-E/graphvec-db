@@ -112,12 +112,12 @@ describe('QuerySlowLog - persistent file', () => {
 
   beforeAll(() => {
     fs = require('fs')
-    try { fs.mkdirSync('./test-data', { recursive: true }) } catch {}
-    try { fs.unlinkSync(TEST_LOG) } catch {}
+    try { fs.mkdirSync('./test-data', { recursive: true }) } catch { /* ignore */ }
+    try { fs.unlinkSync(TEST_LOG) } catch { /* ignore */ }
   })
 
   afterAll(() => {
-    try { fs.unlinkSync(TEST_LOG) } catch {}
+    try { fs.unlinkSync(TEST_LOG) } catch { /* ignore */ }
   })
 
   test('should write slow query log to file', async () => {

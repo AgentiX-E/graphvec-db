@@ -173,7 +173,7 @@ describe('generateSdk', () => {
   const tmpDir = path.join(process.cwd(), '.test-sdk-output')
 
   afterEach(() => {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   test('returns result for go target (no external dep)', () => {

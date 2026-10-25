@@ -31,7 +31,7 @@ describe('审计哈希链', () => {
 
   afterEach(() => {
     log.close()
-    try { fs.rmSync(logDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(logDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   it('genesis 日志 prevHash 应为 undefined', () => {

@@ -165,7 +165,7 @@ describe('Multi-Leader 极端场景', () => {
           const msg = await waitForMsg(n, 'dealerStatus', 3000)
           got = msg.dealerCount
           if (got >= expected) break
-        } catch {}
+        } catch { /* ignore */ }
         await sleep(1000)
       }
       console.log(`✓ ${n.nodeId} has ${got}/${expected} DEALERs`)
@@ -186,9 +186,9 @@ describe('Multi-Leader 极端场景', () => {
 
   afterAll(() => {
     for (const n of nodes) {
-      try { n.proc.kill('SIGTERM') } catch {}
+      try { n.proc.kill('SIGTERM') } catch { /* ignore */ }
     }
-    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch { /* ignore */ }
   }, 10000)
 
   // ================================================================
@@ -223,7 +223,7 @@ describe('Multi-Leader 极端场景', () => {
             try {
               nodeData = await getNodeOn(n, id)
               if (nodeData) break
-            } catch {}
+            } catch { /* ignore */ }
             await sleep(2000)
           }
           expect(nodeData).not.toBeNull()
@@ -257,7 +257,7 @@ describe('Multi-Leader 极端场景', () => {
         try {
           nodeData = await getNodeOn(nodes[2], id1)
           if (nodeData) break
-        } catch {}
+        } catch { /* ignore */ }
         await sleep(2000)
       }
       // 如果 node-1 在 kill 前已经复制到了 node-3，则 nodeData 非空
@@ -312,7 +312,7 @@ describe('Multi-Leader 极端场景', () => {
       expect(ready).toBe(true)
 
       // 替换节点 1
-      try { nodes[0].proc.kill('SIGTERM') } catch {}
+      try { nodes[0].proc.kill('SIGTERM') } catch { /* ignore */ }
       await sleep(500)
       nodes[0] = newNode
 
@@ -385,7 +385,7 @@ describe('Multi-Leader 极端场景', () => {
           try {
             nodeData = await getNodeOn(nodes[2], id)
             if (nodeData) break
-          } catch {}
+          } catch { /* ignore */ }
           await sleep(1000)
         }
         expect(nodeData).not.toBeNull()

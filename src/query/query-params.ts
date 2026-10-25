@@ -17,6 +17,9 @@ const _compileCache = new Map<string, string[]>()
  * 安全地转义字符串值，防止 Cypher 注入。
  */
 function escapeString(val: string): string {
+  // Strip C0 control characters (except tab/newline/CR) to neutralize
+  // injection via raw control bytes. The char-class ranges are intentional.
+  // eslint-disable-next-line no-control-regex
   const cleaned = val.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
   if (cleaned.includes("'") && !cleaned.includes('"')) {
     return `"${cleaned}"`

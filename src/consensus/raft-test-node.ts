@@ -22,7 +22,7 @@ const logger = new Logger('RaftTestNode')
 
 function logOut(msg: unknown): void {
   const str = JSON.stringify(msg) + '\n'
-  try { fs.writeSync(process.stdout.fd, str) } catch {}
+  try { fs.writeSync(process.stdout.fd, str) } catch { /* ignore */ }
 }
 
 async function main() {
@@ -78,7 +78,7 @@ async function main() {
       private _emitState(): void {
         const snap = { role: this._status.role, lead: this._status.leaderId, term: this._status.term, commitIndex: this._status.commitIndex }
         for (const cb of this._stateCbs) {
-          try { cb(snap) } catch {}
+          try { cb(snap) } catch { /* ignore */ }
         }
       }
 
@@ -218,7 +218,7 @@ async function main() {
         default:
           // ignore
       }
-    } catch {}
+    } catch { /* ignore */ }
   })
 }
 

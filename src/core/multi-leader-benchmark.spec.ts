@@ -29,12 +29,12 @@ describe('端到端多进程压测', () => {
   }, 30000)
 
   afterEach(() => {
-    for (const n of e2eNodes) { try { n.proc.kill('SIGTERM') } catch {} }
+    for (const n of e2eNodes) { try { n.proc.kill('SIGTERM') } catch { /* ignore */ } }
     e2eNodes = []
   }, 30000)
 
   afterAll(() => {
-    try { fs.rmSync(e2eTestDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(e2eTestDir, { recursive: true, force: true }) } catch { /* ignore */ }
   }, 30000)
 
   function spawnNodes(nodeIds: string[], basePort: number, extraEnv: Record<string, string> = {}): Promise<NodeProc[]> {
@@ -77,7 +77,7 @@ describe('端到端多进程压测', () => {
             try {
               const msg = JSON.parse(line)
               if (msg.type === 'ready') readyCount++
-            } catch {}
+            } catch { /* ignore */ }
           }
           if (readyCount === nodeIds.length) {
             clearInterval(progress)

@@ -10,8 +10,8 @@ function makeConfig(name: string) {
   return { path: dir, denseVector: { dimension: 384 } }
 }
 
-function cleanupE(e: GraphEngine) { try { if (e.isOpen) e.close() } catch {} }
-function cleanupC(c: { path: string }) { try { fs.rmSync(c.path, { recursive: true, force: true }) } catch {} }
+function cleanupE(e: GraphEngine) { try { if (e.isOpen) e.close() } catch { /* ignore */ } }
+function cleanupC(c: { path: string }) { try { fs.rmSync(c.path, { recursive: true, force: true }) } catch { /* ignore */ } }
 function cleanup2(e1: GraphEngine, c1: { path: string }, e2: GraphEngine, c2: { path: string }) {
   cleanupE(e1); cleanupE(e2); cleanupC(c1); cleanupC(c2)
 }
@@ -167,8 +167,8 @@ describe('Network Partition — Simulation', () => {
         await e1.upsertNode(1, 'first'); expect(e1.scanAllNodes().length).toBe(1)
       } finally { cleanup(e1, c1) }
       // cleanup e2 explicitly
-      e2.close(); try { fs.rmSync(c2.path || '', { recursive: true, force: true }) } catch {}
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(c2) }
+      e2.close(); try { fs.rmSync(c2.path || '', { recursive: true, force: true }) } catch { /* ignore */ }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(c2) }
   }, 15000)
 
   test('3 engines close middle one', async () => {
@@ -305,7 +305,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e1b.open(); e2b.open()
         expect(e1b.scanAllNodes().length).toBe(1)
         expect(e2b.scanAllNodes().length).toBe(1)
-      } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
+      } finally { try { if (e1b.isOpen) e1b.close() } catch { /* ignore */ } try { if (e2b.isOpen) e2b.close() } catch { /* ignore */ } }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
 
@@ -336,7 +336,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
         expect(n2).toBeDefined()
         expect(n1!.props.origin).toBe('l')
         expect(n2!.props.origin).toBe('f')
-      } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
+      } finally { try { if (e1b.isOpen) e1b.close() } catch { /* ignore */ } try { if (e2b.isOpen) e2b.close() } catch { /* ignore */ } }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
 
@@ -354,7 +354,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e1b.open(); e2b.open()
         expect(e1b.getEdge(la, lb, 10)).not.toBeNull()
         expect(e2b.getEdge(la, lb, 10)).toBeNull()
-      } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
+      } finally { try { if (e1b.isOpen) e1b.close() } catch { /* ignore */ } try { if (e2b.isOpen) e2b.close() } catch { /* ignore */ } }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
 
@@ -365,14 +365,14 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e.open()
         for (let j = 0; j < 5; j++) await e.upsertNode(1, `s${i}${j}`)
         e.close()
-      } finally { try { if (e.isOpen) e.close() } catch {} }
+      } finally { try { if (e.isOpen) e.close() } catch { /* ignore */ } }
     }
     for (let i = 0; i < 3; i++) {
       const e = new GraphEngine(cfgs[i])
       try { e.open()
         expect(e.scanAllNodes().length).toBe(5)
         for (const n of e.scanAllNodes()) expect(n.name).toContain(`s${i}`)
-      } finally { try { if (e.isOpen) e.close() } catch {} cleanupC(cfgs[i]) }
+      } finally { try { if (e.isOpen) e.close() } catch { /* ignore */ } cleanupC(cfgs[i]) }
     }
   }, 30000)
 
@@ -387,7 +387,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
         expect(e1b.scanAllNodes().length).toBe(1); expect(e2b.scanAllNodes().length).toBe(1)
         await e1b.upsertNode(1, 'f1b'); await e2b.upsertNode(1, 'f2b')
         expect(e1b.scanAllNodes().length).toBe(2); expect(e2b.scanAllNodes().length).toBe(2)
-      } finally { try { if (e1b.isOpen) e1b.close() } catch {} try { if (e2b.isOpen) e2b.close() } catch {} }
+      } finally { try { if (e1b.isOpen) e1b.close() } catch { /* ignore */ } try { if (e2b.isOpen) e2b.close() } catch { /* ignore */ } }
     } finally { cleanup2(e1, c1, e2, c2) }
   }, 15000)
 
@@ -399,7 +399,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
         expect(e.scanAllNodes().length).toBe(i)
         await e.upsertNode(1, `cy${i}`)
         e.close()
-      } finally { try { if (e.isOpen) e.close() } catch {} }
+      } finally { try { if (e.isOpen) e.close() } catch { /* ignore */ } }
     }
     const ef = new GraphEngine(c)
     try { ef.open(); expect(ef.scanAllNodes().length).toBe(10) }
@@ -432,7 +432,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
     try { es[0].open(); es[1].open()
       await es[0].upsertNode(1, 'acaonly'); await es[1].upsertNode(1, 'acbonly')
       es[0].close(); es[1].close()
-    } finally { for (const e of es) { try { if (e.isOpen) e.close() } catch {} } }
+    } finally { for (const e of es) { try { if (e.isOpen) e.close() } catch { /* ignore */ } } }
     const es2 = cfgs.map(c => new GraphEngine(c))
     try { es2[0].open(); es2[1].open()
       expect(es2[0].scanAllNodes().length).toBe(1); expect(es2[1].scanAllNodes().length).toBe(1)
@@ -457,7 +457,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e.open()
         await e.upsertNode(1, 'pn', { props: { cycle: cy } })
         e.close()
-      } finally { try { if (e.isOpen) e.close() } catch {} }
+      } finally { try { if (e.isOpen) e.close() } catch { /* ignore */ } }
     }
     const ef = new GraphEngine(c)
     try { ef.open()
@@ -521,7 +521,7 @@ describe('Network Partition — Leader-Like Behavior', () => {
       const wp = (async () => { for (let i = 0; i < 20; i++) await e1.upsertNode(1, `mw${i}`) })()
       await new Promise(r => setTimeout(r, 5))
       e1.close()
-      try { await wp } catch {}
+      try { await wp } catch { /* ignore */ }
       await e2.upsertNode(1, 'mwe2')
       expect(e2.scanAllNodes().length).toBe(1)
     } finally { cleanup2(e1, c1, e2, c2) }
@@ -534,14 +534,14 @@ describe('Network Partition — Leader-Like Behavior', () => {
       try { e.open()
         for (let j = 0; j < 5; j++) await e.upsertNode(1, `s4e${i}${j}`)
         e.close()
-      } finally { try { if (e.isOpen) e.close() } catch {} }
+      } finally { try { if (e.isOpen) e.close() } catch { /* ignore */ } }
     }
     for (let i = 0; i < 4; i++) {
       const e = new GraphEngine(cfgs[i])
       try { e.open()
         expect(e.scanAllNodes().length).toBe(5)
         for (const n of e.scanAllNodes()) expect(n.name).toContain(`e${i}`)
-      } finally { try { if (e.isOpen) e.close() } catch {} cleanupC(cfgs[i]) }
+      } finally { try { if (e.isOpen) e.close() } catch { /* ignore */ } cleanupC(cfgs[i]) }
     }
   }, 30000)
 

@@ -11,23 +11,23 @@ function makeConfig(name: string) {
 }
 
 function cleanup(e: GraphEngine, config: { path: string }) {
-  try { if (e.isOpen) e.close() } catch {}
-  try { fs.rmSync(config.path, { recursive: true, force: true }) } catch {}
+  try { if (e.isOpen) e.close() } catch { /* ignore */ }
+  try { fs.rmSync(config.path, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
 function cleanupE(e: GraphEngine) {
-  try { if (e.isOpen) e.close() } catch {}
+  try { if (e.isOpen) e.close() } catch { /* ignore */ }
 }
 
 function cleanupC(c: { path: string }) {
-  try { fs.rmSync(c.path, { recursive: true, force: true }) } catch {}
+  try { fs.rmSync(c.path, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
 function cleanup2(e1: GraphEngine, c1: { path: string }, e2: GraphEngine, c2: { path: string }) {
-  try { if (e1.isOpen) e1.close() } catch {}
-  try { if (e2.isOpen) e2.close() } catch {}
-  try { fs.rmSync(c1.path, { recursive: true, force: true }) } catch {}
-  try { fs.rmSync(c2.path, { recursive: true, force: true }) } catch {}
+  try { if (e1.isOpen) e1.close() } catch { /* ignore */ }
+  try { if (e2.isOpen) e2.close() } catch { /* ignore */ }
+  try { fs.rmSync(c1.path, { recursive: true, force: true }) } catch { /* ignore */ }
+  try { fs.rmSync(c2.path, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
 // ── 1. Single-Node Consistency ──
@@ -134,7 +134,7 @@ describe('Cluster Consistency — Single-Node', () => {
     try { e2.open()
       expect(e2.getNode(id)).not.toBeNull()
       expect(e2.getNode(id)!.props!.survive).toBe(true)
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('multiple edges from same source', async () => {
@@ -230,7 +230,7 @@ describe('Cluster Consistency — Single-Node', () => {
     const e2 = new GraphEngine(config)
     try { e2.open()
       for (const id of ids) expect(e2.getNode(id)).not.toBeNull()
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('re-open restores edges', async () => {
@@ -245,7 +245,7 @@ describe('Cluster Consistency — Single-Node', () => {
     try { e2.open()
       const eg = e2.getEdge(a, b, 10)
       expect(eg).not.toBeNull(); expect(eg!.src).toBe(a); expect(eg!.dst).toBe(b); expect(eg!.type).toBe(10)
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('deleteNode returns false for non-existent', async () => {
@@ -587,7 +587,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     try { e2.open()
       expect(e2.getNode(id)).not.toBeNull()
       expect(e2.getNode(id)!.props!.survive).toBe(true)
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('write close reopen getNode works', async () => {
@@ -601,7 +601,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     try { e2.open()
       expect(e2.getNode(id)).not.toBeNull()
       expect(e2.getNode(id)!.props!.survived).toBe(true)
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('pauseWrites then close reopen data exists', async () => {
@@ -615,7 +615,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     } finally { if (e.isOpen) e.close() }
     const e2 = new GraphEngine(config)
     try { e2.open(); expect(e2.getNode(id)).not.toBeNull() }
-    finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('reopen after edge write edge exists', async () => {
@@ -628,7 +628,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     } finally { if (e.isOpen) e.close() }
     const e2 = new GraphEngine(config)
     try { e2.open(); expect(e2.getEdge(a, b, 10)).not.toBeNull() }
-    finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('edges and nodes both survive reopen', async () => {
@@ -643,7 +643,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     try { e2.open()
       expect(e2.getNode(a)).not.toBeNull(); expect(e2.getNode(b)).not.toBeNull()
       expect(e2.getEdge(a, b, 10)).not.toBeNull()
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('reopen after write with props survives', async () => {
@@ -656,7 +656,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     const e2 = new GraphEngine(config)
     try { e2.open()
       expect(e2.getNode(id)!.props.x).toBe(42); expect(e2.getNode(id)!.props.y).toBe('hello')
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('reopen delete before close persists', async () => {
@@ -668,7 +668,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     } finally { if (e.isOpen) e.close() }
     const e2 = new GraphEngine(config)
     try { e2.open(); expect(e2.getNode(id)).toBeNull() }
-    finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('reopen edge delete persists', async () => {
@@ -681,7 +681,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
     } finally { if (e.isOpen) e.close() }
     const e2 = new GraphEngine(config)
     try { e2.open(); expect(e2.getEdge(a, b, 10)).toBeNull() }
-    finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('reopen with multiple edges all survive', async () => {
@@ -698,7 +698,7 @@ describe('Cluster Consistency — Crash Recovery', () => {
       expect(e2.getEdge(a, b, 10)).not.toBeNull()
       expect(e2.getEdge(a, c, 20)).not.toBeNull()
       expect(e2.getNode(a)).not.toBeNull()
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 
   test('reopen with node name and props intact', async () => {
@@ -712,6 +712,6 @@ describe('Cluster Consistency — Crash Recovery', () => {
     try { e2.open()
       expect(e2.getNode(id)!.name).toBe('survivor')
       expect(e2.getNode(id)!.props.a).toBe(1)
-    } finally { try { if (e2.isOpen) e2.close() } catch {} cleanupC(config) }
+    } finally { try { if (e2.isOpen) e2.close() } catch { /* ignore */ } cleanupC(config) }
   }, 15000)
 })

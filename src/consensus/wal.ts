@@ -257,7 +257,7 @@ export class WAL {
 
     // 解析所有 promise
     for (let i = 0; i < resolvedEntries.length; i++) {
-      try { batch[i].resolve(resolvedEntries[i]) } catch {}
+      try { batch[i].resolve(resolvedEntries[i]) } catch { /* ignore */ }
     }
   }
 

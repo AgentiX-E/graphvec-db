@@ -565,7 +565,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           result[rc] = cleaned
           continue
         }
-      } catch (e: any) {}
+      } catch (e: any) { /* ignore */ }
       // 回退：检查 rc 是否是别名（rc 本身可求值）
       try {
         const fnResult = _evaluateExpression(rc, fnVarCtx)
@@ -574,7 +574,7 @@ function _formatResultRow(r: any, plan: QueryPlan): QueryRow {
           result[rc] = cleaned
           continue
         }
-      } catch (e: any) {}
+      } catch (e: any) { /* ignore */ }
     }
 
     // ── 边变量 RETURN r ──

@@ -3872,7 +3872,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
               // BigInt 精度：ANTLR 截断大整数，用 BigInt 精确比较
               if (typeof val !== typeof target) {
                 if (/^-?\d+$/.test(String(val)) && /^-?\d+$/.test(String(target))) {
-                  try { if (BigInt(String(val)) === BigInt(String(target))) return true } catch {}
+                  try { if (BigInt(String(val)) === BigInt(String(target))) return true } catch { /* ignore */ }
                 }
               }
               // bigint vs bigint 精确比较
@@ -4067,10 +4067,10 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             } else {
               _geUpsertEdge(ge, srcGeId, dstGeId, typeId)
             }
-          } catch {}
+          } catch { /* ignore */ }
           // 无向边双向
           if (anyDirection && srcGeId !== dstGeId) {
-            try { _geUpsertEdge(ge, dstGeId, srcGeId, typeId) } catch {}
+            try { _geUpsertEdge(ge, dstGeId, srcGeId, typeId) } catch { /* ignore */ }
           }
         }
       }
@@ -4156,7 +4156,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           if (srcId !== undefined && srcId !== undefined && srcId >= 0 && dstId >= 0) {
             // 使用 GE 的 _resolveEdgeType 获取统一的 typeId
             const typeId = _geResolveEdgeType(ge, edge.label || '')
-            try { _geUpsertEdge(ge, srcId, dstId, typeId) } catch {}
+            try { _geUpsertEdge(ge, srcId, dstId, typeId) } catch { /* ignore */ }
 
             // 将边添加到 __edges 内存记录
             for (const n of allNodes) {
@@ -5043,11 +5043,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                   }
                   if (pathEdges.length >= edgeVarColsLen) {
                     stepEdgesCache.set(targetIdx, pathEdges)
-                  } else {
                   }
-                } else {
                 }
-              } else {
               }
               // 添加 __crossVarRows 供 whereBody 后处理（_evaluateExpression 需要 i 变量）
               geNode.__crossVarRows = {}
@@ -5493,7 +5490,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // aggregate so QE's post-aggregation path (~line 3798) evaluates the
           // comprehension over the raw matched rows and then aggregates.
           const _aggField = planForGe.aggregate?.field
-          if (_aggField != null && _aggField !== '*' && /[\[\(\{]/.test(String(_aggField))) {
+          if (_aggField != null && _aggField !== '*' && /[[({]/.test(String(_aggField))) {
             delete planForGe.aggregate
           }
           // Nested aggregate (the aggregate call is wrapped in an outer
@@ -5539,7 +5536,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           const _withHasComprehensionCol = (planForGe.with?.columns || []).some((c: any) => {
             const expr = c?.expression
             return expr && (
-              (typeof expr === 'string' && /[\[\(]/.test(expr) && (expr as string).includes('|')) ||
+              (typeof expr === 'string' && /[[(]/.test(expr) && (expr as string).includes('|')) ||
               (expr.type === 'LIST' && (expr.items || []).some((it: any) => it?.type === 'STRING' && String(it.value).includes('|')))
             )
           })
@@ -5793,7 +5790,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 node[sc.property] = typeof pv === 'object' && pv !== null && 'value' in pv ? pv.value : pv
               }
             }
-            if (ge) try { await _geUpsertNode(ge, 1, "", { props: node }) } catch (_) {}
+            if (ge) try { await _geUpsertNode(ge, 1, "", { props: node }) } catch (_) { /* ignore */ }
           }
         }
         // 再执行 REMOVE
@@ -5840,7 +5837,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
                 }
               }
             }
-            if (ge) try { await _geUpsertNode(ge, 1, "", { props: node }) } catch (_) {}
+            if (ge) try { await _geUpsertNode(ge, 1, "", { props: node }) } catch (_) { /* ignore */ }
           }
         }
       } else if (plan.type === 'SET' && plan.setClauses?.length) {
@@ -6192,7 +6189,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // ── OR 连接谓词过滤（WHERE n.p1 > 11 OR n.p2 = 13） ──
     // ANTLR 将 OR 谓词解析为两个独立的 filter 且无 OR 标记，
     // engine 默认 AND 连接导致无行匹配。从 query 文本检查 OR，改 AND 为 OR 语义。
-    if (query && /OR/i.test(query) && filteredWithLabels?.length) {
+    if (query && /OR/i.test(query) && filteredWithLabels?.length) {
       const orFilters = plan.filters?.length ? plan.filters : []
       if (orFilters.length >= 2) {
         filteredWithLabels = filteredWithLabels.filter((r: any) => {
@@ -6837,8 +6834,6 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             ? stepEdgesCache.get(nodeIdx)!
             : (plan.steps || []).map((s: any) => s.edgeLabel || '').filter(Boolean)
           const actualStepEdges = rawStepEdges
-          if ((plan.steps || []).length > 1) {
-          }
           for (let eci = 0; eci < edgeVarCols.length; eci++) {
             const evc = edgeVarCols[eci]
             let edgeLabel = ''
@@ -7565,7 +7560,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
         // Match size([(...)--... | 1]) pattern — degree computation
         // Supports: -->, --, <--, -[:T]->, -[:T|S]->, <-[:T]-, etc.
         const pcMatch = expr.match(
-          /size\s*\(\s*\[\s*\(\s*(\w+)\s*\)\s*(?:<-?-|-?->|--|<\-\s*\[:[A-Za-z_|]+\]\s*-|-\s*\[:[A-Za-z_|]+\]\s*->)\s*\(\s*\)/
+          /size\s*\(\s*\[\s*\(\s*(\w+)\s*\)\s*(?:<-?-|-?->|--|<-\s*\[:[A-Za-z_|]+\]\s*-|-\s*\[:[A-Za-z_|]+\]\s*->)\s*\(\s*\)/
         )
         if (pcMatch) {
           const pcVar = pcMatch[1]
@@ -7641,7 +7636,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
             const alias = ec.alias || expr
             let simplifiedExpr = expr
             const pcFullMatch = expr.match(
-              /size\s*\(\s*\[\s*\(\s*\w+\s*\)\s*(?:<-?-|-?->|--|<\-\s*\[:[A-Za-z_|]+\]\s*-|-\s*\[:[A-Za-z_|]+\]\s*->)\s*\(\s*\)\s*\|\s*\d+\s*\]\s*\)/
+              /size\s*\(\s*\[\s*\(\s*\w+\s*\)\s*(?:<-?-|-?->|--|<-\s*\[:[A-Za-z_|]+\]\s*-|-\s*\[:[A-Za-z_|]+\]\s*->)\s*\(\s*\)\s*\|\s*\d+\s*\]\s*\)/
             )
             if (pcFullMatch) {
               simplifiedExpr = expr.replace(pcFullMatch[0], String(degree))
@@ -8263,7 +8258,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     const _withHasComprehensionCol = (plan.with?.columns || []).some((wc: any) => {
       const expr = wc?.expression
       return expr && (
-        (typeof expr === 'string' && /[\[\(]/.test(expr) && expr.includes('|')) ||
+        (typeof expr === 'string' && /[[(]/.test(expr) && expr.includes('|')) ||
         (expr.type === 'LIST' && (expr.items || []).some((it: any) => it?.type === 'STRING' && String(it.value).includes('|')))
       )
     })
@@ -8356,7 +8351,7 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
           // `count([p = (n)-[:T]->() | p])`): the GE path cannot evaluate it, so
           // we evaluate the field Expression against each raw row's variable
           // bindings and count the non-null results.
-          const isExpressionField = field && /[\[\(\{]/.test(field)
+          const isExpressionField = field && /[[({]/.test(field)
           if (isNodeOrRelVar) {
             aggRow[aggAlias] = result.length
           } else if (isExpressionField) {
@@ -8559,8 +8554,8 @@ export async function _executeViaGraphEngine(plan: QueryPlan, nodes: Array<Recor
     // Note: 如果 whereBody 已经处理过（result 已被过滤），跳过此步避免重复过滤
     // 破坏与 whereBody 语义一致的扁平化结果。
     if (plan.filters?.length && result.length && !plan.aggregate && !plan.whereBody) {
-      if (plan.returnColumns?.some(c => c === 'i.var' || c === 'var') || (plan.whereBody && plan.whereBody.includes('>') && plan.whereBody.includes('IS NOT NULL'))) {
-      }
+      // Per-record flattening below already forks on `i.var`/`var` columns and
+      // whereBody semantics, so no extra branch is needed here.
       const filteredResult: QueryRow[] = []
       for (const row of result) {
         // 构建变量→节点映射

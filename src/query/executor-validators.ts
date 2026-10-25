@@ -46,7 +46,7 @@ export function _validatePatternPosition(query: string): void {
   // The node endpoints `( ... )` must NOT contain a `[` bracket character: a
   // leading `[p = ` or `[` (pattern comprehension) would otherwise be swallowed
   // by `[^)]*`, mislocating the pattern at the opening `(` of the comprehension.
-  const patternRE = /\([^)\[]*\)\s*(?:<-\s*\[[^\]]*\]\s*-|-\s*\[[^\]]*\]\s*(?:->|-)|-\s*->|--)\s*\([^)\[]*\)/
+  const patternRE = /\([^)[]*\)\s*(?:<-\s*\[[^\]]*\]\s*-|-\s*\[[^\]]*\]\s*(?:->|-)|-\s*->|--)\s*\([^)[]*\)/
 
   // A pattern comprehension `[p = (n)-->() | expr]` is legal in RETURN/WITH;
   // only a BARE pattern (not wrapped in `[...]`) is UnexpectedSyntax.  A
@@ -166,7 +166,7 @@ export function _stripPatternPredicateSyntax(text: string): string {
   let prev = ''
   while (prev !== cleaned) {
     prev = cleaned
-    cleaned = cleaned.replace(/\[[^\[\]]*\]/g, ' ')
+    cleaned = cleaned.replace(/\[[^[\]]*\]/g, ' ')
   }
   // 去除箭头和连接符：->, <-, -, -- 
   cleaned = cleaned.replace(/<-[ \t]*-/g, ' ').replace(/-[ \t]*->/g, ' ').replace(/--/g, ' ')
@@ -253,7 +253,7 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
     let prev = ''
     while (prev !== returnColStr) {
       prev = returnColStr
-      returnColStr = returnColStr.replace(/\{[^{}]*\}/g, ' ').replace(/\[[^\[\]]*\]/g, ' ')
+      returnColStr = returnColStr.replace(/\{[^{}]*\}/g, ' ').replace(/\[[^[\]]*\]/g, ' ')
     }
     // 扫描所有在 RETURN 中引用但未在 MATCH 中定义的变量（排除 AS 后的别名）
     // 用 /\bAS\s+/i 分割出 AS 之前的表达式主体
@@ -261,7 +261,7 @@ export function _validateUndefinedVariables(query: string, plan?: any): void {
     // 提取变量名：r.num → 只保留 r（变量），num 是属性名，排除在内
     const varSet = new Set<string>()
     // 把括号/方括号等非单词字符替换为空格，去掉 . 前的空格，让 .prop 能被正确识别
-    const beforeAsClean = beforeAs.replace(/[()\]\[]/g, ' ').replace(/\s+\./g, '.').trim()
+    const beforeAsClean = beforeAs.replace(/[()\][]/g, ' ').replace(/\s+\./g, '.').trim()
     const propRefs = [...beforeAsClean.matchAll(/(\b[a-zA-Z_]\w*)\.(\w+)/g)]
     for (const pr of propRefs) {
       varSet.add(pr[1])     // r.num → 'r' 是变量

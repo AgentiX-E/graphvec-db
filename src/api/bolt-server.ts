@@ -451,8 +451,6 @@ export class BoltServer {
                 buffer = Buffer.concat([buffer, chunk])
                 return
               }
-            } else if (buffer.length < needed && chunk.length > 0) {
-              buffer = Buffer.concat([buffer, chunk])
             }
 
             if (buffer.length >= needed) {

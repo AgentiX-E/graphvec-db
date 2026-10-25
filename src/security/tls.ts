@@ -262,7 +262,7 @@ export function generateSelfSignedCert(
     return { cert: certPem, key: keyPem, fingerprint, validFrom, validTo }
   } finally {
     // 清理临时文件
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
 

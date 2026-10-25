@@ -209,7 +209,7 @@ class OutboxIndex {
         if (outboxEntry && outboxEntry.delivered && outboxEntry.deliveredAt < cutoffMs) {
           this.db.removeSync(key)
           // 同时清理 acked 标记（保持 indexDb 整洁）
-          try { this.db.removeSync(`acked:${seq}`) } catch {}
+          try { this.db.removeSync(`acked:${seq}`) } catch { /* ignore */ }
           count++
         }
       })

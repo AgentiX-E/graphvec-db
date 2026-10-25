@@ -805,12 +805,12 @@ describe('applyForeachOpTop — false-arm fixtures (SET/DELETE/REMOVE without su
     expect(r).toEqual({ name: 'A', flag: 1 })
   })
 
-  it('SET with a non-string value bypasses the \$ref lookup', () => {
+  it('SET with a non-string value bypasses the $ref lookup', () => {
     const r = applyForeachOpTop({ name: 'A' }, { type: 'SET', setClauses: [{ property: 'flag', value: 42 }] } as any, 'x')
     expect(r).toEqual({ name: 'A', flag: 42 })
   })
 
-  it('SET with a \$ref value absent from the row keeps the literal', () => {
+  it('SET with a $ref value absent from the row keeps the literal', () => {
     // val starts with '$' but row[val.slice(1)] is undefined -> keep '$missing'
     const r = applyForeachOpTop({ name: 'A' }, { type: 'SET', setClauses: [{ property: 'flag', value: '$missing' }] } as any, 'x')
     expect(r).toEqual({ name: 'A', flag: '$missing' })

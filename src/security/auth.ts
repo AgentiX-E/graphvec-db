@@ -1065,7 +1065,7 @@ export class LdapAuthenticator {
         this.logger.info('LDAP authentication successful', { user: username, role })
         return { user: username, role }
       } finally {
-        try { client.unbind() } catch {}
+        try { client.unbind() } catch { /* ignore */ }
       }
     } catch (err) {
       if (err instanceof AuthError) throw err
@@ -1377,7 +1377,7 @@ export class AuthenticatorChain {
  * @returns 密钥 buffer
  * @throws Error 如果文件不存在或为空
  */
-;(JwtManager as any).loadSecretFromFile = function (filePath: string): Buffer {
+(JwtManager as any).loadSecretFromFile = function (filePath: string): Buffer {
   const fs = require('fs')
   if (!fs.existsSync(filePath)) {
     throw new Error(`JWT secret file not found: ${filePath}`)

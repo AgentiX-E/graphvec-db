@@ -11,7 +11,7 @@
  */
 const assert = require('node:assert')
 
-// @ts-ignore — 使用 mock 模拟 zmq（child process 从文件入口导入，不受 mock 影响）
+// Mock zeromq so the worker pool never touches the native addon.
 vi.mock('zeromq')
 
 import { EventBusWorkerPool, type PeerConfig } from './event-bus-worker-pool'

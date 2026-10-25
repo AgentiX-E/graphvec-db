@@ -28,7 +28,7 @@ describe('B-03 WAL Group Commit 共识层', () => {
   afterEach(() => {
     // cleanup
     const dir = path.dirname(walPath)
-    try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   // ── TC1: Group Commit 批量追加 ──
@@ -124,8 +124,8 @@ describe('B-03 WAL Group Commit 共识层', () => {
     expect(gcElapsed).toBeLessThanOrEqual(immElapsed * 2) // GC 最多比独立慢 2x（正常情况 GC 更快）
 
     // 清理
-    try { fs.rmSync(path.dirname(wal1['walPath'] ?? walPath + '.gc'), { recursive: true, force: true }) } catch {}
-    try { fs.rmSync(path.dirname(wal2Path), { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(path.dirname(wal1['walPath'] ?? walPath + '.gc'), { recursive: true, force: true }) } catch { /* ignore */ }
+    try { fs.rmSync(path.dirname(wal2Path), { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   // ── TC4: Group Commit 批量写入不同 term ──

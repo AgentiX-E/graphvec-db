@@ -629,7 +629,7 @@ function _buildDmlRows(plan: QueryPlan, allNodes: Array<Record<string, unknown>>
         try {
           const fnResult = _evaluateExpression(rc, varCtx)
           if (fnResult !== undefined) { row[rc] = fnResult; continue }
-        } catch (e: any) {} // function call may fail for invalid args
+        } catch (e: any) { /* ignore */ } // function call may fail for invalid args
       }
       row[rc] = null
       continue

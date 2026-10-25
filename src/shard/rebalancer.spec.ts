@@ -54,8 +54,8 @@ let rebalancer: Rebalancer
 
 beforeAll(async () => {
   TEST_ROOT = `${ROOT_DIR}-${process.pid}`
-  try { fs.rmSync(ROOT_DIR, { recursive: true, force: true }) } catch {}
-  try { fs.rmSync(TEST_ROOT, { recursive: true, force: true }) } catch {}
+  try { fs.rmSync(ROOT_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
+  try { fs.rmSync(TEST_ROOT, { recursive: true, force: true }) } catch { /* ignore */ }
   
   const sm = makeShardMap(TEST_ROOT, 2)
   for (const r of sm.ranges) {
@@ -69,8 +69,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await shardManager.stop()
-  try { fs.rmSync(TEST_ROOT, { recursive: true, force: true }) } catch {}
-  try { fs.rmSync(ROOT_DIR, { recursive: true, force: true }) } catch {}
+  try { fs.rmSync(TEST_ROOT, { recursive: true, force: true }) } catch { /* ignore */ }
+  try { fs.rmSync(ROOT_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
 }, 15000)
 
 // ══════════════════════════════════════════
@@ -272,7 +272,7 @@ describe('Hot node detection', () => {
   afterEach(() => {
     const range = shardManager.getRange('rebal-range-1')
     for (const id of tempNodes.splice(0)) {
-      try { range.write({ type: 'delete_node', payload: { id } }) } catch {}
+      try { range.write({ type: 'delete_node', payload: { id } }) } catch { /* ignore */ }
     }
   })
 

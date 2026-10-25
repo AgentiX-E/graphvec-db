@@ -1,11 +1,14 @@
-// @ts-nocheck
 import { ScatterGather } from './scatter-gather'
 
-function mockEngine(overrides) {
+// Test doubles: overrides are partial engine/range shapes assembled inline by
+// each test, so `any` keeps the fixtures terse without leaking into production.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mockEngine(overrides: any): any {
   return overrides
 }
 
-function mockRange(overrides) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mockRange(overrides: any): any {
   return overrides
 }
 

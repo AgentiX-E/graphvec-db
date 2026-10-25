@@ -130,7 +130,7 @@ describe('HotMigrator', () => {
   })
 
   afterEach(() => {
-    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   describe('construction', () => {

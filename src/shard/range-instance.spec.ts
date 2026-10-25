@@ -47,7 +47,7 @@ describe('RangeInstance', () => {
     // 关闭所有运行中的实例
     await Promise.all(runningInstances.map(r => r.stop().catch(() => {})))
     runningInstances.length = 0
-    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   beforeEach(() => {
@@ -61,8 +61,8 @@ describe('RangeInstance', () => {
     // 等待 IO flush，确保 WAL fd 在删除前释放
     await new Promise(r => setImmediate(r))
     // Clean graph/raft dirs so next test gets fresh state
-    try { fs.rmSync(`${TEST_DIR}/graph`, { recursive: true, force: true }) } catch {}
-    try { fs.rmSync(`${TEST_DIR}/raft`, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(`${TEST_DIR}/graph`, { recursive: true, force: true }) } catch { /* ignore */ }
+    try { fs.rmSync(`${TEST_DIR}/raft`, { recursive: true, force: true }) } catch { /* ignore */ }
     fs.mkdirSync(`${TEST_DIR}/graph`, { recursive: true })
     fs.mkdirSync(`${TEST_DIR}/raft`, { recursive: true })
   })

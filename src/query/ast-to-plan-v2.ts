@@ -616,7 +616,7 @@ function buildQueryPlan(query: string): QueryPlan {
   if (!plan.forEach) {
     // 使用更宽松的正则（不要求 ) 闭合）
     // Detect MATCH from query text when ANTLR didn't parse it (FOREACH not in grammar)
-    const hasMatchInQuery = /MATCH/i.test(trimmed)
+    const hasMatchInQuery = /MATCH/i.test(trimmed)
     
     const feMatch2 = trimmed.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*(.+?)\s*\)\s*(\w.*)?$/is) ||
                      trimmed.match(/FOREACH\s*\(\s*(\w+)\s+IN\s+(.+?)\s*\|\s*(.*)/i)
@@ -654,7 +654,7 @@ function buildQueryPlan(query: string): QueryPlan {
       let feIsVarRef = false
       if (feListRaw.startsWith('[') && feListRaw.endsWith(']')) {
         try { feList = JSON.parse(feListRaw) }
-        catch { try { feList = JSON.parse(feListRaw.replace(/'/g, '"')) } catch { } }
+        catch { try { feList = JSON.parse(feListRaw.replace(/'/g, '"')) } catch { /* ignore */ } }
       } else {
         feIsVarRef = true
         feList = [feListRaw]
@@ -1311,7 +1311,7 @@ function clausesToPlan(clauses: ParsedClause[]): QueryPlan {
 
           if (cleanListRaw.startsWith('[') && cleanListRaw.endsWith(']')) {
             try { feList = JSON.parse(cleanListRaw) }
-            catch { try { feList = JSON.parse(cleanListRaw.replace(/'/g, '"')) } catch {} }
+            catch { try { feList = JSON.parse(cleanListRaw.replace(/'/g, '"')) } catch { /* ignore */ } }
           } else {
             feIsVarRef = true
             feList = [cleanListRaw]
@@ -3074,7 +3074,7 @@ function parseForeachBody(body: string): any {
             let innerIsVarRef = false
             if (innerListRaw.startsWith('[') && innerListRaw.endsWith(']')) {
               try { innerList = JSON.parse(innerListRaw) }
-              catch { try { innerList = JSON.parse(innerListRaw.replace(/'/g, '"')) } catch {} }
+              catch { try { innerList = JSON.parse(innerListRaw.replace(/'/g, '"')) } catch { /* ignore */ } }
             } else {
               innerIsVarRef = true
               innerList = [innerListRaw]

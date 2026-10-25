@@ -24,7 +24,8 @@ import type { OverGraphConfig } from '../types'
  * 所有不可见控制字符（\x00-\x08\x0B\x0C\x0E-\x1F）一律移除。
  */
 function escapeString(val: string): string {
-  // 移除控制字符
+  // Strip C0 control characters to neutralize injection via raw control bytes.
+  // eslint-disable-next-line no-control-regex
   const cleaned = val.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
 
   if (cleaned.includes("'") && !cleaned.includes('"')) {
@@ -350,7 +351,7 @@ function _parseQueryImpl(query: string): QueryPlan {
           // 在节点模式中查找 :scanLabel：如 (:Person), :Person), :Person {prop}
           // `\s*` tolerates a space after the colon (`(n: Label)`), which ANTLR
           // folds into the SymbolicName but our trim-based label extraction strips.
-          const labelPattern = new RegExp(':' + '\\s*' + subPlan.scanLabel + '(?=[\)\\s{]|$)')
+          const labelPattern = new RegExp(':' + '\\s*' + subPlan.scanLabel + '(?=[)\\s{]|$)')
           return labelPattern.test(mc)
         })
         // 如果 scanLabel 在 MATCH 子句中不是作为标签出现，则是变量名，清除
@@ -367,7 +368,7 @@ function _parseQueryImpl(query: string): QueryPlan {
       const matchClauses = rawQuery.match(/MATCH\s+.*?(?=WHERE|RETURN|WITH|CREATE|MERGE|DELETE|SET|REMOVE|UNWIND|\$Cypher|$)/gis) || []
       for (const oms of subPlan.optionalMatchSteps) {
         if (oms.scanLabel && /^[a-z][0-9]?$/.test(oms.scanLabel)) {
-          const labelPattern = new RegExp(':' + oms.scanLabel + '(?=[\)\\s{]|$)')
+          const labelPattern = new RegExp(':' + oms.scanLabel + '(?=[)\\s{]|$)')
           const isLabelInMatch = matchClauses.some((mc: string) => labelPattern.test(mc))
           if (!isLabelInMatch) {
             oms.scanLabel = null
@@ -386,7 +387,7 @@ function _parseQueryImpl(query: string): QueryPlan {
         if (mm.scanLabel) {
           // `\s*` tolerates a space after the colon (`(n: Label)`) — see the
           // primary scanLabel fix above.
-          const labelPattern = new RegExp(':' + '\\s*' + mm.scanLabel + '(?=[\)\\s{]|$)')
+          const labelPattern = new RegExp(':' + '\\s*' + mm.scanLabel + '(?=[)\\s{]|$)')
           const isLabelInMatch = matchClauses.some((mc: string) => labelPattern.test(mc))
           if (!isLabelInMatch) {
             mm.scanLabel = null

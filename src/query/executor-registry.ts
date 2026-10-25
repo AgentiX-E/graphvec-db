@@ -132,7 +132,7 @@ export function _clearGeInstances(): void {
   // 关闭 database-specific GE 实例（CATALOG 多图隔离），但不删除其磁盘目录，
   // 以免与后续 ge.open() 产生 "No such file or directory (os error 2)" 竞态。
   for (const [, ge] of _geInstanceRegistry) {
-    try { ge.close() } catch {}
+    try { ge.close() } catch { /* ignore */ }
   }
   _geInstanceRegistry.clear()
   _geDirRegistry.clear()

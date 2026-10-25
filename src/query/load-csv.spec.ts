@@ -258,6 +258,6 @@ describe('LOAD CSV + 查询联动', () => {
     } catch (e: any) {
       expect(e.message).toContain('Query parse error')
     }
-    try { fs.unlinkSync(csvPath) } catch {}
+    try { fs.unlinkSync(csvPath) } catch { /* ignore */ }
   })
 })

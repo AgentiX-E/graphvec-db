@@ -288,7 +288,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
           if (prev !== true) {
             this.logger.info('[RaftConsensus] Re-entered majority (quorum active)')
             for (const cb of this._majorityCallbacks) {
-              try { cb(true) } catch {}
+              try { cb(true) } catch { /* ignore */ }
             }
           }
         })
@@ -302,7 +302,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
             if (prev !== false) {
               this.logger.info('[RaftConsensus] Lost majority (role changed)', { role: rc.role })
               for (const cb of this._majorityCallbacks) {
-                try { cb(false) } catch {}
+                try { cb(false) } catch { /* ignore */ }
               }
             }
           }
@@ -313,7 +313,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
             if (prev !== true) {
               this.logger.info('[RaftConsensus] Entered majority (became leader)')
               for (const cb of this._majorityCallbacks) {
-                try { cb(true) } catch {}
+                try { cb(true) } catch { /* ignore */ }
               }
             }
           }
@@ -340,7 +340,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
       this._majorityCheckTimer = null
     }
     if (this._unsubscribeState) {
-      try { this._unsubscribeState() } catch {}
+      try { this._unsubscribeState() } catch { /* ignore */ }
       this._unsubscribeState = null
     }
     // flush 剩余 Pipeline 请求
@@ -583,7 +583,7 @@ export class RaftLogicConsensus implements ConsensusProvider {
         term: this.getTerm(),
       })
       for (const cb of this._majorityCallbacks) {
-        try { cb(this._inMajority) } catch {}
+        try { cb(this._inMajority) } catch { /* ignore */ }
       }
     }
   }

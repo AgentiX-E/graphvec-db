@@ -410,7 +410,7 @@ describe('GraphEngine', () => {
         await unionEngine.upsertNode(2, 'agg-dave',  { props: { name: 'Dave', age: 28, score: 95 } })
       } catch { /* data may already exist */ }
     }, 10000)
-    afterAll(() => { try { unionEngine.close() } catch {} })
+    afterAll(() => { try { unionEngine.close() } catch { /* ignore */ } })
 
     test('UNION — deduplicates nodes by ID', () => {
       const results = unionEngine.query('MATCH (a) WHERE a.age = 30 RETURN a UNION MATCH (b) WHERE b.age = 35 RETURN b')

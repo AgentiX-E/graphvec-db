@@ -20,7 +20,7 @@ interface St { nodes: any[]; q: string; res: any[]; err: Error | null; pGe?: any
 const st: St = { nodes: [], q: '', res: [], err: null, params: {} }
 
 /**
- * Strip Cypher comments (`//` line and `/* *​/` block) while respecting
+ * Strip Cypher comments (`//` line comments and block comments) while respecting
  * string literals (single/double quote), backtick-quoted identifiers, and
  * escaped characters.  openCypher TCK `.feature` docstrings frequently embed
  * `// ...` annotations inside multi-line CREATE clauses (e.g. to document a
@@ -73,8 +73,8 @@ function _stripCypherComments(q: string): string {
 
 Before(function () {
   st.nodes = []; st.q = ''; st.res = []; st.err = null; st.params = {}
-  if (st.pGe) { try { st.pGe.close() } catch {} st.pGe = undefined }
-  if (st.pDir) { try { fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {} st.pDir = undefined }
+  if (st.pGe) { try { st.pGe.close() } catch { /* ignore */ } st.pGe = undefined }
+  if (st.pDir) { try { fs.rmSync(st.pDir, { recursive: true, force: true }) } catch { /* ignore */ } st.pDir = undefined }
   _clearGeInstances()
   // 清除 procedure registry（除了内置 proc），确保场景间隔离
   // 内置 proc（db.labels, dbms.security.createUser 等）在 registerBuiltins 中注册，需要保留
@@ -88,8 +88,8 @@ Before(function () {
   }
 })
 After(function () {
-  try { st.pGe?.close() } catch {}
-  try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}
+  try { st.pGe?.close() } catch { /* ignore */ }
+  try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch { /* ignore */ }
 })
 
 function persistGe(): any {
@@ -137,7 +137,7 @@ function parseCreateStmt(query: string): Array<Record<string, unknown>> {
         // Convert Cypher {name: 'b', count: 42} → JSON {"name":"b","count":42}
         const raw = inner.substring(bi).replace(/'/g, '"').replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)(\s*:)/g, '$1"$2"$3')
         Object.assign(props, JSON.parse(raw))
-      } catch {}
+      } catch { /* ignore */ }
     } else if (inner.startsWith(':')) {
       labels.push(...inner.substring(1).split(':').filter(Boolean))
     }
@@ -776,8 +776,8 @@ function cmp(dt: DataTable, ordered = false, ignoreListOrder = false): void {
 Given('an empty graph', () => {
   st.nodes = []
   // Ensure persistent GE is clean for the new scenario
-  try { st.pGe?.close() } catch {}
-  try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}
+  try { st.pGe?.close() } catch { /* ignore */ }
+  try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch { /* ignore */ }
   st.pGe = undefined; st.pDir = undefined
 })
 Given('any graph', () => {})
@@ -832,8 +832,8 @@ Given(/^the (binary-tree-1|binary-tree-2) graph$/, function (variant: string) {
   st.nodes = []
   // Close and drop the persistent GE so the predefined graph seeds into a clean
   // instance (the scenario may re-open one via persistGe() on first use).
-  try { st.pGe?.close() } catch {}
-  try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch {}
+  try { st.pGe?.close() } catch { /* ignore */ }
+  try { if (st.pDir) fs.rmSync(st.pDir, { recursive: true, force: true }) } catch { /* ignore */ }
   st.pGe = undefined
   st.pDir = undefined
   _buildBinaryTreeGraph(variant as 'binary-tree-1' | 'binary-tree-2')
@@ -916,7 +916,7 @@ function execCreateOnGe(ge: any, q: string): void {
     createdNodes.push(node)
     if (variable) varToNodeIdx.set(variable, nodeIdx)
     const h = _hashLabel(node._label as string)
-    try { (ge as any).upsertNode(h, 'rn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
+    try { (ge as any).upsertNode(h, 'rn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch { /* ignore */ }
     nodeGeIds.push(h)
     return nodeIdx
   }
@@ -984,7 +984,7 @@ function execCreateOnGe(ge: any, q: string): void {
       if (srcNode && Array.isArray(srcNode.__edges)) srcNode.__edges.push(edgeEntry)
 
       const typeId = _hashLabel(edgeLabel || 'T')
-      try { (ge as any).upsertEdge(nodeGeIds[geSrc], nodeGeIds[geDst], typeId, { props: edgeProps }) } catch {}
+      try { (ge as any).upsertEdge(nodeGeIds[geSrc], nodeGeIds[geDst], typeId, { props: edgeProps }) } catch { /* ignore */ }
     }
   }
 
@@ -1015,7 +1015,7 @@ function seedGe(ge: any, node: Record<string, unknown>): void {
   const label = String(node['_label'] || 'Default')
   const h = _hashLabel(label)
   // Use sync storage write since GE.upsertNode is async but storage is synced
-  try { (ge as any).upsertNode(h, 'sn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch {}
+  try { (ge as any).upsertNode(h, 'sn-' + crypto.randomBytes(3).toString('hex'), { props: { ...node } }) } catch { /* ignore */ }
 }
 
 /**
@@ -1268,7 +1268,7 @@ Given('having executed:', async function (query: string) {
                   const gIdx = st.nodes.length - 1
                   localAliasToGlobal[cn.alias] = gIdx
                   newNodeIdxByAlias.set(cn.alias, gIdx)
-                  try { seedGe(persistGe(), node) } catch {}
+                  try { seedGe(persistGe(), node) } catch { /* ignore */ }
                 }
                 for (const ce of specEdges) {
                   const srcIdx = ce.source === matchVar ? dIdx : localAliasToGlobal[ce.source]
@@ -1388,7 +1388,7 @@ Given('having executed:', async function (query: string) {
                   : v
                 // 对表达式字符串求值
                 if (typeof raw === 'string' && _isExprValue(raw)) {
-                  try { raw = _evalBinary(raw, {}); node[k] = raw; continue } catch {}
+                  try { raw = _evalBinary(raw, {}); node[k] = raw; continue } catch { /* ignore */ }
                 } else if (typeof raw === 'string' && /^-?\d+$/.test(raw)) {
                   try {
                     const asBig = BigInt(raw)
@@ -1402,7 +1402,7 @@ Given('having executed:', async function (query: string) {
             st.nodes.push(node)
             createdNodes.push(node)
             cnsNodeIdx.push(st.nodes.length - 1)
-            try { seedGe(persistGe(), node) } catch {}
+            try { seedGe(persistGe(), node) } catch { /* ignore */ }
           }
           // Bind CREATE node variables to their created node objects so later
           // statements can reference them.  Two cases:
@@ -1590,7 +1590,7 @@ Given('having executed:', async function (query: string) {
               const node: Record<string, unknown> = { _label: cn.label || 'Default', ...props }
               st.nodes.push(node)
               localAliasToGlobal[cn.alias] = st.nodes.length - 1
-              try { seedGe(persistGe(), node) } catch {}
+              try { seedGe(persistGe(), node) } catch { /* ignore */ }
             }
             for (const ce of specEdges) {
               const srcIdx = ce.source === matchVar2 ? dIdx : localAliasToGlobal[ce.source]
@@ -1631,7 +1631,7 @@ Given('having executed:', async function (query: string) {
             : v
           // 对表达式字符串求值（date(...)、time(...)、duration(...) 等）
           if (typeof raw === 'string' && _isExprValue(raw)) {
-            try { raw = _evalBinary(raw, localCtx) } catch {}
+            try { raw = _evalBinary(raw, localCtx) } catch { /* ignore */ }
           }
           // BIGINT values are already `bigint` (set by the AST layer to preserve
           // precision). STRING values — including numeric string literals such as
@@ -1720,7 +1720,7 @@ Given('having executed:', async function (query: string) {
               let h2 = 0; for (let ci = 0; ci < (String((dstNode as any)._label || 'Default')).length; ci++) h2 = ((h2 << 5) - h2 + (String((dstNode as any)._label || 'Default')).charCodeAt(ci)) | 0
               const dstNid = Math.abs(h2) % 1000 + 1 + dstIdx
               ;(ge as any).upsertEdge(srcNid, dstNid, typeId, { props: ce.props || {} })
-            } catch {}
+            } catch { /* ignore */ }
           }
         }
       }
@@ -1836,7 +1836,7 @@ Given('having executed:', async function (query: string) {
             const srcId = geNodeMap[srcIdx].id
             const dstId = geNodeMap[dstIdx].id
             const typeId = (ge as any)._resolveEdgeType(edge.label || '')
-            try { (ge as any).upsertEdge(srcId, dstId, typeId) } catch {}
+            try { (ge as any).upsertEdge(srcId, dstId, typeId) } catch { /* ignore */ }
             createdEdgeInfos.push({ srcIdx, dstIdx, label: edge.label || '', props: (edge as any).props || null })
           }
         }

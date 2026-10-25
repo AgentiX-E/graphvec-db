@@ -288,7 +288,7 @@ export class GremlinServer {
   async stop(): Promise<void> {
     if (!this._started) return
     for (const [, ws] of this._connections) {
-      try { ws.close() } catch {}
+      try { ws.close() } catch { /* ignore */ }
     }
     this._connections.clear()
     return new Promise((resolve) => {

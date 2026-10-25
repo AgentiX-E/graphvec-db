@@ -104,7 +104,7 @@ export class QueryCachePersister {
           if (entry.cachedAt > 0 && now > entry.cachedAt + 30000) continue
           this.cache.set(parsed.k, entry.results, { query: entry.query, tags: entry.tags })
           recoveredCount++
-        } catch {}
+        } catch { /* ignore */ }
       }
       return recoveredCount
     } catch { return 0 }
@@ -119,7 +119,7 @@ export class QueryCachePersister {
       const dir = path.dirname(this.config.persistPath)
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
       fs.appendFileSync(this.config.persistPath, lines, 'utf-8')
-    } catch {} finally { this.flushRunning = false }
+    } catch { /* ignore */ } finally { this.flushRunning = false }
   }
 
   get pendingCount(): number { return this.pendingBuffer.length }

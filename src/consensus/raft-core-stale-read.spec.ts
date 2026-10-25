@@ -29,7 +29,7 @@ describe('RaftCore StaleRead', () => {
   })
 
   afterEach(async () => {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   // ────────── Q05: canServeStaleRead ──────────

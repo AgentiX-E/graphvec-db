@@ -138,7 +138,7 @@ describe('OverGraphStorage — 分块快照', () => {
       offset++
     }
     if (corrupted[offset] === 0x47 || corrupted[offset] === 0x46) {
-      offset = offset // found chunk at offset
+      // First data chunk header found at `offset`; corrupt the byte after it.
     }
     // 破坏 chunk 中间的字节
     const midPos = Math.min(Math.floor(snapshot.length / 2), snapshot.length - 1)

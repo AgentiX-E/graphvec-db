@@ -89,7 +89,7 @@ describe('TLSConfig', () => {
 
   afterAll(() => {
     tlsConfig?.stopCertWatcher()
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   describe('基础功能', () => {
@@ -152,7 +152,7 @@ describe('TLSConfig', () => {
         setTimeout(() => {
           expect(config.isWatching()).toBe(true)
           config.stopCertWatcher()
-          try { fs.rmSync(testDir, { recursive: true, force: true }) } catch {}
+          try { fs.rmSync(testDir, { recursive: true, force: true }) } catch { /* ignore */ }
           resolve()
         }, 2000)
       }, 500))
@@ -190,7 +190,7 @@ describe('TLSConfig', () => {
       expect(opts.ca).toContain('BEGIN CERTIFICATE')
 
       config.stopCertWatcher()
-      try { fs.rmSync(caDir, { recursive: true, force: true }) } catch {}
+      try { fs.rmSync(caDir, { recursive: true, force: true }) } catch { /* ignore */ }
     })
   })
 })
@@ -526,7 +526,7 @@ basicConstraints=CA:FALSE`
         })
       })
 
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
     }, 30000)
   })
 

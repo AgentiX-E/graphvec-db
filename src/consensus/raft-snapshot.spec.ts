@@ -46,7 +46,7 @@ describe('B-05 快照自动压缩', () => {
   afterEach(() => {
     MockTransport.reset()
     if (tmp) {
-      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
+      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
     }
   })
 

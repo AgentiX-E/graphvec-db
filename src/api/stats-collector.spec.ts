@@ -19,7 +19,7 @@ describe('StatsCollector', () => {
 
   afterEach(() => {
     if (collector) {
-      try { collector.stopPeriodicCollection() } catch {}
+      try { collector.stopPeriodicCollection() } catch { /* ignore */ }
     }
     vi.useRealTimers()
   })

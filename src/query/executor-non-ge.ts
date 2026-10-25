@@ -537,7 +537,7 @@ export async function _execNonGePaths(
           if (listStr.startsWith('[') && listStr.endsWith(']')) {
             // 尝试 JSON.parse，如果失败（如单引号），将单引号替换为双引号
             try { listItems = JSON.parse(listStr) } catch {
-              try { listItems = JSON.parse(listStr.replace(/'/g, '"')) } catch {}
+              try { listItems = JSON.parse(listStr.replace(/'/g, '"')) } catch { /* ignore */ }
             }
           }
         }

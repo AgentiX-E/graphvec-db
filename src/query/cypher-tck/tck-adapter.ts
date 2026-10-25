@@ -175,11 +175,12 @@ export function registerTCKTest(
           }
           break
 
-        case 'when':
+        case 'when': {
           // 执行查询
           const result = executor(step.query, data)
           // 对于纯解析测试，我们不执行查询
           break
+        }
 
         case 'then':
           if (step.expectedResults) {

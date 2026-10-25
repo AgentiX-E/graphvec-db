@@ -39,7 +39,7 @@ describe('B-04 PreVote 完整化', () => {
   afterEach(() => {
     MockTransport.reset()
     if (tmp) {
-      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
+      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
     }
   })
 

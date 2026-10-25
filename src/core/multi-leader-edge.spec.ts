@@ -189,10 +189,10 @@ describe('Multi-Leader 边际场景', () => {
 
   afterAll(async () => {
     for (const n of nodes) {
-      try { n.proc.kill('SIGTERM') } catch {}
+      try { n.proc.kill('SIGTERM') } catch { /* ignore */ }
     }
     await sleep(1000)
-    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch { /* ignore */ }
   }, 10000)
 
   // ================================================================

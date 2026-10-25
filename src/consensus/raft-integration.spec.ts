@@ -137,9 +137,9 @@ describe('Raft 跨进程集成测试', () => {
 
   afterAll(() => {
     for (const n of nodes) {
-      try { n.stdin({ type: 'stop' }) } catch {}
+      try { n.stdin({ type: 'stop' }) } catch { /* ignore */ }
     }
-    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
   }, 10000)
 
   test('所有节点应通过 TCP 启动并响应 getRole', async () => {

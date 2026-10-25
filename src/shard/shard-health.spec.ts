@@ -17,7 +17,7 @@ describe('ShardManager — Health Check Only', () => {
   })
 
   afterAll(() => {
-    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   beforeEach(() => {
@@ -67,7 +67,7 @@ describe('ShardManager — Health Check Only', () => {
   })
 
   afterEach(() => {
-    try { fs.rmSync(`${TEST_DIR}/${testRunId}`, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(`${TEST_DIR}/${testRunId}`, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   test('getShardHealth returns per-range health after start', async () => {

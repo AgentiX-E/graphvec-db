@@ -214,9 +214,9 @@ describe('Multi-Leader 集成测试', () => {
 
   afterAll(() => {
     for (const n of nodes) {
-      try { n.proc.kill('SIGTERM') } catch {}
+      try { n.proc.kill('SIGTERM') } catch { /* ignore */ }
     }
-    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(testDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   // ================================================================
@@ -362,10 +362,10 @@ describe('Multi-Leader 集成测试', () => {
     afterAll(() => {
       if (singleNodes) {
         for (const n of singleNodes) {
-          try { n.proc.kill('SIGTERM') } catch {}
+          try { n.proc.kill('SIGTERM') } catch { /* ignore */ }
         }
       }
-      try { fs.rmSync(singleDir, { recursive: true, force: true }) } catch {}
+      try { fs.rmSync(singleDir, { recursive: true, force: true }) } catch { /* ignore */ }
     })
 
     test('单节点写入后 pending 为 0（无 peer 不写入 Outbox）', async () => {

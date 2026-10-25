@@ -11,32 +11,32 @@ import type { FieldDef, NodeTypeDef, EdgeTypeDef, SchemaDef } from './schema-typ
 
 describe('FieldType', () => {
   it('应支持 string 类型', () => {
-    const t: 'string' = 'string'
+    const t = 'string' as const
     expect(t).toBe('string')
   })
 
   it('应支持 number 类型', () => {
-    const t: 'number' = 'number'
+    const t = 'number' as const
     expect(t).toBe('number')
   })
 
   it('应支持 boolean 类型', () => {
-    const t: 'boolean' = 'boolean'
+    const t = 'boolean' as const
     expect(t).toBe('boolean')
   })
 
   it('应支持 timestamp 类型', () => {
-    const t: 'timestamp' = 'timestamp'
+    const t = 'timestamp' as const
     expect(t).toBe('timestamp')
   })
 
   it('应支持 string[] 类型', () => {
-    const t: 'string[]' = 'string[]'
+    const t = 'string[]' as const
     expect(t).toBe('string[]')
   })
 
   it('应支持 number[] 类型', () => {
-    const t: 'number[]' = 'number[]'
+    const t = 'number[]' as const
     expect(t).toBe('number[]')
   })
 

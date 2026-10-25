@@ -17,9 +17,9 @@ let daemonProc: ReturnType<typeof spawn> | null = null
 
 export function setup() {
   // 清理旧端口文件
-  try { fs.unlinkSync(PORT_FILE) } catch {}
+  try { fs.unlinkSync(PORT_FILE) } catch { /* ignore */ }
   // 杀掉可能残留的旧 daemon
-  try { execSync(`pkill -f "tck-daemon.js"`, { stdio: 'ignore' }) } catch {}
+  try { execSync(`pkill -f "tck-daemon.js"`, { stdio: 'ignore' }) } catch { /* ignore */ }
 
   const daemonPath = path.resolve(__dirname, 'tck-daemon.js')
   daemonProc = spawn('node', [daemonPath, '0', PORT_FILE], {
@@ -43,7 +43,7 @@ export function setup() {
         console.log(`[tck-setup] Daemon ready on port ${port}`)
         return
       }
-    } catch {}
+    } catch { /* ignore */ }
     execSync('sleep 0.05', { stdio: 'ignore' })
   }
 
@@ -52,9 +52,9 @@ export function setup() {
 
 export function teardown() {
   if (daemonProc && !daemonProc.killed) {
-    try { daemonProc.kill('SIGTERM') } catch {}
+    try { daemonProc.kill('SIGTERM') } catch { /* ignore */ }
   }
-  try { fs.unlinkSync(PORT_FILE) } catch {}
+  try { fs.unlinkSync(PORT_FILE) } catch { /* ignore */ }
   // 确保杀掉
-  try { execSync('pkill -f "tck-daemon.js"', { stdio: 'ignore' }) } catch {}
+  try { execSync('pkill -f "tck-daemon.js"', { stdio: 'ignore' }) } catch { /* ignore */ }
 }

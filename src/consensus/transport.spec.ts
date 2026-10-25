@@ -299,8 +299,8 @@ describe('TcpTransport - TLS', () => {
   })
 
   afterEach(() => {
-    try { tcpTls.stop() } catch {}
-    try { tcpTlsClient.stop() } catch {}
+    try { tcpTls.stop() } catch { /* ignore */ }
+    try { tcpTlsClient.stop() } catch { /* ignore */ }
     TcpTransport.reset()
   })
 

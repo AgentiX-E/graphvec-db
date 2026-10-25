@@ -23,7 +23,6 @@
 // - GROUP BY + 聚合
 // ============================================================
 
-// @ts-ignore — alasql has no TypeScript type definitions
 import alasql from 'alasql'
 
 // ── Types ─────────────────────────────────

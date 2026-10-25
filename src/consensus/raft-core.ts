@@ -1460,7 +1460,7 @@ export class RaftCore {
       fs.mkdirSync(dir, { recursive: true })
     }
     fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2), 'utf-8')
-    try { fs.fsyncSync(fs.openSync(snapshotPath, 'r')) } catch {}
+    try { fs.fsyncSync(fs.openSync(snapshotPath, 'r')) } catch { /* ignore */ }
   }
 
   /**

@@ -152,7 +152,7 @@ describe('Raft InstallSnapshot (R04)', () => {
 
     afterEach(async () => {
       if (consensus) {
-        try { await consensus.stop() } catch {}
+        try { await consensus.stop() } catch { /* ignore */ }
       }
     })
 
@@ -361,9 +361,9 @@ describe('Raft InstallSnapshot (R04)', () => {
     })
 
     afterEach(async () => {
-      try { await leader?.stop() } catch {}
-      try { await follower?.stop() } catch {}
-      try { await followerConsensus?.stop() } catch {}
+      try { await leader?.stop() } catch { /* ignore */ }
+      try { await follower?.stop() } catch { /* ignore */ }
+      try { await followerConsensus?.stop() } catch { /* ignore */ }
       MockTransport.reset()
     })
 

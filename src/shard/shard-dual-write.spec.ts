@@ -26,7 +26,7 @@ describe('ShardManager Dual Write', () => {
   })
 
   afterAll(() => {
-    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(TEST_DIR, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   beforeEach(async () => {
@@ -64,8 +64,8 @@ describe('ShardManager Dual Write', () => {
   })
 
   afterEach(async () => {
-    try { await mgr.stop() } catch {}
-    try { fs.rmSync(`${TEST_DIR}/${testRunId}`, { recursive: true, force: true }) } catch {}
+    try { await mgr.stop() } catch { /* ignore */ }
+    try { fs.rmSync(`${TEST_DIR}/${testRunId}`, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
   describe('dual write mechanism', () => {
