@@ -713,7 +713,7 @@ export class OverGraphStorage implements StorageProvider {
     const ids: number[] = []
     const PAGE_SIZE = 1000
     let after: number | undefined
-    while (true) {
+    for (;;) {
       const page = this._db!.queryNodeIds({
         allowFullScan: true,
         orderBy: 'nodeIdAsc',

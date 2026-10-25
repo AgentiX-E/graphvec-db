@@ -310,7 +310,7 @@ export class CdcServer {
     // 处理数据
     socket.on('data', (data: Buffer) => {
       buffer = Buffer.concat([buffer, data])
-      while (true) {
+      for (;;) {
         const frame = parseWsFrame(buffer)
         if (!frame) break
         buffer = buffer.subarray(frame.payload.length + 2 + (frame.payload.length >= 126 ? 2 : 0) + (frame.payload.length >= 65536 ? 8 : 0))

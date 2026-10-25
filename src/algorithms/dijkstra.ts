@@ -65,7 +65,7 @@ class MinHeap<T> {
 
   private _siftDown(idx: number): void {
     const n = this.data.length
-    while (true) {
+    for (;;) {
       let smallest = idx
       const left = (idx << 1) + 1
       const right = left + 1

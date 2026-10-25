@@ -116,7 +116,7 @@ export class PeriodicCommitProcedure {
     let currentSkip = 0
     const batchSize = config.batchSize
 
-    while (true) {
+    for (;;) {
       if (config.maxBatches > 0 && totalBatches >= config.maxBatches) {
         break
       }

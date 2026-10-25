@@ -56,7 +56,7 @@ export function maxFlow(
   let flow = 0
   const INF = Number.MAX_SAFE_INTEGER
 
-  while (true) {
+  for (;;) {
     // BFS level graph
     const level = new Map<number, number>()
     const queue: number[] = [source]
@@ -105,7 +105,7 @@ export function maxFlow(
     }
 
     let pushed = 0
-    while (true) {
+    for (;;) {
       const d = dfs(source, INF)
       if (d === 0) break
       pushed += d

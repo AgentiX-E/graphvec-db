@@ -49,7 +49,7 @@ class MinHeap {
 
   private _sinkDown(idx: number): void {
     const size = this.heap.length
-    while (true) {
+    for (;;) {
       let smallest = idx
       const left = (idx << 1) + 1
       const right = (idx << 1) + 2
@@ -313,7 +313,7 @@ export class GraphAlgorithms {
 
     // 收集所有可见节点
     let index = 0
-    while (true) {
+    for (;;) {
       const node = this.engine.getNode(index)
       if (node === null) break
       parent.set(node.id, node.id)

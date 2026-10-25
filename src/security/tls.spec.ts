@@ -275,7 +275,7 @@ describe('TLS 传输层 (Item 12)', () => {
         },
       )
 
-      await new Promise<void>(async (resolve, reject) => {
+      await new Promise<void>((resolve) => {
         server.listen(0, '127.0.0.1', async () => {
           const addr = server.address()
           if (!addr || typeof addr === 'string') { server.close(resolve as () => void); return }
@@ -324,7 +324,7 @@ describe('TLS 传输层 (Item 12)', () => {
         },
       )
 
-      await new Promise<void>(async (resolve, reject) => {
+      await new Promise<void>((resolve) => {
         server.listen(0, '127.0.0.1', async () => {
           const addr = server.address()
           if (!addr || typeof addr === 'string') { server.close(resolve as () => void); return }
@@ -554,7 +554,7 @@ basicConstraints=CA:FALSE`
         })
       })
 
-      await new Promise<void>(async (resolve, reject) => {
+      await new Promise<void>((resolve) => {
         server.listen(0, '127.0.0.1', async () => {
           try {
             const addr = server.address()

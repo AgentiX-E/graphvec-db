@@ -84,11 +84,10 @@ async function main() {
 
       async start(): Promise<void> {
         // 注册消息处理器，接收 TCP 消息
-        const self = this
         this._transport.onMessage(async (from: string, msgBuf: Uint8Array) => {
           // 收到消息后通过 apply 处理（模拟 leader → follower 复制）
-          if (self._apply) {
-            await self._apply({ data: Buffer.from(msgBuf) })
+          if (this._apply) {
+            await this._apply({ data: Buffer.from(msgBuf) })
           }
         })
 

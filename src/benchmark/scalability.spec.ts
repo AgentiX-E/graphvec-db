@@ -327,14 +327,11 @@ describe('Scalability Benchmarks', () => {
 
     const start = performance.now()
 
-    const promises = Array.from({ length: workers }, (_, w) => {
-      return new Promise<void>(async (resolve) => {
-        for (let i = 0; i < opsPerWorker; i++) {
-          await engine.upsertNode(3001, `sc-p5-w${w}-${i}`, { props: { seq: nodeIdx++ } })
-        }
-        resolve()
-      })
-    })
+    const promises = Array.from({ length: workers }, async (_, w) => {
+      for (let i = 0; i < opsPerWorker; i++) {
+        await engine.upsertNode(3001, `sc-p5-w${w}-${i}`, { props: { seq: nodeIdx++ } })
+      }
+  })
 
     await Promise.all(promises)
 
@@ -356,14 +353,11 @@ describe('Scalability Benchmarks', () => {
 
     const start = performance.now()
 
-    const promises = Array.from({ length: workers }, (_, w) => {
-      return new Promise<void>(async (resolve) => {
-        for (let i = 0; i < opsPerWorker; i++) {
-          await engine.upsertNode(3002, `sc-p10-w${w}-${i}`, { props: { seq: nodeIdx++ } })
-        }
-        resolve()
-      })
-    })
+    const promises = Array.from({ length: workers }, async (_, w) => {
+      for (let i = 0; i < opsPerWorker; i++) {
+        await engine.upsertNode(3002, `sc-p10-w${w}-${i}`, { props: { seq: nodeIdx++ } })
+      }
+  })
 
     await Promise.all(promises)
 
@@ -385,14 +379,11 @@ describe('Scalability Benchmarks', () => {
 
     const start = performance.now()
 
-    const promises = Array.from({ length: workers }, (_, w) => {
-      return new Promise<void>(async (resolve) => {
-        for (let i = 0; i < opsPerWorker; i++) {
-          await engine.upsertNode(3003, `sc-p20-w${w}-${i}`, { props: { seq: nodeIdx++ } })
-        }
-        resolve()
-      })
-    })
+    const promises = Array.from({ length: workers }, async (_, w) => {
+      for (let i = 0; i < opsPerWorker; i++) {
+        await engine.upsertNode(3003, `sc-p20-w${w}-${i}`, { props: { seq: nodeIdx++ } })
+      }
+  })
 
     await Promise.all(promises)
 
@@ -447,14 +438,11 @@ describe('Scalability Benchmarks', () => {
 
     const start = performance.now()
 
-    const writePromises = Array.from({ length: writers }, (_, w) => {
-      return new Promise<void>(async (resolve) => {
-        for (let i = 0; i < opsPerWorker; i++) {
-          await engine.upsertNode(4000, `sc-mix5-w${w}-${i}`, { props: { seq: nodeIdx++ } })
-        }
-        resolve()
-      })
-    })
+    const writePromises = Array.from({ length: writers }, async (_, w) => {
+      for (let i = 0; i < opsPerWorker; i++) {
+        await engine.upsertNode(4000, `sc-mix5-w${w}-${i}`, { props: { seq: nodeIdx++ } })
+      }
+  })
 
     const readPromises = Array.from({ length: readers }, () => {
       return new Promise<void>((resolve) => {
@@ -486,14 +474,11 @@ describe('Scalability Benchmarks', () => {
 
     const start = performance.now()
 
-    const writePromises = Array.from({ length: writers }, (_, w) => {
-      return new Promise<void>(async (resolve) => {
-        for (let i = 0; i < opsPerWorker; i++) {
-          await engine.upsertNode(4001, `sc-mix10-w${w}-${i}`, { props: { seq: nodeIdx++ } })
-        }
-        resolve()
-      })
-    })
+    const writePromises = Array.from({ length: writers }, async (_, w) => {
+      for (let i = 0; i < opsPerWorker; i++) {
+        await engine.upsertNode(4001, `sc-mix10-w${w}-${i}`, { props: { seq: nodeIdx++ } })
+      }
+  })
 
     const readPromises = Array.from({ length: readers }, () => {
       return new Promise<void>((resolve) => {

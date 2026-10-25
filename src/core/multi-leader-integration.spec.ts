@@ -31,7 +31,8 @@ interface NodeProc {
 /** 按顺序启动子进程节点（确保 waitForPeerKeys 能发现所有已有 peer 的公钥） */
 function startNodes(nodeIds: string[], basePort: number, testDir: string, curveDir: string): Promise<NodeProc[]> {
   const nodes: NodeProc[] = []
-  return new Promise(async (resolve, reject) => {
+  return new Promise((resolve, reject) => {
+    void (async () => {
     let hadError = false
     for (let i = 0; i < nodeIds.length; i++) {
       const nodeId = nodeIds[i]
@@ -96,6 +97,7 @@ function startNodes(nodeIds: string[], basePort: number, testDir: string, curveD
       }
     }
     if (!hadError) resolve(nodes)
+    })().catch(reject)
   })
 }
 

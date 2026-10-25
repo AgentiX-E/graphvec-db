@@ -285,7 +285,7 @@ function _evalExprWithCrossRowCollect(
   // literal builders) with the list of inner values gathered across all rows.
   let expanded = expr
   let idx = 0
-  while (true) {
+  for (;;) {
     const m = /\bcollect\s*\(/i.exec(expanded.slice(idx))
     if (!m) break
     const collectStart = idx + m.index
