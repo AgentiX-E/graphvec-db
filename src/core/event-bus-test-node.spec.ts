@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import * as fs from 'fs'
 
 // Mock EventBus
 class MockEventBus {
@@ -94,10 +93,14 @@ describe('event-bus-test-node (logic patterns)', () => {
   })
 
   it('checks peer key file existence (new format)', async () => {
-    const existsSyncSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true)
+    // Load the CJS module so `vi.spyOn` can patch it — the ESM namespace
+    // returned by `import * as fs` is non-configurable and cannot be spied on.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fsCjs = require('fs')
+    const existsSyncSpy = vi.spyOn(fsCjs, 'existsSync').mockReturnValue(true)
 
     const peerKeyFile = '/tmp/curve/peer-1_5501.pub'
-    const keyFound = fs.existsSync(peerKeyFile)
+    const keyFound = fsCjs.existsSync(peerKeyFile)
 
     expect(keyFound).toBe(true)
     expect(existsSyncSpy).toHaveBeenCalledWith(expect.stringContaining('peer-1'))
@@ -105,15 +108,17 @@ describe('event-bus-test-node (logic patterns)', () => {
   })
 
   it('checks old format key file as fallback', async () => {
-    const existsSyncSpy = vi.spyOn(fs, 'existsSync')
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fsCjs = require('fs')
+    const existsSyncSpy = vi.spyOn(fsCjs, 'existsSync')
     existsSyncSpy.mockReturnValueOnce(false).mockReturnValueOnce(true)
 
     const newFormat = '/tmp/curve/node-1_5500.pub'
     const oldFormat = '/tmp/curve/node-1.pub'
 
     let keyFound = false
-    if (!fs.existsSync(newFormat)) {
-      if (fs.existsSync(oldFormat)) {
+    if (!fsCjs.existsSync(newFormat)) {
+      if (fsCjs.existsSync(oldFormat)) {
         keyFound = true
       }
     }

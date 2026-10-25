@@ -24,8 +24,9 @@ describe('time(string) resolves IANA timezone names to an offset', () => {
     expect(t('12:00:00[Europe/Paris]')).toBe('12:00:00+02:00[Europe/Paris]')
   })
 
-  it('resolves Australia/Sydney to its summer offset', () => {
-    expect(t('12:00:00[Australia/Sydney]')).toBe('12:00:00+11:00[Australia/Sydney]')
+  it('resolves Australia/Sydney to its reference-date offset (southern winter)', () => {
+    // 1984-07-01 is southern-hemisphere winter, so Sydney is on standard time.
+    expect(t('12:00:00[Australia/Sydney]')).toBe('12:00:00+10:00[Australia/Sydney]')
   })
 
   it('leaves an explicit numeric offset unchanged', () => {

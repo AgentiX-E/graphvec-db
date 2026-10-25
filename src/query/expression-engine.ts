@@ -1563,7 +1563,12 @@ const _builtinFunctions: Record<string, _BuiltinFn> = {
       const ianaTag = str.match(/\[([^\]]+)\]$/)
       if (ianaTag && !/[Z+-]/.test(str.slice(0, str.lastIndexOf('[')).replace(/^\d{1,2}(:\d{1,2}){0,2}(\.\d+)?/, ''))) {
         const bareTime = str.slice(0, str.lastIndexOf('['))
-        const resolved = _formatTimezone(_resolveNamedTimezone(ianaTag[1]))
+        // A bare IANA name carries no date, so DST resolution must be
+        // deterministic regardless of the wall clock: pin the reference date
+        // to 1984-07-01 (northern-hemisphere summer) as documented, instead of
+        // letting `_resolveNamedTimezone` fall back to `new Date()` (which made
+        // this test flaky across seasons).
+        const resolved = _formatTimezone(_resolveNamedTimezone(ianaTag[1], 1984, 7, 1))
         return _normalizeTimeStr(bareTime) + resolved
       }
       // strip IANA tag 但保留 offset（如 +01:00）
