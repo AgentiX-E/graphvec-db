@@ -95,7 +95,7 @@ interface WorkerToPoolMsg {
  * 然后顺时针分配到最近的 worker 节点。
  * 当 worker 数变化时，只有部分 peer 的分配会改变。
  */
-class ConsistentHash {
+export class ConsistentHash {
   private ringSize: number
   private ring: Array<{ hash: number; workerIndex: number }> = []
   private workerCount = 0

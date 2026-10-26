@@ -17,6 +17,15 @@ export default defineConfig({
         // when the benchmark suites are run explicitly and has no meaningful
         // functional coverage target. Compare `src/test-utils/**` above.
         'src/benchmark/**',
+        // Test and benchmark infrastructure that lives inside src/ but is not
+        // product functionality: the openCypher TCK cucumber harness, the
+        // child-process scripts that are spawned by distributed test suites,
+        // and ad-hoc integration/benchmark drivers. These are exercised by
+        // their dedicated runners, not by the functional coverage suite.
+        'src/query/cypher-tck/**',
+        'src/**/*-test-node.ts',
+        'src/**/*.bench.ts',
+        'src/core/event-bus.curvespec.ts',
       ],
       reporter: ['text', 'text-summary', 'json'],
       reportsDirectory: './coverage',
