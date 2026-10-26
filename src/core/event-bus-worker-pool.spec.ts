@@ -18,7 +18,11 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 
-vi.setConfig({ testTimeout: 30000 })
+// NOTE: do not call vi.setConfig({ testTimeout }) here. This spec runs only in
+// the slow (serial) suite via vitest.slow.config.ts, which already sets a
+// generous testTimeout: 300000. A local override of 30000 re-tightens that and
+// makes the high-concurrency test (8 workers + 20 peers) flake out on slow CI
+// runners with a "timed out in 30000ms" failure.
 
 describe('EventBusWorkerPool', () => {
   let pool: EventBusWorkerPool

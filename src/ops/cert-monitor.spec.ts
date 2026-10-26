@@ -28,8 +28,14 @@ function generateCert(daysValid: number, certDir: string): string {
     `openssl req -new -newkey rsa:2048 -nodes -keyout "${keyPath}" -out "${csrPath}" -subj "${subj}" 2>/dev/null`,
     { stdio: 'pipe' },
   )
+  // openssl's `-days` flag does not accept negative values on every version
+  // (some runners reject "-days -1" with a non-zero exit). For an
+  // already-expired certificate use "-days 0", which yields
+  // notBefore == notAfter == now at second precision; checkNow() therefore
+  // observes diffMs <= 0 regardless of sub-second clock offset.
+  const daysArg = daysValid < 0 ? 0 : daysValid
   execSync(
-    `openssl x509 -req -in "${csrPath}" -signkey "${keyPath}" -out "${certPath}" -days ${daysValid} 2>/dev/null`,
+    `openssl x509 -req -in "${csrPath}" -signkey "${keyPath}" -out "${certPath}" -days ${daysArg} 2>/dev/null`,
     { stdio: 'pipe' },
   )
 
