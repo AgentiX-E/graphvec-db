@@ -2,6 +2,7 @@
  * range-index.spec.ts — 范围索引测试
  */
 import { RangeIndex } from './range-index'
+import { isCoverageEnabled } from '../test-utils/coverage'
 
 describe('RangeIndex', () => {
   describe('add / exact', () => {
@@ -181,7 +182,7 @@ describe('RangeIndex', () => {
   })
 
   describe('performance O(log n)', () => {
-    test('should have O(log n) insertion performance', () => {
+    test.skipIf(isCoverageEnabled())('should have O(log n) insertion performance', () => {
       const idxSmall = new RangeIndex('x')
       const idxLarge = new RangeIndex('x')
       const nSmall = 10_000
@@ -212,7 +213,7 @@ describe('RangeIndex', () => {
       expect(ratio).toBeLessThan(5.0)
     })
 
-    test('should handle 100k sequential inserts efficiently', () => {
+    test.skipIf(isCoverageEnabled())('should handle 100k sequential inserts efficiently', () => {
       const idx = new RangeIndex('seq')
       const start = performance.now()
       for (let i = 0; i < 100_000; i++) idx.add(i, i)

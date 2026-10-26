@@ -12,6 +12,7 @@
 import { SegmentStreamWal, SegmentStreamWalAppendStream, SegmentStreamWalOptions, StreamMessage, FLAG_PENDING, FLAG_ACKED, FLAG_CONSUMED } from './segment-stream-wal'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
+import { isCoverageEnabled } from '../test-utils/coverage'
 
 const TEST_DIR = path.join('/tmp', `segment-stream-wal-test-${Date.now()}`)
 
@@ -499,7 +500,7 @@ describe('SegmentStreamWalAppendStream — fsync 策略与公开方法', () => {
       wal.drop()
     })
 
-    it('appendBatch is faster than individual append for bulk writes', () => {
+    it.skipIf(isCoverageEnabled())('appendBatch is faster than individual append for bulk writes', () => {
       const count = 500
 
       // Batch append
