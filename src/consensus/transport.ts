@@ -139,17 +139,33 @@ export class MockTransport implements Transport {
 
   onMessage(handler: (from: string, msg: RaftMessage) => void): void {
     this.handler = handler
+    // If start() was already called, refresh the registry entry so a handler
+    // registered after start still takes effect (instead of remaining an
+    // empty pendingResponses-only entry).
+    if (this._started) {
+      const entry = globalRegistry.get(this.nodeId)
+      if (entry) {
+        entry.onMessage = (from: string, msg: RaftMessage) => {
+          this.handler!(from, msg)
+        }
+      }
+    }
   }
 
   async start(): Promise<void> {
     if (this._started) return
     this._started = true
     const entry: NodeHandlers = {
-      onMessage: (from: string, msg: RaftMessage) => {
-        if (this.handler) {
-          this.handler(from, msg)
-        }
-      },
+      // Only expose an onMessage entry when a handler is actually registered.
+      // Exposing a no-op closure unconditionally made `_sendInternal` believe
+      // every started node could accept messages, so RPCs targeted at a
+      // handler-less node burned the full 5s response timeout instead of
+      // resolving the default response immediately.
+      onMessage: this.handler
+        ? (from: string, msg: RaftMessage) => {
+            this.handler!(from, msg)
+          }
+        : undefined,
       pendingResponses: [],
     }
     globalRegistry.set(this.nodeId, entry)

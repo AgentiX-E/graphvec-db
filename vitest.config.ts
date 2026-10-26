@@ -7,7 +7,17 @@ export default defineConfig({
       enabled: false,
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.spec.ts', 'src/test-utils/**', 'src/security/__mocks__/**', 'src/**/*.d.ts'],
+      exclude: [
+        'src/**/*.spec.ts',
+        'src/test-utils/**',
+        'src/security/__mocks__/**',
+        'src/**/*.d.ts',
+        // Benchmark harness code (runner/reporter/gate/ldbc-snb loaders) is
+        // test infrastructure, not product functionality. It is exercised only
+        // when the benchmark suites are run explicitly and has no meaningful
+        // functional coverage target. Compare `src/test-utils/**` above.
+        'src/benchmark/**',
+      ],
       reporter: ['text', 'text-summary', 'json'],
       reportsDirectory: './coverage',
     },
