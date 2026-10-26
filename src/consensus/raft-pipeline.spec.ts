@@ -124,11 +124,15 @@ describe('B-01 Raft Pipeline 复制', () => {
     }
 
     for (const n of nodes) await n.start()
-    await new Promise(r => setTimeout(r, 1500))
 
+    // Poll for a leader with a bounded deadline. A two-node cluster can split
+    // vote and needs several randomized election rounds to converge, so a fixed
+    // sleep is flaky on slow CI runners; polling keeps the test deterministic
+    // while still exercising a real leader election.
     let leader = nodes.find(n => n.role === 'leader')
-    if (!leader) {
-      await new Promise(r => setTimeout(r, 1000))
+    const deadline = Date.now() + 10000
+    while (!leader && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 50))
       leader = nodes.find(n => n.role === 'leader')
     }
     expect(leader).toBeDefined()

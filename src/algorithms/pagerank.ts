@@ -15,7 +15,44 @@
 
 import { NodeId } from '../types'
 import { Worker } from 'worker_threads'
-import path from 'path'
+
+/**
+ * Self-contained worker source for the multi-threaded PageRank update. It is
+ * inlined (and run via `new Worker(src, { eval: true })`) rather than loaded
+ * from pagerank-worker.ts so that worker_threads does not need to resolve a
+ * `.ts` entry. Node < 22 lacks native type-stripping, and registering ts-node
+ * in execArgv would add a ~1.4s transpile cost per worker per iteration — far
+ * too slow for the default 100-iteration budget under CI.
+ *
+ * Mirrors pagerank-worker.ts's computeSegment; keep the two in sync.
+ */
+const PAGERANK_WORKER_SOURCE = `
+const { parentPort } = require('worker_threads')
+if (parentPort) {
+  parentPort.on('message', (msg) => {
+    if (msg.type === 'compute') {
+      const { segment, rank, outgoing, outDegrees, n, dampingFactor, danglingRank } = msg
+      const teleport = (1 - dampingFactor) / n
+      const danglingContribution = dampingFactor * danglingRank / n
+      const newRank = {}
+      let diff = 0
+      for (const node of segment) {
+        let incomingSum = 0
+        const srcList = outgoing[node]
+        if (srcList) {
+          for (const src of srcList) {
+            incomingSum += (rank[src] || 0) / (outDegrees[src] || 1)
+          }
+        }
+        const score = teleport + dampingFactor * incomingSum + danglingContribution
+        newRank[node] = score
+        diff += Math.abs(score - (rank[node] || 0))
+      }
+      parentPort.postMessage({ type: 'result', rank: newRank, diff })
+    }
+  })
+}
+`
 
 export interface PageRankOptions {
   dampingFactor?: number
@@ -182,8 +219,6 @@ async function pagerankMultiThread(
     return obj
   }
 
-  const workerPath = path.join(__dirname, 'pagerank-worker.ts')
-
   for (let iter = 0; iter < maxIterations; iter++) {
     // 计算 dangling rank（在主线程做）
     let danglingRank = 0
@@ -200,12 +235,22 @@ async function pagerankMultiThread(
 
     const workerPromises = segments.map((segment) => {
       return new Promise<{ rank: Record<number, number>; diff: number }>((resolve, reject) => {
-        const worker = new Worker(workerPath, {
-          workerData: { segment, rank: rankObj, outgoing: incomingObj, outDegrees: outDegObj, n, dampingFactor, danglingRank },
+        // Inline the worker as a self-contained JS string (eval mode) instead
+        // of loading pagerank-worker.ts. Node < 22 has no native type-stripping
+        // for `.ts` worker entries, and registering ts-node in execArgv makes
+        // each worker pay a ~1.4s transpile cost per iteration; with 100
+        // iterations that would blow the CI timeout. A plain-JS worker keeps
+        // per-iteration spawn cost trivial and is version-independent.
+        const worker = new Worker(PAGERANK_WORKER_SOURCE, {
+          eval: true,
         })
 
         worker.on('message', (msg) => {
           if (msg.type === 'result') {
+            // Terminate once the segment is computed: the worker keeps a
+            // persistent parentPort 'message' listener, so without an explicit
+            // terminate it would stay alive and leak a thread per iteration.
+            void worker.terminate()
             resolve(msg as { rank: Record<number, number>; diff: number })
           }
         })

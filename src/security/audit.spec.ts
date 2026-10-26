@@ -246,9 +246,14 @@ describe('AuditLogger', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
-    it('creates logger with file destination without throwing', () => {
+    it('creates logger with file destination without throwing', async () => {
       const logPath = path.join(tmpDir, 'audit.log')
-      expect(() => new AuditLogger(undefined, logPath)).not.toThrow()
+      const logger = new AuditLogger(undefined, logPath)
+      expect(logger).toBeDefined()
+      // Explicitly close so the pino file destination (sonic-boom) is flushed
+      // and destroyed before the temp dir is removed; otherwise its deferred
+      // open raises an uncaught ENOENT on process exit.
+      await logger.close()
     })
   })
 

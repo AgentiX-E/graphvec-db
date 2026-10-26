@@ -241,19 +241,32 @@ export class AuditLogger {
   private ndjsonPath: string | null = null
   private _unsavedCount = 0
   private _flushTimer: ReturnType<typeof setInterval> | null = null
+  private _ownsLogger = false
+  private _logFd: number | null = null
   private readonly AUTO_FLUSH_THRESHOLD = 1000
   private readonly AUTO_FLUSH_INTERVAL_MS = 60000
 
   constructor(logger?: pino.Logger, logPath?: string, storagePath?: string) {
-    this.logger = logger || (logPath
-      ? pino(pino.destination(logPath))
-      : pino({
-          level: 'info',
-          transport: process.env.NODE_ENV !== 'production'
-            ? { target: 'pino-pretty', options: { colorize: true } }
-            : undefined,
-        })
-    )
+    if (logger) {
+      this.logger = logger
+    } else if (logPath) {
+      // Open the file synchronously up front and hand the descriptor to pino
+      // (sync mode). pino.destination(path) opens the file lazily: if the
+      // destination is never written before the temp dir is removed, sonic-boom
+      // still attempts a deferred open on process exit and throws ENOENT. A
+      // pre-opened fd (sync) guarantees the file exists immediately and never
+      // performs a deferred open, so close() can release it deterministically.
+      this._ownsLogger = true
+      this._logFd = fs.openSync(logPath, 'a')
+      this.logger = pino(pino.destination({ fd: this._logFd, sync: true }))
+    } else {
+      this.logger = pino({
+        level: 'info',
+        transport: process.env.NODE_ENV !== 'production'
+          ? { target: 'pino-pretty', options: { colorize: true } }
+          : undefined,
+      })
+    }
 
     // 初始化 NDJSON 持久化
     if (storagePath) {
@@ -381,6 +394,19 @@ export class AuditLogger {
       this._flushTimer = null
     }
     await this.flush()
+    // Release the self-owned pino destination. We hand pino a pre-opened fd
+    // (sync mode), so sonic-boom owns the descriptor; call destroy() to let it
+    // flush and close the fd deterministically. Do NOT fs.closeSync here — that
+    // would close the fd out from under sonic-boom and trigger a later
+    // "fd out of range" write on the now-closed descriptor.
+    if (this._ownsLogger) {
+      const dest = (this.logger as unknown as { destination?: { flushSync?: () => void; destroy?: () => void } }).destination
+      if (dest) {
+        try { dest.flushSync?.() } catch { /* ignore */ }
+        try { dest.destroy?.() } catch { /* ignore */ }
+      }
+      this._logFd = null
+    }
   }
 
   /** 已持久化的条目数 */

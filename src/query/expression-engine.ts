@@ -1011,6 +1011,22 @@ export function _tzLocalToUTC(localStr: string, ianaTz: string): Date | null {
       hour = parseInt(timeRe[1],10); minute = parseInt(timeRe[2],10);
       if (timeRe[3]) { second = parseFloat(timeRe[3]); nsFrac = Math.round((second - Math.floor(second)) * 1e9); second = Math.floor(second); }
     }
+
+    // Fixed numeric offset (e.g. "+02:00", "-05:30", or the bracket form
+    // "+02:00[UTC+02:00]"). Convert directly: local = UTC + offset, so
+    // UTC = local - offset. This path avoids Intl.DateTimeFormat, whose
+    // support for numeric-offset timeZone values only landed in newer ICU
+    // (Node 22+) and throws on Node 20.
+    const offsetMatch = /^([+-])(\d{2}):(\d{2})(?::(\d{2}))?/.exec(ianaTz);
+    if (offsetMatch) {
+      const sign = offsetMatch[1] === '-' ? -1 : 1;
+      const offMinutes = parseInt(offsetMatch[2], 10) * 60 + parseInt(offsetMatch[3], 10) +
+        (offsetMatch[4] ? parseInt(offsetMatch[4], 10) / 60 : 0);
+      const utcMs = Date.UTC(year, month - 1, day, hour, minute - sign * offMinutes, second, Math.round(nsFrac / 1e6));
+      const d = new Date(utcMs);
+      return isNaN(d.getTime()) ? null : d;
+    }
+
     const targetLocal = { year, month, day, hour, minute };
     for (let hAdj = -14; hAdj <= 14; hAdj++) {
       const utcH = ((hour - hAdj) % 24 + 24) % 24;

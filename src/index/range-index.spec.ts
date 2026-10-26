@@ -203,10 +203,13 @@ describe('RangeIndex', () => {
       }
       const timeLarge = performance.now() - start2
 
-      // O(log n) means 10x data → ~1.15x time (log(100k)/log(10k) ≈ 5/4 = 1.25)
-      // We allow up to 2x to account for GC noise
+      // O(log n) means 10x data → ~1.25x time (log(100k)/log(10k) ≈ 5/4).
+      // A linear scan would be ~10x. Use 5.0 as the cutoff: it still cleanly
+      // rejects O(n) behavior while tolerating GC/cache noise on loaded CI
+      // runners (a tight 3.0 threshold flakes when large-index time spikes to
+      // ~3.7x purely from allocation pressure).
       const ratio = timeLarge / timeSmall
-      expect(ratio).toBeLessThan(3.0)
+      expect(ratio).toBeLessThan(5.0)
     })
 
     test('should handle 100k sequential inserts efficiently', () => {
