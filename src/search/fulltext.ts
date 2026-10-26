@@ -187,6 +187,26 @@ export class SynonymMap {
       const normalizedTerm = term.toLowerCase()
       const normalizedSyns = syns.map(s => s.toLowerCase())
 
+      // Remove stale reverse edges from a previous definition of the same term
+      // before writing the new forward mapping. Otherwise redefining a term
+      // (e.g. computer -> [pc] then computer -> [laptop]) would leave the old
+      // synonym (pc) still pointing back at computer, violating the bidirection
+      // contract.
+      const previousSyns = this._map.get(normalizedTerm)
+      if (previousSyns) {
+        for (const oldSin of previousSyns) {
+          const list = this._reverseMap.get(oldSin)
+          if (list) {
+            const filtered = list.filter((t) => t !== normalizedTerm)
+            if (filtered.length === 0) {
+              this._reverseMap.delete(oldSin)
+            } else {
+              this._reverseMap.set(oldSin, filtered)
+            }
+          }
+        }
+      }
+
       this._map.set(normalizedTerm, normalizedSyns)
 
       // 建立反向映射
@@ -194,7 +214,10 @@ export class SynonymMap {
         if (!this._reverseMap.has(syn)) {
           this._reverseMap.set(syn, [])
         }
-        this._reverseMap.get(syn)!.push(normalizedTerm)
+        const reverseList = this._reverseMap.get(syn)!
+        if (!reverseList.includes(normalizedTerm)) {
+          reverseList.push(normalizedTerm)
+        }
       }
     }
   }
