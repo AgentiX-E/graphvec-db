@@ -138,9 +138,7 @@ export class Rebalancer {
       hotSpotThreshold: options?.hotSpotThreshold ?? 1000,
       hotSpotWindowMs: options?.hotSpotWindowMs ?? 60000,
     }
-    this._reshardStateFile = options?.autoSplitEnabled !== undefined
-      ? RESHARD_STATE_FILE
-      : RESHARD_STATE_FILE
+    this._reshardStateFile = RESHARD_STATE_FILE
     this._reshardState = this._loadReshardState()
     this._hotShardDetector = new HotShardDetector({
       minQpsThreshold: options?.hotShardMinQps ?? 100,
@@ -1381,7 +1379,11 @@ export class Rebalancer {
       }
 
       const elapsedSec = elapsedMs / 1000
-      const opsPerSec = elapsedSec > 0 ? record.count / elapsedSec : Infinity
+      // When ops fall in the exact same millisecond the rate is undefined
+      // (count/0 → Infinity). Treat a same-ms burst as "hot" only when its
+      // absolute count already exceeds the threshold, so that a single
+      // just-recorded operation is never miscounted as a hot range.
+      const opsPerSec = elapsedSec > 0 ? record.count / elapsedSec : record.count
 
       if (opsPerSec >= this.options.hotSpotThreshold) {
         hotRanges.push({ rangeId, opsPerSec })
