@@ -1,4 +1,12 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { GraphConfig } from './graph-config'
+
+const ORIG_ENV = { ...process.env }
+
+function clearConfigEnv(): void {
+  delete process.env.DATA_DIR
+  delete process.env.VECTOR_DIMENSION
+}
 
 describe('GraphConfig', () => {
   test('should create with default config', () => {
@@ -85,4 +93,85 @@ describe('GraphConfig — expansion', () => {
       expect(cfg.cacheSize).toBe(iter * 100)
     })
   }
+})
+
+// ---- GraphConfig environment variable validation ----
+
+describe('GraphConfig environment validation', () => {
+  beforeEach(() => {
+    clearConfigEnv()
+  })
+
+  afterEach(() => {
+    process.env = { ...ORIG_ENV }
+  })
+
+  it('applies defaults when no env vars are set', () => {
+    const cfg = new GraphConfig()
+    const c = cfg.getConfig()
+    expect(c.path).toBe('./data/graph')
+    expect(c.denseVector).toEqual({ dimension: 384 })
+  })
+
+  it('parses a valid DATA_DIR', () => {
+    process.env.DATA_DIR = '/tmp/db'
+    const cfg = new GraphConfig()
+    expect(cfg.getConfig().path).toBe('/tmp/db/graph')
+  })
+
+  it('parses a valid VECTOR_DIMENSION', () => {
+    process.env.VECTOR_DIMENSION = '512'
+    const cfg = new GraphConfig()
+    expect(cfg.getConfig().denseVector).toEqual({ dimension: 512 })
+  })
+
+  it('treats an empty DATA_DIR as unset (falls back to default)', () => {
+    process.env.DATA_DIR = ''
+    const cfg = new GraphConfig()
+    expect(cfg.getConfig().path).toBe('./data/graph')
+  })
+
+  it('rejects a whitespace-only DATA_DIR', () => {
+    process.env.DATA_DIR = '   '
+    expect(() => new GraphConfig()).toThrow(/DATA_DIR must be a non-empty string/)
+  })
+
+  it('rejects a non-numeric VECTOR_DIMENSION', () => {
+    process.env.VECTOR_DIMENSION = 'abc'
+    expect(() => new GraphConfig()).toThrow(/VECTOR_DIMENSION must be a valid integer/)
+  })
+
+  it('rejects a zero VECTOR_DIMENSION', () => {
+    process.env.VECTOR_DIMENSION = '0'
+    expect(() => new GraphConfig()).toThrow(/VECTOR_DIMENSION must be a positive integer/)
+  })
+
+  it('rejects a negative VECTOR_DIMENSION', () => {
+    process.env.VECTOR_DIMENSION = '-4'
+    expect(() => new GraphConfig()).toThrow(/VECTOR_DIMENSION must be a positive integer/)
+  })
+
+  it('rejects a fractional VECTOR_DIMENSION (3.7, not silently truncated)', () => {
+    process.env.VECTOR_DIMENSION = '3.7'
+    expect(() => new GraphConfig()).toThrow(/VECTOR_DIMENSION/)
+  })
+
+  it('rejects a VECTOR_DIMENSION with trailing garbage (12abc)', () => {
+    process.env.VECTOR_DIMENSION = '12abc'
+    expect(() => new GraphConfig()).toThrow(/VECTOR_DIMENSION/)
+  })
+
+  it('merges overrides over defaults and env', () => {
+    process.env.VECTOR_DIMENSION = '256'
+    const cfg = new GraphConfig({ denseVector: { dimension: 1024 } })
+    // Explicit overrides win over env.
+    expect(cfg.getConfig().denseVector).toEqual({ dimension: 1024 })
+  })
+
+  it('getConfig returns a defensive copy', () => {
+    const cfg = new GraphConfig()
+    const c1 = cfg.getConfig()
+    c1.path = '/hacked'
+    expect(cfg.getConfig().path).toBe('./data/graph')
+  })
 })

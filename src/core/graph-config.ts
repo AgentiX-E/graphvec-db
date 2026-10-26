@@ -17,8 +17,17 @@ const ENV_VALIDATORS: Record<string, {
   },
   VECTOR_DIMENSION: {
     parse: (raw: string) => {
-      const n = parseInt(raw, 10)
-      if (isNaN(n)) throw new Error(`VECTOR_DIMENSION must be a valid integer, got: "${raw}"`)
+      const trimmed = raw.trim()
+      // Reject fractional or garbage input (e.g. "3.7", "12abc"). `Number` then
+      // `Number.isInteger` enforces a strict integer rather than parseInt's
+      // silent truncation of trailing non-numeric characters.
+      if (!/^[+-]?\d+$/.test(trimmed)) {
+        throw new Error(`VECTOR_DIMENSION must be a valid integer, got: "${raw}"`)
+      }
+      const n = Number(trimmed)
+      if (!Number.isInteger(n)) {
+        throw new Error(`VECTOR_DIMENSION must be a valid integer, got: "${raw}"`)
+      }
       return n
     },
     validate: (value: unknown) => {
