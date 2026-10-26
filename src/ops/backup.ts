@@ -674,16 +674,55 @@ export function parseBackupTimestamp(backupPath: string): number | null {
   // 格式 2: ISO 8601 基本格式 YYYYMMDDTHHmmssZ
   const mBasic = tsStr.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/)
   if (mBasic) {
-    const d = new Date(Date.UTC(+mBasic[1], +mBasic[2] - 1, +mBasic[3], +mBasic[4], +mBasic[5], +mBasic[6]))
-    return isNaN(d.getTime()) ? null : d.getTime()
+    const year = +mBasic[1]
+    const month = +mBasic[2]
+    const day = +mBasic[3]
+    const hour = +mBasic[4]
+    const minute = +mBasic[5]
+    const second = +mBasic[6]
+
+    // Reject out-of-range fields rather than relying on Date.UTC's lenient
+    // rollover (e.g. month 13 → January of the following year), which would
+    // silently yield a bogus timestamp for a corrupted backup filename.
+    if (month < 1 || month > 12) return null
+    if (day < 1 || day > 31) return null
+    if (hour < 0 || hour > 23) return null
+    if (minute < 0 || minute > 59) return null
+    if (second < 0 || second > 59) return null
+
+    const d = new Date(Date.UTC(year, month - 1, day, hour, minute, second))
+    // Round-trip check: reject non-existent dates like Feb 30 that Date.UTC
+    // otherwise normalises into a real (but wrong) calendar day.
+    if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) {
+      return null
+    }
+    return d.getTime()
   }
 
   // 格式 1: 将 YYYY-MM-DDTHH-mm-ss-SSSZ 还原为 ISO 8601
-  const mFmt = tsStr.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/)
+  const mFmt = tsStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/)
   if (mFmt) {
-    const iso = `${mFmt[1]}T${mFmt[2]}:${mFmt[3]}:${mFmt[4]}.${mFmt[5]}Z`
-    const d = new Date(iso)
-    return isNaN(d.getTime()) ? null : d.getTime()
+    const year = +mFmt[1]
+    const month = +mFmt[2]
+    const day = +mFmt[3]
+    const hour = +mFmt[4]
+    const minute = +mFmt[5]
+    const second = +mFmt[6]
+    const millisecond = +mFmt[7]
+
+    // Reject out-of-range and non-existent calendar dates (e.g. Feb 30) that
+    // the lenient Date parser would otherwise normalise into a wrong day.
+    if (month < 1 || month > 12) return null
+    if (day < 1 || day > 31) return null
+    if (hour < 0 || hour > 23) return null
+    if (minute < 0 || minute > 59) return null
+    if (second < 0 || second > 59) return null
+
+    const d = new Date(Date.UTC(year, month - 1, day, hour, minute, second, millisecond))
+    if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) {
+      return null
+    }
+    return d.getTime()
   }
 
   return null
