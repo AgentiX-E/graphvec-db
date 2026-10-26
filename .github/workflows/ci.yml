@@ -75,7 +75,12 @@ jobs:
   test-slow:
     name: Test Slow (ZMQ)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The slow suite runs 12 ZMQ-heavy specs serially (single worker). A full
+    # local run measures ~19 minutes of pure test time; npm ci and runner
+    # provisioning add another ~2-3 minutes, so 20 minutes is right at the
+    # edge and causes spurious cancellations on shared runners. 35 minutes
+    # leaves a healthy safety margin.
+    timeout-minutes: 35
 
     steps:
       - name: Checkout repository
