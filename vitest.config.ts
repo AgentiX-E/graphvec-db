@@ -69,13 +69,14 @@ export default defineConfig({
     testTimeout: 1200000,
     hookTimeout: 1200000,
     globals: true,
-    pool: 'vmThreads',
-    singleThread: true,
-    deps: {
-      server: {
-        inline: [/lmdb/, /@lmdb/],
-      },
-    },
+    // Isolation via child processes. The `forks` pool runs each test file in
+    // its own child process, which isolates native modules (overgraph, lmdb)
+    // whose FinalizationRegistry cleanup hooks abort the process with
+    // `illegal access` when run under a worker-thread pool (vmThreads). See
+    // vitest.fast.config.ts for the original precedent (onnxruntime-node's
+    // InitOrtOnce cleanup hook).
+    pool: 'forks',
+    singleFork: false,
     server: {
       deps: {
         exclude: ['raft-logic'],

@@ -231,9 +231,12 @@ describe('2. Leader 选举', () => {
   it('requestVote 处理：term 较小时拒绝投票', async () => {
     const ref = await createNode('n1', ['n2'], tmp)
     await ref.node.start()
-    // @ts-expect-error — 访问Private method
+    // A stale RequestVote (term < currentTerm) must be rejected per Raft §5.1.
+    // After start() the node is a follower with currentTerm === 0, so a
+    // request carrying term -1 is genuinely "smaller" and must be refused.
+    // @ts-expect-error — access private method
     const resp = await ref.node._handleRequestVote('n2', {
-      term: 0,
+      term: -1,
       candidateId: 'n2',
       lastLogIndex: 0,
       lastLogTerm: 0,
@@ -243,41 +246,46 @@ describe('2. Leader 选举', () => {
   })
 
   it('requestVote 处理：日志不新时拒绝投票', async () => {
-    // 先给 n1 写入日志
-    const soloCfg = defaultCfg('n1', [], tmp)
-    const solo = new RaftCore(soloCfg, new MockTransport('n1'))
-    await solo.start()
-    await solo.waitForLeader(1000).catch(() => {})
-    await solo.propose(new Uint8Array([42]))
-    const termBefore = solo.lastLogTerm
-    await solo.stop()
+    const ref = await createNode('n1', ['n2'], tmp)
+    await ref.node.start()
 
-    const ref = new RaftCore(defaultCfg('n1', ['n2'], tmp), new MockTransport('n1'))
-    await ref.start()
+    // Seed the node's log with one entry at term 2 so that `myLastTerm` is 2.
+    // Group commit is disabled here because its flush relies on a real
+    // setTimeout, which would never fire under vi.useFakeTimers(); disabling
+    // it makes append resolve synchronously (via fs.writeSync).
+    // @ts-expect-error — access private wal
+    ref.node.wal.setGroupCommit(false)
+    // @ts-expect-error — access private wal
+    await ref.node.wal.append(2, new Uint8Array([1, 2, 3]))
 
-    if (termBefore > 0) {
-      // @ts-expect-error — 访问Private method
-      const resp = await ref._handleRequestVote('n2', {
-        term: 10,
-        candidateId: 'n2',
-        lastLogIndex: 0,
-        lastLogTerm: 0,
-      })
-      expect(resp.voteGranted).toBe(false)
-    }
+    // A RequestVote whose log is stale (lastLogTerm 1 < our 2) must be refused
+    // per Raft §5.4.
+    // @ts-expect-error — access private method
+    const resp = await ref.node._handleRequestVote('n2', {
+      term: 3,
+      candidateId: 'n2',
+      lastLogIndex: 5,
+      lastLogTerm: 1,
+    })
+    expect(resp.voteGranted).toBe(false)
 
-    await ref.stop()
+    await ref.node.stop()
   })
 
   it('requestVote 处理：已投票给其他人时拒绝', async () => {
     const ref = await createNode('n1', ['n2', 'n3'], tmp)
     await ref.node.start()
 
-    // 先模拟 votedFor 被设置
-    // @ts-expect-error — 访问私有属性
+    // Advance to term 1 and record that this node already voted for n2.
+    // The RequestVote below must use the SAME term (1) so that it does not
+    // trigger _stepDown (which would reset _votedFor); Raft §5.2 rejects a
+    // vote when _votedFor is set to a different candidate in the current term.
+    // @ts-expect-error — access private field
+    ref.node._currentTerm = 1
+    // @ts-expect-error — access private field
     ref.node._votedFor = 'n2'
 
-    // @ts-expect-error — 访问Private method
+    // @ts-expect-error — access private method
     const resp = await ref.node._handleRequestVote('n3', {
       term: 1,
       candidateId: 'n3',
@@ -789,6 +797,12 @@ describe('8. Error路径', () => {
   it('日志冲突：冲突的日志条目被截断覆盖', async () => {
     const ref = await createNode('n1', ['n2'], tmp)
     await ref.node.start()
+
+    // Disable group commit so append (via _handleAppendEntries below) resolves
+    // synchronously; group commit flushes through a real setTimeout which would
+    // never fire under vi.useFakeTimers().
+    // @ts-expect-error — access private wal
+    ref.node.wal.setGroupCommit(false)
 
     // 写入第一条日志 (index=1, term=1)
     // @ts-expect-error — 访问Private method

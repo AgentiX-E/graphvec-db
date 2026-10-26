@@ -92,14 +92,27 @@ describe('OverGraphStorage — 分块快照', () => {
   })
 
   test('P0-4.3: 100K+ node graph → chunked export works without OOM', async () => {
-    // 大量节点验证不 OOM
+    // Build a large graph via the batch APIs so the test stays bounded. The
+    // single-node `upsertNode` loop previously issued 50K individual native
+    // calls, which took >10 minutes under both the vmThreads and forks pools
+    // and threatened the 20-minute CI timeout. Batch insertion preserves the
+    // original intent (verify a large graph can be chunk-exported without OOM)
+    // while exercising the same code path used by real bulk ingestion.
     const BATCH = 50000
-    for (let i = 0; i < BATCH; i++) {
-      storage.upsertNode(100 + i, `oom-n-${i}`, { props: { v: i } })
-    }
-    for (let i = 0; i < BATCH; i += 1000) {
-      storage.upsertEdge(100 + i, 100 + ((i + 1) % BATCH), 1)
-    }
+    storage.batchUpsertNodes(
+      Array.from({ length: BATCH }, (_, i) => ({
+        typeId: 100 + i,
+        name: `oom-n-${i}`,
+        key: `oom-n-${i}`,
+        props: { v: i },
+      })),
+    )
+    storage.batchUpsertEdges(
+      Array.from({ length: BATCH / 1000 }, (_, j) => {
+        const i = j * 1000
+        return { src: 100 + i, dst: 100 + ((i + 1) % BATCH), typeId: 1 }
+      }),
+    )
 
     const before = process.memoryUsage().heapUsed
     const chunks: Buffer[] = []
