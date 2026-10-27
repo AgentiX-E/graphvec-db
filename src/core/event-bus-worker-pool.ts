@@ -267,10 +267,21 @@ export class EventBusWorkerPool {
     if (!this.running) return
     this.running = false
 
-    const stopPromises = this.workers.map(async (worker, idx) => {
-      if (!worker.process || !worker.ready) return
+    const stopPromises = this.workers.map(async (worker) => {
+      // Kill every forked child that was created, even if it never reported
+      // ready. Previously `!worker.ready` skipped the kill, leaking a half-
+      // initialised worker whose open stdio pipes kept the event loop alive
+      // and prevented vitest (and the CI Test Slow job) from ever exiting.
+      if (!worker.process) return
       return new Promise<void>((resolve) => {
         const proc = worker.process!
+        // If the worker never finished its two-phase handshake, send SIGKILL
+        // directly: a graceful shutdown message has nobody to answer it.
+        if (!worker.ready) {
+          try { proc.kill('SIGKILL') } catch { /* ignore */ }
+          resolve()
+          return
+        }
         // 发送 shutdown
         try {
           proc.send({ type: 'shutdown' } as any)
