@@ -561,6 +561,11 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
         'npx',
         ['tsx', path.join(__dirname, 'event-bus-test-node.ts')],
         {
+          // Run as its own process group so the cleanup can kill npx *and* its
+          // tsx/node grandchildren together (process.kill(-pid)); killing only
+          // npx leaks the grandchildren whose open stdio pipes keep the event
+          // loop alive and prevent vitest/CI from ever exiting.
+          detached: true,
           env: {
             PATH: process.env.PATH || '/usr/bin',
             NODE_PATH: path.join(__dirname, '..', '..', 'node_modules'),
@@ -600,11 +605,13 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
         for (const line of linesB) {
           try {
             const msg = JSON.parse(line)
-            if (msg.type === 'ready') resolve()
+            if (msg.type === 'ready') { clearInterval(check); resolve() }
           } catch { /* skip */ }
         }
       }, 50)
-      setTimeout(() => { clearInterval(check); resolve() }, 20000)
+      check.unref?.()
+      const t = setTimeout(() => { clearInterval(check); resolve() }, 20000)
+      t.unref?.()
     })
 
     await gotBReady
@@ -630,11 +637,13 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
         for (const line of linesA) {
           try {
             const msg = JSON.parse(line)
-            if (msg.type === 'done') resolve()
+            if (msg.type === 'done') { clearInterval(check); resolve() }
           } catch { /* skip */ }
         }
       }, 50)
-      setTimeout(() => { clearInterval(check); resolve() }, 30000)
+      check.unref?.()
+      const t = setTimeout(() => { clearInterval(check); resolve() }, 30000)
+      t.unref?.()
     })
 
     // 通知接收者预期消息数
@@ -653,13 +662,15 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
           try {
             const msg = JSON.parse(line)
             if (msg.type === 'result') {
-              resolve(msg)
               clearInterval(check)
+              resolve(msg)
             }
           } catch { /* skip */ }
         }
       }, 50)
-      setTimeout(() => { clearInterval(check); resolve({ received: 0 }) }, 15000)
+      check.unref?.()
+      const t = setTimeout(() => { clearInterval(check); resolve({ received: 0 }) }, 15000)
+      t.unref?.()
     })
 
     procB.stdin!.write(JSON.stringify({ type: 'getResult' }) + '\n')
@@ -675,9 +686,13 @@ describe('EventBus 边际场景 (real ZMQ)', () => {
       console.log(`  🔄 吞吐量: ${throughput} msg/s (${stressCount}条/${sendDone.elapsedMs}ms)`)
     }
 
-    // 清理子进程
-    procA.kill()
-    procB.kill()
+    // 清理子进程（连同 tsx/node 孙进程一起杀，见 spawnTestNode 的 detached 说明）
+    for (const p of [procA, procB]) {
+      try { p.kill('SIGTERM') } catch { /* ignore */ }
+      if (p.pid) {
+        try { process.kill(-p.pid, 'SIGTERM') } catch { /* ignore */ }
+      }
+    }
     await new Promise(r => setTimeout(r, 500))
   })
 

@@ -38,6 +38,17 @@ import { EventBusWorkerPool, type PeerConfig } from './event-bus-worker-pool'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const zmq = require('zeromq')
 
+// When the global ZMQ context is "blocky" (the default), destroying it blocks
+// until every queued-but-undelivered message flushes. A dealer whose peer has
+// vanished leaves such messages behind, so the process prints "Waiting for
+// queued ZeroMQ messages to be delivered" and never exits — hanging vitest and
+// the CI Test Slow job long after the tests pass. Setting blocky=false gives
+// every new socket linger=0 so close() drops pending messages immediately.
+// Guarded so the zeromq test mock (which has no `context`) is unaffected.
+if (zmq.context && typeof zmq.context === 'object') {
+  zmq.context.blocky = false
+}
+
 /**
  * ZMQ socket with CURVE properties.
  * The zeromq module augments Socket with curve properties via declaration merging.
@@ -47,6 +58,9 @@ interface ZmqCurveSocket {
   curveSecretKey: string | null
   curvePublicKey: string
   curveServerKey: string | null
+  // ZMQ_RCVTIMEO... actually ZMQ_LINGER: how long close() waits for queued
+  // messages to flush. 0 = drop immediately (never blocks exit).
+  linger: number
   close(): void
   bind(address: string): Promise<void>
   unbind(address: string): Promise<void>
@@ -494,6 +508,12 @@ export class EventBus {
       try {
         await this.routerSocket.unbind(this.config.publishAddress!)
       } catch { /* address may already be unbound */ }
+      // linger=0 drops any queued-but-undelivered messages immediately instead
+      // of blocking close() until they flush. Without this, a socket with a
+      // pending message (e.g. a dealer whose peer vanished) blocks the exit and
+      // prints "Waiting for queued ZeroMQ messages to be delivered", which keeps
+      // the Node event loop alive and hangs vitest / the CI Test Slow job.
+      this.routerSocket.linger = 0
       this.routerSocket.close()
       this.routerSocket = null
     }
@@ -504,6 +524,7 @@ export class EventBus {
           dealer.disconnect(addr)
         } catch { /* ignore disconnect error */ }
       }
+      dealer.linger = 0
       dealer.close()
     }
     this.dealerSockets.clear()
