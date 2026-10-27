@@ -733,9 +733,18 @@ describe('7. MockTransport 集成', () => {
     ]
 
     for (const n of nodes) await n.start()
-    await new Promise(r => setTimeout(r, 3000))
 
-    const leader = nodes.find(n => n.role === 'leader')
+    // Poll for a leader instead of a fixed 3s sleep. Raft election uses a
+    // randomized timeout and split votes can transiently delay convergence, so
+    // under CI load (many forks competing for CPU) a fixed sleep is flaky.
+    // Polling gives the election up to 10s to converge while still surfacing a
+    // genuine electability failure if no node ever becomes leader.
+    const deadline = Date.now() + 10000
+    let leader = nodes.find(n => n.role === 'leader')
+    while (!leader && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 100))
+      leader = nodes.find(n => n.role === 'leader')
+    }
     expect(leader).toBeDefined()
 
     if (leader) {
