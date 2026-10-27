@@ -879,3 +879,71 @@ describe('8. Error路径', () => {
     cleanup(tmp2)
   })
 })
+
+describe('9. Follower stale read (canServeStaleRead)', () => {
+  const tmp = makeTmpDir()
+
+  function makeFollower(commitIndex: number): RaftCore {
+    const node = new RaftCore(defaultCfg('f1', ['leader'], tmp))
+    // Set the private state directly; canServeStaleRead is a pure decision
+    // over (role, commitIndex) and does not require a started node.
+    ;(node as any)._role = 'follower'
+    ;(node as any)._commitIndex = commitIndex
+    return node
+  }
+
+  afterEach(() => vi.useRealTimers())
+
+  it('always serves reads when the node is leader', () => {
+    const node = new RaftCore(defaultCfg('l1', [], tmp))
+    ;(node as any)._role = 'leader'
+    ;(node as any)._commitIndex = 0
+    expect(node.canServeStaleRead(100)).toBe(true)
+  })
+
+  it('never serves reads when the node is a candidate', () => {
+    const node = new RaftCore(defaultCfg('c1', ['leader'], tmp))
+    ;(node as any)._role = 'candidate'
+    ;(node as any)._commitIndex = 100
+    expect(node.canServeStaleRead(100)).toBe(false)
+  })
+
+  it('serves reads when the follower is fully caught up', () => {
+    const node = makeFollower(10)
+    expect(node.canServeStaleRead(10)).toBe(true)
+  })
+
+  it('serves reads when the follower is within the default lag threshold', () => {
+    const node = makeFollower(8) // leader=10, threshold=3 → 8 >= 7
+    expect(node.canServeStaleRead(10)).toBe(true)
+  })
+
+  it('blocks reads when the follower lags beyond the threshold', () => {
+    const node = makeFollower(6) // leader=10, threshold=3 → 6 < 7
+    expect(node.canServeStaleRead(10)).toBe(false)
+  })
+
+  it('serves reads exactly at the lag boundary (>=)', () => {
+    const node = makeFollower(7) // leader=10, threshold=3 → 7 >= 7
+    expect(node.canServeStaleRead(10)).toBe(true)
+  })
+
+  it('requires exact sync when lagSafeThreshold is 0', () => {
+    const synced = makeFollower(10)
+    expect(synced.canServeStaleRead(10, 0)).toBe(true)
+
+    const lagging = makeFollower(9)
+    expect(lagging.canServeStaleRead(10, 0)).toBe(false)
+  })
+
+  it('honours a custom lagSafeThreshold', () => {
+    const node = makeFollower(4) // leader=10, threshold=6 → 4 >= 4
+    expect(node.canServeStaleRead(10, 6)).toBe(true)
+    expect(node.canServeStaleRead(10, 5)).toBe(false) // 4 < 5
+  })
+
+  it('treats a follower ahead of the leader as readable', () => {
+    const node = makeFollower(12) // follower commitIndex > leader commitIndex
+    expect(node.canServeStaleRead(10)).toBe(true)
+  })
+})
