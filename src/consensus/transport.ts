@@ -146,7 +146,11 @@ export class MockTransport implements Transport {
       const entry = globalRegistry.get(this.nodeId)
       if (entry) {
         entry.onMessage = (from: string, msg: RaftMessage) => {
-          this.handler!(from, msg)
+          // Optional call: this.handler becomes null on stop(), and a queued
+          // delivery (via setImmediate) can still fire afterwards. The previous
+          // `this.handler!(...)` non-null assertion is compile-time only and
+          // crashed with "this.handler is not a function".
+          this.handler?.(from, msg)
         }
       }
     }
@@ -163,7 +167,7 @@ export class MockTransport implements Transport {
       // resolving the default response immediately.
       onMessage: this.handler
         ? (from: string, msg: RaftMessage) => {
-            this.handler!(from, msg)
+            this.handler?.(from, msg)
           }
         : undefined,
       pendingResponses: [],
