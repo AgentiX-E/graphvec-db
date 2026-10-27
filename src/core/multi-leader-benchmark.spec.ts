@@ -29,7 +29,16 @@ describe('端到端多进程压测', () => {
   }, 30000)
 
   afterEach(() => {
-    for (const n of e2eNodes) { try { n.proc.kill('SIGTERM') } catch { /* ignore */ } }
+    for (const n of e2eNodes) {
+      // Kill the whole process group: spawn('npx', ['tsx', ...]) creates
+      // npx -> tsx -> node, and killing only npx leaks the tsx/node
+      // grandchildren as orphans whose stdio pipes keep the event loop alive,
+      // so vitest never exits and the CI job hangs until the workflow timeout.
+      try { n.proc.kill('SIGTERM') } catch { /* ignore */ }
+      if (n.proc.pid) {
+        try { process.kill(-n.proc.pid, 'SIGTERM') } catch { /* ignore */ }
+      }
+    }
     e2eNodes = []
   }, 30000)
 
@@ -49,6 +58,10 @@ describe('端到端多进程压测', () => {
           console.log(`  ⏳ spawnNodes: ${readyCount}/${nodeIds.length} ready after ${Math.round(performance.now() / 1000)}s`)
         }
       }, 60000)
+      // This is a diagnostic timer only: it must not keep the Node event loop
+      // alive once the suite has finished, otherwise vitest never exits and the
+      // CI job hangs until the workflow timeout fires.
+      progress.unref?.()
 
       for (let i = 0; i < nodeIds.length; i++) {
         const nodeId = nodeIds[i]
@@ -57,6 +70,9 @@ describe('端到端多进程压测', () => {
         fs.mkdirSync(dataDir, { recursive: true })
 
         const proc = spawn('npx', ['tsx', path.join(__dirname, 'multi-leader-test-node.ts')], {
+          // Run as its own process group so afterEach can kill npx *and* its
+          // tsx/node grandchildren together (process.kill(-pid)).
+          detached: true,
           env: {
             ...process.env,
             ML_NODE_ID: nodeId,
@@ -81,6 +97,7 @@ describe('端到端多进程压测', () => {
           }
           if (readyCount === nodeIds.length) {
             clearInterval(progress)
+            clearTimeout(readyTimeout)
             resolve(nodes)
           }
         })
@@ -95,11 +112,13 @@ describe('端到端多进程压测', () => {
 
       // 300s 超时 — 5 节点 ZMQ CURVE 握手在 load 较高时较慢
       // 这个超时晚于 vitest testTimeout (360s)，通过进展日志定位慢在哪
-      setTimeout(() => {
+      const readyTimeout = setTimeout(() => {
         clearInterval(progress)
         const stderr = stderrBuf.join('\n').slice(0, 1000)
         reject(new Error(`timeout: ${readyCount}/${nodeIds.length} ready\nstderr:\n${stderr}`))
       }, 300000)
+      // Diagnostic timeout only: unref so it never blocks process exit.
+      readyTimeout.unref?.()
     })
   }
 
