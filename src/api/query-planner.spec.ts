@@ -803,31 +803,25 @@ describe('Query Plan Cache', () => {
   })
 
   // ──────────────────────────────────────────
-  // a) Same query twice → second call hits cache (time < 1ms)
+  // a) Same query twice → second call hits cache (returns the cached plan)
   // ──────────────────────────────────────────
 
-  test('same query twice → second call hits cache (< 1ms)', () => {
+  test('same query twice → second call hits cache (returns cached plan)', () => {
     const q1 = { typeId: 1, predicates: [{ field: 'name', op: 'eq', value: 'A' }] }
     const q1String = JSON.stringify(q1)
     const q1Plan = planner.plan(q1)
     // Cache it using the new cache API
     planner.cachePlan(q1String, q1Plan)
 
-    // First call: should still be fast
-    const start1 = performance.now()
-    const plan1 = planner.plan(q1)
-    const elapsed1 = performance.now() - start1
-
     // Second call: from cache
-    const start2 = performance.now()
     const plan2 = planner.getCachedPlan(q1String)
-    const elapsed2 = performance.now() - start2
 
-    // Same structure
-    expect(plan2).toBeDefined()
-    expect(plan2!.type).toBe(q1Plan.type)
-    // Cache hit should be < 1ms
-    expect(elapsed2).toBeLessThan(1)
+    // The cache hit must return the exact same PlanNode object it was cached
+    // with (reference equality), proving the plan was looked up rather than
+    // rebuilt. A wall-clock "< 1ms" assertion is intentionally avoided here:
+    // cache-hit latency is dominated by GC/CPU contention on shared CI runners
+    // and is not a reliable functional signal.
+    expect(plan2).toBe(q1Plan)
   })
 
   // ──────────────────────────────────────────
