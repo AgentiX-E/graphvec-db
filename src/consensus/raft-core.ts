@@ -1074,7 +1074,12 @@ export class RaftCore {
       return
     }
 
-    // 未获得足够投票，继续 candidate 状态（由Election timeout触发重试）
+    // Failed to win a majority (split vote): schedule another election after
+    // a fresh randomized timeout. Without this, a candidate that loses a split
+    // vote stays in the candidate state forever — its previous election timer
+    // already fired, and no code path re-arms it, so the term is never bumped
+    // and no leader is ever elected. This is the classic Raft liveness bug.
+    this._resetElectionTimeout()
   }
 
   private _becomeLeader(): void {

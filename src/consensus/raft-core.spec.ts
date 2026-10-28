@@ -191,7 +191,11 @@ describe('2. Leader 选举', () => {
     await vi.advanceTimersByTimeAsync(500)
 
     expect(node.role).toBe('candidate')
-    expect(node.currentTerm).toBe(1)
+    // The lone node cannot win votes (its peer has no live RaftCore), so it
+    // keeps re-arming the election timer and bumping its term. Assert term
+    // advanced (≥1) rather than an exact value — correct Raft liveness retries
+    // until elected, so the term keeps increasing across the 500ms window.
+    expect(node.currentTerm).toBeGreaterThanOrEqual(1)
 
     await node.stop()
   })
@@ -432,7 +436,8 @@ describe('4. 角色转换', () => {
 
     await vi.advanceTimersByTimeAsync(500)
     expect(ref.node.role).toBe('candidate')
-    expect(ref.node.currentTerm).toBe(1)
+    // Term keeps advancing on retry (peer has no live RaftCore to grant votes).
+    expect(ref.node.currentTerm).toBeGreaterThanOrEqual(1)
 
     await ref.node.stop()
   })
@@ -595,7 +600,8 @@ describe('6. 任期管理', () => {
 
     await vi.advanceTimersByTimeAsync(500)
     expect(ref.node.role).toBe('candidate')
-    expect(ref.node.currentTerm).toBe(1)
+    // Term advances each retry; the isolated node never wins so it keeps going.
+    expect(ref.node.currentTerm).toBeGreaterThanOrEqual(1)
 
     await ref.node.stop()
   })
@@ -796,9 +802,34 @@ describe('8. Error路径', () => {
 
     await vi.advanceTimersByTimeAsync(500)
 
-    // candidate 状态（无法获得多数票）
+    // candidate 状态（无法获得多数票）— 持续重试导致 term 递增
     expect(ref.node.role).toBe('candidate')
-    expect(ref.node.currentTerm).toBe(1)
+    expect(ref.node.currentTerm).toBeGreaterThanOrEqual(1)
+
+    await ref.node.stop()
+  })
+
+  it('选举失败后重新武装定时器并递增 term（split vote liveness）', async () => {
+    // Regression test for the split-vote liveness bug: a candidate that loses
+    // a majority vote used to stay in the candidate state forever, because
+    // _doRealElection's failure path never re-armed the election timer. The
+    // term therefore never advanced and no leader was ever elected. This node
+    // has two unregistered peers, so every RequestVote fails; a correct Raft
+    // implementation must keep re-arming the timer and bumping the term.
+    const ref = await createNode('n1', ['n2', 'n3'], tmp)
+    await ref.node.start()
+
+    // First election fires within [150ms, 300ms]; advance past the upper bound.
+    await vi.advanceTimersByTimeAsync(300)
+    const termAfterFirst = ref.node.currentTerm
+    expect(ref.node.role).toBe('candidate')
+    expect(termAfterFirst).toBeGreaterThanOrEqual(1)
+
+    // The failed election must re-arm the timer, so a further advance triggers
+    // at least one more election and a term strictly greater than before.
+    await vi.advanceTimersByTimeAsync(300)
+    expect(ref.node.role).toBe('candidate')
+    expect(ref.node.currentTerm).toBeGreaterThan(termAfterFirst)
 
     await ref.node.stop()
   })
