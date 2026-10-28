@@ -16,6 +16,11 @@ interface NodeProc {
   stdin: (msg: unknown) => void
 }
 
+/** Per-node ready timeout: a single node's initEventBus + WorkerPool.start
+ *  must complete within 120s. If it doesn't, the node is dead and the test
+ *  fails fast with the node's stderr — no more opaque `N/5 ready` timeouts. */
+const PER_NODE_READY_TIMEOUT_MS = 120000
+
 describe('端到端多进程压测', () => {
   const e2eNodeIds = ['e2e-a', 'e2e-b', 'e2e-c']
   const e2eBasePort = 21550 + Math.floor(Math.random() * 5000)
@@ -46,32 +51,32 @@ describe('端到端多进程压测', () => {
     try { fs.rmSync(e2eTestDir, { recursive: true, force: true }) } catch { /* ignore */ }
   }, 30000)
 
+  /**
+   * Spawn nodes sequentially (one-by-one, waiting for each to report `ready`
+   * before launching the next). Sequential spawning eliminates two sources of
+   * flakiness under high CI load:
+   *
+   * 1. NAS public-key discovery: when 5 nodes are spawned in parallel they
+   *    all write `.pub` files and call `waitForPeerKeys(dir, selfNodeId,
+   *    minPeers=1)` simultaneously; the last node may read a partial or empty
+   *    key file and then waitForPeerKeys (10s deadline) returns 0 peers,
+   *    leaving the node running but never `ready`.
+   * 2. WorkerPool `fork` explosion: each node forks 2 ts-node worker
+   *    processes; launching 15 Node.js processes at once (5 nodes × (1+2
+   *    workers)) on a 2-core runner routinely starves the OS scheduler and
+   *    causes ZMQ CURVE handshakes to stall beyond the 300s spawn timeout.
+   */
   function spawnNodes(nodeIds: string[], basePort: number, extraEnv: Record<string, string> = {}): Promise<NodeProc[]> {
-    return new Promise((resolve, reject) => {
-      const nodes: NodeProc[] = []
-      let readyCount = 0
-      const stderrBuf: string[] = []
+    // Wrap the sync operation in an async function for sequential spawning
+    const nodes: NodeProc[] = []
 
-      // 每 60s 打印 ready 进度（方便Debug）
-      const progress = setInterval(() => {
-        if (readyCount < nodeIds.length) {
-          console.log(`  ⏳ spawnNodes: ${readyCount}/${nodeIds.length} ready after ${Math.round(performance.now() / 1000)}s`)
-        }
-      }, 60000)
-      // This is a diagnostic timer only: it must not keep the Node event loop
-      // alive once the suite has finished, otherwise vitest never exits and the
-      // CI job hangs until the workflow timeout fires.
-      progress.unref?.()
-
-      for (let i = 0; i < nodeIds.length; i++) {
-        const nodeId = nodeIds[i]
-        const port = basePort + i
+    const spawnOne = (nodeId: string, port: number, idx: number): Promise<NodeProc> => {
+      console.log(`  ⏳ spawnNodes: starting ${nodeId} (${idx + 1}/${nodeIds.length})`)
+      return new Promise((resolve, reject) => {
         const dataDir = path.join(e2eTestDir, nodeId)
         fs.mkdirSync(dataDir, { recursive: true })
 
         const proc = spawn('npx', ['tsx', path.join(__dirname, 'multi-leader-test-node.ts')], {
-          // Run as its own process group so afterEach can kill npx *and* its
-          // tsx/node grandchildren together (process.kill(-pid)).
           detached: true,
           env: {
             ...process.env,
@@ -85,41 +90,67 @@ describe('端到端多进程压测', () => {
           stdio: ['pipe', 'pipe', 'pipe'],
         })
 
-        proc.stderr?.on('data', (chunk: Buffer) => stderrBuf.push(chunk.toString()))
+        const node: NodeProc = {
+          proc, nodeId, port,
+          stdin: (msg: unknown) => proc.stdin?.write(JSON.stringify(msg) + '\n'),
+        } as NodeProc
+
+        let stderr = ''
+        proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+        proc.on('error', (err) => {
+          reject(new Error(`${nodeId}: spawn error: ${err.message}`))
+        })
+
+        const singleTimeout = setTimeout(() => {
+          reject(new Error(`${nodeId}: did not ready in ${PER_NODE_READY_TIMEOUT_MS / 1000}s\nstderr:\n${stderr.slice(0, 1000)}`))
+        }, PER_NODE_READY_TIMEOUT_MS)
+
         proc.stdout?.on('data', (chunk: Buffer) => {
           const lines = chunk.toString().trim().split('\n')
           for (const line of lines) {
             if (!line) continue
             try {
               const msg = JSON.parse(line)
-              if (msg.type === 'ready') readyCount++
+              if (msg.type === 'ready') {
+                clearTimeout(singleTimeout)
+                console.log(`  ✓ spawnNodes: ${nodeId} ready (${idx + 1}/${nodeIds.length})`)
+                resolve(node)
+              }
             } catch { /* ignore */ }
           }
-          if (readyCount === nodeIds.length) {
-            clearInterval(progress)
-            clearTimeout(readyTimeout)
-            resolve(nodes)
-          }
         })
-        proc.on('exit', () => {})
-        proc.on('error', () => {})
+      })
+    }
 
-        nodes.push({
-          proc, nodeId, port,
-          stdin: (msg: unknown) => proc.stdin?.write(JSON.stringify(msg) + '\n'),
-        } as NodeProc)
-      }
+    return (async () => {
+      let n = nodeIds.length
+      // Diagnostics: log ready progress every minute
+      const progress = setInterval(() => {
+        console.log(`  ⏳ spawnNodes progress: ${nodes.length}/${n} nodes ready after ${Math.round(performance.now() / 1000)}s`)
+      }, 60000)
+      progress.unref?.()
 
-      // 300s 超时 — 5 节点 ZMQ CURVE 握手在 load 较高时较慢
-      // 这个超时晚于 vitest testTimeout (360s)，通过进展日志定位慢在哪
-      const readyTimeout = setTimeout(() => {
+      // Overall deadline (matches vitest testTimeout for this suite)
+      const globalDeadline = setTimeout(() => {
         clearInterval(progress)
-        const stderr = stderrBuf.join('\n').slice(0, 1000)
-        reject(new Error(`timeout: ${readyCount}/${nodeIds.length} ready\nstderr:\n${stderr}`))
+        throw new Error(`spawnNodes: only ${nodes.length}/${n} ready after 300s (overall deadline)`)
       }, 300000)
-      // Diagnostic timeout only: unref so it never blocks process exit.
-      readyTimeout.unref?.()
-    })
+      globalDeadline.unref?.()
+
+      try {
+        for (let i = 0; i < nodeIds.length; i++) {
+          const node = await spawnOne(nodeIds[i], basePort + i, i)
+          nodes.push(node)
+        }
+        clearInterval(progress)
+        clearTimeout(globalDeadline)
+        return nodes
+      } catch (err) {
+        clearInterval(progress)
+        clearTimeout(globalDeadline)
+        throw err
+      }
+    })()
   }
 
   // ──── 用例 1: 3节点 WorkerPool + Per-Peer DB 高吞吐 ────
