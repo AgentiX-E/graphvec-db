@@ -123,7 +123,7 @@ describe('端到端多进程压测', () => {
     }
 
     return (async () => {
-      let n = nodeIds.length
+      const n = nodeIds.length
       // Diagnostics: log ready progress every minute
       const progress = setInterval(() => {
         console.log(`  ⏳ spawnNodes progress: ${nodes.length}/${n} nodes ready after ${Math.round(performance.now() / 1000)}s`)
