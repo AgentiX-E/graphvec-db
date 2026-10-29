@@ -33,7 +33,6 @@ export default defineConfig({
       '**/cluster/*.spec.ts',
       '**/stress/*.spec.ts',
       '**/ops/backup.spec.ts',
-      '**/ops/backup-manager.spec.ts',
       '**/ops/backup-scheduler.spec.ts',
       '**/ops/query-slow-log.spec.ts',
       '**/query-cache-persister.spec.ts',
