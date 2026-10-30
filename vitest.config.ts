@@ -71,7 +71,6 @@ export default defineConfig({
       '**/ops/backup.spec.ts',
       '**/ops/backup-scheduler.spec.ts',
       '**/ops/query-slow-log.spec.ts',
-      '**/core/query-cache-persister.spec.ts',
       '**/search/search-edge.spec.ts',
       // onnxruntime-node native module: its InitOrtOnce registers a process
       // cleanup hook via napi_add_env_cleanup_hook. Under a worker-thread pool
