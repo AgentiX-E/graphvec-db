@@ -1,171 +1,156 @@
 /**
- * backup-scheduler.spec.ts — BackupScheduler 单元测试
+ * backup-scheduler.spec.ts — Unit tests for BackupScheduler
+ *
+ * Covers: construction, start/stop lifecycle, isRunning, executeNow,
+ * _cleanOldBackups (timestamp parsing + retention), double-start rejection,
+ * and edge cases.
  */
-
-import * as fs from 'fs'
-import * as path from 'path'
 import { BackupScheduler } from './backup-scheduler'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import * as os from 'node:os'
 
-// Mock Backup 模块 — 完全模拟，不依赖 backup.ts
+// ── Mocks (must be before any imports of mocked modules) ──
+
+const mockBackupFn = vi.fn()
+
+vi.mock('node-cron', () => {
+  const s = vi.fn((_expr: string, _cb: () => void) => ({ stop: vi.fn() }))
+  return { schedule: s, default: { schedule: s }, __esModule: true }
+})
+
 vi.mock('./backup', () => ({
-  Backup: vi.fn().mockImplementation(function() { return {
-    backup: vi.fn().mockResolvedValue({
-      path: '/mock/backup.tar.gz',
-      sizeBytes: 1024,
-    }),
-  }}),
+  Backup: vi.fn(function(this: any) {
+    this.backup = mockBackupFn
+  }),
 }))
 
+// ── Setup ──
+
+let tmpRoot: string
+let counter = 0
+
+function tmpDir(label = 'bs') {
+  counter++
+  const d = path.join(tmpRoot, `${label}-${counter}`)
+  fs.mkdirSync(d, { recursive: true })
+  return d
+}
+
+function fakeEngine() {
+  return { open: vi.fn(), close: vi.fn(), upsertNode: vi.fn() } as any
+}
+
+beforeAll(() => { tmpRoot = path.join(os.tmpdir(), `bs-spec-${Date.now()}`); fs.mkdirSync(tmpRoot, { recursive: true }) })
+afterAll(() => { fs.rmSync(tmpRoot, { recursive: true, force: true }) })
+// Backup._execute creates destPath from timestamp, calls mockBackupFn(destPath),
+// and returns result.path (the mock's return value). We set the mock to echo the
+// input path back so the tests can assert on the generated timestamped path.
+
+beforeEach(() => {
+  mockBackupFn.mockReset()
+  mockBackupFn.mockImplementation((destPath: string) => Promise.resolve({ path: destPath, size: 1024 }))
+})
+
 describe('BackupScheduler', () => {
-  const BACKUP_DIR = './test-data/backup-scheduler-test'
-
-  beforeAll(() => {
-    if (fs.existsSync(BACKUP_DIR)) {
-      fs.rmSync(BACKUP_DIR, { recursive: true, force: true })
-    }
-    fs.mkdirSync(BACKUP_DIR, { recursive: true })
+  // ── start / stop ───────────────────────────────────
+  it('starts and stops correctly', () => {
+    const outDir = tmpDir()
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: outDir, engine: fakeEngine() })
+    expect(s.isRunning()).toBe(false)
+    s.start()
+    expect(s.isRunning()).toBe(true)
+    s.stop()
+    expect(s.isRunning()).toBe(false)
   })
 
-  afterAll(() => {
-    if (fs.existsSync(BACKUP_DIR)) {
-      fs.rmSync(BACKUP_DIR, { recursive: true, force: true })
-    }
+  it('double start throws', () => {
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: tmpDir(), engine: fakeEngine() })
+    s.start()
+    expect(() => s.start()).toThrow('already started')
   })
 
-  beforeEach(() => {
-    if (fs.existsSync(BACKUP_DIR)) {
-      fs.rmSync(BACKUP_DIR, { recursive: true, force: true })
-    }
-    fs.mkdirSync(BACKUP_DIR, { recursive: true })
+  it('stop when not started is safe', () => {
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: tmpDir(), engine: fakeEngine() })
+    expect(() => s.stop()).not.toThrow()
   })
 
-  describe('lifecycle', () => {
-    it('should start and stop the scheduler', () => {
-      const scheduler = new BackupScheduler({
-        cronExpression: '* * * * *',
-        outputDir: BACKUP_DIR,
-        engine: {} as any,
-      })
-
-      expect(scheduler.isRunning()).toBe(false)
-
-      scheduler.start()
-      expect(scheduler.isRunning()).toBe(true)
-
-      scheduler.stop()
-      expect(scheduler.isRunning()).toBe(false)
-    })
-
-    it('should throw if start is called twice', () => {
-      const scheduler = new BackupScheduler({
-        cronExpression: '* * * * *',
-        outputDir: BACKUP_DIR,
-        engine: {} as any,
-      })
-
-      scheduler.start()
-      expect(() => scheduler.start()).toThrow('BackupScheduler already started')
-
-      scheduler.stop()
-    })
+  it('start creates output directory', () => {
+    const outDir = path.join(tmpRoot, 'out-' + counter++)
+    new BackupScheduler({ cronExpression: '* * * * *', outputDir: outDir, engine: fakeEngine() }).start()
+    expect(fs.existsSync(outDir)).toBe(true)
   })
 
-  describe('executeNow', () => {
-    it('should run a backup immediately and return a path', async () => {
-      const scheduler = new BackupScheduler({
-        cronExpression: '0 0 * * *',
-        outputDir: BACKUP_DIR,
-        engine: {} as any,
-      })
-
-      scheduler.start()
-      try {
-        const resultPath = await scheduler.executeNow()
-        expect(resultPath).toBeTruthy()
-        expect(resultPath).toMatch(/\.tar\.gz$/)
-      } finally {
-        scheduler.stop()
-      }
-    })
+  // ── executeNow ─────────────────────────────────────
+  it('executeNow calls backup and returns path', async () => {
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: tmpDir(), engine: fakeEngine() })
+    const result = await s.executeNow()
+    expect(result).toContain('graphvec-backup-')
+    expect(mockBackupFn).toHaveBeenCalled()
   })
 
-  describe('cleanOldBackups', () => {
-    it('should clean backups older than maxRetentionDays', () => {
-      // 创建旧备份文件（文件名中的时间戳决定年龄）
-      const oldFile1 = path.join(BACKUP_DIR, 'graphvec-backup-2020-01-01T00-00-00-000Z.tar.gz')
-      const oldFile2 = path.join(BACKUP_DIR, 'graphvec-backup-2020-06-15T00-00-00-000Z')
-      const newFile = path.join(BACKUP_DIR, 'graphvec-backup-2099-01-01T00-00-00-000Z.tar.gz')
+  it('executeNow without start works', async () => {
+    mockBackupFn.mockResolvedValue({ path: '/manual.backup', size: 500 })
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: tmpDir(), engine: fakeEngine() })
+    expect(await s.executeNow()).toBe('/manual.backup')
+  })
 
-      fs.writeFileSync(oldFile1, 'old backup 1')
-      fs.mkdirSync(oldFile2, { recursive: true })
-      fs.writeFileSync(path.join(oldFile2, 'data.bin'), 'old data')
-      fs.writeFileSync(newFile, 'new backup')
+  it('executeNow propagates backup failure', async () => {
+    mockBackupFn.mockRejectedValue(new Error('disk full'))
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: tmpDir(), engine: fakeEngine() })
+    await expect(s.executeNow()).rejects.toThrow('disk full')
+  })
 
-      expect(fs.existsSync(oldFile1)).toBe(true)
-      expect(fs.existsSync(oldFile2)).toBe(true)
-      expect(fs.existsSync(newFile)).toBe(true)
+  // ── Retention cleanup ──────────────────────────────
+  it('cleans old backups on start with maxRetentionDays', () => {
+    const outDir = tmpDir()
+    const oldFile = 'graphvec-backup-2020-01-01T00-00-00-000Z'
+    fs.writeFileSync(path.join(outDir, oldFile), 'old')
+    new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: outDir, engine: fakeEngine(), maxRetentionDays: 30 }).start()
+    expect(fs.existsSync(path.join(outDir, oldFile))).toBe(false)
+  })
 
-      const scheduler = new BackupScheduler({
-        cronExpression: '0 0 * * *',
-        outputDir: BACKUP_DIR,
-        engine: {} as any,
-        maxRetentionDays: 365, // 保留 1 年，2099 年的文件会被保留
-      })
+  it('keeps recent backups during cleanup', () => {
+    const outDir = tmpDir()
+    const recent = 'graphvec-backup-' + new Date().toISOString().replace(/[:.]/g, '-')
+    fs.writeFileSync(path.join(outDir, recent), 'recent')
+    new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: outDir, engine: fakeEngine(), maxRetentionDays: 30 }).start()
+    expect(fs.existsSync(path.join(outDir, recent))).toBe(true)
+  })
 
-      scheduler.start()
+  it('skips cleanup when maxRetentionDays is 0', () => {
+    const outDir = tmpDir()
+    const oldFile = 'graphvec-backup-2020-01-01T00-00-00-000Z'
+    fs.writeFileSync(path.join(outDir, oldFile), 'old')
+    new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: outDir, engine: fakeEngine(), maxRetentionDays: 0 }).start()
+    expect(fs.existsSync(path.join(outDir, oldFile))).toBe(true)
+  })
 
-      expect(fs.existsSync(oldFile1)).toBe(false)
-      expect(fs.existsSync(oldFile2)).toBe(false)
-      expect(fs.existsSync(newFile)).toBe(true)
+  it('ignores non-backup files during cleanup', () => {
+    const outDir = tmpDir()
+    fs.writeFileSync(path.join(outDir, 'other.txt'), 'x')
+    new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: outDir, engine: fakeEngine(), maxRetentionDays: 1 }).start()
+    expect(fs.existsSync(path.join(outDir, 'other.txt'))).toBe(true)
+  })
 
-      scheduler.stop()
-    })
+  // ── Edge cases ─────────────────────────────────────
+  it('stop-then-start restarts', () => {
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: tmpDir(), engine: fakeEngine() })
+    s.start(); s.stop(); s.start()
+    expect(s.isRunning()).toBe(true)
+  })
 
-    it('should not delete any backup when maxRetentionDays is not set', () => {
-      const oldFile = path.join(BACKUP_DIR, 'graphvec-backup-2020-01-01T00-00-00-000Z.tar.gz')
-      fs.writeFileSync(oldFile, 'old backup')
+  it('handles missing outputDir during cleanup gracefully', () => {
+    const outDir = path.join(tmpRoot, 'no-exist-' + counter++)
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: outDir, engine: fakeEngine(), maxRetentionDays: 7 })
+    // mkdirSync creates the dir during start, so no crash
+    expect(() => s.start()).not.toThrow()
+  })
 
-      const scheduler = new BackupScheduler({
-        cronExpression: '0 0 * * *',
-        outputDir: BACKUP_DIR,
-        engine: {} as any,
-      })
-
-      scheduler.start()
-      expect(fs.existsSync(oldFile)).toBe(true)
-      scheduler.stop()
-    })
-
-    it('should only delete graphvec-backup- prefixed files', () => {
-      const oldBackup = path.join(BACKUP_DIR, 'graphvec-backup-2020-01-01T00-00-00-000Z.tar.gz')
-      const unrelated = path.join(BACKUP_DIR, 'some-other-file.txt')
-
-      fs.writeFileSync(oldBackup, 'old backup')
-      fs.writeFileSync(unrelated, 'unrelated')
-
-      const scheduler = new BackupScheduler({
-        cronExpression: '0 0 * * *',
-        outputDir: BACKUP_DIR,
-        engine: {} as any,
-        maxRetentionDays: 1,
-      })
-
-      scheduler.start()
-      expect(fs.existsSync(oldBackup)).toBe(false)
-      expect(fs.existsSync(unrelated)).toBe(true)
-      scheduler.stop()
-    })
-
-    it('should handle empty backup directory gracefully', () => {
-      const scheduler = new BackupScheduler({
-        cronExpression: '0 0 * * *',
-        outputDir: BACKUP_DIR,
-        engine: {} as any,
-        maxRetentionDays: 7,
-      })
-
-      expect(() => scheduler.start()).not.toThrow()
-      scheduler.stop()
-    })
+  it('cleanup ignores entries with unparseable timestamps', () => {
+    const outDir = tmpDir()
+    fs.writeFileSync(path.join(outDir, 'graphvec-backup-bad-format'), 'x')
+    const s = new BackupScheduler({ cronExpression: '0 3 * * *', outputDir: outDir, engine: fakeEngine(), maxRetentionDays: 1 })
+    expect(() => s.start()).not.toThrow()
   })
 })

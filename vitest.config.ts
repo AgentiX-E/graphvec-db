@@ -69,7 +69,6 @@ export default defineConfig({
       '**/cluster/*.spec.ts',
       '**/stress/*.spec.ts',
       '**/ops/backup.spec.ts',
-      '**/ops/backup-scheduler.spec.ts',
       '**/ops/query-slow-log.spec.ts',
       '**/search/search-edge.spec.ts',
       // onnxruntime-node native module: its InitOrtOnce registers a process
