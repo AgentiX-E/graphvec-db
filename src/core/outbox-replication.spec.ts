@@ -218,3 +218,49 @@ describe('OutboxReplicationManager', () => {
     expect(mgr).toBeTruthy()
   })
 })
+
+describe('PerPeerWorker lifecycle', () => {
+  it('start sets isRunning to true', () => {
+    const w = new PerPeerWorker('p1', {
+      peerId: 'p1', tickMs: 5000, maxBackoffMs: 30000, ackTimeoutMs: 5000,
+      curveDir: '/tmp', sendFn: async () => {}, recoverDealerFn: async () => {},
+      logger: silentLogger,
+    }, null as any)
+    expect(w.isRunning).toBe(false)
+    w.start()
+    expect(w.isRunning).toBe(true)
+    w.stop()
+  })
+
+  it('stop sets isRunning to false', () => {
+    const w = new PerPeerWorker('p2', {
+      peerId: 'p2', tickMs: 5000, maxBackoffMs: 30000, ackTimeoutMs: 5000,
+      curveDir: '/tmp', sendFn: async () => {}, recoverDealerFn: async () => {},
+      logger: silentLogger,
+    }, null as any)
+    w.start()
+    w.stop()
+    expect(w.isRunning).toBe(false)
+  })
+
+  it('double start is idempotent', () => {
+    const w = new PerPeerWorker('p3', {
+      peerId: 'p3', tickMs: 5000, maxBackoffMs: 30000, ackTimeoutMs: 5000,
+      curveDir: '/tmp', sendFn: async () => {}, recoverDealerFn: async () => {},
+      logger: silentLogger,
+    }, null as any)
+    w.start()
+    w.start()
+    expect(w.isRunning).toBe(true)
+    w.stop()
+  })
+
+  it('getPendingCount returns 0 initially', () => {
+    const w = new PerPeerWorker('p4', {
+      peerId: 'p4', tickMs: 5000, maxBackoffMs: 30000, ackTimeoutMs: 5000,
+      curveDir: '/tmp', sendFn: async () => {}, recoverDealerFn: async () => {},
+      logger: silentLogger,
+    }, null as any)
+    expect(w.getPendingCount()).toBe(0)
+  })
+})
