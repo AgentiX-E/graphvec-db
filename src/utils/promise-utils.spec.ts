@@ -35,6 +35,16 @@ describe('promise-utils', () => {
     })
   })
 
+    test('handles empty items array', async () => {
+      await parallelLimit([], async () => { throw new Error('should not run') }, 3)
+    })
+
+    test('handles limit larger than items', async () => {
+      let c = 0, m = 0
+      await parallelLimit([1,2], async () => { c++; m=Math.max(m,c); await new Promise(r=>setTimeout(r,5)); c-- }, 10)
+      expect(m).toBeLessThanOrEqual(2)
+    })
+
   describe('withTimeout', () => {
     test('should throw on timeout', async () => {
       await expect(
